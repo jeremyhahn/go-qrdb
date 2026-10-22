@@ -21,6 +21,7 @@ package file
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -129,19 +130,31 @@ type Engine struct {
 	// is redundant work, not a correctness requirement.
 	durableShardDirs sync.Map
 
+	// nameKey is an encrypted store's record-name key once recordNameKey
+	// has read it through the barrier, and nil until then; a plaintext
+	// store never sets it. nameKeyMu serialises its creation, so goroutines
+	// applying one batch in parallel cannot each mint a different key.
+	nameKey   atomic.Pointer[[]byte]
+	nameKeyMu sync.Mutex
+
 	// syncs times every fsync the engine issues on its write path (see
 	// timedSync). Nil, in an Engine built by hand, times nothing.
 	syncs *syncwatch.Observer
 }
 
-// Option configures an Engine at New.
-// timedSync runs one fsync, recording its duration and warning when it was
-// slow. A failed fsync is timed too: a disk that fails slowly stalls the
-// write as much as one that succeeds slowly.
+// timedSync runs one fsync through e's observer (observeSync).
 func (e *Engine) timedSync(fsyncFn func() error) error {
-	start := e.syncs.Now()
+	return observeSync(e.syncs, fsyncFn)
+}
+
+// observeSync runs one fsync, recording its duration through syncs and
+// warning when it was slow. A failed fsync is timed too: a disk that fails
+// slowly stalls the write as much as one that succeeds slowly. A nil syncs
+// times nothing.
+func observeSync(syncs *syncwatch.Observer, fsyncFn func() error) error {
+	start := syncs.Now()
 	err := fsyncFn()
-	e.syncs.Since(start)
+	syncs.Since(start)
 	return err
 }
 
@@ -159,26 +172,43 @@ const (
 
 	// formatVersion is this build's on-disk format. Bump it, and the error
 	// messages that name it, whenever the layout or record format changes
-	// again; there is no migration between versions, by policy. Version 3
-	// added the at-rest posture to the marker and routes every record's and
-	// the journal's contents through the engine's file system.
-	formatVersion = "3"
+	// again; there is no migration between versions, by policy. The marker
+	// carries the at-rest posture after the version; every record's and the
+	// journal's contents go through the engine's file system, and an
+	// encrypted store names its records under its record-name key
+	// (nameKeyFileName).
+	formatVersion = "4"
+
+	// nameKeyFileName names the file in an encrypted store's root that holds
+	// its record-name key: nameKeyLen random bytes, written through the
+	// engine's file system and so readable only through the barrier. A
+	// record file in an encrypted store is named by the HMAC-SHA-256 of its
+	// key under this key, so a name reveals nothing about the key to anyone
+	// without the barrier; a plaintext store names records by the bare
+	// SHA-256 and has no such file. The key is written before the store's
+	// first record, so a store without it holds no records.
+	nameKeyFileName = ".qrdb-file-names"
+
+	// nameKeyLen is the record-name key's length in bytes: SHA-256's output
+	// length L, the least RFC 2104 §3 recommends for an HMAC key.
+	nameKeyLen = sha256.Size
 
 	// atRestPlaintext and atRestEncrypted are the at-rest postures the
-	// format marker records after the version ("3/encrypted"), so a store
+	// format marker records after the version ("4/encrypted"), so a store
 	// is never opened under the other one: a plaintext store under the
 	// barrier would serve its plaintext records beside new ciphertext ones,
 	// and an encrypted store without it would decode ciphertext as records.
 	atRestPlaintext = "plaintext"
 	atRestEncrypted = "encrypted"
 
-	// Temp-file prefixes for the three crash-safe publishes (writeDurable):
-	// a record, the commit journal and the format marker. None has the
-	// shape of a record name (isHashFileName), and leftovers are removed at
-	// open.
+	// Temp-file prefixes for the four crash-safe publishes (writeDurable):
+	// a record, the commit journal, the format marker and the record-name
+	// key. None has the shape of a record name (isHashFileName), and
+	// leftovers are removed at open.
 	tmpSetPrefix     = ".tmp-set-"
 	tmpJournalPrefix = ".tmp-journal-"
 	tmpFormatPrefix  = ".tmp-format-"
+	tmpNamesPrefix   = ".tmp-names-"
 
 	// lostAndFoundDirName is the directory mkfs/fsck creates at the root of
 	// a freshly formatted ext2/3/4 filesystem (and recreates after a repair)
@@ -199,8 +229,8 @@ const (
 	// prefix at the start of every stored record.
 	keyHeaderLen = 4
 
-	// hashHexLen is the length of a hex-encoded SHA-256 digest, and so the
-	// exact length of every record's filename. Used to recognise a record
+	// hashHexLen is the length of a hex-encoded SHA-256 digest or
+	// HMAC-SHA-256 tag, and so the exact length of every record's filename. Used to recognise a record
 	// file during a directory walk without reading it.
 	hashHexLen = sha256.Size * 2
 )
@@ -244,7 +274,7 @@ func WithSyncObserver(o *syncwatch.Observer) Option {
 // New creates a new file-based storage engine rooted at dir. The directory
 // is created if it does not exist, with every directory entry created along
 // the way fsynced into its parent so the creation itself is crash-durable
-// (mkdirAllDurable).
+// (mkdirAllDurable); those fsyncs are timed like every other.
 //
 // A FRESH (non-existent or empty) directory is initialised with this
 // build's format marker. A directory that already holds data is opened only
@@ -272,7 +302,10 @@ func New(dir string, opts ...Option) (*Engine, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	if err := mkdirAllDurable(dir); err != nil {
+	if cfg.syncs == nil {
+		cfg.syncs = syncwatch.ForStorage(syncwatch.BackendFile, syncwatch.WithAttrs(slog.String("dir", dir)))
+	}
+	if err := mkdirAllDurable(dir, cfg.syncs); err != nil {
 		return nil, err
 	}
 	lock, err := filelock.Open(filepath.Join(dir, lockFileName))
@@ -280,9 +313,6 @@ func New(dir string, opts ...Option) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext, lock: lock, syncs: cfg.syncs}
-	if e.syncs == nil {
-		e.syncs = syncwatch.ForStorage(syncwatch.BackendFile, syncwatch.WithAttrs(slog.String("dir", dir)))
-	}
 	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
 		e.fs = cfg.encryptor.Wrap(vfs.Default)
 		e.atRest = atRestEncrypted
@@ -475,11 +505,71 @@ func (e *Engine) shardDir(digest string) string {
 }
 
 // recordPaths returns key's shard directory and the full path of its record
-// file within it, computing the digest once for both.
-func (e *Engine) recordPaths(key []byte) (dir, path string) {
-	digest := hashHex(key)
-	dir = e.shardDir(digest)
-	return dir, filepath.Join(dir, digest)
+// file within it, computing the record name once for both. create says
+// whether an encrypted store without a record-name key mints one, as a write
+// does; for a read the missing key file's not-exist error is returned, which
+// means the store holds no records (see nameKeyFileName).
+func (e *Engine) recordPaths(key []byte, create bool) (dir, path string, err error) {
+	name, err := e.recordName(key, create)
+	if err != nil {
+		return "", "", err
+	}
+	dir = e.shardDir(name)
+	return dir, filepath.Join(dir, name), nil
+}
+
+// recordName returns the name of key's record file: the hex SHA-256 of key in
+// a plaintext store, and the hex HMAC-SHA-256 (RFC 2104) of key under the
+// store's record-name key in an encrypted one.
+func (e *Engine) recordName(key []byte, create bool) (string, error) {
+	if e.atRest != atRestEncrypted {
+		return hashHex(key), nil
+	}
+	nameKey, err := e.recordNameKey(create)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, nameKey)
+	mac.Write(key)
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// recordNameKey returns an encrypted store's record-name key, reading it
+// through the barrier the first time, so it fails with the barrier's error
+// while the barrier is sealed. When the key file does not exist it returns
+// that not-exist error, unless create is set: then it mints the key and
+// writes it durably before returning it. A caller passing create holds the
+// write lock, which makes the creation exclusive across processes;
+// nameKeyMu makes it exclusive within this one.
+func (e *Engine) recordNameKey(create bool) ([]byte, error) {
+	if k := e.nameKey.Load(); k != nil {
+		return *k, nil
+	}
+	e.nameKeyMu.Lock()
+	defer e.nameKeyMu.Unlock()
+	if k := e.nameKey.Load(); k != nil {
+		return *k, nil
+	}
+	path := filepath.Join(e.dir, nameKeyFileName)
+	k, err := readFile(e.fs, path)
+	switch {
+	case err == nil:
+		if len(k) != nameKeyLen {
+			return nil, &NameKeyLengthError{Path: path, Len: len(k), Want: nameKeyLen}
+		}
+	case create && isNotExist(err):
+		k = make([]byte, nameKeyLen)
+		if _, err := io.ReadFull(rand.Reader, k); err != nil {
+			return nil, err
+		}
+		if err := e.writeDurable(e.fs, path, tmpNamesPrefix, k); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+	e.nameKey.Store(&k)
+	return k, nil
 }
 
 // encodeRecord renders key and value as the on-disk record format:
@@ -570,7 +660,13 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 	if err := checkKey(key); err != nil {
 		return nil, err
 	}
-	_, path := e.recordPaths(key)
+	_, path, err := e.recordPaths(key, false)
+	if err != nil {
+		if isNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	record, err := readFile(e.fs, path)
 	if err != nil {
 		if isNotExist(err) {
@@ -619,7 +715,10 @@ func (e *Engine) set(key, value []byte) error {
 // writeRecord durably replaces the record for key. The caller holds the write
 // lock.
 func (e *Engine) writeRecord(key, value []byte) error {
-	dir, path := e.recordPaths(key)
+	dir, path, err := e.recordPaths(key, true)
+	if err != nil {
+		return err
+	}
 	if err := e.ensureShardDirDurable(dir); err != nil {
 		return err
 	}
@@ -752,7 +851,13 @@ func (e *Engine) del(key []byte) error {
 	if err := checkKey(key); err != nil {
 		return err
 	}
-	dir, path := e.recordPaths(key)
+	dir, path, err := e.recordPaths(key, false)
+	if err != nil {
+		if isNotExist(err) {
+			return nil
+		}
+		return err
+	}
 	if rmErr := e.removeRecord(path); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			return nil
@@ -866,7 +971,9 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 // not open the record to verify the stored key: a presence check is exactly
 // what callers of Exists want, and a mismatched record is vanishingly
 // unlikely (see Get) and, if it ever happened, would still be caught the
-// moment that key is actually read.
+// moment that key is actually read. In an encrypted store the record name
+// needs the record-name key, so a store that has not read it yet answers
+// with the barrier's error while the barrier is sealed.
 func (e *Engine) Exists(key []byte) (bool, error) {
 	if e.closed.Load() {
 		return false, &storage.ClosedError{}
@@ -874,10 +981,12 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 	if err := checkKey(key); err != nil {
 		return false, err
 	}
-	_, path := e.recordPaths(key)
-	_, err := os.Stat(path)
+	_, path, err := e.recordPaths(key, false)
+	if err == nil {
+		_, err = os.Stat(path)
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if isNotExist(err) {
 			return false, nil
 		}
 		return false, err
@@ -968,8 +1077,12 @@ func (e *Engine) ensureShardDirDurable(dir string) error {
 // directory ENTRY, which a crash can otherwise lose even though the files
 // written inside it later are made durable on their own (Set, the commit
 // journal). It stops at the first ancestor that already exists: nothing
-// changed there, so there is nothing to make durable.
-func mkdirAllDurable(dir string) error {
+// changed there, so there is nothing to make durable. Every fsync is timed
+// through syncs (observeSync), like the engine's other syncs.
+func mkdirAllDurable(dir string, syncs *syncwatch.Observer) error {
+	syncParent := func() error {
+		return observeSync(syncs, func() error { return fsync.Dir(filepath.Dir(dir)) })
+	}
 	if info, err := os.Stat(dir); err == nil {
 		if !info.IsDir() {
 			return &os.PathError{Op: "mkdir", Path: dir, Err: os.ErrExist}
@@ -980,12 +1093,12 @@ func mkdirAllDurable(dir string) error {
 		// parent here too, so every caller that reaches this point --
 		// racing the creator or simply arriving later -- returns only once
 		// the directory ENTRY is durable, never racing ahead of it.
-		return fsync.Dir(filepath.Dir(dir))
+		return syncParent()
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	if parent := filepath.Dir(dir); parent != dir {
-		if err := mkdirAllDurable(parent); err != nil {
+		if err := mkdirAllDurable(parent, syncs); err != nil {
 			return err
 		}
 	}
@@ -996,11 +1109,11 @@ func mkdirAllDurable(dir string) error {
 			// the identical guarantee before its caller writes into dir,
 			// so sync independently rather than trust the winner's
 			// in-flight call.
-			return fsync.Dir(filepath.Dir(dir))
+			return syncParent()
 		}
 		return err
 	}
-	return fsync.Dir(filepath.Dir(dir))
+	return syncParent()
 }
 
 // isNotExist reports whether err says a file is absent. The engine's file
@@ -1070,15 +1183,16 @@ func (e *Engine) writeDurable(fs vfs.FS, path, tmpPrefix string, data []byte) er
 // not written by this exact on-disk format (see FormatMarkerMissingError,
 // FormatVersionMismatchError), and writes the marker into a fresh one.
 func (e *Engine) ensureFormatMarker() error {
-	// A crash between creating the marker's temp file and renaming it leaves
-	// a stray temp file with no committed marker; clean it up first so it
-	// cannot be mistaken for "this directory already holds data".
+	// A crash between creating the marker's or the record-name key's temp
+	// file and renaming it leaves a stray temp file with no committed file;
+	// clean it up first so it cannot be mistaken for "this directory already
+	// holds data".
 	entries, err := os.ReadDir(e.dir)
 	if err != nil {
 		return err
 	}
 	for _, ent := range entries {
-		if !ent.IsDir() && strings.HasPrefix(ent.Name(), tmpFormatPrefix) {
+		if !ent.IsDir() && (strings.HasPrefix(ent.Name(), tmpFormatPrefix) || strings.HasPrefix(ent.Name(), tmpNamesPrefix)) {
 			_ = os.Remove(filepath.Join(e.dir, ent.Name()))
 		}
 	}
@@ -1116,7 +1230,7 @@ func (e *Engine) ensureFormatMarker() error {
 }
 
 // writeFormatMarker durably publishes formatMarkerFileName naming
-// formatVersion and the engine's at-rest posture ("3/encrypted"). The marker
+// formatVersion and the engine's at-rest posture ("4/encrypted"). The marker
 // is the one file always written in plaintext: it says how every other file
 // must be read, so it has to be readable before that choice is made, and it
 // holds no data.

@@ -1,6 +1,6 @@
 # Security Officer dual-factor (SO PIN)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 The SO dual-factor gate adds an in-band Security Officer PIN as a
@@ -39,8 +39,8 @@ unchanged.
 
 ## The node barrier is platform scope
 
-`seal:rekey`, `seal:rotate-root-key`, `seal:generate-recovery`,
-`seal:initialize-shamir` and `seal:seal` act on the **node** barrier, a
+`seal:rekey`, `seal:rotate_root_key`, `seal:generate_recovery`,
+`seal:initialize_shamir` and `seal:seal` act on the **node** barrier, a
 singleton that protects every tenant's data. They are `ScopeCross`: only an
 identity of the system tenant may exercise them, on every transport, with the
 gate on or off. An SO of any other tenant -- holding that tenant's SO role and
@@ -51,7 +51,7 @@ permissions.
 
 The rest of the node barrier's permissions are `ScopeCross` for the same
 reason, whether or not the gate covers them: `seal:bootstrap`, `seal:unseal`,
-`seal:enable_encryption`, the holder registry (`seal:officer_register`,
+`seal:enable_encryption`, `seal:store_manage`, the holder registry (`seal:officer_register`,
 `seal:officer_list`, `seal:officer_revoke`) and the node key ceremony
 (`ceremony:initialize`, `ceremony:sign_csr`). See
 [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only).
@@ -59,10 +59,8 @@ reason, whether or not the gate covers them: `seal:bootstrap`, `seal:unseal`,
 Sealing is not an SO-gated operation: Admin and Operator hold `seal:seal` by
 design, and the dual-factor gate does not cover it. When a barrier SO PIN is
 configured (the `pin.PINBackend`), a seal must present it in the request's
-`so_pin` on **every** transport. REST and MCP always required it. gRPC, the
-Unix socket and QUIC now require it too: `BarrierSeal` takes
-`BarrierSealRequest{so_pin}` instead of `google.protobuf.Empty`, and the QUIC
-handler reads the body it used to ignore. The Go SDK fills that `so_pin` from
+`so_pin` on **every** transport: on gRPC, the Unix socket and QUIC,
+`BarrierSeal` takes `BarrierSealRequest{so_pin}`. The Go SDK fills that `so_pin` from
 the PIN bound by `sdk.WithSOPIN`, since `BarrierSeal` takes no request of its
 own.
 
@@ -86,8 +84,7 @@ A QUIC frame has no header section, so on QUIC the PIN rides in the `so_pin`
 field of the request message of every SO-gated operation
 (`barrier.ShamirInitialize`, `barrier.RekeyStart`, `barrier.RecoveryGenerate`,
 `barrier.RecoveryDelete`, `ceremony.Initialize`, `ceremony.SignCSR`).
-`BarrierRecoveryDelete` takes a `BarrierRecoveryDeleteRequest` for this reason
-(it took `google.protobuf.Empty`; an empty request encodes identically). A
+`BarrierRecoveryDelete` takes a `BarrierRecoveryDeleteRequest` for this reason. A
 gated QUIC method without a carrier would be refused, never admitted, and a
 test holds every gated method to having one. The embedded transport runs in
 process with no authenticated caller and is not gated.
@@ -250,12 +247,12 @@ verifies the old PIN through the gate above before it commits anything.
 
 ## Chain position
 
-The middleware is the innermost REST wrapper (directly around the mux),
-so it runs after the auth middleware has resolved the caller's identity
-into the request context:
+On REST the middleware sits directly inside the auth middleware, so it runs
+after the caller's identity is resolved into the request context. Only replica
+forwarding, when configured, sits between it and the router:
 
 ```
-CORS → scope → sealed-window → auth → SO dual-factor → mux
+CORS → scope → sealed-window → auth → SO dual-factor → replica forwarding → router
 ```
 
 Interaction with the sealed window: the SO-gated operations that are

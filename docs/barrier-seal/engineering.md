@@ -941,7 +941,14 @@ every acknowledged write afterwards. At every turn it asks
 step counts it expects, and it ends when every node, over every transport,
 reports no migration: the record was reaped. It also reads the nodes' logs for
 the three hand-on lines: each turn's `catch_up_index` must be above zero and
-above the previous turn's. A stale coordinator's conditional write, which
+above the previous turn's.
+`TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` stops the
+coordinating leader while the second owner holds its turn, and starts it
+again. Every node, over every transport, then reports the same generation and
+the same steps as before the stop. The restarted node, leading again, hands
+that turn on. Its own turn comes last and waits for its credential file,
+because the restart discarded the request credential. The rollout ends with
+one hand-on per owner. A stale coordinator's conditional write, which
 loses and is decided again on the record it re-reads, and a shard with no
 leader, are unit-tested in `pkg/clustermig`. A write is retried only in the class the
 key-value API documents as retryable: `503 UNAVAILABLE`, or a node that does

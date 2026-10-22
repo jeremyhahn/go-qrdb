@@ -145,15 +145,21 @@ const (
 var (
 	prTierJobs      = []string{changesJob, "image", "arch-gates"}
 	codeTierJobs    = []string{"test-typescript"}
-	fullTierJobs    = []string{"integration-standalone", featureJob}
+	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
 )
 
+// fipsJob runs the unit suites under GODEBUG=fips140=only (#20,
+// docs/seal/fips140-mode.md).
+const fipsJob = "fips"
+
 // fullTierJob reports whether a job must be in the full tier. Every
 // integration job is, however the Integration stage is split, and so is trivy
-// (devops.md §8a: `trivy fs` runs in the full tier or nightly, not per PR).
+// (devops.md §8a: `trivy fs` runs in the full tier or nightly, not per PR),
+// and so is fips: it reruns both unit suites under the FIPS module, which no
+// pull request's budget holds.
 func fullTierJob(name string) bool {
-	return strings.HasPrefix(name, "integration") || name == "trivy"
+	return strings.HasPrefix(name, "integration") || name == "trivy" || name == fipsJob
 }
 
 // prTriggerTypes are the pull_request activity types ci.yml must declare.
@@ -369,7 +375,7 @@ func ciTierProblems(wf ciWorkflow) []string {
 			}
 			if fullTierJob(name) {
 				problems = append(problems, "job "+name+" is tagged pr but belongs to the full tier "+
-					"(every integration job and trivy, devops.md §8a)")
+					"(every integration job, trivy and fips, devops.md §8a)")
 			}
 			if slices.Contains(codeTierJobs, name) {
 				problems = append(problems, "job "+name+" is a code-tier job tagged pr: "+ciGateJob+
@@ -502,6 +508,11 @@ jobs:
     needs: [build]
     steps:
       - run: make integration-test-x
+  fips:
+    if: ` + fullTierIf + `
+    needs: [build]
+    steps:
+      - run: make test
   soak-x:
     if: ` + nightlyIf + `
     needs: [build]
@@ -509,10 +520,11 @@ jobs:
       - run: make soak-x
   ci-gate:
     if: always()
-    needs: [build, changes, test-typescript, integration-x, soak-x]
+    needs: [build, fips, changes, test-typescript, integration-x, soak-x]
     steps:
       - env:
           RESULT_BUILD: ${{ needs.build.result }}
+          RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}
@@ -526,6 +538,7 @@ jobs:
           check changes "$RESULT_CHANGES" pr
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check integration-x "$RESULT_INTEGRATION_X" full
+          check fips "$RESULT_FIPS" full
           check soak-x "$RESULT_SOAK_X" nightly
 `
 
@@ -621,6 +634,15 @@ func TestCITierProblems_CanFail(t *testing.T) {
 			}
 		})
 	}
+
+	// fips (#20) on the PR tier: no `if:` and tagged pr is self-consistent to
+	// every other guard, so only fullTierJob's name rule can catch it.
+	fipsOnPR := strings.Replace(replace("  fips:\n    if: "+fullTierIf+"\n", "  fips:\n"),
+		`"$RESULT_FIPS" full`, `"$RESULT_FIPS" pr`, 1)
+	want := "job " + fipsJob + " is tagged pr but belongs to the full tier"
+	if p := ciTierProblems(parseWorkflow(t, fipsOnPR)); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
+		t.Fatalf("fips job on the PR tier: want a problem containing %q, got %q", want, p)
+	}
 }
 
 // runGate executes ci-gate's script under bash the way a runner does, with
@@ -697,6 +719,11 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	if c, found := checks[featureJob]; !found || c.tier != tierFull {
 		t.Fatalf("%s has no full-tier check line for %s; the per-feature legs would not gate", ciGateJob, featureJob)
 	}
+	// fips (#20) is a required full-tier gate: its cases below name it rather
+	// than full[0], which is whichever full job sorts first.
+	if c, found := checks[fipsJob]; !found || c.tier != tierFull {
+		t.Fatalf("%s has no full-tier check line for %s; a FIPS 140-3 failure would not gate", ciGateJob, fipsJob)
+	}
 	all := func(jobs []string, result string) map[string]string {
 		m := map[string]string{}
 		for _, j := range jobs {
@@ -736,6 +763,10 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		{"one feature leg cancelled", map[string]string{featureJob: "cancelled"}, "true", "false", true},
 		{"feature legs skipped on a full-tier run", map[string]string{featureJob: "skipped"}, "true", "false", true},
 		{"feature legs skipped on a PR-tier run", map[string]string{featureJob: "skipped"}, "false", "false", false},
+		{"fips failed on a full-tier run", map[string]string{fipsJob: "failure"}, "true", "false", true},
+		{"fips cancelled on a full-tier run", map[string]string{fipsJob: "cancelled"}, "true", "false", true},
+		{"fips skipped on a full-tier run", map[string]string{fipsJob: "skipped"}, "true", "false", true},
+		{"fips skipped on a PR-tier run", map[string]string{fipsJob: "skipped"}, "false", "false", false},
 		{"nightly skipped on a main push", allNightly("skipped"), "true", "false", false},
 		{"nightly skipped on a dispatch", allNightly("skipped"), "true", "true", true},
 		{"nightly failed on a dispatch", map[string]string{nightly[0]: "failure"}, "true", "true", true},

@@ -1,6 +1,6 @@
 # Pluggable Authentication
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -20,6 +20,8 @@ type Identity struct {
     TenantID  string
     Roles     []string
     Metadata  map[string]string
+    // also RoleBindings, TenantOwner, ScopePermissions, Attributes:
+    // see pkg/auth/auth.go
 }
 
 type Authenticator interface {
@@ -28,7 +30,7 @@ type Authenticator interface {
 }
 
 type Authorizer interface {
-    Authorize(ctx context.Context, resource, action string) error
+    Authorize(ctx context.Context, identity *Identity, resource, action string) error
 }
 ```
 
@@ -39,11 +41,11 @@ Extracts identity from TLS peer certificates:
 | Field | Source |
 |-------|--------|
 | `Subject` | Certificate Subject CN, until the account is resolved (below) |
-| `TenantID` | the tenant-scoped SPIFFE URI SAN when present (with a configured trust domain PINNED), otherwise Certificate Subject OU[0] |
+| `TenantID` | the SPIFFE ID URI SAN's trust domain, which must equal Certificate Subject OU[0]; a certificate lacking either, whose two disagree, or whose OU is the pinned cluster trust domain is refused (`*CertificateTenantError`), and the tenant must exist |
 | `Roles` | Not populated (external RBAC) |
 
 **Those fields SELECT the account; they do not prove it.** The authenticator
-produces a claim, and `auth/middleware.finalizeIdentity` then decides whether
+produces a claim, and `AuthMiddleware.finalizeIdentity` (`pkg/auth/middleware`) then decides whether
 to believe it: an account with at least one SPKI `CertBindings` entry
 authenticates only with a certificate matching one of them
 (`*CertBindingNotPermittedError`, 401), while an account with none
@@ -101,9 +103,10 @@ one-way door. Detail:
 The authenticator is wired into protocol middleware:
 
 - **REST**: `pkg/auth/middleware/rest.go` extracts TLS peer cert, calls `Authenticate()`
-- **gRPC**: `pkg/auth/middleware/grpc.go` extracts from gRPC TLS credentials
-- **Unix**: No auth required (inherently local)
-- **MCP**: OAuth 2.1 Bearer token validation via external mux
+- **gRPC and gRPC over the Unix socket**: `pkg/auth/middleware/grpc.go` extracts from gRPC TLS credentials; the Unix socket server applies the same middleware as TCP gRPC, never a local-trust bypass
+- **QUIC**: `pkg/auth/middleware/quic.go`
+- **MCP**: `pkg/auth/middleware/mcp.go`; bearer-token validation is an embedder authenticator ([custom-authorizers.md](custom-authorizers.md))
+- **MySQL / PostgreSQL**: `pkg/auth/middleware/sql.go`
 
 ## RBAC Authorizer
 
@@ -166,25 +169,22 @@ verb of it. Full mapping:
 
 ## Admin Bootstrap
 
-Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go). It is the canonical place where the system tenant, built-in roles, and the platform admin user are created. The package is reusable across qrdb, xkms, quicbaas, and any future binary in the stack — dependencies are passed by interface (`TenantCreator`, `RoleCreator`, `UserCreator`, `CertProvider`).
+Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go). It is the canonical place where the system tenant, built-in roles, and the platform admin user are created. The package is reusable across qrdb, xkms, quicbaas, and any future binary in the stack — dependencies are passed by interface (`TenantCreator`, `RoleCreator`, `UserCreator`, `CertProvider`, `CertSigner`).
 
-`firstboot.Initialize` runs after `ceremony.Initialize`:
+`firstboot.Initialize` runs four steps:
 
-1. **TLS setup** (driven by ceremony): Generate or load CA certificate and server TLS credentials.
-2. **System tenant**: Create the reserved `system` tenant via an internal-call context that bypasses the public reserved-id rejection.
-3. **Built-in roles**: Register the five built-in roles (SO / Admin / Operator / User / Auditor) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
-4. **Admin user**: Create user `admin` in the system tenant with exactly one role grant: `Admin@system`. The system-tenant rule in `pkg/auth/rbac` promotes that single grant to cross-tenant authority.
-5. **Admin client certificate**: Issue an mTLS client certificate via the supplied `CertProvider` so the CLI can authenticate immediately after first start.
+1. **System tenant**: Create the reserved `system` tenant via an internal-call context that bypasses the public reserved-id rejection.
+2. **Built-in roles**: Register the five built-in roles (SO / Admin / Operator / User / Auditor) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
+3. **Admin user**: Create user `admin` in the system tenant with exactly one role grant: `Admin@system`. The system-tenant rule in `pkg/auth/rbac` promotes that single grant to cross-tenant authority.
+4. **Admin client certificate**: Issue an mTLS client certificate (the `CertSigner` signs the admin's CSR when `AdminCSRPEM` is supplied; otherwise the `CertProvider` generates the key pair) and bind its SPKI thumbprint to the admin, so the CLI can authenticate immediately after first start.
 
 Every step is idempotent and Raft-replicated; follower nodes observe the leader's writes and skip duplication on their own runs.
 
 The function returns a `firstboot.Result` describing which artifacts were created in *this* run (the `*Created` flags reflect this run only, not the overall presence of the resource — useful for distinguishing a true first boot from a follower replay).
 
-> See `pkg/firstboot/firstboot.go:130-204` for the canonical implementation.
-
 ## go-xkms Integration
 
-go-xkms passes its own `Authenticator` (JWT with tenant claims, adaptive auth) to go-qrdb's server constructor. go-qrdb accepts any implementation of the interface.
+go-xkms registers its own `Authenticator` implementations through the embedder hooks below (`node.WithAuthenticators`, `AuthMiddlewareConfig.ExtraAuthenticators`). go-qrdb accepts any implementation of the interface.
 
 ## Embedder Hooks (OAuth 2.1 / custom authorizers)
 
@@ -209,7 +209,7 @@ for that work:
 sdk.RegisterPermissionRoleGrant("xkms", sdk.PermissionCredentialsStore, sdk.PermissionCredentialsRetrieve)
 n, _ := node.NewStandaloneNode(ctx, cfg, serverOpts, node.WithServicePrincipal("xkms"))
 svcCtx, _ := n.ServiceContext(ctx) // identity "qrdb-service:xkms", system tenant
-_, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
+_, err := n.Client().Credentials().CredentialRetrieveBuffer(svcCtx, "ca-state")
 ```
 
 | Property | How |
@@ -217,7 +217,7 @@ _, err := n.Client().Credentials().CredentialRetrieve(svcCtx, "ca-state")
 | Authority | Exactly the permissions registered under the principal's name, carried as `ScopePermissions` with no roles. The RBAC authorizer applies every rule (scope, the SO deny-list, ABAC) unchanged. There is no superuser and no bypass. |
 | Denial | `*sdk.PermissionDeniedError`, like any other caller's |
 | Audit | Every `auth.authorize` decision names actor `qrdb-service:<name>` |
-| Network | Refused on every transport: `AuthMiddleware.finalizeIdentity` rejects an identity whose subject starts with `qrdb-service:`, or that carries the principal marker, with `*ServicePrincipalPresentedError` (unwraps to `ErrUnauthenticated`) |
+| Network | Refused on every transport: `AuthMiddleware.finalizeIdentity` rejects an identity whose subject starts with `qrdb-service:`, or that carries the principal marker, with `*ServicePrincipalPresentedError` (unwraps to `ErrUnauthenticated`). The one network path is a delegation certificate a tenant's own CA issued to the principal: it then acts inside that tenant, never the system tenant (`Node.DelegatedContext`) |
 | Forwarding | A call forwarded to another replica carries the `WithEmbeddedCaller` identity, never the principal |
 
 The engineering contract is in

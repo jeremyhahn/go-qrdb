@@ -177,7 +177,7 @@ func TestRunRefusesAnIncompleteJobList(t *testing.T) {
 	err := run([]string{
 		"-repo", testRepo, "-api", "http://forge.example/api/v1", "-ref", "main",
 		"-job", "fips=FIPS 140-3=failure",
-		"-workflow-file", filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml"),
+		"-workflow-file", twoJobWorkflow(t),
 		"-self", "signal",
 	}, io.Discard)
 	var coverage *JobCoverageError
@@ -201,7 +201,7 @@ func TestRunRefusesAnUnknownJobResult(t *testing.T) {
 	err := run([]string{
 		"-mode", modeApply,
 		"-repo", testRepo, "-api", h.forge.api(), "-ref", testBranch, "-run-id", "100",
-		"-workflow-file", filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml"),
+		"-workflow-file", twoJobWorkflow(t),
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=neutral",
 		"-job", "trivy=" + trivyName + "=" + resultSuccess,
@@ -225,7 +225,7 @@ func TestOneUndecidableJobDoesNotStopTheRest(t *testing.T) {
 	err := run([]string{
 		"-mode", modeApply,
 		"-repo", testRepo, "-api", h.forge.api(), "-ref", testBranch, "-run-id", "100",
-		"-workflow-file", filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml"),
+		"-workflow-file", twoJobWorkflow(t),
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=neutral",
 		"-job", "trivy=" + trivyName + "=" + resultFailure,

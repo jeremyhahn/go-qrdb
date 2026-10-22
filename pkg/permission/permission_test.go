@@ -635,7 +635,9 @@ func TestAll_TotalCount(t *testing.T) {
 	//   tenant acting on its own devices only (ScopeSelf) = 396 total.
 	// + 5 abac_policies perms (create, read, list, update, delete), each
 	//   tenant managing its own ABAC policies only (ScopeSelf) = 401 total.
-	const expectedTotal = 401
+	// + 1 audit:delete, retention administration of the tenant's own
+	//   audit events (ScopeSelf) = 402 total.
+	const expectedTotal = 402
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

@@ -155,8 +155,8 @@ func registerGovernanceDuties() {
 		// the token, not use of its keys (piv:use is DutyCryptoUse).
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
-		// Audit oversight.
-		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
+		// Audit oversight and retention administration.
+		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Cluster and node control.
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,

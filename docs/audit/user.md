@@ -141,8 +141,14 @@ A Go program that gates audit access with the SDK's RBAC authorizer
 - `sdk.PermissionAuditRead` (`audit:read`)
 - `sdk.PermissionAuditQuery` (`audit:query`)
 - `sdk.PermissionAuditStream` (`audit:stream`)
+- `sdk.PermissionAuditDelete` (`audit:delete`)
 
 Each one has the same value as the permission the server checks.
+`audit:delete` names deleting audit events under retention administration.
+The SO and Admin built-in roles hold it; the Auditor role does not, so the
+role that reviews the trail cannot remove from it. No qrdb endpoint deletes
+audit events: the verb is for a program that runs its own retention over
+the trail and authorizes it with the SDK.
 
 ## Troubleshooting
 

@@ -1,6 +1,6 @@
 # Custom Authenticators & Authorizers (Embedder Hooks)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -13,8 +13,8 @@ authorization stack (RBAC, optionally decorated with ABAC). Everything else
 — OAuth 2.1 bearer validation, external policy engines, adaptive
 authentication — is the embedding application's to implement and register
 through the hooks below. **qrdb defines the interfaces and the transport
-plumbing only; it contains no OAuth, JWT, or token-validation code and no
-such dependencies.**
+plumbing only; it contains no OAuth, JWT, or token-validation code and
+imports no such library.**
 
 ## The two interfaces (`pkg/auth`)
 

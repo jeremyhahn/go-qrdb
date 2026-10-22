@@ -1,6 +1,6 @@
 # Identity / authorization layering
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -22,41 +22,43 @@ membership from qrdb via the SDK.
 - **Tenants** (`pkg/tenant`) — including the reserved `system` tenant.
 - **Users** (`pkg/user`) — passwordless principals scoped to a tenant.
 - **Roles** (`pkg/role`) — name + permission list, scoped to a tenant.
-- **Role memberships** — `User.RoleIDs` is the assignment edge.
+- **Role memberships** — `User.RoleIDs` (system-scoped roles) and
+  `User.RoleBindings` (tenant-scoped grants) are the assignment edges.
 - **Permission registry** (`pkg/permission/constants.go`) — comprehensive permission
   set including:
-  - tenant CRUD (create, read, update, delete, list:cross, approve) and tenant barriers
+  - tenant CRUD, its cross-tenant variants (`tenants:*:cross`), `tenants:approve`, and tenant barriers
   - user CRUD and authentication factors
   - role CRUD and permission listing
   - audit log access (read, query, stream)
   - KV / MVCC / transaction / batch / watch / lease / index / time-series / vector / lock operations
   - cryptographic keys (sign, verify, encrypt, decrypt, wrap, unwrap, create, rotate, delete, derive)
-  - certificate management (issue, enroll, export, revoke, list, read) and trust anchors (add, list, remove)
+  - certificate management (issue, enroll, delegate, revoke, list, read) and trust anchors (add, list, remove)
   - certificate authority (CA) and ACME operations
   - seal/barrier operations and recovery
-  - ceremony and custodian operations
-- **System-tenant rule** — an identity rooted in the `system` tenant gets
-  cross-tenant scope; everything else is bound to its own tenant.
+  - ceremony operations
+- **System-tenant rule** — a cross-scope permission (`:cross`, tagged
+  `ScopeCross`) takes effect only for an identity in the `system` tenant;
+  every other identity is bound to its own tenant.
 
 ## What does NOT live in qrdb
 
-- Hardware-specific authentication factor implementations (FIDO2, PIV, PKCS#11, TPM2). These live in go-xkms and are adapted to the `authfactors.FactorRegistry` interface.
+- Hardware-specific authentication factor implementations (FIDO2, PIV, PKCS#11, TPM2). These live in go-xkms and implement the `authfactors.Factor` interface, registered in an `authfactors.FactorRegistry`.
 - Hardware seal strategy implementations (TPM2, PKCS#11, cloud KMS, Vault). These live in go-xkms and register into qrdb's `seal.StrategyRegistry`.
 - Application-specific resource models beyond the core qrdb / go-xkms domains (e.g., quicbaas's static-password / team domain).
-- Per-resource policies (e.g., per-key restrictions beyond role-based access). qrdb implements role-based access control; fine-grained per-resource policies belong to downstream applications.
+- Policies over an application's own resources. qrdb implements role-based access control, with an optional ABAC decorator over it ([abac.md](abac.md)); a downstream application's resource policies belong to that application.
 
 The split respects module boundaries: qrdb owns core identity, cryptographic operations, and seal/barrier lifecycle. go-xkms and go-quicbaas inject hardware backends and application-specific domains via composition.
 
 ## Pattern for downstream applications
 
 ```go
-// Look up identity / role membership through qrdb.
-roles, err := xkms.Auth(qrdbClient).RBAC().ListPermissions(ctx, identity.Subject)
+// Look up identity / role membership through qrdb (sdk/go Client).
+perms, err := qrdbClient.RBAC().ListPermissions(ctx, identity)
 // or:
-user, err := xkms.Auth(qrdbClient).Users().GetUserByUsername(ctx, tenantID, username)
+user, err := qrdbClient.Users().GetUserByUsername(ctx, tenantID, username)
 
-// Then make the permission decision in the application's domain.
-allowed, err := keyrbac.CheckPermission(user.Roles, "keys", "sign")
+// Then make the permission decision in the application's own domain.
+allowed := app.CheckPermission(user.RoleIDs, "keys", "sign")
 ```
 
 The downstream app owns the permission semantics; qrdb owns the membership.
@@ -74,12 +76,12 @@ The downstream app owns the permission semantics; qrdb owns the membership.
 ## Cross-cutting authorization in qrdb
 
 Authorization in qrdb itself uses qrdb's permission registry (e.g.
-`tenant:list:cross`, `certs:revoke:cross`). Downstream apps that need to
+`tenants:list:cross`, `certs:revoke:cross`). Downstream apps that need to
 perform identity-layer operations (e.g. an admin UI listing all tenants)
 go through qrdb's RBACClient:
 
 ```go
-err := xkms.Auth(qrdbClient).RBAC().Authorize(ctx, identity, "tenant", "list:cross")
+err := qrdbClient.RBAC().Authorize(ctx, identity, "tenants", "list:cross")
 ```
 
 Authorization for the app's *own* domain stays inside the app.

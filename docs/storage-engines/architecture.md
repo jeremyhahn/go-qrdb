@@ -71,8 +71,11 @@ authentication down with it. PebbleDB and in-memory storage have no such path:
 two keys are two byte strings.
 
 Each key's record is named by the
-**hex SHA-256 digest of the key** (stdlib `crypto/sha256`; no hand-rolled
-hashing), sharded two levels deep by the first four hex characters (two
+**hex SHA-256 digest of the key** in a plaintext store, and by the **hex
+HMAC-SHA-256 ([RFC 2104](https://www.rfc-editor.org/rfc/rfc2104)) of the key
+under the store's record-name key** in an encrypted one (stdlib
+`crypto/sha256` and `crypto/hmac`; no hand-rolled hashing; see "At-rest
+encryption" below). Either name is sharded two levels deep by the first four hex characters (two
 characters per level: 256 subdirectories per level, 65,536 leaf directories
 in total — a small, FIXED number regardless of keyspace size). The record
 file holds `[keyLen:4 BE][key][value]`: the real key travels with its value,
@@ -108,13 +111,14 @@ content:
 
 **Format version marker.** `New` writes a marker (`.qrdb-file-format`,
 naming the current format version and the store's at-rest posture,
-`3/encrypted` or `3/plaintext`) into a directory it finds empty, and
+`4/encrypted` or `4/plaintext`) into a directory it finds empty, and
 refuses to open a NON-empty directory that lacks one or names a different
 version (`FormatMarkerMissingError`, `FormatVersionMismatchError`) — a
 validity check, not migration code. A marker naming the other posture is
 refused too (`AtRestMismatchError`); see "At-rest encryption" below. A
 directory written in any other layout, or in a future format this binary
-predates, is refused rather than silently misread. "Non-empty" ignores
+predates, is refused rather than silently misread: a version-3 directory
+fails at open with `FormatVersionMismatchError`. "Non-empty" ignores
 `lost+found`: a filesystem's own mount-root directory, never written by this
 engine, so a mount root that holds nothing else is a fresh mount, not
 unmarked data.
@@ -213,26 +217,29 @@ What a `file` store leaves on disk under the seal:
 | Artefact | At rest |
 |---|---|
 | record file, `[keyLen:4 BE][key][value]` | ciphertext: the key and the value alike |
-| record file name | the hex SHA-256 digest of the key, sharded two levels deep: reveals no key |
+| record file name | the hex HMAC-SHA-256 of the key under the store's record-name key, sharded two levels deep: without the barrier no name can be computed for a guessed key, and two stores holding the same keys share no name |
+| `.qrdb-file-names` | ciphertext: the record-name key, 32 random bytes minted with the store's first write |
 | commit journal | ciphertext |
-| `.qrdb-file-format` | plaintext, `3/encrypted`: it says how every other file is read, so it is readable before that choice is made, and holds nothing about the data |
+| `.qrdb-file-format` | plaintext, `4/encrypted`: it says how every other file is read, so it is readable before that choice is made, and holds nothing about the data |
 | record count and sizes | visible, as Pebble's file count and sizes are |
 
 **Posture is fixed per directory.** The marker records whether the store was
-written through the barrier. Opening a `3/plaintext` store with an encryptor,
-or a `3/encrypted` store without one, fails with `AtRestMismatchError`
+written through the barrier. Opening a `4/plaintext` store with an encryptor,
+or a `4/encrypted` store without one, fails with `AtRestMismatchError`
 naming both. Pebble's encrypting file system passes a pre-existing plaintext
 file through on read; the file engine refuses the whole store instead, so a
 store never serves plaintext records beside encrypted ones. A store created
-under strategy `none` is `3/encrypted`: the format is the encrypted one and
+under strategy `none` is `4/encrypted`: the format is the encrypted one and
 only the key is credential-free. A store written by another format version
 is refused at open; there is no migration code.
 
 **Sealed.** A store can be opened while the barrier is sealed: `New` reads
 only the plaintext marker. Every record read or write then fails with the
-barrier's error, `seal.ErrSealed`. `Exists` is the exception: it answers from
-the hashed record file name and reads no record, so it does not consult the
-barrier.
+barrier's error, `seal.ErrSealed`. `Exists` and `Delete` fail the same way:
+a record's name needs the record-name key, which is read through the barrier.
+Once read, the key is held for the engine's life. A store that has never been
+written has no key file and so no records; its reads find nothing and mint no
+key.
 
 **Re-encryption.** A node encryption migration — `barrier enable-encryption`,
 or any recycle of the node's key — moves a `file` node store to the new key

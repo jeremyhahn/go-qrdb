@@ -676,6 +676,30 @@ func TestSOPINLockout_SlowVerifyHoldsUpOnlyItsOwnKey(t *testing.T) {
 	}
 }
 
+// TestSOPINLockout_BackoffStartsWhenVerifyReturns: a failure is counted when
+// its verification ends, so a KDF slower than the backoff -- PBKDF2 under
+// fips140=only -- still leaves the full backoff in force after the free
+// failures, and the next check is refused.
+func TestSOPINLockout_BackoffStartsWhenVerifyReturns(t *testing.T) {
+	f := newLockoutFixture()
+	slowWrong := func() error {
+		f.now = f.now.Add(2 * SOPINBaseBackoff)
+		return errWrong
+	}
+	for i := 0; i < SOPINFreeFailures; i++ {
+		if err := f.l.Check(context.Background(), "node", "", slowWrong, f.isWrong); !errors.Is(err, errWrong) {
+			t.Fatalf("failure %d = %v", i, err)
+		}
+	}
+	if _, until := f.l.Status("node", ""); !until.Equal(f.now.Add(SOPINBaseBackoff)) {
+		t.Fatalf("locked until %v, want the base backoff from the last verification's end (%v)", until, f.now.Add(SOPINBaseBackoff))
+	}
+	var locked *SOPINLockedError
+	if err := f.l.Check(context.Background(), "node", "", f.right, f.isWrong); !errors.As(err, &locked) || locked.RetryAfter != SOPINBaseBackoff {
+		t.Fatalf("the check after the free failures = %v, want locked for the base backoff", err)
+	}
+}
+
 // statusLockedForTest reads principal's failures for key from inside a verify
 // callback, where the key's lock is already held by the calling check.
 func (l *SOPINLockout) statusLockedForTest(key, principal string) (int, bool) {

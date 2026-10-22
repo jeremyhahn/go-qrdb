@@ -180,8 +180,8 @@ The volume pool surface is in
   encrypted store.
 - **A sealed barrier fails every record read and write.** The encrypting file
   system cannot unwrap a file's key, so the engine returns `seal.ErrSealed`.
-  `Exists` answers from the hashed record file name without reading the
-  record, so it does not consult the barrier.
+  `Exists` and `Delete` fail the same way, because an encrypted store names
+  its records under a record-name key that is read through the barrier.
 
 ## Configuration
 
@@ -252,7 +252,9 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 ## Persistence
 
 - **File engine**: a hashed, flat, content-addressed layout — each key's
-  record is named by the hex SHA-256 digest of the key, sharded two levels
+  record is named by the hex SHA-256 digest of the key (in an encrypted
+  store, the hex HMAC-SHA-256, [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104),
+  under the store's record-name key), sharded two levels
   deep (two hex characters per level), holding `[keyLen:4 BE][key][value]` —
   with atomic temp-file + rename + fsync writes, every `MkdirAll`-created
   directory's parent fsynced too, and an all-or-nothing commit journal
@@ -269,13 +271,15 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   `Delete` removes only the record, never its (fixed, bounded) shard
   directories, for the reason that doc gives: concurrent per-key workers
   (the `fast` state machine's write-through) make pruning them on a
-  point-in-time emptiness check a race. `New` refuses a non-empty data
+  point-in-time emptiness check a race. The format version is 4
+  (`formatVersion`, `pkg/storage/file/file.go`). `New` refuses a non-empty data
   directory lacking a matching format-version marker
-  (`FormatMarkerMissingError`, `FormatVersionMismatchError`), or one whose
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`; a version-3
+  directory is refused this way), or one whose
   marker records the other at-rest posture (`AtRestMismatchError`). With an
-  enabled encryptor every record and the journal are written through the
-  barrier's encrypting file system; the marker (`3/encrypted`) is the one
-  plaintext file. The layout has
+  enabled encryptor every record, the journal and the record-name key
+  (`.qrdb-file-names`) are written through the barrier's encrypting file
+  system; the marker (`4/encrypted`) is the one plaintext file. The layout has
   no key-length or path-depth dependency at all; the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes) is a client-input policy enforced before and at Apply, independent
   of any particular backend's constraints.

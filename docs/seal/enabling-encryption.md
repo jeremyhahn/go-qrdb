@@ -1,6 +1,6 @@
 # Enabling, Rotating & Disabling Encryption at Rest
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -116,10 +116,11 @@ credential), so no unseal step is needed and the rest of the node keeps serving
 throughout.
 
 **Scope is never global.** It is either the **system** barrier (admin authority,
-`seal:enable_encryption`) or a single tenant's **dedicated** barrier (`--tenant`).
+`seal:enable_encryption`) or a single tenant's **dedicated** barrier (`--tenant`,
+`tenant_barrier:enable_encryption` for that tenant).
 A tenant on the **shared system barrier** inherits the system settings and
 cannot change its own encryption — the server rejects such a request. Take a
-verified backup before migrating (see [backup/README.md](../backup-restore/architecture.md)).
+verified backup before migrating (see [backup-restore/architecture.md](../backup-restore/architecture.md)).
 
 The GUI surfaces the same operation from the Seal Manager. When a `none`
 barrier is configured it offers the migration; for a barrier subsystem present
@@ -130,11 +131,9 @@ data yet).
 > **Transport support:** the endpoint/tool is available on every SDK
 > transport — REST (`POST /v1/barrier/enable-encryption`), gRPC, Unix (the
 > default CLI transport), QUIC, MCP, and embedded — registered
-> unconditionally and refusing with a typed "no encryption migrator
-> configured" error (never a bare 404/tool-not-found/`NotImplementedError`)
-> on a deployment where none is wired (standalone mode). Every Go SDK client
-> forwards the call to its already-working server handler the same way it
-> forwards every other barrier call; none of them stub it locally. An
+> unconditionally. On a node with no encryption migrator wired it refuses with
+> a typed unimplemented error (REST: HTTP 501, `ServiceNotImplementedError`
+> for `encryption-migration`), never a bare 404 or tool-not-found. An
 > embedded node can also drive the migration directly via the
 > `node.EnableEncryption(ctx, scope, opts)` API
 > (see [Embedded-node tenant enable-encryption](#embedded-node-tenant-enable-encryption) below).
@@ -174,13 +173,13 @@ qrdb barrier enable-encryption --strategy passphrase --passphrase '…'
 qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase '…'
 ```
 
-**Internally (Phase D architecture):**
+**Internally:**
 
 1. **Coordinator (leader only):** Routes the request to a cluster coordinator if
    the scope has `RF > 1`. The leader resolves the owning nodes (system scope =
    all cluster members; tenant scope = the placement Replicas), writes a
    **replicated migration intent** record under `__sys:encmig/{tenant}/{db}` to
-   the system KV, and returns `202 Accepted` immediately.
+   the system KV, and returns `migration_started` immediately.
 
 2. **Each node supplies its own credential (none in the record):** The intent
    record carries the target, the mechanism, the Shamir M/N, the owners and the
@@ -189,9 +188,7 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
    owner reads its own from `<seal.migration_credentials_dir>/system` or
    `<seal.migration_credentials_dir>/tenant-<id>`, and waits in phase
    `awaiting-credential` until the file is there. A Shamir target needs none:
-   each node seals a fresh share set to its own officers. **Correction
-   (2026-10-01):** earlier releases sealed the credential to each owner with
-   HPKE and stored the envelopes in the record; that path is removed.
+   each node seals a fresh share set to its own officers.
 
 3. **Per-node reconciler (all nodes):** Each owning node detects the replicated
    intent (either immediately via change-feed or on reboot). It obtains its own
@@ -229,7 +226,7 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
   continues. The cluster never blocks on a laggard.
 
 - **Mid-migration crash:** Each node's local recycle is crash-safe via the
-  `MigrationJournal` (existing mechanism, deployed in single-node migrations).
+  `MigrationJournal`, the same journal single-node migrations use.
   On restart, the journal roll-forwards or rolls back the replica deterministically,
   and the node re-publishes its phase to the replicated status. The journal
   records the migration's store directories and staged snapshot files, so
@@ -247,13 +244,13 @@ Poll the barrier status to observe per-node progress:
 
 ```bash
 qrdb barrier status                    # system scope
-qrdb barrier status --tenant acme      # tenant scope
+qrdb tenant barrier-status --id acme   # tenant scope
 ```
 
-The response includes the strategy (changes from `none` to `passphrase`/`shamir`
-when all replicas are keyed) and, for tenant-scope, per-node migration phases.
-Clients may also watch the change-feed for the replicated intent record if
-available.
+Both responses carry the strategy, which changes from `none` to
+`passphrase`/`shamir` once the migration completes. The system-scope response
+also carries `cluster_migration`: the target, the generation, how many owners
+have acked, and each owner's phase.
 
 ### Operator notes
 
@@ -263,7 +260,8 @@ available.
   as initializing the barrier for the first time.
 
 - **Online (tenant-scope).** Tenant-scope migrations are fully online — no unseal
-  step, no maintenance window. The migration command returns 202, and the nodes
+  step, no maintenance window. The migration command returns once the migration
+  has started, and the nodes
   self-reconcile in the background.
 
 - **Pre-migration backup recommended.** As with single-node migrations, it is
@@ -288,11 +286,15 @@ scope := qrdbsdk.BarrierScope{
     TenantID: "acme",
 }
 
-err := n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
+creds, err := qrdbsdk.NewCredentials(ctx, []byte("tenant-secret"))
+if err != nil {
+    return err
+}
+err = n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
     TargetStrategy: qrdbsdk.StrategyPassphrase,
     Mechanism:      qrdbsdk.MechanismSwap,
     Availability:   qrdbsdk.AvailabilityOnline,
-    Credentials:    qrdbsdk.Credentials{Secret: []byte("tenant-secret")},
+    Credentials:    creds,
 })
 ```
 
@@ -344,15 +346,16 @@ deliberately ships no key-extraction primitive). Instead you:
 For disaster recovery to a *fresh* cluster, the barrier key must be recoverable
 there. That is the job of the **Shamir recovery-officer quorum**
 (`pkg/seal/recovery.go` + recovery-domain share holders) — the supported "get my
-data back" path — or, for cluster expansion, the node-to-node key transport
-(`pkg/keydelivery` + `pkg/clusterkeys`). See
+data back" path. A dedicated tenant's replica on another node receives the
+tenant's root key from the placement leader (`pkg/keydelivery` +
+`pkg/clusterkeys`). See
 [shamir-custody](../shamir-custody/) for share holders and the recovery domain.
 
 ## Why "disable encryption" is not a toggle
 
 Making encryption easy to turn off is an anti-pattern:
 
-- **Compliance.** PCI-DSS v4, HIPAA (45 CFR 164.312(a)(2)(i)), and FedRAMP treat
+- **Compliance.** PCI-DSS v4, HIPAA (45 CFR 164.312(a)(2)(iv)), and FedRAMP treat
   at-rest encryption as a *required* control that extends to backups. A one-click
   "disable encryption" lets an operator silently drop a mandated control and
   produce plaintext backups of regulated data.
@@ -366,7 +369,7 @@ Making encryption easy to turn off is an anti-pattern:
 If a true downgrade is ever required (e.g. migrating off qrdb), the compliant
 shape is a deliberate, audited, **empty-barrier-only** disable (refused if any
 data exists) plus an explicit background re-encrypt for the data case — never a
-Seal Manager toggle. This is not implemented; request it explicitly if needed.
+Seal Manager toggle. This is not implemented.
 
 ## See Also
 
@@ -375,6 +378,6 @@ Seal Manager toggle. This is not implemented; request it explicitly if needed.
   (see the `StrategyNone` row)
 - [shamir-custody](../shamir-custody/) — share holders, the recovery domain and the
   authenticated quorum
-- [backup/README.md](../backup-restore/architecture.md) — Backup & restore
-- [../cli/barrier.md](../barrier-seal/cli.md) — `qrdb barrier` CLI (init, unseal,
-  rekey, status)
+- [backup-restore/architecture.md](../backup-restore/architecture.md) — Backup & restore
+- [barrier-seal/cli.md](../barrier-seal/cli.md) — `qrdb barrier` CLI (status, init,
+  unseal, seal, enable-encryption)

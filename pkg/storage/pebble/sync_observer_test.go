@@ -85,12 +85,15 @@ func TestSyncedWrites_EachSyncIsObserved(t *testing.T) {
 	if err := b.Commit(); err != nil {
 		t.Fatalf("batch Commit: %v", err)
 	}
+	if err := s.DeleteRange([]byte("a"), []byte("c")); err != nil {
+		t.Fatalf("DeleteRange: %v", err)
+	}
 
 	count, sum := syncwatchtest.HistogramSample(t, reg, syncFamily, "backend", syncwatch.BackendPebble)
-	if count != 4 {
-		t.Fatalf("sync count = %d, want 4 (Set, Delete, CompareAndSwap, batch Commit)", count)
+	if count != 5 {
+		t.Fatalf("sync count = %d, want 5 (Set, Delete, CompareAndSwap, batch Commit, DeleteRange)", count)
 	}
-	if want := (4 * time.Millisecond).Seconds(); sum != want {
+	if want := (5 * time.Millisecond).Seconds(); sum != want {
 		t.Fatalf("sync sum = %v, want %v", sum, want)
 	}
 }
@@ -107,6 +110,9 @@ func TestUnsyncedWrites_AreNotObserved(t *testing.T) {
 	}
 	if err := b.Commit(); err != nil {
 		t.Fatalf("batch Commit: %v", err)
+	}
+	if err := s.DeleteRange([]byte("a"), []byte("c")); err != nil {
+		t.Fatalf("DeleteRange: %v", err)
 	}
 
 	if n := syncCount(t, reg); n != 0 {

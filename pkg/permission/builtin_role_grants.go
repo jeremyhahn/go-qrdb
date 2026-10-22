@@ -84,8 +84,8 @@ func registerSOGrants() {
 		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
-		// Audit (operational oversight)
-		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
+		// Audit (operational oversight, and retention administration)
+		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Admin
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
@@ -229,8 +229,10 @@ func registerAdminGrants() {
 		// tenant's data. It stays ScopeSelf, so a tenant Admin restores only
 		// their own tenant's keys.
 		MVCCRestore,
-		// Audit (self-scope)
-		AuditRead, AuditQuery,
+		// Audit (self-scope). AuditDelete is retention administration of the
+		// tenant's own events; the Auditor role, which reviews the trail,
+		// does not hold it, so the trail's reviewer cannot remove from it.
+		AuditRead, AuditQuery, AuditDelete,
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
 		TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,

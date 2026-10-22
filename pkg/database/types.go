@@ -493,8 +493,10 @@ type DatabaseConfig struct {
 	// barrier-encrypted under the owning tenant's barrier instead of the shared
 	// system-barrier WAL (4d Option C). It is meaningful only for raft-backed
 	// databases and is gated by the dedicated_wal entitlement plus the
-	// MaxDedicatedWALGroups quota; when either is unavailable the create falls
-	// back to the shared WAL. For all other backends it is ignored.
+	// MaxDedicatedWALGroups quota; when either refuses, the create fails with
+	// that error rather than falling back to the shared WAL. For any other
+	// backend the service clears the flag, so it is neither persisted nor
+	// metered.
 	DedicatedWAL bool                      `yaml:"dedicated_wal,omitempty" json:"dedicated_wal,omitempty"`
 	Raft         *DatabaseRaftConfig       `yaml:"raft"                    json:"raft,omitempty"`
 	Barrier      *DatabaseBarrierConfig    `yaml:"barrier"                 json:"barrier,omitempty"`

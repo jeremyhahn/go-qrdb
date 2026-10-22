@@ -141,6 +141,10 @@ type startFlags struct {
 	// it. buildServerConfig carries it to the server, which serves gRPC-Web
 	// from the REST server when it is enabled.
 	grpcWeb qrdbconfig.GRPCWebConfig
+	// cors is the config file's cors section; no flag moves it.
+	// buildServerConfig carries it to the server, which hands the REST
+	// server a CORS policy when the section lists an allowed origin.
+	cors qrdbconfig.CORSConfig
 	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
 	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
@@ -637,7 +641,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.logLevel, "log-level", "info", "Minimum log level: debug, info, warn, error")
 	cmd.Flags().BoolVar(&f.debugRaft, "debug-raft", false, "Enable verbose Raft protocol logging (sets log level to debug)")
 	cmd.Flags().Uint64Var(&f.snapshotEntries, "snapshot-entries", 0,
-		"Number of applied entries between automatic snapshots (0=disabled)")
+		"Number of applied entries between automatic snapshots (0 = default, 100000)")
 	cmd.Flags().Uint64Var(&f.compactionOverhead, "compaction-overhead", 0,
 		"Number of entries to keep after compaction (0=use default 5000)")
 	cmd.Flags().BoolVar(&f.join, "join", false,
@@ -797,6 +801,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	f.observability = cfg.Observability
 	f.grpcWeb = cfg.Server.GRPCWeb
+	f.cors = cfg.CORS
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
 	}
@@ -3348,6 +3353,7 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			Host:    f.host,
 			GRPCWeb: f.grpcWeb,
 		},
+		CORS: f.cors,
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
 			GRPC:       f.enableGRPC,

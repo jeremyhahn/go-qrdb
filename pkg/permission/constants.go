@@ -662,6 +662,11 @@ const (
 	AuditRead Permission = "audit:read"
 	// AuditQuery grants access to query audit events with filtering.
 	AuditQuery Permission = "audit:query"
+	// AuditDelete grants access to delete audit events under retention
+	// administration. Granted to SO and Admin, never to Auditor: the role
+	// that reviews the trail does not also remove from it (FIPS 140-3
+	// role separation).
+	AuditDelete Permission = "audit:delete"
 	// AuditStream grants access to stream audit events in real time.
 	AuditStream Permission = "audit:stream"
 	// AuditVerify grants access to verify the audit log's tamper-evidence
@@ -1206,7 +1211,7 @@ var categories = []Category{
 		Name:  "Audit",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			AuditRead, AuditQuery, AuditStream, AuditVerify, AuditVerifyReplicated,
+			AuditRead, AuditQuery, AuditDelete, AuditStream, AuditVerify, AuditVerifyReplicated,
 		},
 	},
 	{

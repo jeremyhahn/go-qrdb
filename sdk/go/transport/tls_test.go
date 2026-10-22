@@ -102,14 +102,37 @@ func writeTLSTestFile(t *testing.T, name string, data []byte) string {
 // BuildTLSConfig tests
 // ---------------------------------------------------------------------------
 
-func TestBuildTLSConfig_CustomReturnedUnmodified(t *testing.T) {
+func TestBuildTLSConfig_CustomReturnedAsCopy(t *testing.T) {
 	custom := &tls.Config{ServerName: "example"}
 	got, err := BuildTLSConfig(TLSBuildOptions{Custom: custom, Enabled: false})
 	if err != nil {
 		t.Fatalf("BuildTLSConfig: %v", err)
 	}
-	if got != custom {
-		t.Error("expected the exact Custom config pointer to be returned")
+	if got == custom {
+		t.Fatal("expected a clone, got the caller's Custom pointer")
+	}
+	if got.ServerName != "example" {
+		t.Errorf("ServerName = %q, want %q", got.ServerName, "example")
+	}
+}
+
+// TestBuildTLSConfig_CustomMutationDoesNotReachCaller pins #949: a
+// transport that mutates the config it is handed (net/http appends "h2"
+// to NextProtos) must not change the caller's config, which may be shared
+// with a client that cannot speak what the mutation offers.
+func TestBuildTLSConfig_CustomMutationDoesNotReachCaller(t *testing.T) {
+	custom := &tls.Config{ServerName: "example"}
+	got, err := BuildTLSConfig(TLSBuildOptions{Custom: custom})
+	if err != nil {
+		t.Fatalf("BuildTLSConfig: %v", err)
+	}
+	got.NextProtos = append(got.NextProtos, "h2")
+	got.ServerName = "changed"
+	if len(custom.NextProtos) != 0 {
+		t.Errorf("caller NextProtos = %v, want empty", custom.NextProtos)
+	}
+	if custom.ServerName != "example" {
+		t.Errorf("caller ServerName = %q, want %q", custom.ServerName, "example")
 	}
 }
 

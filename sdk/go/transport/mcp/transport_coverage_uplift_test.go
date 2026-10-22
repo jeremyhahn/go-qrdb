@@ -146,8 +146,11 @@ func TestBuildTLSConfig_CustomConfigOverridesEverything(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig: %v", err)
 	}
-	if out != custom {
-		t.Fatalf("expected returned config to be the custom config pointer")
+	if out == custom {
+		t.Fatal("expected a clone of the custom config, got the caller's pointer")
+	}
+	if out.ServerName != "custom" {
+		t.Fatalf("ServerName = %q, want %q", out.ServerName, "custom")
 	}
 }
 

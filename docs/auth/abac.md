@@ -1,13 +1,12 @@
 # ABAC Authorization Decorator
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-17
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 `pkg/auth/abac` layers attribute-based access control over the RBAC
-authorizer. It is the canonical home of the policy engine ported from
-go-quicbaas's IAM module (compiler, resource trie, condition parser,
-evaluator); distribution concerns (policy storage, Raft sync, PEP cache)
-were intentionally not ported.
+authorizer. It is the canonical home of the policy engine (compiler,
+resource trie, condition parser, evaluator); it does not store, replicate or
+cache policies, which the host supplies.
 
 ## Decorator semantics
 
@@ -172,8 +171,7 @@ spec:
 
 `spec.enabled` switches a policy off without deleting it. The field is
 optional and presence-tracked: in Go it is `PolicySpec.Enabled *bool`, `nil`
-when the document did not set it, and an absent field means enabled, so a
-document written before the field existed keeps its meaning. With
+when the document did not set it, and an absent field means enabled. With
 `enabled: false` the evaluator skips the policy: its deny rules do not deny
 and its allow rules do not allow, and a policy set holding only disabled
 policies behaves as an empty one. A disabled policy is still validated and
@@ -195,13 +193,13 @@ equivalents (the identity-rbac feature's [api.md](../identity-rbac/api.md)
 and [cli.md](../identity-rbac/cli.md)). It stores the document as a record
 of the caller's own tenant and returns it unchanged, `enabled` included: the
 gRPC message's `spec.enabled` is an `optional bool`, so an unset field stays
-unset. A stored policy does **not** feed the evaluator yet; the evaluator
-still reads only the two inputs above.
+unset. A stored policy does **not** feed the evaluator; the evaluator reads
+only the two inputs above.
 
 Condition expressions support comparison (`==`, `!=`, `>`, `>=`, `<`,
-`<=`, `between`), string (`startswith`, `endswith`, `contains`, `matches`,
-`like`), set (`in` — including CIDR for IPs — `notin`, `containsall`,
-`containsany`, `overlaps`, `disjoint`), existence (`exists`, `notexists`),
+`<=`, `between`), string (`startswith`, `endswith`, `contains`,
+`matches`, `like`), set (`in` — including CIDR for IPs — `notin`, `containsall`,
+`containsany`, `notcontains`, `overlaps`, `disjoint`), existence (`exists`, `notexists`),
 and logical (`and`, `or`, `not`) operators over `subject.*`, `request.*`,
 `resource`, and `time.*` fields. Parentheses group a sub-expression.
 

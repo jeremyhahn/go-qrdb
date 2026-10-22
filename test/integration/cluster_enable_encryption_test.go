@@ -654,6 +654,29 @@ type noneSealRF3 struct {
 	logs       []*nodeLog
 	adminCert  string
 	adminKey   string
+	// name, bin and args are the cluster's log prefix and each node's binary
+	// and arguments, to start a node again.
+	name string
+	bin  string
+	args [][]string
+}
+
+// stop stops node i, giving it grace to shut down.
+func (c *noneSealRF3) stop(t *testing.T, i int) {
+	t.Helper()
+	stopNode(t, c.logs[i].cmd, 15*time.Second)
+	c.logs[i].cmd = nil
+}
+
+// restart starts node i again, after stop, with the arguments it first
+// started with, and unseals it if it came back sealed. Its log keeps what it
+// logged before the stop.
+func (c *noneSealRF3) restart(t *testing.T, i int) {
+	t.Helper()
+	c.logs[i].cmd = startNode(t, c.bin, c.args[i], fmt.Sprintf("[%s-node%d] ", c.name, i+1), c.logs[i])
+	unsealNodes(t, c.ca, c.adminPorts[i])
+	waitForHealthy(t, c.dataDirs[i], 60*time.Second)
+	waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)
 }
 
 // startNoneSealSystemRF3 starts three nodes on one system shard, initializes
@@ -691,6 +714,7 @@ func startNoneSealSystemRF3(t *testing.T, name string) *noneSealRF3 {
 
 	nodes := make([]gatedClusterNode, 3)
 	logs := make([]*nodeLog, 3)
+	argv := make([][]string, 3)
 	for i := range 3 {
 		sockDir, err := os.MkdirTemp("", "qrdb-rf3-")
 		if err != nil {
@@ -721,6 +745,7 @@ func startNoneSealSystemRF3(t *testing.T, name string) *noneSealRF3 {
 			"--tls-cert-file", nodeCertPaths[i],
 			"--tls-key-file", nodeKeyPaths[i],
 		}
+		argv[i] = args
 		logs[i] = &nodeLog{}
 		logs[i].cmd = startNode(t, bin, args, fmt.Sprintf("[%s-node%d] ", name, i+1), logs[i])
 	}
@@ -746,7 +771,7 @@ func startNoneSealSystemRF3(t *testing.T, name string) *noneSealRF3 {
 	t.Logf("cluster healthy (none barrier), leader on admin port %d", leaderPort)
 	adminCert, adminKey := ca.boundAdminCert(t, dataDirs[0])
 	return &noneSealRF3{ca: ca, adminPorts: adminPorts, dataDirs: dataDirs, credDirs: credDirs, leaderPort: leaderPort,
-		nodes: nodes, logs: logs, adminCert: adminCert, adminKey: adminKey}
+		nodes: nodes, logs: logs, adminCert: adminCert, adminKey: adminKey, name: name, bin: bin, args: argv}
 }
 
 func adminPortIndex(t *testing.T, ports []int, port int) int {

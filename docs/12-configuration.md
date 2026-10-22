@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference for the YAML keys; the code (`pkg/config`) wins on any disagreement.
 
 QRDB uses YAML-based configuration loaded at startup via the `--config` flag.
@@ -8,16 +8,16 @@ CLI flags override YAML values when both are provided. Omitted fields inherit
 production-ready defaults from `DefaultConfig()`.
 
 ```bash
-qrdb start --config /etc/qrdb/qrdb.yaml
+qrdbd start --config /etc/qrdb/qrdb.yaml
 ```
 
 ---
 
 ## Complete Default Configuration
 
-The following YAML shows every field with its default value. This is the
-configuration produced by `config.DefaultConfig()` and is valid as-is for a
-single-node deployment.
+The following YAML shows the core fields with their default values, as set by
+`config.DefaultConfig()`; it is valid as-is for a single-node deployment. Each
+section below lists its full set of keys.
 
 ```yaml
 # =============================================================================
@@ -26,27 +26,30 @@ single-node deployment.
 
 # Run mode: "standalone" (no raft — standard database operations plus the
 # always-on security core) or "raft" (single- or multi-node consensus, the
-# full feature set). Empty means "raft" for full backward compatibility.
+# full feature set). Empty means "raft".
 # Under "standalone", raft.join or a multi-member raft.peers list is a
 # validation error whose text names the remedy: "requires mode: raft".
 # mvcc / watch / lease are served, and their enabled toggles valid, in both
 # modes. See docs/run-modes.md for the three-gate
 # feature model (build tag > run mode > config).
-# NOTE: the qrdbd daemon refuses "standalone" until its raft-free
-# composition branch lands (run-modes plan, phase 3); the SDK's
-# node.NewStandaloneNode is the raft-free path today.
-mode: "raft"
+mode: ""
 
 server:
   admin_port: 63002
   grpc_port: 63003
+  quic_port: 63004
+  mysql_port: 3306
+  pgsql_port: 5432
   host: "0.0.0.0"
 
 protocols:
   rest: true
   grpc: true
-  unix: true
-  mcp: true
+  quic: false
+  unix: false
+  mcp: false
+  mysql: false
+  postgresql: false
 
 unix:
   socket_path: "/var/run/qrdbd/qrdbd.sock"
@@ -85,6 +88,7 @@ tls:
   ca_file: ""
   cert_file: ""
   key_file: ""
+  min_version: "TLS1.3"
   # Leaving ca_file/cert_file/key_file empty auto-resolves TLS material
   # (generate for single-node, or enroll into an existing cluster); there is
   # no separate "auto_tls" toggle. See the "tls" section below.
@@ -168,7 +172,7 @@ auth:
       burst: 30
 
 seal:
-  # auth.enabled (above) defaults to true and now REQUIRES seal.enabled:
+  # auth.enabled (above) defaults to true and REQUIRES seal.enabled:
   # true too -- an auth-enabled, seal-disabled node is refused at config
   # validation with a typed error. The bootstrap admin's
   # certificate binding depends on `qrdb init` being able to bring the
@@ -210,19 +214,27 @@ Configures the QRDB server's network listeners.
 |--------------|--------|-----------|----------|----------------|-----------------------------------------|
 | `admin_port` | int    | `63002`   | yes      | `--admin-port` | Port for the REST/admin server: HTTPS on TCP and HTTP/3 on UDP, both on this number |
 | `grpc_port`  | int    | `63003`   | no       | `--grpc-port`  | TCP port for the gRPC data-plane service |
+| `quic_port`  | int    | `63004`   | no       | `--quic-port`  | UDP port for the native QUIC transport  |
+| `mysql_port` | int    | `3306`    | no       | `--mysql-port` | Port for the MySQL wire protocol server |
+| `pgsql_port` | int    | `5432`    | no       | `--pgsql-port` | Port for the PostgreSQL wire protocol server |
 | `host`       | string | `0.0.0.0` | yes      | `--host`       | Bind host for every API listener        |
 | `advertise_host` | string | host of `raft.raft_address` | no | `--advertise-host` | Host peers and clients dial to reach this node |
+| `secure_memory_budget_mib` | int | `0` (derived from `RLIMIT_MEMLOCK`) | no | `--secure-memory-budget-mib` | Locked-memory budget for secure buffers, in MiB |
+| `grpc_web.enabled` | bool | `false` | no | | Serve gRPC-Web under `/grpc-web/` on the admin server; requires `protocols.grpc` |
+| `grpc_web.allowed_origins` | []string | `[]` | no | | Browser origins CORS admits for gRPC-Web (`https://app.example.com`, or `"*"`); empty admits no cross-origin call |
+| `grpc_web.allow_credentials` | bool | `false` | no | | Let a cross-origin gRPC-Web call carry credentials; not with `"*"` |
 
 **Validation rules:**
 
 - `admin_port` must be between 1 and 65535 (inclusive).
-- `grpc_port` must be between 0 and 65535 (inclusive). Set to `0` to disable the gRPC listener.
+- `grpc_port`, `quic_port`, `mysql_port` and `pgsql_port` must be between 0 and 65535 (inclusive).
 - `host` must not be empty.
+- `secure_memory_budget_mib` must not be negative.
 
 **Notes:**
 
 - The `admin_port` serves both the REST API and operational endpoints (`/status`, `/health`, `/metrics`, `/peers`, `/drain`).
-- When using non-static discovery methods (multicast, dns) without a config file, the server auto-selects free ports for `admin_port` and `grpc_port`.
+- When using non-static discovery methods (multicast, dns) without a config file, the server auto-selects free ports for `admin_port` and `grpc_port`, and for `quic_port` when QUIC is enabled.
 - `host` binds **every** API listener: REST, the HTTP/3 (QUIC) listener that
   shares the REST port, gRPC, the native QUIC transport, MCP, MySQL and
   PostgreSQL. Settable by `server.host`, `QRDB_SERVER_HOST` or `--host` under
@@ -266,6 +278,7 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
 | `join_http_url`   | string | `""` | `--bootstrap-join-url`        | Base admin HTTPS URL of an admitted member, for the SPKI/Direct join transport |
 | `join_token_file` | string | `""` | `--bootstrap-join-token-file` | Path to a file holding the join-admission secret |
 | `join_token_env`  | string | `""` | `--bootstrap-join-token-env`  | Name of an environment variable holding the join-admission secret |
+| `join_approval_poll_interval` | duration | `0` (15s) | `--bootstrap-join-approval-poll-interval` | How often a tokenless CSR is re-presented while it waits in the signing member's approval queue |
 
 **Notes:**
 
@@ -279,10 +292,10 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
   `server.admin_port`. If that port is unset the derivation **fails with
   `*clusterenroll.MissingAdminPortError`** rather than completing the URL with a
   guessed port.
-- `join_token_file` and `join_token_env` are mutually exclusive; configuring
-  either `join_addr`/`join_key` or `join_http_url` without one of them fails
-  config validation with a typed `*ValidationError` — the join-admission
-  secret is never configured inline in YAML.
+- `join_token_file` and `join_token_env` are mutually exclusive (a typed
+  `*ValidationError`); the join-admission secret is never configured inline in
+  YAML. A join with neither sends a tokenless CSR, which waits in the signing
+  member's approval queue. `join_http_url` must use `https://`.
 - `join_addr` requires `join_key` or `join_p256_key`, and each of those
   requires `join_addr`; `p256_key` requires `noise_addr`. Both P-256 keys are
   validated as 65-byte uncompressed P-256 points. `join_http_url` needs none of
@@ -307,6 +320,8 @@ above for the joining side).
 | `listen_host` | string | `""` | `--cluster-join-listen-host` | Bind host for the Noise_NK join listener; the flag defaults to `--host`, the YAML key is required when `enabled` is true |
 | `listen_port` | int    | `63007` | `--cluster-join-listen-port`  | TCP port for the Noise_NK join listener |
 
+`enabled: true` requires `seal.enabled: true`.
+
 **Notes:**
 
 - There is no admission-token field: a signing member checks presented join
@@ -327,6 +342,11 @@ Controls which API protocols are enabled.
 |--------|------|---------|-----------------|---------------------------------|
 | `rest` | bool | `true`  | `--enable-rest` | Enable the HTTP/REST admin and KV API |
 | `grpc` | bool | `true`  | `--enable-grpc` | Enable the gRPC KV service      |
+| `quic` | bool | `false` | `--enable-quic` | Enable the native QUIC transport |
+| `unix` | bool | `false` | `--enable-unix` | Enable the gRPC-over-Unix-socket service |
+| `mcp`  | bool | `false` | `--enable-mcp`  | Enable the Model Context Protocol service |
+| `mysql` | bool | `false` | `--enable-mysql` | Enable the MySQL wire protocol server; requires build tag `qrdb_mysql` |
+| `postgresql` | bool | `false` | `--enable-pgsql` | Enable the PostgreSQL wire protocol server; requires build tag `qrdb_pgsql` |
 
 **Notes:**
 
@@ -363,6 +383,7 @@ Configures the QuicRaft consensus layer.
 Every key is also read from `QRDB_RAFT_<KEY>` when `--config` is given. The
 per-key bounds and what lease reads guarantee are in
 [configuration/user.md](configuration/user.md#raft-settings).
+
 **Validation rules:**
 
 - `data_dir` must not be empty.
@@ -382,9 +403,6 @@ per-key bounds and what lease reads guarantee are in
   refuses the shard at start when `lease_read` is on without `check_quorum`,
   or when the effective `snapshot_entries` does not exceed the effective
   `compaction_overhead`.
-
-*(Corrected: this list named only `pebble`, `memory` and `mvcc` as valid
-`sm_type` values and omitted the `shard_id` upper bound.)*
 
 **`sm_type` values:**
 
@@ -430,7 +448,6 @@ omitted. Ignored for a single-node cluster.
 - Setting `snapshot_entries` to `0` uses go-quicraft's default of 100000
   entries; it does not disable snapshots. `18446744073709551615`
   (go-quicraft's `SnapshotsDisabled`) disables automatic snapshots.
-  *(Corrected: this said `0` disables automatic snapshots.)*
 - Setting `compaction_overhead` to `0` uses the system default of 5000 entries.
 - `snapshot_entries` must be greater than `compaction_overhead` when both are set.
 - `snapshot_entries` and `compaction_overhead` apply to every raft group the
@@ -441,8 +458,7 @@ omitted. Ignored for a single-node cluster.
 - go-quicraft's own `TransportConfig` (stream pool sizing, snapshot receive
   limits, and the inbound message-receive budget) has no field here:
   `buildHostConfig` sets only the mTLS material, so those knobs run at
-  go-quicraft's built-in defaults. See `docs/configuration/cli.md` for the
-  0.18.0 message-receive-budget default change.
+  go-quicraft's built-in defaults.
 - With non-static discovery methods and no config file, `replica_id` is auto-generated from `crypto/rand` (48-bit) and `data_dir` is suffixed with the replica ID to avoid collisions.
 
 ---
@@ -457,10 +473,13 @@ Configures the underlying storage backend.
 | `cache_size`     | int64  | `0`      | no       | PebbleDB block cache size in bytes                |
 | `wal_dir`        | string | `""`     | no       | Separate directory for the PebbleDB WAL           |
 | `max_open_files` | int    | `0`      | no       | Maximum number of open files for PebbleDB         |
+| `volume_pools`   | []VolumePoolConfig | `[]` | no | Map of this node's local mounts to catalog pool names; see [volume-pools](volume-pools/user.md#2-map-it-on-each-node) |
+| `allow_degraded_volume_boot` | bool | `false` | no | Start even when a `volume_pools` entry fails to open, skipping only that pool's databases (`--allow-degraded-volume-boot`) |
+| `objstore`       | ObjstoreConfig | — | no | Object-storage backend settings, used when a backend is `objstore`; see [storage-engines](storage-engines/engineering.md#configuration) |
 
 **Validation rules:**
 
-- `backend`, when non-empty, must be one of: `pebble`, `memory`.
+- `backend`, when non-empty, must be one of: `pebble`, `memory`, `file`, `objstore`.
 - `cache_size` must not be negative (>= 0).
 - `max_open_files` must not be negative (>= 0).
 
@@ -470,6 +489,8 @@ Configures the underlying storage backend.
 |----------|-------------------------------------------------------|
 | `pebble` | PebbleDB persistent storage (default, production use) |
 | `memory` | In-memory storage (data lost on restart, testing use) |
+| `file`     | File-per-key storage under the data directory         |
+| `objstore` | Object-storage backend configured by `objstore`       |
 
 **Notes:**
 
@@ -493,8 +514,8 @@ Configures TLS for all network listeners (REST, gRPC, Raft).
 | `min_version`    | string   | `"TLS1.3"`| no       | N/A               | Minimum TLS version: `"TLS1.2"` or `"TLS1.3"`       |
 | `additional_cas` | []string | `[]`      | no       | N/A               | Extra CA PEM files layered onto the client-CA pool  |
 
-**There is no `auto_tls` field.** TLS material resolution is not a boolean —
-it is `resolveTLS`'s ordered fallback, driven by what is and is not set:
+TLS material comes from `resolveTLS` (`cmd/qrdbd/bootstrap.go`), an ordered
+fallback driven by what is set:
 
 1. `ca_file`, `cert_file` and `key_file` all set → loaded from those paths.
 2. Otherwise, cached certificates in `raft.data_dir` from a previous start, if
@@ -516,9 +537,9 @@ of the three is not a supported partial state.
 
 **Notes:**
 
-- A generated or enrolled CA certificate is written under `raft.data_dir` so
-  CLI commands (`qrdb status`, `qrdb peers`) can verify the server certificate
-  on a later start.
+- A generated or enrolled CA certificate is written to `ca.pem` under
+  `raft.data_dir` and reloaded on a later start; pass it to `qrdbd status` or
+  `qrdbd peers` with `--tls-ca-file` to verify the server certificate.
 - The generated/enrolled certificate supports both REST/gRPC client
   connections and mTLS on the QUIC transport for Raft peer communication.
 - For production multi-node clusters, set `ca_file`/`cert_file`/`key_file`
@@ -567,7 +588,7 @@ Configures structured logging output.
 
 Configures peer discovery for cluster formation. The discovery engine
 (`pkg/discovery`) and bootstrap orchestration (`pkg/cluster`) are described in
-detail in [discovery.md](clustering/architecture.md).
+detail in [clustering](clustering/architecture.md).
 
 | Field                       | Type   | Default      | CLI Flag                   | Description                                          |
 |-----------------------------|--------|--------------|----------------------------|------------------------------------------------------|
@@ -601,7 +622,7 @@ detail in [discovery.md](clustering/architecture.md).
 
 - **Default is single-node `static`** with no network auto-join and no shared secret — the production-safe default. Multi-node discovery (multicast/dns/token) is an explicit opt-in.
 - **Static discovery** requires the `raft.peers` field to contain the complete initial member list. A single entry (`1=127.0.0.1:63001`) creates a single-node cluster with transport disabled.
-- **Multicast discovery** requires an operator-chosen `multicast_secret` shared across all nodes (the protocol is authenticated-only; there is deliberately **no well-known default** PSK). The secret must be at least 16 bytes: it is the HMAC-SHA256 key, and FIPS 140-3 (SP 800-107 §5.3.4) sets the floor for an HMAC key at 112 bits — a shorter secret is rejected at construction with a `ValidationError`, and would otherwise panic under `GODEBUG=fips140=only` (see [seal/fips140-mode.md](seal/fips140-mode.md)). The default minimum cluster size for bootstrap is 3 nodes.
+- **Multicast discovery** requires an operator-chosen `multicast_secret` shared across all nodes (the protocol is authenticated-only; there is deliberately **no well-known default** PSK). The secret must be at least 16 bytes: it is the HMAC-SHA256 key, and FIPS 140-3 (SP 800-107 §5.3.4) sets the floor for an HMAC key at 112 bits — a shorter secret is rejected at construction with a `*discovery.Error`, and would otherwise panic under `GODEBUG=fips140=only` (see [seal/fips140-mode.md](seal/fips140-mode.md)). The default minimum cluster size for bootstrap is 3 nodes.
 - **DNS discovery** requires `dns_domain` to be set. It looks up SRV records at `{dns_service}.{dns_proto}.{dns_domain}` (default `_raft._udp.{dns_domain}`).
 - **Token discovery** requires `token_endpoint` and `token`. Each node registers via the endpoint and polls until `token_cluster_size` (or `min_peers`) nodes have registered. The endpoint must use `https://` unless `allow_insecure_token_http` is set. The token is sent as an `Authorization: Bearer` header, never in the URL.
 - When using multicast, dns, or token discovery without a config file, the server auto-generates `replica_id`, selects free ports, and appends the replica ID to `data_dir` to avoid collisions.
@@ -610,22 +631,19 @@ detail in [discovery.md](clustering/architecture.md).
 
 ### mvcc
 
-Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engine. This section applies when `raft.sm_type` is set to `mvcc`.
+Configures the MVCC (Multi-Version Concurrency Control) service. In raft mode, revision history needs `raft.sm_type: mvcc` (below).
 
 | Field     | Type | Default | Description                                   |
 |-----------|------|---------|-----------------------------------------------|
-| `enabled` | bool | (raft)  | Raft-only toggle; omitted means enabled in raft mode |
+| `enabled` | *bool | omitted (enabled) | Toggles the MVCC service in either mode; omitted means enabled |
 
 There is no compaction setting. MVCC history is compacted per database, only
 by the tenant that owns it: an explicit `Compact`, or the database's own
 compaction policy. The node keyspace -- keys outside every tenant database --
 is compacted only by the platform's policy, set with `qrdb admin
 update-node-compaction` (system tenant only). Both policies are replicated
-records set through the API, not configuration. *(Corrected: this section
-documented `node_compaction`, which is no longer read.)* See
-[key-value/engineering.md](key-value/engineering.md). *(Corrected: this section
-documented `compaction_retention` and `revision_limit`; nothing read either
-key, and both are removed.)*
+records set through the API, not configuration. See
+[key-value/engineering.md](key-value/engineering.md).
 
 **Features requiring `raft.sm_type: mvcc`:**
 
@@ -645,6 +663,7 @@ Configures the real-time watch notification system for key change events.
 
 | Field          | Type | Default | Description                                         |
 |----------------|------|---------|-----------------------------------------------------|
+| `enabled`      | *bool | omitted (enabled) | Toggles the watch service in either mode; omitted means enabled |
 | `buffer_size`  | int  | `1024`  | Per-watcher event channel buffer size               |
 | `max_watchers` | int  | `0`     | Maximum number of concurrent watchers allowed       |
 
@@ -666,6 +685,7 @@ Configures the distributed lease management system.
 
 | Field                 | Type     | Default | Description                                                                 |
 |-----------------------|----------|---------|-----------------------------------------------------------------------------|
+| `enabled`             | *bool    | omitted (enabled) | Toggles the lease service in either mode; omitted means enabled  |
 | `min_ttl`             | int64    | `5`     | Minimum lease TTL in seconds                                                |
 | `max_ttl`             | int64    | `0`     | Maximum lease TTL in seconds                                                |
 | `check_interval`      | int64    | `1`     | Interval in seconds between lease expiry checks                             |
@@ -752,6 +772,9 @@ Configures authentication and role-based access control (RBAC).
 | `invitation_ttl`   | string | `"24h"`     | no       | N/A                | How long a `users:invite` token stays redeemable. Positive, at most 7 days |
 | `invitation_require_key_pin` | bool | `false` | no   | N/A                | Refuse any invitation not pinned to the invited user's key            |
 | `invitation_redeem_limit` | object | see below | no  | N/A                | `per_source`/`per_tenant` token-bucket throttles for invitation redemption, each `{rate_per_second, burst}` |
+| `so_dual_factor`   | bool   | `false`     | no       | N/A                | Require the Security Officer PIN (`X-QRDB-SO-PIN` header) on SO-gated REST routes; needs an SO authenticator wired (`server.WithSOAuthenticator`) |
+| `peer_admin_urls`  | list   | `[]`        | no       | N/A                | Peer admin HTTPS base URLs for cluster key delivery, each `{raft_addr, admin_url}`; a peer not listed is reached on its Raft host at the local `admin_port` |
+| `abac`             | object | disabled    | no       | N/A                | `{enabled, policy_dir}`: YAML attribute-based policies evaluated before RBAC; `policy_dir` is required when `enabled` is `true` |
 
 **Validation rules:**
 
@@ -864,12 +887,16 @@ brings the barrier up.
 | Field | Type | Default | Required | CLI Flag | Description |
 |---|---|---|---|---|---|
 | `enabled` | bool | `true` | no | N/A | Enable the storage barrier. **Required when `auth.enabled` is `true`** — see Validation rules. |
-| `strategy` | string | `"none"` | no | `--barrier-strategy` (`qrdb init`, `qrdb barrier init-shamir`) | `"none"` \| `"passphrase"` \| `"shamir"` \| a hardware strategy ID registered by a go-xkms composition. Any other value, including `"software"`, is refused. |
+| `strategy` | string | `"none"` | no | `--barrier-strategy` (`qrdb init`, `qrdb barrier init`) | `"none"` \| `"passphrase"` \| `"shamir"`. Any other value is refused. |
 | `root_key_path` | string | `"__sys:seal/root_key"` | no | N/A | Storage key the sealed root-key blob is persisted under. |
 | `shamir_threshold` | int | — | when `strategy: shamir` | `--threshold` | Minimum shares required to unseal; `>= 2` and `<= shamir_total`. |
-| `shamir_total` | int | — | when `strategy: shamir` | `--shares` / `--total` | Total Shamir shares to generate. |
+| `shamir_total` | int | — | when `strategy: shamir` | `--shares` (`qrdb init`) / `--total` (`qrdb barrier init-shamir`) | Total Shamir shares to generate. |
 | `share_ttl` | string | `"15m"` | no | N/A (env `QRDB_SEAL_SHARE_TTL`) | How long an unseal-share quorum session stays open before submitted shares expire. |
 | `credential_strategy` | string | `"barrier"` | no | N/A | `"manual"` \| `"barrier"` — where named credentials (SO/user PINs, rotated credentials) are stored. |
+| `cluster_lease` | string | `"15s"` | no | N/A | How long a successful read of the cluster seal records lets this node serve; a node that cannot read them for longer stops serving, keeping its keys. At most `60s`. |
+| `cluster_poll_interval` | string | `"1s"` | no | N/A | How often this node reads the cluster seal records. At most a third of `cluster_lease`. |
+| `cluster_ack_timeout` | string | `"5s"` | no | N/A | How long a node waits for every node to acknowledge a node-barrier seal before wiping its own key. At most half of `cluster_lease`. |
+| `migration_credentials_dir` | string | `""` | no | N/A | Directory of this node's own credentials for a cluster `enable-encryption` migration it did not accept the request for: `system` for the node barrier, `tenant-<id>` for a tenant barrier. Each file mode 0600 or stricter. |
 
 **Validation rules:**
 
@@ -879,10 +906,15 @@ brings the barrier up.
   admin's certificate binding depends on `qrdb init` being able to bring
   the system barrier up at all, which does not exist when the seal is off.
   Set `auth.enabled: false` too for a node that genuinely wants neither.
-- `strategy` must be one of the accepted values (or the `"software"`
-  alias) when `enabled` is `true`; an unrecognised value fails the boot.
+- The rules below apply when `enabled` is `true`.
+- `strategy`, when non-empty, must be one of `none`, `passphrase`, `shamir`.
 - `shamir_threshold`/`shamir_total` are validated only when `strategy` is
-  `"shamir"`.
+  `"shamir"`: the threshold must be `>= 2` and the total `>=` the threshold.
+- `credential_strategy`, when non-empty, must be `manual` or `barrier`.
+- `share_ttl`, when non-empty, must be a Go duration greater than zero.
+- `cluster_lease`, `cluster_poll_interval` and `cluster_ack_timeout` must each
+  be a Go duration greater than zero (empty takes the default) and keep the
+  bounds in the table.
 
 **Notes:**
 
@@ -903,13 +935,8 @@ brings the barrier up.
 
 ### audit
 
-> **There is no `audit:` block, and there is no `audit.Config`.** This section
-> described one — `enabled`, `kv_backend`, `file_backend`, `file_path`, and a
-> KV-backed sink under `__sys:audit/` — and none of those keys is read by any
-> code. Setting them has no effect. The description predates the sink rework;
-> it is corrected here rather than left in place.
-
-Audit logging is **always on** and is composed at the node's wiring site, not
+There is no `audit:` block; a file carrying one is refused at load as an
+unknown key. Audit logging is **always on** and is composed at the node's wiring site, not
 configured. Every node builds three sinks behind one fan-out:
 
 | Sink | Destination |
@@ -931,7 +958,7 @@ written. See [audit/architecture.md](audit/architecture.md),
 
 ### cors
 
-Configures Cross-Origin Resource Sharing headers for the REST API.
+Cross-Origin Resource Sharing settings for the REST API (`config.CORSConfig`).
 
 | Field             | Type     | Default                              | Required | Description                            |
 |-------------------|----------|--------------------------------------|----------|----------------------------------------|
@@ -941,24 +968,27 @@ Configures Cross-Origin Resource Sharing headers for the REST API.
 
 **Validation rules:**
 
-- `allowed_origins` must not be empty when CORS is configured.
 - `max_age` must not be negative (>= 0).
 
 **Notes:**
 
-- Setting `allowed_origins` to `["*"]` allows all origins. For production, restrict to specific domains.
-- The `max_age` value controls how long browsers cache preflight (OPTIONS) responses. A value of `3600` (1 hour) is suitable for most deployments.
-- CORS headers are only added when the `cors` section is present in the configuration. Omitting the section entirely disables CORS.
+- `qrdbd` loads and validates this block but does not apply it: the REST
+  server adds CORS headers only when built with the `rest.WithCORS` option,
+  which an embedding program passes. Without it, the REST API sends no CORS
+  headers.
+- With `rest.WithCORS`, `["*"]` answers every origin with
+  `Access-Control-Allow-Origin: *`; any other list admits exactly those
+  origins. `max_age` sets `Access-Control-Max-Age` on preflight (OPTIONS)
+  responses.
 
 ---
 
 ### databases
 
 Configures named databases. Each entry defines an isolated data store with
-its own backend and optional per-database wire protocols. *(Corrected: there
-is no per-database `engine` field. Lane 1C deleted it outright -- every
-database serves every compiled-in engine, OD-12/OD-13 -- and a config file
-still carrying `engine` is refused by the strict decode below, not ignored.)*
+its own backend and optional per-database wire protocols. There is no
+per-database `engine` field: every database serves every compiled-in engine,
+and a file carrying `engine` is refused at load as an unknown key.
 
 | Field        | Type   | Default | Required | Description                                          |
 |--------------|--------|---------|----------|-------------------------------------------------------|
@@ -966,17 +996,11 @@ still carrying `engine` is refused by the strict decode below, not ignored.)*
 | `backend`    | string | --      | yes      | Storage backend: `memory`, `file`, `pebble`, `raft`, or `objstore` |
 | `mysql`      | bool   | `false` | no       | Enable the MySQL wire protocol for this database       |
 | `postgresql` | bool   | `false` | no       | Enable the PostgreSQL wire protocol for this database  |
-| `etcd`       | object | --      | no       | etcd v3 gRPC protocol configuration; see `EtcdConfig` below |
+| `etcd`       | object | --      | no       | etcd v3 gRPC protocol configuration; see `DatabaseEtcdConfig` below |
 | `sql`        | object | --      | no       | Per-database SQL settings; see `DatabaseSQLConfig` below |
 
 `mysql`, `postgresql`, `etcd` and `sql` sit directly on the database entry —
-flat, there is no `protocol` wrapper field. (Corrected 2026-10-03: earlier
-versions of this section showed a nested `protocol:` object with `mysql`
-and `postgresql` themselves as nested objects; `config.DatabaseConfig` has
-no `protocol` field, `MySQL`/`PostgreSQL` are plain booleans, `Etcd` is a
-pointer directly on the entry, and a nested block here is silently dropped
-by the YAML decoder rather than applied.) `mysql`/`postgresql` replaced the
-former top-level `SQLConfig`.
+flat, there is no `protocol` wrapper field.
 
 **`DatabaseSQLConfig`** (the `sql` field):
 
@@ -984,7 +1008,7 @@ former top-level `SQLConfig`.
 |---------------|--------|---------------|------------------------------------------------------|
 | `concurrency` | string | `"optimistic"`| Row-locking mode: `"optimistic"` or `"pessimistic"`. See [row-locking](row-locking/architecture.md). |
 
-#### EtcdConfig
+#### DatabaseEtcdConfig
 
 Configures the etcd-compatible gRPC endpoint for a database. Unlike `mysql`
 and `postgresql`, which are plain booleans, `etcd` is an object (it needs a
@@ -1001,10 +1025,10 @@ entry, not nested under anything else.
 
 - `name` must not be empty and must be unique across `databases`.
 - `backend` must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
-- `mysql` or `postgresql`, when `true` on any database, require TLS and auth
-  enabled at the server level (`tls.enabled`, `auth.enabled`).
-- `etcd.enabled`, when `true`, requires TLS and auth enabled at the server
-  level (there is no longer an `engine` constraint to check); a binary without
+- `etcd.enabled`, when `true`, requires `etcd.listen_addr`
+  (`database.EtcdListenAddrRequiredError`). The etcd listener also needs TLS
+  and auth configured on the server; without them it refuses to start
+  (`etcd.AuthRequiredError`). A binary without
   the `qrdb_etcd` build tag refuses it at boot (`service.RefuseEtcdNotCompiled`),
   checked over every configured database before any of them provisions.
   See [etcd-compatibility](etcd-compatibility/architecture.md) for the full
@@ -1039,14 +1063,16 @@ databases:
   `wait_timeout`, `write_timeout`); it does not enable a protocol. A database's own `mysql`/`postgresql` fields are what
   turn the wire protocols on, and `protocols.mysql`/`protocols.postgresql`
   must also be enabled server-wide (and compiled in — see
-  `ValidateCapabilities`).
+  `Config.ValidateCapabilities`). Either server-wide flag requires
+  `tls.enabled`, auth enabled and a non-empty `sql.default_database`.
 
 ---
 
 ### embedding
 
-Configures the embedding service for vector generation. When disabled (no providers
-configured), all embedding API calls return `EmbeddingProviderNotFoundError`.
+Configures the embedding service for vector generation. With no providers
+configured, the node builds neither the embedding service nor the RAG
+pipeline.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -1060,18 +1086,18 @@ Configures a single OpenAI-compatible embedding provider endpoint.
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `name` | string | -- | yes | Unique provider identifier within the registry |
-| `base_url` | string | -- | yes | OpenAI-compatible API base URL (e.g., `http://localhost:11434/v1`) |
+| `name` | string | `"default"` | no | Unique provider identifier within the registry |
+| `base_url` | string | `"https://api.openai.com"` | no | OpenAI-compatible API base URL (e.g., `http://localhost:11434/v1`); a trailing `/v1` is optional |
 | `api_key` | string | `""` | no | Bearer token for authentication; leave empty for unauthenticated endpoints |
-| `model` | string | -- | yes | Default embedding model name used when request does not specify one |
-| `timeout` | string | `"30s"` | no | Per-request timeout in Go duration format (e.g., `"60s"`) |
-| `max_retries` | int | `3` | no | Retry attempts for transient failures (5xx responses, network errors) |
+| `model` | string | `"text-embedding-3-small"` | no | Default embedding model name used when request does not specify one |
+| `timeout` | string | `"30s"` | no | Per-request timeout in Go duration format (e.g., `"60s"`), whole seconds; an unparsable value takes the default |
+| `max_retries` | int | `3` | no | Retry attempts for transient failures (5xx responses, network errors); 0 or less takes the default |
 
 **Validation rules:**
 
-- Each provider name must be unique.
-- `base_url` must be a valid URL.
-- `model` must not be empty.
+- Each provider name must be unique; a duplicate fails node start.
+- `cache_capacity`, when greater than 0, sizes the LRU cache; a value the
+  cache refuses fails node start.
 
 **Example configuration with Ollama:**
 
@@ -1090,7 +1116,8 @@ embedding:
 **Notes:**
 
 - Caching is optional and improves performance by avoiding duplicate embedding requests.
-- Environment variable substitution is supported: `api_key: "${OPENAI_API_KEY}"`.
+- Values are read literally: the loader does no environment variable
+  substitution, so `api_key: "${OPENAI_API_KEY}"` sends that string.
 - The embedding service is required by the RAG pipeline.
 
 ---
@@ -1153,32 +1180,42 @@ Configures multi-tenant default quotas and entitlements. See
 [docs/multi-tenancy/](multi-tenancy/architecture.md) for the full isolation
 model.
 
-**Vector namespace creation and the cluster isolation-policy floor:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_quotas` | object | see below | Limits applied to a tenant whose own quotas are unset |
+| `default_entitlements` | object | see below | Entitlements applied to a tenant whose own entitlements are unset |
+| `quota_reconcile_interval` | duration | `"5m"` | How often the storage-quota reconciler flushes byte counters and re-measures dedicated-volume tenants |
+| `isolation_policy` | string | `""` | Cluster isolation-policy floor applied at start: `strict` or `operator-access`. Empty applies nothing. The floor tightens only: this key can set or tighten it, never loosen it; a refused change is logged and the stored floor stands |
 
-There is no `tenant.strict_isolation` configuration key — it was removed
-(go-qrdb v0.45) because it governed only vector namespace creation, which made
-it dangerously misleading for a compliance reader looking for the tenant
-isolation posture. Its behavior is folded into the real, cluster-wide
-isolation-policy floor
+`default_quotas` keys: `max_databases` (default `5`), `max_raft_groups`
+(`0`), `max_replicas_per_group` (`3`), `max_total_replicas` (`3`),
+`max_storage_bytes` (`1073741824`, 1 GiB), `max_database_size_bytes` (`0`),
+`max_dedicated_wal_groups` (`0`), `system_barrier_quota` (`0`: unavailable;
+`-1` unlimited; greater than 0 a byte cap).
+
+`default_entitlements` keys: `allowed_isolation_modes` (default
+`["prefix"]`), `allow_dedicated_raft`, `allow_volume_storage`,
+`allow_system_managed_barrier`, `allow_dedicated_wal`,
+`allowed_barrier_modes`, `allowed_volume_pools`, `allow_replicated_audit`
+(the booleans default `false`, the lists empty).
+
+**Vector namespace creation and the cluster isolation-policy floor**
 ([docs/multi-tenancy/architecture.md#the-isolation-policy](multi-tenancy/architecture.md#the-isolation-policy)):
 
 - **Cluster floor is `strict`** (including a FIPS 140-3 build, which always
   tightens the floor to `strict`): vector namespace creation requires the
   authenticated identity to carry a non-system tenant. An identity resolving
-  to the `system` tenant is rejected with `403 Forbidden` (`tenant required`).
-- **Cluster floor is `operator-access`** (today's behavior, and the default
-  for any deployment that has not set the floor): un-tenanted identities pool
-  into `system`. This is a single-tenant convenience, not cross-tenant
-  isolation — it does not prevent an identity from accidentally writing to
-  another tenant's namespace if it somehow resolves to the same tenant.
+  to the `system` tenant is rejected with `403 Forbidden`
+  (`service.TenantRequiredError`).
+- **Cluster floor is `operator-access`** (the default where no floor is set):
+  un-tenanted identities pool into `system`. This is a single-tenant
+  convenience, not cross-tenant isolation.
 
 **Notes:**
 
 - The tenant is derived from the authenticated identity, not a request header (see
   [scoping.md](scoping.md)).
-- Vector namespaces are tenant-partitioned in both modes; strict mode additionally
-  refuses to create a namespace for an identity that has no real tenant (i.e. the
-  `system` tenant), preventing accidental shared/un-owned namespaces.
+- Vector namespaces are tenant-partitioned under either floor.
 
 ---
 
@@ -1299,13 +1336,23 @@ observability:
    `*UnknownFieldError`, naming the key's full path (e.g.
    `databases[2].protocol`) and, where known, the file and line.
 1. `DefaultConfig()` initializes all fields with production-ready defaults.
-2. The YAML file (if provided via `--config`) is unmarshaled on top of the defaults. Only fields present in the YAML file override the defaults.
-3. CLI flags that are explicitly set override the corresponding YAML values.
+2. The YAML file (given with `--config`) overlays the defaults. Only fields
+   present in the file override them.
+3. `QRDB_`-prefixed environment variables override both, with nested keys
+   joined by `_` (`seal.shamir_total` → `QRDB_SEAL_SHAMIR_TOTAL`). This
+   layer is part of `config.Load`, so it applies only when `--config` is
+   given.
+4. With no `databases` entry, `config.Load` adds one database named
+   `system` on `storage.backend` (`pebble` when that is empty), then runs
+   `Config.Validate()`.
+5. `qrdbd start` applies the CLI flags that are explicitly set over the
+   result and validates the merged configuration again.
 
 ### Validation
 
 After loading and merging, the configuration is validated by `Config.Validate()`.
-Validation checks every field and returns the first error encountered as a
+Validation checks every field and returns the first error encountered: a
+`*DatabaseConfigError` for a `databases` entry, otherwise a
 `*ValidationError` containing the field path and reason:
 
 ```
@@ -1319,9 +1366,10 @@ config: validation failed for "raft.shard_id": must be greater than 0
 | `*LoadError`          | The YAML file cannot be read or parsed                      |
 | `*UnknownFieldError`  | The YAML file carries a key that names no field in the schema |
 | `*ValidationError`    | A configuration field has an invalid value                   |
+| `*DatabaseConfigError` | A `databases` entry has an empty or duplicate name, an unknown backend or an invalid `sql.concurrency` |
 
-All three error types implement the `error` interface. `LoadError` also
-implements `Unwrap()` for use with `errors.Is` and `errors.As`.
+`LoadError` and `ValidationError` implement `Unwrap()` for use with
+`errors.Is` and `errors.As`.
 
 A key for a feature this binary was not compiled with (e.g. `protocols.mysql`
 without build tag `qrdb_mysql`) is never an `*UnknownFieldError` -- `pkg/config`
@@ -1335,8 +1383,8 @@ tag.
 
 ### Minimal Single-Node
 
-The simplest deployment. Uses in-memory storage, static discovery, auto-generated
-TLS, and disables the QUIC transport (no remote peers).
+The simplest deployment. Uses in-memory storage, static discovery and
+auto-generated TLS, and leaves the native QUIC API off (the default).
 
 ```yaml
 server:

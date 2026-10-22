@@ -16,7 +16,10 @@
 
 package pgcatalog
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 // CatalogUnavailableError is returned when a pg_catalog relation is scanned
 // before go-mysql-server has handed it the engine catalog through
@@ -60,4 +63,15 @@ type RowWidthError struct {
 func (e *RowWidthError) Error() string {
 	return "pgcatalog: information_schema.columns row has " + strconv.Itoa(e.Got) +
 		" columns, want " + strconv.Itoa(e.Want)
+}
+
+// TypeOIDError is returned by format_type when its first argument converts
+// to an unsigned 32-bit integer but does not come back as a type OID.
+type TypeOIDError struct {
+	Value any
+}
+
+// Error returns a human-readable description.
+func (e *TypeOIDError) Error() string {
+	return "pgcatalog: " + FormatTypeFunction + " cannot read " + fmt.Sprint(e.Value) + " as a type OID"
 }

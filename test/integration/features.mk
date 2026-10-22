@@ -54,7 +54,8 @@
 # node's Prometheus /metrics (the default gatherer, the WAL fsync histogram,
 # the authentication requirement). grpc_web_test.go calls QRDBService over
 # native gRPC and over gRPC-Web on the REST listener side by side and holds
-# every caller to the same status code from both.
+# every caller to the same status code from both. rest_cors_test.go starts
+# a node with a cors: block and checks the REST preflight headers.
 #
 # test/buildgates/feature_integration_coverage_test.go (run by
 # `make check-integration-feature-coverage` in the Lint job) is the other
@@ -82,7 +83,7 @@
 # pattern rule avoids the question entirely by computing the same
 # substitution on both sides: $(INTTEST_$(subst -,_,$*))).
 
-INTTEST_api_server          := cli_multiprotocol_test.go metrics_test.go grpc_web_test.go
+INTTEST_api_server          := cli_multiprotocol_test.go metrics_test.go grpc_web_test.go rest_cors_test.go
 INTTEST_attested_caller     :=
 INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
 INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go

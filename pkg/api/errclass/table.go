@@ -1005,6 +1005,10 @@ var tenantRules = []rule{
 	// the tenant cannot move to from where it is depends on its state.
 	as(&tenant.InvalidStatusError{}, InvalidArgument),
 	as(&tenant.StatusTransitionError{}, FailedPrecondition),
+	// An isolation policy only tightens: a loosening, or a setter that lost
+	// the compare-and-set to one that moved the policy first, leaves the
+	// store unchanged, and the caller re-reads before deciding anything.
+	as(&tenant.IsolationPolicyChangeError{}, FailedPrecondition),
 	// UpdateTenant lost its compare-and-swap on every attempt: other writers
 	// kept committing the record, and the caller may retry the update.
 	as(&tenant.ConcurrentUpdateError{}, Aborted),

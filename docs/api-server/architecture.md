@@ -380,7 +380,8 @@ threshold. For the Raft WAL the observation point is qrdb's side of go-quicraft'
 `MetricsCollector.ObserveFsyncLatency` — `RaftMetrics` records into
 `quicraft_logdb_fsync_latency_seconds` and then checks the threshold, naming
 the WAL directory — so go-quicraft is unchanged. For storage, the pebble
-backend times each write committed with `pebble.Sync` and the file backend each
+backend and the pebble-backed vector store (`backend="pebble"`, naming its
+directory) time each write committed with `pebble.Sync` and the file backend each
 record, rename and directory fsync, into
 `qrdb_storage_sync_duration_seconds{backend}`; `database.openStorage` and the
 store's pebble wrappers name the database and directory on the observer. The

@@ -14,6 +14,8 @@
 
 package file
 
+import "strconv"
+
 // JournalCorruptError indicates the commit journal found at open time is
 // unreadable — the last batch commit is in an unknown state, so the store
 // fails closed rather than silently serving a half-applied batch.
@@ -77,6 +79,25 @@ type FormatVersionMismatchError struct {
 func (e *FormatVersionMismatchError) Error() string {
 	return "file storage: data directory format version " + e.Found + " does not match this build's " + e.Want +
 		" — there is no migration between on-disk formats"
+}
+
+// NameKeyLengthError is returned when an encrypted store's record-name key
+// file (nameKeyFileName) decrypts to a length other than the one the engine
+// writes. Every record name is derived from that key, so the store is not
+// served under a key it did not write.
+type NameKeyLengthError struct {
+	// Path is the record-name key file.
+	Path string
+	// Len is the length the file decrypted to.
+	Len int
+	// Want is the length the engine writes.
+	Want int
+}
+
+// Error returns a human-readable description of the bad key file.
+func (e *NameKeyLengthError) Error() string {
+	return "file storage: record-name key " + e.Path + " holds " + strconv.Itoa(e.Len) +
+		" bytes, want " + strconv.Itoa(e.Want)
 }
 
 // AtRestMismatchError refuses to open a data directory whose format marker

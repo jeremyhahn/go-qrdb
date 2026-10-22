@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **An encrypted `file` store names its records under a barrier-held key**
+  (#911). A record's file name is the HMAC-SHA-256 (RFC 2104) of its key under
+  the store's random record-name key, kept in `.qrdb-file-names` and written
+  through the barrier, so a name can no longer be matched to a guessed key. On
+  a store opened while the barrier is sealed, `Exists` and `Delete` now fail
+  with `seal.ErrSealed`, as `Get` and `Set` already did. **Breaking (on-disk
+  format):** the format marker is version `4`, and a version `3` data
+  directory, plaintext or encrypted, is refused at open. See
+  `docs/storage-engines/architecture.md`.
+
 ## [0.51.0-alpha] - 2026-10-21
 
 ### Added

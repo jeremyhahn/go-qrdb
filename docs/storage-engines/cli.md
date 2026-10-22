@@ -60,7 +60,7 @@ With `seal.enabled: true`, what `storage.backend` leaves on disk:
 | `storage.backend` | On disk | While sealed |
 |---|---|---|
 | `pebble` | every sstable, WAL, manifest and options file encrypted by the barrier's encrypting file system | record reads and writes fail with the sealed error |
-| `file` | every record file and commit journal encrypted by the same file system; file names are SHA-256 digests of the keys; only the format marker is plaintext | record reads and writes fail with the sealed error |
+| `file` | every record file and commit journal encrypted by the same file system; file names are HMAC-SHA-256 tags of the keys under a key the barrier encrypts; only the format marker is plaintext | record reads and writes fail with the sealed error |
 | `objstore` | values and object names in the clear; `qrdbd start` logs a warning naming the gap | — |
 | `memory` | nothing | — |
 

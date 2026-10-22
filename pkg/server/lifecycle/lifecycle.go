@@ -1922,9 +1922,10 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 		// credential services — tenant CRUD is never invoked during the sealed
 		// window. The replicated, cluster-visible tenant service is built
 		// post-host in BuildServices (buildSealServices); per-tenant barrier
-		// restore at boot uses the barrier registry's own persisted
-		// __registry:tenant_root/ records, not TenantInfo, so this seal-backed
-		// instance is never consulted for tenant resolution.
+		// restore at boot (BarrierRegistry.RestoreVolumeTenants) reads the
+		// volume catalog's Assignments and the registry's own
+		// __registry:tenant_posture/ records, not TenantInfo, so this
+		// seal-backed instance is never consulted for tenant resolution.
 		tenantSvcInst, err := tenant.NewTenantService(
 			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {

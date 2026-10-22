@@ -143,7 +143,7 @@ qrdbd and the headless qrdb CLI twice:
   are refused. The Wails desktop client also needs cgo and is not a release
   artifact.
 - **FIPS is a build-time choice.** `GOFIPS140` links Go's native FIPS 140-3
-  module, at the same `latest` the nightly FIPS leg tests. The plain build
+  module, at the same `latest` the full-tier `fips` job tests. The plain build
   sets `GOFIPS140=off` explicitly, so the caller's environment cannot turn it
   into a second FIPS binary. The enforcement level stays the operator's
   `GODEBUG` ([seal/fips140-mode.md](../seal/fips140-mode.md)).
@@ -185,7 +185,7 @@ pull request skips, and a fourth, nightly, for the soak:
 |---|---|---|
 | PR | every run | `changes`, `docker-build` (the devcontainer images), `image` (lint, build and the unit suites), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `test-typescript` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, and `integration-standalone` and `integration-features` (one leg per feature) |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (one leg per feature) and `fips` (both unit suites under FIPS 140-3) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
@@ -217,6 +217,14 @@ it. A full-tier run whose `image` job fails still runs
 the legs, and `ci-gate`, which needs every job, fails on that result; a run
 whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
 legs `skipped`, which `ci-gate` fails as well.
+
+`fips` needs `docker-build` alone and runs in the toolchain image: it builds
+every package with `GOFIPS140=latest` and runs `make test` and `make test-sdk`
+under `GODEBUG=fips140=only`, so a primitive outside the FIPS 140-3 boundary
+reached by any unit test fails it, and `ci-gate` fails with it
+([seal/fips140-mode.md](../seal/fips140-mode.md)). It reruns both unit suites
+under `-race`, which no pull request's one-hour budget holds, so it is a
+full-tier job.
 
 Within the `image` job, one step depends on the trigger. `make lint-gates`
 runs on every run and holds `make vet` over the default tag set and the
@@ -262,8 +270,7 @@ other workflows on pull requests keep one group per ref (handbook `devops.md`
 `test/buildgates/ci_tiers_test.go` holds both values.
 
 No CI workflow runs on a schedule; `automerge.yml` is the one workflow with a
-`schedule:`. `nightly.yml` (FIPS 140-3, trivy's full
-report, and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
+`schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`, whose dispatch also runs the soak.
 
 `image` runs every stage of the handbook CI standard (`ci-standard.md`) in the

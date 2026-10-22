@@ -220,7 +220,7 @@ func (f *formatType) Eval(ctx *sqle.Context, row sqle.Row) (interface{}, error) 
 	}
 	converted, ok := oid.(uint32)
 	if !ok {
-		return nil, fmt.Errorf("%s: cannot read %v as a type OID", FormatTypeFunction, value)
+		return nil, &TypeOIDError{Value: value}
 	}
 	return FormatTypeName(converted), nil
 }

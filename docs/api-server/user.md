@@ -169,6 +169,11 @@ The other go-quicraft series:
 - security: `quicraft_security_unauthorized_messages_dropped_total`,
   `quicraft_security_unauthorized_snapshots_dropped_total`.
 
+`quicraft_raft_elections_total{shard_id}` counts the campaigns this node
+launched for that shard, one per round of vote requests it sent. A
+single-replica shard elects itself without sending any, so on a one-node
+deployment the counter stays at zero.
+
 ### Slow-sync warning
 
 A sync slower than one second logs one warning per sync, at `WARN`, whatever

@@ -104,7 +104,9 @@ func selfScopedPermissions() []Permission {
 		// AuditVerifyReplicated IS here, deliberately unlike AuditVerify: it
 		// verifies one tenant's own independent replicated chain, which is
 		// exactly the tenant-filtered slice AuditVerify's comment says it
-		// lacks.
+		// lacks. AuditDelete is here for AuditQuery's reason: it acts on
+		// the tenant-filtered slice of events the caller's tenant owns.
+		AuditDelete,
 		AuditQuery,
 		AuditRead,
 		AuditStream,

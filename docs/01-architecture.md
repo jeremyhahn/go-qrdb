@@ -1,6 +1,6 @@
 # QRDB Architecture Overview
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -27,29 +27,18 @@ transactions, distributed leases, watch notifications, and linearizable
 reads -- all replicated through multi-group Raft consensus with QUIC
 transport.
 
-QRDB sits in the middle tier of a three-project stack:
+QRDB is the cluster engine and database system of a layered stack
+([SPEC.md](SPEC.md), Purpose):
 
-- **go-quicraft** -- the consensus engine (Raft protocol, WAL, QUIC
-  transport, state machine interfaces, session deduplication)
-- **go-qrdb** -- the transactional KV layer (MVCC, transactions, leases,
-  watches, secondary indexes, time-series, REST + gRPC APIs)
-- **go-dragondb** -- the database layer (SQL, schemas, query planning --
-  future consumer of go-qrdb as its storage engine)
-
-QRDB depends on go-quicraft via a local `replace` directive and exposes
-its own service interfaces that higher-level consumers (go-dragondb, CLI
-tools, application code) program against.
-
-Source: `go.mod`
-
-```
-module github.com/jeremyhahn/go-qrdb
-
-go 1.27.3
-
-require github.com/jeremyhahn/go-quicraft v0.0.0
-replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
-```
+- **go-quicraft** -- the consensus library (Raft protocol, WAL, QUIC
+  transport, state machine interfaces, session deduplication), embedded
+  by go-qrdb as a Go module dependency (`go.mod`)
+- **go-qrdb** -- the distributed key-value store and the database services
+  over it (MVCC, transactions, leases, watches, secondary indexes,
+  time-series, vectors, SQL), served on REST, gRPC, QUIC, Unix socket, MCP
+  and embedded transports
+- **go-xkms** and **go-quicbaas** -- the layers above, which program against
+  go-qrdb's `sdk/go` and service interfaces
 
 ## 2. Three-Tier Architecture
 
@@ -66,7 +55,7 @@ replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
 |   +-----------+-------+---------+---------+-----------------+ |
 |               |          Service Layer         |              |
 |               +--------------------------------+              |
-|   | REST API | gRPC API | Unix API | MCP API | etcd API |     |
+|   | REST | gRPC | QUIC | Unix | MCP | etcd |                  |
 |               +--------------------------------+              |
 +---------------------------------------------------------------+
                               |
@@ -98,13 +87,13 @@ replace github.com/jeremyhahn/go-quicraft => ../go-quicraft
 +---------------------------------------------------------------+
 ```
 
-The boundary between go-quicraft and go-qrdb is the `sm.DiskStateMachine`
-interface. QRDB uses a three-layer store architecture:
+The boundary between go-quicraft and go-qrdb is go-quicraft's `sm`
+state machine interfaces. QRDB uses a three-layer store architecture:
 
 1. **Storage backends** (`pkg/storage/`) implement the `storage.Storage`
-   interface. Three backends are provided: `memory` (in-memory, data lost
-   on restart), `file` (filesystem-backed), and `pebble` (PebbleDB-backed,
-   production default).
+   interface. Four backends are provided: `memory` (in-memory, data lost
+   on restart), `file` (filesystem-backed, hashed file names), `pebble`
+   (PebbleDB-backed) and `objstore` (any go-objstore provider).
 
 2. **Store engines** (`pkg/engine/`) implement the `Engine` interface
    (extends `backend.SMAdapter`). They contain all handler logic for
@@ -113,27 +102,33 @@ interface. QRDB uses a three-layer store architecture:
    - `MVCCEngine` -- MVCC versioning, transactions, leases, indexes, watches,
      time-series, and extended protocol op codes
 
-3. **State machines** (`pkg/store/`) are thin Raft wrappers that implement
-   `sm.DiskStateMachine` and delegate `Update`/`Lookup` calls to an engine.
-   They add only: opening PebbleDB, persisting `lastApplied`, and snapshot
-   save/restore. `MVCCStateMachine` (`pkg/store/mvcc.go`) is the primary
-   Raft state machine.
+3. **State machines** (`pkg/store/`, `pkg/statemachine/`) are the Raft
+   wrappers. `PebbleStateMachine` (`pkg/store/pebble.go`) and
+   `MVCCStateMachine` (`pkg/store/mvcc.go`) implement `sm.DiskStateMachine`
+   over PebbleDB; `MVCCStateMachine` delegates `Update`/`Lookup` to an
+   `MVCCEngine` and adds persisting `lastApplied` and snapshot
+   save/restore.
 
-In **local (non-Raft) mode**, a `LocalBackend` wraps an engine directly
-without a state machine, bypassing Raft consensus entirely.
+In **local (non-Raft) mode**, a `LocalBackend` (`pkg/backend/local.go`)
+wraps an engine directly without a state machine, bypassing Raft consensus
+entirely.
 
 Users choose a **store engine** (`kv` or `mvcc`) and a **storage backend**
-(`memory`, `file`, `pebble`) independently. The file backend defaults to
-the KV engine because MVCC binary keys are not valid filenames.
+independently. Every backend defaults to the MVCC engine
+(`pkg/server/lifecycle.NewLocalEngine`); `kv` is an explicit opt-in.
 
-The `raft.sm_type` configuration field (`"pebble"`, `"memory"`, or `"mvcc"`)
-selects which Raft state machine wrapper to use for distributed mode.
+The `raft.sm_type` configuration field selects the Raft state machine for
+distributed mode: `pebble` (the default), `mvcc`, `memory`, `standard`,
+`concurrent`, `fast`, `disk`, `highperf` or `regular` (`validSMTypes`,
+`pkg/config/config.go`). `raft.sm_backend` selects a variant, and
+`raft.sm_storage` the storage backend that the storage-generic `disk` and
+`fast` machines compose.
 
 ## 3. Package Structure
 
 ```
 github.com/jeremyhahn/go-qrdb/
-  cmd/qrdbd/                   Server daemon (cobra commands: start, status, peers, tls)
+  cmd/qrdbd/                   Server daemon (cobra commands: start, status, peers, node-identity, version)
   pkg/
     protocol/                  Extended wire protocol (MVCC, txn, lease, batch, index, TS, vector op codes)
     discovery/                 Peer discovery engine (static, multicast, dns, token methods + manager)
@@ -148,33 +143,36 @@ github.com/jeremyhahn/go-qrdb/
     vector/                    Vector database (HNSW indexes, k-NN search, tenant-scoped namespaces)
     rag/                        RAG ingest primitive (chunking, embedding, vector storage)
     service/                   Service layer interfaces + implementations
-      service.go                 KVService, AdminService, Host interfaces
-      mvcc_service.go            MVCCKVService interface
-      transaction_service.go     TransactionService interface
-      watch_service.go           WatchService interface
-      lease_service.go           LeaseService interface
-      batch_service.go           BatchService interface
-      index_service.go           IndexService interface
-      timeseries_service.go      TimeSeriesService interface
+      service.go                 KVService, AdminService, Host interface
+      mvcc_service.go            MVCCKVService
+      transaction_service.go     TransactionService
+      watch_service.go           WatchService
+      lease_service.go           LeaseService
+      batch_service.go           BatchService
+      index_service.go           IndexService
+      timeseries_service.go      TimeSeriesService
       vector_service.go          VectorService interface (namespace CRUD, k-NN search, metadata filtering)
-      embedding_service.go       EmbeddingService interface (provider-proxy, batch processing, caching)
-      rag_service.go             RAGService interface (document ingest, query, deletion)
+      embedding_service.go       EmbeddingServicer interface (provider-proxy, batch processing, caching)
+      rag_service.go             RAGServicer interface (document ingest, query, deletion)
       types.go                   Shared types (KeyValue, Event, Lease, Compare, Op, etc.)
       errors.go                  Typed service errors
     storage/                   Storage backend implementations
       storage.go                 storage.Storage interface
       memory/                    In-memory storage backend (data lost on restart)
       file/                      Filesystem-backed storage backend
-      pebble/                    PebbleDB-backed storage backend (production default)
-      namespace/                 Namespace-scoped storage wrapper
+      pebble/                    PebbleDB-backed storage backend
+      objstore/                  go-objstore-backed storage backend
+      vector/                    Vector embedding and metadata storage
     engine/                    Store engine implementations
       kv_engine.go               KVEngine (basic KV ops, optional indexes/watches)
       mvcc_engine.go             MVCCEngine (MVCC, transactions, leases, indexes, watches, time-series)
     store/                     Raft state machine wrappers
       mvcc.go                    MVCCStateMachine (sm.DiskStateMachine, delegates to engine)
-      pebble.go                  PebbleStateMachine (sm.DiskStateMachine, legacy wrapper)
-      factory.go                 Store factory (functional options)
+      pebble.go                  PebbleStateMachine (sm.DiskStateMachine, default raft.sm_type)
+      factory.go                 Functional options (Option, MVCCOption)
+      registry.go                Registers the pebble and mvcc state machines
       errors.go                  Store-specific error types
+    statemachine/              State machine registry and the storage-generic and in-memory machines
     config/                    YAML configuration loading and validation
       config.go                  Config struct, DefaultConfig(), Load(), Validate()
       errors.go                  Config-specific error types
@@ -186,7 +184,7 @@ github.com/jeremyhahn/go-qrdb/
     auth/
       rbac/                  RBAC authorizer with permission cache
       middleware/            Auth chain: gRPC interceptors + REST middleware
-    audit/                   Dual-backend audit logging (KVStore + slog JSON file)
+    audit/                   Audit trail: AuditLogger interface and its sinks (slog, hash-chained file)
     api/
       rest/                    REST API (HTTP/2 + HTTP/3, leader forwarding, Prometheus)
         server.go                Server struct, route registration, TLS setup
@@ -205,7 +203,7 @@ github.com/jeremyhahn/go-qrdb/
   cmd/qrdb/                    Client CLI + Desktop GUI (Wails v2 + Svelte 5)
     frontend/                  Svelte 5 frontend (Vite + TailwindCSS + DaisyUI)
   sdk/
-    go/                        Go SDK with 5 transports
+    go/                        Go SDK; transports: embedded, gRPC, MCP, QUIC, REST, Unix
     typescript/                TypeScript SDK (@qrdb/sdk, WailsClient + RestClient)
   configs/                     YAML configuration files (qrdb.yaml, qrdb-dev.yaml)
   docs/                        Documentation
@@ -275,7 +273,6 @@ MVCCEngine
   |-- dispatch via op-code map:
   |     10 -> handleMVCCPut
   |     11 -> handleMVCCDelete
-  |     12 -> handleMVCCRange
   |     20 -> handleTransaction
   |     30 -> handleBatch
   |     40 -> handleLeaseGrant
@@ -344,85 +341,24 @@ Client <- TransactionResponse{Succeeded, Revision, Responses}
 
 ## 5. Internal Dependency Graph
 
-The package dependency graph is strictly acyclic. Arrows represent
-import relationships.
+The package import graph is acyclic; the Go compiler enforces it. From
+the bottom up (`go list -f '{{.Imports}}'`):
 
-```
-                              +----------+
-                              | protocol |  (stdlib only)
-                              +----------+
-                              /    |     \
-                             /     |      \
-                            v      v       v
-                      +------+  +-------+  +-------+
-                      | mvcc |  | store |  | lease |
-                      +------+  +-------+  +-------+
-                         |         |           |
-                         |    pebble/v2        |
-                         |         |           |
-          +---------+    |         |     +-----------+
-          |  watch  |    |         |     | consistency|  (stdlib only)
-          +---------+    |         |     +-----------+
-               |         |         |           |
-               v         v         v           v
-          +-----------------------------------------------+
-          |              service (types.go)                |
-          |                                               |
-          |  KVService        MVCCKVService                |
-          |  AdminService     TransactionService           |
-          |  WatchService     LeaseService                 |
-          |  BatchService     IndexService                 |
-          |  TimeSeriesService                             |
-          +-----------------------------------------------+
-                    |                       |
-                    v                       v
-          +----------------+      +------------------+
-          | api/rest       |      | api/grpc         |
-          | (handlers.go)  |      | (service.go)     |
-          +----------------+      +------------------+
-                    \                      /
-                     \                    /
-                      v                  v
-                  +------------------------+
-                  |        server          |
-                  | (multi-protocol       |
-                  |  orchestrator)        |
-                  +------------------------+
-                            |
-                            v
-                  +------------------------+
-                  |       cmd/qrdbd        |
-                  | (server daemon)        |
-                  +------------------------+
-```
-
-Key invariant: **no import cycles exist**. Each layer depends only on
-layers below it. The `protocol` package depends only on the standard
-library. The `service` package defines interfaces and types that bridge
-the gap between transport-specific API handlers and storage backends.
-
-Package dependency summary:
-
-| Package       | Imports from go-qrdb             | External        |
-|---------------|----------------------------------|-----------------|
-| `protocol`    | (none)                           | stdlib only     |
-| `mvcc`        | `protocol`                       | `pebble/v2`     |
-| `watch`       | `service` (types only)           | stdlib only     |
-| `consistency` | (none)                           | stdlib only     |
-| `lease`       | `service` (types only)           | stdlib only     |
-| `index`       | `service` (types only)           | `pebble/v2`     |
-| `timeseries`  | `service` (types only)           | stdlib only     |
-| `storage`     | (none)                           | `pebble/v2`     |
-| `engine`      | `protocol`, `storage`, `mvcc`    | stdlib only     |
-| `store`       | `engine`, `storage`              | `pebble/v2`     |
-| `service`     | (defines interfaces)             | `go-quicraft`   |
-| `api/rest`    | `service`                        | `prometheus`    |
-| `api/grpc`    | `service`                        | `grpc`, `protobuf` |
-| `api/etcd`    | `service`                        | `grpc`, `etcd/api` |
-| `server`      | `service`, `config`, `api/*`     | `prometheus`    |
-| `config`      | (none)                           | `yaml.v3`       |
-| `cmd/qrdbd`   | `server`, `config`, `store`      | `cobra`         |
-| `sdk/go/node` | `server`, `config`, `store`      | (none)           |
+| Package | Imports from go-qrdb `pkg/` |
+|---|---|
+| `storage`, `consistency` | nothing |
+| `lease` | `clock`, `storage` |
+| `protocol` | `audit`, `lease`, `vlog` |
+| `watch` | `kv`, `logger`, `messaging` |
+| `mvcc` | `service`, `storage`, `tenantid` |
+| `index` | `errors`, `logger`, `storage`, `util/metrics` |
+| `timeseries` | `consistency`, `protocol`, `storage` |
+| `engine` | the data packages (`mvcc`, `index`, `lease`, `timeseries`, `vector`, `watch`, `vlog`), `protocol`, `service`, `statemachine`, `storage` |
+| `store` | `engine` and the same data packages, `storage/pebble` |
+| `service` | the domain packages (auth, seal, tenant, cluster, data); not `engine` or `store` |
+| `api/rest`, `api/grpc`, `api/etcd` | `service` and the domain packages |
+| `server` | every `api/*` transport, `service`, `store`, `config` |
+| `cmd/qrdbd`, `sdk/go/node` | `server`, `server/lifecycle`, `service`, `store`, `config` |
 
 ## 5.5. Daemon and Embedded Sibling Composition
 
@@ -431,26 +367,27 @@ are sibling composition roots that call `server.New()` over the shared `pkg/serv
 core. The daemon is **not** built on the node; rather, both are built on the same
 foundation.
 
-A new compositor, `pkg/server.BuildTenantInfra(TenantInfraConfig)`, is used by
-both roots to wire the per-tenant infrastructure (tenant host registry, Raft backend
-factory, encryption migrator). This converges daemon and embedded paths on the same
-code for per-tenant features, enabling the embedded node to offer daemon-parity
-capabilities like tenant-scoped enable-encryption via `node.WithTenantIsolation()`
-and `node.EnableEncryption()`.
+Both roots wire the per-tenant infrastructure through
+`pkg/server.BuildTenantInfra(TenantInfraConfig)`: the tenant host registry
+(`TenantHostRegistry`), the Raft backend factory (`RaftBackendFactory`) and
+the placement reconciler (`TenantShardReconciler`). The embedded node
+therefore has the daemon's per-tenant features, such as tenant-scoped
+encryption via `node.WithTenantIsolation()` and `(*Node).EnableEncryption`.
 
 ## 6. Key Design Decisions
 
-- **MVCC as a separate package with its own PebbleDB handle.** The MVCC
-  engine manages revision-keyed data independently from the base KV
-  store, enabling distinct compaction policies and key encoding schemes
-  without coupling the two storage paths.
+- **MVCC as a separate package over `storage.Storage`.** `mvcc.Store`
+  manages revision-keyed data on any storage backend, independently from
+  the base KV path, enabling distinct compaction policies and key encoding
+  schemes without coupling the two storage paths.
 
 - **Three-layer store architecture with independent engine and backend selection.**
   The store layer is split into storage backends (`pkg/storage/`), store
   engines (`pkg/engine/`), and thin Raft state machine wrappers (`pkg/store/`).
   Operators choose a store engine (`kv` for simple put/get/delete with base
-  op codes 1-3, or `mvcc` for the full transactional feature set with
-  extended op codes 10+) and a storage backend (`memory`, `file`, `pebble`)
+  op codes 1-4, or `mvcc` for the full transactional feature set with
+  extended op codes 10+) and a storage backend (`memory`, `file`, `pebble`,
+  `objstore`)
   independently. State machines delegate all data operations to engines,
   adding only Raft lifecycle concerns (open, lastApplied, snapshots).
   In local (non-Raft) mode, a `LocalBackend` wraps an engine directly.
@@ -459,30 +396,18 @@ and `node.EnableEncryption()`.
 
 - **The base KV opcode set is a contract every state machine must satisfy in
   full.** `kv.OpPut`, `kv.OpDelete` and `kv.OpPutIfAbsent` (op code 4) are
-  handled by `pkg/store`, both engines in `pkg/engine`, and all four state
-  machines in `pkg/statemachine`. The set is discovered at RUN time — a state
-  machine that omits one still compiles and still starts, and fails only when
-  an entry carrying that op code is applied. `OpPutIfAbsent` was missing from
-  all four `pkg/statemachine` implementations until go-qrdb#86, which meant
-  the identity index could not claim an identity on `--sm-type memory` or
-  `concurrent` and first boot could not complete. Adding an op code means
-  adding it everywhere in the same change; the conformance test in
-  `pkg/statemachine/putifabsent_test.go` is what enforces that.
+  handled by `pkg/store`, both engines in `pkg/engine`, and `KVStateMachine`,
+  `FastStateMachine` and `RegularStateMachine` in `pkg/statemachine`. The set
+  is discovered at run time: a state machine that omits one still compiles and
+  starts, and fails only when an entry carrying that op code is applied.
+  Adding an op code means adding it everywhere in the same change; the
+  conformance test in `pkg/statemachine/putifabsent_test.go` enforces that.
 
-  The **single-key guarded verbs** — `protocol.OpCompareAndDelete` (66) and
-  `protocol.OpCompareAndSwap` (67) — carry the same contract, and repeated the
-  same defect: they were dispatched by `pkg/store` and both `pkg/engine`
-  engines and by none of the four state machines, so every `sm_type` those
-  serve refused an ordinary authorized `CompareAndDelete` with
-  `unknown opcode: 66` until go-qrdb#175. They need no MVCC store — the guard
-  is evaluated against the state machine's own store inside apply — so unlike
-  the multi-key transaction plane they are not confined to `sm_type: mvcc`.
-  They are available on **every `sm_type`**, `fast` included. Between
-  go-qrdb#175 and go-qrdb#216 `fast` refused them with a typed
-  `GuardedWriteUnsupportedError`, because `KVStateMachine` reaches storage only
-  through the `Backend` seam and `FastBackend` acknowledged a write before it
-  was durable; `Backend` now requires a durable write pair of every
-  implementation, so the refusal is gone along with the error type (below).
+  The **single-key guarded verbs**, `protocol.OpCompareAndDelete` (66) and
+  `protocol.OpCompareAndSwap` (67), carry the same contract. They need no MVCC
+  store: the guard is evaluated against the state machine's own store inside
+  apply, so unlike the multi-key transaction plane they are not confined to
+  `sm_type: mvcc`. They are available on **every `sm_type`**, `fast` included.
   `pkg/statemachine/guarded_ops_test.go` enforces their coverage the way
   `putifabsent_test.go` enforces the base set, and
   `sdk/go/conformance/matrix_test.go` walks them across every backend, mode and
@@ -500,7 +425,7 @@ and `node.EnableEncryption()`.
   Two consequences follow for the sharded state machine, and neither is a durability
   guarantee:
 
-  1. **A failed storage write is only logged — for the UNGUARDED verbs.** An
+  1. **A failed storage write is only logged, for the UNGUARDED verbs.** An
      ordinary `Put` or `Delete` can be reported as succeeding while the value
      is absent after a restart; its contract is "your write is queued".
 
@@ -509,22 +434,17 @@ and `node.EnableEncryption()`.
      instead of logging it, because "did I win this claim?" and "is my write
      queued?" are different promises and only the first is worth a disk wait. A
      write that does not reach storage is withdrawn from the shard cache,
-     restoring exactly the prior state — an absence, a delete tombstone, or the
+     restoring exactly the prior state: an absence, a delete tombstone, or the
      previous value.
 
-     That exemption reached `FastStateMachine` directly, because it owns its
-     storage. `KVStateMachine` reaches storage
-     only through the `Backend` seam, so it had no way to ask for a synchronous
-     write at all — and over `FastBackend` (`sm_type: fast`) it acknowledged a
-     claim before it was durable and logged the storage failure rather than
-     returning it.
-
-     **`Backend` now carries the durable pair itself** — `PutDurable` and
+     `KVStateMachine` reaches storage only through the `Backend` seam, so
+     **`Backend` carries the durable pair itself**: `PutDurable` and
      `DeleteDurable`, alongside the asynchronous `Put` and `Delete`. The three guarded verbs write through
      the durable pair; `Put`, `Delete` and the batch verbs keep the
-     asynchronous one. Every implementation must answer: the four in-memory
-     backends and `DiskBackend` satisfy it by delegating, since their writes
-     already land before the call returns, and `FastBackend` implements it as a
+     asynchronous one. Every implementation must answer: the in-memory
+     `StandardBackend`, `ConcurrentBackend` and `HighPerfBackend`, and
+     `DiskBackend`, satisfy it by delegating, since their writes already land
+     before the call returns, and `FastBackend` implements it as a
      synchronous ordered write that returns its storage error and withdraws the
      cache entry when the write does not land.
 
@@ -532,43 +452,35 @@ and `node.EnableEncryption()`.
      may implement. An optional interface is the idiomatic Go shape and it is
      wrong here: a backend that skipped it would fall back to the asynchronous
      path SILENTLY, which is the degradation the guarded plane exists to
-     refuse. An opt-in guarantee is not a guarantee. The interim opt-in
-     `GuardedWriteBackend` and its `GuardedWriteUnsupportedError` are removed —
-     a refusal path no backend can reach is an invitation to re-arm it.
-  2. **Writes reach storage in apply order, per shard.** They did not
-     originally: each write persisted on an independent goroutine, so
+     refuse. An opt-in guarantee is not a guarantee.
+  2. **Writes reach storage in apply order, per shard.** `persistOrder` draws a
+     ticket under the shard's data lock, where apply order is already
+     established, and each writer waits its turn. Without it,
      `Delete(k)` followed by `PutIfAbsent(k, v)` could leave storage with no
-     key at all. `persistOrder` draws a ticket under the shard's data lock —
-     where apply order is already established — and each writer waits its turn.
-     Writes remain asynchronous, so apply never blocks on the disk; only their
-     ORDER is constrained. A key belongs to exactly one shard, so per-shard
-     ordering is per-key ordering.
-
-     **`FastBackend` was missing this until go-qrdb#224.** It was written after
-     go-qrdb#86 and reproduced the pre-#86 write path, so `sm_type: fast` lost
-     writes and resurrected deleted keys on the ordinary `Put`/`Delete` path,
-     with no crash and no error. Every asynchronous storage writer in
-     `pkg/statemachine` now draws a ticket: there are four, and all four are
-     ordered. A fix applied writer-by-writer is a fix sized by whoever was in
-     the room, so the count is stated here rather than left to be rediscovered.
+     key at all. Writes remain asynchronous, so apply never blocks on the disk;
+     only their ORDER is constrained. A key belongs to exactly one shard, so
+     per-shard ordering is per-key ordering. Every asynchronous storage writer
+     in `pkg/statemachine`, `FastStateMachine` and `FastBackend` included,
+     draws a ticket.
 
   Source: `pkg/statemachine/persist_order.go`, `pkg/statemachine/fast.go`,
   `pkg/statemachine/backend_fast.go`
 
-- **Interface segregation across service boundaries.** Each feature domain
-  has its own service interface (`KVService`, `MVCCKVService`,
-  `TransactionService`, `WatchService`, `LeaseService`, `BatchService`,
-  `IndexService`, `TimeSeriesService`, `AdminService`). API handlers
-  depend only on the interfaces they need, enabling independent testing
-  and clean compile-time contracts.
+- **One service per feature domain.** Each feature domain has its own
+  service type (`KVService`, `MVCCKVService`, `TransactionService`,
+  `WatchService`, `LeaseService`, `BatchService`, `IndexService`,
+  `TimeSeriesService`, `AdminService`), all over the `Host` interface. API
+  handlers depend only on the services they need, enabling independent
+  testing.
 
   Source: `pkg/service/*.go`
 
 - **Extended wire protocol defined in go-qrdb, not go-quicraft.** The base
-  KV protocol (op codes 1-3: `OpPut`, `OpGet`, `OpDelete`) lives in
-  go-quicraft's `pkg/sm/kv` package. QRDB extends it with higher-numbered
-  op codes (10-69) for MVCC, transactions, leases, batches, indexes, and
-  time-series operations. This keeps the consensus library generic while
+  KV protocol (op codes 1-4: `OpPut`, `OpGet`, `OpDelete`, `OpPutIfAbsent`)
+  lives in go-quicraft's `pkg/sm/kv` package. QRDB extends it with
+  higher-numbered op codes (10-82) for MVCC, transactions, batches, leases,
+  indexes, time-series, guarded writes, vectors, audit, range deletes and the
+  verifiable log. This keeps the consensus library generic while
   allowing QRDB to define its own domain-specific wire format.
 
   Source: `pkg/protocol/protocol.go` -- op code constants and encoders
@@ -615,21 +527,22 @@ and `node.EnableEncryption()`.
   of a full lock.
 
 - **Map-based dispatch in state machine and API routing.** Both the REST
-  API handler (`kvMethodHandlers` map in `pkg/api/rest/handlers.go`) and
-  the MVCC state machine use `map[byte]handler` dispatch tables instead
-  of `switch` statements. This follows the project convention of
+  API handler (`kvMethodHandlers`, a `map[string]kvMethodHandler` in
+  `pkg/api/rest/handlers.go`) and the MVCC engine (`map[byte]mvccHandler`
+  in `pkg/engine/mvcc_engine.go`) use dispatch tables instead of `switch`
+  statements. This follows the project convention of
   preferring map-based dispatch for extensibility and readability.
 
   Source: `pkg/api/rest/handlers.go` -- `kvMethodHandlers`
 
 - **Service layer as the critical abstraction.** All protocol handlers
-  (REST, gRPC) delegate to service interfaces. The service layer
+  (REST, gRPC) delegate to the service layer. The service layer
   translates between the API-facing types and the QuicRaft host
   operations, handling error mapping (`NotLeaderError` -> service-level
   `NotLeaderError`), protocol encoding, and business logic. No Raft
   operations leak into the API layer.
 
-  Source: `pkg/service/service.go` -- `kvService`, `adminService`
+  Source: `pkg/service/service.go` -- `KVService`, `AdminService`
 
 - **Vector storage and embedding as tenant-safe barrier-encrypted primitives.**
   QRDB provides a thin, tenant-scoped RAG ingest/retrieve primitive
@@ -660,8 +573,8 @@ and `node.EnableEncryption()`.
   Source: `pkg/server/server.go` -- `ServerOption`
   Source: `pkg/store/factory.go` -- `Option`
 
-- **Typed errors only.** The codebase never uses `fmt.Errorf`. Every error
-  is a named struct type with an `Error() string` method, enabling
+- **Typed errors only.** Errors are named struct types with an
+  `Error() string` method rather than `fmt.Errorf` strings, enabling
   callers to use `errors.As` for precise error handling. Error types are
   co-located with their packages (`pkg/service/errors.go`,
   `pkg/store/errors.go`, `pkg/api/rest/errors.go`, etc.).
@@ -669,25 +582,26 @@ and `node.EnableEncryption()`.
 ## 7. Capabilities API
 
 The `pkg/capabilities/` package implements compile-time feature registration using
-Go build tags. Each feature (MVCC, transactions, batch, watch, lease, index,
-time-series, vector) registers itself via an `init()` function in a
-`*_enabled.go` file that is only compiled when the corresponding build tag is
-present. A companion `*_stub.go` file (compiled when the tag is absent) registers
-the feature as disabled.
+Go build tags. Each optional feature (time-series, vector, SQL, MySQL,
+PostgreSQL, etcd, full-text search) has a `capabilities_<feature>.go` file,
+compiled only under its build tag (`qrdb_ts`, `qrdb_vector`, `qrdb_sql`,
+`qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`), whose `init()` calls
+`Register`. A feature whose tag is absent is never registered. The core
+features (KV, MVCC, transactions, batch, watch, lease, lock, index, cluster,
+backup, rebalance) are always present.
 
 ```go
-// capabilities/registry.go
-var registry = map[string]bool{}
-
-func Register(name string, enabled bool) { registry[name] = enabled }
-func IsEnabled(name string) bool         { return registry[name] }
-func All() map[string]bool               { return registry }
+// pkg/capabilities/capabilities.go
+func Register(feature string)   // called from a tagged file's init()
+func Has(feature string) bool   // was the feature compiled in?
+func Seal(c Capabilities)       // composition root: build tags ∩ run mode ∩ config
+func Get() Capabilities         // the sealed profile, or the compiled-in one
 ```
 
-The `GET /v1/capabilities` endpoint and `qrdb_capabilities` MCP tool return
-`capabilities.All()`, giving clients a runtime view of which features the server
-was compiled with. This enables conditional UI rendering in the GUI and
-feature-gated CLI commands.
+The `GET /capabilities` REST endpoint and the `qrdb_capabilities` MCP tool
+return `capabilities.Get()` through `AdminService.Capabilities`, giving
+clients a runtime view of which features this node serves. This enables
+conditional UI rendering in the GUI and feature-gated CLI commands.
 
 ## 8. GUI Architecture
 

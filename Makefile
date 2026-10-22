@@ -673,7 +673,7 @@ _build-client: build-frontend
 # artifact.
 #
 # The FIPS variant links Go's native FIPS 140-3 module, selected at BUILD time
-# by GOFIPS140 -- the same `latest` the nightly FIPS leg tests against
+# by GOFIPS140 -- the same `latest` ci.yml's full-tier `fips` job tests against
 # (docs/seal/fips140-mode.md). Enforcement is still the operator's GODEBUG at
 # run time; the plain variant is built with GOFIPS140=off so a GOFIPS140 in
 # the caller's environment cannot turn it into a second FIPS binary.
@@ -2534,14 +2534,13 @@ check-lean-standalone:
 # workstation the forge address has to be given, and an unset one fails with a
 # sentence naming the flag rather than by talking to nothing.
 #
-# The two RESULT knobs default to `failure` because "what would the signal do if
+# The RESULT knob defaults to `failure` because "what would the signal do if
 # this went red" is the question a developer has to ask, and the answer is
 # uninteresting when everything is green.
 NIGHTLY_SIGNAL_SERVER ?= $(GITHUB_SERVER_URL)
 NIGHTLY_SIGNAL_API    ?= $(if $(NIGHTLY_SIGNAL_SERVER),$(NIGHTLY_SIGNAL_SERVER)/api/v1,)
 NIGHTLY_SIGNAL_REPO   ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_REPOSITORY),jeremyhahn/go-qrdb)
 NIGHTLY_SIGNAL_REF    ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
-NIGHTLY_SIGNAL_FIPS   ?= failure
 NIGHTLY_SIGNAL_TRIVY  ?= failure
 
 # REPORT MODE HERE, deliberately. devops.md §4 says CI runs the same target a
@@ -2559,7 +2558,6 @@ nightly-signal: ## Report what the nightly signal would open, update or close
 		-api $(NIGHTLY_SIGNAL_API) \
 		-ref $(NIGHTLY_SIGNAL_REF) \
 		-self signal \
-		-job "fips=FIPS 140-3=$(NIGHTLY_SIGNAL_FIPS)" \
 		-job "trivy=Trivy=$(NIGHTLY_SIGNAL_TRIVY)"
 
 # The decision table, the coverage floor and the rendering, over the REAL

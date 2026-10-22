@@ -12,14 +12,16 @@ This document records how go-qrdb is verified against the Go Cryptographic
 Module, the remediation on its cryptographic paths, the exemption register for
 anything that is deliberately not clean, and, in
 [Open blockers](#open-blockers), what remains. **Both modules' suites pass
-under `fips140=only`, and the gate is not armed**, so do not read this document
-as a compliance claim: an unarmed job's result is a measurement, not an
-enforceable property. What arming waits on is in
-[Arming the gate](#arming-the-gate).
+under `fips140=only`, and the `fips` job is a required check in ci.yml's full
+tier**: every push to `main` runs it and `ci-gate` fails when it fails. That is
+an enforced property of the tree on `main`, not a compliance claim about the
+product; where the gate sits and why is in [Arming the gate](#arming-the-gate).
 
 ## The job
 
-The `FIPS 140-3` job in `.github/workflows/nightly.yml` executes the full unit
+ci.yml's `fips` job (`FIPS 140-3`) runs in the full tier — every push to
+`main`, every `workflow_dispatch`, and a pull request labelled `ci:full` — in
+the one toolchain image `docker-build` produces, and executes the full unit
 suite of **both modules** under:
 
 ```
@@ -27,8 +29,6 @@ GOFIPS140=latest GODEBUG=fips140=only go build ./...
 GOFIPS140=latest GODEBUG=fips140=only make test
 GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
-
-The workflow has no `schedule:` trigger; it runs on `workflow_dispatch`.
 
 The `go build ./...` line runs in the **root module only**: the job has no
 build step for `sdk/go`. The SDK is compiled under the FIPS module only as far
@@ -62,11 +62,8 @@ The sdk step runs even when the root suite fails (`if: always()`), so a red
 root module still yields an SDK measurement. Either module failing fails the
 job.
 
-The job is **not** in `ci-gate`'s `needs` and is therefore not a required
-check. No finding keeps it red (see [Measured status](#measured-status)), so
-what is left is a decision rather than a blocker;
-[Arming the gate](#arming-the-gate) states it and the change that makes the
-job required.
+The job is in `ci-gate`'s `needs`, so a red `fips` turns CI Gate red; see
+[Arming the gate](#arming-the-gate).
 
 To reproduce a CI failure locally, prefix the same commands:
 
@@ -405,9 +402,11 @@ it is reachable from the code as well as from here.
 
 **Read this before describing go-qrdb as FIPS 140-3 clean.** Both modules'
 suites pass under `fips140=only` (see [Measured status](#measured-status)), and
-the job is **not a required check**. Do not present it as an enforceable
-compliance gate until it is armed; see [Arming the gate](#arming-the-gate).
-Until then it measures; it is not a claim of compliance.
+the job is a required check in ci.yml's full tier (see [Arming the
+gate](#arming-the-gate)). What it enforces is that no unit test of either
+module reaches a primitive outside the FIPS 140-3 boundary on `main`; it is not
+a claim of compliance, which covers the deployed build, its configuration and
+the validated module, not a test run.
 
 **No finding stands between the job and green**, but the Noise finding is
 closed in this repository, not upstream. go-truststrap's `pkg/noiseproto` still
@@ -415,9 +414,9 @@ performs the Noise_NK handshake over X25519; `pkg/clusterenroll` does not reach
 it when `crypto/fips140.Enabled()`, and the P-256 suite enrolls in its place
 ([X25519 — Noise NK enrollment](#x25519--noise-nk-enrollment-replaced-by-the-p-256-suite-in-fips-mode)).
 
-A test fixture that reintroduces a prohibited primitive turns the job red, and
-the job runs only when dispatched, so nothing reports the regression until
-someone runs it. **Re-measure before quoting [Measured status](#measured-status).**
+A test fixture that reintroduces a prohibited primitive turns the job red on
+the next full-tier run, which every push to `main` is. **Re-measure before
+quoting [Measured status](#measured-status).**
 
 ### Noise refused at run time, not compiled out
 
@@ -509,40 +508,33 @@ GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'crypto/ecdh: use
 
 ### Arming the gate
 
-**No finding blocks arming; the job is deliberately not armed.** It waits on a
-stability record.
+**The `fips` job is armed: it is a required check in ci.yml's full tier.** It
+carries the full-tier `if:` every full-tier job repeats, is in `ci-gate`'s
+`needs` with `RESULT_FIPS` in its `env` block, and `ci-gate` calls
+`check fips "$RESULT_FIPS" full`. `test/buildgates/ci_tiers_test.go` pins
+`fips` to the full tier, refuses it tagged `pr`, and runs the gate's script to
+prove that a failed, cancelled or skipped `fips` on a full-tier run turns the
+gate red.
 
-- **One green run is not a track record.** A check made required on its first
-  pass starts being bypassed the first time it fails for a reason nobody can
-  attribute, and a bypassed gate is worse than none.
-- **The job is the wrong shape for a pull-request check.** It runs `make test`
-  under the race detector with a 60-minute timeout. Armed per pull request, its
-  slowest run is added to every pull request; armed in the full tier, to every
-  push to `main`.
+**Why the full tier and not every pull request.** The job rebuilds the tree
+against the FIPS module and reruns both unit suites under `-race`, so it costs
+what `image`'s unit stages cost again, on top of them. A pull request's
+pipeline is held to one hour and already runs those suites once without the
+FIPS module; a second pass does not fit. The full tier runs on every push to
+`main` and every `workflow_dispatch`, and a pull request labelled `ci:full`
+runs it before merge, so a FIPS regression is caught on the commit that
+introduces it rather than whenever someone thinks to look.
 
-**The record: fourteen consecutive green runs on `main`.** Not runs on a
-branch: the record counts the thing being required.
-
-- **The record must exclude a flake, and this suite is where one would hide.**
-  It runs long race-detector packages under `fips140=only`. A defect that fails
-  one run in ten survives five consecutive runs unseen about 59% of the time and
-  fourteen about 23%.
-- **Fourteen runs span a moving tree.** They test whether the job survives
-  other merges, not one tree's determinism.
-
-Arming is four edits, made together when the record is in:
-
-1. Move the job from `.github/workflows/nightly.yml` into
-   `.github/workflows/ci.yml`, with the full-tier `if:` unless it is armed per
-   pull request.
-2. Add `fips` to `ci-gate`'s `needs`.
-3. Add `RESULT_FIPS: ${{ needs.fips.result }}` to `ci-gate`'s `env` block.
-4. Add `check fips "$RESULT_FIPS" <pr|code|full>` to its loop.
-
-`test/buildgates/ci_tiers_test.go` refuses a `ci-gate` job whose `needs`,
-`RESULT_` variables and `check` lines disagree. Until the job is armed, a FIPS
-job that can pass and is not required is a fail-open gate, carried
-deliberately for the length of the record.
+**What a red means.** A failed `fips` on `main` means some unit test of either
+module reached a primitive the FIPS 140-3 module rejects under
+`fips140=only`, or the tree no longer builds with `GOFIPS140=latest`. It is a
+finding, handled by [Handling a failure](#handling-a-failure): fix the call
+site, isolate a protocol-mandated primitive and register it, or fix the
+fixture. `main` is red until that lands, and the commit that introduced it is
+reverted through a pull request if the fix is not immediate. Setting
+`fips140=on`, `continue-on-error`, a skip tag, or a narrower package list is
+the forbidden response in every case: each produces a green gate that tests
+less.
 
 ## See Also
 

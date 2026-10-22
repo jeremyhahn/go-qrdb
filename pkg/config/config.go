@@ -194,11 +194,10 @@ type TransportConfig struct {
 	// DefaultTransportMaxMessageBytes.
 	MaxMessageBytes int `yaml:"max_message_bytes"`
 
-	// MaxConnsPerPeer bounds the number of concurrent TCP connections a
-	// single remote IP may hold open against a TCP listener: the gRPC
-	// data-plane listener and the MCP HTTP listener. The Unix domain
-	// socket and the native QUIC transport (which bounds concurrent
-	// streams per connection instead, see MaxStreamsPerConn) are
+	// MaxConnsPerPeer bounds the number of concurrent connections a
+	// single remote IP may hold open against each network listener: the
+	// REST HTTP/2 listener, the gRPC data-plane listener, the native QUIC
+	// listener and the MCP HTTP listener. The Unix domain socket is
 	// unaffected. Zero means "unconfigured" and resolves to
 	// DefaultTransportMaxConnsPerPeer; a negative value is an explicit
 	// opt-out and means unlimited.
@@ -707,8 +706,8 @@ type RaftConfig struct {
 	// than forming a new one.
 	Join bool `yaml:"join"`
 
-	// SnapshotEntries controls how often automatic snapshots are taken.
-	// 0 disables automatic snapshots.
+	// SnapshotEntries is the number of applied entries between automatic
+	// snapshots. 0 uses the go-quicraft default of 100000 entries.
 	SnapshotEntries uint64 `yaml:"snapshot_entries"`
 
 	// CompactionOverhead is the number of log entries to keep after
@@ -764,7 +763,8 @@ type RaftConfig struct {
 
 // StorageConfig configures the storage backend.
 type StorageConfig struct {
-	// Backend selects the storage engine: "pebble" or "memory".
+	// Backend selects the storage engine: "pebble", "memory", "file" or
+	// "objstore". Empty means "pebble".
 	Backend string `yaml:"backend"`
 
 	// CacheSize is the PebbleDB block cache size in bytes.
@@ -1027,17 +1027,15 @@ type DiscoveryConfig struct {
 // platform's policy -- both replicated records set through the API, never a
 // node's configuration (see docs/key-value/).
 type MVCCConfig struct {
-	// Enabled toggles the MVCC service. Nil means enabled (in raft
-	// mode). Explicitly setting true under mode "standalone" is a
-	// validation error: MVCC requires mode "raft".
+	// Enabled toggles the MVCC service in either mode. Nil means
+	// enabled.
 	Enabled *bool `yaml:"enabled"`
 }
 
 // WatchConfig configures the real-time watch notification system.
 type WatchConfig struct {
-	// Enabled toggles the watch service. Nil means enabled (in raft
-	// mode). Explicitly setting true under mode "standalone" is a
-	// validation error: watch requires mode "raft".
+	// Enabled toggles the watch service in either mode. Nil means
+	// enabled.
 	Enabled *bool `yaml:"enabled"`
 
 	// BufferSize is the per-watcher event channel buffer size. Larger
@@ -1051,9 +1049,8 @@ type WatchConfig struct {
 
 // LeaseConfig configures the distributed lease management system.
 type LeaseConfig struct {
-	// Enabled toggles the lease service. Nil means enabled (in raft
-	// mode). Explicitly setting true under mode "standalone" is a
-	// validation error: lease requires mode "raft".
+	// Enabled toggles the lease service in either mode. Nil means
+	// enabled.
 	Enabled *bool `yaml:"enabled"`
 
 	// MinTTL is the minimum lease TTL in seconds that the server
@@ -1453,8 +1450,9 @@ type PeerAdminEntry struct {
 // CORSConfig configures Cross-Origin Resource Sharing for the REST API,
 // enabling browser-based access.
 type CORSConfig struct {
-	// AllowedOrigins is the list of allowed request origins.
-	// Default: ["*"].
+	// AllowedOrigins is the list of allowed request origins; ["*"] admits
+	// any origin. Default: none, which turns CORS off: the REST server
+	// sends no CORS headers.
 	AllowedOrigins []string `yaml:"allowed_origins"`
 
 	// AllowedHeaders is the list of allowed request headers.
@@ -1889,7 +1887,6 @@ func DefaultConfig() *Config {
 			RevocationCacheTTL: DefaultRevocationCacheTTLString,
 		},
 		CORS: CORSConfig{
-			AllowedOrigins: []string{"*"},
 			AllowedHeaders: []string{"Authorization", "Content-Type"},
 			MaxAge:         3600,
 		},

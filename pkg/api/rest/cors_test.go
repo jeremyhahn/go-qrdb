@@ -275,3 +275,37 @@ func TestWithCORS_IntegrationWithServer(t *testing.T) {
 		t.Fatalf("expected *, got %q", got)
 	}
 }
+
+func TestWithCORS_ServerPreflightListedOriginOnly(t *testing.T) {
+	tlsCfg, pool := generateTestTLSConfig(t)
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, dualStackAddr(t), WithTLS(tlsCfg), WithCORS(CORSConfig{
+		AllowedOrigins: []string{"https://app.example.com"},
+		AllowedHeaders: []string{"Authorization"},
+		MaxAge:         600,
+	}))
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+	}}
+	defer client.CloseIdleConnections()
+
+	for origin, want := range map[string]string{
+		"https://app.example.com":  "https://app.example.com",
+		"https://evil.example.com": "",
+	} {
+		req, _ := http.NewRequest(http.MethodOptions, "https://"+srv.Addr()+"/health", nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != want {
+			t.Errorf("origin %s: Access-Control-Allow-Origin = %q, want %q", origin, got, want)
+		}
+	}
+}

@@ -192,6 +192,11 @@ const (
 	PermissionAuditStream = permission.AuditStream
 )
 
+// PermissionAuditDelete is the audit-delete verb ("audit:delete"): deleting
+// audit events under retention administration. The SO and Admin built-in
+// roles hold it; the Auditor role does not.
+const PermissionAuditDelete = permission.AuditDelete
+
 // ---------------------------------------------------------------------------
 // Permission scope types and registration
 //

@@ -1875,10 +1875,25 @@ func (s *Server) wireModuleTenantTargetAuthorizers() {
 	}
 }
 
+// ModuleStartError is returned by Start when a registered ServiceModule fails
+// to start. It names the module and wraps the module's own error.
+type ModuleStartError struct {
+	Module string
+	Err    error
+}
+
+// Error implements the error interface.
+func (e *ModuleStartError) Error() string {
+	return "server: module " + strconv.Quote(e.Module) + " failed to start: " + e.Err.Error()
+}
+
+// Unwrap returns the module's error for errors.Is/As.
+func (e *ModuleStartError) Unwrap() error { return e.Err }
+
 func (s *Server) startModules() error {
 	for _, m := range s.opts.modules {
 		if err := m.Start(context.Background()); err != nil {
-			return fmt.Errorf("server: module %q failed to start: %w", m.Name(), err)
+			return &ModuleStartError{Module: m.Name(), Err: err}
 		}
 	}
 	return nil
@@ -2203,6 +2218,9 @@ func (s *Server) startREST() error {
 	}
 	if gw := s.grpcWebConfig(); gw.Enabled {
 		restOpts = append(restOpts, rest.WithGRPCWeb(gw, http.HandlerFunc(s.serveGRPCWeb)))
+	}
+	if cors, ok := s.restCORS(); ok {
+		restOpts = append(restOpts, rest.WithCORS(cors))
 	}
 
 	if s.opts.sealedWindowListener {

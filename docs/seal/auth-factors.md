@@ -1,6 +1,6 @@
 # Authentication Factor Framework
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -21,23 +21,24 @@ go-qrdb/pkg/authfactors/      <-- THIS PACKAGE
   ├─ factors.go               Factor interface, EnrollParams, Enrollment, Challenge, Response
   ├─ registry.go              FactorRegistry (name -> Factor lookup, safe for concurrent use)
   ├─ ids.go                   NewEnrollmentID / NewChallengeID (UUID v4)
-  └─ errors.go                Typed errors: FactorNotFoundError, FactorAlreadyRegisteredError, ...
+  ├─ errors.go                Typed errors: FactorNotFoundError, FactorAlreadyRegisteredError, ...
+  └─ mtls/                    the software mTLS factor (Name "mtls")
 
 go-xkms (downstream, optional)
   └─ pkg/authfactors/
      ├─ fido2/                CTAP2 / WebAuthn factor
      ├─ piv/                  NIST SP 800-73-4 PIV smart-card factor
      └─ pkcs11/               PKCS#11 / Cryptoki HSM factor
-     Each ships a struct implementing Factor and a NewXxxFactor() constructor;
-     callers register them with WithFactorRegistry on the qrdb server constructor.
+     Each ships a type implementing Factor; the composer registers it in a
+     FactorRegistry and passes the registry with server.WithFactorRegistry.
 ```
 
-The hardware sub-packages (`fido2/`, `piv/`, `pkcs11/`) that previously lived under `go-qrdb/pkg/authfactors/` have been deleted. They are no longer part of qrdb. See the [composition flow](#composition-flow) below for how go-quicbaas wires the xkms-supplied factors into qrdb at startup.
+qrdb ships no hardware factor. See the [composition flow](#composition-flow) below for how a composer wires the xkms-supplied factors into qrdb at startup.
 
 ## Factor Interface
 
 ```go
-// pkg/authfactors/factors.go:29-46
+// pkg/authfactors/factors.go:30-47
 type Factor interface {
     Name() string                                                                          // "fido2", "piv", "pkcs11", "mtls", ...
     Enroll(ctx context.Context, params *EnrollParams) (*Enrollment, error)
@@ -82,11 +83,11 @@ type Response struct {
 }
 ```
 
-See `pkg/authfactors/factors.go:48-143` for the canonical wire-type definitions and field-by-field encoding rules per factor.
+See `pkg/authfactors/factors.go:71-192` for the canonical wire-type definitions and field-by-field encoding rules per factor.
 
 ## FactorRegistry
 
-`FactorRegistry` (`pkg/authfactors/registry.go:31-109`) is the canonical name -> `Factor` lookup. It is safe for concurrent use: `Register` / `Unregister` take a short write lock; `Lookup` / `List` / `All` take a short read lock.
+`FactorRegistry` (`pkg/authfactors/registry.go`) is the canonical name -> `Factor` lookup. Names are case-insensitive (`NormalizeName` lower-cases them). It is safe for concurrent use: `Register` / `Unregister` take a short write lock; `Lookup` / `List` / `All` take a short read lock.
 
 ```go
 type FactorRegistry struct { ... }
@@ -101,26 +102,23 @@ func (r *FactorRegistry) All() []Factor                       // lexicographic-b
 
 ## Composition flow
 
-qrdb is composed with whatever factor set the deployment needs. The typical path through go-quicbaas:
+qrdb is composed with whatever factor set the deployment needs. The composer (go-quicbaas, for one) builds the registry:
 
 ```mermaid
 sequenceDiagram
-    participant App as quicbaas main
+    participant App as composer main
     participant Reg as authfactors.FactorRegistry
     participant XKMS as go-xkms factor pkgs
     participant QRDB as qrdb server
     App->>Reg: NewFactorRegistry()
-    App->>Reg: Register(softwareMTLSFactor)
-    App->>XKMS: xkms.RegisterFactors(Reg) (when hardware available)
-    XKMS->>Reg: Register(NewFIDO2Factor())
-    XKMS->>Reg: Register(NewPIVFactor())
-    XKMS->>Reg: Register(NewPKCS11Factor(...))
-    App->>QRDB: server.New(cfg, ..., WithFactorRegistry(Reg))
+    App->>XKMS: build the hardware factors (when hardware is available)
+    XKMS->>Reg: Register(factor), once per factor
+    App->>QRDB: server.New(cfg, kvSvc, adminSvc, server.WithFactorRegistry(Reg))
     Note over QRDB: ceremony, custodian, and SDK auth surfaces
     Note over QRDB: resolve factors by name via Reg.Lookup
 ```
 
-Server option: `pkg/server/server.go:497-503`
+Server option: `pkg/server/server.go:1239-1241`
 
 ```go
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
@@ -128,7 +126,7 @@ func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 }
 ```
 
-When `WithFactorRegistry` is not supplied, qrdb falls back to a registry containing only the software mTLS reference factor — enough to ship a fully-functional software-only ceremony, but obviously not enough to satisfy a FIPS-grade custodian deployment.
+The registry starts empty; qrdb registers no default factor. When `WithFactorRegistry` is supplied and no `WithAuthFactorService` is, the server builds a `service.AuthFactorServicer` from the registry, so every transport serves enrollment, challenge and verify; that needs `WithTenantStoreResolver` too, and the server refuses to start without it (`ErrAuthFactorTenantRoutingRequired`). Without a registry there is no auth-factor service, and share-holder factor resolution (`ceremony.HolderDeps`) still finds the software `mtls` factor by name: enough for a software-only ceremony, not for a FIPS-grade custodian deployment.
 
 ## Extension points
 
@@ -165,7 +163,7 @@ srv := server.New(cfg, kvSvc, adminSvc, server.WithFactorRegistry(reg))
 
 - [../auth/roles.md](../auth/roles.md) — roles, and why a key custodian is a share holder rather than a role
 - [shamir-custody](../shamir-custody/) — share holders and the factors that authenticate their quorum submissions
-- [../ceremony/README.md](../ceremony/architecture.md) — How the ceremony consumes factors during enrolment
+- [../ceremony/architecture.md](../ceremony/architecture.md) — How the ceremony consumes factors during enrolment
 - [go-xkms docs](https://github.com/jeremyhahn/go-xkms/tree/main/docs/authfactors) — Hardware factor implementations (FIDO2, PIV, PKCS#11) with attestation
 - [NIST SP 800-73-4](https://csrc.nist.gov/publications/detail/sp/800-73/4/final) — PIV standard
 - [PKCS#11 v2.40](http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/os/pkcs11-base-v2.40-os.html) — Cryptoki standard

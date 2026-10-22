@@ -75,7 +75,7 @@ The guarantee differs by backend:
 | Backend | Encrypted at rest | What stays visible on disk |
 |---|---|---|
 | `pebble` | every file: sstables, WAL, manifest, options | file count and sizes |
-| `file` | every record file and the commit journal, key and value alike | the number of records and each record's size; file names are SHA-256 digests of the keys, so they reveal no key; the format marker (version and whether the store is encrypted) |
+| `file` | every record file and the commit journal, key and value alike | the number of records and each record's size; file names are HMAC-SHA-256 tags of the keys under a key the barrier encrypts, so no name can be matched to a guessed key; the format marker (version and whether the store is encrypted) |
 | `objstore` | — (no file system for the barrier to encrypt) | values and object names, which encode the keys; a standalone `storage.backend: objstore` is not encrypted and the daemon warns at start |
 | `memory` | — | nothing is written |
 
@@ -128,6 +128,13 @@ does.
 be opened encrypted"** (or the reverse). The data directory was written with
 the seal in the other state. See "At-rest encryption" above; the engine
 refuses rather than mix the two.
+
+**A `file` store refused to open, saying its "format version 3 does not match
+this build's 4".** The engine reads format version 4 only, and there is no
+migration between on-disk formats. Start the store in an empty directory: a raft
+replica rebuilds from the cluster over raft's restore. A `file`-backed backup is
+in the format of the binary that wrote it, so a version-3 one is refused the same
+way; see [../backup-restore/user.md](../backup-restore/user.md).
 
 **The server would not start, complaining about a directory.** Backing
 directories are opened at startup, not lazily at first write, so a permissions

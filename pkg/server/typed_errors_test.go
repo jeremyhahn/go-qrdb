@@ -387,12 +387,30 @@ func TestServer_StartModules_StopsAtTheFirstError(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Errorf("error does not wrap the module's own: %v", err)
 	}
-	if !strings.Contains(err.Error(), "second") {
-		t.Errorf("error = %q, want it to name the failing module", err)
+	var mse *ModuleStartError
+	if !errors.As(err, &mse) || mse.Module != "second" {
+		t.Errorf("error = %#v, want a *ModuleStartError naming the failing module", err)
 	}
 	want := []string{"start:first", "start:second"}
 	if !slices.Equal(events, want) {
 		t.Errorf("events = %v, want %v: a module after the failure must not be started", events, want)
+	}
+}
+
+func TestModuleStartError_Message(t *testing.T) {
+	err := &ModuleStartError{Module: "billing", Err: errors.New("port in use")}
+	if got, want := err.Error(), `server: module "billing" failed to start: port in use`; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestModuleStartError_UnwrapsTheModuleError(t *testing.T) {
+	err := error(&ModuleStartError{Module: "billing", Err: io.ErrUnexpectedEOF})
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("errors.Is(%v, io.ErrUnexpectedEOF) = false, want true", err)
+	}
+	if errors.Unwrap(err) != io.ErrUnexpectedEOF {
+		t.Errorf("Unwrap() = %v, want io.ErrUnexpectedEOF", errors.Unwrap(err))
 	}
 }
 

@@ -193,7 +193,8 @@
 # (schedule + workflow_dispatch): both were known-red on every push (fips:
 # tracked per-repo fips140=only issues; trivy: undiagnosed install failure),
 # and a known-red job burning 60-90 runner-minutes per push verifies
-# nothing. The gate now distinguishes SKIP (upstream stage failed) from
+# nothing. (go-qrdb, #20: fips is back, as a required full-tier job; see the
+# `fips` job.) The gate now distinguishes SKIP (upstream stage failed) from
 # FAIL, both failing closed — this supersedes v1.8.1's lint-decoupling,
 # whose silent-skip hazard is closed at the source (pinned linter) and in
 # the gate (named skips).
@@ -903,6 +904,170 @@ jobs:
         if: always()
         run: make integration-down INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}" || true
 
+  # CUSTOMIZE (go-qrdb, #20): FIPS 140-3, a required gate on the full tier
+  # (security-review.md §6, docs/seal/fips140-mode.md). The whole unit suite,
+  # both modules, race-enabled, built against the Go Cryptographic Module and
+  # run under GODEBUG=fips140=only. Full tier because the suite takes 18 to 35
+  # minutes under fips140=only and a plain PR does not pay for that; main pays
+  # on every push and every dispatch, so the run that introduces non-approved
+  # cryptography on a tested path turns CI Gate red on main and is reverted
+  # through a PR like any other full-tier red.
+  #
+  # GOFIPS140 selects the module at BUILD time; GODEBUG selects the
+  # enforcement level at RUN time, and both are needed. "only" rather than
+  # "on": "on" loads the module but still PERMITS non-approved algorithms, so
+  # a regulated path using MD5, SHA-1 or GCM with a caller-chosen IV passes
+  # silently and the gate reports green on exactly the thing it exists to
+  # catch. "only" makes those operations error or panic. Ratified by the owner
+  # 2026-08-17; see ../handbook/software/conventions/configuration.md §5.
+  #
+  # The two settings ride in each stage's command (FIPS_ENV), not in the job
+  # environment: in-toolchain-image.sh forwards a fixed environment to the
+  # container, and on the runner they would reach only the host's own Go
+  # programs (the docker CLI), which are not under test.
+  #
+  # A red here IS the finding: something on a tested path is using
+  # non-approved cryptography. Fix the call site, or -- when an external
+  # format mandates the primitive -- isolate it and record a cited exemption
+  # in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
+  # continue-on-error, add a build tag that skips a package, or narrow the
+  # package list.
+  fips:
+    name: FIPS 140-3
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    needs: [docker-build]
+    # The race-enabled suite under fips140=only is what takes the time; 90
+    # minutes holds both modules with each under its 60m package budget.
+    timeout-minutes: 90
+    env:
+      FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1 (Company Agent m605 item 8): mask the forge credentials before
+      # any other step. The runner injects them as plain environment
+      # (dependency-resolution.md §6), which the log does not mask by itself,
+      # and the token sits inside GIT_CONFIG_KEY_0's URL, so it is masked alone
+      # as well.
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # docker-build built the toolchain image, on this daemon when this job
+      # landed on its runner; a daemon that lacks the content-hashed tag
+      # builds it here, as the image job does.
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+              for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+                if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+              done )
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+            rm -f "$RUNNER_TEMP/gomodauth.env"
+          fi
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      # GODEBUG is a runtime setting and cannot fail a compile, but building
+      # against the module first keeps a genuine build break from being
+      # reported as a test failure.
+      - name: Build all packages against the FIPS module
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV go build ./..."
+
+      # The same targets the unit suites run, with the same build tags. The
+      # scope is deliberately identical: a FIPS job over a subset of the suite
+      # cannot tell you the product is FIPS-clean.
+      #
+      # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
+      # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
+      # iterations, which measured 2.6x on pkg/seal, and pkg/seal has been
+      # killed at exactly 30m (go-qrdb#147). The job ceiling above is 90
+      # minutes, so a 60m package budget cannot outlive the job. This raises a
+      # runaway guard; it does not skip a package, weaken an assertion or
+      # narrow the scope.
+      #
+      # pipefail matters: without it tee's exit status hides a failing suite.
+      - name: Unit tests (race, FIPS 140-only)
+        run: |
+          set -o pipefail
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
+
+      # `sdk/go` IS A SEPARATE GO MODULE (#142): `make test` is
+      # `./pkg/... ./cmd/...` and never reaches the SDK, so without this step
+      # the job is the "FIPS job over a subset of the suite" ruled out above.
+      # `if: always()` is load-bearing: a root-module regression must not stop
+      # the SDK suite from being measured. Both suites run; either failing
+      # fails the job. Its own log file, because the report below parses these
+      # by package and both modules define packages of the same name.
+      - name: Unit tests (race, FIPS 140-only, sdk/go module)
+        if: ${{ always() && env.TOOLCHAIN_IMAGE != '' }}
+        run: |
+          set -o pipefail
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-sdk GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test-sdk.log
+
+      # A per-package timeout panic names whichever test was running when the
+      # alarm fired, NOT the test that consumed the budget. This step lists the
+      # package results and the slowest completed tests of both modules, on
+      # success too, so the trend is visible before the cliff. A missing log
+      # is reported: it means that suite never started.
+      - name: Package results and slowest tests
+        if: always()
+        run: |
+          report() { # report <label> <logfile>
+            label="$1"
+            log="$2"
+            echo "######## ${label} ########"
+            if [ ! -f "$log" ]; then
+              echo "no ${log}: this suite never started -- see the step above" >&2
+              echo
+              return 0
+            fi
+            # Captured into variables rather than piped straight to stdout so
+            # the "nothing parsed" case can actually be reported. A `grep ...
+            # | sort || echo fallback` cannot do that: the pipeline's status is
+            # sort's, which is 0 on empty input, so the fallback is unreachable.
+            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+              "$log" | sort -u || true)
+            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
+              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+              | sort -rn | head -25 || true)
+
+            echo "== package results =="
+            if [ -n "$pkgs" ]; then
+              echo "$pkgs"
+              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+            else
+              echo "(no package result lines parsed -- the suite may have died before any package finished)"
+            fi
+
+            echo
+            echo "== 25 slowest tests that COMPLETED =="
+            echo "A timeout panic names the test holding the alarm, not the one"
+            echo "that spent the budget. These are the candidates that did."
+            if [ -n "$slow" ]; then
+              echo "$slow"
+            else
+              echo "(no completed top-level tests parsed)"
+            fi
+            echo
+          }
+
+          report "root module (./pkg/... ./cmd/...)" fips-test.log
+          report "sdk/go module" fips-test-sdk.log
+
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's
   # npm ci, tsc, npm test (vitest, and the wire contract test pinning the
@@ -1086,8 +1251,8 @@ jobs:
   # is worse than no gate. Do not use join(needs.*.result); it evaluates empty
   # on Gitea and reports success while jobs fail.
   # v1.21: on the ci-gate runners (Company Agent m386: only CI Gate runs there;
-  # a 1-CPU gate runner cannot hold a stage). trivy and fips are in nightly.yml
-  # (v1.9, devops.md §8a: the alpha regime).
+  # a 1-CPU gate runner cannot hold a stage). trivy is in nightly.yml (v1.9,
+  # devops.md §8a: the alpha regime); fips is a full-tier job here (#20).
   ci-gate:
     name: CI Gate
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'ci-gate' }}
@@ -1100,7 +1265,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, docker-build, image, test-typescript, arch-gates, integration-standalone, integration-features, soak]
+    needs: [changes, docker-build, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -1111,6 +1276,7 @@ jobs:
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
+          RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_SOAK: ${{ needs.soak.result }}
           # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
           # PR labelled ci:full. A job marked `full` may be skipped below only
@@ -1168,5 +1334,6 @@ jobs:
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
           # A matrix job's result is success only when every leg succeeded.
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
+          check fips "$RESULT_FIPS" full
           check soak "$RESULT_SOAK" nightly
           exit $BAD

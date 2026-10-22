@@ -69,7 +69,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.BackendsList, permission.BackendsRead,
 	permission.PINRead, permission.PINWrite,
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
-	permission.AuditRead, permission.AuditQuery, permission.AuditVerify, permission.AuditVerifyReplicated,
+	permission.AuditRead, permission.AuditQuery, permission.AuditDelete, permission.AuditVerify, permission.AuditVerifyReplicated,
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.AdminAddMember, permission.AdminRemoveMember,
 	permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
@@ -128,7 +128,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// pkg/permission/cluster_join_token_scope.go).
 	permission.ClusterJoinToken,
 	permission.MVCCRestore,
-	permission.AuditRead, permission.AuditQuery,
+	permission.AuditRead, permission.AuditQuery, permission.AuditDelete,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
 	permission.TenantsReadCross, permission.TenantsDeleteCross, permission.TenantsUpdateCross,
 	// Tenant provisioning, ScopeCross: effective only for system-tenant Admin.

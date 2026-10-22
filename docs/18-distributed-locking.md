@@ -1,6 +1,6 @@
 # Distributed Locking
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -140,11 +140,11 @@ func criticalOperation(key string, token int64) error {
 1. Grant a lease with the specified TTL
 2. Compare-and-Swap: Assert version == 0 (key does not exist) → Put the lock
 3. On success: Return the acquired `Lock`
-4. On failure: Check if the lock is held by the same holder (reentrant case)
-   - If reentrant and same holder: Increment AcquireCount, revoke the new lease, update the existing lock
-   - If held by a different owner: Return `LockHeldError` immediately
+4. On failure: Read the current holder
+   - If the holder ID matches and both the request and the held lock are reentrant: Increment `AcquireCount`, revoke the new lease, update the existing lock
+   - Otherwise: Revoke the new lease and return `LockHeldError` immediately
 
-The compare-and-swap ensures the operation is atomic and recoverable on crash/failure.
+The compare-and-swap makes acquisition atomic. When the transaction returns an error but the key is now bound to the lease this attempt granted, the write committed: `TryLock` returns the lock rather than revoking the lease.
 
 ### Lock (Blocking)
 
@@ -156,36 +156,39 @@ The compare-and-swap ensures the operation is atomic and recoverable on crash/fa
    - Wait for `EventDelete` (indicates the lock was released)
    - On event, retry `TryLock`
    - Loop until acquired or context canceled
+   - If the watch closes, retry `TryLock` once and return its result
 3. On any other error: Return immediately
 
 The watch-based approach is event-driven with no polling overhead. Concurrent waiters are woken by a single delete event and race for the lock, with only one succeeding.
 
 ### Reentrant Locks
 
-When `LockOptions.Reentrant` is true, the same holder can call `Lock` or `TryLock` multiple times:
+When `LockOptions.Reentrant` is true, the same holder can call `Lock` or `TryLock` multiple times. The holder is identified by `HolderID`, so a re-acquisition must pass the same `HolderID` as the first one; an empty `HolderID` gets a fresh UUID and counts as a different holder. Both the request and the held lock must be reentrant.
 
 - Each re-acquisition increments `AcquireCount`
-- The underlying lease is reused (no new lease is granted)
+- The lock keeps its original lease and fencing token; the lease granted for the attempt is revoked
 - The lock must be unlocked the same number of times to fully release
 
 Example:
 
 ```go
 // First acquisition
-lock1, _ := locker.Lock(ctx, LockOptions{
-    Key: "resource",
-    TTL: 10*time.Second,
+lock1, _ := locker.Lock(ctx, lock.LockOptions{
+    Key:       "resource",
+    HolderID:  "worker-1",
+    TTL:       10 * time.Second,
     Reentrant: true,
 })
 // AcquireCount = 1
 
 // Same holder re-acquires
-lock2, _ := locker.Lock(ctx, LockOptions{
-    Key: "resource",
-    TTL: 10*time.Second,
+lock2, _ := locker.Lock(ctx, lock.LockOptions{
+    Key:       "resource",
+    HolderID:  "worker-1",
+    TTL:       10 * time.Second,
     Reentrant: true,
 })
-// AcquireCount = 2
+// AcquireCount = 2, lock2.FencingToken == lock1.FencingToken
 
 // Must unlock twice
 locker.Unlock(ctx, "resource", lock2.FencingToken)  // AcquireCount = 1
@@ -196,7 +199,8 @@ locker.Unlock(ctx, "resource", lock1.FencingToken)  // AcquireCount = 0, lock re
 
 `Unlock` releases the lock identified by a key and fencing token:
 
-1. Validate the fencing token matches the current `ModRevision`
+1. Read the lock and validate the fencing token against the one stored at acquisition
+   - Return `LockNotFoundError` if no lock is held on the key
    - Return `NotLockHolderError` if token is stale
 2. For reentrant locks with `AcquireCount > 1`:
    - Decrement `AcquireCount`
@@ -212,6 +216,7 @@ The compare-and-swap delete catches races where another process modified the loc
 `Extend` refreshes the TTL of an existing lock without releasing it:
 
 1. Read the current lock value and validate the fencing token
+   - Return `LockNotFoundError` if no lock is held on the key
    - Return `NotLockHolderError` if token is stale
 2. Issue a lease keepalive on the underlying lease ID
 3. Return the updated `Lock` with refreshed TTL
@@ -220,412 +225,53 @@ This is useful for long-running operations that may exceed the original TTL.
 
 ## Standalone vs Clustered
 
-| Aspect | Standalone | Clustered |
-|--------|-----------|-----------|
-| **Scope** | Single process | All cluster nodes |
-| **Fault tolerance** | None (lock lost on crash) | Survives minority node failures |
-| **Use case** | Coordinating goroutines, preventing concurrent CLI operations | True distributed coordination, leader election |
-| **Fencing token validity** | Valid for the lifetime of the process | Valid across cluster and persistent restarts |
-| **Consensus required** | No | Yes (all lock operations go through Raft) |
+The semantics are identical in every run mode. In embedded and standalone mode the compare-and-swap and the lease-expiry sweep are local; clustered, both go through Raft. A caller does not change code between them.
 
-In **standalone mode**, locks are stored in an in-memory or file-backed engine without Raft replication. Fencing tokens are based on local MVCC revisions.
+A lock survives a restart in both modes, because its lease is durable: a lock held when the server stops is still held by the same holder afterwards. A standalone node on the file or objstore backend keeps no leases, so every lock verb there is refused with a typed capability error. See [distributed-locks/architecture.md](distributed-locks/architecture.md#standalone-vs-clustered).
 
-In **clustered mode**, locks are replicated through Raft consensus. All acquire, unlock, and extend operations must obtain Raft consensus, ensuring that all cluster nodes agree on lock state. Fencing tokens are based on the global MVCC revision and remain valid across node failures and restarts.
+## API
 
-## REST API
+Every verb is served on REST, gRPC, the Unix socket, QUIC, MCP and the embedded SDK. [distributed-locks/api.md](distributed-locks/api.md) is the contract for each transport: paths and method names, request and response schemas, the `(tenant, database)` scope, and the status and error mapping.
 
-The REST API exposes lock operations as JSON endpoints:
+REST paths are unversioned (`/lock/...`) and served on the REST port, 63002 by default. `ttl` is in seconds and `holder_id` is optional:
 
-### POST /v1/lock/acquire
-
-Blocking lock acquisition.
-
-**Request:**
-```json
-{
-  "key": "resource",
-  "holder_id": "process-123",
-  "ttl": 30,
-  "reentrant": false
-}
-```
-
-**Response** `200 OK`:
-```json
-{
-  "key": "resource",
-  "fencing_token": 42,
-  "lease_id": 10,
-  "holder_id": "process-123",
-  "reentrant": false,
-  "acquire_count": 1,
-  "ttl": 30,
-  "acquired_at": 1704067200
-}
-```
-
-**Error** `409 Conflict` (already held):
-```json
-{
-  "code": "lock_held",
-  "message": "lock: held by other-process on key resource"
-}
-```
-
-**Error** `400 Bad Request`:
-```json
-{
-  "code": "invalid_ttl",
-  "message": "lock: TTL must be positive"
-}
-```
-
-**Example:**
 ```bash
-curl -sk -X POST https://localhost:63002/v1/lock/acquire \
+CURL="curl -s --cert client.pem --key client-key.pem --cacert ca.pem"
+
+# Acquire, blocking until the lock is free
+$CURL -X POST https://db.example.com:63002/lock/acquire \
   -H "Content-Type: application/json" \
-  -d '{
-    "key": "resource",
-    "ttl": 30,
-    "reentrant": true
-  }' | jq .
-```
+  -d '{"key": "resource", "holder_id": "worker-1", "ttl": 30}'
 
-### POST /v1/lock/trylock
-
-Non-blocking lock attempt.
-
-**Request:**
-```json
-{
-  "key": "resource",
-  "holder_id": "process-123",
-  "ttl": 30,
-  "reentrant": false
-}
-```
-
-**Response** `200 OK` (acquired):
-```json
-{
-  "key": "resource",
-  "fencing_token": 42,
-  "lease_id": 10,
-  "holder_id": "process-123",
-  "reentrant": false,
-  "acquire_count": 1,
-  "ttl": 30,
-  "acquired_at": 1704067200
-}
-```
-
-**Error** `409 Conflict` (held by another):
-```json
-{
-  "code": "lock_held",
-  "message": "lock: held by other-process on key resource"
-}
-```
-
-**Example:**
-```bash
-curl -sk -X POST https://localhost:63002/v1/lock/trylock \
+# Try once; 409 when another holder has the lock
+$CURL -X POST https://db.example.com:63002/lock/trylock \
   -H "Content-Type: application/json" \
-  -d '{
-    "key": "resource",
-    "ttl": 30
-  }' | jq .
-```
+  -d '{"key": "resource", "holder_id": "worker-1", "ttl": 30}'
 
-### POST /v1/lock/release
-
-Release a held lock.
-
-**Request:**
-```json
-{
-  "key": "resource",
-  "fencing_token": 42
-}
-```
-
-**Response** `204 No Content` (success, no body)
-
-**Error** `403 Forbidden` (stale token):
-```json
-{
-  "code": "not_lock_holder",
-  "message": "lock: caller is not the lock holder for key resource (expected token 42, actual 43)"
-}
-```
-
-**Error** `404 Not Found` (lock does not exist):
-```json
-{
-  "code": "lock_not_found",
-  "message": "lock: not found for key resource"
-}
-```
-
-**Example:**
-```bash
-curl -sk -X POST https://localhost:63002/v1/lock/release \
+# Extend, then release, with the fencing token from the acquire response
+$CURL -X POST https://db.example.com:63002/lock/extend \
   -H "Content-Type: application/json" \
-  -d '{
-    "key": "resource",
-    "fencing_token": 42
-  }'
-```
-
-### POST /v1/lock/extend
-
-Extend lock TTL.
-
-**Request:**
-```json
-{
-  "key": "resource",
-  "fencing_token": 42
-}
-```
-
-**Response** `200 OK`:
-```json
-{
-  "key": "resource",
-  "fencing_token": 42,
-  "lease_id": 10,
-  "holder_id": "process-123",
-  "reentrant": false,
-  "acquire_count": 1,
-  "ttl": 30,
-  "acquired_at": 1704067200
-}
-```
-
-**Error** `403 Forbidden` (stale token):
-```json
-{
-  "code": "not_lock_holder",
-  "message": "lock: caller is not the lock holder for key resource"
-}
-```
-
-**Error** `404 Not Found`:
-```json
-{
-  "code": "lock_not_found",
-  "message": "lock: not found for key resource"
-}
-```
-
-**Example:**
-```bash
-curl -sk -X POST https://localhost:63002/v1/lock/extend \
+  -d '{"key": "resource", "fencing_token": 42}'
+$CURL -X POST https://db.example.com:63002/lock/release \
   -H "Content-Type: application/json" \
-  -d '{
-    "key": "resource",
-    "fencing_token": 42
-  }' | jq .
+  -d '{"key": "resource", "fencing_token": 42}'
+
+# Status of one lock, and every lock under a prefix
+$CURL 'https://db.example.com:63002/lock/status?key=resource'
+$CURL 'https://db.example.com:63002/lock/list?prefix=resource'
 ```
-
-### GET /v1/lock/status
-
-Query current lock state.
-
-**Query Parameters:**
-- `key` (required): The lock key
-
-**Response** `200 OK` (lock exists):
-```json
-{
-  "key": "resource",
-  "fencing_token": 42,
-  "lease_id": 10,
-  "holder_id": "process-123",
-  "reentrant": false,
-  "acquire_count": 1,
-  "ttl": 30,
-  "acquired_at": 1704067200
-}
-```
-
-**Response** `404 Not Found` (lock does not exist):
-```json
-{
-  "code": "lock_not_found",
-  "message": "lock: not found for key resource"
-}
-```
-
-**Example:**
-```bash
-curl -sk 'https://localhost:63002/v1/lock/status?key=resource' | jq .
-```
-
-### GET /v1/lock/list
-
-List active locks.
-
-**Query Parameters:**
-- `prefix` (optional): Filter locks by key prefix (empty returns all)
-
-**Response** `200 OK`:
-```json
-{
-  "locks": [
-    {
-      "key": "resource-a",
-      "fencing_token": 40,
-      "lease_id": 8,
-      "holder_id": "process-123",
-      "reentrant": false,
-      "acquire_count": 1,
-      "ttl": 30,
-      "acquired_at": 1704067200
-    },
-    {
-      "key": "resource-b",
-      "fencing_token": 42,
-      "lease_id": 10,
-      "holder_id": "process-456",
-      "reentrant": true,
-      "acquire_count": 2,
-      "ttl": 60,
-      "acquired_at": 1704067180
-    }
-  ]
-}
-```
-
-**Example:**
-```bash
-curl -sk 'https://localhost:63002/v1/lock/list?prefix=resource' | jq .
-```
-
-## gRPC API
-
-The gRPC API defines lock methods as protobuf messages. Source: `pkg/api/grpc/proto/qrdbv1/qrdb.proto`
-
-### Methods
-
-| Method | Request | Response |
-|--------|---------|----------|
-| `lock.Acquire` | `LockAcquireRequest` | `LockInfo` |
-| `lock.TryLock` | `LockTryLockRequest` | `LockInfo` |
-| `lock.Release` | `LockReleaseRequest` | `Empty` |
-| `lock.Extend` | `LockExtendRequest` | `LockInfo` |
-| `lock.Status` | `LockStatusRequest` | `LockInfo` |
-| `lock.List` | `LockListRequest` | `LockListResponse` |
-
-All methods include standard gRPC error codes:
-- `OK` (0): Success
-- `INVALID_ARGUMENT` (3): Invalid TTL, empty key
-- `NOT_FOUND` (5): Lock does not exist
-- `ALREADY_EXISTS` (6): Lock held by another holder
-- `FAILED_PRECONDITION` (9): Stale fencing token
-- `CANCELLED` (1): Context canceled
-- `DEADLINE_EXCEEDED` (4): Request timeout
 
 ## CLI Reference
 
-### lock acquire
-
-Blocking lock acquisition.
+`qrdb lock` has one verb per operation. [distributed-locks/cli.md](distributed-locks/cli.md) documents every flag, its default and the `(tenant, database)` scope.
 
 ```bash
-qrdb lock acquire <key> --ttl <seconds> [--holder <id>] [--reentrant] [--timeout <seconds>]
-```
-
-**Options:**
-- `--ttl`: Required. Lock time-to-live in seconds
-- `--holder`: Optional. Holder ID (UUID generated if not provided)
-- `--reentrant`: Flag. Enable reentrant acquisition
-- `--timeout`: Optional. Command timeout (default: 10s)
-
-**Example:**
-```bash
-qrdb lock acquire myresource --ttl 30
+qrdb lock acquire myresource --ttl 30            # blocks; --wait <seconds> bounds the wait
 qrdb lock acquire leader --ttl 60 --holder node-1 --reentrant
-```
-
-### lock trylock
-
-Non-blocking lock attempt.
-
-```bash
-qrdb lock trylock <key> --ttl <seconds> [--holder <id>] [--reentrant]
-```
-
-**Options:**
-- `--ttl`: Required. Lock time-to-live in seconds
-- `--holder`: Optional. Holder ID
-- `--reentrant`: Flag. Enable reentrant acquisition
-
-**Example:**
-```bash
-qrdb lock trylock myresource --ttl 30
-```
-
-### lock release
-
-Release a held lock.
-
-```bash
-qrdb lock release <key> --token <fencing-token>
-```
-
-**Options:**
-- `--token`: Required. The fencing token returned by acquire/trylock
-
-**Example:**
-```bash
-qrdb lock release myresource --token 42
-```
-
-### lock extend
-
-Extend lock TTL.
-
-```bash
-qrdb lock extend <key> --token <fencing-token>
-```
-
-**Options:**
-- `--token`: Required. The fencing token of the held lock
-
-**Example:**
-```bash
+qrdb lock trylock myresource --ttl 30            # fails at once when the lock is held
 qrdb lock extend myresource --token 42
-```
-
-### lock status
-
-Query lock state.
-
-```bash
-qrdb lock status <key>
-```
-
-**Example:**
-```bash
+qrdb lock release myresource --token 42
 qrdb lock status myresource
-```
-
-### lock list
-
-List active locks.
-
-```bash
-qrdb lock list [--prefix <prefix>]
-```
-
-**Options:**
-- `--prefix`: Optional. Filter locks by key prefix
-
-**Example:**
-```bash
-qrdb lock list
 qrdb lock list --prefix resource-
 ```
 
@@ -633,33 +279,33 @@ qrdb lock list --prefix resource-
 
 ### Go SDK
 
-The Go SDK exposes locks through the `LockClient` interface:
+The Go SDK exposes locks through the `transport.LockClient` interface (`sdk/go/transport/client.go`), returned by `Client.Lock()`:
 
 ```go
 type LockClient interface {
-    LockAcquire(ctx context.Context, key, holderID string, ttl time.Duration, reentrant bool) (*Lock, error)
-    LockTryLock(ctx context.Context, key, holderID string, ttl time.Duration, reentrant bool) (*Lock, error)
-    LockRelease(ctx context.Context, key string, fencingToken int64) error
-    LockExtend(ctx context.Context, key string, fencingToken int64) (*Lock, error)
-    LockStatus(ctx context.Context, key string) (*Lock, error)
-    LockList(ctx context.Context, prefix string) ([]*Lock, error)
+    LockAcquire(ctx context.Context, req *LockAcquireRequest) (*LockInfo, error)
+    LockTryLock(ctx context.Context, req *LockAcquireRequest) (*LockInfo, error)
+    LockRelease(ctx context.Context, req *LockReleaseRequest) error
+    LockExtend(ctx context.Context, req *LockExtendRequest) (*LockInfo, error)
+    LockStatus(ctx context.Context, key string) (*LockInfo, error)
+    LockList(ctx context.Context, prefix string) (*LockListResponse, error)
 }
 ```
 
-All methods are safe for concurrent use and respect the context deadline.
+`LockAcquireRequest` carries `Key`, `HolderID`, `TTL` (seconds) and `Reentrant`; `LockReleaseRequest` and `LockExtendRequest` carry `Key` and `FencingToken` (`sdk/go/transport/lock_types.go`).
 
 ### TypeScript SDK
 
-The TypeScript SDK exposes the same interface through the `LockClient` class:
+The TypeScript SDK exposes the same operations through the `LockClient` interface (`sdk/typescript/src/interfaces.ts`), reached as `client.lock`:
 
 ```typescript
 interface LockClient {
-    acquire(key: string, holderID: string, ttl: number, reentrant: boolean): Promise<LockInfo>
-    tryLock(key: string, holderID: string, ttl: number, reentrant: boolean): Promise<LockInfo>
-    release(key: string, fencingToken: number): Promise<void>
-    extend(key: string, fencingToken: number): Promise<LockInfo>
+    acquire(req: LockAcquireRequest): Promise<LockInfo>
+    tryLock(req: LockAcquireRequest): Promise<LockInfo>
+    release(req: LockReleaseRequest): Promise<void>
+    extend(req: LockExtendRequest): Promise<LockInfo>
     status(key: string): Promise<LockInfo | null>
-    list(prefix?: string): Promise<LockInfo[]>
+    list(prefix?: string): Promise<LockListResponse>
 }
 ```
 
@@ -683,64 +329,68 @@ All transports implement the full lock API:
 ```go
 import (
     "context"
-    "fmt"
-    "time"
+    "log"
 
     sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+    "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+    "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
 )
 
 func main() {
-    client, _ := sdk.NewClient(sdk.WithTransport("grpc"))
+    t, err := grpc.New(
+        transport.WithAddress("db.example.com:63003"),
+        transport.WithTLS("client.pem", "client-key.pem", "ca.pem"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    client, err := sdk.NewClient(t)
+    if err != nil {
+        log.Fatal(err)
+    }
     defer client.Close()
 
     ctx := context.Background()
-    lock, err := client.Lock().LockAcquire(ctx, "myresource", "", 30*time.Second, false)
+    l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{Key: "myresource", TTL: 30})
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
-    defer client.Lock().LockRelease(ctx, "myresource", lock.FencingToken)
+    defer client.Lock().LockRelease(ctx, &transport.LockReleaseRequest{Key: "myresource", FencingToken: l.FencingToken})
 
-    fmt.Println("Critical section protected by lock")
-    // Perform critical work...
+    // Critical section, protected by the lock.
 }
 ```
 
 ### Leader Election
 
+`LockAcquire` blocks until the lock is free, so a node waits for leadership by acquiring and keeps it by extending well inside the TTL:
+
 ```go
-func leaderElection(nodeID string) error {
-    client, _ := sdk.NewClient(sdk.WithTransport("grpc"))
-    defer client.Close()
-
-    ctx := context.Background()
-
-    for {
-        // Try to acquire leader lock
-        lock, err := client.Lock().LockTryLock(ctx, "leader", nodeID, 60*time.Second, false)
-        if err != nil {
-            // Another node is leader; wait for release
-            watchLock(ctx, client)
-            continue
-        }
-
-        fmt.Println("I am the leader")
-        runLeaderTasks(ctx, client, lock)
-
-        // Release on exit
-        _ = client.Lock().LockRelease(ctx, "leader", lock.FencingToken)
-        break
+func runAsLeader(ctx context.Context, client *sdk.Client, nodeID string) error {
+    l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{
+        Key: "leader", HolderID: nodeID, TTL: 60,
+    })
+    if err != nil {
+        return err
     }
+    defer client.Lock().LockRelease(context.Background(), &transport.LockReleaseRequest{
+        Key: "leader", FencingToken: l.FencingToken,
+    })
 
-    return nil
-}
-
-func watchLock(ctx context.Context, client sdk.Client) {
-    watcher, _ := client.Watch().Watch(ctx, "__sys:lock/leader")
-    defer watcher.Close()
-
-    for range watcher.Events() {
-        // Lock released, retry
-        return
+    ticker := time.NewTicker(20 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-ticker.C:
+            // An error here means leadership is lost: stop leader work.
+            if _, err := client.Lock().LockExtend(ctx, &transport.LockExtendRequest{
+                Key: "leader", FencingToken: l.FencingToken,
+            }); err != nil {
+                return err
+            }
+        }
     }
 }
 ```
@@ -748,26 +398,15 @@ func watchLock(ctx context.Context, client sdk.Client) {
 ### Resource Coordination with Fencing Token Validation
 
 ```go
-type DatabaseConnection struct {
-    client sdk.Client
-    lock *Lock
-}
-
-func (db *DatabaseConnection) ExecuteWithLock(ctx context.Context, query string) error {
-    lock, err := db.client.Lock().LockAcquire(ctx, "db-write", "", 10*time.Second, false)
+func executeWithLock(ctx context.Context, client *sdk.Client, query string) error {
+    l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{Key: "db-write", TTL: 10})
     if err != nil {
         return err
     }
-    defer db.client.Lock().LockRelease(ctx, "db-write", lock.FencingToken)
+    defer client.Lock().LockRelease(ctx, &transport.LockReleaseRequest{Key: "db-write", FencingToken: l.FencingToken})
 
-    // Attach fencing token to the query metadata
-    return db.execute(ctx, query, lock.FencingToken)
-}
-
-func (db *DatabaseConnection) execute(ctx context.Context, query string, token int64) error {
-    // Upstream service validates token before accepting query
-    // (prevents executing with stale lock knowledge)
-    return db.executeInternal(ctx, query, token)
+    // The downstream service rejects a token lower than the highest it has seen.
+    return execute(ctx, query, l.FencingToken)
 }
 ```
 
@@ -777,57 +416,47 @@ func (db *DatabaseConnection) execute(ctx context.Context, query string, token i
 import { RestClient } from "@qrdb/sdk";
 
 async function main() {
-    const client = new RestClient("https://localhost:63002");
-    
+    const client = new RestClient("https://db.example.com:63002");
+
+    const lock = await client.lock.acquire({ key: "myresource", ttl: 30 });
     try {
-        // Acquire lock
-        const lock = await client.lock.acquire("myresource", "", 30, false);
-        console.log("Lock acquired:", lock.fencingToken);
-
-        // Do work...
-        await doImportantWork();
-
-        // Release lock
-        await client.lock.release("myresource", lock.fencingToken);
-    } catch (err) {
-        console.error("Lock error:", err.message);
+        await doImportantWork(lock.fencingToken);
+    } finally {
+        await client.lock.release({ key: "myresource", fencing_token: lock.fencingToken });
     }
 }
 ```
 
 ## Error Handling
 
-Errors returned by lock operations are typed for proper error handling:
+The lock service returns typed errors. [distributed-locks/api.md](distributed-locks/api.md#status-and-error-mapping) maps every failure on every transport.
 
 | Error | HTTP | gRPC | Description |
 |-------|------|------|-------------|
-| `LockHeldError` | `409 Conflict` | `ALREADY_EXISTS` | Lock held by another holder |
-| `NotLockHolderError` | `403 Forbidden` | `FAILED_PRECONDITION` | Stale fencing token on unlock/extend |
+| `LockHeldError` | `409 Conflict` | `ABORTED` | `trylock` on a lock held by another holder |
+| `NotLockHolderError` | `403 Forbidden` | `PERMISSION_DENIED` | Stale fencing token on unlock/extend |
 | `LockNotFoundError` | `404 Not Found` | `NOT_FOUND` | Key not currently locked |
-| `ErrEmptyKey` | `400 Bad Request` | `INVALID_ARGUMENT` | Lock key is empty |
-| `ErrInvalidTTL` | `400 Bad Request` | `INVALID_ARGUMENT` | TTL must be positive |
+| `ErrEmptyKey` | `500 Internal Server Error` | `INTERNAL` | Lock key is empty (unclassified) |
+| `ErrInvalidTTL` | `500 Internal Server Error` | `INTERNAL` | TTL is not positive (unclassified) |
 
-Example error handling:
+The embedded transport returns these errors as the lock service produced them, re-exported as `sdk.LockHeldError`, `sdk.NotLockHolderError` and `sdk.LockNotFoundError`. A network transport returns a transport error carrying the status above.
 
 ```go
-lock, err := client.Lock().LockAcquire(ctx, "resource", "", 30*time.Second, false)
+_, err := client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "resource", TTL: 30})
 
-var held *lock.LockHeldError
+var held *sdk.LockHeldError
 if errors.As(err, &held) {
     fmt.Printf("Lock held by %s\n", held.HolderID)
-    // Wait and retry
 }
 
-var notHolder *lock.NotLockHolderError
+var notHolder *sdk.NotLockHolderError
 if errors.As(err, &notHolder) {
     fmt.Printf("Stale token: expected %d, actual %d\n", notHolder.ExpectedToken, notHolder.ActualToken)
-    // Log and abandon
 }
 
-var notFound *lock.LockNotFoundError
+var notFound *sdk.LockNotFoundError
 if errors.As(err, &notFound) {
     fmt.Println("Lock was released or never acquired")
-    // Handle release
 }
 ```
 
@@ -841,108 +470,79 @@ Choose a TTL that balances false expiry and stale lock detection:
 - **Too long** (e.g., 3600s): Slow stale lock detection (full hour to recover)
 - **Good range** (10-60s): Reasonable recovery time with low false positivity
 
-For long-running operations, use `Extend()` to refresh the TTL periodically rather than acquiring with a very long TTL.
+For long-running operations, use `LockExtend` to refresh the TTL periodically rather than acquiring with a very long TTL.
 
 ### Fencing Token Validation
 
-Always validate fencing tokens in downstream services:
+Pass the fencing token to every downstream service the lock protects, and have that service reject a token lower than the highest it has seen. A holder that paused past its TTL then carries a stale token, and the service refuses it:
 
 ```go
-// Bad: ignoring token
-func criticalWork(ctx context.Context) {
-    lock, _ := client.Lock().LockAcquire(ctx, "resource", "", 30*time.Second, false)
-    defer client.Lock().LockRelease(ctx, "resource", lock.FencingToken)
-
-    // If this service crashes and restarts, it might proceed
-    // with stale lock knowledge
-    executeQuery(ctx, "UPDATE important_table")
+l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{Key: "resource", TTL: 30})
+if err != nil {
+    return err
 }
+defer client.Lock().LockRelease(ctx, &transport.LockReleaseRequest{Key: "resource", FencingToken: l.FencingToken})
 
-// Good: passing token to verifier
-func criticalWork(ctx context.Context) {
-    lock, _ := client.Lock().LockAcquire(ctx, "resource", "", 30*time.Second, false)
-    defer client.Lock().LockRelease(ctx, "resource", lock.FencingToken)
-
-    // Downstream verifies token before accepting
-    executeQuery(ctx, "UPDATE important_table", lock.FencingToken)
-}
+// Bad: executeQuery(ctx, "UPDATE important_table")
+// Good: the downstream service checks the token before it accepts the write.
+return executeQuery(ctx, "UPDATE important_table", l.FencingToken)
 ```
 
 ### Avoiding Deadlocks
 
-Always use context with a timeout when acquiring locks:
+The lock service does no deadlock detection: acquire locks in a consistent order. Bound every blocking acquisition with a context deadline:
 
 ```go
-// Bad: no timeout
-lock, err := client.Lock().LockAcquire(context.Background(), "resource", "", 30*time.Second, false)
-
-// Good: context with timeout
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
-lock, err := client.Lock().LockAcquire(ctx, "resource", "", 30*time.Second, false)
-if err == context.DeadlineExceeded {
-    fmt.Println("Failed to acquire lock within timeout")
+l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{Key: "resource", TTL: 30})
+if err != nil {
+    return err // not acquired within 5 seconds, or refused
 }
 ```
 
 ### Reentrant Locks
 
-Use reentrant locks sparingly. They are useful for protecting shared state within a single component that calls itself recursively, but can obscure lock dependencies:
+Use reentrant locks sparingly. They suit a single component that calls itself recursively, but can obscure lock dependencies. Every acquisition must name the same `HolderID`:
 
 ```go
-// Appropriate: recursive function protecting shared state
-func (t *Tree) Insert(value int, reentrant bool) error {
-    lock, err := locker.Lock(ctx, LockOptions{
-        Key: "tree",
-        TTL: 30*time.Second,
-        Reentrant: reentrant,
+func (t *Tree) Insert(ctx context.Context, value int) error {
+    l, err := t.locker.Lock(ctx, lock.LockOptions{
+        Key:       "tree",
+        HolderID:  t.holderID,
+        TTL:       30 * time.Second,
+        Reentrant: true,
     })
     if err != nil {
         return err
     }
-    defer locker.Unlock(ctx, "tree", lock.FencingToken)
+    defer t.locker.Unlock(ctx, "tree", l.FencingToken)
 
-    // Safe to call Insert recursively
-    return t.insertNode(value)
-}
-
-// Poor: reentrant locks hiding dependencies
-func (s *Service) Handle(event Event) {
-    s.Lock()
-    defer s.Unlock()
-
-    // Unclear what state is protected
-    s.AnotherMethod()  // also acquires lock
+    // Safe to call Insert recursively.
+    return t.insertNode(ctx, value)
 }
 ```
 
 ### Cleanup on Context Cancellation
 
-Ensure locks are released even when context is canceled:
+Release with a context that the work's cancellation does not cancel:
 
 ```go
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-
-lock, err := client.Lock().LockAcquire(ctx, "resource", "", 30*time.Second, false)
+l, err := client.Lock().LockAcquire(ctx, &transport.LockAcquireRequest{Key: "resource", TTL: 30})
 if err != nil {
-    // Context may be canceled here
     return err
 }
-
-// Ensure cleanup even if ctx is canceled
 defer func() {
-    // Use a background context for cleanup to avoid context cancellation
-    releaseCtx := context.Background()
-    client.Lock().LockRelease(releaseCtx, "resource", lock.FencingToken)
+    _ = client.Lock().LockRelease(context.WithoutCancel(ctx), &transport.LockReleaseRequest{
+        Key: "resource", FencingToken: l.FencingToken,
+    })
 }()
 
-// Do work with lock
 return doWork(ctx)
 ```
 
 ## See Also
 
-- [06-leases.md](leases/engineering.md) -- Lease management and TTL enforcement
-- [03-transactions.md](transactions/engineering.md) -- Compare-and-swap transactions
+- [leases/engineering.md](leases/engineering.md) -- Lease management and TTL enforcement
+- [transactions/engineering.md](transactions/engineering.md) -- Compare-and-swap transactions
 - [05-consistency.md](05-consistency.md) -- Consistency levels and routing

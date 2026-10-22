@@ -1,6 +1,6 @@
 # FIPS 140-3 Role Model
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -8,7 +8,7 @@ Copyright 2026 Jeremy Hahn
 Licensed under the Apache License, Version 2.0
 -->
 
-Role definitions and enforced separation of duties for go-qrdb, aligned with FIPS 140-3 AS10.03 (Module Roles, Services, and Authentication). go-qrdb is the foundation library for compliance-grade downstream systems (go-xkms, which absorbed go-trusted-ca's CA/ACME functionality). Roles apply to barrier operations, ceremony enrollment, KV store access, tenant management, key lifecycle, and audit visibility.
+Role definitions and enforced separation of duties for go-qrdb, aligned with FIPS 140-3 AS10.03 (Module Roles, Services, and Authentication). go-qrdb is the foundation library for compliance-grade downstream systems (go-xkms). Roles apply to barrier operations, ceremony enrollment, KV store access, tenant management, key lifecycle, and audit visibility.
 
 ## Overview
 
@@ -21,7 +21,7 @@ Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct r
 | Role | Abbreviation | Description |
 |------|-------------|-------------|
 | Security Officer | SO | Module initialization, PIN management, CA operations, share-holder enrolment and revocation. **Cannot** sign/encrypt/decrypt. |
-| Admin | Admin | Day-to-day key lifecycle (create, rotate, delete operational keys), tenant management, backup. |
+| Admin | Admin | Day-to-day key lifecycle (create, rotate, delete keys), tenant management, backup. |
 | Operator | Operator | Operational key use, routine maintenance, barrier seal/unseal (except share-claim). |
 | User | User | Cryptographic operations only (sign, encrypt, decrypt, verify). No key creation or deletion. |
 | Auditor | Auditor | Read-only access to audit logs and system state. Cannot modify. |
@@ -32,13 +32,13 @@ Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct r
 
 The SO performs all module initialization, administrative lifecycle operations, and dual-authentication governance. Per FIPS 140-3 AS10.03, the SO is **explicitly excluded** from cryptographic operations.
 
-**Authentication:** Dual-factor — mTLS certificate (something you have) + SO PIN (something you know, never stored, verified in-band per request).
+**Authentication:** Dual-factor — mTLS certificate (something you have) + SO PIN (something you know, kept only as a hash commitment, verified in-band on each SO-PIN-gated request; see [Dual Authentication (SO)](#dual-authentication-so)).
 
 **Assigned during:** `qrdbd start` with M-of-N ceremony (or single-admin if threshold < 2).
 
 **Responsibilities:**
 - Initialize the barrier (set strategy, root key, Shamir parameters)
-- Manage SO PIN (set/reset; different from User PIN)
+- Manage PINs (set, change, reset; `pin:write`)
 - Generate Recovery Keys (offline escrow for disaster recovery)
 - Rotate barrier root key or rekey shares
 - Enroll/revoke custodians in M-of-N ceremony
@@ -47,26 +47,26 @@ The SO performs all module initialization, administrative lifecycle operations, 
 - Access audit logs for operational oversight
 - Emergency unlock via root token (reconstruction)
 
-**Key constraint:** The SO role **cannot** perform a cryptographic operation. That is not a `keys:*` rule: it covers every permission declared `DutyCryptoUse` (`keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`) and every resource whose action names a cryptographic primitive (`sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote`) -- including resources contributed by a higher layer, such as go-quicbaas's `attestation:attest`, which extends a PCR on the host TPM and returns a signed quote. Enforcement is dual-layer per FIPS 140-3 AS10.03: `permission.RegisterRoleGrant` refuses the **grant** at registration time, and the RBAC deny-list refuses the **request** at authorization time even if a grant reached a role by some other path (defense-in-depth). See [../permissions/README.md](../identity-rbac/architecture.md#structural-separation-of-duties-enforcement-fips-140-3-as1003).
+**Key constraint:** The SO role **cannot** perform a cryptographic operation. That is not a `keys:*` rule: it covers every permission declared `DutyCryptoUse` (`keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, `dek:encrypt`, `dek:decrypt`, `dek:rewrap`) and every resource whose action names a cryptographic primitive (`sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote`) -- including resources contributed by a higher layer, such as go-quicbaas's `attestation:attest`, which extends a PCR on the host TPM and returns a signed quote. Enforcement is dual-layer per FIPS 140-3 AS10.03: `permission.RegisterRoleGrant` refuses the **grant** at registration time, and the RBAC deny-list refuses the **request** at authorization time even if a grant reached a role by some other path (defense-in-depth). See [SO Cannot Sign/Encrypt/Decrypt](#so-cannot-signencryptdecrypt-fips-140-3-as1003).
 
-**Authorization:** SO is granted seal:* (all seal operations including bootstrap, unseal, seal, status, rotate_root_key, rekey, generate recovery keys, initialize_shamir, officer_register, officer_list, officer_revoke), certs:* (issue, enroll, export, revoke, list, read), trust_anchors:* (add, list, remove), roles:* (create, read, update, delete, list, assign, unassign), users:* (create, read, update, delete, list, enable, disable), ceremony:* (initialize, sign_csr, status), ca:* (create, read, list, update), acme:* (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), audit:read, audit:query, audit:verify, admin:* (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), backends:* (list, read), pin:* (read, write), piv:* (read, write, delete), authfactor:* (enroll, list, revoke). **Denied**: every cryptographic operation -- `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any `resource:action` whose action is a cryptographic primitive. Note that `seal:unseal`, `seal:seal`, `seal:rekey`, `ceremony:sign_csr` and `certs:issue` are cryptographic by mechanism but are granted to the SO on purpose: they are module lifecycle and issuance governance, the duties FIPS 140-3 assigns to the Security Officer, not use of a key on a requester's behalf.
+**Authorization:** SO is granted `seal:*` (bootstrap, unseal, seal, status, rotate_root_key, rekey, generate_recovery, initialize_shamir, officer_register, officer_list, officer_revoke, store_manage), `certs:*` (issue, enroll, delegate, revoke, list, read), `trust_anchors:*` (add, list, remove), `roles:*` (create, read, update, delete, list, assign, unassign), `permissions:list`, `users:*` (create, read, update, delete, list, enable, disable, invite, suspend, unsuspend), `tenants:*` (create, read, update, delete, list, set_status, set_entitlements, set_isolation), `keys:create`, `keys:delete`, `keys:import`, `keys:export`, `keys:list`, `keys:get`, `escrow:*` (create, list, recover, revoke), `ceremony:*` (initialize, sign_csr, status), `ca:*` (create, read, list, update), `acme_accounts:*` (read, list, disable), `acme_orders:*` (read, list), `acme_eab:*` (read, list, create, delete), `audit:read`, `audit:query`, `audit:delete`, `audit:verify`, `audit:verify_replicated`, `admin:*` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `authfactor:*` (enroll, list, revoke). **Denied**: every cryptographic operation -- `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, `dek:encrypt`, `dek:decrypt`, `dek:rewrap`, and any `resource:action` whose action is a cryptographic primitive. Note that `seal:unseal`, `seal:seal`, `seal:rekey`, `ceremony:sign_csr` and `certs:issue` are cryptographic by mechanism but are granted to the SO on purpose: they are module lifecycle and issuance governance, the duties FIPS 140-3 assigns to the Security Officer, not use of a key on a requester's behalf.
 
 ### Admin
 
-Admins manage operational keys and certificates but cannot initialize or re-initialize the module. This role is appropriate for team leads or senior engineers who provision keys for applications.
+Admins manage keys and certificates but cannot initialize or re-initialize the module. This role is appropriate for team leads or senior engineers who provision keys for applications.
 
 **Authentication:** mTLS certificate or JWT (platform-dependent; xkms extends with multi-factor).
 
 **Responsibilities:**
-- Generate operational keys (create, rotate)
-- Delete keys they created (not infrastructure keys)
+- Generate keys (create, rotate)
+- Delete keys
 - Manage certificates (issue, revoke for end-user certs)
 - Manage their own tenant's custom roles (create, update, assign; not delete), and reconcile its built-in roles. The built-in roles keep reserved names and fixed grants, and another tenant's roles, or the `system` tenant's, are out of reach
 - Manage their own tenant (read, rename, delete it; list it). Creating tenants and setting a tenant's plan -- quotas, entitlements, isolation tier -- is reserved to Admin in the `system` tenant (the platform operator); see [Tenant plan permissions](#tenant-plan-permissions-are-platform-operator-only)
 - Perform backups and replication
 - Access audit logs for operational oversight
 
-**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (issue, enroll, export, revoke, list, read), `trust_anchors:*` (add, list, remove), `tenants:*` (read, update, delete, list; and, cross-scope, create, set_quotas, set_entitlements, set_isolation, list:cross, create:cross, approve, list_deleted, reconcile_deleted), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:officer_register`, `seal:officer_list`, `seal:officer_revoke`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list, officer_revoke, rekey), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable, add_cert_binding), `roles:create`, `roles:read`, `roles:update`, `roles:list`, `roles:assign`, `roles:unassign` (in its own tenant; `roles:delete` stays with the SO), `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`, `cluster:join_token` (cross-scope — mints a member-side CSR join token; effective only for the `system` tenant's Admin, see [Cluster-membership permissions are platform-operator only](#cluster-membership-permissions-are-platform-operator-only)).
+**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `escrow:*` (create, list, recover, revoke), `dek:*` (rotate, retire, rewrap, status), `certs:*` (issue, enroll, delegate, revoke, list, read; and, cross-scope, revoke:cross), `trust_anchors:*` (add, list, remove), `tenants:*` (read, update, delete, list; and, cross-scope, create, set_quotas, set_entitlements, set_isolation, set_status, read:cross, update:cross, delete:cross, list:cross, create:cross, approve, list_deleted, reconcile_deleted), `admin:*` (health, status, peers, capabilities; and, cross-scope, add_member, remove_member, snapshot, drain, node_compaction, state_hash), `audit:read`, `audit:query`, `audit:delete`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:officer_register`, `seal:officer_list`, `seal:officer_revoke`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, status, officer_register, officer_list, officer_revoke, rekey), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable, invite, suspend, unsuspend, add_cert_binding), `roles:create`, `roles:read`, `roles:update`, `roles:list`, `roles:assign`, `roles:unassign` (in its own tenant; `roles:delete` stays with the SO), `permissions:list`, `abac_policies:*` (create, read, update, delete, list), `mvcc:restore`, `ca:*` (create, read, list, update), `acme:read`, `acme:write`, `acme_accounts:*` (read, list, disable), `acme_orders:*` (read, list), `acme_eab:*` (read, list, create, delete), `secrets:*` (read, write, list, delete), `trust:read`, `trust:write`, `devices:onboard`, `ota:activate`, `ota:confirm`, the broker families as wildcards (`objstore:*`, `orchestrator:*`, `scheduler:*`, `messaging:*`, `parameters:*`, `dynamic_secrets:*`, `project:*`, `ollama:*`), and, cross-scope, `volume_pools:*` (create, read, update, delete, list), `registration_config:read`, `registration_config:update` and `cluster:join_token` (cross-scope — mints a member-side CSR join token; effective only for the `system` tenant's Admin, see [Cluster-membership permissions are platform-operator only](#cluster-membership-permissions-are-platform-operator-only)).
 
 ### Operator
 
@@ -81,7 +81,7 @@ Operators perform routine key operations and maintenance. They can use keys and 
 - Query key metadata
 - Access audit logs
 
-**Authorization:** `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*` (put, get, delete, list, exists, range), `mvcc:*` (put_with_lease, get_revision, get_at_revision, range, compact, current_revision, restore), `transaction:execute`, `batch:execute`, `watch:*` (watch, watch_prefix), `lease:*` (grant, revoke, keepalive, ttl, list), `index:*` (create, drop, query, scan), `timeseries:*` (write, write_batch, query, aggregate), `vector:*` (namespace_create, namespace_delete, namespace_list, namespace_info, upsert, get, delete, batch_upsert, batch_delete, list, update_metadata, search_similar, search_by_metadata, hybrid_search, search_by_id, rebuild_index, get_rebuild_progress, get_index_stats, compact, get_compaction_progress), `admin:health`, `admin:status`, `backends:*` (list, read), `pin:read`, `piv:read`, `piv:use`, `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:list`, `roles:list`, `permissions:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, broker data-plane families (objstore, orchestrator, scheduler, messaging, parameters, dynamic_secrets, project, ollama).
+**Authorization:** `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*` (put, get, delete, list, exists, range), `mvcc:*` (put_with_lease, get_revision, get_at_revision, range, compact, current_revision, restore), `transaction:execute`, `batch:execute`, `watch:*` (watch, watch_prefix), `lease:*` (grant, revoke, keepalive, ttl, list), `index:*` (create, drop, query, scan), `timeseries:*` (write, write_batch, query, aggregate), `vector:*` (namespace_create, namespace_delete, namespace_list, namespace_info, upsert, get, delete, batch_upsert, batch_delete, list, update_metadata, search_similar, search_by_metadata, hybrid_search, search_by_id, rebuild_index, get_rebuild_progress, get_index_stats, compact, get_compaction_progress), `admin:health`, `admin:status`, `backends:*` (list, read), `pin:read`, `piv:read`, `piv:use`, `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `dek:encrypt`, `dek:decrypt`, `dek:rewrap`, `dek:status`, `ca:read`, `ca:list`, `acme_accounts:read`, `acme_accounts:list`, `acme_orders:read`, `acme_orders:list`, `acme_eab:read`, `acme_eab:list`, broker data-plane families (objstore, orchestrator, scheduler, messaging, parameters, dynamic_secrets, project, ollama).
 
 ### User
 
@@ -97,7 +97,7 @@ Users perform cryptographic operations (sign, verify, encrypt, decrypt) using ex
 - Query key metadata (public key only, not material)
 - Use, change and remove their own passwords
 
-**Authorization:** `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` (read-only key access), `passwords:read`, `passwords:write`, `passwords:delete`, `passwords:lock`, `passwords:unlock` (self-scoped: confined to the caller's tenant by the authorizer, and to the caller's own entries by the password service). No `passwords:generate`.
+**Authorization:** `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:get`, `keys:list` (read-only key access), `piv:use`, `dek:encrypt`, `dek:decrypt`, `admin:health`, `admin:status`, an orchestrator subset (status, list, health, inference, prompt, spawn, close, task_create, task_decompose, task_read, task_list, job_start, job_read, job_list, job_cancel, workflow_read, artifact_read), `passwords:read`, `passwords:write`, `passwords:delete`, `passwords:lock`, `passwords:unlock` (self-scoped: confined to the caller's tenant by the authorizer, and to the caller's own entries by the password service). No `passwords:generate`.
 
 ### Auditor
 
@@ -110,7 +110,7 @@ Auditors have read-only access to audit logs, system state, and configuration. T
 - Query system health and metrics
 - List users, roles, keys, certificates (metadata only)
 
-**Authorization:** `audit:read`, `audit:query`, `audit:stream`, `audit:verify`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, and orchestrator read-only verbs (status, list, task_read, task_list, job_read, job_list, workflow_read, agent_read, agent_list, backend_list, health). No write/delete permissions.
+**Authorization:** `audit:read`, `audit:query`, `audit:stream`, `audit:verify`, `audit:verify_replicated`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `escrow:list`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme_accounts:read`, `acme_accounts:list`, `acme_orders:read`, `acme_orders:list`, `acme_eab:read`, `acme_eab:list`, and orchestrator read-only verbs (status, list, task_read, task_list, job_read, job_list, workflow_read, agent_read, agent_list, backend_list, health). No write/delete permissions.
 
 **Guarantee:** Auditor role has no capability to delete or modify audit events. Audit trail integrity is enforced at the storage layer.
 
@@ -169,19 +169,18 @@ CEREMONY OPERATIONS
   Sign CSR (for new certs)              YES   --     --        --    --
   Ceremony status                       YES   YES    YES       --    YES
 
-PIN MANAGEMENT (delegated to pin.PINBackend; see docs/pin/README.md)
-  Set/reset SO PIN                      YES   --     --        --    --
-  Reset User PIN                        YES   YES    --        --    --
+PIN MANAGEMENT (delegated to pin.PINBackend)
+  Set/change/reset PINs                 YES   YES    --        --    --
+  Read PIN state                        YES   YES    YES       --    YES
   Change own password                   --    YES    YES       YES   --
 
 KEY LIFECYCLE
-  Generate infrastructure keys          YES   --     --        --    --
-  Generate operational keys             --    YES    YES       --    --
-  Delete any key                        YES   --     --        --    --
-  Delete own keys                       --    YES    YES       --    --
+  Create keys                           YES   YES    --        --    --
+  Delete keys                           YES   YES    --        --    --
+  Import/export keys                    YES   YES    --        --    --
   Rotate keys                           --    YES    YES       --    --
-  List keys                             --    YES    YES       YES   YES
-  Get key metadata                      --    YES    YES       YES   YES
+  List keys                             YES   YES    YES       YES   YES
+  Get key metadata                      YES   YES    YES       YES   YES
 
 CRYPTO OPERATIONS (SO explicitly denied)
   Sign data                             ✗✗   --     YES       YES   --
@@ -191,32 +190,30 @@ CRYPTO OPERATIONS (SO explicitly denied)
   Wrap/unwrap keys                      ✗✗   YES    --        --    --
 
 CERTIFICATE MANAGEMENT
-  Create CA                             YES   --     --        --    --
+  Create CA                             YES   YES    --        --    --
   Issue certificates                    YES   YES    --        --    --
   Revoke certificates                   YES   YES    --        --    --
-  Store/delete certificates             YES   YES    --        --    --
   List certificates                     YES   YES    --        --    YES
 
 TENANT MANAGEMENT
   Create/delete tenants                 YES   YES    --        --    --
-  List tenants                          YES   YES    YES       --    YES
-  Assign backend to tenant              YES   YES    --        --    --
-  Configure tenant barriers             YES   YES    --        --    --
+  List tenants                          YES   YES    --        --    YES
+  Configure tenant barriers             --    YES    --        --    --
 
 ROLE & USER MANAGEMENT
-  Create roles                          YES   --     --        --    --
+  Create roles                          YES   YES    --        --    --
   Delete roles                          YES   --     --        --    --
-  Modify role permissions               YES   --     --        --    --
+  Modify role permissions               YES   YES    --        --    --
   Create users                          YES   YES    --        --    --
   Delete users                          YES   YES    --        --    --
   Assign roles to users                 YES   YES    --        --    --
-  List users                            YES   YES    YES       --    YES
-  List roles                            YES   YES    YES       --    YES
+  List users                            YES   YES    --        --    YES
+  List roles                            YES   YES    --        --    YES
 
 AUDIT & MONITORING
   Query audit events                    YES   YES    --        --    YES
   View system health                    YES   YES    YES       YES   YES
-  View metrics                          YES   YES    YES       --    YES
+  View system status                    YES   YES    YES       YES   YES
 
 Legend: YES = permitted, -- = denied, ✗✗ = explicitly denied even with erroneous permission grant
 ```
@@ -225,23 +222,12 @@ Legend: YES = permitted, -- = denied, ✗✗ = explicitly denied even with erron
 
 ### Dual Authentication (SO)
 
-The SO role requires two-factor authentication for all operations:
+With `auth.so_dual_factor` set and an SO authenticator wired (`server.WithSOAuthenticator`), the barrier and ceremony operations in `authmw.SOPermissions` -- `ceremony:initialize`, `ceremony:sign_csr`, `seal:rotate_root_key`, `seal:rekey`, `seal:generate_recovery` and `seal:initialize_shamir` -- require two factors:
 
 1. **mTLS client certificate** — proves possession of the SO's private key
 2. **SO PIN** — proves knowledge of the PIN set during initialization
 
-Both factors must be present on every SO-authenticated request. The mTLS certificate is verified at the TLS layer. The SO PIN is verified in-band on each request via the `X-QRDB-SO-PIN` HTTP header (REST) or gRPC metadata (gRPC), never stored, and always transmitted over TLS 1.3.
-
-Example REST request (SO changing User PIN):
-
-```bash
-curl -X POST https://localhost:63002/v1/barrier/pin/reset \
-  --cert so.pem \
-  --key so-key.pem \
-  -H "X-QRDB-SO-PIN: <PIN>" \
-  -H "Content-Type: application/json" \
-  -d '{"new_pin": "new-pin-value"}'
-```
+The mTLS certificate is verified at the TLS layer. The SO PIN is verified in-band on each such request and is kept only as a hash commitment (Argon2id, or PBKDF2-SHA256 in FIPS mode), with a per-tenant lockout on failed checks. It travels in the `X-QRDB-SO-PIN` header (REST, MCP), the `x-qrdb-so-pin` metadata key (gRPC, Unix socket), or the request message's `so_pin` field (QUIC). Other SO operations need the certificate alone.
 
 ### Share Holders
 
@@ -301,7 +287,7 @@ Auditors can observe but not modify. This ensures audit trail integrity — an a
 
 **Enforcement:** by the composition of the auditor grant list only (`registerAuditorGrants` in `pkg/permission/builtin_role_grants.go` lists read-only verbs, and the golden-set drift guard in `pkg/role/builtin_grants_equivalence_test.go` fails if it changes). There is **no** structural deny-all-writes rule for the auditor role: unlike the SO constraint above, nothing panics if a future contributor adds a write permission to the auditor role — the drift guard turns it into a deliberate review item rather than an impossibility. Add a structural guard here before relying on AS10.10 as an enforced invariant rather than a maintained one.
 
-### Key Deletion Requires SO (FIPS 140-3 AS10.03)
+### Key Deletion Is Limited to SO and Admin (FIPS 140-3 AS10.03)
 
 `keys:delete` is granted to the SO and to Admin, and to no other built-in role — an Operator can rotate a key but not destroy one, and User and Auditor cannot either. This limits destruction of critical keys to the two governance roles.
 
@@ -325,19 +311,16 @@ The go-qrdb role model extends the PKCS#11 two-role model (SO + User) to support
 | User | Admin, Operator, User | Subdivided for finer-grained access control. |
 | N/A | Auditor | go-qrdb extension for compliance (HIPAA, PCI-DSS, FedRAMP require audit read-access). |
 
-When qrdb is deployed as a PKCS#11 library, the SO role maps to `CKU_SO` user type, and Admin/Operator/User map to `CKU_USER`. The Auditor role exists at the qrdb application layer (not PKCS#11 protocol layer); key custodians are share holders, not a role.
+The Auditor role exists at the qrdb application layer, not in PKCS#11; key custodians are share holders, not a role.
 
 ## Mapping to Existing qrdb RBAC
 
-The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/auth/rbac/`):
+The five roles are built-in roles of qrdb's RBAC system (`pkg/role/`, `pkg/auth/rbac/`), with the grants listed under [Role Details](#role-details). Beyond those lists:
 
-| Role | RBAC Permissions | Key Differences |
-|------|------------------|-----------------|
-| SO | `seal:*`, `certs:*`, `trust_anchors:*`, `roles:*`, `users:*`, `ceremony:*`, `ca:*`, `acme:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:read/write/delete`, `authfactor:enroll/list/revoke`, `keys:create/rotate/delete/list/get/import/export` | Explicitly **denied** every cryptographic operation: `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any action naming a cryptographic primitive. Dual-factor auth. |
-| Admin | `keys:*`, `certs:*`, `trust_anchors:*`, `tenants:*` (the plan permissions cross-scope, see below), `seal:unseal`, `seal:seal`, `seal:status`, `seal:officer_register`, `seal:officer_list`, `seal:officer_revoke`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `cluster:join_token` (cross-scope), `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:create`, `roles:read`, `roles:update`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. `cluster:join_token` is the only built-in grant of this permission besides Owner, and the only one that survives strict separation of duties, which voids Owner. |
-| Operator | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*`, `mvcc:*`, `transaction:execute`, `batch:execute`, `watch:*`, `lease:*`, `index:*`, `timeseries:*`, `vector:*`, `admin:health`, `admin:status`, `backends:*`, `pin:read`, `piv:read`, `piv:use`, `passwords:*`, `ssh:*`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list` | No key creation/deletion, no SO operations. No wrap/unwrap. No certs operations. No admin/governance verbs. |
-| User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:list`, `keys:get`, `piv:use`, `passwords:read`, `passwords:write`, `passwords:delete`, `passwords:lock`, `passwords:unlock`, `admin:health`, `admin:status` | Minimal: crypto plus the caller's own passwords (self-scoped; no `passwords:generate`). No key creation/deletion/rotation. No administrative operations. |
-| Auditor | `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, orchestrator read-only perms | Read-only everywhere. No seal:status. No write/delete permissions. |
+- No built-in role holds `backup:*`: cluster backup and restore is granted to no built-in role.
+- `mvcc:restore` -- selective point-in-time restore of a bounded key set -- is Admin's only `kv:*`/`mvcc:*` verb.
+- Admin's `cluster:join_token` is the only built-in grant of that permission besides Owner, and the only one that survives strict separation of duties, which voids Owner.
+- The Auditor holds no `seal:status` and no write or delete permission.
 
 ### Tenant plan permissions are platform-operator only
 
@@ -346,12 +329,13 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 admits them only for an identity in the `system` tenant, whatever tenant the
 request names. The built-in Admin role carries them in every tenant, exactly as
 it carries its other cross-scope grants (`tenants:list:cross`,
-`volumepool:*`, `registrationconfig:*`), and they are inert outside `system`.
+`volume_pools:*`, `registration_config:*`), and they are inert outside `system`.
 So Admin in the `system` tenant creates tenants and sets their plans, and a
 tenant's own Admin manages everything inside its tenant but cannot create
 tenants, raise its own quotas, grant itself entitlements or change its own
-isolation tier. The SO role's `tenants:create`, `tenants:set_isolation` and
-`tenants:set_entitlements` grants are cross-scope for the same reason.
+isolation tier. The SO role's `tenants:create`, `tenants:set_isolation`,
+`tenants:set_entitlements` and `tenants:set_status` grants are cross-scope for
+the same reason.
 
 The quotas routes check `tenants:set_quotas`, not `tenants:update`, and
 `tenants:update` covers only a tenant's display name. `tenants:delete` stays
@@ -367,7 +351,7 @@ share of its key is **cross-scope** (`ScopeCross`, declared in
 
 - `seal:bootstrap`, `seal:unseal`, `seal:seal`, `seal:rekey`,
   `seal:rotate_root_key`, `seal:initialize_shamir`, `seal:generate_recovery`,
-  `seal:enable_encryption`;
+  `seal:enable_encryption`, `seal:store_manage`;
 - `seal:officer_register`, `seal:officer_list` and `seal:officer_revoke` --
   enrolling a share holder into the node barrier's unseal or recovery domain,
   listing those holders with their certificate thumbprints, and revoking one
@@ -375,10 +359,10 @@ share of its key is **cross-scope** (`ScopeCross`, declared in
 - `ceremony:initialize` and `ceremony:sign_csr` -- the node key ceremony,
   whose CSR signing uses the cluster CA.
 
-None of these routes names a tenant. Under `ScopeSelf` the authorizer compared
-the caller's tenant with itself and admitted every holder, so a tenant's SO --
-which holds most of them through its own tenant's built-in SO role -- could
-register holders into the node barrier. Every rekey, revocation and
+None of these routes names a tenant, so `ScopeSelf` would compare the caller's
+tenant with itself and admit every holder: a tenant's SO -- which holds most of
+them through its own tenant's built-in SO role -- could register holders into
+the node barrier. Every rekey, revocation and
 recovery-key generation sends a share to every registered holder, so M planted
 holders could reconstruct the node unseal key or reach the root-token quorum.
 The built-in roles still carry these grants in every tenant, and they are inert
@@ -399,7 +383,7 @@ is anonymous and runs no RBAC at all, so it is unaffected.
 
 `admin:add_member`, `admin:remove_member`, `admin:drain` and `admin:snapshot`
 -- and `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`,
-`admin:topology`, `admin:replica_state` and `admin:node_compaction` -- are **cross-scope** (`ScopeCross`, declared in
+`admin:topology`, `admin:replica_state`, `admin:state_hash` and `admin:node_compaction` -- are **cross-scope** (`ScopeCross`, declared in
 `pkg/permission/cluster_admin_scope.go`). They act on the cluster's Raft
 membership and shards, addressed by shard id: the system shard every
 prefix-isolated tenant's data lives on, and every raft-isolated tenant's own
@@ -407,7 +391,7 @@ group. No route names a tenant, and the admin service does no tenant check of
 its own, so under `ScopeSelf` the built-in Admin and SO roles -- which grant
 add_member, remove_member, drain and snapshot in every tenant -- let any
 tenant's Admin remove replicas from the system shard and break quorum for
-every tenant, or drain the node. Now only the `system` tenant's Admin or SO
+every tenant, or drain the node. Only the `system` tenant's Admin or SO
 exercises them; a tenant's is refused on every transport. `rebalance:*` is
 cross-scope for the same reason: `rebalance:execute` physically moves shards
 between nodes, and the plan, report and stats reads describe every shard. No
@@ -419,7 +403,7 @@ and a restore overwrites every tenant's state.
 
 The topology reads go with them because they enumerate every tenant's raft
 group and node address, and no built-in tenant role carries them; the web
-console already treats a refused topology probe as a standalone server.
+console treats a refused topology probe as a standalone server.
 `admin:peers`, `admin:status`, `admin:health` and `admin:capabilities` stay
 `ScopeSelf`: the etcd listener's `Cluster.MemberList` is a tenant-facing call
 backed by `admin:peers` and authorized against the database's owning tenant,
@@ -427,14 +411,12 @@ and status, health and capabilities are what a tenant's tools poll.
 
 `cluster:join_token` (`pkg/permission/cluster_join_token_scope.go`) is the
 same shape, for the same reason: minting a member-side CSR join token admits
-a node to the whole cluster, not to one tenant. Unlike the `admin:*` family
-above, no built-in role carried it at all until the 2026-10-06 ruling gave it
-to Admin alone -- not to SO, which otherwise holds every other platform-only
+a node to the whole cluster, not to one tenant. Among the built-in roles only
+Admin carries it -- not SO, which otherwise holds every other platform-only
 cluster permission in this section. That asymmetry is deliberate: strict
 separation of duties (always on in a FIPS build) strips the `Owner` role id
-outright, and before this grant Owner was the only identity that could mint
-a join token by default, so under a FIPS build no identity could mint one at
-all. See
+outright, so without the Admin grant no identity could mint a join token under
+a FIPS build. See
 [../seal/fips140-mode.md](../seal/fips140-mode.md#strict-separation-of-duties-and-clusterjoin_token-under-fips).
 
 ## Bootstrap and Role Lifecycle
@@ -449,14 +431,14 @@ On daemon initialization (`qrdbd start`), the five system roles are created dete
   [identity-rbac/engineering.md](../identity-rbac/engineering.md#persistence)
   for the derivation rules.
 - All five roles are marked as **system roles** (undeletable)
-- Roles are persisted in the KV store at `__sys:role/<id>` (Raft-replicated)
+- Roles are persisted in the KV store at `__sys:roles/id/<id>` (Raft-replicated)
 - If roles already exist (restart scenario), the function returns immediately without duplication
 
 See [bootstrap.md](../bootstrap.md) for the full bootstrap sequence.
 
 ### Role Assignment and Revocation
 
-Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a user can hold multiple roles). Only SO and Admin can create/delete/modify roles and user-role assignments.
+Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a user can hold multiple roles). Only SO and Admin can create and modify roles and user-role assignments; only SO can delete a role.
 
 ## Compliance Mapping
 

@@ -50,12 +50,39 @@ func nightlyPath(t *testing.T) string {
 	return filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml")
 }
 
+// twoJobFixture declares two watched jobs and the signal job. The run() tests
+// exercise several watched jobs at once (one regressed, one never green, one
+// undecidable beside a decided one); the real nightly.yml watches trivy
+// alone, and the tests that read it pin that job list against the real file.
+const twoJobFixture = `jobs:
+  fips:
+    name: FIPS 140-3
+    runs-on: ubuntu-latest
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+  signal:
+    name: Signal
+    needs: [fips, trivy]
+    runs-on: ubuntu-latest
+`
+
+// twoJobWorkflow writes twoJobFixture to a temporary file and returns its path.
+func twoJobWorkflow(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "nightly.yml")
+	if err := os.WriteFile(path, []byte(twoJobFixture), 0o600); err != nil {
+		t.Fatalf("write the fixture workflow: %v", err)
+	}
+	return path
+}
+
 func TestDeclaredJobsReadsTheRealNightlyWorkflow(t *testing.T) {
 	jobs, err := DeclaredJobs(nightlyPath(t))
 	if err != nil {
 		t.Fatalf("DeclaredJobs: %v", err)
 	}
-	want := map[string]string{"fips": "FIPS 140-3", "trivy": "Trivy", "signal": "Signal"}
+	want := map[string]string{"trivy": "Trivy", "signal": "Signal"}
 	if len(jobs) < len(want) {
 		t.Fatalf("found %d jobs, want at least %d — discovery has broken", len(jobs), len(want))
 	}
@@ -179,8 +206,8 @@ func TestAssertCoverageRefusesAnUnwatchedJob(t *testing.T) {
 
 // Every unwatched job is reported, not just the first: a coverage check that
 // named one gap and stopped would let a second missing job through on the
-// retry. The real nightly.yml now declares only two watched jobs, so this is
-// proved on a fixture rather than through run().
+// retry. The real nightly.yml declares one watched job, so this is proved on a
+// fixture rather than through run().
 func TestAssertCoverageReportsEveryUnwatchedJob(t *testing.T) {
 	declared := []DeclaredJob{{"fips", "FIPS 140-3"}, {"trivy", "Trivy"}, {"extra", "Extra"}, {"signal", "Signal"}}
 	specs := []JobSpec{{Key: "fips", Name: "FIPS 140-3"}}

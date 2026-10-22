@@ -438,7 +438,7 @@ func TestGet_OSError(t *testing.T) {
 
 	// Replace the record file with a directory of the same name.
 	// os.ReadFile on a directory always fails, regardless of user.
-	_, recordPath := eng.recordPaths(key)
+	_, recordPath := mustRecordPaths(t, eng, key)
 	if err := os.Remove(recordPath); err != nil {
 		t.Fatalf("setup: Remove: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestSet_MkdirAllError(t *testing.T) {
 	defer func() { _ = eng.Close() }()
 
 	key := []byte("blocked-key")
-	shardDir, _ := eng.recordPaths(key)
+	shardDir, _ := mustRecordPaths(t, eng, key)
 	// Occupy the FIRST shard level (shardDir's parent) with a regular file,
 	// so MkdirAll cannot create shardDir under it.
 	obstacle := filepath.Dir(shardDir)
@@ -496,7 +496,7 @@ func TestDelete_OSError(t *testing.T) {
 	defer func() { _ = eng.Close() }()
 
 	key := []byte("nonemptydir-key")
-	_, recordPath := eng.recordPaths(key)
+	_, recordPath := mustRecordPaths(t, eng, key)
 	if err := os.MkdirAll(recordPath, 0o700); err != nil {
 		t.Fatalf("setup: MkdirAll: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestExists_OSError(t *testing.T) {
 	// ancestor is now a file, not a directory. This error is not
 	// os.IsNotExist, so Exists must return it. Works regardless of whether
 	// we run as root.
-	shardDir, _ := eng.recordPaths(key)
+	shardDir, _ := mustRecordPaths(t, eng, key)
 	if err := os.RemoveAll(shardDir); err != nil {
 		t.Fatalf("setup: RemoveAll: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestFileEngine_DeleteRange_ListErrorPropagates(t *testing.T) {
 	defer func() { _ = eng.Close() }()
 	seedKeys(t, eng, "a")
 
-	dir, path := eng.recordPaths([]byte("corrupt"))
+	dir, path := mustRecordPaths(t, eng, []byte("corrupt"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -735,14 +735,14 @@ func TestFileEngine_DeleteRange_DeleteErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = eng.Close() }()
 
-	misplacedDir, misplacedPath := eng.recordPaths([]byte("x"))
+	misplacedDir, misplacedPath := mustRecordPaths(t, eng, []byte("x"))
 	if err := os.MkdirAll(misplacedDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(misplacedPath, encodeRecord([]byte("b"), []byte("v")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, ownPath := eng.recordPaths([]byte("b"))
+	_, ownPath := mustRecordPaths(t, eng, []byte("b"))
 	if err := os.MkdirAll(ownPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1502,7 +1502,7 @@ func TestMkdirAllDurable_StatErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := mkdirAllDurable(filepath.Join(parent, "child"))
+	err := mkdirAllDurable(filepath.Join(parent, "child"), nil)
 	if err == nil {
 		t.Fatal("expected ENOTDIR stat'ing under a regular file, got nil")
 	}
@@ -1526,7 +1526,7 @@ func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // #nosec G302 -- restores the mode memdir.TempDir(t) needs to remove the directory; not a secret file's mode
 
-	err := mkdirAllDurable(filepath.Join(parent, "child"))
+	err := mkdirAllDurable(filepath.Join(parent, "child"), nil)
 	if err == nil {
 		t.Fatal("expected a permission error creating the child, got nil")
 	}
@@ -1585,7 +1585,7 @@ func TestSet_RenameErrorPropagates(t *testing.T) {
 	defer func() { _ = e.Close() }()
 
 	key := []byte("blocked-by-a-directory")
-	_, recordPath := e.recordPaths(key)
+	_, recordPath := mustRecordPaths(t, e, key)
 	if err := os.MkdirAll(recordPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1609,7 +1609,7 @@ func TestCleanupTempSetFiles_RemovesStrayTempFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1645,7 +1645,7 @@ func TestCleanupTempSetFiles_RemoveErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1676,7 +1676,7 @@ func TestCleanupTempSetFiles_WalkErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1704,7 +1704,7 @@ func TestList_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1730,7 +1730,7 @@ func TestIterator_WalkErrorOnAShardDirectoryPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1864,7 +1864,7 @@ func TestGet_KeyMismatchError(t *testing.T) {
 	if err := e.Set(key, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	_, path := e.recordPaths(key)
+	_, path := mustRecordPaths(t, e, key)
 	corrupt := encodeRecord([]byte("not-a"), []byte("v"))
 	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
 		t.Fatal(err)
@@ -1903,7 +1903,7 @@ func TestSnapshot_PropagatesIteratorError(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	dir, path := e.recordPaths([]byte("corrupt"))
+	dir, path := mustRecordPaths(t, e, []byte("corrupt"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

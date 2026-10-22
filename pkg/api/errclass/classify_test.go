@@ -362,6 +362,26 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 	}
 }
 
+// TestClassify_IsolationPolicyChangeIsFailedPrecondition pins the class of a
+// refused isolation-policy change: a loosening of the cluster floor or of a
+// tenant's own policy depends on the policy in force, as a refused status
+// transition does, and is not an internal fault.
+func TestClassify_IsolationPolicyChangeIsFailedPrecondition(t *testing.T) {
+	for name, err := range map[string]error{
+		"floor loosened":  &tenant.IsolationPolicyChangeError{From: "strict", To: "operator-access"},
+		"tenant loosened": &tenant.IsolationPolicyChangeError{From: "strict", To: "inherit"},
+		"lost the race":   &tenant.IsolationPolicyChangeError{From: "", To: "strict"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for shape, e := range map[string]error{"bare": err, "wrapped": wrapped{err}} {
+				if got := Classify(e); got != FailedPrecondition {
+					t.Errorf("%s: got %s, want %s", shape, got, FailedPrecondition)
+				}
+			}
+		})
+	}
+}
+
 // A dead RoleBinding is a bad field in the write, whether it arrives bare or
 // wrapped by a service layer.
 func TestClassify_RoleBindingTenantIsInvalidArgument(t *testing.T) {
