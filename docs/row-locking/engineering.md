@@ -1,6 +1,6 @@
 # Row Locking — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Design and boundaries are in [architecture.md](architecture.md). This file is
@@ -119,8 +119,10 @@ type SQLConfig struct {
 	Concurrency Concurrency `yaml:"concurrency" json:"concurrency,omitempty"`
 }
 
-// DatabaseConfig, DatabaseMeta and DatabaseInfo carry:
+// DatabaseConfig carries:
 //	SQL *SQLConfig `yaml:"sql" json:"sql,omitempty"`
+// DatabaseMeta and DatabaseInfo carry:
+//	SQL *SQLConfig `json:"sql,omitempty"`
 ```
 
 `sdk/go/transport`:
@@ -146,17 +148,11 @@ type UpdateDatabaseSQLRequest struct {
 ```ts
 type SQLConcurrency = 'optimistic' | 'pessimistic';
 interface DatabaseSQLConfig { readonly concurrency?: SQLConcurrency }
-interface DatabaseProtocolConfig { readonly mysql: boolean; readonly postgresql: boolean }
 
 // DatabaseClient:
 updateSQL(name: string, sql?: DatabaseSQLConfig): Promise<DatabaseInfo>          // PATCH /v1/databases/{name}/sql
-updateProtocol(name: string, protocol: DatabaseProtocolConfig): Promise<DatabaseInfo> // PATCH /v1/databases/{name}/protocol
-// DatabaseInfo and CreateDatabaseRequest: protocol?: DatabaseProtocolConfig; sql?: DatabaseSQLConfig
+// DatabaseInfo and CreateDatabaseRequest: sql?: DatabaseSQLConfig
 ```
-
-The TypeScript `updateProtocol` / `DatabaseProtocolConfig` match the Go SDK's
-`UpdateDatabaseProtocol` / `ProtocolConfig`; `updateSQL` / `DatabaseSQLConfig`
-carry the SQL settings.
 
 ## The lock record
 
@@ -512,9 +508,10 @@ mean.
   commits. Each subtest's sessions are discarded with it, never returned to
   the connection pool, so no subtest inherits another's open or aborted
   transaction.
-- `sdk/go/gorm`: GORM's `TestConcurrentMany2ManyAssociation` scenario (one user,
-  concurrent many-to-many `Append`s) passes in pessimistic mode, where the
-  optimistic default loses appends to 1213.
+- `sdk/go/gorm`: `TestConcurrentMany2ManyAssociation_Pessimistic` runs GORM's
+  `TestConcurrentMany2ManyAssociation` scenario (one user, concurrent
+  many-to-many `Append`s) in pessimistic mode, where the optimistic default
+  loses appends to 1213.
 
 ## Integration testing
 

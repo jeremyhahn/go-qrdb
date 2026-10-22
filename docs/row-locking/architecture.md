@@ -1,6 +1,6 @@
 # Row Locking — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated** with the rest of the SQL layer: `qrdb_sql` compiles it,
@@ -278,8 +278,8 @@ holds: a statement that times out leaves none of its rows committed (see
 
 - **A state-machine lock subsystem with new Raft commands.** Grant and
   deadlock decisions would be made deterministically inside the apply loop,
-  but every new command must sit behind a cluster feature gate that does not
-  exist, every state-machine type would need the subsystem, and the lock table
+  but every new command must sit behind a cluster feature gate, every
+  state-machine type would need the subsystem, and the lock table
   would need its own snapshot format and a hook into lease expiry. The records
   above need none of that and reuse primitives that are already proven.
 - **A node-local lock map.** A leader change, or simply two sessions on two
