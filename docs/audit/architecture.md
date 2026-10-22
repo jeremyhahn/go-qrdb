@@ -1,6 +1,6 @@
 # Audit — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Compliance-grade audit logging: who did what, to which resource, with what
@@ -78,16 +78,16 @@ suppress the trail in the healthy ones.
 - **An `Emit` with no error return.** Rejected: it decides the compliance
   question for every caller. A caller that wants to fail closed cannot.
 - **A parallel `EmitErr` beside `Emit`.** Rejected. Two methods means two
-  behaviours to keep in step across five implementations, and the unchecked one
+  behaviours to keep in step across every implementation, and the unchecked one
   stays the easy one to call.
 - **Failing fast in the fan-out.** Rejected: stopping at the first failed sink
   would let a broken file destination silently blank the ring buffer and the
   operational log stream that were both perfectly healthy.
-- **Storing audit entries in the KV store at all.** Rejected. The trail is a
-  hash-chained append-only file plus an in-memory ring; it is not in the
-  keyspace, user or internal, so no KV surface can enumerate, rewrite or
-  compact it. A tamper-evident chain wants an append-only medium, and a
-  replicated mutable store is the opposite of one.
+- **Storing audit entries as KV keys.** Rejected. The node-local trail is a
+  hash-chained append-only file plus an in-memory ring, and the opt-in
+  replicated chain is a reserved raw-keyspace table (see *Record layout*
+  below); neither is a key any KV surface can enumerate, rewrite or compact.
+  A tamper-evident chain wants an append-only medium, not a mutable keyspace.
 - **A world-readable audit file.** Rejected: mode 0600.
 
 ## Fail-closed on audit write failure
@@ -594,6 +594,10 @@ four). Two further bounds, both clamps on `upper`:
   rather than one command staging an unbounded number of deletes into one
   apply batch.
 
+No component proposes a prune: `protocol.EncodeAuditPrune` has no caller
+outside tests, so the replicated chain keeps every event. `Prune` is the apply
+path only.
+
 ### Tenant confinement inside a shared table
 
 `Chain.Query` trusts its `tenantID` argument completely and never reads
@@ -603,7 +607,7 @@ file sink's `matchesFilter` (the same `TenantID`/`Untenanted` semantics
 `tenant.ConfineAuditFilter` relies on for the node-local trail) is reused, so a platform event filed under the
 system tenant's segment with no `TenantID` of its own matches only an
 `Untenanted` system-tenant query, never an ordinary one. `Append`, `Prune`
-and `Query` alike refuse a tenant ID containing `/` (`*InvalidTenantIDError`)
+and `Query` alike refuse a tenant ID containing `/` (`*vlog.InvalidTenantIDError`)
 — such an id could otherwise carve a second segment inside another tenant's
 range in the raw table's concatenated keys.
 
@@ -646,12 +650,14 @@ the same per-tenant entitlement as `Emit`/`Query`
 `*service.ReplicatedAuditNotEntitledError` when the tenant's entitlement is
 off), reachable from every transport — see
 [api.md](api.md#the-replicated-chain-read-surface) and
-[cli.md](cli.md#qrdb-audit-verify---replicated).
+[cli.md](cli.md#--replicated).
 
 ## Trust boundaries
 
-- **Audit entries are not in the key-value store**, so no KV verb reaches
-  them: the trail is `audit-events.ndjson` plus the in-memory ring.
+- **No KV verb reaches an audit entry.** The node-local trail is
+  `audit-events.ndjson` plus the in-memory ring; the opt-in replicated chain
+  is a reserved raw-keyspace table that `statemachine.IsReservedKey` refuses on
+  every client read and compare path.
 - **The audit file is mode 0600.**
 - **`PrevHash` chains entries** so a deletion or edit is detectable rather than
   silent.
