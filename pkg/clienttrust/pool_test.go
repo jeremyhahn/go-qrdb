@@ -493,7 +493,7 @@ func TestPool_ProviderErrorFallsBackToStatic(t *testing.T) {
 	pool := New()
 	pool.Wire(cfg)
 	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
-	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
+	pool.SetKeyBProvider(&fakeCertProvider{err: &cert.BarrierSealedError{}})
 	rebuild(t, pool)
 
 	if got := getConfigForClient(t, cfg); got != cfg {
@@ -764,7 +764,7 @@ func TestPool_KeyBNeverSucceeded_StaticExemptionStillHonored(t *testing.T) {
 
 	pool := New()
 	pool.Wire(cfg)
-	pool.SetKeyBProvider(&fakeCertProvider{err: errors.New("barrier is sealed")})
+	pool.SetKeyBProvider(&fakeCertProvider{err: &cert.BarrierSealedError{}})
 
 	if err := pool.Refresh(context.Background()); err == nil {
 		t.Fatal("expected Refresh to fail while Key B has never once succeeded")
@@ -1567,10 +1567,11 @@ func TestPool_Refresh_SupersededUntilItsBoundRunsOut(t *testing.T) {
 // TestPool_Reseal_DropsKeyBTrust is go-qrdb#591's review (blocker 2) red/
 // green proof: docs/certificate-authority/architecture.md promises that a
 // runtime reseal makes the dynamic trust pool drop Key B at the next
-// rebuild, never indefinitely: a rebuild whose CACertPEMs fails publishes a
-// snapshot with no Key B trust rather than keeping the last good one (the
-// pre-#591 contract for a merely transient blip), so a reseal never leaves
-// the listener widening from certificates read before the seal.
+// rebuild, never indefinitely: a rebuild whose CACertPEMs refuses as sealed
+// publishes a snapshot with no Key B trust rather than keeping the last good
+// one (which only a read that did not answer is kept across, within
+// snapshotMaxAge), so a reseal never leaves the listener widening from
+// certificates read before the seal.
 //
 // A Key B-issued leaf authenticates while the provider is healthy; once
 // CACertPEMs starts failing (simulating a reseal) and a rebuild has run,
@@ -1673,10 +1674,11 @@ func TestPool_Reseal_DropsKeyBTrust(t *testing.T) {
 		t.Error("expected VerifiedChains empty while Pool's own VerifyConnection hook is active")
 	}
 
-	// Simulate a reseal: CACertPEMs starts failing, and the next rebuild
-	// runs -- it must publish a snapshot with no Key B trust rather than
-	// keep the last good one.
-	prov.err = errors.New("barrier is sealed")
+	// Simulate a reseal: CACertPEMs starts refusing as sealed, and the next
+	// rebuild runs -- it must publish a snapshot with no Key B trust rather
+	// than keep the last good one, which only a read that did not answer
+	// is kept across.
+	prov.err = &cert.BarrierSealedError{}
 	rebuild(t, pool)
 
 	// The Key B leaf must now be refused outright.
@@ -1848,7 +1850,7 @@ func TestRV794_LongLivedConnStaticAnchorAfterReseal(t *testing.T) {
 	// runs, so the snapshot is not merely a stale pre-reseal one. The
 	// cluster CA resolver itself stays healthy throughout, matching an
 	// ordinary reseal where Key A's own certificate is still readable.
-	prov.err = errors.New("barrier is sealed")
+	prov.err = &cert.BarrierSealedError{}
 	rebuild(t, pool)
 
 	// A long-lived connection presenting a Key A or operator-CA leaf must
@@ -2283,6 +2285,135 @@ func TestPool_VerifyPeerChain_RefusalWhileKeyBUnreadIsUnavailable(t *testing.T) 
 	rebuild(t, pool)
 	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
 		t.Fatalf("VerifyPeerChain once Key B answers: %v", err)
+	}
+}
+
+// TestPool_KeyBReadTimeout_KeepsLoadedSet is main red 61227: a Key B set
+// that loaded once must not become unusable because one rebuild's store
+// read did not answer. A chain under the loaded CA still verifies; a chain
+// nothing trusts is still refused, as unavailable because a read failed;
+// and Refresh reports the read it kept the set across.
+func TestPool_KeyBReadTimeout_KeepsLoadedSet(t *testing.T) {
+	keyBPEM, keyBCert := genCAPEM(t)
+	_, strangerCert := genCAPEM(t)
+	_, keyACert := genCAPEM(t)
+	prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
+	pool := New()
+	pool.Wire(baseConfig(t, x509.NewCertPool()))
+	pool.SetClusterCA(&fakeClusterCA{cert: keyACert})
+	pool.SetKeyBProvider(prov)
+	if err := pool.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh while healthy: %v", err)
+	}
+
+	timeout := errors.New("quicraft: timeout")
+	prov.err = timeout
+	err := pool.Refresh(context.Background())
+	var keyBErr *KeyBUnavailableError
+	if !errors.As(err, &keyBErr) || !errors.Is(err, timeout) {
+		t.Fatalf("Refresh across a failed Key B read: err = %v, want the *KeyBUnavailableError it kept the set across", err)
+	}
+
+	if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
+		t.Fatalf("a chain under the loaded Key B CA after one failed read: %v", err)
+	}
+	if !pool.isRegisteredKeyBCA(keyBCert) {
+		t.Error("the loaded Key B CA stopped being registered after one failed read")
+	}
+	_, err = pool.VerifyPeerChain(context.Background(), strangerCert, nil)
+	if !auth.TrustStateUnavailable(err) {
+		t.Fatalf("a chain nothing trusts, refused while Key B is unread: err = %v, want a TrustStateUnavailable refusal", err)
+	}
+
+	prov.err = nil
+	if err := pool.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh once Key B answers again: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(context.Background(), strangerCert, nil); err == nil || auth.TrustStateUnavailable(err) {
+		t.Fatalf("a chain nothing trusts with every source read: err = %v, want a refusal that is not unavailable", err)
+	}
+}
+
+// TestPool_KeyBReadFailure_DoesNotKeepPastBound proves what is never kept
+// across a failed Key B read: a sealed barrier's refusal (a reseal), a set
+// last read snapshotMaxAge ago, a cluster CA that failed in the same
+// rebuild, and a set that never loaded.
+func TestPool_KeyBReadFailure_DoesNotKeepPastBound(t *testing.T) {
+	cases := map[string]struct {
+		healthy   bool
+		keyBErr   error
+		clusterCA ClusterCA
+		age       time.Duration
+	}{
+		"sealed barrier":           {healthy: true, keyBErr: &cert.BarrierSealedError{}},
+		"set older than max age":   {healthy: true, keyBErr: errors.New("quicraft: timeout"), age: snapshotMaxAge},
+		"cluster CA failing too":   {healthy: true, keyBErr: errors.New("quicraft: timeout"), clusterCA: &fakeClusterCA{err: errors.New("quicraft: timeout")}},
+		"set that never loaded":    {keyBErr: errors.New("quicraft: timeout")},
+		"wrapped sealed refusal":   {healthy: true, keyBErr: &cert.StoreError{Op: "scan", Err: &cert.BarrierSealedError{}}},
+		"no Key B provider at all": {healthy: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			keyBPEM, keyBCert := genCAPEM(t)
+			prov := &fakeCertProvider{pems: [][]byte{keyBPEM}}
+			pool := New()
+			pool.Wire(baseConfig(t, x509.NewCertPool()))
+			if tc.healthy {
+				pool.SetKeyBProvider(prov)
+				rebuild(t, pool)
+				if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err != nil {
+					t.Fatalf("a chain under the Key B CA while healthy: %v", err)
+				}
+			}
+			if tc.age > 0 {
+				pool.snapshot.Load().built = time.Now().Add(-tc.age)
+			}
+			if tc.clusterCA != nil {
+				pool.clusterCA.Store(&clusterCABox{ca: tc.clusterCA})
+			}
+			switch {
+			case tc.keyBErr != nil:
+				prov.err = tc.keyBErr
+				pool.provider.Store(&providerBox{prov: prov})
+			case tc.healthy:
+				pool.provider.Store(&providerBox{})
+			}
+			rebuild(t, pool)
+
+			if _, err := pool.VerifyPeerChain(context.Background(), keyBCert, nil); err == nil {
+				t.Fatal("a chain under the Key B CA was still admitted")
+			}
+			if snap := pool.snapshot.Load(); snap.keptAcross != nil {
+				t.Fatalf("snapshot kept across %v", snap.keptAcross)
+			}
+		})
+	}
+}
+
+// TestSameCertificate covers both nil, one nil, equal and different
+// certificates.
+func TestSameCertificate(t *testing.T) {
+	_, a := genCAPEM(t)
+	_, b := genCAPEM(t)
+	aCopy, err := x509.ParseCertificate(a.Raw)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	cases := []struct {
+		name string
+		x, y *x509.Certificate
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"one nil", a, nil, false},
+		{"other nil", nil, a, false},
+		{"same DER", a, aCopy, true},
+		{"different", a, b, false},
+	}
+	for _, tc := range cases {
+		if got := sameCertificate(tc.x, tc.y); got != tc.want {
+			t.Errorf("%s: sameCertificate = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

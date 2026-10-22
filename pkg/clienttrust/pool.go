@@ -63,10 +63,11 @@ import (
 // a reseal.
 const poolCacheTTL = 2 * time.Second
 
-// refreshTimeout bounds one rebuild's storage reads. A rebuild that runs
-// out of time has failed, and a failed rebuild withdraws Key B trust
-// (go-qrdb#591, blocker 2), so a store that stops answering costs Key B
-// logins until it answers again, never the handshake itself. It sits well
+// refreshTimeout bounds one rebuild's storage reads. A rebuild whose Key B
+// read runs out of time keeps the previous snapshot's trust, but only for
+// snapshotMaxAge after Key B was last read (build), so a store that stops
+// answering costs Key B logins until it answers again, never the handshake
+// itself. It sits well
 // inside the 5 s handshake deadline the listeners set, as a second line of
 // defence: the handshake does not wait on a rebuild at all.
 //
@@ -77,7 +78,8 @@ var refreshTimeout = 2 * time.Second
 // snapshotMaxAge is how old a snapshot may grow before the handshake
 // treats it as withdrawn. Run replaces it every poolCacheTTL, so one three
 // intervals old means rebuilds have stopped landing -- Run never started,
-// or a store read that ignores its deadline -- and Key B trust must not
+// a store read that ignores its deadline, or Key B reads that keep timing
+// out, each of which keeps the old snapshot (build) -- and Key B trust must not
 // outlive its source of truth without bound.
 const snapshotMaxAge = 3 * poolCacheTTL
 
@@ -234,6 +236,11 @@ type trustSnapshot struct {
 	// nothing grants it or because a source did not answer; only the
 	// second is a condition a retry can outlast (VerifyPeerChain).
 	unread error
+
+	// keptAcross is the failed Key B read this snapshot carried the previous
+	// one's trust across (build), or nil for a snapshot built from what its
+	// own rebuild read.
+	keptAcross error
 
 	// base is the static pool widened was built over (staticBase when the
 	// rebuild ran); extra is every certificate added to it.
@@ -422,7 +429,8 @@ func (p *Pool) Run(ctx context.Context) {
 
 // Refresh reads the current trust state from storage, bounded by
 // refreshTimeout, and publishes it as the snapshot the handshake loads.
-// It returns the reason the new snapshot grants no widening, or nil.
+// It returns the reason the new snapshot grants no widening, the failed
+// Key B read it kept the previous trust across (build), or nil.
 //
 // When Refresh returns, the published snapshot was built after the call
 // began. A change that lands while the read is in flight -- a setter's
@@ -443,7 +451,10 @@ func (p *Pool) Refresh(ctx context.Context) error {
 		prev := p.snapshot.Load()
 		snap := p.build(ctx)
 		if p.snapshot.CompareAndSwap(prev, snap) {
-			return snap.err
+			if snap.err != nil {
+				return snap.err
+			}
+			return snap.keptAcross
 		}
 		if err := ctx.Err(); err != nil {
 			return &RefreshSupersededError{Err: err}
@@ -468,11 +479,14 @@ func (p *Pool) Refresh(ctx context.Context) error {
 //     is a signal this function must not paper over. keyBOnly is still
 //     filled (B3, see trustSnapshot).
 //
-// A failed Key B read also grants no widening (go-qrdb#591, blocker 2):
-// Key B stops being trusted once its source of truth stops answering, at
-// the latest one rebuild later -- a reseal is the ordinary cause in Raft
-// mode (docs/certificate-authority/architecture.md's "a runtime reseal must
-// make the dynamic client-auth trust pool drop Key B immediately" rule).
+// A sealed barrier grants no Key B widening (go-qrdb#591, blocker 2): a
+// reseal drops Key B at the next rebuild (docs/certificate-authority/
+// architecture.md's "a runtime reseal must make the dynamic client-auth trust
+// pool drop Key B immediately" rule). Any other failed Key B read -- a store
+// read that ran out of time on a busy node -- is not an answer about the CA
+// set, so the previous snapshot's trust is kept across it (keepAcross), but
+// never past snapshotMaxAge from the rebuild that last read Key B: a source
+// that stops answering costs Key B trust within that bound.
 func (p *Pool) build(ctx context.Context) *trustSnapshot {
 	snap := &trustSnapshot{built: time.Now(), base: p.staticBase.Load()}
 	keyBCerts, keyBErr := p.readKeyB(ctx)
@@ -493,6 +507,9 @@ func (p *Pool) build(ctx context.Context) *trustSnapshot {
 		snap.err = keyBErr
 	}
 	if snap.err != nil {
+		if kept := p.keepAcross(snap, keyBErr); kept != nil {
+			return kept
+		}
 		snap.unread = unansweredRead(snap.err)
 		return snap
 	}
@@ -507,6 +524,47 @@ func (p *Pool) build(ctx context.Context) *trustSnapshot {
 	snap.unread = anchorsErr
 	snap.widened = widen(snap.base, snap.extra)
 	return snap
+}
+
+// keepAcross returns the published snapshot's trust, carried across
+// keyBErr, when snap failed on nothing but a Key B read that did not answer
+// and the published snapshot still grants widening over the same static
+// pool and cluster CA; otherwise nil, and snap is published. The carried
+// snapshot keeps its build time, so current() and the next rebuild stop
+// honoring it snapshotMaxAge after Key B was last read. A sealed barrier
+// (*cert.BarrierSealedError), a missing provider and a pending rebuild are
+// answers, never carried across.
+func (p *Pool) keepAcross(snap *trustSnapshot, keyBErr error) *trustSnapshot {
+	var keyB *KeyBUnavailableError
+	if errors.As(snap.err, new(*ClusterCAUnavailableError)) || !errors.As(keyBErr, &keyB) || keyB.Err == nil ||
+		errors.As(keyBErr, new(*cert.BarrierSealedError)) {
+		return nil
+	}
+	prev := p.snapshot.Load()
+	if prev == nil || prev.widened == nil || prev.base != snap.base ||
+		!sameCertificate(prev.clusterCA, snap.clusterCA) ||
+		time.Since(prev.built) >= snapshotMaxAge {
+		return nil
+	}
+	return &trustSnapshot{
+		built:      prev.built,
+		unread:     keyBErr,
+		keptAcross: keyBErr,
+		base:       prev.base,
+		extra:      prev.extra,
+		widened:    prev.widened,
+		keyBOnly:   prev.keyBOnly,
+		clusterCA:  prev.clusterCA,
+	}
+}
+
+// sameCertificate reports whether a and b are both nil or the same
+// certificate.
+func sameCertificate(a, b *x509.Certificate) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(b)
 }
 
 // unansweredRead returns err when it says a trust source did not answer --

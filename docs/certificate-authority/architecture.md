@@ -909,8 +909,15 @@ copies of the same logic:
   (the ordinary case), or whatever a composed PRIOR hook itself returned,
   so that hook's own effect is never discarded on this path. This is what
   happens before the first rebuild after `SetKeyBProvider`, and whenever
-  the last rebuild's `CACertPEMs` failed — the ordinary outcome while
-  sealed in Raft mode, where the replicated store cannot be opened at all.
+  the last rebuild's `CACertPEMs` refused with `BarrierSealedError` — the
+  ordinary outcome while sealed. A `CACertPEMs` read that fails for any
+  other reason (a replicated read that runs out of time on a busy node) says
+  nothing about the CA set, so the rebuild keeps the previous snapshot's
+  trust across it, provided that snapshot granted widening over the same
+  static pool and cluster CA. The kept snapshot keeps its build time, so
+  the three-period age limit below still withdraws it when Key B reads keep
+  failing. A chain refused meanwhile is refused as trust state unavailable
+  (a retryable 503), not as an invalid certificate.
   - **The pool and the issuer-tenant binding are the SAME object.**
     `clienttrust.Pool` is both the TLS-layer widening decision and the
     authentication-layer binding check (`IsClusterCA`, `VerifyIssuer` —
@@ -960,8 +967,9 @@ copies of the same logic:
     cluster-CA swap never serves trust read from the previous one; a
     rebuild that was already reading when a setter ran is discarded rather
     than published (compare-and-swap). A snapshot older than three periods
-    is treated as withdrawn, so a stopped rebuild loop falls back to the
-    static baseline instead of serving old Key B trust indefinitely.
+    is treated as withdrawn, so a stopped rebuild loop, or one whose Key B
+    reads keep timing out, falls back to the static baseline instead of
+    serving old Key B trust indefinitely.
   - **Every listener-specific TLS override composes with
     `clienttrust.ReassertListenerTLS`**, not a bare clone-and-mutate:
     `GetConfigForClient`'s returned config REPLACES the connection's
