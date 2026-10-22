@@ -327,6 +327,7 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				cfg.RaftAddr,
 				logger,
 				WithBarrierReadiness(cfg.BarrierReg),
+				WithBarrierUnsealNotifier(cfg.BarrierReg),
 				WithSealRecords(cfg.ClusterSealer),
 				WithJoinObserver(ti.Raft),
 				WithPromoter(newRaftPromoter(cfg.Host)),

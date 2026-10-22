@@ -687,7 +687,13 @@ administrators may seal or unseal it; the platform operator cannot. See
 Replica placement is quota-checked and spread across distinct healthy nodes by a
 load-aware scheduler. Each node's `TenantShardReconciler` watches the replicated
 placement table and converges its assigned replicas — starting on boot,
-following placement changes, stopping on demotion. Replicas survive node
+following placement changes, stopping on demotion. A replica whose tenant
+barrier is missing or sealed on the node is deferred, and starts the moment
+that barrier is initialized or unsealed there: the barrier registry reports
+each tenant barrier's initialization and unseal to the reconciler, which runs
+a pass then rather than at its next poll. A tenant's home group is placed
+before any node holds its barrier, so this is what brings the group up as
+soon as the tenant's barrier exists. Replicas survive node
 restarts through the persistent placement table and per-node replica re-attach.
 
 Because leaving the placement stops a replica, a replica leaves its group

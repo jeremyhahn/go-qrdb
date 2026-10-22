@@ -150,6 +150,32 @@ func WithBarrierReadiness(b BarrierReadiness) TenantShardReconcilerOption {
 	return func(r *TenantShardReconciler) { r.barriers = b }
 }
 
+// BarrierUnsealNotifier reports each tenant barrier this node initializes
+// or unseals. It is satisfied by *seal.BarrierRegistry.
+type BarrierUnsealNotifier interface {
+	// OnTenantUnsealed registers fn to run, with the tenant's ID, each time
+	// one of the node's tenant barriers is initialized or unsealed. fn must
+	// not block.
+	OnTenantUnsealed(fn func(ctx context.Context, tenantID string))
+}
+
+// WithBarrierUnsealNotifier makes Run reconcile as soon as a tenant barrier
+// on this node is initialized or unsealed, so a shard deferred for its
+// barrier (WithBarrierReadiness) starts then rather than on the next poll.
+// When nil, a deferred shard waits for the next pass.
+func WithBarrierUnsealNotifier(n BarrierUnsealNotifier) TenantShardReconcilerOption {
+	return func(r *TenantShardReconciler) { r.unsealNotifier = n }
+}
+
+// queuePass asks the running reconciler for a pass without blocking; a pass
+// already queued absorbs the request.
+func (r *TenantShardReconciler) queuePass(context.Context, string) {
+	select {
+	case r.kick <- struct{}{}:
+	default:
+	}
+}
+
 // WithSealRecords makes the reconciler hold a tenant's shards while the
 // tenant's cluster seal record is sealed, and a database's shard while the
 // database's is. A system-managed tenant auto-unseals at boot, before this
@@ -224,6 +250,12 @@ type TenantShardReconciler struct {
 	purgeOnDemotion bool
 	pollInterval    time.Duration
 	logger          *slog.Logger
+
+	// unsealNotifier, when set, reports each tenant barrier this node
+	// initializes or unseals (WithBarrierUnsealNotifier); every report
+	// queues a pass on kick so a deferred shard starts then.
+	unsealNotifier BarrierUnsealNotifier
+	kick           chan struct{}
 }
 
 // NewTenantShardReconciler creates a TenantShardReconciler. store and factory
@@ -248,6 +280,7 @@ func NewTenantShardReconciler(
 		pollInterval:    defaultReconcilerPollInterval,
 		purgeOnDemotion: true,
 		logger:          logger,
+		kick:            make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -621,8 +654,15 @@ func (r *TenantShardReconciler) SetShellRegistrar(s ShellRegistrar) {
 //   - when Watch returns ErrWatchUnsupported or any error, polls with
 //     ReconcileOnce on a ticker at r.pollInterval (poll path).
 //
+// On either path, a tenant barrier initialized or unsealed on this node
+// (WithBarrierUnsealNotifier) runs a pass at once, so a shard deferred for
+// its barrier starts without waiting for the next tick.
+//
 // Run blocks until ctx is cancelled.
 func (r *TenantShardReconciler) Run(ctx context.Context) {
+	if r.unsealNotifier != nil {
+		r.unsealNotifier.OnTenantUnsealed(r.queuePass)
+	}
 	r.ReconcileOnce(ctx)
 
 	events, err := r.placement.Watch(ctx)
@@ -659,6 +699,8 @@ func (r *TenantShardReconciler) runWatch(ctx context.Context, events <-chan plac
 			}
 			r.handleEvent(ctx, ev)
 		case <-ticker.C:
+			r.ReconcileOnce(ctx)
+		case <-r.kick:
 			r.ReconcileOnce(ctx)
 		}
 	}
@@ -714,6 +756,8 @@ func (r *TenantShardReconciler) runPoll(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			r.ReconcileOnce(ctx)
+		case <-r.kick:
 			r.ReconcileOnce(ctx)
 		}
 	}

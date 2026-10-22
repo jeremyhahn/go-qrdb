@@ -543,6 +543,125 @@ func TestTenantShardReconciler_BarrierNotReadyDefers(t *testing.T) {
 	}
 }
 
+// deferralSignal is a slog.Handler that reports, on deferred, each time the
+// reconciler logs that it deferred a shard for its barrier: the record is
+// written after the barrier was found sealed, so a test acting on it knows
+// the pass that saw the barrier sealed is over.
+type deferralSignal struct{ deferred chan struct{} }
+
+func (h deferralSignal) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h deferralSignal) Handle(_ context.Context, rec slog.Record) error {
+	if strings.Contains(rec.Message, "deferring shard start") {
+		select {
+		case h.deferred <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (h deferralSignal) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h deferralSignal) WithGroup(string) slog.Handler      { return h }
+
+// runDeferredReconciler places tenantID's "orders" database on this node,
+// runs a reconciler over the real registry reg with a poll an hour away, and
+// returns once the reconciler has deferred the shard for its sealed barrier.
+func runDeferredReconciler(t *testing.T, reg *seal.BarrierRegistry, tenantID string, opts ...TenantShardReconcilerOption) *fakeShardLifecycle {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(ctx, placement1(tenantID, "orders", 1001)); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	factory := newFakeShardLifecycle()
+	signal := deferralSignal{deferred: make(chan struct{}, 1)}
+	opts = append([]TenantShardReconcilerOption{
+		WithReconcilerPollInterval(time.Hour),
+		WithBarrierReadiness(reg),
+	}, opts...)
+	r := NewTenantShardReconciler(store, factory, "local:1", slog.New(signal), opts...)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	select {
+	case <-signal.deferred:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reconciler never deferred the shard for its sealed barrier")
+	}
+	if n := factory.attachCount(); n != 0 {
+		t.Fatalf("Attach called %d times while the barrier was sealed", n)
+	}
+	return factory
+}
+
+// registerSystemManagedShell registers tenantID's barrier, wrapped by the
+// node barrier, uninitialized and sealed -- the shell placement registers on
+// a node before the tenant's barrier is initialized there.
+func registerSystemManagedShell(t *testing.T, reg *seal.BarrierRegistry, tenantID string) {
+	t.Helper()
+	if _, err := reg.RegisterTenant(context.Background(), tenantID, seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "tenants/" + tenantID + "/root-key"},
+		seal.NewSystemBarrierStrategy(reg.SystemBarrier())); err != nil {
+		t.Fatalf("RegisterTenant(%s): %v", tenantID, err)
+	}
+}
+
+// TestTenantShardReconciler_StartsDeferredShardWhenBarrierInitializes is main
+// red 61101: a tenant's home group is placed before the node holds its
+// barrier, so the shard is deferred, and the barrier initialized next must
+// start it then -- not on the next poll, an hour away here.
+func TestTenantShardReconciler_StartsDeferredShardWhenBarrierInitializes(t *testing.T) {
+	reg := newEnforcerRegistry(t)
+	registerSystemManagedShell(t, reg, "rt2")
+	factory := runDeferredReconciler(t, reg, "rt2", WithBarrierUnsealNotifier(reg))
+
+	if err := reg.InitializeTenant(context.Background(), "rt2", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+	waitFor(t, func() bool { return factory.isStarted("rt2", "orders") })
+}
+
+// TestTenantShardReconciler_StartsDeferredShardWhenBarrierUnseals defers a
+// shard for a barrier sealed after its initialization: the unseal starts it.
+func TestTenantShardReconciler_StartsDeferredShardWhenBarrierUnseals(t *testing.T) {
+	reg := newEnforcerRegistry(t)
+	registerSystemManagedShell(t, reg, "rt2")
+	if err := reg.InitializeTenant(context.Background(), "rt2", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant: %v", err)
+	}
+	if err := reg.SealTenant("rt2"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	factory := runDeferredReconciler(t, reg, "rt2", WithBarrierUnsealNotifier(reg))
+
+	if err := reg.UnsealTenant(context.Background(), "rt2", seal.Credentials{}); err != nil {
+		t.Fatalf("UnsealTenant: %v", err)
+	}
+	waitFor(t, func() bool { return factory.isStarted("rt2", "orders") })
+}
+
+// TestTenantShardReconciler_QueuePassNeverBlocks queues passes with no Run
+// draining them: the first is held, the rest are absorbed by it.
+func TestTenantShardReconciler_QueuePassNeverBlocks(t *testing.T) {
+	r := NewTenantShardReconciler(nil, newFakeShardLifecycle(), "local:1", nil)
+	for range 3 {
+		r.queuePass(context.Background(), "rt2")
+	}
+	if n := len(r.kick); n != 1 {
+		t.Fatalf("queued passes = %d, want 1", n)
+	}
+}
+
 // TestTenantShardReconciler_IdempotentAttach proves ReconcileOnce does not
 // re-attach an already-started shard.
 func TestTenantShardReconciler_IdempotentAttach(t *testing.T) {
