@@ -1,6 +1,6 @@
 # Audit — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -57,7 +57,8 @@ func NewNoopLogger() *NoopLogger
 func NewAggregateLogger(loggers ...AuditLogger) AuditLogger
 
 // Implemented by backends capable of self-verifying their own tamper-evidence
-// hash chain. *ChainFileLogger is the only first-party implementation.
+// hash chain. *ChainFileLogger is the backend that does; the logger
+// NewAggregateLogger returns delegates to the first member that resolves to one.
 type Verifier interface {
 	VerifyChainSet(ctx context.Context) (*ChainVerification, error)
 }
@@ -102,7 +103,7 @@ func ParseFailurePolicy(s string) (FailurePolicy, error)
 
 type InvalidFailurePolicyError struct{ Value string }
 type GateError struct {
-	Component string   // "authorize", "so-auth", "so-dual-factor"
+	Component string   // the gate that refused, e.g. "authorize", "so-auth", "so-dual-factor"
 	Err       error
 }
 
@@ -117,8 +118,8 @@ func EmitBestEffort(ctx context.Context, sink AuditLogger, component string, ev 
 
 **The posture lives in `pkg/audit`, not in `pkg/auth/middleware`.**
 `pkg/auth/middleware` imports `pkg/auth`, so the security-officer factor in
-`pkg/auth` could not read a policy the middleware owned, and the SO gate
-would run on a weaker posture than the authorization gate it sits behind.
+`pkg/auth` cannot read a policy the middleware owns; the SO gate would then
+run on a weaker posture than the authorization gate it sits behind.
 
 ## Composition
 
@@ -126,8 +127,8 @@ There is **no factory and no `audit.Config`**. The node's wiring site composes
 the sinks directly:
 
 ```go
-chain, err := audit.NewFileLogger(filepath.Join(dataDir, "audit-events.ndjson"))
-sink := audit.NewAggregateLogger(chain, audit.NewRingBuffer(10000), audit.NewSlogSink())
+chain, err := audit.NewFileLoggerIn(dataDir, audit.DefaultTrailFile)
+sink := audit.NewAggregateLogger(chain, audit.NewRingBuffer(audit.TrailRingSize), audit.NewSlogSink())
 decisions := audit.NewDecisionLogger(sink)   // -> middleware.WithAuditLogger
 ```
 
@@ -359,18 +360,18 @@ measure the write path.
 
 ## Fail-closed on audit write failure
 
-`decisionLogger.Log` propagates the sink's error verbatim. **Two gates** act on
-it, on **one** `audit.FailurePolicy` value:
+`decisionLogger.Log` propagates the sink's error verbatim. **Three gates** act
+on a failed write, on **one** `audit.FailurePolicy` value:
 
 | Gate | Where | Component | How the policy reaches it |
 |---|---|---|---|
 | authorization decision | `AuthMiddleware.authorize` → `auditDecision` | `authorize` | `middleware.WithAuditFailurePolicy` |
-| SO dual factor (route gate) | `middleware.SOGate` (REST `SOMiddleware`; gRPC, Unix, QUIC, MCP `WithSOGate`) | `so-dual-factor` | the `policy` **parameter**, set by `rest.WithAuditFailurePolicy` |
+| SO dual factor (route gate) | `middleware.SOGate` (REST `SOMiddleware`; gRPC, Unix, QUIC, MCP `WithSOGate`) | `so-dual-factor` | the `policy` **parameter** of `NewSOGate` and `SOMiddleware`; REST sets it from `rest.WithAuditFailurePolicy` |
 | SO PIN verification | `auth.SOAuthenticator.VerifySOPIN` | `so-auth` | `auth.WithSOAuditFailurePolicy` |
 
 All three read the operator's single `auth.audit_failure_policy`, resolved once
-per boot. **There is no second configuration key**: two keys would reintroduce
-the split this design exists to remove.
+per boot. **There is no second configuration key**: two keys would let the SO
+gates run on a different posture from the authorization gate.
 
 - **`audit.FailClosed` is the zero value**, so an `AuthMiddleware`, an
   `SOAuthenticator`, a `rest.Server` or a `SOMiddleware` call built by any
@@ -424,17 +425,19 @@ PIN through `VerifySOPIN` before committing anything.
 ```
 qrdb_auth_audit_write_failures_total{outcome="denied"}          # the authorization gate refused
 qrdb_auth_audit_write_failures_total{outcome="permitted"}       # the authorization gate let it through
-qrdb_audit_gate_failures_total{component,outcome}               # any OTHER gate: so-auth, so-dual-factor
+qrdb_audit_gate_failures_total{component,outcome}               # any OTHER gate (audit.EmitGated)
 qrdb_audit_write_failures_total{component="..."}                # a post-hoc record was lost
 qrdb_audit_rotation_failures_total                              # the file stopped honouring maxBytes
 ```
 
 The first two count authorization decisions. The third counts every **other**
 gating record that failed to write, labelled by the gate and by what the policy
-did — `component="so-auth"` and `component="so-dual-factor"` today. The fourth
-counts **post-hoc** records that failed to write, labelled by the subsystem
-whose trail now has the gap — `user`, `role`, `custodian`, `ceremony`,
-`credentials`, `so-auth`. Those call sites log and continue (see *Callers other
+did — `so-auth`, `so-dual-factor`, `share-holder`, `trust-anchor`, `backup`,
+`cert-enrollment`, `tenant-status`, `tenant-onboarding`. The fourth counts
+**post-hoc** records that failed to write, labelled by the subsystem whose
+trail now has the gap — `user`, `role`, `so-auth`, `credentials`,
+`share-holder`, `invitation`, `user_authfactor`, `cert`, `cert-enrollment`,
+`trust-anchor`, `backup`, `barrier`. Those call sites log and continue (see *Callers other
 than the middleware*), and a log line is not something anyone can alert on; the
 counter is.
 
@@ -464,7 +467,7 @@ There are exactly two honest answers:
 
 | Answer | When | How |
 |---|---|---|
-| **Propagate** | the record **gates** an operation that has not yet happened | `audit.EmitGated(ctx, sink, component, policy, ev)` — the SO gates. The authorization middleware propagates through `auditDecision`, which keeps its own counter; `sdk/go/transport/embedded.EmitAudit` returns the sink's error verbatim, because there the emit IS the caller's operation |
+| **Propagate** | the record **gates** an operation that has not yet happened | `audit.EmitGated(ctx, sink, component, policy, ev)` — the SO gates. The authorization middleware propagates through `auditDecision`, which keeps its own counter; the embedded transport's `AuditClient.EmitAudit` returns the sink's error verbatim, because there the emit IS the caller's operation |
 | **Log and count** | the operation has **already committed** and this is its post-hoc record | `audit.EmitBestEffort(ctx, sink, component, ev)` |
 
 ```go
@@ -574,8 +577,8 @@ through `NewDecisionLogger`: `Subject` becomes `actor`, `Result` becomes
 
 | Action | Resource format | Emitted by |
 |---|---|---|
-| `create` / `update` / `delete` / `enable` / `disable` / `add_cert_binding` / `remove_cert_binding` | `user:{id}` | user management (`pkg/user`) |
-| `create` / `update` / `delete` / `reconcile` | `role:{id}` | role management (`pkg/role`) |
+| `create` / `update` / `delete` / `enable` / `disable` / `add_cert_binding` / `remove_cert_binding` / `activate_with_cert_binding` / `record_auth` / `create_claim_leaked` | `user:{id}` | user management (`pkg/user`) |
+| `create` / `update` / `delete` / `reconcile` / `create_claim_leaked` | `role:{id}` | role management (`pkg/role`) |
 | `cert.issue` | `cert:{serial}` | every signature by a tenant's login CA (`CertEnrollmentService.SignCertificate`): CSR issuance for an existing account |
 | `cert.enroll` | `user:{id}` | a bring-your-own certificate bound to an existing account (`CertEnrollmentService.EnrollCertificate`) |
 | `cert.revoke` | `cert:{serial}` | every revocation (`DefaultCertProvider.RevokeCert`), deny-by-serial included |
@@ -666,12 +669,14 @@ counters. Auditors of a FedRAMP / PCI DSS / HIPAA deployment should treat a node
 running `"fail-open"` as a node whose authorization trail is not complete for
 the duration.
 
-**There is deliberately no second key.** An `auth.so_audit_failure_policy` would
-let a deployment record one of the two assertions and not the other, which is
-the split this design exists to remove. The daemon resolves the string once at
-boot and hands the resulting `audit.FailurePolicy` to
-`middleware.WithAuditFailurePolicy`, `rest.WithAuditFailurePolicy` and
-`auth.WithSOAuditFailurePolicy`.
+**There is deliberately no second key**: an `auth.so_audit_failure_policy`
+would let a deployment record one of the two assertions and not the other. The
+daemon resolves the string once at boot and hands the resulting
+`audit.FailurePolicy` to every gate, among them
+`middleware.WithAuditFailurePolicy` (through
+`wiring.AuthMiddlewareConfig.AuditFailurePolicy`),
+`rest.WithAuditFailurePolicy`, `auth.WithSOAuditFailurePolicy` and
+`ceremony.HolderDeps.AuditPolicy`.
 
 Three constraints on the setting, all enforced rather than documented:
 
@@ -709,13 +714,11 @@ client does.
 The durable trail is `audit-events.ndjson` in the data directory: one JSON
 object per line, each carrying the hash of its predecessor. It is **node-local
 and not Raft-replicated** — each node records what it did, so reconstructing a
-cluster-wide trail means collecting from every node, for this sink alone. (A
-second, separate mechanism — the replicated audit chain below — IS
-Raft-replicated and per-tenant opt-in via `AllowReplicatedAudit`: an entitled
-tenant's events reach BOTH the node-local sink above and the replicated
-chain, and the replicated chain's copy reads identically from any node in
-the group. The statement above still holds for the node-local sink itself,
-and for every tenant that has not opted into the replicated chain.)
+cluster-wide trail means collecting from every node. The replicated audit
+chain below is a separate, Raft-replicated mechanism, opt-in per tenant through
+the `allow_replicated_audit` entitlement: an entitled tenant's events reach
+both this sink and the replicated chain, whose copy reads identically from any
+node in the group.
 
 `ChainFileLogger` rotates at its size bound and, when it opens, deletes
 archives older than its retention window (90 days by default). Retention is
@@ -764,14 +767,15 @@ map.
 | `pkg/service/audit_optin_logger.go` | `AuditEntitlementLookup`, `OptInAuditLogger`, `TenantChainVerifier` |
 | `pkg/service/audit_errors.go` | `AuditFeatureNotActiveError`, `DedicatedTenantAuditNotSupportedError`, `ReplicatedAuditNotEntitledError` |
 | `pkg/server/lifecycle/lifecycle.go`, `audit_replicated.go` | `Node.ReplicatedAudit`, `Infra.ReplicatedAuditPlatformEnabled`, the lazy `nodeAuditIsolationLookup`/`nodeAuditEntitlementLookup` adapters `BuildServices` binds before `Node.Tenant` exists |
-| `pkg/api/{rest,grpc,quic,mcp,unix}` | the replicated query/verify capability per transport (`handleAuditQuery`'s `replicated` branch, `handleAuditVerifyReplicated(Chain)`) |
+| `pkg/api/{rest,grpc,quic,mcp,unix}` | the replicated query/verify capability per transport: `handleAuditQuery`'s `replicated` branch and `handleAuditVerifyReplicated` (REST, MCP) or `handleAuditVerifyReplicatedChain` (QUIC); the gRPC `auditServer.Query`/`VerifyReplicatedChain`, which the Unix socket also serves |
 | `sdk/go/transport/*`, `sdk/go/node/node.go` | `AuditFilter.Replicated`, `AuditClient.VerifyReplicatedChain`, `ChainContinuityResult`, the embedded transport's `WithReplicatedAuditLogger` |
 | `cmd/qrdb/audit.go` | `--replicated` on `qrdb audit query` / `qrdb audit verify` |
 
 **Reachability from a composer.** `sdk/go/node` forwards the node's own
-`Node.ReplicatedAudit` to REST, gRPC, QUIC, Unix and MCP as well as the
-embedded transport (`server.WithReplicatedAuditLogger`, surfaced as
-`CryptoOptions.ReplicatedAuditLogger`), so `--replicated` query and chain
+`Node.ReplicatedAudit` to REST, gRPC, QUIC, Unix and MCP through
+`server.WithReplicatedAuditLogger` (surfaced as
+`CryptoOptions.ReplicatedAuditLogger`), and to the embedded transport through
+`embedded.WithReplicatedAuditLogger`, so `--replicated` query and chain
 verification answer the replicated chain on every transport. A logger the
 caller passes as a server option comes last and replaces the node's.
 
@@ -786,12 +790,14 @@ makes the identical split:
   replica silently diverge from peers whose write succeeded.
 - Everything else `Append` can return (`*audit.MissingTimestampError`,
   `*audit.EncodeEventError`, `*audit.TenantMismatchError`,
-  `*vlog.InvalidTenantIDError`) and everything a malformed or
-  unrecognized command can produce (`*protocol.InvalidCommandError`) is a
-  deterministic consequence of the committed entry's own bytes — every
-  replica reaches it identically — so it is encoded as an application
-  refusal (`statemachine.RefusalResult`) via `pkg/statemachine`'s
-  `refusalRules` table, never returned as a Go error. `Prune` has no
+  `*vlog.InvalidTenantIDError`), and an event body that does not unmarshal
+  (`*protocol.InvalidCommandError`), is a deterministic consequence of the
+  committed entry's own bytes — every replica reaches it identically — so it
+  is encoded as an application refusal (`statemachine.RefusalResult`) via
+  `pkg/statemachine`'s `refusalRules` table, never returned as a Go error.
+  Framing `DecodeAuditCommand` rejects, an unknown subtype and a malformed
+  prune cutoff halt instead: they name a command shape this binary does not
+  recognize, the same class as `protocol.UnknownOpError`. `Prune` has no
   equivalent per-replica-refusal case at all: every error it can return is
   a fault in this replica's own already-committed storage, so it always
   halts.
@@ -834,7 +840,7 @@ group's sequence continues from its own storage alone.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-audit` (no Docker; selection in `test/integration/features.mk`). It runs the audit query/verify CLI suite per protocol and the tenant-confinement suite. Per-transport accounting is the `audit` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-audit` (no Docker; selection in `test/integration/features.mk`). It runs the audit query/verify CLI suite per protocol, the tenant-confinement suite and the three-node replicated-chain suite. Per-transport accounting is the `audit` row of `test/integration/COVERAGE.md`.
 
 - **Every sink's `Emit` error path has a test**, including the three that can
   never fail — each of those asserts the *reason* nil is the truthful answer,
