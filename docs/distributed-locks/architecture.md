@@ -1,6 +1,6 @@
 # Distributed Locks — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -59,11 +59,13 @@ holder's write, even though the zombie is convinced it holds the lock.
 
 ## Data flow
 
-**Acquire (`TryLock`, non-blocking):** read the lock key; if unheld, propose a
-CAS that claims it and grants a lease; on commit, the resulting `ModRevision`
-becomes the `FencingToken`, stored in the lock record. If held by another
-holder, return `LockHeldError` immediately. A reentrant re-acquisition by the
-same holder increments `AcquireCount` and returns the stored token unchanged.
+**Acquire (`TryLock`, non-blocking):** grant a lease, then run a CAS that
+creates the lock key bound to it only if the key does not exist; on commit, the
+resulting `ModRevision` becomes the `FencingToken`, written back into the lock
+record. If the CAS fails, read the record: held by another holder, revoke the
+new lease and return `LockHeldError` immediately. A reentrant re-acquisition by the
+same holder revokes the new lease, increments `AcquireCount` on the existing
+one and returns the stored token unchanged.
 
 **Acquire (`Lock`, blocking):** the same CAS; on contention, watch the lock key
 and retry the CAS when a release event arrives, until the caller's context is

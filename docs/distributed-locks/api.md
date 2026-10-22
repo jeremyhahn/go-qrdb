@@ -1,6 +1,6 @@
 # Distributed Locks — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -40,16 +40,18 @@ scope only.
 
 ## Schemas
 
-`LockAcquireRequest` (acquire and trylock):
+`LockAcquireRequest` (gRPC's `LockTryLockRequest` has the same fields):
 
 ```json
 { "key": "jobs/nightly-report", "holder_id": "worker-7", "ttl": 300, "reentrant": false }
 ```
 
-`holder_id` is optional; when empty the server generates a UUID. It is a
-reentrancy discriminator, **not an authenticated identity**.
+`holder_id` is optional on REST, gRPC and QUIC; when empty the server generates
+a UUID. The MCP tools require it. It is a reentrancy discriminator, **not an
+authenticated identity**.
 
-`LockInfo` (returned by acquire, trylock, extend, status; the elements of list):
+`LockInfo` (returned by acquire, trylock, extend, status; the elements of list;
+gRPC wraps it as the response's `lock` field):
 
 ```json
 {

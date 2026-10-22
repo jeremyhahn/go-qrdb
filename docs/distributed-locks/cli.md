@@ -1,6 +1,6 @@
 # Distributed Locks — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lock` — acquire, release, extend, inspect and list

@@ -1,6 +1,6 @@
 # Distributed Locks — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 A distributed lock lets one process at a time into a critical section across
@@ -126,7 +126,7 @@ two runs were in different scopes and never contended at all. Compare the
 another tenant is not visible to you and does not block you; a lock held in
 another of your databases needs `--database` to see.
 
-**Every lock command is refused as "unsupported".** The server's storage
+**Every lock command fails with "lock: not implemented on this server".** The server's storage
 backend is file or objstore, which keeps no leases to expire a lock. Run the
 server on the pebble or memory backend, in either mode.
 

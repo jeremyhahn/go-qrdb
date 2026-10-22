@@ -1,6 +1,6 @@
 # Distributed Locks — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -81,7 +81,7 @@ configured, which is the registry-less composition.
   lease** rather than granting a new one. The lock must be released the same
   number of times to be fully released. `AcquireCount` is always 1 for
   non-reentrant locks.
-- **`Lock` blocks, `TryLock` does not.** Blocking is implemented as a watch on
+- **`lock.Service.Lock` blocks, `TryLock` does not.** Blocking is implemented as a watch on
   the lock key plus a CAS retry on release, not a poll loop.
 - **TTL expiry releases the lock.** A crashed holder's lock is released by lease
   expiry with no operator action.
