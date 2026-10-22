@@ -202,7 +202,19 @@ repository, trust class and Docker host. The class is `CI_CACHE_CLASS`:
 `main` for a push to `main`, `pr` for every other event, so a pull request
 never writes a cache that `main`'s build reads. After the image build,
 `scripts/trim-ci-caches.sh` bounds the repository's cache volumes on the host
-to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job.
+to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. Over
+the bound, it first deletes the build and golangci-lint cache entries unused
+for three days, then one day, 12, 6 and 3 hours, measuring after each, and
+only then removes the largest volume no container mounts; the module cache is
+never thinned, only removed whole. While removal came first, it emptied the
+build cache, and the next `make lint` compiled the tree from nothing: 56
+minutes, against seconds on a warm cache (#1046). `make test-trim-ci-caches`, in
+`make lint-gates`, tests the order on a stub `docker`. The build cache also
+holds `go test`'s result cache: `make coverage`'s bulk run leaves out
+`make test`'s `-count=1`, so a package unchanged since a passing run replays
+that result and its coverage profile, and the packages
+`scripts/coverage-merge-subprocess.sh` covers run beside the bulk run rather
+than after it (#1046).
 `scripts/reap-stale-ci-stacks.sh` removes only compose-labelled and anonymous
 volumes, never these. `CI_CACHE=off` mounts none; a bridge stage then takes a
 writable copy of the image's module cache instead.

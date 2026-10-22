@@ -708,6 +708,10 @@ jobs:
       # COVERAGE_THRESHOLD (testing-guidelines.md), so the suite runs once.
       # Tags matter here too: without them tag-gated packages are neither
       # tested nor counted. The integration stage is its own job below.
+      # CUSTOMIZE (go-qrdb, #1046): the bulk run omits make test's -count=1,
+      # so a package unchanged since a passing run on this host's cache
+      # replays that result and its profile, and the subprocess-coverage
+      # packages run beside it, not after it.
       - name: make coverage (unit tests and the threshold)
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"

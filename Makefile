@@ -72,6 +72,13 @@ GO            := go
 # the push path should surface in 30m.
 GOTEST_TIMEOUT ?= 30m
 GOTEST        := $(GO) test -race -count=1 -v -timeout=$(GOTEST_TIMEOUT)
+# COVER_GOTEST is GOTEST without -count=1, for `make coverage`'s bulk run
+# alone (#1046). Every flag left is a build flag or one of go test's cacheable
+# flags, so a package whose test binary, and the files and environment its
+# tests read, are unchanged since a passing run replays that run's result and
+# its coverage profile instead of running again: the figure is the same, the
+# time is not. `make test` keeps -count=1 and runs everything.
+COVER_GOTEST  := $(GO) test -race -v -timeout=$(GOTEST_TIMEOUT)
 # INT_GOTEST is GOTEST without -race, for the integration suites alone. Race
 # detection is the unit suites' job, which keep GOTEST; under -race the
 # multi-node cluster suites cost several times the CPU and wall time, and the
@@ -1745,6 +1752,12 @@ COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/
 # needs this treatment at all and why concatenation, not `covdata merge`, is
 # the right operation here.
 #
+# The two runs are concurrent (#1046): the script compiles and runs its eight
+# packages one at a time, 171s on a warm cache, and run after the bulk run it
+# was a serial tail on top of it. It writes its output to subprocess.log,
+# printed once both are done, and each run's exit status is kept and checked
+# before either profile is read.
+#
 # `set -e`: without it, a `;`-joined recipe has NO fail-fast of its own -- a
 # failed bulk test run or a failed subprocess merge would leave `head`/`tail`
 # to run anyway over whatever partial output exists, and the recipe's exit
@@ -1785,8 +1798,11 @@ define COVERAGE_MERGE_SUBPROCESS
 	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
 	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
 	BULK_PKGS=$$($(GO) list $(TAG_FLAG) ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS; \
-	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out; \
+	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out > $(COVER_DIR)/subprocess.log 2>&1 & SUBPROCESS_PID=$$!; \
+	BULK_RC=0; $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS || BULK_RC=$$?; \
+	SUBPROCESS_RC=0; wait $$SUBPROCESS_PID || SUBPROCESS_RC=$$?; \
+	cat $(COVER_DIR)/subprocess.log; \
+	if [ $$BULK_RC -ne 0 ] || [ $$SUBPROCESS_RC -ne 0 ]; then echo "coverage: bulk run exit $$BULK_RC, subprocess run exit $$SUBPROCESS_RC" >&2; exit 1; fi; \
 	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
@@ -2164,7 +2180,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2293,7 +2309,8 @@ vet-sdk:
 # before a tag. `make lint-gates lint-sweeps` is the whole set.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
-	test-cluster-cpus check-action-pins check-integration-feature-coverage \
+	test-cluster-cpus test-trim-ci-caches check-action-pins \
+	check-integration-feature-coverage \
 	check-no-deprecated-credential-retrieve check-no-alias-language \
 	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
@@ -2593,6 +2610,14 @@ test-compose-targets: ## Test the compose-target guard
 .PHONY: test-cluster-cpus
 test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
 	@./scripts/cluster-cpus_test.sh
+
+# The CI cache trim (scripts/trim-ci-caches.sh) evicts the build and
+# golangci-lint cache entries unused longest before it removes a whole volume,
+# which emptied the build cache and made the next image job compile the tree
+# from nothing (#1046). Tested on a stub docker: a real run needs the runner's.
+.PHONY: test-trim-ci-caches
+test-trim-ci-caches: ## Test the CI cache trim's age-first eviction
+	@./scripts/trim-ci-caches_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
