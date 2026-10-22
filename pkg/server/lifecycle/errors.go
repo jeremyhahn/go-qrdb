@@ -285,6 +285,23 @@ func (e *EmbeddingProviderError) Unwrap() error {
 	return e.Err
 }
 
+// RAGChunkDefaultsError is returned when the rag configuration's chunking
+// defaults are a set the chunker refuses, such as an overlap not below the
+// chunk size or an unknown strategy.
+type RAGChunkDefaultsError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *RAGChunkDefaultsError) Error() string {
+	return "lifecycle: rag chunking defaults invalid: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RAGChunkDefaultsError) Unwrap() error {
+	return e.Err
+}
+
 // LocalStorageError is returned when NewLocalStorage fails to open the
 // node-local storage backend for a raft-free composition.
 type LocalStorageError struct {

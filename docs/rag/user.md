@@ -75,12 +75,10 @@ curl --cert client.pem --key client-key.pem --cacert ca.pem \
 
 ## Common tasks
 
-**Replace a document.** Delete it, then ingest the same `--id` again. Ingesting
-over it without the delete overwrites its chunks by index but keeps any extra
-chunks the old version had, and they stay searchable.
+**Replace a document.** Ingest the same `--id` again. The new text replaces the
+whole chunk set: chunks the old version had beyond the new count are removed.
 
 ```bash
-qrdb rag delete --namespace docs --id manual-v2
 qrdb rag ingest --namespace docs --id manual-v2 --text "$(cat manual-updated.txt)"
 ```
 

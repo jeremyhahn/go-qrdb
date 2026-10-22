@@ -33,8 +33,10 @@ document path, because the request carries both a document ID and a namespace.
   "chunk_overlap": 50, "chunk_min_size": 100 }
 ```
 
-`chunk_strategy` is `fixed`, `sentence` or `paragraph`; omitted chunk fields
-take the built-in defaults (`fixed`, 512, 50, 100). Response:
+`chunk_strategy` is `fixed`, `sentence` or `paragraph`; an omitted or zero
+chunk field takes the node's `rag` configuration default
+(`default_chunk_strategy`, `default_chunk_size`, `default_overlap`; built in
+`fixed`, 512, 50) and `chunk_min_size` takes 100. Response:
 
 ```json
 { "document_id": "manual-v2", "chunk_count": 37, "namespace": "docs" }
@@ -87,8 +89,9 @@ by `top_k` and are not paginated.
 | Success | 200 | `OK` |
 | Unknown vector namespace on query | 404 | `NOT_FOUND` — `*NamespaceNotFoundError`; ingest creates the namespace on first use |
 | Unknown document on delete | 404 | `NOT_FOUND` — `*RAGDocumentNotFoundError` |
-| Chunking or embedding failure during ingest | 500 | `INTERNAL` — `*RAGIngestError` |
-| Document over `max_document_size` | 500 | `INTERNAL` — `*RAGIngestError` wrapping `*rag.DocumentTooLargeError`, refused before chunking |
+| Empty document text, or a chunk setting the chunker refuses | 400 | `INVALID_ARGUMENT` — `*RAGIngestError` wrapping `*rag.ChunkingError` |
+| Document over `max_document_size` | 413 | `RESOURCE_EXHAUSTED` — `*RAGIngestError` wrapping `*rag.DocumentTooLargeError`, refused before chunking |
+| Embedding or store failure during ingest | 500 | `INTERNAL` — `*RAGIngestError` |
 | Unknown embedding provider | 404 | `NOT_FOUND` — nothing is stored |
 | Service closed | 503 | `UNAVAILABLE` — `*RAGServiceClosedError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

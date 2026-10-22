@@ -15,7 +15,9 @@ package service
 
 // ChunkConfig configures the chunking behavior for the RAG pipeline.
 // This mirrors pkg/rag/chunker.Config so the service layer does not
-// import the build-tag-guarded package.
+// import the build-tag-guarded package. A zero field is unset, as it is on
+// every transport's wire, and takes the node's default from the rag
+// configuration.
 type ChunkConfig struct {
 	// Strategy selects the chunking algorithm: "fixed", "sentence", "paragraph".
 	Strategy string
@@ -29,16 +31,6 @@ type ChunkConfig struct {
 	// MinSize is the minimum chunk size; chunks smaller than this are merged
 	// with the previous chunk.
 	MinSize int
-}
-
-// DefaultChunkConfig returns a ChunkConfig with sensible defaults.
-func DefaultChunkConfig() *ChunkConfig {
-	return &ChunkConfig{
-		Strategy:  "fixed",
-		ChunkSize: 512,
-		Overlap:   50,
-		MinSize:   100,
-	}
 }
 
 // IngestDocumentRequest is the service-layer request to ingest a document into

@@ -43,12 +43,16 @@
 // ragSvc != nil, so calls fail at the mcp-go client's CallTool step,
 // wrapped by toolCallError as "mcp transport: tool <name> failed: ...").
 //
-// This file asserts that "config-required" contract on all 5 protocols --
-// it does NOT assert positive RAG functionality qrdb does not provide
-// standalone, per this batch's explicit scope.
+// This file asserts that "config-required" contract on all 5 protocols. It
+// also starts a node with an embedding provider configured, so its RAG
+// service exists, and asserts on every protocol that an oversize document
+// and a chunking configuration the chunker rejects are refused as the
+// caller's error: neither request reaches the provider, so no embedding
+// backend is needed.
 package integration_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -197,5 +201,88 @@ func testRAGUnconfiguredOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	}
 	if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
 		t.Fatalf("[%s] rag list (no --namespace) error = %q, want it to contain %q", proto.name, out, want)
+	}
+}
+
+// ragMaxDocumentSize is the rag.max_document_size the input-refusal node is
+// started with: small enough that a one-line document exceeds it.
+const ragMaxDocumentSize = 64
+
+// ragInputRefusalYAML configures an embedding provider, so the node builds
+// its RAG service, and a document size bound. The provider's endpoint is
+// never dialled: both refusals the test drives happen before a chunk is
+// embedded (pkg/rag/ingest.go checks the size, then builds the chunker).
+var ragInputRefusalYAML = fmt.Sprintf(`embedding:
+  default_provider: default
+  providers:
+    - name: default
+      base_url: http://127.0.0.1:1
+      model: text-embedding-3-small
+rag:
+  max_document_size: %d
+`, ragMaxDocumentSize)
+
+// tooLargeByProto is how each transport's CLI error renders the TooLarge
+// class rag.DocumentTooLargeError maps to (pkg/api/errclass).
+var tooLargeByProto = map[string]string{
+	"rest": "status 413",
+	"grpc": "code = ResourceExhausted",
+	"quic": "resource exhausted",
+	"mcp":  "resource exhausted",
+	"unix": "code = ResourceExhausted",
+}
+
+// invalidArgumentByProto is how each transport's CLI error renders the
+// InvalidArgument class rag.ChunkingError maps to (pkg/api/errclass).
+var invalidArgumentByProto = map[string]string{
+	"rest": "status 400",
+	"grpc": "code = InvalidArgument",
+	"quic": "invalid argument",
+	"mcp":  "invalid argument",
+	"unix": "code = InvalidArgument",
+}
+
+// TestRAG_CLI_RefusesBadInput_PerProtocol proves, on one node with RAG
+// configured and over every transport, that `qrdb rag ingest` of a document
+// over rag.max_document_size is refused as too large (413 /
+// RESOURCE_EXHAUSTED) and that a chunking configuration the chunker rejects
+// is refused as the caller's invalid argument (400 / INVALID_ARGUMENT),
+// neither as an internal error.
+func TestRAG_CLI_RefusesBadInput_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", ragInputRefusalYAML)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testRAGRefusesBadInputOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testRAGRefusesBadInputOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	ns := "ragrefuse-" + proto.name
+
+	oversize := strings.Repeat("x", ragMaxDocumentSize+1)
+	out, err := runCLIProto(t, node, proto, "rag", "ingest",
+		"--id", "doc-big", "--text", oversize, "--namespace", ns)
+	if err == nil {
+		t.Fatalf("[%s] rag ingest of a %d-byte document over a %d-byte bound succeeded, got: %s",
+			proto.name, len(oversize), ragMaxDocumentSize, out)
+	}
+	if want := tooLargeByProto[proto.name]; !strings.Contains(out, want) {
+		t.Fatalf("[%s] oversize rag ingest error = %q, want it to contain %q", proto.name, out, want)
+	}
+
+	// An overlap equal to the chunk size is a configuration the fixed
+	// chunker rejects (chunker.InvalidConfigError).
+	out, err = runCLIProto(t, node, proto, "rag", "ingest",
+		"--id", "doc-bad-chunking", "--text", "the quick brown fox", "--namespace", ns,
+		"--chunk-strategy", "fixed", "--chunk-size", "8", "--chunk-overlap", "8")
+	if err == nil {
+		t.Fatalf("[%s] rag ingest with overlap == chunk size succeeded, got: %s", proto.name, out)
+	}
+	if want := invalidArgumentByProto[proto.name]; !strings.Contains(out, want) {
+		t.Fatalf("[%s] bad-chunking rag ingest error = %q, want it to contain %q", proto.name, out, want)
 	}
 }

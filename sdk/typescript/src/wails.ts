@@ -509,7 +509,7 @@ export class WailsClient implements Client {
                 // Deliberately unimplemented: the desktop webview talks to
                 // the embedded transport, which carries no authorization of
                 // its own (every AdminServicer verb skips enforcement
-                // there; see docs/embedded's trust-model note). Minting a
+                // there; see docs/embedding.md, "Trust model"). Minting a
                 // cluster join token is ScopeCross and platform-only --
                 // exactly the kind of admin verb that must never be
                 // reachable through a less-trusted binding than the

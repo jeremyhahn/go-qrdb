@@ -139,3 +139,21 @@ func TestVectorStoreAdapter_SearchSimilar_Error(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestVectorStoreAdapter_DeleteVector_Success(t *testing.T) {
+	adapter := NewVectorStoreAdapter(&ragMockVecSvc{})
+	require.NoError(t, adapter.DeleteVector(context.Background(), "ns", 42))
+}
+
+func TestVectorStoreAdapter_DeleteVector_NotFoundIsRemoved(t *testing.T) {
+	svc := &ragMockVecSvc{deleteErr: &VectorNotFoundError{Namespace: "ns", ID: "42"}}
+	adapter := NewVectorStoreAdapter(svc)
+	require.NoError(t, adapter.DeleteVector(context.Background(), "ns", 42),
+		"a vector that is already gone is removed, so a retry succeeds")
+}
+
+func TestVectorStoreAdapter_DeleteVector_Error(t *testing.T) {
+	cause := errors.New("delete failed")
+	adapter := NewVectorStoreAdapter(&ragMockVecSvc{deleteErr: cause})
+	require.ErrorIs(t, adapter.DeleteVector(context.Background(), "ns", 42), cause)
+}

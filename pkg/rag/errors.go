@@ -1,5 +1,3 @@
-//go:build qrdb_vector
-
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
 //
@@ -16,6 +14,9 @@
 package rag
 
 import "strconv"
+
+// This file carries no build tag, unlike the rest of the package: the error
+// classification table (pkg/api/errclass) names these types in every build.
 
 // DocumentTooLargeError is returned when a document exceeds the configured
 // maximum document size.
@@ -57,6 +58,24 @@ func (e *EmbeddingError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *EmbeddingError) Unwrap() error {
+	return e.Cause
+}
+
+// StoreError wraps a failure of the chunk-text store or the vector store
+// while a document's chunk set is read, written or removed. It carries no
+// class of its own: the cause decides how a transport reports it.
+type StoreError struct {
+	Op    string
+	Cause error
+}
+
+// Error returns a human-readable description of the store failure.
+func (e *StoreError) Error() string {
+	return "rag: " + e.Op + ": " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *StoreError) Unwrap() error {
 	return e.Cause
 }
 

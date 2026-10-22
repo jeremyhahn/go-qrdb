@@ -91,9 +91,12 @@ embedding service.
 ## Invariants
 
 - **`DocumentID` is the caller's identity for the document.** Ingesting the same
-  ID again overwrites its chunks by index and its document record, but leaves
-  chunks past the new chunk count in place; delete removes every chunk vector it
-  produced and reports `ChunksRemoved`.
+  ID again replaces its whole chunk set: the new chunks overwrite the old ones
+  by index, every chunk past the new count (its vector and its text) is
+  removed, and the document record is written last. Delete removes each chunk's
+  vector, then its text, and the document record last, and reports
+  `ChunksRemoved`; a delete that fails part way leaves the record, so deleting
+  again finishes it.
 - **Chunk text lives in the KV store; the vector carries the reference.**
   Retrieval is search-then-fetch, which is why `RAGQueryResult` can return
   `chunk_text` while the vector index stays dense.
@@ -106,9 +109,12 @@ embedding service.
 - **A query embeds with the same provider/model the caller names**, and the
   caller is responsible for that matching the model the corpus was ingested
   with. Mismatched models produce nonsense scores with no error.
-- **Ingest is not atomic across chunks in the caller-visible sense**: a failure
-  partway leaves the document partially ingested, and re-ingesting the same
-  `DocumentID` is the recovery.
+- **Ingest is not atomic across chunks in the caller-visible sense**: the chunk
+  text and the vectors live in separate stores with no shared transaction, so a
+  failure partway leaves the document partially ingested, and re-ingesting the
+  same `DocumentID` is the recovery. The document record is the last write, and
+  the stale chunks are found by listing the document's chunk keys, so a retry
+  removes whatever a failed re-ingest left.
 - **A query targets exactly one namespace.**
 
 ## Configuration
@@ -117,15 +123,19 @@ Section `rag`:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `default_chunk_strategy` | string | `fixed` | strategy for a request that sets none |
+| `default_chunk_size` | int | `512` | chunk size for a request that sets none |
+| `default_overlap` | int | `50` | overlap for a request that sets none |
+| `default_top_k` | int | `5` | result bound for a query that sets none |
 | `max_document_size` | int64 | `0` | max document size in bytes; **0 means unlimited** |
 
-The section also parses `default_chunk_strategy`, `default_chunk_size`,
-`default_overlap` and `default_top_k`, but no code reads them. A request that
-sets no chunk field uses the built-in chunk defaults (`fixed`, 512, 50, 100),
-and `top_k: 0` returns at most 5 results.
+A request's chunk field or `top_k` wins over the key; a zero or omitted one is
+unset on every transport and takes the key. A key set to 0 takes the built-in
+value shown. `chunk_min_size` has no key and defaults to 100. The node refuses
+to start (`*RAGChunkDefaultsError`) when the chunker refuses the three chunk
+defaults together, as it does an overlap not below the chunk size for `fixed`.
 
-Per-request chunk fields override the built-in defaults. Chunk parameters by
-strategy:
+Chunk parameters by strategy:
 
 | Strategy | `chunk_size` | `chunk_overlap` | `chunk_min_size` |
 |---|---|---|---|
@@ -144,15 +154,16 @@ Source: `pkg/service/rag_errors.go`.
 |---|---|---|
 | `*RAGServiceClosedError` | the service has been closed | yes |
 | `*RAGDocumentNotFoundError` | the document does not exist in the namespace | yes |
-| `*RAGIngestError` | ingest failed: chunking, embedding, namespace creation, a vector or KV write, or a document over `max_document_size`; wraps the cause | yes |
+| `*RAGIngestError` | ingest failed; wraps the cause: `*rag.DocumentTooLargeError` (a document over `max_document_size`, class TooLarge: 413 / `RESOURCE_EXHAUSTED`), `*rag.ChunkingError` (empty text or a chunk setting the chunker refuses, class InvalidArgument: 400 / `INVALID_ARGUMENT`), `*rag.EmbeddingError` (embedding, namespace creation or a vector write) or `*rag.StoreError` (a KV write), both internal | yes |
 | `*RAGQueryError` | query or list failed; wraps the cause, which for a missing vector namespace is `*NamespaceNotFoundError` | yes |
-| `*RAGDeleteError` | delete failed after the document was found; wraps the cause | yes |
+| `*RAGDeleteError` | removing a chunk's vector or text, or the document record, failed after the document was found; wraps the cause; the record survives, so the delete is retried | yes |
 | `*RAGTenantRequiredError` (`rag_scope.go`) | an authenticated node received a call carrying no tenant | yes |
 
 | Condition | Behavior |
 |---|---|
 | Unknown embedding provider | the embedding call fails; nothing is stored |
-| Document exceeds `max_document_size` | refused before chunking |
+| Document exceeds `max_document_size` | refused before chunking, as too large (413 / `RESOURCE_EXHAUSTED`) |
+| Chunk setting the chunker refuses | refused before embedding, as an invalid argument (400 / `INVALID_ARGUMENT`) |
 | Missing `rag:*` permission | permission denied |
 | Barrier sealed | refused |
 

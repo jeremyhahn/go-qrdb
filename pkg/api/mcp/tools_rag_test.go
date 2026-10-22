@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -60,6 +62,61 @@ func TestHandleRAGIngest_Success(t *testing.T) {
 	assert.Contains(t, text, `"Namespace":"ns"`)
 }
 
+// TestHandleRAGIngest_ChunkArgs proves every chunk argument, chunk_min_size
+// included, reaches the service, and that omitted ones leave no config.
+func TestHandleRAGIngest_ChunkArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]interface{}
+		want *service.ChunkConfig
+	}{
+		{
+			name: "all chunk fields",
+			args: map[string]interface{}{
+				"chunk_strategy": "sentence",
+				"chunk_size":     float64(256),
+				"chunk_overlap":  float64(16),
+				"chunk_min_size": float64(32),
+			},
+			want: &service.ChunkConfig{Strategy: "sentence", ChunkSize: 256, Overlap: 16, MinSize: 32},
+		},
+		{
+			name: "chunk_min_size alone",
+			args: map[string]interface{}{"chunk_min_size": float64(64)},
+			want: &service.ChunkConfig{MinSize: 64},
+		},
+		{
+			name: "no chunk fields",
+			args: map[string]interface{}{},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *service.IngestDocumentRequest
+			svc := &mockRAGSvc{
+				ingestFn: func(_ context.Context, req *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
+					got = req
+					return &service.IngestDocumentResponse{DocumentID: req.DocumentID}, nil
+				},
+			}
+			args := map[string]interface{}{
+				"document_id": "doc1",
+				"text":        "The quick brown fox.",
+				"namespace":   "ns",
+			}
+			for k, v := range tt.args {
+				args[k] = v
+			}
+			result, err := handleRAGIngest(svc)(context.Background(), newRAGCallRequest(args))
+			require.NoError(t, err)
+			assert.False(t, result.IsError)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want, got.ChunkConfig)
+		})
+	}
+}
+
 func TestHandleRAGIngest_ServiceError(t *testing.T) {
 	svc := &mockRAGSvc{
 		ingestFn: func(_ context.Context, _ *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
@@ -73,8 +130,43 @@ func TestHandleRAGIngest_ServiceError(t *testing.T) {
 		"namespace":   "ns",
 	})
 	result, err := handler(context.Background(), req)
-	require.NoError(t, err)
-	assert.True(t, result.IsError)
+	require.Error(t, err, "a service error is returned for errorCodeMiddleware to classify")
+	assert.Nil(t, result)
+}
+
+// TestHandleRAGIngest_RefusalCodes pins the codes an ingest refusal reaches
+// the client with: a document over max_document_size is RESOURCE_EXHAUSTED
+// and a chunking failure is INVALID_ARGUMENT, as on every other transport.
+func TestHandleRAGIngest_RefusalCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want wire.Code
+	}{
+		{"too large", &service.RAGIngestError{Cause: &rag.DocumentTooLargeError{Size: 2048, MaxSize: 1024}}, wire.CodeResourceExhausted},
+		{"chunking", &service.RAGIngestError{Cause: &rag.ChunkingError{Cause: errors.New("bad chunk size")}}, wire.CodeInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockRAGSvc{
+				ingestFn: func(context.Context, *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
+					return nil, tc.err
+				},
+			}
+			req := newRAGCallRequest(map[string]interface{}{
+				"document_id": "doc1",
+				"text":        "text",
+				"namespace":   "ns",
+			})
+			coded, err := errorCodeMiddleware()(handleRAGIngest(svc))(context.Background(), req)
+			require.NoError(t, err)
+			require.NotNil(t, coded)
+			require.True(t, coded.IsError)
+			payload, ok := wire.DecodeErrorPayload(coded.StructuredContent)
+			require.True(t, ok, "the refusal carries a code")
+			assert.Equal(t, tc.want, payload.Code)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -108,8 +200,8 @@ func TestHandleRAGQuery_ServiceError(t *testing.T) {
 		"namespace": "ns",
 	})
 	result, err := handler(context.Background(), req)
-	require.NoError(t, err)
-	assert.True(t, result.IsError)
+	require.Error(t, err, "a service error is returned for errorCodeMiddleware to classify")
+	assert.Nil(t, result)
 }
 
 // ---------------------------------------------------------------------------
@@ -142,8 +234,8 @@ func TestHandleRAGDeleteDocument_ServiceError(t *testing.T) {
 		"namespace":   "ns",
 	})
 	result, err := handler(context.Background(), req)
-	require.NoError(t, err)
-	assert.True(t, result.IsError)
+	require.Error(t, err, "a service error is returned for errorCodeMiddleware to classify")
+	assert.Nil(t, result)
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +265,6 @@ func TestHandleRAGListDocuments_ServiceError(t *testing.T) {
 	handler := handleRAGListDocuments(svc)
 	req := newRAGCallRequest(map[string]interface{}{"namespace": "ns"})
 	result, err := handler(context.Background(), req)
-	require.NoError(t, err)
-	assert.True(t, result.IsError)
+	require.Error(t, err, "a service error is returned for errorCodeMiddleware to classify")
+	assert.Nil(t, result)
 }

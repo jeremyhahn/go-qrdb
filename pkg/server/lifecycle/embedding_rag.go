@@ -101,17 +101,46 @@ func convertEmbeddingResult(r *embedding.EmbeddingResult) *service.EmbeddingResu
 // ragIngestorAdapter bridges rag.Ingestor to service.RAGIngestor. The
 // rag.Ingestor.Ingest method accepts *rag.IngestRequest while
 // service.RAGIngestor.Ingest takes *service.IngestDocumentRequest, requiring a
-// field-mapping conversion.
+// field-mapping conversion, in which every chunk setting the request leaves
+// unset takes the node's default.
 type ragIngestorAdapter struct {
-	ing *rag.Ingestor
+	ing           *rag.Ingestor
+	chunkDefaults chunker.Config
 }
 
-func newRAGIngestorAdapter(ing *rag.Ingestor) *ragIngestorAdapter {
-	return &ragIngestorAdapter{ing: ing}
+func newRAGIngestorAdapter(ing *rag.Ingestor, chunkDefaults chunker.Config) *ragIngestorAdapter {
+	return &ragIngestorAdapter{ing: ing, chunkDefaults: chunkDefaults}
+}
+
+// chunkConfig returns req with every unset field, a zero value on every
+// transport, taken from the adapter's defaults.
+func (a *ragIngestorAdapter) chunkConfig(req *service.ChunkConfig) *chunker.Config {
+	cfg := a.chunkDefaults
+	if req == nil {
+		return &cfg
+	}
+	if req.Strategy != "" {
+		cfg.Strategy = req.Strategy
+	}
+	if req.ChunkSize != 0 {
+		cfg.ChunkSize = req.ChunkSize
+	}
+	if req.Overlap != 0 {
+		cfg.Overlap = req.Overlap
+	}
+	if req.MinSize != 0 {
+		cfg.MinSize = req.MinSize
+	}
+	return &cfg
 }
 
 // Compile-time assertion.
 var _ service.RAGIngestor = (*ragIngestorAdapter)(nil)
+
+// RemoveChunks implements service.RAGIngestor.
+func (a *ragIngestorAdapter) RemoveChunks(ctx context.Context, namespace, documentID string) error {
+	return a.ing.RemoveChunks(ctx, namespace, documentID)
+}
 
 // Ingest implements service.RAGIngestor.
 func (a *ragIngestorAdapter) Ingest(ctx context.Context, req *service.IngestDocumentRequest) (*service.RAGIngestResult, error) {
@@ -121,17 +150,10 @@ func (a *ragIngestorAdapter) Ingest(ctx context.Context, req *service.IngestDocu
 			Text:     req.Text,
 			Metadata: req.Metadata,
 		},
-		Namespace: req.Namespace,
-		Model:     req.Model,
-		Provider:  req.Provider,
-	}
-	if req.ChunkConfig != nil {
-		ragReq.ChunkConfig = &chunker.Config{
-			Strategy:  req.ChunkConfig.Strategy,
-			ChunkSize: req.ChunkConfig.ChunkSize,
-			Overlap:   req.ChunkConfig.Overlap,
-			MinSize:   req.ChunkConfig.MinSize,
-		}
+		Namespace:   req.Namespace,
+		Model:       req.Model,
+		Provider:    req.Provider,
+		ChunkConfig: a.chunkConfig(req.ChunkConfig),
 	}
 	resp, err := a.ing.Ingest(ctx, ragReq)
 	if err != nil {
@@ -148,13 +170,15 @@ func (a *ragIngestorAdapter) Ingest(ctx context.Context, req *service.IngestDocu
 // RAG retriever adapter
 // ---------------------------------------------------------------------------
 
-// ragRetrieverAdapter bridges rag.Retriever to service.RAGRetriever.
+// ragRetrieverAdapter bridges rag.Retriever to service.RAGRetriever. A query
+// that sets no top-k takes defaultTopK; zero leaves the retriever's own.
 type ragRetrieverAdapter struct {
-	ret *rag.Retriever
+	ret         *rag.Retriever
+	defaultTopK int
 }
 
-func newRAGRetrieverAdapter(ret *rag.Retriever) *ragRetrieverAdapter {
-	return &ragRetrieverAdapter{ret: ret}
+func newRAGRetrieverAdapter(ret *rag.Retriever, defaultTopK int) *ragRetrieverAdapter {
+	return &ragRetrieverAdapter{ret: ret, defaultTopK: defaultTopK}
 }
 
 // Compile-time assertion.
@@ -162,10 +186,14 @@ var _ service.RAGRetriever = (*ragRetrieverAdapter)(nil)
 
 // Retrieve implements service.RAGRetriever.
 func (a *ragRetrieverAdapter) Retrieve(ctx context.Context, req *service.RAGQueryRequest) (*service.RAGRetrieveResult, error) {
+	topK := req.TopK
+	if topK <= 0 {
+		topK = a.defaultTopK
+	}
 	ragReq := &rag.RetrieveRequest{
 		Query:     req.Query,
 		Namespace: req.Namespace,
-		TopK:      req.TopK,
+		TopK:      topK,
 		Model:     req.Model,
 		Provider:  req.Provider,
 		Filter:    req.Filter,
@@ -270,6 +298,10 @@ func buildEmbeddingAndRAG(
 	// database and its seal, ownership, quota and isolation apply.
 	var ragSvc service.RAGServicer
 	if vectorSvc != nil {
+		chunkDefaults, err := ragChunkDefaults(ragCfg)
+		if err != nil {
+			return nil, nil, err
+		}
 		binding := service.NewRAGBinding()
 		embedAdapter := service.NewEmbedProviderAdapter(embSvc)
 		vectorAdapter := service.NewScopedVectorStoreAdapter(binding)
@@ -287,12 +319,33 @@ func buildEmbeddingAndRAG(
 			ragStore,
 		)
 		ragSvc = service.NewRAGService(
-			newRAGIngestorAdapter(ingestor),
-			newRAGRetrieverAdapter(retriever),
+			newRAGIngestorAdapter(ingestor, chunkDefaults),
+			newRAGRetrieverAdapter(retriever, ragCfg.DefaultTopK),
 			ragStore,
 		)
 		log.Info("RAG service initialized")
 	}
 
 	return embSvc, ragSvc, nil
+}
+
+// ragChunkDefaults returns the chunk configuration a request's unset fields
+// take: each rag key the configuration sets, and the chunker's built-in value
+// for each it leaves zero. A set the chunker refuses is a configuration
+// error, reported at startup rather than on every ingest.
+func ragChunkDefaults(ragCfg qrdbconfig.RAGConfig) (chunker.Config, error) {
+	cfg := *chunker.DefaultConfig()
+	if ragCfg.DefaultChunkStrategy != "" {
+		cfg.Strategy = ragCfg.DefaultChunkStrategy
+	}
+	if ragCfg.DefaultChunkSize != 0 {
+		cfg.ChunkSize = ragCfg.DefaultChunkSize
+	}
+	if ragCfg.DefaultOverlap != 0 {
+		cfg.Overlap = ragCfg.DefaultOverlap
+	}
+	if _, err := chunker.New(&cfg); err != nil {
+		return chunker.Config{}, &RAGChunkDefaultsError{Err: err}
+	}
+	return cfg, nil
 }

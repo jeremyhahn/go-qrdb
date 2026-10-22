@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"sync/atomic"
 )
 
@@ -65,6 +64,12 @@ type RAGIngestor interface {
 	// Ingest validates the document, chunks it, embeds the chunks, and stores
 	// the results. Returns a summary of the ingestion.
 	Ingest(ctx context.Context, req *IngestDocumentRequest) (*RAGIngestResult, error)
+
+	// RemoveChunks removes every chunk stored for the document: each chunk's
+	// vector and then its text. It leaves the document record, which the
+	// caller removes once RemoveChunks succeeds, so a failed removal is
+	// retried by calling it again.
+	RemoveChunks(ctx context.Context, namespace, documentID string) error
 }
 
 // RAGRetrievalResult is a single retrieved passage from the RAG pipeline.
@@ -218,18 +223,14 @@ func (s *ragService) DeleteDocument(ctx context.Context, req *DeleteRAGDocumentR
 		return nil, &RAGDeleteError{ID: req.DocumentID, Cause: err}
 	}
 
-	// Remove each chunk's KV entry.
-	for i := 0; i < docInfo.ChunkCount; i++ {
-		chunkKey := ragChunkKey(req.Namespace, req.DocumentID, i)
-		if delErr := s.kvSvc.Delete(ctx, chunkKey); delErr != nil {
-			// Non-fatal: log and continue cleaning up remaining chunks.
-			_ = delErr
-		}
+	// Remove every chunk's vector and text before the document record:
+	// until the record is gone, a retried delete finds the document and the
+	// chunks a failed removal left.
+	if err = s.ingestor.RemoveChunks(ctx, req.Namespace, req.DocumentID); err != nil {
+		return nil, &RAGDeleteError{ID: req.DocumentID, Cause: err}
 	}
-
-	// Remove document metadata.
-	if delErr := s.kvSvc.Delete(ctx, metaKey); delErr != nil {
-		_ = delErr
+	if err = s.kvSvc.Delete(ctx, metaKey); err != nil {
+		return nil, &RAGDeleteError{ID: req.DocumentID, Cause: err}
 	}
 
 	return &DeleteRAGDocumentResponse{
@@ -295,11 +296,6 @@ func (s *ragService) ListDocuments(ctx context.Context, req *ListRAGDocumentsReq
 func (s *ragService) Close() error {
 	s.closed.CompareAndSwap(false, true)
 	return nil
-}
-
-// ragChunkKey mirrors the key format used by the Ingestor.
-func ragChunkKey(namespace, docID string, chunkIdx int) string {
-	return "rag:" + namespace + ":" + docID + ":" + strconv.Itoa(chunkIdx)
 }
 
 // ragDocMetaKey mirrors the metadata key format used by the Ingestor.

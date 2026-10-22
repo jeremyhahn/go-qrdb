@@ -40,20 +40,30 @@ func (n *Node) Close() error
 
 ## Trust model
 
-**The embedded transport (`n.Client()`, `n.AdminService()`, and every
-service accessible through `n.Services()`) is a fully trusted, in-process
-surface with no authorization of its own.** Every remote transport (REST,
-gRPC, QUIC, Unix, MCP) enforces permissions in its own handler or
+**The embedded transport (`n.Client()`) authorizes through the same
+`AuthMiddleware` as the network transports.** The node builds one
+`AuthMiddleware` and hands that instance to the server and to the embedded
+transport alike (`n.AuthMiddleware()` returns it), so an in-process call is
+checked against the identity its context carries, under the same
+`pkg/permission` entry REST, gRPC, QUIC, Unix and MCP apply to the same
+operation. With auth disabled there is no middleware and the embedded
+transport admits every call, as a network transport run with
+`--auth-enabled=false` does.
+
+**The service handles (`n.Services()`, `n.AdminService()`) are a fully
+trusted, in-process surface with no authorization of their own.** Every
+transport, embedded included, enforces permissions in its own handler or
 middleware layer — REST middleware, the gRPC interceptor reading a proto
-method's permission option, QUIC's `handleIf`, MCP's `Perm` field — and
-every one of those sits in front of the SAME service methods embedded
-calls directly, with nothing in between. A service method like
-`AdminService.AddMember` or `AdminService.MintJoinToken` performs no
-permission check of its own; authorization is a property of the HANDLER
-a remote transport interposes, and embedded has none.
+method's permission option, QUIC's `handleIf`, MCP's `Perm` field, the
+embedded transport's `authorize` — and every one of those sits in front of
+the SAME service methods the service handles expose directly, with nothing
+in between. A service method like `AdminService.AddMember` or
+`AdminService.MintJoinToken` performs no permission check of its own;
+authorization is a property of the HANDLER a transport interposes, and a
+service handle has none.
 
 This is intentional and correct for its actual use: an embedding Go
-process calling `n.Client()` or `n.Services()` IS its own admission
+process calling `n.Services()` IS its own admission
 control, the same way a library call is not expected to re-authenticate
 its caller. The rule this implies, and the reason it is written down
 here rather than left implicit:

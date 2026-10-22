@@ -85,29 +85,6 @@ func TestRAGDeleteError_ErrorAndUnwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// rag_types.go – DefaultChunkConfig() (0%)
-// ---------------------------------------------------------------------------
-
-func TestDefaultChunkConfig_ReturnsDefaults(t *testing.T) {
-	cfg := DefaultChunkConfig()
-	if cfg == nil {
-		t.Fatal("expected non-nil ChunkConfig")
-	}
-	if cfg.Strategy != "fixed" {
-		t.Fatalf("expected Strategy=fixed, got %q", cfg.Strategy)
-	}
-	if cfg.ChunkSize != 512 {
-		t.Fatalf("expected ChunkSize=512, got %d", cfg.ChunkSize)
-	}
-	if cfg.Overlap != 50 {
-		t.Fatalf("expected Overlap=50, got %d", cfg.Overlap)
-	}
-	if cfg.MinSize != 100 {
-		t.Fatalf("expected MinSize=100, got %d", cfg.MinSize)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // batch_service.go – hasCSVExtension, hasJSONExtension (75%)
 // ---------------------------------------------------------------------------
 

@@ -1106,7 +1106,7 @@ and semantic retrieval.
 | `default_chunk_size` | int | `512` | Target chunk size in characters |
 | `default_overlap` | int | `50` | Overlapping characters/sentences between adjacent chunks |
 | `max_document_size` | int64 | `0` | Max document size in bytes; 0 = unlimited |
-| `default_top_k` | int | `10` | Default number of retrieval results when caller does not specify |
+| `default_top_k` | int | `5` | Default number of retrieval results when caller does not specify |
 
 **Chunking strategies:**
 
@@ -1124,14 +1124,18 @@ rag:
   default_chunk_size: 512
   default_overlap: 50
   max_document_size: 0
-  default_top_k: 10
+  default_top_k: 5
 ```
 
 **Validation rules:**
 
-- `default_chunk_strategy` must be one of: `"fixed"`, `"sentence"`, `"paragraph"`.
-- `default_chunk_size` must be greater than 0.
-- `default_overlap` must be non-negative.
+- A request's own chunk setting or `top_k` wins; these keys fill only what it
+  leaves unset. A key set to 0 takes the built-in default above.
+- The node refuses to start when the chunker refuses the three chunk defaults
+  together: `default_chunk_strategy` must be one of `"fixed"`, `"sentence"`,
+  `"paragraph"`; `default_chunk_size` must be greater than 0;
+  `default_overlap` must be non-negative and, for `"fixed"`, below
+  `default_chunk_size`.
 - `max_document_size` of 0 means unlimited.
 
 **Notes:**

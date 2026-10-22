@@ -111,20 +111,14 @@ func (s *Server) handleRAGIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build chunk config from request fields, applying defaults when zero.
+	// An omitted chunk field stays zero; the node's default fills it.
 	var chunkCfg *service.ChunkConfig
-	if req.ChunkStrategy != "" || req.ChunkSize > 0 {
-		chunkCfg = service.DefaultChunkConfig()
-		if req.ChunkStrategy != "" {
-			chunkCfg.Strategy = req.ChunkStrategy
-		}
-		if req.ChunkSize > 0 {
-			chunkCfg.ChunkSize = req.ChunkSize
-		}
-		if req.ChunkOverlap > 0 {
-			chunkCfg.Overlap = req.ChunkOverlap
-		}
-		if req.ChunkMinSize > 0 {
-			chunkCfg.MinSize = req.ChunkMinSize
+	if req.ChunkStrategy != "" || req.ChunkSize != 0 || req.ChunkOverlap != 0 || req.ChunkMinSize != 0 {
+		chunkCfg = &service.ChunkConfig{
+			Strategy:  req.ChunkStrategy,
+			ChunkSize: req.ChunkSize,
+			Overlap:   req.ChunkOverlap,
+			MinSize:   req.ChunkMinSize,
 		}
 	}
 

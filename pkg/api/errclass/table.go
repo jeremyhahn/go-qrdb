@@ -48,6 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
@@ -705,6 +706,11 @@ var privilegeRules = []rule{
 var ragRules = []rule{
 	as(&service.RAGDocumentNotFoundError{}, NotFound),
 	as(&service.RAGServiceClosedError{}, Unavailable),
+	// A document over max_document_size is refused before it is chunked.
+	as(&rag.DocumentTooLargeError{}, TooLarge),
+	// Chunking fails only on its input: empty text or a chunk setting the
+	// chunker refuses.
+	as(&rag.ChunkingError{}, InvalidArgument),
 }
 
 // embeddingRules are the embedding-provider conditions.

@@ -15,7 +15,7 @@
 // Package vlog is the replicated, append-only log a state machine keeps in
 // its raw keyspace: the apply-time head, the table it is stored in and the
 // restore-then-apply contract. pkg/audit's replicated chain is its first
-// instance; docs/decisions/verifiable-log.md is the design.
+// instance; docs/databases/architecture.md#verifiable-log is the design.
 package vlog
 
 import (

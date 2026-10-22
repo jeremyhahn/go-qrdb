@@ -34,10 +34,9 @@ qrdb rag ingest --namespace docs --id essay-1 --text "$(cat essay.txt)" \
      --chunk-strategy paragraph --chunk-min-size 200
 ```
 
-The response reports `chunk_count`. Re-ingesting the same `--id` overwrites its
-chunks by index and its document record. Chunks past the new chunk count are
-not removed and stay searchable, so delete the document before re-ingesting
-shorter text.
+The response reports `chunk_count`. Re-ingesting the same `--id` replaces the
+document: its chunks are overwritten by index, and any chunk past the new chunk
+count is removed, so nothing of the old version stays searchable.
 
 ## `qrdb rag query <query>`
 

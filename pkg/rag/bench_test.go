@@ -96,6 +96,10 @@ func (v *benchVecStore) EnsureNamespace(_ context.Context, _ string, _ int, _ st
 	return nil
 }
 
+func (v *benchVecStore) DeleteVector(_ context.Context, _ string, _ uint64) error {
+	return nil
+}
+
 // benchKVStore is an in-memory KVStore backed by a pre-populated map.
 // It is not safe for concurrent writes, but benchmarks only read from it.
 type benchKVStore struct {
