@@ -1234,8 +1234,10 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 // server (via ensureAuthFactorService in Start) and the SDK node builders
 // (via wireClientAndServer) construct the unified AuthFactorService from
 // the registry automatically so every transport exposes the
-// enrollment/challenge/verify surface. mTLS login is handled natively by
-// the auth.LoginResolver path and is not an authfactors.Factor.
+// enrollment/challenge/verify surface. mTLS login resolves through
+// auth.LoginResolver; the software mtls factor (pkg/authfactors/mtls) is an
+// authfactors.Factor that a caller may register here, and share-holder
+// ceremonies resolve it even when the registry lacks it.
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 	return func(o *serverOptions) { o.factorRegistry = reg }
 }
