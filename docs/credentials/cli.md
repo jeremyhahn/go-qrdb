@@ -1,6 +1,6 @@
 # Credentials — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb credential` — named-credential operations. All verbs
@@ -22,9 +22,9 @@ qrdb credential strategy
 
 Persist a credential value under the given name.
 
-| Flag | Type |
-|---|---|
-| `--value` | string |
+| Flag | Type | Required |
+|---|---|---|
+| `--value` | string | yes |
 
 ```bash
 qrdb credential store smtp-password --value "$SMTP_PASS"
@@ -36,9 +36,9 @@ Submit a credential value under the **manual** strategy. Retrieval blocks until
 this happens, which is how a non-resident secret reaches a booting system: an
 officer supplies it.
 
-| Flag | Type |
-|---|---|
-| `--value` | string |
+| Flag | Type | Required |
+|---|---|---|
+| `--value` | string | yes |
 
 ```bash
 qrdb credential submit ceremony-seed --value "$SEED"
@@ -58,7 +58,7 @@ Retrieve a specific version. **`--version 0` means the current version.**
 
 | Flag | Type | Default |
 |---|---|---|
-| `--version` | uint | `0` (current) |
+| `--version` | uint64 | `0` (current) |
 
 ```bash
 qrdb credential retrieve-version smtp-password --version 3
@@ -78,8 +78,8 @@ Rotate to a new value.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--value` | string | — | the new value |
-| `--grace-period` | int | `0` | seconds the **previous** version stays retrievable; `0` wipes it immediately |
+| `--value` | string | — (required) | the new value |
+| `--grace-period` | int64 | `0` | seconds the **previous** version stays retrievable; `0` wipes it immediately |
 
 ```bash
 # Cut over immediately
@@ -127,8 +127,8 @@ qrdb credential delete smtp-password
 
 ## Notes
 
-- Under the `barrier` strategy, every verb here fails while the barrier is
-  sealed.
+- Under the `barrier` strategy, every verb here except `strategy` fails while
+  the barrier is sealed.
 - Under `manual`, values live only in memory: a restart re-blocks retrieval
   until somebody submits again.
 - **PINs are not credentials.** They live in their own subsystem with lockout

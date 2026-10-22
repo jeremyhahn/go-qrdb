@@ -1,6 +1,6 @@
 # Credentials — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Named secrets the engine itself needs, with version history and a rotation
@@ -23,7 +23,7 @@ qrdb credential strategy
 
 | Strategy | What it means for you |
 |---|---|
-| `barrier` (production default) | values are encrypted and stored; they survive restarts; they are unreadable while the barrier is sealed |
+| `barrier` (the default) | values are encrypted and stored; they survive restarts; they are unreadable while the barrier is sealed |
 | `manual` | values live only in memory; **a read blocks until somebody submits the value**; a restart means submitting again |
 
 ## First run
@@ -104,8 +104,8 @@ smtp_password: "credential://smtp-password"
 
 At the application's boot these resolve into protected in-memory values, not plain strings. A
 field marked protected **must** reference a secret; if the reference cannot be
-resolved, startup fails rather than continuing with nothing. `literal://` exists
-for the cases where an inline value is genuinely intended.
+resolved, startup fails rather than continuing with nothing. `literal://` gives
+an inline value to a field that is not protected; a protected field refuses it.
 
 ## Troubleshooting
 

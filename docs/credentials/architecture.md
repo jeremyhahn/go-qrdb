@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Named credentials with versioned rotation, plus the SPI that resolves
@@ -15,15 +15,13 @@ in config files would put them on disk in plaintext.
 
 ## Shape chosen
 
-One interface, one service, **two strategies**:
-
-
-`pkg/credentials/config.go:11-24`
+One interface, one service, **two strategies**
+(`pkg/credentials/config.go:11-24`):
 
 | Strategy | Description |
 |----------|-------------|
-| `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). Plaintext is materialized only transiently (`Open → copy → Destroy`) on read; on delete/rotation the backing enclave is destroyed. |
-| `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the production default. |
+| `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). A read opens the enclave straight into a fresh `*secure.Buffer`; a delete, and a rotation with no grace period, destroy the backing enclave. |
+| `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the default. |
 
 A strategy that cannot enumerate its credentials returns
 `ErrEnumerationNotSupported` from `ListCredentials` rather than break the
@@ -62,9 +60,10 @@ These are deliberately **not** the same thing and do **not** overlap:
 
 `pkg/secret` resolves `credential://` and `literal://` references in an
 embedding application's configuration at boot (`qrdbd`'s own configuration
-carries none), into **enclave-backed `SecretValue` targets rather than
-plain strings**. A protected config field must reference a secret, and
-resolution **fails closed** when it cannot.
+carries none). A `credential://` reference resolves into an **enclave-backed
+`SecretValue` target rather than a plain string**. A protected config field
+must reference a secret held elsewhere, so it refuses an inline `literal://`
+value, and resolution **fails closed** when it cannot.
 
 The design record is
 [credentials/secret-resolution.md](../credentials/secret-resolution.md), which
@@ -86,9 +85,9 @@ the SPI.
 ## Trust boundaries
 
 - **`manual` credentials live only in go-enclave sealed enclaves** — never as raw,
-  garbage-collected heap bytes. Plaintext is materialized transiently
-  (`Open → copy → Destroy`) on read; the enclave is destroyed on delete or
-  rotation.
+  garbage-collected heap bytes. A read opens the enclave straight into a
+  fresh `*secure.Buffer`; the enclave is destroyed on delete, and on a
+  rotation with no grace period.
 - **`barrier` credentials are encrypt-then-store** through the
   `seal.StorageBarrier`, so a sealed barrier makes them unreadable.
 - **Retrieval under `manual` blocks until an operator submits the value.** That

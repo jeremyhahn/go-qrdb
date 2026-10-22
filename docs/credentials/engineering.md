@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -87,8 +87,8 @@ is the contract for where bytes may leave it. The rules a contributor works to:
 
 | Strategy | Storage | Read semantics |
 |---|---|---|
-| `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; plaintext materialized transiently (`Open → copy → Destroy`) |
-| `barrier` | encrypt-then-store through `seal.StorageBarrier` | the production default; unreadable while sealed |
+| `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; a read opens the enclave straight into a fresh `*secure.Buffer` |
+| `barrier` | encrypt-then-store through `seal.StorageBarrier` | the default; unreadable while sealed |
 
 `CredentialStrategy()` reports which is active. A strategy that cannot
 enumerate returns `ErrEnumerationNotSupported` from `ListCredentials` rather
@@ -101,8 +101,8 @@ than change the interface.
 - **`pkg/credentials` is the only secret-bearing store in qrdb.** There is no
   `secrets` or `kms` package.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
-  plaintext exists only transiently during a read; the enclave is destroyed on
-  delete and on rotation.
+  a read opens the enclave into a fresh `*secure.Buffer`; the enclave is
+  destroyed on delete and on a rotation with no grace period.
 - **A read copies under a held borrow, and refuses an unreadable enclave.**
   The copy out of protected memory runs inside a single coordinated borrow
   (`secure.CopyOut`) rather than sizing the destination and then reading it as
@@ -169,9 +169,9 @@ than change the interface.
   under the same lock as the current credential.
 - **GC reaps only expired historical versions** — it never touches the current
   one.
-- **Secret references resolve to protected targets, not strings.** A protected
-  config field must reference a secret, and resolution **fails closed** when it
-  cannot.
+- **A protected config field resolves to a `SecretValue`, never a string.** It
+  must reference a secret held elsewhere, so an inline `literal://` value is
+  refused, and resolution **fails closed** when it cannot.
 - **PINs are not credentials.** `pkg/pin` owns them, because PIN lockout is
   backend-native and credentials have no equivalent.
 
@@ -194,15 +194,14 @@ continue with no credential at all.
 
 ## Permission model
 
-`credentials:submit`, `credentials:strategy`, `credentials:list`,
-`credentials:store`, `credentials:retrieve`, `credentials:rotate`,
-`credentials:delete`, `credentials:retrieve_version`,
-`credentials:list_versions`, `credentials:gc_expired`. **Write, rotate and
-delete custody secret material and are gated separately from reads.**
+One permission per verb, listed in the [API capability matrix](api.md#capability-matrix)
+(`pkg/permission/constants.go`). **Write, rotate and delete custody secret
+material and are gated separately from reads.**
 
 ## Configuration
 
-The active strategy is a server configuration item; `credential strategy`
+The active strategy is `seal.credential_strategy` in the server configuration
+(`manual` or `barrier`; empty selects `barrier`); `credential strategy`
 reports it. Secret references in config use the `credential://` and
 `literal://` schemes and are processed by `ConfigProcessor` at boot. Scheme
 ownership across the stack is documented in
@@ -226,7 +225,7 @@ expiry implied by the rotation's grace period.
   without a grace period, versioned retrieval including `0` meaning current, GC
   reaping only expired versions, and `CredentialStrategy()`.
 - **The enclave lifecycle is tested, not assumed**: destroy on delete and on
-  rotation, and transient materialization on read.
+  rotation, and opening into a fresh Buffer on read.
 - **Delete is tested against the full version history, not just the current
   value**: rotate with a nonzero grace period, delete, then assert every
   version — current and in-grace history alike — is unretrievable, on both
@@ -242,7 +241,6 @@ expiry implied by the rotation's grace period.
   server error, nil request, closed transport).
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
-- **No `time.Sleep`** — grace-period expiry is driven through the clock seam.
 - **Error tests** per function.
 
 ## Observability

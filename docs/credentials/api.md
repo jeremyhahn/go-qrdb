@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -21,9 +21,8 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List names | `GET /v1/credentials` | `CredentialList` | `credential.List` | `qrdb_credential_list` | `CredentialList` | `credentials:list` |
 | Active strategy | `GET /v1/credentials/strategy` | `CredentialStrategy` | `credential.Strategy` | `qrdb_credential_strategy` | `CredentialStrategy` | `credentials:strategy` |
 
-Ten capabilities on all six transports. **Every transport handler routes
-through the same `service.CredentialServicer`**, so behaviour cannot diverge
-between them.
+**Every transport handler routes through the same
+`service.CredentialServicer`**, so behaviour cannot diverge between them.
 
 ## Schemas
 
@@ -60,6 +59,8 @@ Strategy returns `manual` or `barrier`.
 | Success | 200; 204 for store, submit and delete | `OK` |
 | Credential not found | 404 | `NOT_FOUND` |
 | Version expired or never existed | 404 | `NOT_FOUND` |
+| Submit of a name already submitted under `manual` | 409 | `ALREADY_EXISTS` — `ErrCredentialAlreadySubmitted` |
+| Empty name, empty value or negative grace period | 400 | `INVALID_ARGUMENT` |
 | Retrieve under `manual` with nothing submitted | **blocks** until submitted or the context ends | same |
 | Barrier sealed under the `barrier` strategy | 503 | `UNAVAILABLE` |
 | Enumeration on a strategy that cannot | 501 | `UNIMPLEMENTED` — `ErrEnumerationNotSupported` |
@@ -72,10 +73,10 @@ strategy exists to prevent.
 ## Secret resolution SPI
 
 An application embedding qrdb runs `ConfigProcessor` over its own configuration
-at boot, resolving `credential://` and `literal://` references into
-**enclave-backed `SecretValue` targets rather than plain strings**; `qrdbd`'s
-own configuration carries no reference. A protected field whose reference does
-not resolve **fails closed**.
+at boot, resolving `credential://` references into **enclave-backed
+`SecretValue` targets rather than plain strings**; `qrdbd`'s own configuration
+carries no reference. A protected field whose reference does not resolve, or
+that holds an inline `literal://` value, **fails closed**.
 
 This is a **Tier 2, composition-plane** surface: it has an `sdk/go` alias file
 and a documented functional option, and no wire endpoint — configuration is

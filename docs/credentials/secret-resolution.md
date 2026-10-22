@@ -1,6 +1,6 @@
 # Secret-reference resolution (`pkg/secret`)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -31,8 +31,8 @@ place. A value with no recognized scheme is left untouched.
   hold a reference, and resolves each through the registry. A `SecretValue`
   field is filled in place inside its enclave; a plain `string` field has the
   plaintext written back over the reference. `WithFailClosed()` makes it return
-  `ErrUnresolvedSecretURI` when any reference fails to resolve. For a production
-  boot, that is the default you want.
+  `ErrUnresolvedSecretURI` when any reference fails to resolve. It is opt-in;
+  a production boot sets it.
 - **`SecretValue`** — a resolved secret plus its `ResolvedStrategy` tag, and the
   processor's protected resolution target.
 
@@ -270,7 +270,8 @@ closed. See
 
 `literal://<value>` forces a value to be treated as a verbatim literal, which is
 how an operator quotes a value that would otherwise look like a reference. The
-prefix is stripped during resolution.
+prefix is stripped during resolution. It applies to a plain `string` field only;
+a protected target refuses it (above).
 
 ## Consuming it downstream
 
