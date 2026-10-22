@@ -1,6 +1,6 @@
 # Coordination — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -27,8 +27,8 @@ of work.
 
 Every verb is served in both run modes and on every storage backend. A
 standalone node runs the same lease, watch and lock machinery in process, and
-expires leases itself. What can turn a verb off is the node's configuration:
-**check, do not discover it at an election.**
+expires leases itself. The node's configuration can turn a family off.
+**Check, do not discover it at an election.**
 
 ```bash
 qrdb admin capabilities --output json
@@ -140,9 +140,6 @@ func renewWithRetry(ctx context.Context, l sdk.Lease, attempts int) error {
 ```
 
 ## Task 2 — choose the TTL and the renewal interval
-
-This is the decision people get wrong, so here is the reasoning rather than a
-rule of thumb.
 
 Your lease has a **deadline**. It moves only when a renewal is *acknowledged*,
 and it is measured from when that renewal was **sent**. So the time that has to

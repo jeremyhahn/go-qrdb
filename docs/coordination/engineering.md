@@ -1,6 +1,6 @@
 # Coordination — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -26,7 +26,7 @@ limitations under the License.
 | `sdk/go/coordination.go` | the whole surface: interfaces, `Coordinator`, the concrete lease and watch stream, every error type |
 | `sdk/go/coordination_test.go` | unit tests over fakes for the four transport sub-clients. It is an in-package test (`package sdk`) because it shortens the unexported `leaseCleanupTimeout` directly, the only test seam |
 | `sdk/go/coordination_standalone_test.go` | end to end against a real standalone node — CAS, lease and watch served |
-| `sdk/go/conformance/coordination_parity_test.go` | the lease, watch and lock suite against standalone and raft nodes on all six transports |
+| `sdk/go/conformance/coordination_parity_test.go` | `TestCoordinationFamilies_SameOnStandaloneAndRaft`, the lease, watch and lock sub-clients, and `TestCoordinator_SameOnEveryTransport`, every verb through `Client.Coordination()` — both against standalone and raft nodes on all six transports |
 | `sdk/go/coordination_raft_test.go` | end to end against a real single-replica raft group — lease lifecycle, expiry, exclusivity, renewal cadence, watch delivery |
 
 ## Exported surface
@@ -246,7 +246,8 @@ running out.
 
 ### The liveness observer
 
-Started by `AcquireLease`, stopped only by a successful `Release`.
+Started by `AcquireLease`; stopped by a successful `Release`, or when the
+observer ends the lease itself.
 
 | Quantity | Value |
 |---|---|
@@ -538,10 +539,12 @@ with it, repeated so a single lucky pass cannot make it green.
 a watch opened before the acquire delivers the leased key.
 
 **Parity, on every transport** (`sdk/go/conformance/coordination_parity_test.go`):
-one lease, watch and lock suite against a standalone memory, file and pebble
-node and a raft node on REST, gRPC, Unix, QUIC, MCP and embedded, and a
-standalone objstore node on embedded. Every backend composes the MVCC
-engine, so no row refuses the lease. The expiry case attaches its key under a
+`TestCoordinationFamilies_SameOnStandaloneAndRaft` drives the lease, watch and
+lock sub-clients, and `TestCoordinator_SameOnEveryTransport` every verb through
+`Client.Coordination()`, both over the same grid (`coordinationCells`): a
+standalone memory, file and pebble node and a raft node on REST, gRPC, Unix,
+QUIC, MCP and embedded, and a standalone objstore node on embedded. The expiry
+case attaches its key under a
 one-second lease and, if the host is too loaded for the put to land inside it
 (the server proves the lease gone), retries under twice the TTL; the reap is
 then bounded by that TTL plus one sweep interval plus the revoke's own write.

@@ -1,6 +1,6 @@
 # Coordination — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -102,8 +102,8 @@ call site:
 - **Serving lease and watch inertly where the node cannot back them** — a
   lease that never expires, a watch that never fires. Rejected: a primitive
   that silently does nothing is worse than a refusal, because the consumer only
-  finds out when its election fails to elect. A backend that keeps no leases
-  (standalone file or objstore) refuses `AcquireLease` with a typed error.
+  finds out when its election fails to elect. A node that does not compose the
+  lease service refuses `AcquireLease` with a typed error.
 - **A soft ownership deadline that credits a renewal already in flight.**
   Rejected, and this is the central safety decision. A keepalive that stalls in
   transport produces no extension on the server, so crediting it client-side
@@ -131,7 +131,7 @@ call site:
 | The four sub-client interfaces it composes | `sdk/go/transport` | go-qrdb |
 | Terminal watch-error classification | `sdk/go/transport` (`WatchResponse.Err`, `ClassifyWatchError`) | go-qrdb |
 | Lease objects, TTL accounting, the expiry sweep | `pkg/lease` — see [../leases/](../leases/) | go-qrdb |
-| Transaction precondition evaluation | `pkg/service` — see [../transactions/](../transactions/) | go-qrdb |
+| Transaction precondition evaluation | the state machine's apply: `pkg/store` (`pebbleEvaluateCompare`) and `pkg/engine` (`KVEngine.evaluateTxnCompare`) — see [../transactions/](../transactions/) | go-qrdb |
 | Change fan-out and watcher eviction | `pkg/watch` — see [../watch/](../watch/) | go-qrdb |
 | Commit order that makes revisions monotonic | `pkg/mvcc` over the consensus log | go-qrdb / go-quicraft |
 | Consensus, leader election | — | **go-quicraft** |
@@ -190,30 +190,20 @@ sweeper itself (see [../run-modes/architecture.md](../run-modes/architecture.md)
 So lease-based leadership and watch-driven convergence work on a single
 process, and a lease survives a restart in both modes.
 
-| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
-|---|---|---|---|
-| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
-| `AcquireLease` | serves | **refused** | serves |
-| `Watch` | serves | serves | serves |
-
 `CompareAndSwap` is linearizable on a standalone node because it is
 engine-direct and single-process; consensus is what makes a swap linearizable
 across *replicas*.
 
-**The storage backend, not the mode, is the boundary.** The file and objstore
-backends compose the plain KV engine, which keeps no leases: `AcquireLease`
-there is refused with `*transport.CapabilityUnsupportedError` rather than
-granting a lease nothing could expire. `Watch` is served there, except over
-MCP: MCP's polling client needs revision replay to stay gap-free, which that
-engine cannot give, so the watch ends with
-`*transport.WatchStartRevisionUnsupportedError` rather than dropping changes.
+**The storage backend is no boundary either.** A standalone node composes the
+MVCC engine over memory, file, pebble and objstore storage alike
+(`lifecycle.NewLocalEngine`), so every verb is served on every backend.
 
 **A consumer discovers what it has by asking, not by probing.**
 `Client.Admin().Capabilities(ctx)` returns `Mode` alongside per-family booleans
 including `Lease` and `Watch`, the node's sealed effective profile, the same on
 every transport. Constructing the `Coordinator` tells you nothing about it —
-every transport implements all four sub-client interfaces — and a backend
-refusal surfaces from the individual call.
+every transport implements all four sub-client interfaces — and a family the
+node does not compose is refused by the individual call.
 
 ## Trust boundaries
 

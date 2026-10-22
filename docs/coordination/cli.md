@@ -1,6 +1,6 @@
 # Coordination — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -73,7 +73,9 @@ qrdb admin capabilities --output json
 ```
 
 Read `mode`, `lease` and `watch` from the result. Every verb is served in both
-run modes and on every storage backend. See [../run-modes/cli.md](../run-modes/cli.md).
+run modes and on every storage backend; `lease` or `watch` reads false only
+where the operator set `lease.enabled` or `watch.enabled` to false. See
+[api.md](api.md) and [../run-modes/cli.md](../run-modes/cli.md).
 
 ## Parity
 
