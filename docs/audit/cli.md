@@ -1,6 +1,6 @@
 # Audit — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb audit` — query and verify the compliance-grade audit
@@ -29,12 +29,12 @@ With it:
   Raft-replicated, so the SAME tenant's trail reads identically from any
   node in the group, unlike the node-local file. A tenant whose
   `AllowReplicatedAudit` entitlement is off sees an empty result
-  (`Total: -1`), never an error: indistinguishable from "no replicated audit
-  configured on this node."
+  (`Total: -1`), never an error. A node with no replicated audit configured
+  refuses the query as not implemented.
 - `qrdb audit verify --replicated [--tenant-id ID]` verifies the hash-chain
   CONTINUITY of the replicated chain for one tenant (the caller's own by
   default; `--tenant-id` names another and is refused unless it IS the
-  caller's). This is a different check from the node-local `verify`'s
+  caller's), and requires `audit:verify_replicated`. This is a different check from the node-local `verify`'s
   rotation-archive walk — see
   [architecture.md](architecture.md#chain-hash-continuity-verification) for
   what it means and what it cannot prove. A tenant not entitled to the
@@ -118,8 +118,14 @@ The server caps `--limit` at 1000; a wider query must be paged.
 ## `qrdb audit verify`
 
 Verify the audit log's tamper-evidence hash chain across the active file and
-every rotation archive. No flags — the target is always the server's own
-configured trail. **Requires the `audit:verify` permission.**
+every rotation archive. Without `--replicated` the target is always the
+server's own configured trail and `--tenant-id` is ignored. **Requires the
+`audit:verify` permission.**
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--replicated` | bool | `false` | verify the cluster-wide replicated chain instead of the node-local trail |
+| `--tenant-id` | string | the caller's own | tenant whose replicated chain to verify (`--replicated` only); any other tenant is refused |
 
 ```bash
 qrdb audit verify
@@ -133,7 +139,7 @@ Verified: true
 Files: 3
 Records: 1842
 Genesis: true
-Order: audit-events.20260810-1.ndjson, audit-events.20260811-1.ndjson, audit-events.ndjson
+Order: audit-events-2026-08-10-000.ndjson, audit-events-2026-08-11-000.ndjson, audit-events.ndjson
 ```
 
 **A tamper finding exits non-zero.** `verify` prints the report either way,

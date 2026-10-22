@@ -1,6 +1,6 @@
 # Audit — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Who did what, when, and whether it worked. Auditing is on by default.
@@ -117,7 +117,8 @@ enrolments, envelope claims, quorum submissions, rekeys and revocations, in
 every scope, including the unseal quorum a sealed node gathers before it
 starts -- and **every permission denial**.
 Each entry names the actor, the actor's **role at that moment**, the tenant, the
-resource, the action, the outcome, the client IP and a request ID.
+resource, the action and the outcome; a Security Officer PIN check also
+records the client's address.
 
 Entries are chained by hash, so an edit or a deletion is detectable.
 
@@ -203,7 +204,7 @@ audit plane itself being down:
 qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}
     an authorization decision could not be recorded
 
-qrdb_audit_write_failures_total{component="user"|"role"|"custodian"|...}
+qrdb_audit_write_failures_total{component="user"|"role"|"share-holder"|...}
     some other subsystem's record could not be written; the label says
     whose trail is now incomplete
 

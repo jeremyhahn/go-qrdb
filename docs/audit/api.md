@@ -1,6 +1,6 @@
 # Audit — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
@@ -147,7 +147,7 @@ QUIC, the permission-denied tool code on MCP, and
 | `action` | initialize, unseal, sign, create, delete, … |
 | `outcome` | `success` · `failure:<reason>` · `denied:<reason>` |
 | `attributes` | JSON-serializable custom attributes |
-| `client_ip` | from `X-Forwarded-For` or the remote address |
+| `client_ip` | the remote address of the caller's connection, where the emitter records one |
 | `request_id` | for tracing across logs |
 | `prev_hash` | hex SHA-256 digest of the previous entry, empty for the first — the tamper-detection chain; the replicated chain writes it as `sha256:<hex>` |
 
@@ -199,7 +199,7 @@ Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | `replicated=true`, no replicated audit sink configured | 501 | `UNIMPLEMENTED` |
 | `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (query) | 200, `total: -1`, empty events | `OK`, `total: -1`, empty events |
-| `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (**verify**) | 403 | `PERMISSION_DENIED` |
+| `/v1/audit/replicated/verify`, tenant's `AllowReplicatedAudit` entitlement off | 403 | `PERMISSION_DENIED` |
 | Replicated chain's cluster feature gate not yet active on the tenant's shard | 503 | `UNAVAILABLE` |
 | Tenant names a dedicated-isolation (volume/raft) tenant not yet routable | 501 | `UNIMPLEMENTED` |
 
