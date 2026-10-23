@@ -71,8 +71,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // cliTenantAdminCred is a tenant's first-admin certificate/key pair, stashed
@@ -181,7 +179,7 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 	var adminClient *http.Client
 	if cred, ok := lookupTenantAdminCred(tenantID); ok {
 		adminClient = mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second)
-		selfAssignTenantSO(t, node.restPort, tenantID, adminClient)
+		awaitTenantAdminID(t, node.restPort, tenantID, adminClient)
 	} else {
 		adminClient = mtlsHTTPClient(t, node.ca, 15*time.Second)
 	}
@@ -235,29 +233,6 @@ func awaitTenantAdminID(t *testing.T, restPort int, tenantID string, adminClient
 		t.Fatalf("awaitTenantAdminID: decode tenant admin id: %v body=%s", err, lookupBody)
 	}
 	return adminResp.ID
-}
-
-// selfAssignTenantSO grants tenantID's own, already-seeded SO role
-// (role.BuiltInRoles/pkg/bootstrap.seedTenantRoles create one for every
-// tenant) to the identity authenticating as adminClient -- which must be
-// that tenant's own admin, looked up by its well-known username. Purely
-// test setup, for a test whose admin then acts as the tenant's Security
-// Officer: roles:assign is in the Admin's grants, and self-assignment is not
-// restricted beyond it.
-func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
-	t.Helper()
-	adminUsername := tenantID + "-admin"
-	adminID := awaitTenantAdminID(t, restPort, tenantID, adminClient)
-	assignBody, assignStatus := iraftAPIPost(t, adminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/roles/assign", restPort),
-		map[string]interface{}{
-			"user_id": adminID,
-			"role_id": role.SystemRoleID(tenantID, role.RoleNameSO),
-		},
-	)
-	if assignStatus != http.StatusOK {
-		t.Fatalf("selfAssignTenantSO: self-assign SO to tenant admin %s: status %d, body: %s", adminUsername, assignStatus, assignBody)
-	}
 }
 
 // tenantCLIArgsForProto returns the root-level qrdb CLI flags that select

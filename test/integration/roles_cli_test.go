@@ -660,3 +660,55 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 		t.Fatalf("[%s] built-in admin role after refused update = %+v", proto.name, builtIn)
 	}
 }
+
+// TestRolesTenantAdminSOGrantRefused_CLI_PerProtocol drives `qrdb roles
+// assign` as a tenant's bootstrap Admin over every CLI transport: the Admin
+// holds roles:assign in its own tenant, yet granting the tenant's built-in SO
+// role is the tenant SO's alone (SORoleRequiredError, 403 /
+// PermissionDenied), so the Admin cannot make itself the Security Officer.
+func TestRolesTenantAdminSOGrantRefused_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testRolesTenantAdminSOGrantRefusedOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testRolesTenantAdminSOGrantRefusedOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	tenantID := fmt.Sprintf("tso-%s-%d", proto.name, time.Now().UnixNano())
+	conn := tenantAdminConn(t, node, proto, tenantID)
+	cred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for tenant %s", proto.name, tenantID)
+	}
+	adminID := awaitTenantAdminID(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second))
+	soID := role.SystemRoleID(tenantID, role.RoleNameSO)
+
+	out, err := runQRDB(t, node.cli, conn, "roles", "assign", "--user", adminID, "--role", soID)
+	if err == nil {
+		t.Fatalf("[%s] tenant Admin granted itself the SO role %s: %s", proto.name, soID, out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "so role required") &&
+		!strings.Contains(lower, "permission denied") &&
+		!strings.Contains(lower, "forbidden") {
+		t.Fatalf("[%s] SO grant by the tenant Admin must be refused as a permission denial, got: %s", proto.name, out)
+	}
+
+	// The refusal changed nothing: the Admin still holds Admin, and not SO.
+	user, err := runQRDB(t, node.cli, conn, "--output", "json", "users", "get", adminID)
+	if err != nil {
+		t.Fatalf("[%s] users get %s: %v\noutput: %s", proto.name, adminID, err, user)
+	}
+	if !strings.Contains(user, role.SystemRoleID(tenantID, role.RoleNameAdmin)) {
+		t.Fatalf("[%s] tenant Admin %s lacks the Admin role: %s", proto.name, adminID, user)
+	}
+	if strings.Contains(user, soID) {
+		t.Fatalf("[%s] tenant Admin %s holds the SO role after a refused grant: %s", proto.name, adminID, user)
+	}
+}

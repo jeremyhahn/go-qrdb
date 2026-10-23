@@ -169,6 +169,10 @@ From the moment the delete starts, the role grants nothing. If the delete
 fails part way, for example because a node is unavailable, run it again: it
 picks up where it stopped.
 
+Deleting a role is the Security Officer's: the built-in `so` role carries
+`roles:delete` and the Admin role does not, so an Admin that creates and
+updates roles is refused their delete with permission denied (HTTP 403).
+
 **Store an ABAC policy and read it back.**
 
 ```bash

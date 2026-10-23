@@ -141,12 +141,11 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, tenantA
 	// Authenticate as the tenant's OWN admin (the CSR-provisioned identity
 	// tenant create just bound), not the system admin: the system tenant can
 	// no longer provision records inside another tenant's IAM at all (owner
-	// ruling, 2026-10-01: ScopeSelf has no system-tenant lift). The tenant's
-	// built-in Admin role cannot create a NEW role (RolesCreate is
-	// SO-exclusive), so it self-assigns its own pre-seeded SO role first,
-	// exactly like tenant_isolation_cli_test.go's provisionTenantIdentityFor.
+	// ruling, 2026-10-01: ScopeSelf has no system-tenant lift), once
+	// awaitTenantAdminID sees that account completed, exactly like
+	// tenant_isolation_cli_test.go's provisionTenantIdentityFor.
 	adminClient := mtlsHTTPClientFromFiles(t, ca, tenantAdminCertPath, tenantAdminKeyPath, 15*time.Second)
-	selfAssignTenantSO(t, adminPort, tenantID, adminClient)
+	awaitTenantAdminID(t, adminPort, tenantID, adminClient)
 
 	roleBody, roleStatus := iraftAPIPost(t, adminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),

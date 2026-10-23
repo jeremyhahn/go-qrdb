@@ -285,8 +285,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	// The system tenant can no longer provision records inside another
 	// tenant's IAM at all (owner ruling, 2026-10-01), so createRole and the
 	// tenant's bound users below authenticate as the tenant's own onboarded
-	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
-	// is SO-exclusive), so it self-assigns its own pre-seeded SO role first.
+	// admin, once awaitTenantAdminID sees that account completed.
 	var createResp struct {
 		Admin struct {
 			CertPEM string `json:"cert_pem"`
@@ -300,7 +299,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
 	}
 	c.admin = qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-	selfAssignTenantSO(t, adminPorts[c.creator], fwdTenantID, c.admin)
+	awaitTenantAdminID(t, adminPorts[c.creator], fwdTenantID, c.admin)
 	writerRole := c.createRole(t, base, "kv-writer", "databases:create", "databases:create_raft", "databases:read",
 		"databases:list", "databases:delete", "kv:put", "kv:get", "kv:delete", "watch:watch")
 	listerRole := c.createRole(t, base, "db-lister", "databases:list")
