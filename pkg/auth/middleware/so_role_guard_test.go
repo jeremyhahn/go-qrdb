@@ -19,6 +19,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -131,5 +134,96 @@ func TestSORoleGuard_NilMiddlewareHasNoGuard(t *testing.T) {
 	var m *AuthMiddleware
 	if g := m.SORoleGuard(context.Background()); g != nil {
 		t.Fatal("a nil middleware returned a guard")
+	}
+}
+
+// boundCaller is an acme caller holding roleIDs and the given bindings, the
+// way authentication carries them: bindings apart from Roles.
+func boundCaller(roleIDs []string, bindings ...auth.RoleBinding) context.Context {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
+		Subject: "acme-caller", TenantID: "acme", Roles: roleIDs, RoleBindings: bindings,
+	})
+	return tenant.WithTenantID(ctx, "acme")
+}
+
+// TestSORoleChange_CallerBindings: a caller holding the SO role only through
+// a binding scoped to the target tenant grants and revokes it; a binding
+// scoped to another tenant counts for nothing, and the Admin stays refused.
+func TestSORoleChange_CallerBindings(t *testing.T) {
+	f := newSORoleFixture(t)
+	acmeUser := func(roleIDs ...string) *userTenantFixture {
+		return &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: roleIDs}}
+	}
+	boundSO := boundCaller([]string{f.admin}, auth.RoleBinding{RoleID: f.so, TenantID: "acme"})
+	foreignSO := role.SystemRoleID("globex", role.RoleNameSO)
+	foreignBound := boundCaller([]string{f.admin},
+		auth.RoleBinding{RoleID: f.so, TenantID: "globex"},
+		auth.RoleBinding{RoleID: foreignSO, TenantID: "globex"})
+	admin := boundCaller([]string{f.admin}, auth.RoleBinding{RoleID: f.userRole, TenantID: "acme"})
+
+	tests := []struct {
+		name  string
+		call  func() error
+		check func(t *testing.T, err error)
+	}{
+		{"bound SO assigns SO", func() error { return f.mw.AuthorizeRoleAssignment(boundSO, acmeUser(), f.roles, 7, f.so) }, wantNoError},
+		{"bound SO unassigns SO", func() error { return f.mw.AuthorizeRoleUnassignment(boundSO, acmeUser(f.so), 7, f.so) }, wantNoError},
+		{"bound SO replaces role_ids granting SO", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(boundSO, acmeUser(), f.roles, 7, []string{f.so}, nil)
+		}, wantNoError},
+		{"bound SO guard revokes SO", func() error {
+			return f.mw.SORoleGuard(boundSO)(acmeUser(f.so).u, acmeUser().u)
+		}, wantNoError},
+		{"foreign-bound SO assigns SO", func() error {
+			return f.mw.AuthorizeRoleAssignment(foreignBound, acmeUser(), f.roles, 7, f.so)
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"foreign-bound SO unassigns SO", func() error {
+			return f.mw.AuthorizeRoleUnassignment(foreignBound, acmeUser(f.so), 7, f.so)
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"admin with a bound role assigns SO", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(), f.roles, 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		{"admin with a bound role guard revokes SO", func() error {
+			return f.mw.SORoleGuard(admin)(acmeUser(f.so).u, acmeUser().u)
+		}, wantErrorAs[*SORoleRequiredError]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.call())
+		})
+	}
+}
+
+func TestHeldRoleIDs(t *testing.T) {
+	bindings := []user.RoleBinding{{RoleID: "b-acme", TenantID: "acme"}, {RoleID: "b-globex", TenantID: "globex"}}
+	tests := []struct {
+		name     string
+		target   string
+		roleIDs  []string
+		bindings []user.RoleBinding
+		want     []string
+	}{
+		{"roles and target-scoped bindings", "acme", []string{"r"}, bindings, []string{"r", "b-acme"}},
+		{"another target", "globex", nil, bindings, []string{"b-globex"}},
+		{"no bindings", "acme", []string{"r"}, nil, []string{"r"}},
+		{"nothing", "acme", nil, nil, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := heldRoleIDs(tt.target, tt.roleIDs, tt.bindings); !slices.Equal(got, tt.want) {
+				t.Fatalf("heldRoleIDs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCallerRoleIDs(t *testing.T) {
+	identity := &auth.Identity{
+		Roles:        []string{"r"},
+		RoleBindings: []auth.RoleBinding{{RoleID: "b-acme", TenantID: "acme"}, {RoleID: "b-globex", TenantID: "globex"}},
+	}
+	if got, want := callerRoleIDs(identity, "acme"), []string{"r", "b-acme"}; !slices.Equal(got, want) {
+		t.Fatalf("callerRoleIDs(acme) = %v, want %v", got, want)
+	}
+	if got, want := callerRoleIDs(&auth.Identity{Roles: []string{"r"}}, "acme"), []string{"r"}; !slices.Equal(got, want) {
+		t.Fatalf("callerRoleIDs without bindings = %v, want %v", got, want)
 	}
 }

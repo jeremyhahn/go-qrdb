@@ -105,7 +105,7 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	if bindings != nil {
 		afterBindings = bindings
 	}
-	if err := m.authorizeSORoleChange(ctx, target, heldRoleIDs(existing.RoleIDs, existing.RoleBindings), heldRoleIDs(afterIDs, afterBindings)); err != nil {
+	if err := m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, afterBindings)); err != nil {
 		return err
 	}
 	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, bindings)
@@ -132,7 +132,7 @@ func (m *AuthMiddleware) AuthorizeRoleAssignment(
 	if err := m.authorizeRolesAssign(ctx, target); err != nil {
 		return err
 	}
-	before := heldRoleIDs(existing.RoleIDs, existing.RoleBindings)
+	before := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
 	if err := m.authorizeSORoleChange(ctx, target, before, append(slices.Clip(before), roleID)); err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 	// UnassignRole removes the role from RoleIDs alone; a binding naming it
 	// still grants it afterwards.
 	afterIDs := slices.DeleteFunc(slices.Clone(existing.RoleIDs), func(id string) bool { return id == roleID })
-	return m.authorizeSORoleChange(ctx, target, heldRoleIDs(existing.RoleIDs, existing.RoleBindings), heldRoleIDs(afterIDs, existing.RoleBindings))
+	return m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, existing.RoleBindings))
 }
 
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a
@@ -221,8 +221,9 @@ func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
 		return nil
 	}
 	return func(prior, next *user.User) error {
-		return m.authorizeSORoleChange(ctx, tenantid.Normalize(prior.TenantID),
-			heldRoleIDs(prior.RoleIDs, prior.RoleBindings), heldRoleIDs(next.RoleIDs, next.RoleBindings))
+		target := tenantid.Normalize(prior.TenantID)
+		return m.authorizeSORoleChange(ctx, target,
+			heldRoleIDs(target, prior.RoleIDs, prior.RoleBindings), heldRoleIDs(target, next.RoleIDs, next.RoleBindings))
 	}
 }
 
@@ -243,8 +244,9 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 // itself target's SO. The tenant Admin holds roles:assign and
 // roles:unassign and is refused here, as is any other tenant's SO, the
 // system tenant's included. A write that leaves SO membership as it was is
-// not this gate's to decide. The caller is judged as SOGate judges it, by
-// role.HoldsSystemRole over the identity's Roles.
+// not this gate's to decide. The caller is judged by role.HoldsSystemRole
+// over the roles it holds in target, its Roles and its bindings scoped to
+// target (callerRoleIDs), as the account's own membership is counted.
 //
 // The refusal is *SORoleRequiredError (403 / PermissionDenied); a role
 // store that cannot say who holds the SO role is *SORoleUnresolvedError
@@ -269,7 +271,7 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 	if identity == nil || tenantid.Normalize(identity.TenantID) != target {
 		return &SORoleRequiredError{}
 	}
-	isSO, err := m.holdsSO(ctx, target, identity.Roles)
+	isSO, err := m.holdsSO(ctx, target, callerRoleIDs(identity, target))
 	if err != nil {
 		return err
 	}
@@ -303,15 +305,32 @@ func assignee(ctx context.Context, userSvc user.UserServicer, userID uint64) (*u
 	return existing, nil
 }
 
-// heldRoleIDs is every role an account with roleIDs and bindings holds in its
-// own tenant, the only tenant a binding may name (user.NormalizeRoleBindings).
-func heldRoleIDs(roleIDs []string, bindings []user.RoleBinding) []string {
+// heldRoleIDs is every role an account with roleIDs and bindings holds in
+// target: its roles and its bindings scoped to target. An account's own
+// bindings name only its own tenant (user.NormalizeRoleBindings); a caller's
+// may name others, which grant nothing in target.
+func heldRoleIDs(target string, roleIDs []string, bindings []user.RoleBinding) []string {
 	out := make([]string, 0, len(roleIDs)+len(bindings))
 	out = append(out, roleIDs...)
 	for _, b := range bindings {
-		out = append(out, b.RoleID)
+		if tenantid.Normalize(b.TenantID) == target {
+			out = append(out, b.RoleID)
+		}
 	}
 	return out
+}
+
+// callerRoleIDs is every role the authenticated caller holds in target: its
+// roles and, as heldRoleIDs counts them for an account, its bindings scoped
+// to target. Authentication carries bindings apart from Roles
+// (auth.Identity.RoleBindings), so a caller holding the SO role through a
+// binding is an SO here too.
+func callerRoleIDs(identity *auth.Identity, target string) []string {
+	bindings := make([]user.RoleBinding, len(identity.RoleBindings))
+	for i, b := range identity.RoleBindings {
+		bindings[i] = user.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return heldRoleIDs(target, identity.Roles, bindings)
 }
 
 // validateRoleAssignment confirms every role reference exists and may be
