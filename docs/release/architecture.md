@@ -100,7 +100,7 @@ notes and the release binaries:
    every tag together, but says nothing about how soon a *fetch* on a
    different connection observes all of them.
 2. **`gate`** — re-runs the functional build/lint/test signal from ci.yml's
-   `image` job (lint, build and the unit suites) against the exact tagged tree. It does not
+   `lint` and `image` jobs (lint, build and the unit suites) against the exact tagged tree. It does not
    repeat every ci.yml step: `release-alpha` refuses to tag anything but the
    commit `main`'s own `ci-gate` already verified clean, so re-running a
    guard's self-test or a whole-tree scan against the same tree would answer
@@ -183,8 +183,8 @@ pull request skips, and a fourth, nightly, for the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `image` (lint, build and the unit suites), `arch-gates`, `ci-gate` |
-| Code | every run but a docs-only pull request | `test-typescript` |
+| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint` and `make lint-gates`), `arch-gates`, `ci-gate` |
+| Code | every run but a docs-only pull request | `image` (build and the unit suites), `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (one leg per feature) and `fips` (both unit suites under FIPS 140-3) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
@@ -210,13 +210,20 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
 which builds the devcontainer images in about two minutes, and
-`test-typescript` and `arch-gates`. They run beside `image`, which needs
-`docker-build` too and runs lint, the build, every unit suite and, in the full
-tier, the security stages in those images, so the long legs do not wait for
-it. A full-tier run whose `image` job fails still runs
+`test-typescript` and `arch-gates`. They run beside `lint` and `image`, which
+need `docker-build` too and run, side by side in those images, the lint stages
+(`lint`) and the build, every unit suite and, in the full tier, the security
+stages (`image`), so the long legs wait for neither. A full-tier run whose
+`lint` or `image` job fails still runs
 the legs, and `ci-gate`, which needs every job, fails on that result; a run
 whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
 legs `skipped`, which `ci-gate` fails as well.
+
+The stages are two jobs, not the ci-template's one image job, because together
+they outlast one job's 90-minute limit on a loaded runner: `lint` with
+`make lint-sweeps` takes most of an hour, and `make coverage` about half of
+one. As two jobs they run concurrently, each under a limit sized to its own
+stages, and the run waits on the longer of the two rather than on their sum.
 
 `fips` needs `docker-build` alone and runs in the toolchain image: it builds
 every package with `GOFIPS140=latest` and runs `make test` and `make test-sdk`
@@ -226,30 +233,30 @@ reached by any unit test fails it, and `ci-gate` fails with it
 under `-race`, which no pull request's one-hour budget holds, so it is a
 full-tier job.
 
-Within the `image` job, one step depends on the trigger. `make lint-gates`
+Within the `lint` job, one step depends on the trigger. `make lint-gates`
 runs on every run and holds `make vet` over the default tag set and the
 secure analyzer's self-test (`test-secure-analyzer`). `make lint-sweeps`,
 `make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
 combination, is the longest stage (about 45 minutes), so it runs only on a
 push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
-included), never on a pull request, whose pipeline is held to one hour. With
-the sweeps, the unit suites and `make coverage` in one job, a `main` run
-needs more than 90 minutes, so the `image` job's `timeout-minutes` is 180. `release.yml`
+included), never on a pull request, whose pipeline is held to one hour. The
+sweeps run in the `lint` job beside the `image` job's unit suites and
+`make coverage`, so neither job's limit exceeds 90 minutes. `release.yml`
 runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`
 (`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
-`changes`, `docker-build`, `image`, `arch-gates` and `ci-gate`.
-`docker-build` builds the toolchain image alone: no step of a docs-only run
+`changes`, `docker-build`, `lint`, `arch-gates` and `ci-gate`.
+`docker-build` builds the toolchain image alone: no job of a docs-only run
 uses the integration image, so it builds none and takes no hold on one.
-`image` runs `make lint` and `make lint-gates` and skips the build-tag
-assertion, the builds, `make coverage` and the other unit suites.
+`lint` runs `make lint` and `make lint-gates`.
 `arch-gates` runs `make check-public-releasable`, which scans the whole
 tracked tree, docs included, and skips its two code-only steps (the
 go-objstore import check and the compose-target check). Those jobs still
 succeed, so `ci-gate` needs no exception for them. Every job of the code tier
-(`test-typescript`) carries exactly
+(`image`, with the build-tag assertion, the builds, `make coverage` and the
+other unit suites, and `test-typescript`) carries exactly
 `if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and is
 skipped. The gates that read `docs/` --
 `check-publication-bound`, `check-integration-feature-coverage` and
@@ -275,17 +282,18 @@ No CI workflow runs on a schedule; `automerge.yml` is the one workflow with a
 `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only on `workflow_dispatch`, and is dispatched by hand each night together
 with `ci.yml`, whose dispatch also runs the soak.
 
-`image` runs every stage of the handbook CI standard (`ci-standard.md`) in the
-one image built from `build/docker/devcontainer/Dockerfile` at the commit under
-test: lint and the lint gates, the server and headless
-CLI build and the linux/arm64 release cross-build, `make coverage` with the
-other unit suites and `test-sdk`, and, in the full tier, security and
-deps-check in its `toolchain` stage, then `trivy image` over its
-`integration` stage, all in one job. Each stage container is bounded to the
-job's CPU quota (`scripts/in-toolchain-image.sh`).
+`lint` and `image` run every stage of the handbook CI standard
+(`ci-standard.md`) in the one image built from
+`build/docker/devcontainer/Dockerfile` at the commit under test: `lint` the
+lint, the lint gates and, on `main` and a dispatch, the lint sweeps; `image`
+the server and headless CLI build and the linux/arm64 release cross-build,
+`make coverage` with the other unit suites and `test-sdk`, and, in the full
+tier, security and deps-check in its `toolchain` stage, then `trivy image`
+over its `integration` stage. Each stage container is bounded to the job's
+CPU quota (`scripts/in-toolchain-image.sh`).
 `test-typescript` (the TypeScript SDK and the desktop frontend) and
 `arch-gates` (the import-boundary, public-releasable and compose-target
-gates) run on the runner beside it.
+gates) run on the runner beside them.
 
 `image`'s two scans (`make security`'s trivy leg and
 `make trivy-image`), scan only with a vulnerability database younger than

@@ -138,13 +138,14 @@ const (
 // the split itself, not just its consistency: moving a job between tiers is a
 // deliberate edit to this file. integration-features (featureJob) is one job
 // with a matrix leg per feature; ci-gate reads its aggregate result. changes
-// (v1.24) is PR tier: it decides whether a pull request is docs-only, and image
-// needs it. arch-gates stays PR tier because make check-public-releasable
-// scans docs too; test-typescript builds and tests nothing a docs-only pull
-// request changes (DS-3160).
+// (v1.24) is PR tier: it decides whether a pull request is docs-only, and lint
+// and image need it. lint and arch-gates stay PR tier because make lint-gates
+// and make check-public-releasable read docs too; image (#1046) and
+// test-typescript build and test nothing a docs-only pull request changes
+// (DS-3160).
 var (
-	prTierJobs      = []string{changesJob, "image", "arch-gates"}
-	codeTierJobs    = []string{"test-typescript"}
+	prTierJobs      = []string{changesJob, "lint", "arch-gates"}
+	codeTierJobs    = []string{"test-typescript", "image"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
 )
