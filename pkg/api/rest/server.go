@@ -46,6 +46,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -300,6 +301,11 @@ type Server struct {
 	// arrives while it reports the node barrier sealed down the boot-time
 	// listener's path. Nil installs no dispatch.
 	sealedWindowDispatch sealedwindow.ListenerProbe
+
+	// peerChainVerifier verifies a client certificate this listener's TLS
+	// configuration accepted without building a chain (the client trust
+	// pool's widened handshake). Nil falls back to authMW's.
+	peerChainVerifier auth.IssuerVerifier
 
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
@@ -943,6 +949,28 @@ func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithPeerChainVerifier sets the verifier that resolves the caller's client
+// certificate when this listener's TLS configuration accepted it without
+// building a chain: the client trust pool the configuration is wired to. The
+// listener binds it, with the request's TLS state, to every request before
+// admission, so a share claim binds only a verified certificate on the
+// authenticated chain and in the sealed window alike. Unset, the listener
+// uses its AuthMiddleware's issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(s *Server) {
+		s.peerChainVerifier = v
+	}
+}
+
+// chainVerifier is the verifier the listener binds to every request:
+// WithPeerChainVerifier's, else the AuthMiddleware's issuer verifier.
+func (s *Server) chainVerifier() auth.IssuerVerifier {
+	if s.peerChainVerifier != nil {
+		return s.peerChainVerifier
+	}
+	return s.authMW.IssuerVerifier()
+}
+
 // WithSealedWindowListener installs the gate of the boot-time sealed-window
 // listener (SealedWindowListenerMiddleware) backed by probe: the allowlist
 // while the barrier is sealed, less officer registration once enrollment has
@@ -1238,6 +1266,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// raw router above -- the one path a bound identity's own TLS-state
 	// injection (RESTMiddleware) never reaches. See its doc for why.
 	handler = remoteAddrMiddleware(handler)
+	// Beside it, for the same reason: the sealed-window paths skip
+	// RESTMiddleware, and a share claim on them still binds only a verified
+	// client certificate.
+	handler = peerTLSMiddleware(s.chainVerifier(), handler)
 
 	// ABSOLUTE OUTERMOST: the request-body cap runs before every layer
 	// above, including canonicalPathMiddleware and CORS, neither of which

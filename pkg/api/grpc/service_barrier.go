@@ -20,12 +20,9 @@ import (
 	"log/slog"
 	"time"
 
-	"google.golang.org/grpc/credentials"
-	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -349,22 +346,13 @@ func (s *qrdbServiceServer) BarrierRecoveryStatus(ctx context.Context, _ *emptyp
 // Security Officer management handlers (new: share-distribution model)
 // ---------------------------------------------------------------------------
 
-// peerCertThumbprint extracts the mTLS leaf certificate thumbprint from the
-// gRPC peer context. Returns an error if no verified client certificate is
-// available on the connection.
+// peerCertThumbprint returns the thumbprint of the caller's verified client
+// certificate (service.VerifiedClientCertThumbprint, with the chain verifier
+// the auth interceptor bound): a share claim binds to it. A certificate the
+// connection presented but no trust anchor verified is
+// service.ClientCertRequiredError.
 func peerCertThumbprint(ctx context.Context) (string, error) {
-	p, ok := grpcpeer.FromContext(ctx)
-	if !ok {
-		return "", &service.ClientCertRequiredError{}
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return "", &service.ClientCertRequiredError{}
-	}
-	if len(tlsInfo.State.PeerCertificates) == 0 {
-		return "", &service.ClientCertRequiredError{}
-	}
-	return mtls.Thumbprint(tlsInfo.State.PeerCertificates[0].Raw), nil
+	return service.VerifiedClientCertThumbprint(ctx)
 }
 
 // ---------------------------------------------------------------------------

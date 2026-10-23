@@ -57,7 +57,7 @@ limitations under the License.
   different connection observes all of them, so the step fetches and
   re-audits up to ten times, three seconds apart, before failing.
 - **`gate` runs the same commands as the lint, build and unit-test stages of
-  ci.yml's `image` job** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
+  ci.yml's `lint` and `image` jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
   `make lint`, `go build ./...`, `make build-server`, `make coverage`,
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped. The two
@@ -90,9 +90,9 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a `gate` job missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate`, a hardcoded `github.com` instead of `github.api_url`, a `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
-| `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `code`, `full` or `nightly`; a `code` job carries exactly `if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and `ci-gate`'s DOCS_ONLY is `${{ needs.changes.outputs.docs_only }}`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no code, full-tier or nightly job, and a code job needs no full-tier or nightly job; every `integration*` job (and a job named `trivy`) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run). Every tier's jobs are pinned by name (`prTierJobs`: `changes`, `image`, `arch-gates`; `codeTierJobs`: `test-typescript`; `fullTierJobs`: `integration-standalone`, `integration-features`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, a `nightly` job outside a dispatch or a `code` job when DOCS_ONLY is `true`, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml`'s group on `main` carries the event only, with a literal `cancel-in-progress: true` (a newer push to `main` cancels the `main` run of the same event in flight; an expression, a `main` group that also carries the sha, or a ref-keyed group reddens it); every other workflow on pull_request has the ref-keyed group with `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `code`, `full` or `nightly`; a `code` job carries exactly `if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and `ci-gate`'s DOCS_ONLY is `${{ needs.changes.outputs.docs_only }}`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no code, full-tier or nightly job, and a code job needs no full-tier or nightly job; every `integration*` job (and a job named `trivy`) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run). Every tier's jobs are pinned by name (`prTierJobs`: `changes`, `lint`, `arch-gates`; `codeTierJobs`: `test-typescript`, `image`; `fullTierJobs`: `integration-standalone`, `integration-features`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, a `nightly` job outside a dispatch or a `code` job when DOCS_ONLY is `true`, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml`'s group on `main` carries the event only, with a literal `cancel-in-progress: true` (a newer push to `main` cancels the `main` run of the same event in flight; an expression, a `main` group that also carries the sha, or a ref-keyed group reddens it); every other workflow on pull_request has the ref-keyed group with `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
 | `test/buildgates/no_deprecated_test.go` (`TestNoLegacyOrDeprecatedAliasLanguage` alone is `make check-no-alias-language`, in `make lint-gates`) | no Go source, proto, CLI command or `docs/*.md` file carries a deprecated declaration, a redirect stub or legacy-alias language. The `docs/` scan is in `make lint-gates` as well as `make test` because a docs-only pull request runs lint and skips the unit suite |
-| `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: in every job that holds one (`docker-build`, `image`, `integration-standalone`, `integration-features`, `soak`; `changes` holds one but prints only file names) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: every ci.yml job is in `credentialJobs` or in `unmaskedJobs` (`changes`, which prints only file names, and `ci-gate`, which prints only job results); in every job of `credentialJobs` (`docker-build`, `lint`, `image`, `test-typescript`, `arch-gates`, `integration-standalone`, `integration-features`, `fips`, `soak`) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
 
 ## Test tooling this feature folder also owns
 
@@ -137,20 +137,26 @@ values to the Dockerfile as build arguments, the Makefile includes it, and
 `make check-tool-versions` holds `.devcontainer/`'s ARG defaults to it and
 fails on a tool pin in ci.yml or an assignment in the Makefile, either of
 which would be a second pin. Module credentials reach the build only as the
-`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build`
-and `image` jobs each write the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, pass
+`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build`,
+`lint` and `image` jobs each write the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, pass
 it as `MODULE_ENV_FILE` (handbook `devcontainer.md` §7) and remove it after
 the build; outside CI the recipe reads them from the environment. No layer, no
 command line and no log line holds them: the recipe is silent, printing only
 which source it used.
 
-**Every job that holds a forge credential masks it first.** The
-`docker-build`, `image`, `integration-features`, `integration-standalone` and `soak` jobs open with "Mask the
-forge credentials", which registers each credential value with the runner's
-log masker before any other step can print it. No step
+**Every job that can print a forge credential masks it first.** The runner
+injects the credentials into every job, and the `docker-build`, `lint`,
+`image`, `test-typescript`, `arch-gates`, `integration-features`,
+`integration-standalone`, `fips` and `soak` jobs, each of which runs a make
+target, a script, npm or curl, open with "Mask the forge credentials", which
+registers each credential value with the runner's log masker before any other
+step can print it. `changes` and `ci-gate` run only inline steps that print
+the changed file names and the jobs' results, and carry no mask. No step
 prints the environment. `test/buildgates/ci_logs_test.go` fails when the mask
-is not the first step, when a step prints the environment, or when ci.yml's
-`GO_BUILD_TAGS` differs from `make -s print-build-tags`.
+is not the first step of a job in its `credentialJobs` list, when a ci.yml job
+is in neither that list nor `unmaskedJobs` (the two above), when a step prints
+the environment, or when ci.yml's `GO_BUILD_TAGS` differs from
+`make -s print-build-tags`.
 
 **Findings are reported by path, line and rule only.** The tree scanners
 (`make check-publication-bound`, `make check-public-releasable`), `make lint`'s
@@ -160,23 +166,32 @@ repeats the value a scanner exists to keep out of the tree.
 
 The `docker-build` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag) and passes both image
-names to the jobs after it as job outputs. The `image` job, in the PR tier,
-needs it and first runs the idempotent builds: `make docker-build-toolchain`
-only when its daemon lacks the content-hashed toolchain tag, since that target
-rebuilds whenever it runs, and `make docker-build-it`, which skips a held tag
-itself. On the runner `docker-build` used both are cache hits; on another
-they build, so a daemon without the images never fails the job. One job then
-runs each stage in a toolchain container through `scripts/in-toolchain-image.sh`. That container
+names to the jobs after it as job outputs. Two jobs need it and run the
+stages side by side in the one toolchain image: `lint`, in the PR tier
+(`make lint`, `make lint-gates` and, on a push to `main` and a dispatch,
+`make lint-sweeps`), and `image`, in the code tier (the build-tag assertion,
+the builds, `make coverage` and the other unit suites and, in the full tier,
+security, deps-check and the trivy image scan). The ci-template runs them all
+in one image job; this repository splits it because together the stages
+outlast one job's 90-minute limit on a loaded runner, and each job has a
+limit sized to its own stages (architecture.md, "CI tiers"). Each
+first runs the idempotent builds of what it uses: `make
+docker-build-toolchain` only when its daemon lacks the content-hashed
+toolchain tag, since that target rebuilds whenever it runs, and, in `image`
+alone, `make docker-build-it`, which skips a held tag itself; `lint` takes no
+hold on the integration image. On the runner `docker-build` used both are
+cache hits; on another they build, so a daemon without the images never fails
+the job. Each job then runs each stage in a toolchain container through
+`scripts/in-toolchain-image.sh`. That container
 holds the job's CPU bound: the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. The `image` job also needs the `changes` job: on a docs-only pull
+number. Both jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
-or under `docs/`), it runs lint and the lint gates and skips the build-tag
-assertion, the builds, `make coverage` and the other unit suites; the job
-still succeeds. On such a run `docker-build` builds the toolchain image alone
-and outputs an empty integration image, which `image` accepts only then, and
-`test-typescript`, the code tier, is skipped (architecture.md, "CI tiers").
+or under `docs/`), `lint` runs lint and the lint gates and succeeds, and
+`image` is skipped with `test-typescript`, the code tier. On such a run
+`docker-build` builds the toolchain image alone and outputs an empty
+integration image, which no job reads (architecture.md, "CI tiers").
 `changes` is never docs-only off a pull request or under
 `ci:full`. A runner reaches
 its Docker daemon through a socket, so the script copies the checkout into the
@@ -208,13 +223,13 @@ for three days, then one day, 12, 6 and 3 hours, measuring after each, and
 only then removes the largest volume no container mounts; the module cache is
 never thinned, only removed whole. While removal came first, it emptied the
 build cache, and the next `make lint` compiled the tree from nothing: 56
-minutes, against seconds on a warm cache (#1046). `make test-trim-ci-caches`, in
+minutes, against seconds on a warm cache. `make test-trim-ci-caches`, in
 `make lint-gates`, tests the order on a stub `docker`. The build cache also
 holds `go test`'s result cache: `make coverage`'s bulk run leaves out
 `make test`'s `-count=1`, so a package unchanged since a passing run replays
 that result and its coverage profile, and the packages
 `scripts/coverage-merge-subprocess.sh` covers run beside the bulk run rather
-than after it (#1046).
+than after it.
 `scripts/reap-stale-ci-stacks.sh` removes only compose-labelled and anonymous
 volumes, never these. `CI_CACHE=off` mounts none; a bridge stage then takes a
 writable copy of the image's module cache instead.
@@ -244,7 +259,7 @@ reported with its age and does not fail the check, since no one could yet have
 adopted it; one seven or more days old fails, and one whose time cannot be read
 is treated as old. A module whose lookup fails, offline or without credentials,
 fails the check: the question was not answered.
-`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `image` job) proves
+`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint` job) proves
 each branch with a fake `go`, and the publish time with the real one over a
 `file://` proxy.
 
@@ -388,13 +403,15 @@ them together and `ci-gate` excuses that skip; a push to `main`, a dispatch or
 a `ci:full` pull request runs all of them from its next push, update-branch or dispatch (a label change alone starts no run).
 No leg starts before `docker-build`, `test-typescript` and `arch-gates` have
 passed: the job needs those three, as does `integration-standalone`, and not
-`image`, so the legs start once the images are built and run beside the
-`image` job's checks; `ci-gate` still fails the run on any red check. The label goes on once, when the pull
+`lint` or `image`, so the legs start once the images are built and run beside
+those jobs' checks; `ci-gate` still fails the run on any red check. The label goes on once, when the pull
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 
-Each leg runs on a shared `ubuntu-latest` (bare-metal) runner, like every other
-job. Those runners are loaded (load averages of 40 to 70 on 80 threads), and
+Each leg runs on a shared `bigdisk` (bare-metal) runner, the label that carries
+Docker and the disk the integration image needs (`ubuntu-latest` on github.com), as
+the image job and the standalone and soak jobs do.
+Those runners are loaded (load averages of 40 to 70 on 80 threads), and
 load breaks a 3-node cluster's elections and a CLI call's 10-second deadline
 first. The `integration` compose service carries the CPU half of the cluster
 stage's budget (below) as `GOMAXPROCS=8`: the `go test` process and every

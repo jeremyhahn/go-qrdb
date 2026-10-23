@@ -107,7 +107,10 @@ func postJSON(t *testing.T, srv *Server, path string, body any, cert *x509.Certi
 	}
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
 	if cert != nil {
-		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+		req.TLS = &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{cert},
+			VerifiedChains:   [][]*x509.Certificate{{cert}},
+		}
 	}
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)

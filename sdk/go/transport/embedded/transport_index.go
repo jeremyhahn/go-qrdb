@@ -32,7 +32,8 @@ var _ transport.IndexClient = (*Transport)(nil)
 // IndexCreate creates a new secondary index by delegating to the injected
 // IndexServicer.
 func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, config transport.IndexConfig) error {
-	if err := t.gate("IndexCreate"); err != nil {
+	ctx, err := t.admit(ctx, "IndexCreate")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "IndexCreate"); err != nil {
@@ -64,7 +65,8 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 // IndexDrop removes a secondary index by name by delegating to the
 // injected IndexServicer.
 func (t *Transport) IndexDrop(ctx context.Context, name string) error {
-	if err := t.gate("IndexDrop"); err != nil {
+	ctx, err := t.admit(ctx, "IndexDrop")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "IndexDrop"); err != nil {
@@ -82,7 +84,8 @@ func (t *Transport) IndexDrop(ctx context.Context, name string) error {
 // IndexQuery returns entity keys matching an exact value in an index by
 // delegating to the injected IndexServicer.
 func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*transport.IndexQueryResponse, error) {
-	if err := t.gate("IndexQuery"); err != nil {
+	ctx, err := t.admit(ctx, "IndexQuery")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "IndexQuery"); err != nil {
@@ -108,7 +111,8 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 // IndexScan returns entries in an index within a value range [start, end)
 // by delegating to the injected IndexServicer.
 func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
-	if err := t.gate("IndexScan"); err != nil {
+	ctx, err := t.admit(ctx, "IndexScan")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "IndexScan"); err != nil {
@@ -144,7 +148,8 @@ func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end 
 // IndexList returns the names of all registered indexes by delegating to
 // the injected IndexServicer.
 func (t *Transport) IndexList(ctx context.Context) (*transport.IndexListResponse, error) {
-	if err := t.gate("IndexList"); err != nil {
+	ctx, err := t.admit(ctx, "IndexList")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "IndexList"); err != nil {

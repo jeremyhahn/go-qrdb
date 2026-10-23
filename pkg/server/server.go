@@ -201,11 +201,14 @@ type serverOptions struct {
 
 	tlsConfig  *tls.Config
 	caCertPool *x509.CertPool
-	gatherer   prometheus.Gatherer
-	resolver   rest.LeaderAdminResolver
-	host       rest.Host
-	kvSvc      service.KVServicer
-	adminSvc   service.AdminServicer
+	// peerChainVerifier verifies a client certificate tlsConfig accepted
+	// without building a chain; every TLS listener binds it to every call.
+	peerChainVerifier auth.IssuerVerifier
+	gatherer          prometheus.Gatherer
+	resolver          rest.LeaderAdminResolver
+	host              rest.Host
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
 	// modules are capability modules a higher layer (e.g. go-xkms) registers via
 	// WithModule. Each is exposed across every transport by the start* methods.
 	modules []apimodule.ServiceModule
@@ -569,6 +572,31 @@ func WithCACertPool(pool *x509.CertPool) ServerOption {
 	return func(o *serverOptions) {
 		o.caCertPool = pool
 	}
+}
+
+// WithPeerChainVerifier sets the verifier that resolves a caller's client
+// certificate the TLS configuration accepted without building a chain: the
+// client trust pool WithTLS's configuration is wired to. REST, gRPC, QUIC and
+// MCP bind it, with the peer's TLS state, to every call before admission and
+// independent of authentication, so a share claim binds only a verified
+// certificate on the authenticated chain, on the boot-time sealed-window
+// listener, which has no authentication, and on a re-sealed node's
+// sealed-window dispatch. Unset, each listener uses WithAuthMiddleware's
+// issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(o *serverOptions) {
+		o.peerChainVerifier = v
+	}
+}
+
+// peerChainOptions is a transport's option binding v, its with option
+// applied to v, or no option when v is nil so the transport keeps its
+// AuthMiddleware's issuer verifier.
+func peerChainOptions[O any](v auth.IssuerVerifier, with func(auth.IssuerVerifier) O) []O {
+	if v == nil {
+		return nil
+	}
+	return []O{with(v)}
 }
 
 // WithHost sets the Host interface for REST leader forwarding headers.
@@ -2068,6 +2096,7 @@ func (s *Server) startREST() error {
 	if s.opts.authMW != nil {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
+	restOpts = append(restOpts, peerChainOptions(s.opts.peerChainVerifier, rest.WithPeerChainVerifier)...)
 	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
 		// The boot-time listener's gate is installed by
 		// rest.NewSealedWindowServer below.
@@ -2385,6 +2414,7 @@ func (s *Server) startGRPC() error {
 	if s.opts.authMW != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	grpcOpts = append(grpcOpts, peerChainOptions(s.opts.peerChainVerifier, grpcapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		grpcOpts = append(grpcOpts, grpcapi.WithReplicaForwarding(fwd))
 	}
@@ -2555,6 +2585,7 @@ func (s *Server) startQUIC() error {
 	if s.opts.authMW != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	quicOpts = append(quicOpts, peerChainOptions(s.opts.peerChainVerifier, quicapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		quicOpts = append(quicOpts, quicapi.WithReplicaForwarding(fwd))
 	}
@@ -2717,6 +2748,7 @@ func (s *Server) startUnix() error {
 	if s.opts.authMW != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	unixOpts = append(unixOpts, peerChainOptions(s.opts.peerChainVerifier, unixapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		unixOpts = append(unixOpts, unixapi.WithReplicaForwarding(fwd))
 	}
@@ -2876,6 +2908,7 @@ func (s *Server) startMCP() error {
 		// (default-deny). Parity with REST/gRPC/QUIC.
 		mcpOpts = append(mcpOpts, mcpapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	mcpOpts = append(mcpOpts, peerChainOptions(s.opts.peerChainVerifier, mcpapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		mcpOpts = append(mcpOpts, mcpapi.WithReplicaForwarding(fwd))
 	}

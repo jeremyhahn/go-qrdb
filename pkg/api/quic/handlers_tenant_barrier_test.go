@@ -735,7 +735,7 @@ func ctxWithFakeTLSQuic() context.Context {
 	if err != nil {
 		panic("ctxWithFakeTLSQuic: parse cert: " + err.Error())
 	}
-	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
 	return auth.WithTLSState(context.Background(), state)
 }
 

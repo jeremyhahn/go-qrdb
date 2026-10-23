@@ -33,7 +33,8 @@ func WithEmbeddingService(svc service.EmbeddingServicer) Option {
 
 // Embed generates embedding vectors by delegating to the injected service.
 func (t *Transport) Embed(ctx context.Context, req *transport.EmbedRequest) (*transport.EmbedResponse, error) {
-	if err := t.gate("Embed"); err != nil {
+	ctx, err := t.admit(ctx, "Embed")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "Embed"); err != nil {
@@ -60,7 +61,8 @@ func (t *Transport) Embed(ctx context.Context, req *transport.EmbedRequest) (*tr
 
 // BatchEmbed embeds a large set of texts by delegating to the injected service.
 func (t *Transport) BatchEmbed(ctx context.Context, req *transport.BatchEmbedRequest) (*transport.BatchEmbedResponse, error) {
-	if err := t.gate("BatchEmbed"); err != nil {
+	ctx, err := t.admit(ctx, "BatchEmbed")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BatchEmbed"); err != nil {
@@ -87,7 +89,8 @@ func (t *Transport) BatchEmbed(ctx context.Context, req *transport.BatchEmbedReq
 
 // ListEmbeddingModels returns a provider's models by delegating to the service.
 func (t *Transport) ListEmbeddingModels(ctx context.Context, provider string) (*transport.ListEmbeddingModelsResponse, error) {
-	if err := t.gate("ListEmbeddingModels"); err != nil {
+	ctx, err := t.admit(ctx, "ListEmbeddingModels")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListEmbeddingModels"); err != nil {

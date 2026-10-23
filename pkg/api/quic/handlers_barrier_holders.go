@@ -35,26 +35,25 @@ import (
 // gRPC and Unix transports, converted by pkg/api/holderpb, so a holder
 // message means the same thing on every protobuf-carrying transport.
 
-// quicCertThumbprint returns the verified TLS client certificate's
-// thumbprint, or a service.ClientCertRequiredError when the stream carried
-// none.
+// quicCertThumbprint returns the thumbprint of the caller's verified client
+// certificate (service.VerifiedClientCertThumbprint, with the chain verifier
+// withConnectionState bound): a share claim binds to it. A certificate the
+// connection presented but no trust anchor verified is
+// service.ClientCertRequiredError.
 func quicCertThumbprint(ctx context.Context) (string, error) {
-	tlsState := auth.TLSStateFromContext(ctx)
-	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
-		return "", &service.ClientCertRequiredError{}
-	}
-	return mtls.Thumbprint(tlsState.PeerCertificates[0].Raw), nil
+	return service.VerifiedClientCertThumbprint(ctx)
 }
 
-// quicOptionalThumbprint returns the TLS client certificate's thumbprint, or
-// "" when there is none. The factor proof authenticates a quorum submission;
-// a certificate, when present, is additionally bound by the mtls factor.
+// quicOptionalThumbprint returns the presented TLS client certificate's
+// thumbprint, or "" when there is none. The factor proof authenticates a
+// quorum submission; a certificate, when present, is additionally bound by
+// the mtls factor.
 func quicOptionalThumbprint(ctx context.Context) string {
-	thumb, err := quicCertThumbprint(ctx)
-	if err != nil {
+	tlsState := auth.TLSStateFromContext(ctx)
+	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
 		return ""
 	}
-	return thumb
+	return mtls.Thumbprint(tlsState.PeerCertificates[0].Raw)
 }
 
 // marshalReply encodes a protobuf reply.

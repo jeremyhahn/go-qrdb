@@ -74,7 +74,7 @@
 # (devops.md §9); the copy goes and the canonical block replaces it. Adopted
 # with the v1.22 rollout.
 # v1.22 (Company Agent m616 item 2, 2026-10-18, after CI job layers filled the
-# runner disks): the image job's stages keep the Go build, golangci-lint and
+# runner disks): the lint and image jobs' stages keep the Go build, golangci-lint and
 # module caches in named volumes on the runner's Docker host, kept across jobs
 # and split by trust class (CI_CACHE_CLASS: `main` for a push to main, `pr`
 # otherwise), never in a job container's writable layer or its /tmp
@@ -82,7 +82,7 @@
 # trim-ci-caches.sh, bounds the repo's cache volumes on the host
 # (CI_CACHE_MAX_GIB, default 32).
 # v1.21.1 (Company Agent m605 item 8, 2026-10-18, after a forge token printed
-# in a go-xkms run): the image and integration jobs mask the forge
+# in a go-xkms run): the lint, image and integration jobs mask the forge
 # credentials first, and no step or make target prints an env file, the job
 # environment or a matched line; lint steps and `make check-public-literals`
 # report path and line only, and `make stage-gomodauth` runs silent
@@ -101,6 +101,10 @@
 # §1) and trivy image on the integration image (it leaves the CUSTOMIZE note).
 # The integration stage stays its own job, `make integration-test` in the
 # integration image. Both run on bigdisk (ubuntu-latest on github.com).
+# CUSTOMIZE (go-qrdb): DS-3044 moved the image build to its own docker-build
+# job, and #1046 (Company Agent m1001) split the stages between a lint job and
+# the image job, which run side by side in the one toolchain image; see the
+# lint job.
 # setup-go, the runner tool installs and the SARIF upload (m601 (d): CI runs
 # on Gitea) are gone, and with them GO_VERSION: the image pins Go. The tag
 # assertion moves to scripts/assert-build-tags.sh (ships beside this file).
@@ -396,9 +400,10 @@ jobs:
   # jobs that run on every event but a docs-only PR. Each carries exactly
   # `if: needs.changes.outputs.docs_only != 'true'` and lists changes in
   # needs; CI Gate excuses its skip only when DOCS_ONLY is true. A docs-only
-  # PR runs changes, docker-build (the toolchain image alone), image (make
+  # PR runs changes, docker-build (the toolchain image alone), lint (make
   # lint and make lint-gates), arch-gates (make check-public-releasable
-  # alone) and CI Gate; test-typescript, the code tier, is skipped.
+  # alone) and CI Gate; image and test-typescript, the code tier, are
+  # skipped.
   changes:
     name: Changed files
     runs-on: ubuntu-latest
@@ -429,15 +434,15 @@ jobs:
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
 
   # CUSTOMIZE (go-qrdb, DS-3044): `make docker-build` is its own job, so the
-  # integration legs wait on the two-minute image build, not on the image
-  # job's stages (about 52 minutes), and run beside them. Lint runs in the
-  # toolchain image on a docs-only PR too, so every run builds that image;
-  # it needs `changes` only to know whether the run is a docs-only PR
-  # (DS-3160). A docs-only PR builds the toolchain image alone and outputs an
-  # empty it_image: no step of such a run uses the integration image, so it
-  # builds none and takes no hold, and the hold's release below and in the
-  # image job's Tear down remove nothing. Any other docs_only value builds
-  # both. The image names go out as job outputs.
+  # integration legs wait on the two-minute image build, not on the lint and
+  # image jobs' stages, and run beside them. Lint runs in the toolchain image
+  # on a docs-only PR too, so every run builds that image; it needs `changes`
+  # only to know whether the run is a docs-only PR (DS-3160). A docs-only PR
+  # builds the toolchain image alone and outputs an empty it_image: no job of
+  # such a run uses the integration image (the image job is the code tier
+  # and skips), so it builds none and takes no hold, and the hold's release
+  # below removes nothing. Any other docs_only value builds both. The image
+  # names go out as job outputs.
   #
   # The hold: this job takes the image job's hold on the integration image
   # (IT_HOLD, the same name in both jobs) and leaves it in place on success.
@@ -517,14 +522,15 @@ jobs:
         run: make docker-release-it
 
   # v1.21: every stage runs in the project's own devcontainer image and no
-  # other (ci-standard.md §2, devcontainer.md §7). One image job (Company Agent
-  # m601 (a)) builds the images once from build/docker/devcontainer/Dockerfile
-  # at this commit (`make docker-build`) and runs each stage's `make` target in
-  # the toolchain image as its own step, through scripts/in-toolchain-image.sh
-  # (ships beside this file), which copies the checkout into the container: a
-  # runner reaches its daemon through a socket, so a bind mount would resolve
-  # on the daemon's host. A failed step names its stage; `if: !cancelled()`
-  # runs every stage after a failed one, so one run reports them all.
+  # other (ci-standard.md §2, devcontainer.md §7). The docker-build job builds
+  # the images once from build/docker/devcontainer/Dockerfile at this commit
+  # (`make docker-build`), and the lint and image jobs run each stage's `make`
+  # target in the toolchain image as its own step, through
+  # scripts/in-toolchain-image.sh (ships beside this file), which copies the
+  # checkout into the container: a runner reaches its daemon through a socket,
+  # so a bind mount would resolve on the daemon's host. A failed step names
+  # its stage; `if: !cancelled()` runs every stage after a failed one, so one
+  # run reports them all.
   #
   # No job installs a Go toolchain or a tool on the runner: the image's pin file
   # (devcontainer.md §2) decides every version, and the Makefile carries every
@@ -550,26 +556,30 @@ jobs:
   # file writes run silent, and lint steps and `make check-public-literals`
   # report path and line only (ci-standard.md §5, Company Agent m605 item 8).
   #
-  # Runners: the image and integration jobs run on bigdisk (Docker and the disk
-  # for the image builds) and CI Gate on ci-gate; on the github.com mirror all
-  # are ubuntu-latest, which has Docker (devops.md §1: host-specific choices
-  # are guarded on github.server_url).
-  image:
-    name: Devcontainer image [lint, build, test, security, deps-check, trivy image]
+  # Runners: the lint, image and integration jobs run on bigdisk (Docker and
+  # the disk for the image builds) and CI Gate on ci-gate; on the github.com
+  # mirror all are ubuntu-latest, which has Docker (devops.md §1:
+  # host-specific choices are guarded on github.server_url).
+  #
+  # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
+  # template's one image job (m601 (a)). The stages run in two jobs side by
+  # side, lint (make lint, make lint-gates, make lint-sweeps) and image (the
+  # tag assertion, build, the release cross-build, the unit suites, security,
+  # deps-check, trivy image), in the one toolchain image docker-build built,
+  # each with its own limit: together they outlast one job's 90 minutes on a
+  # loaded runner, where lint with lint-sweeps takes most of an hour and
+  # coverage about half of one.
+  # lint is the PR tier and is all a docs-only PR runs of the stages; image is
+  # the code tier (DS-3160) and skips there. Only image holds the integration
+  # image (IT_HOLD): lint reads the toolchain image alone, so it neither takes
+  # nor releases a hold.
+  lint:
+    name: Devcontainer image [lint, lint-gates, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
-    # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE: give the stages honest headroom
+    timeout-minutes: 75       # CUSTOMIZE (#1046): ~56 lint minutes loaded with lint-sweeps (~12 warm without), with headroom
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
-      # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
-      # image (Makefile IT_HOLD), from docker-build to this job's teardown,
-      # so another job's reaper cannot remove the image before the trivy
-      # step saves it. Under qrdb-ci-, so a dead job's hold is reaped.
-      # DS-3044: docker-build takes it under this name and leaves it to this
-      # job (see the docker-build job).
-      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
       # v1.22: the cache volumes' trust class. Only a push to main writes the
       # caches main's build reads; every other event, pull requests included,
       # gets the `pr` set (ci-standard.md §6). CUSTOMIZE (go-qrdb, m433):
@@ -599,28 +609,15 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE: host tuning a test needs (e.g. QUIC UDP buffers:
-      # sudo sysctl -w net.core.rmem_max=7340032 net.core.wmem_max=7340032)
-      # goes here; the container shares the runner's kernel.
-
-      # CUSTOMIZE (go-qrdb, DS-3044): docker-build built both images, on this
-      # daemon when this job landed on its runner. Each build here is the
-      # idempotent one, so a daemon that lacks an image builds it and never
-      # fails for want of it: `make docker-build-toolchain` always rebuilds
-      # (from cache at best), so it runs only when the daemon lacks the
-      # toolchain tag, which is content-hashed; `make docker-build-it` skips a
-      # held tag itself and takes this job's hold (IT_HOLD) or keeps
-      # docker-build's. A docs-only PR (DS-3160) has no integration image:
-      # an empty it_image is accepted then and only then, and no step of the
-      # run reads IT_IMAGE (the trivy image scan is full tier).
-      - name: Ensure the devcontainer images
+      # CUSTOMIZE (go-qrdb, DS-3044): docker-build built the toolchain image,
+      # on this daemon when this job landed on its runner. `make
+      # docker-build-toolchain` always rebuilds (from cache at best), so it
+      # runs only when the daemon lacks the tag, which is content-hashed.
+      - name: Ensure the toolchain image
         env:
           BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
-          BUILT_IT_IMAGE: ${{ needs.docker-build.outputs.it_image }}
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
           : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          [ "$DOCS_ONLY" = true ] || : "${BUILT_IT_IMAGE:?docker-build output no integration image}"
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
@@ -630,17 +627,12 @@ jobs:
           else
             make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
           fi
-          if [ "$DOCS_ONLY" = true ]; then
-            echo "==> docs-only pull request: no integration image"
-          else
-            make docker-build-it MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$BUILT_IT_IMAGE"
-          fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
-          echo "IT_IMAGE=$BUILT_IT_IMAGE" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes on the host before the stages
-      # add to them (ci-standard.md §6). It never fails the job.
+      # add to them (ci-standard.md §6). It never fails the job, and it keeps
+      # every volume a container mounts, so the image job beside it is safe.
       - name: Trim the CI caches
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
@@ -665,23 +657,106 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
-      # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), over an hour of
-      # this job, so they run on a push to main and on the daily full-tier
-      # workflow_dispatch, never on a pull request, which must finish within
-      # one hour. release.yml runs both again before a tag. A network for
-      # vet-tags' nested benchmark modules, as above.
+      # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
+      # push to main and on the daily full-tier workflow_dispatch, never on a
+      # pull request, which must finish within one hour. release.yml runs both
+      # again before a tag. A network for vet-tags' nested benchmark modules,
+      # as above.
       - name: make lint-sweeps
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  image:
+    name: Devcontainer image [build, test, security, deps-check, trivy image]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    # CUSTOMIZE (go-qrdb, #1046): the code tier (DS-3160), so a docs-only PR,
+    # which builds nothing, skips it; lint, above, is that PR's stage job.
+    if: needs.changes.outputs.docs_only != 'true'
+    # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
+    # docker-build, which builds the images this job's stages run in.
+    needs: [changes, docker-build]
+    timeout-minutes: 90       # CUSTOMIZE (#1046): ~39 warm minutes of build and unit stages (~80 loaded) plus the full-tier scans; the 90 ceiling
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
+      # image (Makefile IT_HOLD), from docker-build to this job's teardown,
+      # so another job's reaper cannot remove the image before the trivy
+      # step saves it. Under qrdb-ci-, so a dead job's hold is reaped.
+      # DS-3044: docker-build takes it under this name and leaves it to this
+      # job (see the docker-build job).
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
+      # v1.22: the cache volumes' trust class (see the lint job).
+      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1 (Company Agent m605 item 8): mask the forge credentials before
+      # any other step (see the lint job).
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # CUSTOMIZE (go-qrdb, #813): reaps under qrdb-ci- too (see the lint job).
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      # CUSTOMIZE: host tuning a test needs (e.g. QUIC UDP buffers:
+      # sudo sysctl -w net.core.rmem_max=7340032 net.core.wmem_max=7340032)
+      # goes here; the container shares the runner's kernel.
+
+      # CUSTOMIZE (go-qrdb, DS-3044): docker-build built both images, on this
+      # daemon when this job landed on its runner. Each build here is the
+      # idempotent one, so a daemon that lacks an image builds it and never
+      # fails for want of it: `make docker-build-toolchain` always rebuilds
+      # (from cache at best), so it runs only when the daemon lacks the
+      # toolchain tag, which is content-hashed; `make docker-build-it` skips a
+      # held tag itself and takes this job's hold (IT_HOLD) or keeps
+      # docker-build's. This job skips a docs-only PR, the one run with no
+      # integration image, so both outputs are required.
+      - name: Ensure the devcontainer images
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          BUILT_IT_IMAGE: ${{ needs.docker-build.outputs.it_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          : "${BUILT_IT_IMAGE:?docker-build output no integration image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          make docker-build-it MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" IT_IMAGE="$BUILT_IT_IMAGE"
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$BUILT_IT_IMAGE" >> "$GITHUB_ENV"
+
+      # v1.22: bound this repo's cache volumes on the host before the stages
+      # add to them (ci-standard.md §6), as the lint job does.
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
       # v1.9.2, now in the image: the declared tag set must select code. Each
       # tag is checked by removal: if dropping it changes no selected file
       # (tests included), it is misspelled or dead. Compares files, not
       # packages, and a tag may swap files (a `!foo` stub for a `foo` body).
       - name: Assert every build tag selects code
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.GO_BUILD_TAGS != '' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.GO_BUILD_TAGS != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "GO_BUILD_TAGS='$GO_BUILD_TAGS' sh scripts/assert-build-tags.sh"
 
       # CUSTOMIZE: nested modules (sdk/go, xkey) and variants (FIPS) are built
@@ -692,7 +767,7 @@ jobs:
       # every package untagged, the sdk/go module, and builds qrdbd and the
       # headless qrdb CLI under the feature set.
       - name: make build-server build-cli-headless
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "go build ./... && (cd sdk/go && go build ./...) && make build-server build-cli-headless GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # CUSTOMIZE (go-qrdb): the release publishes linux/arm64 binaries
@@ -700,7 +775,7 @@ jobs:
       # fails here on the pull request rather than on the tag. A cgo-free
       # cross-compile: nothing runs on arm64 and nothing is emulated.
       - name: make release-cross (linux/arm64, plain and FIPS)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make release-cross PLATFORM=linux/arm64 GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # The test stage (m601 (c)): make coverage runs the whole unit suite with
@@ -714,7 +789,7 @@ jobs:
       # replays that result and its profile, and the subprocess-coverage
       # packages run beside it, not after it.
       - name: make coverage (unit tests and the threshold)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"
 
       # CUSTOMIZE (go-qrdb): the suites `make coverage` does not reach.
@@ -725,7 +800,7 @@ jobs:
       # module's race suite (#132), which `./...` at the root never crosses.
       # They are unit suites, so the PR tier, and skip on a docs-only PR (v1.24).
       - name: make test-clusterproof coverage-fts test-tags test-sdk
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-clusterproof coverage-fts test-tags test-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # make security: gosec, govulncheck, go mod verify (devops.md §8), with
@@ -782,9 +857,9 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb): the template's one `integration` job is two jobs
   # here, both on the full tier (#674). DS-3044: both need docker-build,
-  # test-typescript and arch-gates, not the image job (lint, build, the unit
-  # suites, about 52 minutes), so the legs start once the images are built
-  # and run beside the image job's stages; CI Gate still needs every job.
+  # test-typescript and arch-gates, not the lint and image jobs, so the legs
+  # start once the images are built and run beside those jobs' stages; CI
+  # Gate still needs every job.
   # `ci:full` goes on once, when the PR is green on the PR tier and ready to
   # merge.
   #
@@ -819,7 +894,7 @@ jobs:
   # (#682). The gate holds a leg to exactly the reap, the run and the teardown.
   integration-features:
     name: Integration (${{ matrix.feature }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 45
@@ -873,7 +948,7 @@ jobs:
   # `docker compose down` is refused for want of that name.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 90
@@ -1085,6 +1160,17 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
+      # Mask the forge credentials before any other step (see the lint job):
+      # npm, curl and make all run here with them in the environment.
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22"
@@ -1126,7 +1212,7 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
     env:
       SOAK_MINUTES: 30        # CUSTOMIZE
@@ -1177,7 +1263,7 @@ jobs:
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
 
-  # CUSTOMIZE: further stages run in the image job as steps of the same
+  # CUSTOMIZE: further stages run in the lint or image job as steps of the same
   # shape (one `make` target in the toolchain image, `if: !cancelled()`). A
   # suite that needs its own runner or stack (tagged suites, cross-arch,
   # contrib modules) is a job of the integration job's shape and joins CI
@@ -1207,6 +1293,17 @@ jobs:
       OBJSTORE_SEAMS: 'pkg/storage/objstore/|sdk/go/transport/embedded/'      # CUSTOMIZE
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # Mask the forge credentials before any other step (see the lint job):
+      # the make targets below run with them in the environment.
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
 
       - name: No direct go-objstore import outside the storage seam
         if: needs.changes.outputs.docs_only != 'true'
@@ -1265,12 +1362,13 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, docker-build, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
+    needs: [changes, docker-build, lint, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
     steps:
       - name: Fail closed on any non-success
         env:
           RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
+          RESULT_LINT: ${{ needs.lint.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
@@ -1328,7 +1426,8 @@ jobs:
           # (go-qrdb, DS-3160) is code; every other job is pr.
           check changes "$RESULT_CHANGES" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
-          check image "$RESULT_IMAGE" pr
+          check lint "$RESULT_LINT" pr
+          check image "$RESULT_IMAGE" code
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check arch-gates "$RESULT_ARCH_GATES" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full

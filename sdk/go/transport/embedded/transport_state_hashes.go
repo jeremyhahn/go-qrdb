@@ -30,7 +30,8 @@ var _ transport.ReplicaStateHasher = (*Transport)(nil)
 // is refused with *transport.CapabilityUnsupportedError, the error every
 // network transport reconstitutes from its "unimplemented" status.
 func (t *Transport) StateHashes(ctx context.Context, shardIDs []uint64) (*transport.StateHashesResponse, error) {
-	if err := t.gate("StateHashes"); err != nil {
+	ctx, err := t.admit(ctx, "StateHashes")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "StateHashes"); err != nil {

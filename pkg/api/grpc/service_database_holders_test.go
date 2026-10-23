@@ -16,13 +16,9 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"testing"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	grpcpeer "google.golang.org/grpc/peer"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
@@ -34,11 +30,10 @@ import (
 // The handlers only type-assert it; none of its methods is called.
 type noHolderDatabaseSvc struct{ service.DatabaseServicer }
 
-// dbHolderPeer is a context whose connection presents h's certificate.
+// dbHolderPeer is a context whose connection presents h's verified
+// certificate.
 func dbHolderPeer(h *servicetest.Holder) context.Context {
-	return grpcpeer.NewContext(context.Background(), &grpcpeer.Peer{
-		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{h.Cert}}},
-	})
+	return verifiedPeerContext(h.Cert)
 }
 
 // submitDBShare answers h's mtls challenge for op and submits its share.
@@ -115,6 +110,16 @@ func TestGRPCDatabaseHolders_Lifecycle(t *testing.T) {
 	for _, h := range holders {
 		_, err := s.DatabaseBarrierShareClaimBegin(ctx, &pb.DatabaseBarrierShareClaimBeginRequest{
 			Database: "vault", Claim: &pb.BarrierShareClaimBeginRequest{Username: h.Name},
+		})
+		requireCode(t, err, codes.Unauthenticated)
+		// The holder's own certificate, presented but verified by no one,
+		// binds nothing either.
+		_, err = s.DatabaseBarrierShareClaimBegin(unverifiedPeerContext(h.Cert), &pb.DatabaseBarrierShareClaimBeginRequest{
+			Database: "vault", Claim: &pb.BarrierShareClaimBeginRequest{Username: h.Name},
+		})
+		requireCode(t, err, codes.Unauthenticated)
+		_, err = s.DatabaseBarrierShareClaimComplete(unverifiedPeerContext(h.Cert), &pb.DatabaseBarrierShareClaimCompleteRequest{
+			Database: "vault", Claim: &pb.BarrierShareClaimCompleteRequest{Username: h.Name, NonceHex: "ab", Signature: []byte("sig")},
 		})
 		requireCode(t, err, codes.Unauthenticated)
 		peerCtx := dbHolderPeer(h)

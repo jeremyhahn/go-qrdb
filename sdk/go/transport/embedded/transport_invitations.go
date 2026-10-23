@@ -31,7 +31,8 @@ var _ transport.InvitationClient = (*Transport)(nil)
 // authorized like every other authenticated write: a sealed barrier or an
 // unauthorized caller refuses it before the service is ever reached.
 func (t *Transport) InviteUser(ctx context.Context, req *transport.InviteUserRequest) (*transport.Invitation, error) {
-	if err := t.gate("InviteUser"); err != nil {
+	ctx, err := t.admit(ctx, "InviteUser")
+	if err != nil {
 		return nil, err
 	}
 	if t.invitations == nil {
@@ -67,7 +68,8 @@ func (t *Transport) InviteUser(ctx context.Context, req *transport.InviteUserReq
 // collapses every refusal before the token is spent into one opaque error
 // (service.InvitationInvalidError).
 func (t *Transport) RedeemInvitation(ctx context.Context, req *transport.RedeemInvitationRequest) (*transport.EnrolledCert, error) {
-	if err := t.gate("RedeemInvitation"); err != nil {
+	ctx, err := t.admit(ctx, "RedeemInvitation")
+	if err != nil {
 		return nil, err
 	}
 	if t.invitations == nil {

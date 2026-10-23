@@ -47,7 +47,8 @@ import (
 // *ceremony.AdminCredentialRequiresCAError the service layer already
 // returns (go-qrdb#560 review item 5).
 func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.CeremonyInitializeRequest) (*transport.CeremonyInitializeResponse, error) {
-	if err := t.gate("CeremonyInitialize"); err != nil {
+	ctx, err := t.admit(ctx, "CeremonyInitialize")
+	if err != nil {
 		return nil, err
 	}
 	// CeremonyInitialize is a sealed-window verb (pkg/api/sealedwindow.VerbCeremonyInitialize): public
@@ -110,7 +111,8 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 // CeremonyStatus returns the current ceremony state by delegating to the
 // injected CeremonyServicer.
 func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStatusResponse, error) {
-	if err := t.gate("CeremonyStatus"); err != nil {
+	ctx, err := t.admit(ctx, "CeremonyStatus")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CeremonyStatus"); err != nil {
@@ -182,7 +184,8 @@ func quorumThumbprint(ctx context.Context) string {
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
 // by delegating to the injected CeremonyServicer.
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
-	if err := t.gate("CeremonySignCSR"); err != nil {
+	ctx, err := t.admit(ctx, "CeremonySignCSR")
+	if err != nil {
 		return nil, err
 	}
 	// CeremonySignCSR is a sealed-window verb (pkg/api/sealedwindow.VerbCeremonySignCSR): public

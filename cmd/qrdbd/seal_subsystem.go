@@ -445,10 +445,7 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	if err != nil {
 		return nil, err
 	}
-	serverOpts := []server.ServerOption{
-		server.WithTLS(bundle.TLSConfig),
-		server.WithCACertPool(bundle.CACertPool),
-	}
+	serverOpts := bundle.serverTLSOptions()
 	if ceremonyCA != nil {
 		serverOpts = append(serverOpts, server.WithCeremonyCA(ceremonyCA))
 	}

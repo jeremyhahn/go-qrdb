@@ -23,7 +23,8 @@ import (
 
 // GetRoleByName retrieves a role by its tenant-scoped name.
 func (t *Transport) GetRoleByName(ctx context.Context, req *transport.GetRoleByNameRequest) (*transport.Role, error) {
-	if err := t.gate("GetRoleByName"); err != nil {
+	ctx, err := t.admit(ctx, "GetRoleByName")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {
@@ -42,7 +43,8 @@ func (t *Transport) GetRoleByName(ctx context.Context, req *transport.GetRoleByN
 // ResolvePermissions returns the union of effective permissions for the
 // given role IDs (sorted, deduplicated).
 func (t *Transport) ResolvePermissions(ctx context.Context, req *transport.ResolvePermissionsRequest) (*transport.ResolvePermissionsResponse, error) {
-	if err := t.gate("ResolvePermissions"); err != nil {
+	ctx, err := t.admit(ctx, "ResolvePermissions")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ResolvePermissions"); err != nil {

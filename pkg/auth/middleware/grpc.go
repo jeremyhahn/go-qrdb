@@ -56,7 +56,7 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		// authenticator can extract peer certificate identity, and the
 		// caller's authorization metadata so an embedder's bearer
 		// authenticator sees it exactly as it does on REST and MCP.
-		ctx = injectTLSState(ctx)
+		ctx = InjectGRPCPeerTLS(ctx, m.IssuerVerifier())
 		ctx = injectAuthorization(ctx)
 		ctx = injectDPoP(ctx, info.FullMethod)
 
@@ -206,7 +206,7 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 		// authenticator can extract peer certificate identity, and the
 		// caller's authorization metadata so an embedder's bearer
 		// authenticator sees it exactly as it does on REST and MCP.
-		ctx = injectTLSState(ctx)
+		ctx = InjectGRPCPeerTLS(ctx, m.IssuerVerifier())
 		ctx = injectAuthorization(ctx)
 		ctx = injectDPoP(ctx, info.FullMethod)
 
@@ -278,6 +278,33 @@ func InjectGRPCRemoteAddr(ctx context.Context) context.Context {
 // bucket again.
 func RemoteAddrUnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	return handler(InjectGRPCRemoteAddr(ctx), req)
+}
+
+// InjectGRPCPeerTLS carries the gRPC peer's TLS connection state and v, the
+// listener's chain verifier, into ctx through auth.WithTLSState and
+// auth.WithPeerChainVerifier. A nil v binds the state alone, so only a chain
+// crypto/tls verified counts (auth.ResolveVerifiedChains).
+func InjectGRPCPeerTLS(ctx context.Context, v auth.IssuerVerifier) context.Context {
+	return auth.WithPeerChainVerifier(injectTLSState(ctx), v)
+}
+
+// PeerTLSUnaryInterceptor is InjectGRPCPeerTLS as a
+// grpc.UnaryServerInterceptor. A transport installs it OUTSIDE its whole
+// admission chain, independent of AuthMiddleware, so a handler that binds the
+// caller's verified client certificate (auth.VerifiedPeerCertificate) resolves
+// it on every path: the authenticated chain, the boot-time sealed window,
+// which has no authentication, and a re-sealed node's sealed-window dispatch.
+func PeerTLSUnaryInterceptor(v auth.IssuerVerifier) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(InjectGRPCPeerTLS(ctx, v), req)
+	}
+}
+
+// PeerTLSStreamInterceptor is PeerTLSUnaryInterceptor for streaming RPCs.
+func PeerTLSStreamInterceptor(v auth.IssuerVerifier) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		return handler(srv, &wrappedStream{ServerStream: ss, ctx: InjectGRPCPeerTLS(ss.Context(), v)})
+	}
 }
 
 func injectTLSState(ctx context.Context) context.Context {

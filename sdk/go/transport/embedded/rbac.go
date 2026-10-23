@@ -111,7 +111,8 @@ func validateIdentity(id *transport.Identity) error {
 // structural check on the identity ARGUMENT's shape, not an authentication
 // of the caller.
 func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity, resource, action string) error {
-	if err := c.transport.gate("RBACClient.Authorize"); err != nil {
+	ctx, err := c.transport.admit(ctx, "RBACClient.Authorize")
+	if err != nil {
 		return err
 	}
 	if c.transport.closed.Load() {
@@ -144,7 +145,8 @@ func (c *rbacClient) Authorize(ctx context.Context, identity *transport.Identity
 // was false for every member of the tenant-only broker data-plane families
 // the built-in Admin role grants this way.
 func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Identity) ([]transport.PermissionInfo, error) {
-	if err := c.transport.gate("RBACClient.ListPermissions"); err != nil {
+	ctx, err := c.transport.admit(ctx, "RBACClient.ListPermissions")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.authorize(ctx, "RBACClient.ListPermissions"); err != nil {
@@ -181,7 +183,8 @@ func (c *rbacClient) ListPermissions(ctx context.Context, identity *transport.Id
 // an authenticated caller, no permission -- the floor requireIdentity
 // enforces here and permission.IdentityGated on every network transport.
 func (c *rbacClient) ListOwnPermissions(ctx context.Context) ([]transport.PermissionInfo, error) {
-	if err := c.transport.gate("RBACClient.ListOwnPermissions"); err != nil {
+	ctx, err := c.transport.admit(ctx, "RBACClient.ListOwnPermissions")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.requireIdentity(ctx); err != nil {

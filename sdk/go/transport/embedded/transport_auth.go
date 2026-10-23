@@ -40,7 +40,8 @@ var (
 
 // CreateUser creates a new passwordless user via the embedded user service.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
-	if err := t.gate("CreateUser"); err != nil {
+	ctx, err := t.admit(ctx, "CreateUser")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -76,7 +77,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 
 // GetUser retrieves a user by ID via the embedded user service.
 func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
-	if err := t.gate("GetUser"); err != nil {
+	ctx, err := t.admit(ctx, "GetUser")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -95,7 +97,8 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 // GetUserByUsername retrieves a user by tenant-scoped username via the
 // embedded user service.
 func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username string) (*transport.User, error) {
-	if err := t.gate("GetUserByUsername"); err != nil {
+	ctx, err := t.admit(ctx, "GetUserByUsername")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -113,7 +116,8 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 
 // GetUserByEmail resolves the canonical login key through the embedded service.
 func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
-	if err := t.gate("GetUserByEmail"); err != nil {
+	ctx, err := t.admit(ctx, "GetUserByEmail")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -132,7 +136,8 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint via the
 // embedded user service.
 func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
-	if err := t.gate("GetUserByCertThumbprint"); err != nil {
+	ctx, err := t.admit(ctx, "GetUserByCertThumbprint")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetUserByCertThumbprint"); err != nil {
@@ -151,7 +156,8 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 // AddCertBinding binds an mTLS SPKI thumbprint to a user via the embedded
 // user service.
 func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
-	if err := t.gate("AddCertBinding"); err != nil {
+	ctx, err := t.admit(ctx, "AddCertBinding")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -174,7 +180,8 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 // RemoveCertBinding withdraws an mTLS SPKI thumbprint from a user via the
 // embedded user service.
 func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
-	if err := t.gate("RemoveCertBinding"); err != nil {
+	ctx, err := t.admit(ctx, "RemoveCertBinding")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -192,7 +199,8 @@ func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbp
 
 // UpdateUser applies partial updates to a user via the embedded user service.
 func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
-	if err := t.gate("UpdateUser"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateUser")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -238,7 +246,8 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 // DeleteUser removes a non-system user by ID via the embedded user service.
 func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
-	if err := t.gate("DeleteUser"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteUser")
+	if err != nil {
 		return err
 	}
 	if t.userSvc == nil {
@@ -252,7 +261,8 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 
 // ListUsers returns a paginated user list via the embedded user service.
 func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersRequest) (*transport.ListUsersResponse, error) {
-	if err := t.gate("ListUsers"); err != nil {
+	ctx, err := t.admit(ctx, "ListUsers")
+	if err != nil {
 		return nil, err
 	}
 	if t.userSvc == nil {
@@ -287,7 +297,8 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 
 // EnableUser activates a user account via the embedded user service.
 func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
-	if err := t.gate("EnableUser"); err != nil {
+	ctx, err := t.admit(ctx, "EnableUser")
+	if err != nil {
 		return err
 	}
 	if t.userSvc == nil {
@@ -301,7 +312,8 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 
 // DisableUser deactivates a user account via the embedded user service.
 func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
-	if err := t.gate("DisableUser"); err != nil {
+	ctx, err := t.admit(ctx, "DisableUser")
+	if err != nil {
 		return err
 	}
 	if t.userSvc == nil {
@@ -316,7 +328,8 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 // SuspendUser moves an active user account to suspended via the embedded
 // user service.
 func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
-	if err := t.gate("SuspendUser"); err != nil {
+	ctx, err := t.admit(ctx, "SuspendUser")
+	if err != nil {
 		return err
 	}
 	if t.userSvc == nil {
@@ -331,7 +344,8 @@ func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
 // UnsuspendUser moves a suspended user account back to active via the
 // embedded user service.
 func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
-	if err := t.gate("UnsuspendUser"); err != nil {
+	ctx, err := t.admit(ctx, "UnsuspendUser")
+	if err != nil {
 		return err
 	}
 	if t.userSvc == nil {
@@ -349,7 +363,8 @@ func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
 
 // CreateRole creates a new role via the embedded role service.
 func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleRequest) (*transport.Role, error) {
-	if err := t.gate("CreateRole"); err != nil {
+	ctx, err := t.admit(ctx, "CreateRole")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {
@@ -373,7 +388,8 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 
 // GetRole retrieves a role by ID via the embedded role service.
 func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, error) {
-	if err := t.gate("GetRole"); err != nil {
+	ctx, err := t.admit(ctx, "GetRole")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {
@@ -391,7 +407,8 @@ func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, er
 
 // UpdateRole applies partial updates to a role via the embedded role service.
 func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleRequest) (*transport.Role, error) {
-	if err := t.gate("UpdateRole"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateRole")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {
@@ -417,7 +434,8 @@ func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleReq
 
 // DeleteRole removes a non-system role by ID via the embedded role service.
 func (t *Transport) DeleteRole(ctx context.Context, id string) error {
-	if err := t.gate("DeleteRole"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteRole")
+	if err != nil {
 		return err
 	}
 	if t.roleSvc == nil {
@@ -431,7 +449,8 @@ func (t *Transport) DeleteRole(ctx context.Context, id string) error {
 
 // ListRoles returns a paginated role list via the embedded role service.
 func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesRequest) (*transport.ListRolesResponse, error) {
-	if err := t.gate("ListRoles"); err != nil {
+	ctx, err := t.admit(ctx, "ListRoles")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {
@@ -464,7 +483,8 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 
 // AssignRole adds a role to a user's role set via the embedded services.
 func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string) error {
-	if err := t.gate("AssignRole"); err != nil {
+	ctx, err := t.admit(ctx, "AssignRole")
+	if err != nil {
 		return err
 	}
 	if t.roleSvc == nil {
@@ -502,7 +522,8 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 
 // UnassignRole removes a role from a user's role set via the embedded services.
 func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID string) error {
-	if err := t.gate("UnassignRole"); err != nil {
+	ctx, err := t.admit(ctx, "UnassignRole")
+	if err != nil {
 		return err
 	}
 	if t.roleSvc == nil {
@@ -535,7 +556,8 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 
 // ListPermissions returns all registered permission categories.
 func (t *Transport) ListPermissions(ctx context.Context) (*transport.ListPermissionsResponse, error) {
-	if err := t.gate("ListPermissions"); err != nil {
+	ctx, err := t.admit(ctx, "ListPermissions")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListPermissions"); err != nil {
@@ -581,7 +603,8 @@ func enrolledToTransport(e *service.EnrolledCertificate) *transport.EnrolledCert
 // AuthMiddleware.AuthorizeCertTenant, the same shared gate every network
 // transport authorizes this verb through.
 func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertRequest) (*transport.EnrolledCert, error) {
-	if err := t.gate("IssueCert"); err != nil {
+	ctx, err := t.admit(ctx, "IssueCert")
+	if err != nil {
 		return nil, err
 	}
 	if t.certEnroll == nil {
@@ -617,7 +640,8 @@ func (t *Transport) IssueCert(ctx context.Context, req *transport.IssueCertReque
 // enforced through AuthMiddleware.AuthorizeCertTenant, the same shared gate
 // every network transport authorizes this verb through.
 func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDelegationRequest) (*transport.IssuedDelegation, error) {
-	if err := t.gate("IssueDelegation"); err != nil {
+	ctx, err := t.admit(ctx, "IssueDelegation")
+	if err != nil {
 		return nil, err
 	}
 	if t.certEnroll == nil {
@@ -662,7 +686,8 @@ func (t *Transport) IssueDelegation(ctx context.Context, req *transport.IssueDel
 // AuthMiddleware.AuthorizeCertTenant, the same shared gate every network
 // transport authorizes this verb through.
 func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertRequest) (*transport.EnrolledCert, error) {
-	if err := t.gate("EnrollCert"); err != nil {
+	ctx, err := t.admit(ctx, "EnrollCert")
+	if err != nil {
 		return nil, err
 	}
 	if t.certEnroll == nil {
@@ -700,7 +725,8 @@ func (t *Transport) EnrollCert(ctx context.Context, req *transport.EnrollCertReq
 // network transport uses (AuthMiddleware.AuthorizeCertRevoke): certs:revoke
 // or certs:revoke:cross respectively.
 func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
-	if err := t.gate("RevokeCert"); err != nil {
+	ctx, err := t.admit(ctx, "RevokeCert")
+	if err != nil {
 		return nil, err
 	}
 	if t.certProv == nil {
@@ -731,7 +757,8 @@ func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.R
 // unconditional), and the RBAC grant for it is checked the same way every
 // network transport checks it (AuthMiddleware.AuthorizeCertTenant).
 func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
-	if err := t.gate("ListCerts"); err != nil {
+	ctx, err := t.admit(ctx, "ListCerts")
+	if err != nil {
 		return nil, err
 	}
 	if t.certProv == nil {

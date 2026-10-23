@@ -546,6 +546,24 @@ kernel-assigned port.
   principal's grants (see
   [../identity-rbac/](../identity-rbac/architecture.md#tenant-issued-delegations)).
   See [engineering.md](engineering.md#service-principal).
+- **The embedded transport binds its caller before anything dispatches.** A
+  network transport's identity comes from its authenticating listener; the
+  embedded transport has none, so the identity on the caller's context is the
+  caller. `embedded.WithContextBinder` (re-exported as
+  `node.WithContextBinder`, which binds the transport behind `Node.Client`)
+  is the in-process counterpart of that listener. Every unary and streaming
+  entry point opens with one helper, `Transport.admit`: the sealed-window gate,
+  then the binder. The context the binder returns is the one the auth
+  middleware authorizes and the handler runs on; a binder error is returned
+  unchanged and no handler is reached; a nil context is refused with
+  `NilBoundContextError`. The bound context is marked with the binder that
+  bound it, so an entry point that re-enters another (`Request` dispatching to
+  `Put`) or a database-scoped clone, which shares the binder, binds once. The
+  node's internal clients are built without it. A reflection test walks every
+  request method of the transport and its sub-clients under a refusing binder,
+  so an entry point added without `admit` fails it. Calls a non-replica
+  node forwards to a replica leader carry the `WithEmbeddedCaller` identity,
+  as above; the binder runs on the local node, before the forward.
 - **gRPC-Web is decided by the gRPC chain, never by REST's.** A call under
   `/grpc-web/` bypasses the REST middleware and reaches the gRPC server's own
   interceptors with its TLS state intact, so every caller gets the status code

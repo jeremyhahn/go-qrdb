@@ -31,7 +31,8 @@ import (
 // CredentialSubmit submits a named credential value by delegating to the
 // injected CredentialServicer.
 func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.CredentialSubmitRequest) error {
-	if err := t.gate("CredentialSubmit"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialSubmit")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "CredentialSubmit"); err != nil {
@@ -49,7 +50,8 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 // CredentialStrategy returns the active credential management strategy by
 // delegating to the injected CredentialServicer.
 func (t *Transport) CredentialStrategy(ctx context.Context) (*transport.CredentialStrategyResponse, error) {
-	if err := t.gate("CredentialStrategy"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialStrategy")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialStrategy"); err != nil {
@@ -70,7 +72,8 @@ func (t *Transport) CredentialStrategy(ctx context.Context) (*transport.Credenti
 // CredentialDelete removes a named credential by delegating to the injected
 // CredentialServicer.
 func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
-	if err := t.gate("CredentialDelete"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialDelete")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "CredentialDelete"); err != nil {
@@ -89,7 +92,8 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 // delegating to the injected CredentialServicer. Values are never
 // returned by enumeration.
 func (t *Transport) CredentialList(ctx context.Context, _ *transport.CredentialListRequest) (*transport.CredentialListResponse, error) {
-	if err := t.gate("CredentialList"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialList")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialList"); err != nil {
@@ -114,7 +118,8 @@ func (t *Transport) CredentialList(ctx context.Context, _ *transport.CredentialL
 // optionally keeping the previous version retrievable for a grace period.
 // Delegates to the injected CredentialServicer.
 func (t *Transport) CredentialRotate(ctx context.Context, req *transport.CredentialRotateRequest) (*transport.CredentialRotateResponse, error) {
-	if err := t.gate("CredentialRotate"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialRotate")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialRotate"); err != nil {
@@ -151,7 +156,8 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 // grace) for a credential by delegating to the injected CredentialServicer.
 // Values are never returned by this call.
 func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.CredentialListVersionsRequest) (*transport.CredentialListVersionsResponse, error) {
-	if err := t.gate("CredentialListVersions"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialListVersions")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialListVersions"); err != nil {
@@ -194,7 +200,8 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 // grace period has elapsed, returning the count reaped. Delegates to the
 // injected CredentialServicer.
 func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.CredentialGCRequest) (*transport.CredentialGCResponse, error) {
-	if err := t.gate("CredentialGCExpired"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialGCExpired")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialGCExpired"); err != nil {
@@ -322,7 +329,8 @@ func WithCredentialService(svc service.CredentialServicer) Option {
 
 // CredentialStore persists a credential value via the injected service.
 func (t *Transport) CredentialStore(ctx context.Context, name string, value []byte) error {
-	if err := t.gate("CredentialStore"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialStore")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "CredentialStore"); err != nil {
@@ -341,7 +349,8 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 // memory by delegating to the injected CredentialServicer. Nothing is copied
 // out: the embedded transport has no wire.
 func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
-	if err := t.gate("CredentialRetrieveBuffer"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialRetrieveBuffer")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialRetrieveBuffer"); err != nil {
@@ -361,7 +370,8 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 // CredentialServicer. Nothing is copied out: the embedded transport has no
 // wire.
 func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *transport.CredentialRetrieveVersionRequest) (*secure.Buffer, error) {
-	if err := t.gate("CredentialRetrieveVersionBuffer"); err != nil {
+	ctx, err := t.admit(ctx, "CredentialRetrieveVersionBuffer")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CredentialRetrieveVersionBuffer"); err != nil {

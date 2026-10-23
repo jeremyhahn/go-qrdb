@@ -24,7 +24,8 @@ import (
 // ReconcileBuiltInRoles converges the tenant's stored built-in roles onto this
 // build's definitions.
 func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.ReconcileRolesRequest) (*transport.ReconcileRolesResponse, error) {
-	if err := t.gate("ReconcileBuiltInRoles"); err != nil {
+	ctx, err := t.admit(ctx, "ReconcileBuiltInRoles")
+	if err != nil {
 		return nil, err
 	}
 	if t.roleSvc == nil {

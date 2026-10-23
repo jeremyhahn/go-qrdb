@@ -57,7 +57,10 @@ func injectFakeTLS(r *http.Request) {
 	if err != nil {
 		panic("injectFakeTLS: parse cert: " + err.Error())
 	}
-	r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
 }
 
 // ---------------------------------------------------------------------------

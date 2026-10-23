@@ -163,6 +163,19 @@ type RetiredPermissionError = role.RetiredPermissionError
 // is no registry entry for one to lose.
 var RetiredPermissions = role.RetiredPermissions
 
+// EffectivePermissions resolves roleIDs through svc and returns the concrete
+// permissions they grant, deduplicated and sorted by name, with every
+// whole-segment wildcard grant (objstore:*, *:read, *:*) expanded to the
+// registered permissions it matches. The roles resolve in the context tenant.
+// A nil svc returns *RoleServiceRequiredError. (Aliases
+// pkg/role.EffectivePermissions.)
+//
+// It reads below authz: no identity is consulted and no permission is
+// checked, so the caller owns the decision to call it — a composer issuing a
+// token at login, before the user holds a bearer token or an mTLS identity,
+// reads the user's grants through its node's RoleServicer with it.
+var EffectivePermissions = role.EffectivePermissions
+
 // IsSystemRoleName reports whether a role name is one of the canonical system
 // role names — the five FIPS 140-3 / PCI-DSS roles or Owner.
 //

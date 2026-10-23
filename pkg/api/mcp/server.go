@@ -160,6 +160,11 @@ type Server struct {
 	sealedWindowDispatch sealedwindow.ListenerProbe
 	sealedPath           *Server
 
+	// peerChainVerifier verifies a client certificate this listener's TLS
+	// configuration accepted without building a chain (the client trust
+	// pool's widened handshake). Nil falls back to authMW's.
+	peerChainVerifier auth.IssuerVerifier
+
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). See WithAwaitingAdminCredentialProbe.
 	awaitingAdminCredentialProbe awaitingAdminCredentialProbe
@@ -641,6 +646,28 @@ func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithPeerChainVerifier sets the verifier that resolves the caller's client
+// certificate when this listener's TLS configuration accepted it without
+// building a chain: the client trust pool the configuration is wired to. The
+// listener binds it, with the request's TLS state, to every tool call before
+// admission, so a share claim binds only a verified certificate on the
+// authenticated path and in the sealed window alike. Unset, the listener
+// uses its AuthMiddleware's issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(s *Server) {
+		s.peerChainVerifier = v
+	}
+}
+
+// chainVerifier is the verifier the listener binds to every tool call:
+// WithPeerChainVerifier's, else the AuthMiddleware's issuer verifier.
+func (s *Server) chainVerifier() auth.IssuerVerifier {
+	if s.peerChainVerifier != nil {
+		return s.peerChainVerifier
+	}
+	return s.authMW.IssuerVerifier()
+}
+
 // WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
 // gate (go-qrdb#548 review item 3): while probe reports awaiting, only the
 // ceremony status and ceremony-initialize tools are served -- admitted with
@@ -704,6 +731,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 			sealed.pinBackend = s.pinBackend
 			sealed.encMigrator = s.encMigrator
 			sealed.ceremonyCA = s.ceremonyCA
+			// A share claim on the sealed path binds only a certificate
+			// this listener's trust verifies, as it does here.
+			sealed.peerChainVerifier = s.chainVerifier()
 		})
 	}
 

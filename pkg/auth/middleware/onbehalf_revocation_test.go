@@ -221,3 +221,27 @@ func TestRevocationChecker_UnwiredAndNilMiddlewareAnswerNil(t *testing.T) {
 		t.Errorf("nil middleware: RevocationChecker() = %#v, want nil", rc)
 	}
 }
+
+// TestIssuerVerifier_ReturnsTheWiredVerifier pins the accessor a transport
+// binds with auth.WithPeerChainVerifier to the verifier the middleware holds.
+func TestIssuerVerifier_ReturnsTheWiredVerifier(t *testing.T) {
+	v := clusterOnly{}
+	m := newTestMiddleware(nil, WithIssuerVerifier(v))
+
+	if got := m.IssuerVerifier(); got != auth.IssuerVerifier(v) {
+		t.Fatalf("IssuerVerifier() = %#v, want the installed verifier %#v", got, v)
+	}
+}
+
+// TestIssuerVerifier_UnwiredAndNilMiddlewareAnswerNil: no verifier wired and
+// no middleware at all both answer a nil interface, so only a chain crypto/tls
+// verified counts for auth.VerifiedPeerCertificate.
+func TestIssuerVerifier_UnwiredAndNilMiddlewareAnswerNil(t *testing.T) {
+	if v := newTestMiddleware(nil).IssuerVerifier(); v != nil {
+		t.Errorf("unwired middleware: IssuerVerifier() = %#v, want nil", v)
+	}
+	var absent *AuthMiddleware
+	if v := absent.IssuerVerifier(); v != nil {
+		t.Errorf("nil middleware: IssuerVerifier() = %#v, want nil", v)
+	}
+}

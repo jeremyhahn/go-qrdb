@@ -2294,8 +2294,9 @@ lint-sdk:
 vet-sdk:
 	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
 
-# lint-gates is every repository gate CI's image job runs beside `make lint`
-# on every run (ci-template v1.21, one image job): the gates over the scripts,
+# lint-gates is every repository gate CI's lint job runs beside `make lint`
+# on every run (ci-template v1.21's one image job, split into lint and image
+# here by #1046): the gates over the scripts,
 # the workflows, the generated code and the module files, `make vet` over the
 # default tag set, the secure analyzer's self-test and the sdk/go linters. Run
 # with `make -k lint-gates` it reports every failing gate in one pass.
@@ -2304,7 +2305,7 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of the image job, so CI runs them on a push to main and on the daily
+# hour of CI's lint stages, so CI runs them on a push to main and on the daily
 # full-tier dispatch, not on a pull request; release.yml still runs both
 # before a tag. `make lint-gates lint-sweeps` is the whole set.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \

@@ -18,25 +18,32 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc/credentials"
+	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderpb"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// optionalPeerThumbprint returns the verified TLS client certificate's
+// optionalPeerThumbprint returns the presented TLS client certificate's
 // thumbprint, or "" when the connection carried none. A quorum submission
 // does not require mTLS — the factor proof authenticates the holder — but
 // when a certificate is present the mtls factor binds to it.
 func optionalPeerThumbprint(ctx context.Context) string {
-	thumb, err := peerCertThumbprint(ctx)
-	if err != nil {
+	p, ok := grpcpeer.FromContext(ctx)
+	if !ok {
 		return ""
 	}
-	return thumb
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
+		return ""
+	}
+	return mtls.Thumbprint(tlsInfo.State.PeerCertificates[0].Raw)
 }
 
 // barrierUnavailable is the reply when no barrier service is wired.

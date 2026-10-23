@@ -35,9 +35,14 @@ import (
 // exactly the caller CallerPrincipal would otherwise classify as the one
 // shared "" anonymous principal, letting one peer's wrong guesses lock out
 // every other peer's legitimate attempts on this listener.
-func withConnectionState(ctx context.Context, conn *quicgo.Conn) context.Context {
+//
+// The chain verifier v (the auth middleware's, nil without one) is bound
+// with the TLS state, so a handler reading the caller's verified certificate
+// (service.VerifiedClientCertThumbprint) resolves it through the trust pool.
+func withConnectionState(ctx context.Context, conn *quicgo.Conn, v auth.IssuerVerifier) context.Context {
 	tlsState := conn.ConnectionState().TLS
 	ctx = auth.WithTLSState(ctx, &tlsState)
+	ctx = auth.WithPeerChainVerifier(ctx, v)
 	if addr := conn.RemoteAddr(); addr != nil {
 		ctx = auth.WithRemoteAddr(ctx, addr.String())
 	}

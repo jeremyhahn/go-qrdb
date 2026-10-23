@@ -1,6 +1,6 @@
 # Deploying Multi-Node IsolationRaft Clusters
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -24,21 +24,24 @@ nodes. For the design rationale and implementation details, see
 - All nodes agree on a single **cluster trust domain** (default: `qrdb.cluster`).
   This value is used in node certificate SPIFFE URIs and must be consistent
   across all nodes.
-- All nodes have a configured **volume pool** (e.g., a shared NFS mount or
-  per-node local filesystem). Each node must have the same pool root path.
-  Operator expectation: homogeneous topology — same mount point on every node.
+- The **volume pool** exists in the replicated catalog
+  (`qrdb volume-pool create <pool>`) and every node maps that pool name to a
+  local path under `storage.volume_pools`. The paths need not be identical:
+  each node resolves the pool to its own local mount.
 - The cluster uses **mTLS authentication** (production default). Plaintext mode
   (no client cert) is supported for development/testing but is not recommended.
 - Node certificates carry a **SPIFFE URI SAN** in the form
   `spiffe://{trustDomain}/node/{raftAddr}`. This is mandatory for the secure
-  per-node key delivery (Phase 4c-1c).
+  per-node key delivery.
 
 ### Tenants and entitlements
 
-- The tenant has an `AllowedIsolationModes` entitlement that includes `raft`.
-- The tenant has `AllowDedicatedRaft: true` in their entitlements.
-- Quotas are configured: `MaxRaftGroups`, `MaxReplicasPerGroup`, `MaxTotalReplicas`,
-  and `MaxStorageBytes`.
+- The tenant's `allowed_isolation_modes` entitlement includes `raft`.
+- The tenant has `allow_dedicated_raft: true` in its entitlements.
+- A tenant whose databases live in a volume pool has that pool in its
+  `allowed_volume_pools` entitlement; with none, pool placement fails closed.
+- Quotas are configured: `max_raft_groups`, `max_replicas_per_group`,
+  `max_total_replicas`, and `max_storage_bytes`.
 
 ---
 
@@ -60,32 +63,33 @@ The trust domain is threaded into:
 
 ### Volume pool
 
-Each node must have the same pool path configured:
+Each node maps the catalog pool name to its own local path:
 
 ```yaml
 storage:
   volume_pools:
     - name: "default"
-      path: "/var/qrdb/pools/default"   # Same path on every node
+      path: "/var/qrdb/pools/default"   # This node's mount for the pool
+      provider: "dir"                   # Default
 ```
 
-The pool is homogeneous — operator must ensure the same mount point exists
-on all nodes. A tenant's dedicated store is allocated under the pool's
-path, so its replicas can resolve the same path on each node.
+A tenant's dedicated store is allocated under the pool's path plus the
+tenant's id, which every node resolves against its own mount.
 
 ### Barrier and key management
 
 ```yaml
 seal:
-  strategy: "software"  # or "shamir", depending on your policy
-  
+  strategy: "passphrase"  # none (default), passphrase, or shamir
+
 tenant:
   default_entitlements:
     allowed_isolation_modes: [prefix, volume, raft]
     allow_dedicated_raft: true
     allow_volume_storage: true
     allow_system_managed_barrier: false  # Operator choice
-  
+    allowed_volume_pools: [default]
+
   default_quotas:
     max_raft_groups: 10
     max_replicas_per_group: 3
@@ -93,13 +97,13 @@ tenant:
     max_storage_bytes: 10737418240  # 10 GiB
 ```
 
-**BarrierAutoUnseal choice:**
+**Barrier auto-unseal choice** (`qrdb tenant create --barrier-auto-unseal`):
 
 - `false` (default, self-managed): tenant must unseal their barrier on each
   node after restart. Higher security, unattended-restart cost.
 - `true` (system-managed): tenant barrier is auto-unsealed under the system
   barrier; replicas start automatically after restart. Lower security, higher
-  convenience.
+  convenience. Requires the `allow_system_managed_barrier` entitlement.
 
 Both modes are fully supported in multi-node deployments.
 
@@ -110,26 +114,26 @@ Both modes are fully supported in multi-node deployments.
 ### Single command
 
 ```bash
-qrdb database create --tenant acme --database payments \
+qrdb database create payments \
   --backend raft \
   --replicas 3
 ```
 
-The replication factor is clamped to `min(requested, cluster_size)`, so a
-request for `--replicas 5` on a 3-node cluster places 3 replicas. If you
-request more than `MaxReplicasPerGroup` or the aggregate `MaxTotalReplicas`
-budget, the operation fails.
+The database is created in the calling tenant (`acme`, from the caller's
+identity). The replication factor is clamped to `min(requested, cluster_size)`,
+so a request for `--replicas 5` on a 3-node cluster places 3 replicas. If you
+request more than `max_replicas_per_group` or the aggregate
+`max_total_replicas` budget, the operation fails.
 
 ### REST API
 
 ```bash
 curl -X POST https://localhost:63002/v1/databases \
-  -H "X-QRDB-Database: payments" \
-  -H "X-QRDB-Tenant: acme" \
   -H "Content-Type: application/json" \
   --cert client.crt --key client.key \
   --cacert ca.crt \
   -d '{
+    "name": "payments",
     "backend": "raft",
     "replicas": 3,
     "dedicatedWal": true
@@ -146,13 +150,13 @@ uses the shared, system-key-encrypted WAL. Omit the field for the default.
 
 The admin web UI exposes these operations directly:
 
-- **Create database wizard** (raft mode): a **Replication Factor** input and a
-  **Dedicated WAL** toggle (raft-only) — the toggle sends `dedicatedWal` on
-  create.
+- **Create database wizard** (raft mode): a **Replication Factor (Replicas)**
+  input and a **Dedicated WAL** toggle (raft-only) — the toggle sends
+  `dedicatedWal` on create.
 - **Tenant detail → Quotas**: `Max Replicas / Group`, `Max Total Replicas`, and
   `Max Dedicated WAL Groups` fields.
-- **Tenant detail → Entitlements**: `Allow Dedicated Raft`, `Allow Volume
-  Storage`, `Allow System-Managed Barrier`, and `Allow Dedicated WAL` toggles,
+- **Tenant detail → Entitlements**: `Allow dedicated Raft`, `Allow volume
+  storage`, `Allow system-managed barrier`, and `Allow dedicated WAL` toggles,
   plus the allowed isolation modes.
 - **Admin → Topology** (raft clusters): the placement/replica-distribution view
   — per node, its raft address, shard count, and the per-shard replica/leader
@@ -168,18 +172,23 @@ standalone/clustered choice at setup time.)
 
 ### What happens
 
-1. **Placement decision** (Phase 4c-1b): The service picks 3 distinct,
+1. **Placement decision**: The service picks 3 distinct,
    least-loaded, healthy nodes. The least-loaded node is elected leader.
 2. **Placement persistence**: The decision is persisted to the replicated
    placement table in the system KV: `__sys:placement/acme/payments`.
-3. **Key distribution** (Phase 4c-1c): If the request came from the leader node,
-   the tenant barrier's root key is immediately sent to each follower node over
-   an authenticated mTLS control plane. Non-leader replicas receive the key when
-   they become involved in a rebalance or takeover.
-4. **Replica start** (Phase 4c-1d): Each node's `TenantShardReconciler` watches
-   the placement table, sees the new entry, and calls `Attach` to start the
-   local replica (if the barrier is unsealed). Replicas converge to "running"
-   within ~5 seconds (watch-based) or ~30 seconds (polling fallback).
+3. **Barrier keys**: Every serving node initialises the tenant barrier with
+   its own key from the owner's signed, keyless init statement; no key is
+   carried between nodes for the `none`, `passphrase` and `shamir` strategies
+   or for a system-managed barrier. For an injected (hardware) strategy, the
+   owner-sealed portable blob is sent to each replica node over the
+   authenticated mTLS control plane (see
+   [Secure key delivery](#secure-key-delivery)). Delivery is best-effort: a
+   failed delivery does not fail the create.
+4. **Replica start**: Each node's `TenantShardReconciler` watches the
+   placement table (polling every 5 seconds when no watch is available), sees
+   the new entry, and calls `Attach` to start the local replica (if the
+   barrier is unsealed). A new replica joins as an observer and is promoted to
+   a voter once it has caught up.
 
 ---
 
@@ -187,17 +196,19 @@ standalone/clustered choice at setup time.)
 
 ### Boot sequence (all nodes)
 
-1. System barrier unseals (operator action for self-managed, automatic for
-   system-managed).
+1. The node's own system barrier is unsealed. Each node is unsealed on its
+   own; there is no cluster auto-unseal (see
+   [barrier-seal/architecture.md](barrier-seal/architecture.md#no-cluster-auto-unseal)).
 2. The replicated placement table is loaded into the system KV.
 3. `TenantShardReconciler.Run()` is launched and calls `ReconcileOnce`.
 4. For each placed replica assigned to this node:
    - If the barrier is unsealed and the shard is not already running, call
      `Attach` to start it.
    - If the barrier is sealed (self-managed mode), defer and wait for the
-     tenant to unseal.
+     tenant to unseal it on this node
+     (`qrdb tenant barrier-unseal --id acme --key <base64>`).
 5. After reconciliation, the node begins serving traffic. Sealed replicas are
-   reachable but return "tenant barrier sealed" errors until unsealed.
+   reachable but return `qrdb/seal: tenant barrier is sealed` until unsealed.
 
 ### Leader restart
 
@@ -205,8 +216,9 @@ If the current leader node restarts:
 1. Raft will elect a new leader (quorum-based).
 2. The old leader rejoins as a follower.
 3. The placement table stays unchanged (it's replicated).
-4. New replicas are not spawned automatically; if you want to rebalance,
-   use the rebalance API explicitly.
+4. New replicas are not spawned automatically; to rebalance, use
+   `qrdb rebalance plan` and `qrdb rebalance execute` (see
+   [Rebalance and move](#rebalance-and-move)).
 
 ### Data integrity after restart
 
@@ -224,43 +236,50 @@ persistent placement table and per-node reconciler ensure:
 
 ### Node join (adding a node to the cluster)
 
-1. Configure and start the new node with the same trust domain and pool root.
-2. Cluster peer discovery brings it into the Raft cluster.
+1. Configure and start the new node with the same trust domain, and map the
+   volume pool to a local path.
+2. Admit it to the Raft cluster: a join token (`qrdb admin join-token mint`)
+   and an approved join request (`qrdb admin join-request approve`), or
+   `qrdb admin member add`. Automatic membership is off by default
+   (`qrdbd start --dynamic-membership`). See
+   [clustering/user.md](clustering/user.md#adding-a-node-member-side-csr-join).
 3. Subsequent database creates can place replicas on the new node.
-4. Existing databases are not automatically rebalanced; use the rebalance API
-   to move replicas if desired.
+4. Existing databases are not automatically rebalanced; use
+   `qrdb rebalance plan` and `qrdb rebalance execute` to move replicas if
+   desired.
 
 ### Node leave (removing a node from the cluster)
 
-1. Stop the node gracefully (e.g., SIGTERM).
-2. Remove it from the cluster discovery (if using static peer lists).
-3. A graceful shutdown triggers the reconciler to close assigned replicas.
-4. The leader will eventually remove the node from the placement table (if
-   consensus is quorum-based on the remaining nodes).
-5. Any unclean shutdown (crash) will trigger Raft membership change on the
-   quorum; replicas on the crashed node are automatically demoted.
-
-For a controlled rebalance, move replicas away from the node before stopping it.
+1. Put the node into drain mode (`qrdb admin drain`). See
+   [clustering/user.md](clustering/user.md#taking-a-node-out-of-service).
+2. Move its replicas away (`qrdb rebalance plan` / `execute`, or
+   `qrdb database scale`).
+3. Remove it from Raft membership (`qrdb admin member remove`). See
+   [clustering/user.md](clustering/user.md#changing-membership).
+4. Stop the node gracefully (e.g., SIGTERM).
 
 ---
 
-## Secure key delivery (Phase 4c-1c)
+## Secure key delivery
 
 ### Architecture overview
 
-Each tenant's dedicated-raft database has a per-tenant barrier with a root key.
-When the database is created or a replica is moved, the leader must securely
-deliver the tenant root key to each follower node. The delivery uses:
+Each node initialises an isolated tenant's barrier with its own key (see
+[barrier-seal/architecture.md](barrier-seal/architecture.md#per-node-barrier-keys)).
+Only for an injected (hardware) seal strategy does a node send anything: the
+tenant's owner-sealed portable blob, delivered to each replica node when the
+database is created. No plaintext root key is sent. The delivery uses:
 
 - **Transport**: Authenticated mTLS HTTPS on the admin control plane
-  (`POST /v1/cluster/keydelivery`).
-- **Crypto**: HPKE (RFC 9180) encryption bound to the recipient node's
-  certificate pubkey (P-256 ECDH). Even without mTLS, the payload is encrypted
-  so only the right node can decrypt.
+  (`POST /v1/cluster/keydelivery`; the sender fetches the recipient's key from
+  `GET /v1/cluster/nodekey`).
+- **Crypto**: HPKE (RFC 9180, DHKEM(P-256)-HKDF-SHA256-AES-256-GCM) bound to
+  the recipient node's certificate key. Even without mTLS, the payload is
+  encrypted so only the right node can decrypt.
 - **Authentication**: Cluster peer verifies the sender certificate chains to
   the cluster CA, and the recipient verifies the placement table authorizes the
   delivery (tenant boundary enforcement).
-- **Idempotency**: Nonce + TTL prevent replay.
+- **Idempotency**: A 32-byte nonce and a 5-minute TTL prevent replay.
 
 ### Node certificate requirements
 
@@ -277,103 +296,81 @@ before sending the key.
 
 See [bootstrap.md](bootstrap.md) for how to generate SPIFFE-SAN node certificates.
 
-### Key re-wrapping at each node
+### At the receiving node
 
-When a node receives the tenant root key, it does NOT store it plaintext.
-Instead:
-
-- **System-managed auto-unseal**: The key is immediately re-wrapped under *that
-  node's* system barrier (using AES-GCM under the system master key) and
-  persisted. The plaintext is wiped from memory (`enclave.WipeBytes`).
-- **Self-managed**: The key is persisted in the sealed form it arrived in
-  (already HPKE-sealed by the sender; double-sealed under the sender's view).
-  The tenant must unseal on this node to unwrap and use the key.
-
-No plaintext tenant key ever sits on disk across nodes. Each node's barrier is
+The receiver imports the blob into its barrier registry. The barrier stays
+sealed until the tenant unseals it on that node. Each node's barrier is
 independent.
 
 ---
 
 ## Rebalance and move
 
-### Rebalance API
+### Rebalance plan
 
 ```bash
-qrdb rebalance auto
+qrdb rebalance report
+qrdb rebalance plan --dry-run --max-moves 10 --output json > plan.json
+qrdb rebalance execute < plan.json
 ```
 
-Computes a new placement decision (using current cluster load) and moves
-replicas to reach the target. For dedicated-raft databases:
+The plan is computed from current cluster load; `execute` runs its moves. For
+dedicated-raft databases, each move:
 
-1. **Add**: Deliver the tenant key to the destination node.
-2. **Wait**: The destination node's reconciler starts the replica and catches up
-   via Raft snapshot transfer.
-3. **Leader transfer** (if rebalancing leadership): Transfer leader to the new
-   node (if load-balancing requires it).
-4. **Remove**: The source node is removed from Raft quorum and the replica is
+1. **Add**: The destination node is added to the group as an observer; its
+   reconciler starts the replica, which catches up via Raft.
+2. **Promote**: Once caught up, the observer is promoted to a voter.
+3. **Remove**: The source node is removed from the group and its replica is
    stopped.
 
-### Move a single replica
+See [clustering/user.md](clustering/user.md#rebalancing) for reading the
+report and the plan.
+
+### Change the replica count
 
 ```bash
-qrdb rebalance move --tenant acme --database payments \
-  --from 127.0.0.1:63001 --to 127.0.0.2:63001
+qrdb database scale payments --replicas 5
 ```
 
-Moves a replica from one node to another, reusing the same logic as `rebalance auto`.
+Adds or removes replicas of one database, observer-first on the way up.
 
 ### During a move
 
 - The database remains accessible on the leader.
-- Read consistency is maintained (strong reads wait for the new replica to catch up).
-- Write latency may increase while the snapshot is transferred.
-- A crash during the move is safe: the placement table is replicated, so the
-  move will be retried on recovery.
+- Write latency may increase while the new replica catches up.
+- The `execute` result lists each failed move with the phase it failed in and
+  why; generate a new plan to retry.
 
 ---
 
 ## Monitoring
 
-### Replica status per node
+### Cluster topology and replica state
 
 ```bash
-qrdb cluster shards
+qrdb admin topology
+qrdb admin replica-states
 ```
 
-Lists all shards (system + user databases) on the local node, including:
-- Shard ID, Tenant, Database, Replication Factor
-- State (running / starting / stopped / sealed)
-- Leader replica (if applicable)
-- Replica count on this node
+`topology` shows the full cluster topology as seen from this node
+(`GET /admin/topology`). `replica-states` shows the applied index and state-machine hash of every
+replica on this node.
 
-### Placement table
+### One database's placement
 
 ```bash
-qrdb admin placement list --tenant acme --database payments
+qrdb database info payments
 ```
 
-Shows the replicated placement decision:
-
-```
-TenantID: acme
-Database: payments
-ShardID: 12345
-RF: 3
-Leader: Replica 1 (127.0.0.1:63001)
-
-Replicas:
-  Replica 1 (127.0.0.1:63001) [leader]
-  Replica 2 (127.0.0.2:63001)
-  Replica 3 (127.0.0.3:63001)
-```
+Shows the database's details, including its shard ID and replicas.
 
 ### Rebalance load report
 
 ```bash
-qrdb admin imbalance-report
+qrdb rebalance report
 ```
 
-Shows the current load distribution across nodes and recommends placement changes.
+Shows the per-node load distribution and identifies cluster hotspots.
 
 ---
 
@@ -384,64 +381,63 @@ Shows the current load distribution across nodes and recommends placement change
 **Symptom**: A placement entry exists, but the replica is not running.
 
 **Diagnosis**:
-1. Check if the barrier is unsealed (self-managed mode):
+1. Check if the tenant barrier is unsealed on this node (self-managed mode):
    ```bash
-   qrdb barrier status --tenant acme
+   qrdb tenant barrier-status --id acme
    ```
    If sealed, unseal it:
    ```bash
-   qrdb barrier unseal --tenant acme
+   qrdb tenant barrier-unseal --id acme --key <base64>
    ```
 2. Check the node logs for reconciler errors:
    ```bash
-   journalctl -u qrdbd | grep -i "reconcil"
+   journalctl -u qrdbd | grep -i "placement reconciler"
    ```
 3. Verify the placement entry:
    ```bash
-   qrdb admin placement list --tenant acme --database payments
+   qrdb database info payments
    ```
 
 **Resolution**: If the barrier is not unsealed, unseal it first. If the
 placement table is empty or wrong, recreate the database. If the node is
 unhealthy, check cluster connectivity.
 
-### Key delivery timeout
+### Key delivery failure
 
-**Symptom**: Database create fails with "key delivery timeout" or replica
-starts with "barrier not unsealed".
+**Symptom**: With an injected (hardware) seal strategy, a replica node has no
+imported barrier for the tenant after create. Create itself succeeds; delivery
+is best-effort.
 
 **Diagnosis**:
 1. Verify mTLS connectivity between nodes:
    ```bash
-   # From leader node
-   curl -X POST https://<follower>:63002/v1/cluster/keydelivery \
+   curl https://<replica-node>:63002/v1/cluster/nodekey \
      --cert node.crt --key node.key --cacert ca.crt
    ```
-2. Check the leader logs for key-delivery errors:
+2. Check the sending node's logs for key-delivery errors:
    ```bash
-   journalctl -u qrdbd | grep -i "keydelivery"
+   journalctl -u qrdbd | grep -i "clusterkeys"
    ```
 3. Verify node certificates have SPIFFE URIs:
    ```bash
    openssl x509 -in node.crt -noout -text | grep -A 1 "Subject Alternative Name"
    ```
 
-**Resolution**: Verify mTLS setup and node certificates. If the follower node
-is temporarily offline, the create will fail; retry after the node comes back.
+**Resolution**: Verify mTLS setup and node certificates.
 
 ### Placement inconsistency
 
 **Symptom**: Different nodes report different placements for the same database.
 
 **Diagnosis**: This should not happen if the replicated placement table (in
-the system KV) is consistent. Check:
+the system KV) is consistent. Run on each node:
 ```bash
-qrdb admin placement list --tenant acme --database payments
+qrdb database info payments
 ```
 
 **Resolution**: If you see inconsistency, check the system KV consistency
-(possible rare race or bug). File an issue with the logs and the placement
-entries from all nodes.
+(`qrdb admin replica-states` on each node) and collect the logs and the
+placement entries from all nodes.
 
 ### Full cluster restart with sealed barriers
 
@@ -449,11 +445,12 @@ entries from all nodes.
 
 **What happens**:
 1. All nodes boot with their system barriers sealed.
-2. Operator unseals the system barrier (once, on any node).
-3. Raft replicates the unseal operation.
-4. All nodes converge to system-barrier-unsealed within ~5 seconds.
-5. All tenant barriers auto-unseal (they are wrapped under the system barrier).
-6. All replicas start automatically via the reconciler.
+2. Operator unseals the system barrier on each node; there is no cluster
+   auto-unseal.
+3. A node waits for its system shard's leader before it serves.
+4. On each unsealed node, the system-managed tenant barriers auto-unseal (they
+   are wrapped under the system barrier).
+5. All replicas start automatically via the reconciler.
 
 **If barriers are self-managed**: Operator must unseal each tenant barrier on
 each node (more operational burden, higher security).
@@ -462,10 +459,11 @@ each node (more operational burden, higher security).
 
 ## See Also
 
-- [multi-tenancy.md](multi-tenancy/architecture.md) — Isolation modes, quotas, entitlements
+- [multi-tenancy/architecture.md](multi-tenancy/architecture.md) — Isolation
+  modes, quotas, entitlements
 - [bootstrap.md](bootstrap.md) — TLS setup, SPIFFE URIs, initial cluster
   formation
 - [seal/multi-tenant.md](seal/multi-tenant.md) — Barrier lifecycle, key
   management
-- [multi-tenancy/](multi-tenancy/) — Design
-  and implementation details of Phase 4c
+- [clustering/user.md](clustering/user.md) — Membership, drain, rebalancing
+- [multi-tenancy/](multi-tenancy/) — Design and implementation details

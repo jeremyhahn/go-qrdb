@@ -185,7 +185,8 @@ func factorToDomain(userID uint64, f transport.Factor) *auth.AuthFactor {
 
 // Enroll persists a new factor for the given user.
 func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transport.Factor) error {
-	if err := c.transport.gate("FactorClient.Enroll"); err != nil {
+	ctx, err := c.transport.admit(ctx, "FactorClient.Enroll")
+	if err != nil {
 		return err
 	}
 	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsAdd); err != nil {
@@ -212,7 +213,8 @@ func (c *factorClient) Enroll(ctx context.Context, userID uint64, factor transpo
 
 // List returns every factor belonging to the user.
 func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Factor, error) {
-	if err := c.transport.gate("FactorClient.List"); err != nil {
+	ctx, err := c.transport.admit(ctx, "FactorClient.List")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsList); err != nil {
@@ -243,7 +245,8 @@ func (c *factorClient) List(ctx context.Context, userID uint64) ([]transport.Fac
 // the user-side service identifies factors by id alone. Callers passing
 // a mismatched userID still see RBAC-level isolation upstream.
 func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID string) error {
-	if err := c.transport.gate("FactorClient.Remove"); err != nil {
+	ctx, err := c.transport.admit(ctx, "FactorClient.Remove")
+	if err != nil {
 		return err
 	}
 	if err := c.transport.authorizeUserTarget(ctx, userID, permission.UserAuthFactorsRemove); err != nil {
@@ -270,7 +273,8 @@ func (c *factorClient) Remove(ctx context.Context, userID uint64, factorID strin
 // Verify exercises the configured FactorVerifier for the requested
 // factor type.
 func (c *factorClient) Verify(ctx context.Context, userID uint64, challenge transport.VerifyChallenge) (*transport.FactorVerifyResult, error) {
-	if err := c.transport.gate("FactorClient.Verify"); err != nil {
+	ctx, err := c.transport.admit(ctx, "FactorClient.Verify")
+	if err != nil {
 		return nil, err
 	}
 	// Verify is the challenge-response check a login flow performs against an

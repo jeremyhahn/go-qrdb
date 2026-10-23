@@ -78,8 +78,10 @@ permissions:
   contents: read
 
 env:
-  # Kept in lockstep with ci.yml, including the reason (#540).
-  GO_VERSION: "1.27.2"
+  # The go directive of go.mod: GOTOOLCHAIN=local refuses an older Go, so a
+  # stale pin fails the tagged tree at its first go command.
+  # test/buildgates/release_workflow_test.go fails when the two differ.
+  GO_VERSION: "1.27.3"
   GOLANGCI_LINT_VERSION: "v2.14.0"
   GOWORK: "off"
   GOFLAGS: "-buildvcs=false"
