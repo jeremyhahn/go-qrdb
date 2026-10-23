@@ -147,7 +147,12 @@ func TestOpenCursor_TenantSuspensionClosesOnlyItsConnection(t *testing.T) {
 			t.Fatalf("another tenant's fetch after the suspension = %d rows, %v; want 1 row", rows, err)
 		}
 	}
-	require.Equal(t, 1, srv.sessions.guard.Len(), "only the suspended tenant's connection was closed")
+	// The guard ends acme's session by closing its connection; the listener
+	// releases the session when it sees the close, which can follow the
+	// client's failed fetch.
+	require.Eventually(t, func() bool {
+		return srv.sessions.guard.Len() == 1
+	}, 10*time.Second, 20*time.Millisecond, "only the suspended tenant's connection was closed")
 }
 
 // TestNewServer_AuthMiddlewareAloneStartsTheGuard: a listener with an auth
