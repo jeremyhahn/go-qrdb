@@ -205,6 +205,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		return nil, err
 	}
 	updateReq := &user.UpdateUserRequest{
+		Guard:        t.authMW.SORoleGuard(ctx),
 		ID:           req.ID,
 		Username:     req.Username,
 		Email:        req.Email,
@@ -492,6 +493,7 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 	}
 	roleIDs := append(u.RoleIDs, roleID)
 	_, err = t.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   t.authMW.SORoleGuard(ctx),
 		ID:      userID,
 		RoleIDs: roleIDs,
 	})
@@ -524,6 +526,7 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 		}
 	}
 	_, err = t.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   t.authMW.SORoleGuard(ctx),
 		ID:      userID,
 		RoleIDs: roleIDs,
 	})

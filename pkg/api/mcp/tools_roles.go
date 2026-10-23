@@ -441,6 +441,7 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, auth
 		roleIDs = append(roleIDs, roleID)
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {
@@ -500,6 +501,7 @@ func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware
 		}
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {

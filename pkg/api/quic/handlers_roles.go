@@ -508,6 +508,7 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 
 	roleIDs := append(u.RoleIDs, req.RoleID)
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})
@@ -552,6 +553,7 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 	}
 
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})

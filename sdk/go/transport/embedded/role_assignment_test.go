@@ -20,6 +20,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -362,6 +363,89 @@ func TestEmbeddedSORole_OnlyTheTenantSOGrantsOrRevokesIt(t *testing.T) {
 			}
 			if writes != 0 {
 				t.Fatalf("a refused SO change must write nothing, got %d writes", writes)
+			}
+		})
+	}
+}
+
+// TestEmbeddedSORole_AdminWriteOverlappingAnSOGrant: an SO grant that lands
+// after the gate read the record and before the Admin's write commits is not
+// removed by that write. The user service double judges the request's Guard
+// against the record it replaces, as the user store does against the base of
+// its conditional commit.
+func TestEmbeddedSORole_AdminWriteOverlappingAnSOGrant(t *testing.T) {
+	const soID = "acme-so"
+	roleSvc := &mockRoleServicer{
+		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
+			return []permission.Permission{permission.RolesAssign, permission.RolesUnassign, permission.UsersUpdate}, nil
+		},
+		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+			return &role.Role{ID: id, TenantID: "acme"}, nil
+		},
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			if tenantID != "acme" || name != role.RoleNameSO {
+				return nil, &role.RoleNotFoundError{ID: name}
+			}
+			return &role.Role{ID: soID, TenantID: "acme", Name: role.RoleNameSO}, nil
+		},
+	}
+
+	tests := []struct {
+		name string
+		call func(*Transport, context.Context) error
+	}{
+		{"update role_ids", func(tr *Transport, ctx context.Context) error {
+			_, err := tr.UpdateUser(ctx, &transport.UpdateUserRequest{ID: 1, RoleIDs: []string{"role-a"}})
+			return err
+		}},
+		{"unassign SO", func(tr *Transport, ctx context.Context) error { return tr.UnassignRole(ctx, 1, soID) }},
+		{"assign another role", func(tr *Transport, ctx context.Context) error {
+			// The handler appends to the record it read before the grant, so
+			// its write would drop the SO role.
+			return tr.AssignRole(ctx, 1, "role-b")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := user.User{ID: 1, TenantID: "acme", RoleIDs: []string{"role-a"}}
+			userSvc := &mockUserServicer{
+				getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+					cp := rec
+					return &cp, nil
+				},
+				updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+					// The SO's grant commits first.
+					rec.RoleIDs = append(slices.Clone(rec.RoleIDs), soID)
+					next := rec
+					if req.RoleIDs != nil {
+						next.RoleIDs = req.RoleIDs
+					}
+					if req.Guard != nil {
+						if err := req.Guard(&rec, &next); err != nil {
+							return nil, err
+						}
+					}
+					rec = next
+					cp := rec
+					return &cp, nil
+				},
+			}
+			tr, err := New(newMockKVService(), &mockAdminService{},
+				WithUserService(userSvc),
+				WithRoleService(roleSvc),
+				WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			err = tt.call(tr, roleAssignmentIdentityCtx("acme", "admin"))
+			var denied *authmw.SORoleRequiredError
+			if !errors.As(err, &denied) {
+				t.Fatalf("want *SORoleRequiredError, got %T: %v", err, err)
+			}
+			if !slices.Contains(rec.RoleIDs, soID) {
+				t.Fatalf("the SO grant was removed: roles = %v", rec.RoleIDs)
 			}
 		})
 	}

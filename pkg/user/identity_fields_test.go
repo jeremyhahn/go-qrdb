@@ -708,11 +708,13 @@ func TestLastAuthOnly_AnyOtherFieldDisqualifies(t *testing.T) {
 	}
 
 	// Every mutable field of UpdateUserRequest must appear above. ID is the
-	// target, not a mutation, and LastAuth is the field the path exists for.
-	const idAndLastAuth = 2
-	if got := reflect.TypeOf(UpdateUserRequest{}).NumField(); got != len(disqualifying)+idAndLastAuth {
+	// target and Guard a precondition, neither a mutation, and LastAuth is the
+	// field the path exists for. A LastAuth-only write changes no role, so a
+	// guard over roles has nothing to judge on it.
+	const idGuardAndLastAuth = 3
+	if got := reflect.TypeOf(UpdateUserRequest{}).NumField(); got != len(disqualifying)+idGuardAndLastAuth {
 		t.Fatalf("UpdateUserRequest has %d fields but only %d are pinned here; a new field must "+
-			"either disqualify the fast path or be handled by mergeLastAuth", got, len(disqualifying)+idAndLastAuth)
+			"either disqualify the fast path or be handled by mergeLastAuth", got, len(disqualifying)+idGuardAndLastAuth)
 	}
 }
 
@@ -899,8 +901,9 @@ func TestOnlyReassertsLifecycle_AnyOtherFieldDisqualifies(t *testing.T) {
 		}
 	}
 
-	const idAndLifecycle = 2
-	if got := reflect.TypeOf(UpdateUserRequest{}).NumField(); got != len(disqualifying)+idAndLifecycle {
-		t.Fatalf("UpdateUserRequest has %d fields but only %d are pinned here", got, len(disqualifying)+idAndLifecycle)
+	// ID is the target and Guard a precondition; neither is a mutation.
+	const idGuardAndLifecycle = 3
+	if got := reflect.TypeOf(UpdateUserRequest{}).NumField(); got != len(disqualifying)+idGuardAndLifecycle {
+		t.Fatalf("UpdateUserRequest has %d fields but only %d are pinned here", got, len(disqualifying)+idGuardAndLifecycle)
 	}
 }

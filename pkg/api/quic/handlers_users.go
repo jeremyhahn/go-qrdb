@@ -395,6 +395,7 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 	}
 
 	updateReq := &user.UpdateUserRequest{
+		Guard:        s.authMW.SORoleGuard(ctx),
 		ID:           req.ID,
 		Username:     req.Username,
 		Email:        req.Email,

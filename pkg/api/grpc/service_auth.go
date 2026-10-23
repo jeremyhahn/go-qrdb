@@ -166,6 +166,7 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 	}
 
 	updateReq := &user.UpdateUserRequest{
+		Guard:     s.authMW.SORoleGuard(ctx),
 		ID:        req.GetId(),
 		Username:  req.GetUsername(),
 		Email:     req.GetEmail(),
@@ -462,6 +463,7 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 
 	roleIDs := append(u.RoleIDs, req.GetRoleId())
 	if _, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.GetUserId(),
 		RoleIDs: roleIDs,
 	}); err != nil {
@@ -498,6 +500,7 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 	}
 
 	if _, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.GetUserId(),
 		RoleIDs: roleIDs,
 	}); err != nil {

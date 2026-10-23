@@ -354,6 +354,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 
 	roleIDs := append(u.RoleIDs, req.RoleID)
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})
@@ -405,6 +406,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})

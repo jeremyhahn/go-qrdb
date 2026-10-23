@@ -204,6 +204,28 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, nil)
 }
 
+// SORoleGuard returns the user.UpdateGuard that binds the SO-role rule to the
+// write it authorizes. AuthorizeRoleAssignmentWrite, AuthorizeRoleAssignment
+// and AuthorizeRoleUnassignment judge the SO transition against the record as
+// they read it, which a concurrent write can replace before the update
+// commits: an Admin's role replacement checked against a record without the
+// SO role would otherwise remove a grant an SO committed in between. The
+// guard repeats the judgement inside the user store against the record the
+// conditional commit swaps against, so the rule holds for the version written.
+// Every UpdateUser that follows one of those gates carries it.
+//
+// The guard refuses with *SORoleRequiredError or *SORoleUnresolvedError, as
+// the gates do. A nil m enforces no RBAC and returns nil.
+func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
+	if m == nil {
+		return nil
+	}
+	return func(prior, next *user.User) error {
+		return m.authorizeSORoleChange(ctx, tenantid.Normalize(prior.TenantID),
+			heldRoleIDs(prior.RoleIDs, prior.RoleBindings), heldRoleIDs(next.RoleIDs, next.RoleBindings))
+	}
+}
+
 // authorizeRolesAssign requires roles:assign in target, the tenant the
 // user is in or is being created in. A nil m authorizes nothing, as every
 // AuthMiddleware gate does when no RBAC is configured.
