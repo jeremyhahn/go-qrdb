@@ -1,6 +1,6 @@
 # Shamir Custody — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 M-of-N custody means no one person can open the database alone. This guide is
@@ -90,7 +90,7 @@ key is useless without it. If your key lives on a smart card, use
 `claim-begin`, sign the message it prints (`SignMessageHex`) with the card,
 and finish with `claim-complete`.
 
-Claim within 24 hours; an unclaimed envelope is wiped, and only a rekey
+Claim within the claim window, 24 hours by default; an unclaimed envelope is wiped, and only a rekey
 replaces it.
 
 The web UI does not claim or submit: your keys never enter a browser page. It
@@ -111,7 +111,7 @@ A holder with a hardware factor asks for a challenge first, answers it with
 the device, then submits:
 
 ```bash
-qrdb barrier quorum begin --op unseal --username dave -o json
+qrdb barrier quorum begin --op unseal --username dave --output json
 qrdb barrier quorum submit --op unseal --username dave --envelope dave.env \
      --key dave.key --challenge-id <id> --factor fido2 --response-file dave.assertion
 ```
