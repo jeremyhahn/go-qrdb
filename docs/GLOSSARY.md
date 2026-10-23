@@ -1,6 +1,6 @@
 # QRDB Glossary
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -10,7 +10,7 @@ Licensed under the Apache License, Version 2.0
 
 Standard terminology for qrdb. Use these terms exactly — several look
 interchangeable but name different layers, and most confusion in configs and
-conversation comes from mixing them. The four load-bearing distinctions:
+conversation comes from mixing them. The three load-bearing distinctions:
 
 1. **Run mode** — HOW the qrdb process is deployed (embedded / standalone /
    clustered). A topology, not a storage choice.
@@ -19,29 +19,22 @@ conversation comes from mixing them. The four load-bearing distinctions:
 3. **State machine (SM) type** — WHICH Raft state machine applies committed
    log entries on each replica (`raft.sm_type`: pebble / mvcc / memory /
    standard / concurrent / fast / disk / highperf / regular).
-4. **Database engine** — WHAT data model a database speaks
-   (`engine`: kv / timeseries / vector).
 
-"Raft" is none of these four: it is the **replication layer**, selected by
+"Raft" is none of these three: it is the **replication layer**, selected by
 the run mode. When a per-database `backend: raft` appears, it means
 "replicate this database through consensus", not a fifth storage
 technology.
 
-**The intended run-mode split (ratified 2026-08-17):**
+**The run-mode split:**
 
 - **Standalone** = NO Raft. The whole per-database data plane (KV, batch,
   transactions, MVCC revisions, watch, lease, lock, collections, indexes,
   database management, SQL, timeseries, vector) over any non-raft storage
   backend, plus the always-on security core (mTLS+RBAC IAM, seal barrier,
-  audit). The file/objstore engines keep no revisions or leases.
+  audit).
 - **Raft** (single- or multi-node) = adds what needs a cluster:
   replication, etcd compatibility, cluster membership/rebalance/shard
-  operations. *(MVCC, watch, lease, lock and transactions were listed here
-  as raft-only; standalone serves them since go-qrdb#62 and #582.)*
-
-Implementation status: the raft-free stack serves the SDK's in-process
-paths AND the `qrdbd` daemon (`mode: standalone`). Where this glossary
-marks something *(planned)*, the code has not landed yet.
+  operations.
 
 ---
 
@@ -53,7 +46,7 @@ marks something *(planned)*, the code has not landed yet.
 | **`embedded://` (DSN)** | The SDK's fast in-process KV-only transport: engines wired directly, minimal stack. **No relational/SQL surface** — `CREATE TABLE` fails by design. Use for pure KV embedding. |
 | **`node://` (DSN)** | The SDK's full in-process node: the complete service stack (SQL/relational catalog, tenants, seal, IAM) inside the caller's process — **raft-free**: `sdk/go/node.NewStandaloneNode` composes `backend.LocalBackend` (a `service.Host` over an engine, no consensus). `NewClusteredNode` is the raft counterpart. Required for relational/SQL work when embedding. |
 | **Standalone** | One `qrdb` process with **no Raft**: services composed over `backend.LocalBackend` + an engine on a local storage backend. Serves the whole per-database data plane (including MVCC, watch, lease and lock) + the security core; refuses cluster-shaped features with a typed "requires mode: raft" error. Implemented in the SDK (`node://`, `NewStandaloneNode`), the `embedded://` driver, AND the daemon (`mode: standalone` in YAML or `--mode standalone`). |
-| **Raft single-node** | One `qrdbd` daemon running a **single-replica Raft group** (quorum of one — see *Single-node Raft* below). The full feature set including MVCC/watch/lease, with a clean scale-out path. This is what `configs/qrdb.yaml` describes, and what `qrdbd` runs today by default (`mode: raft`). |
+| **Raft single-node** | One `qrdbd` daemon running a **single-replica Raft group** (quorum of one — see *Single-node Raft* below). The full feature set including MVCC/watch/lease, with a clean scale-out path. This is what `configs/qrdb.yaml` describes, and `qrdbd`'s default (`mode: raft`). |
 | **Raft clustered** | Three or more `qrdbd` peers forming one Raft group per shard, replicating every write through consensus. Tolerates minority failures (`2f+1` members tolerate `f` failures). |
 
 ### Single-node Raft (why a 1-peer config is valid)
@@ -78,12 +71,11 @@ only to *survive the loss of one node*, not to make Raft function.
 
 ---
 
-## The storage stack (four distinct layers)
+## The storage stack (three distinct layers)
 
 From the wire down:
 
 ```
-Database engine   (kv | timeseries | vector)          ── data model
 Store engine      (KVEngine | MVCCEngine, pkg/engine) ── operation dispatch
 State machine     (raft.sm_type, pkg/store)           ── applies the Raft log
 Storage backend   (storage.backend, pkg/storage)      ── bytes on disk/memory
@@ -96,9 +88,9 @@ The physical key-value persistence a state machine writes through.
 | Value | Meaning |
 |---|---|
 | `memory` | In-process map. Nothing survives restart. Tests/ephemeral. |
-| `file` | Simple file-per-namespace store. Low-dependency durability; used by downstream dev flows (e.g. xkey) as a diff-testing oracle. |
+| `file` | One file per key, named by a hash of the key. Low-dependency durability. |
 | `pebble` | CockroachDB's Pebble LSM. **The production backend.** Encrypted at rest via the seal barrier's encfs when the barrier is enabled. |
-| `objstore` | go-objstore providers (local/memory/s3) for object-storage-backed data. |
+| `objstore` | go-objstore providers (`local` and `memory` always; cloud providers such as `s3` when built with go-objstore's build tag) for object-storage-backed data. |
 
 ### State machine type — `raft.sm_type` / `--sm` (per node)
 
@@ -112,7 +104,7 @@ committed entries. Deterministic across replicas by contract.
 | `memory`, `standard` | In-memory SM. Fast, volatile; tests. |
 | `concurrent` | Concurrent (sharded) in-memory SM. |
 | `highperf` | In-memory SM with configurable sharding, for data-plane state. |
-| `regular` | Legacy in-memory SM. |
+| `regular` | `RegularStateMachine`, a serialized in-memory SM that keeps no leases. Prefer `standard`. |
 | `fast` | Sharded cache SM writing through to `raft.sm_storage`. |
 | `disk` | Synchronous SM over `raft.sm_storage`. |
 
@@ -128,13 +120,11 @@ selects the storage backend under the storage-generic SMs (`disk`/`fast`):
 The protocol-dispatch/data-operation layer the state machines wrap:
 **`KVEngine`** (plain KV) and **`MVCCEngine`** (revisioned KV with history,
 watch, transactions). Not directly user-configurable; chosen by `sm_type`.
+A standalone node always composes `MVCCEngine`, over every storage backend.
 
-### Database engine — `engine` (per database)
-
-The data model of a logical database created via `database create`:
-**`kv`**, **`timeseries`**, **`vector`**. SQL/relational is a surface over
-the kv/mvcc keyspace via the relational catalog, not a separate engine
-value.
+A database has no engine setting. Time series, vector and SQL are
+build-tag-gated surfaces over the same keyspace; SQL goes through the
+relational catalog.
 
 ### Per-database backend (per database, distinct from `storage.backend`)
 
@@ -149,15 +139,14 @@ names replication, not a storage technology.
 
 ## Support matrix
 
-**Run mode × feature set** (the requirement's matrix; *(planned)* items are
-part of the approved run-modes plan):
+**Run mode × feature set:**
 
 | Feature | Standalone (no raft) | Raft (single or cluster) |
 |---|---|---|
 | KV, batch, collections, indexes, database mgmt | ✅ | ✅ |
 | SQL, timeseries, vector (build-tag gated) | ✅ | ✅ |
 | Auth (mTLS+RBAC IAM), seal barrier, audit | ✅ always-on core | ✅ always-on core |
-| MVCC revisions, watch, lease, lock, transactions | ✅ (pebble/memory backends) | ✅ |
+| MVCC revisions, watch, lease, lock, transactions | ✅ | ✅ |
 | etcd compatibility | ❌ requires raft | ✅ (qrdb_etcd tag) |
 | Cluster membership, rebalance, shard backup | ❌ requires raft | ✅ |
 
@@ -183,7 +172,8 @@ path.
 | Transactions, batches, guarded verbs (value and version compares) | ✅ | ✅ | ✅ | ✅ |
 | Revision compares | ❌ refused | ✅ | ❌ refused | ❌ refused |
 | MVCC (revisions, `--at-revision`, watch replay, PITR-lite restore) | ❌ | ✅ | ❌ | ❌ |
-| Lease, watch, lock, index, time series | ✅ | ✅ | ❌ | ❌ |
+| Lease | ✅ | ✅ | ✅ | ✅ except `regular` |
+| Watch, lock, index, time series | ✅ | ✅ | ❌ | ❌ |
 | SQL / relational (needs `node://` or daemon) | ✅ | ✅ | ✅ | ✅ (volatile) |
 | Encryption at rest (barrier encfs) | ✅ | ✅ | ✅ over `pebble` and `file` `sm_storage`; `memory` persists nothing | n/a |
 

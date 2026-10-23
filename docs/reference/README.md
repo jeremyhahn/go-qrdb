@@ -33,7 +33,7 @@ has no copy in this directory, for the reason given under the table.
 | [rfc9114.txt](rfc9114.txt) | HTTP/3 | RFC 9114 | `pkg/api/rest` (via quic-go) | https://www.rfc-editor.org/rfc/rfc9114.txt |
 | [rfc9180.txt](rfc9180.txt) | Hybrid Public Key Encryption | RFC 9180 | `pkg/keydelivery` | https://www.rfc-editor.org/rfc/rfc9180.txt |
 | [rfc9449.txt](rfc9449.txt) | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | RFC 9449 | `pkg/auth`, `pkg/auth/middleware`, `sdk/go` | https://www.rfc-editor.org/rfc/rfc9449.txt |
-| [rfc9562.txt](rfc9562.txt) | Universally Unique IDentifiers (UUIDs) | RFC 9562 | `pkg/role` (UUIDv8 over SHA-256, section 5.8), `pkg/dao` | https://www.rfc-editor.org/rfc/rfc9562.txt |
+| [rfc9562.txt](rfc9562.txt) | Universally Unique IDentifiers (UUIDs) | RFC 9562 | `pkg/role` (UUIDv8 over SHA-256, section 5.8) | https://www.rfc-editor.org/rfc/rfc9562.txt |
 | [rfc9728.txt](rfc9728.txt) | OAuth 2.0 Protected Resource Metadata | RFC 9728 | `pkg/api/mcp`, `pkg/server` | https://www.rfc-editor.org/rfc/rfc9728.txt |
 | [draft-ietf-hpke-pq-05.txt](draft-ietf-hpke-pq-05.txt) | Post-Quantum and Post-Quantum/Traditional Hybrid Algorithms for HPKE | draft -05 (see the note on the pin below) | `pkg/keydelivery` (MLKEM768-X25519, "X-Wing", through Go's `crypto/hpke`) | https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/05/ |
 | link only | Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC | NIST SP 800-38D (2007) | `pkg/crypto/aesgcm`, `pkg/seal`, `pkg/seal/encfs`, `pkg/keywrap`, `pkg/service` | https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf |
@@ -42,13 +42,13 @@ has no copy in this directory, for the reason given under the table.
 | link only | Recommendation for Applications Using Approved Hash Algorithms | NIST SP 800-107 Rev. 1 | `pkg/discovery` (HMAC key floor, section 5.3.4) | https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-107r1.pdf |
 | link only | Interfaces for Personal Identity Verification | NIST SP 800-73-4 | `sdk/go/authfactor`, `pkg/auth` (PIV factor name only; the PIV implementation lives in go-xkms) | https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-4.pdf |
 | link only | Security Requirements for Cryptographic Modules | FIPS 140-3 | `pkg/clusterenroll`, `pkg/keydelivery`, `pkg/seal/kdf`, `pkg/pin`, `pkg/auth`, `cmd/qrdbd` (FIPS mode, `GODEBUG=fips140=only`) | https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.140-3.pdf |
-| [spiffe-id.md](spiffe-id.md) | The SPIFFE Identity and Verifiable Identity Document (SPIFFE ID) | spiffe/spiffe commit `665a28f3253ecdce59f26f3ef29c0d6408b37c3d` (2026-07-01) | `pkg/auth/spiffe`, `pkg/cert`, `pkg/config` | https://github.com/spiffe/spiffe/blob/665a28f3253ecdce59f26f3ef29c0d6408b37c3d/standards/SPIFFE-ID.md |
-| [grpc-http2-protocol.md](grpc-http2-protocol.md) | gRPC over HTTP2 | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` (2026-10-17) | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-HTTP2.md |
-| [grpc-web-protocol.md](grpc-web-protocol.md) | gRPC Web | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` (2026-10-17) | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-WEB.md |
+| [spiffe-id.md](spiffe-id.md) | The SPIFFE Identity and Verifiable Identity Document (SPIFFE ID) | spiffe/spiffe commit `665a28f3253ecdce59f26f3ef29c0d6408b37c3d` | `pkg/auth/spiffe`, `pkg/cert`, `pkg/config` | https://github.com/spiffe/spiffe/blob/665a28f3253ecdce59f26f3ef29c0d6408b37c3d/standards/SPIFFE-ID.md |
+| [grpc-http2-protocol.md](grpc-http2-protocol.md) | gRPC over HTTP2 | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-HTTP2.md |
+| [grpc-web-protocol.md](grpc-web-protocol.md) | gRPC Web | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-WEB.md |
 | link only | MySQL Client/Server Protocol | as implemented by go-mysql-server | `pkg/sql/mysql` (via dolthub go-mysql-server and vitess) | https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html |
 | link only | PostgreSQL Frontend/Backend Protocol | protocol 3.0 | `pkg/sql/pgsql` (via jackc/pgx) | https://www.postgresql.org/docs/current/protocol.html |
 | link only | etcd v3 API | etcd API v3.7 (`go.etcd.io/etcd/api/v3` v3.7.2) | `pkg/api/etcd` | https://etcd.io/docs/v3.7/learning/api/ |
-| link only | Model Context Protocol specification | as implemented by `mark3labs/mcp-go` v0.45.0 | `pkg/api/mcp`, `sdk/go/transport/mcp` | https://modelcontextprotocol.io/specification |
+| link only | Model Context Protocol specification | as implemented by `mark3labs/mcp-go` v1.3.0 | `pkg/api/mcp`, `sdk/go/transport/mcp` | https://modelcontextprotocol.io/specification |
 | link only | In Search of an Understandable Consensus Algorithm (Raft) | extended version, 2014 | go-quicraft (consensus; consumed, not implemented, here) | https://raft.github.io/raft.pdf |
 
 ## Why some rows are link only
@@ -70,6 +70,6 @@ has no copy in this directory, for the reason given under the table.
 `crypto/hpke` (`MLKEM768X25519`), whose documentation names the draft and not a
 revision; neither the qrdb code nor its tests name one either. The X-Wing
 codepoint Go's test vectors use, `0x647a`, first appears in -02 and is
-unchanged through -05, the newest revision on 2026-10-16. The copy here is -05; which revision the Go toolchain
+unchanged through -05. The copy here is -05; which revision the Go toolchain
 in `go.mod` implements is unconfirmed, so the pin is provisional until that is
 checked against the toolchain's source.
