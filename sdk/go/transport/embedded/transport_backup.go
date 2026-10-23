@@ -37,7 +37,8 @@ func WithBackupService(svc service.BackupServicer) Option {
 // BackupServicer. Returns NilServiceError when no backup service has
 // been configured.
 func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupRequest) (*transport.BackupInfo, error) {
-	if err := t.gate("CreateBackup"); err != nil {
+	ctx, err := t.admit(ctx, "CreateBackup")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CreateBackup"); err != nil {
@@ -66,7 +67,8 @@ func (t *Transport) CreateBackup(ctx context.Context, req *transport.BackupReque
 // to the injected BackupServicer. Returns NilServiceError when no
 // backup service has been configured.
 func (t *Transport) ListBackups(ctx context.Context) ([]transport.BackupInfo, error) {
-	if err := t.gate("ListBackups"); err != nil {
+	ctx, err := t.admit(ctx, "ListBackups")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListBackups"); err != nil {
@@ -90,7 +92,8 @@ func (t *Transport) ListBackups(ctx context.Context) ([]transport.BackupInfo, er
 // to the injected BackupServicer. Returns NilServiceError when no
 // backup service has been configured.
 func (t *Transport) GetBackup(ctx context.Context, id string) (*transport.BackupInfo, error) {
-	if err := t.gate("GetBackup"); err != nil {
+	ctx, err := t.admit(ctx, "GetBackup")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetBackup"); err != nil {
@@ -110,7 +113,8 @@ func (t *Transport) GetBackup(ctx context.Context, id string) (*transport.Backup
 // BackupServicer. Returns NilServiceError when no backup service has
 // been configured.
 func (t *Transport) DeleteBackup(ctx context.Context, id string) error {
-	if err := t.gate("DeleteBackup"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteBackup")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "DeleteBackup"); err != nil {
@@ -129,7 +133,8 @@ func (t *Transport) DeleteBackup(ctx context.Context, id string) error {
 // BackupServicer. Returns NilServiceError when no backup service has
 // been configured.
 func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreRequest) (*transport.RestoreResult, error) {
-	if err := t.gate("RestoreBackup"); err != nil {
+	ctx, err := t.admit(ctx, "RestoreBackup")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "RestoreBackup"); err != nil {
@@ -156,7 +161,8 @@ func (t *Transport) RestoreBackup(ctx context.Context, req *transport.RestoreReq
 // the injected BackupServicer. Returns NilServiceError when no backup
 // service has been configured.
 func (t *Transport) VerifyBackup(ctx context.Context, id string) (*transport.VerifyResult, error) {
-	if err := t.gate("VerifyBackup"); err != nil {
+	ctx, err := t.admit(ctx, "VerifyBackup")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "VerifyBackup"); err != nil {

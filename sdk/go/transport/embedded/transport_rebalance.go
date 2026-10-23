@@ -39,7 +39,8 @@ func WithRebalanceService(svc service.RebalanceServicer) Option {
 // the injected RebalanceServicer. Returns NilServiceError when no
 // rebalance service has been configured.
 func (t *Transport) GetShardStats(ctx context.Context, shardID uint64) (*transport.ShardStatsResponse, error) {
-	if err := t.gate("GetShardStats"); err != nil {
+	ctx, err := t.admit(ctx, "GetShardStats")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetShardStats"); err != nil {
@@ -68,7 +69,8 @@ func (t *Transport) GetShardStats(ctx context.Context, shardID uint64) (*transpo
 // injected RebalanceServicer. Returns NilServiceError when no rebalance
 // service has been configured.
 func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.RebalancePlanRequest) (*transport.RebalancePlan, error) {
-	if err := t.gate("CreateRebalancePlan"); err != nil {
+	ctx, err := t.admit(ctx, "CreateRebalancePlan")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CreateRebalancePlan"); err != nil {
@@ -112,7 +114,8 @@ func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.Reba
 // the injected RebalanceServicer. Returns NilServiceError when no
 // rebalance service has been configured.
 func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.RebalancePlan) (*transport.RebalanceResult, error) {
-	if err := t.gate("ExecuteRebalance"); err != nil {
+	ctx, err := t.admit(ctx, "ExecuteRebalance")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ExecuteRebalance"); err != nil {
@@ -161,7 +164,8 @@ func (t *Transport) ExecuteRebalance(ctx context.Context, plan *transport.Rebala
 // delegating to the injected RebalanceServicer. Returns NilServiceError
 // when no rebalance service has been configured.
 func (t *Transport) GetImbalanceReport(ctx context.Context) (*transport.ImbalanceReport, error) {
-	if err := t.gate("GetImbalanceReport"); err != nil {
+	ctx, err := t.admit(ctx, "GetImbalanceReport")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetImbalanceReport"); err != nil {

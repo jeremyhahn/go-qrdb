@@ -123,6 +123,43 @@ ceremony. Then an anonymous client can `initialize`, list exactly those tools
 and call them, and nothing else. Once authenticated, `tools/list` shows the
 tools your grants let you call, not the whole surface.
 
+## Binding the caller on the embedded transport
+
+A network transport learns who is calling from the connection. The embedded
+transport has no connection: whatever identity is on the `context.Context`
+your code passes is the caller. A program that serves its own users through an
+embedded node — a desktop application, a service that fronts qrdb with its own
+login — installs a **context binder** so that no call reaches qrdb without one.
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+	node.WithContextBinder(func(ctx context.Context) (context.Context, error) {
+		id, err := sessions.Identity(ctx) // your application's own session lookup
+		if err != nil {
+			return ctx, err // the call fails with this error; nothing runs
+		}
+		return auth.WithIdentity(ctx, id), nil
+	}),
+)
+```
+
+The binder runs once before every call through `Node.Client()`: every KV,
+SQL, barrier, ceremony, credential, IAM and admin request, and every watch
+stream. It runs before authorization, so the identity it binds is the one the
+permission check and the operation see. When it returns an error, the call
+fails with that same error (`errors.Is` matches it) and nothing is executed.
+
+- It binds only the client `Node.Client()` returns. The node's own internal
+  calls, and the services `Node.Services()` returns, are not behind it.
+- A binder that returns a `nil` context fails the call with
+  `*embedded.NilBoundContextError`, which names the operation.
+- `node.WithContextBinder(nil)` fails node construction with
+  `*embedded.NilContextBinderError`. Leave the option out to install no
+  binder; then the context you pass is used as it is.
+
+A program that builds the transport itself passes `embedded.WithContextBinder`
+to `embedded.New`, with the same behaviour.
+
 ## Metrics
 
 ```bash

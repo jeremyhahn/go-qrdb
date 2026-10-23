@@ -47,7 +47,8 @@ func (t *Transport) collectionSvcFor(ctx context.Context, database string) (serv
 // CollectionServicer. Returns NilServiceError when no collection service
 // has been configured.
 func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCollectionRequest) (*transport.CollectionInfo, error) {
-	if err := t.gate("CreateCollection"); err != nil {
+	ctx, err := t.admit(ctx, "CreateCollection")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CreateCollection"); err != nil {
@@ -75,7 +76,8 @@ func (t *Transport) CreateCollection(ctx context.Context, req transport.CreateCo
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string) (*transport.CollectionInfo, error) {
-	if err := t.gate("GetCollectionInfo"); err != nil {
+	ctx, err := t.admit(ctx, "GetCollectionInfo")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetCollectionInfo"); err != nil {
@@ -96,7 +98,8 @@ func (t *Transport) GetCollectionInfo(ctx context.Context, database, name string
 // to the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) ListCollections(ctx context.Context, database string) (*transport.ListCollectionsResponse, error) {
-	if err := t.gate("ListCollections"); err != nil {
+	ctx, err := t.admit(ctx, "ListCollections")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListCollections"); err != nil {
@@ -125,7 +128,8 @@ func (t *Transport) ListCollections(ctx context.Context, database string) (*tran
 // the injected CollectionServicer. Returns NilServiceError when no
 // collection service has been configured.
 func (t *Transport) DropCollection(ctx context.Context, database, name string) error {
-	if err := t.gate("DropCollection"); err != nil {
+	ctx, err := t.admit(ctx, "DropCollection")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "DropCollection"); err != nil {
@@ -145,7 +149,8 @@ func (t *Transport) DropCollection(ctx context.Context, database, name string) e
 // assigned document ID by delegating to the injected CollectionServicer.
 // Returns NilServiceError when no collection service has been configured.
 func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocumentRequest) (*transport.InsertDocumentResponse, error) {
-	if err := t.gate("InsertDocument"); err != nil {
+	ctx, err := t.admit(ctx, "InsertDocument")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "InsertDocument"); err != nil {
@@ -172,7 +177,8 @@ func (t *Transport) InsertDocument(ctx context.Context, req transport.InsertDocu
 // injected CollectionServicer. Returns NilServiceError when no collection
 // service has been configured.
 func (t *Transport) GetDocument(ctx context.Context, database, collection string, id uint64) (*transport.DocumentResponse, error) {
-	if err := t.gate("GetDocument"); err != nil {
+	ctx, err := t.admit(ctx, "GetDocument")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetDocument"); err != nil {
@@ -197,7 +203,8 @@ func (t *Transport) GetDocument(ctx context.Context, database, collection string
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocumentRequest) error {
-	if err := t.gate("UpdateDocument"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateDocument")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "UpdateDocument"); err != nil {
@@ -220,7 +227,8 @@ func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocu
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) DeleteDocument(ctx context.Context, database, collection string, id uint64) error {
-	if err := t.gate("DeleteDocument"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteDocument")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "DeleteDocument"); err != nil {
@@ -242,7 +250,8 @@ func (t *Transport) DeleteDocument(ctx context.Context, database, collection str
 // delegating to the injected CollectionServicer. Returns NilServiceError
 // when no collection service has been configured.
 func (t *Transport) ListDocuments(ctx context.Context, req transport.ListDocumentsRequest) (*transport.ListDocumentsResponse, error) {
-	if err := t.gate("ListDocuments"); err != nil {
+	ctx, err := t.admit(ctx, "ListDocuments")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListDocuments"); err != nil {

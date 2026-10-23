@@ -196,6 +196,7 @@ func (t *Transport) cloneShared() *Transport {
 		registry:                     t.registry,
 		rbacAuthz:                    t.rbacAuthz,
 		authMW:                       t.authMW,
+		binder:                       t.binder,
 		userAuthFactorSvc:            t.userAuthFactorSvc,
 		loginResolver:                t.loginResolver,
 		sessionIssuer:                t.sessionIssuer,

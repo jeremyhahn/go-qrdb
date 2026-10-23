@@ -32,7 +32,8 @@ var _ transport.ABACPolicyClient = (*Transport)(nil)
 
 // CreateABACPolicy implements transport.ABACPolicyClient.
 func (t *Transport) CreateABACPolicy(ctx context.Context, policy *abac.Policy) (*abac.Policy, error) {
-	if err := t.policyReady(ctx, "CreateABACPolicy", policy == nil); err != nil {
+	ctx, err := t.policyReady(ctx, "CreateABACPolicy", policy == nil)
+	if err != nil {
 		return nil, err
 	}
 	return t.policySvc.CreatePolicy(ctx, policy)
@@ -40,7 +41,8 @@ func (t *Transport) CreateABACPolicy(ctx context.Context, policy *abac.Policy) (
 
 // GetABACPolicy implements transport.ABACPolicyClient.
 func (t *Transport) GetABACPolicy(ctx context.Context, req *transport.ABACPolicyRequest) (*abac.Policy, error) {
-	if err := t.policyReady(ctx, "GetABACPolicy", req == nil); err != nil {
+	ctx, err := t.policyReady(ctx, "GetABACPolicy", req == nil)
+	if err != nil {
 		return nil, err
 	}
 	return t.policySvc.GetPolicy(ctx, req.TenantID, req.Name)
@@ -48,7 +50,8 @@ func (t *Transport) GetABACPolicy(ctx context.Context, req *transport.ABACPolicy
 
 // ListABACPolicies implements transport.ABACPolicyClient.
 func (t *Transport) ListABACPolicies(ctx context.Context, req *transport.ABACPolicyListRequest) (*transport.ABACPolicyListResponse, error) {
-	if err := t.policyReady(ctx, "ListABACPolicies", req == nil); err != nil {
+	ctx, err := t.policyReady(ctx, "ListABACPolicies", req == nil)
+	if err != nil {
 		return nil, err
 	}
 	policies, err := t.policySvc.ListPolicies(ctx, req.TenantID)
@@ -63,7 +66,8 @@ func (t *Transport) ListABACPolicies(ctx context.Context, req *transport.ABACPol
 
 // UpdateABACPolicy implements transport.ABACPolicyClient.
 func (t *Transport) UpdateABACPolicy(ctx context.Context, policy *abac.Policy) (*abac.Policy, error) {
-	if err := t.policyReady(ctx, "UpdateABACPolicy", policy == nil); err != nil {
+	ctx, err := t.policyReady(ctx, "UpdateABACPolicy", policy == nil)
+	if err != nil {
 		return nil, err
 	}
 	return t.policySvc.UpdatePolicy(ctx, policy)
@@ -71,7 +75,8 @@ func (t *Transport) UpdateABACPolicy(ctx context.Context, policy *abac.Policy) (
 
 // DeleteABACPolicy implements transport.ABACPolicyClient.
 func (t *Transport) DeleteABACPolicy(ctx context.Context, req *transport.ABACPolicyRequest) error {
-	if err := t.policyReady(ctx, "DeleteABACPolicy", req == nil); err != nil {
+	ctx, err := t.policyReady(ctx, "DeleteABACPolicy", req == nil)
+	if err != nil {
 		return err
 	}
 	return t.policySvc.DeletePolicy(ctx, req.TenantID, req.Name)
@@ -81,23 +86,24 @@ func (t *Transport) DeleteABACPolicy(ctx context.Context, req *transport.ABACPol
 // other embedded methods run them: the sealed-window gate, the caller's
 // permission, then a closed transport, an unwired service and a nil
 // request.
-func (t *Transport) policyReady(ctx context.Context, method string, nilRequest bool) error {
-	if err := t.gate(method); err != nil {
-		return err
+func (t *Transport) policyReady(ctx context.Context, method string, nilRequest bool) (context.Context, error) {
+	ctx, err := t.admit(ctx, method)
+	if err != nil {
+		return ctx, err
 	}
 	if err := t.authorize(ctx, method); err != nil {
-		return err
+		return ctx, err
 	}
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return ctx, &transport.ClosedError{}
 	}
 	if t.policySvc == nil {
-		return &NilServiceError{Service: "PolicyServicer"}
+		return ctx, &NilServiceError{Service: "PolicyServicer"}
 	}
 	if nilRequest {
-		return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
+		return ctx, &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
 	}
-	return nil
+	return ctx, nil
 }
 
 // WithPolicyService injects the tenant ABAC policy store. Without it every

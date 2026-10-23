@@ -23,7 +23,8 @@ import (
 
 // SealStorePut stores a secret in the seal store.
 func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePutRequest) error {
-	if err := t.gate("SealStorePut"); err != nil {
+	ctx, err := t.admit(ctx, "SealStorePut")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "SealStorePut"); err != nil {
@@ -40,7 +41,8 @@ func (t *Transport) SealStorePut(ctx context.Context, req *transport.SealStorePu
 
 // SealStoreGet retrieves a secret from the seal store.
 func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGetRequest) (*transport.SealStoreGetResponse, error) {
-	if err := t.gate("SealStoreGet"); err != nil {
+	ctx, err := t.admit(ctx, "SealStoreGet")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "SealStoreGet"); err != nil {
@@ -64,7 +66,8 @@ func (t *Transport) SealStoreGet(ctx context.Context, req *transport.SealStoreGe
 
 // SealStoreDelete deletes a secret from the seal store.
 func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStoreDeleteRequest) error {
-	if err := t.gate("SealStoreDelete"); err != nil {
+	ctx, err := t.admit(ctx, "SealStoreDelete")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "SealStoreDelete"); err != nil {
@@ -81,7 +84,8 @@ func (t *Transport) SealStoreDelete(ctx context.Context, req *transport.SealStor
 
 // SealStoreList lists all stored secret names.
 func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreListResponse, error) {
-	if err := t.gate("SealStoreList"); err != nil {
+	ctx, err := t.admit(ctx, "SealStoreList")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "SealStoreList"); err != nil {
@@ -104,7 +108,8 @@ func (t *Transport) SealStoreList(ctx context.Context) (*transport.SealStoreList
 
 // SealStoreReseal reseals a secret with the current sealing key.
 func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStoreResealRequest) error {
-	if err := t.gate("SealStoreReseal"); err != nil {
+	ctx, err := t.admit(ctx, "SealStoreReseal")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "SealStoreReseal"); err != nil {
@@ -121,7 +126,8 @@ func (t *Transport) SealStoreReseal(ctx context.Context, req *transport.SealStor
 
 // SealStoreStatus returns the seal store status.
 func (t *Transport) SealStoreStatus(ctx context.Context) (*transport.SealStoreStatusResponse, error) {
-	if err := t.gate("SealStoreStatus"); err != nil {
+	ctx, err := t.admit(ctx, "SealStoreStatus")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "SealStoreStatus"); err != nil {

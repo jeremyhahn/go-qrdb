@@ -26,7 +26,8 @@ import (
 // TenantBarrierSeal seals a per-tenant barrier by delegating to the
 // configured TenantServicer.
 func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.TenantBarrierSealRequest) error {
-	if err := t.gate("TenantBarrierSeal"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierSeal")
+	if err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -47,7 +48,8 @@ func (t *Transport) TenantBarrierSeal(ctx context.Context, req *transport.Tenant
 // TenantBarrierStatus reports the current sealed/initialized state for a
 // per-tenant barrier by delegating to the configured TenantServicer.
 func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.TenantBarrierStatusRequest) (*transport.TenantBarrierStatusResponse, error) {
-	if err := t.gate("TenantBarrierStatus"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierStatus")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {

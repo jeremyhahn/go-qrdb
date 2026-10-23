@@ -11,6 +11,17 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+
+- **The embedded transport binds its caller before every dispatch**
+  (#1084). `embedded.WithContextBinder`, re-exported as
+  `node.WithContextBinder`, runs once before every unary and streaming call,
+  ahead of the auth middleware; its error fails the call unchanged with no
+  handler reached, and the context it returns is the one authorized and
+  served. A nil binder fails `embedded.New` with `NilContextBinderError`; a
+  binder that returns a nil context fails the call with
+  `NilBoundContextError`. With no binder installed nothing changes.
+
 ## [0.52.0-alpha] - 2026-10-23
 
 ### Added
