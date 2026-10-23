@@ -230,9 +230,11 @@ Within the `image` job, one step depends on the trigger. `make lint-gates`
 runs on every run and holds `make vet` over the default tag set and the
 secure analyzer's self-test (`test-secure-analyzer`). `make lint-sweeps`,
 `make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
-combination, is the longest stage, so it runs only on a push to
-`main` and on `workflow_dispatch` (the daily full-tier dispatch included),
-never on a pull request, whose pipeline is held to one hour. `release.yml`
+combination, is the longest stage (about 45 minutes), so it runs only on a
+push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
+included), never on a pull request, whose pipeline is held to one hour. With
+the sweeps, the unit suites and `make coverage` in one job, a `main` run
+needs more than 90 minutes, so the `image` job's `timeout-minutes` is 180. `release.yml`
 runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 

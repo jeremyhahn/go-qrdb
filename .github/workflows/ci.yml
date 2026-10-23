@@ -560,7 +560,7 @@ jobs:
     # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
     # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE: give the stages honest headroom
+    timeout-minutes: 180      # CUSTOMIZE: give the stages honest headroom
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
