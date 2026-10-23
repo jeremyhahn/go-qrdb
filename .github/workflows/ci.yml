@@ -894,7 +894,7 @@ jobs:
   # (#682). The gate holds a leg to exactly the reap, the run and the teardown.
   integration-features:
     name: Integration (${{ matrix.feature }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 45
@@ -948,7 +948,7 @@ jobs:
   # `docker compose down` is refused for want of that name.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 90
@@ -1212,7 +1212,7 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
     env:
       SOAK_MINUTES: 30        # CUSTOMIZE

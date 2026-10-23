@@ -408,8 +408,10 @@ those jobs' checks; `ci-gate` still fails the run on any red check. The label go
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 
-Each leg runs on a shared `ubuntu-latest` (bare-metal) runner, like every other
-job. Those runners are loaded (load averages of 40 to 70 on 80 threads), and
+Each leg runs on a shared `bigdisk` (bare-metal) runner, the label that carries
+Docker and the disk the integration image needs (`ubuntu-latest` on github.com), as
+the image job and the standalone and soak jobs do.
+Those runners are loaded (load averages of 40 to 70 on 80 threads), and
 load breaks a 3-node cluster's elections and a CLI call's 10-second deadline
 first. The `integration` compose service carries the CPU half of the cluster
 stage's budget (below) as `GOMAXPROCS=8`: the `go test` process and every
