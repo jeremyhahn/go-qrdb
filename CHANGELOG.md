@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.54.0-alpha] - 2026-10-23
+
+### Added
+
+- **`sdk/go` re-exports `role.EffectivePermissions`** (#1089), so a composer
+  that issues tokens below authz expands a role's whole-segment wildcards
+  (`objstore:*`, `*:read`, `*:*`) through the SDK instead of copying the
+  expansion.
+
 ## [0.53.0-alpha] - 2026-10-23
 
 ### Security

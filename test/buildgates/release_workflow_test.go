@@ -191,6 +191,64 @@ func readReleaseWorkflow(t *testing.T) []byte {
 	return raw
 }
 
+// goDirective matches go.mod's go directive.
+var goDirective = regexp.MustCompile(`(?m)^go\s+(\S+)\s*$`)
+
+// goVersionDefect returns why the workflow's GO_VERSION is not go.mod's go
+// directive, or "" when it is. The tagged tree runs under GOTOOLCHAIN=local,
+// so a pin older than the directive fails at the first go command.
+func goVersionDefect(workflow, gomod []byte) string {
+	var wf struct {
+		Env map[string]string `yaml:"env"`
+	}
+	if err := yaml.Unmarshal(workflow, &wf); err != nil {
+		return "release.yml is not parseable YAML: " + err.Error()
+	}
+	m := goDirective.FindSubmatch(gomod)
+	if m == nil {
+		return "go.mod has no go directive"
+	}
+	if got, want := wf.Env["GO_VERSION"], string(m[1]); got != want {
+		return fmt.Sprintf("env.GO_VERSION is %q, go.mod's go directive is %q", got, want)
+	}
+	return ""
+}
+
+// TestTheReleaseWorkflowRunsGoModsGoVersion is the gate on the real files.
+func TestTheReleaseWorkflowRunsGoModsGoVersion(t *testing.T) {
+	gomod, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	if d := goVersionDefect(readReleaseWorkflow(t), gomod); d != "" {
+		t.Fatal(d)
+	}
+}
+
+// TestTheGoVersionGateSeesADriftedPin is its negative control.
+func TestTheGoVersionGateSeesADriftedPin(t *testing.T) {
+	workflow := []byte("env:\n  GO_VERSION: \"1.27.2\"\n")
+	for name, tc := range map[string]struct {
+		gomod string
+		want  string
+	}{
+		"an older pin":    {"module m\n\ngo 1.27.3\n", `"1.27.2"`},
+		"no go directive": {"module m\n", "no go directive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if d := goVersionDefect(workflow, []byte(tc.gomod)); !strings.Contains(d, tc.want) {
+				t.Fatalf("defect %q does not name %q", d, tc.want)
+			}
+		})
+	}
+	if d := goVersionDefect(workflow, []byte("module m\n\ngo 1.27.2\n")); d != "" {
+		t.Fatalf("a matching pin reported %q", d)
+	}
+	if d := goVersionDefect([]byte("env: ["), []byte("go 1.27.2\n")); !strings.Contains(d, "not parseable") {
+		t.Fatalf("unparseable workflow reported %q", d)
+	}
+}
+
 // TestTheReleaseWorkflowIsTheRulingsReleasePath is the gate on the real file.
 func TestTheReleaseWorkflowIsTheRulingsReleasePath(t *testing.T) {
 	if d := releaseWorkflowDefects(readReleaseWorkflow(t)); len(d) != 0 {
