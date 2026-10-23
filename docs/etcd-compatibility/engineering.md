@@ -1,6 +1,6 @@
 # etcd Compatibility — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated: `qrdb_etcd`** (`WITH_QRDB_ETCD=1`, on by default). Disable
@@ -125,10 +125,8 @@ The file layout of `pkg/api/etcd` is in
 
 ```bash
 make test-etcd            # etcd API tests
-make coverage-etcd        # etcd coverage (91%+ required)
+make coverage-etcd        # etcd coverage; fails below COVER_MIN (91%)
 ```
-
-The 91% coverage floor is enforced by the target, not by convention.
 
 - **Unit**: per-RPC translation round-trips, authorization mapping for each
   operation in the table and default-deny for every other RPC, the refusal to

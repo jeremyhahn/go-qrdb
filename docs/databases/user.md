@@ -1,7 +1,7 @@
 # Databases — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Coming change" sections describe the multi-model database design in
@@ -17,7 +17,9 @@ replication, wire protocols and — if you want one — its own encryption key.
 A reachable server, client certificates, and the `databases:*` permissions.
 Creating a Raft-backed or volume-isolated database needs an extra grant
 (`databases:create_raft`, `databases:create_volume`) on top of
-`databases:create`.
+`databases:create`. A database barrier's secret, unseal key or share goes only
+over TLS: on a connection without it, the Unix socket included, the call is
+refused with `BarrierSecretRequiresTLSError` before anything is sent.
 
 ## First run
 
@@ -191,9 +193,9 @@ same name starts with no policy.
 
 ## Upgrading a cluster that holds raft databases
 
-A cluster that already holds raft-backed databases cannot be upgraded in place
-to a release with cluster-wide shard IDs. Earlier releases issued shard IDs per
-node, so two databases may share one, and the new issuer cannot tell which IDs
+A cluster whose raft-backed databases were created with per-node shard IDs
+cannot be upgraded in place to a release with cluster-wide shard IDs: two
+databases may share one ID, and the cluster-wide issuer cannot tell which IDs
 are taken. Build a new cluster on the new release and move the data across. A
 cluster with no raft-backed databases upgrades as usual.
 

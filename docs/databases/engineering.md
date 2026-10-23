@@ -1,7 +1,7 @@
 # Databases — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 >
 > Sections headed **Target** are the requirements contract for the multi-model
@@ -296,7 +296,7 @@ must hold, at the entry's own log position, for it to apply:
   asks the proposing Host, when it implements `service.FeatureGatedHost`,
   whether `featuregate.GuardedWrites` is enabled for the target shard, and
   proposes the command unguarded when it is not; the database's fence is
-  then the resolve-time check. `raftbackend.HostAdapter` answers from the
+  then the resolve-time check. `pkg/backend/raft`'s `HostAdapter` answers from the
   node's `featuregate.Gate` (see
   [../clustering/engineering.md](../clustering/engineering.md), "Cluster
   feature gate"); a Host with no transport, a `LocalBackend`, and a Host
@@ -508,8 +508,8 @@ A range delete removes every key in `[start, end)` in one Raft entry:
     refuses with `database.DroppingError` from the moment the drop begins
     until it either finishes or a failed reclamation clears the fence.
     Every read and write path resolves through `Manager.Get` (directly, or
-    through `service.Registry.resolve`, which checks it before any
-    isolation-specific routing — see "Fenced but still cacheable" below), so
+    through `pkg/server`'s `restServiceRegistry.resolve`, which checks it
+    before any isolation-specific routing), so
     this is what stops a write from landing in a keyspace that is already
     being reclaimed and surviving, orphaned, once the catalog record is
     gone. The fence is its own state (`Database.Dropping()`, persisted as
@@ -813,7 +813,7 @@ A range delete removes every key in `[start, end)` in one Raft entry:
   capability is refused with a typed error. A mixed-version group never
   receives a command some member would reject.
 - **Every write carries the drop fence.** A write is a guarded command whose
-  guard is "this database's fence key is absent", evaluated at apply time on
+  guard is "this database's fence marker holds its incarnation", evaluated at apply time on
   every replica. This holds for every engine and for local bindings as well as
   raft ones.
 - **Every engine uses the binding's encryptor and data root.** An engine that
@@ -848,8 +848,8 @@ Deliberately finer than one grant per verb:
 | `databases:create` | creating any database — including SQL `CREATE DATABASE`, which creates a database owned by the session's tenant, inside its quota |
 | `databases:create_raft` | **in addition** for a raft-backed database — `backend: raft`, or any database of a raft-isolated tenant — because a dedicated Raft group is privileged provisioning |
 | `databases:create_volume` | **in addition** for a volume-isolated database — any database of a volume-isolated tenant |
-| `databases:read` | `GetDatabase` |
-| `databases:list` | `ListDatabases` |
+| `databases:read` | reading one database's record |
+| `databases:list` | listing databases |
 | `databases:update` | all configuration updates: barrier, connection, etcd, protocol, raft |
 | `databases:scale` | changing the replication factor — distinct from `update` because it consumes quota and mutates cluster placement and Raft membership |
 | `databases:delete` | dropping a database — including SQL `DROP DATABASE`, which may drop only a database the session's tenant owns |
@@ -1391,8 +1391,8 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   anything, and every transport maps the refusal), **the replicated
   placement fence a dedicated-raft drop also sets** (`Store.SetDropping`
   round-trips through `Get`, is a no-op when the value already matches, and
-  fails on a placement entry that does not exist; `RaftBackendFactory.
-  Services` refuses with `DroppingError` on both the cold-start path and a
+  fails on a placement entry that does not exist;
+  `RaftBackendFactory.Services` refuses with `DroppingError` on both the cold-start path and a
   shard already cached from before the drop began, using two independent
   `RaftBackendFactory` instances sharing one `placement.Store` since a
   genuine multi-member Raft group cannot form across two transport-less
@@ -1438,33 +1438,14 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
 
 A database's scheduled-compaction policy (`compaction.Policy` (`pkg/compaction`), the
 `compaction` block of `DatabaseConfig`, its `meta.json` record and
-`DatabaseInfo`) is **off unless its owning tenant set one**, and is set only by:
-
-- `UpdateDatabaseCompaction` on any transport, which requires `mvcc:compact`
-  (`ScopeSelfStrict`) and refuses -- as not found -- a database the caller's
-  tenant does not own; the system tenant owns only its own databases
-  (`service.DatabaseService.UpdateCompactionForTenant` applies that rule to
-  every caller); and
-- the node's configuration file, `databases[].compaction`, for the databases
-  that file declares (all system-owned). When present it is applied at every
-  start; a database it is absent from keeps whatever was last set through the
-  API.
+`DatabaseInfo`) is **off unless its owning tenant set one**, and is set only by
+`UpdateDatabaseCompaction` on any transport, which requires `mvcc:compact`
+(`ScopeSelfStrict`) and refuses -- as not found -- a database the caller's
+tenant does not own; the system tenant owns only its own databases
+(`service.DatabaseService.UpdateCompactionForTenant` applies that rule to
+every caller). The node's configuration file has no compaction key.
 
 Create never takes a policy, so `databases:create` cannot compact. The policy's
 semantics, and the scheduler that runs it, are specified in
 [../key-value/engineering.md](../key-value/engineering.md) "Scheduled
 compaction".
-
-```yaml
-databases:
-  - name: events
-    backend: pebble
-    compaction:
-      mode: revision        # off | revision | period
-      retain_revisions: 100000
-  - name: audit
-    backend: pebble
-    compaction:
-      mode: period
-      retain_period: 720h
-```

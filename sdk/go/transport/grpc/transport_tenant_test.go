@@ -24,7 +24,6 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -165,7 +164,14 @@ func (f *fakeTenantServicer) TenantBarrierShareClaimComplete(_ context.Context, 
 
 func startTenantBarrierServer(t *testing.T, svc tenantpkg.TenantServicer) (string, func()) {
 	t.Helper()
-	srv := googlegrpc.NewServer()
+	return startTenantBarrierServerTLS(t, svc, nil)
+}
+
+// startTenantBarrierServerTLS is startTenantBarrierServer over tt; a nil tt is
+// plaintext.
+func startTenantBarrierServerTLS(t *testing.T, svc tenantpkg.TenantServicer, tt *testTLS) (string, func()) {
+	t.Helper()
+	srv := googlegrpc.NewServer(tt.serverOptions()...)
 	grpcpkg.RegisterTenantBarrierService(srv, svc, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -182,12 +188,19 @@ func startTenantBarrierServer(t *testing.T, svc tenantpkg.TenantServicer) (strin
 // health check to be registered on the test server.
 func connectBareTransport(t *testing.T, addr string) (*Transport, func()) {
 	t.Helper()
-	conn, err := googlegrpc.NewClient(addr, googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	return connectBareTransportTLS(t, addr, nil)
+}
+
+// connectBareTransportTLS is connectBareTransport over tt; a nil tt is
+// plaintext.
+func connectBareTransportTLS(t *testing.T, addr string, tt *testTLS) (*Transport, func()) {
+	t.Helper()
+	conn, err := googlegrpc.NewClient(addr, tt.dialOption())
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	tr := &Transport{
-		config: &transport.Config{Address: addr},
+		config: tt.config(addr),
 		conn:   conn,
 		// closed defaults to zero-value (false) which is the desired open state.
 	}
@@ -326,9 +339,10 @@ func TestTransport_TenantBarrierUnseal_Success_Key(t *testing.T) {
 			return nil
 		},
 	}
-	addr, stop := startTenantBarrierServer(t, svc)
+	tt := newTestTLS(t)
+	addr, stop := startTenantBarrierServerTLS(t, svc, tt)
 	defer stop()
-	tr, cleanup := connectBareTransport(t, addr)
+	tr, cleanup := connectBareTransportTLS(t, addr, tt)
 	defer cleanup()
 
 	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{

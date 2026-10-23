@@ -1,6 +1,6 @@
 # Configuration — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-configuration`; coverage row: `test/integration/COVERAGE.md` `[configuration](../../docs/configuration/)`.
@@ -148,10 +148,9 @@ starts: at config load when it comes from the file or the environment, and by
 `start` itself when it comes from the flag.
 
 **Not covered by the budget:** a few things lock memory outside it — sealing a
-secret, Shamir shares submitted during a barrier unseal, and the Noise
-enrollment key, which still uses memguard through go-truststrap. See
+secret, and Shamir shares submitted during a barrier unseal. See
 [cli.md](cli.md#locked-memory-outside-the-budget) for the exact scope and how
-tightly each is bounded. `secure_memory_budget_mib` is therefore not yet a hard
+tightly each is bounded. `secure_memory_budget_mib` is therefore not a hard
 ceiling on every page this daemon locks, which is why the derived budget leaves
 headroom under the host limit.
 
@@ -235,8 +234,8 @@ the config. This check is deliberately separate from ordinary validation, so
 your config file stays valid or invalid independent of which binary reads it.
 
 **A setting seems to have no effect.** Check `qrdb admin capabilities`. The
-usual causes: the run mode forbids it (standalone cannot enable MVCC, watch or
-lease), or the build tag is absent. Config can only ever **narrow** what the
+usual causes: the run mode forbids it (standalone refuses `raft.join` and more
+than one `raft.peers` entry), or the build tag is absent. Config can only ever **narrow** what the
 mode and the binary allow — it can never enable something they forbid, and
 asking is an error rather than a silent no-op.
 

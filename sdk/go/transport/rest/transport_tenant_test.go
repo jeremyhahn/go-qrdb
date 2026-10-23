@@ -402,7 +402,8 @@ func TestTenantBarrierInit_AfterClose(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTenantBarrierUnseal_Success(t *testing.T) {
-	rt, srv, _ := newTenantBarrierTestTransport(t)
+	// The unseal key is a barrier secret: it is sent only over TLS (#1043).
+	rt, srv := newTenantBarrierTLSTransport(t)
 
 	want := []byte("super-secret-bytes")
 	err := rt.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{

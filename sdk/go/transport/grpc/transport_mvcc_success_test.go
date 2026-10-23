@@ -23,7 +23,6 @@ import (
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -189,7 +188,13 @@ const mvccSOPIN = "mvcc-so-pin"
 
 func startMVCCServer(t *testing.T) (string, func()) {
 	t.Helper()
-	srv := googlegrpc.NewServer()
+	return startMVCCServerTLS(t, nil)
+}
+
+// startMVCCServerTLS is startMVCCServer over tt; a nil tt is plaintext.
+func startMVCCServerTLS(t *testing.T, tt *testTLS) (string, func()) {
+	t.Helper()
+	srv := googlegrpc.NewServer(tt.serverOptions()...)
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 	mvccSvc := &fakeMVCCServicer{mockKVService: kvSvc}
@@ -218,12 +223,19 @@ func startMVCCServer(t *testing.T) (string, func()) {
 
 func connectMVCCTransport(t *testing.T, addr string) (*Transport, func()) {
 	t.Helper()
-	conn, err := googlegrpc.NewClient(addr, googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	return connectMVCCTransportTLS(t, addr, nil)
+}
+
+// connectMVCCTransportTLS is connectMVCCTransport over tt; a nil tt is
+// plaintext.
+func connectMVCCTransportTLS(t *testing.T, addr string, tt *testTLS) (*Transport, func()) {
+	t.Helper()
+	conn, err := googlegrpc.NewClient(addr, tt.dialOption())
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	tr := &Transport{
-		config: &transport.Config{Address: addr},
+		config: tt.config(addr),
 		conn:   conn,
 		client: pb.NewQRDBServiceClient(conn),
 	}
@@ -527,9 +539,10 @@ func TestGRPCBatch_Import_Success(t *testing.T) {
 // ===========================================================================
 
 func TestGRPCBarrier_RemainingMethods_Success(t *testing.T) {
-	addr, stop := startMVCCServer(t)
+	tt := newTestTLS(t)
+	addr, stop := startMVCCServerTLS(t, tt)
 	defer stop()
-	tr, cleanup := connectMVCCTransport(t, addr)
+	tr, cleanup := connectMVCCTransportTLS(t, addr, tt)
 	defer cleanup()
 	ctx := context.Background()
 

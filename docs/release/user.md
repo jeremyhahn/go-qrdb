@@ -1,6 +1,6 @@
 # Release — User guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 <!--
 Copyright 2026 Jeremy Hahn

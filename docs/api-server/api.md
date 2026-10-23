@@ -1,6 +1,6 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -512,7 +512,7 @@ Path versioning is inconsistent across features and that is the current state,
 not a scheme: control-plane and newer surfaces are under `/v1/`
 (`/v1/tenants`, `/v1/barrier`, `/v1/ceremony`, `/v1/backups`, `/v1/credentials`,
 `/v1/collections`, `/v1/databases`, `/v1/rag`, `/v1/embeddings`, `/v1/audit`,
-`/v1/rebalance`), while the data plane and several older surfaces are
+`/v1/rebalance`), while the data plane, identity and node-status surfaces are
 unversioned (`/kv`, `/watch`, `/lease`, `/lock`, `/index`, `/ts`, `/vector`,
 `/tx`, `/batch`, `/certs`, `/users`, `/roles`, `/health`, `/status`, `/peers`).
 The gRPC service is `qrdb.v1` throughout.

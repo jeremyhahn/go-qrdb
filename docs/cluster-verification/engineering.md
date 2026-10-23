@@ -1,6 +1,6 @@
 # Cluster Verification — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -354,81 +354,49 @@ The fault runs `-check` on its target before it injects, and maps either
 exit to a typed `RefusedError`. A refusal fails the inject, so no window
 runs against a node it would not reach.
 
-#### Lease-read results
+#### What the lease and rate runs show
 
 `TestClusterFault_LeaseReadAfterLeaderChange` reads one key through the
 leader from eight clients while the majority elects a successor and
-overwrites it. `lease_read` was on, and the test ran four times on one
-kernel. **No stale read was observed in any case.**
+overwrites it, with `lease_read` on. What the old leader may serve:
 
-| Case | What the old leader served |
+| Case | What the old leader serves |
 |---|---|
-| isolated | the old value until 0.6–1.55 s after the cut, inside the 1.584 s lease and always before the overwrite was acknowledged; then `NOT_LEADER` |
-| paused and isolated | nothing: every read after it resumed was refused with `NOT_LEADER` |
+| isolated | the old value until it steps down, inside the lease and before the overwrite is acknowledged; then `NOT_LEADER` |
+| paused and isolated | nothing: every read after it resumes is refused with `NOT_LEADER` |
 | paused, links restored | only the new value |
 
-An isolated leader often stepped down before its lease ran out. That costs
+An isolated leader often steps down before its lease runs out. That costs
 availability, not safety.
 
-#### Rate-nemesis results
+Out of bound, a resumed leader serves no read from its lease: its first reads
+queue for heartbeat confirmation (`read index queued for heartbeat
+confirmation`), it learns the new term and steps down (`leader lost`), and the
+uncommitted tail of its log is overwritten (`WAL index truncated: leader
+overwrote uncommitted entries`). A read served from the lease logs `read index
+fast path` with `lease_valid=true`. go-quicraft's lease guards log their own
+lines: a follower whose acknowledgement may still count toward a lease skips
+an election (`election skipped: a leader may be counting this replica's ack
+toward a read lease`), and a leader with an active lease drops a higher-term
+vote request (`dropped higher-term RequestVote, leader lease active`).
 
-The `pause` gate ran on three local nodes (one kernel) with seal `none`,
-`lease_read` on and debug logs. The workload was gRPC, six clients on 16
-keys, with a 3 s operation timeout. Lease use was counted from the leaders'
-`read index fast path` lines (`lease_valid=true`), against reads that fell
-back to `read index queued for heartbeat confirmation`.
-
-| Bound | Pauses | Duration | Operations (failed, indeterminate) | Verdict | Leader | Lease reads (heartbeat fallbacks) |
-|---|---|---|---|---|---|---|
-| in | 24, 0.2–1.2 s; 10 on the leader | 90 s | 48,618 (2, 10) | proven: E1–E4 pass, no linearizability violation | unchanged | 161,835 (78) |
-| in | 24, 0.2–1.2 s | 90 s | 37,295 (3,783, 3,733) | **undecided**: the checker was killed for memory | changed under host load (below) | not counted |
-| in | 24, 0.2–1.2 s (repeat of the row above); 11 on the leader | 90 s | 42,676 (0, 0) | proven | unchanged | 142,288 (65) |
-| in | 22, 0.2–1.2 s; 7 on the leader | 90 s | 58,277 (0, 0) | proven | unchanged | 193,785 (71) |
-| out | 8, 5.1–11.6 s | 120 s | 66,710 (22, 38) | proven | replaced twice | 221,657 (117) |
-| out | 9, 5.9–10.5 s | 120 s | 45,016 (88, 93) | proven | replaced three times | 150,062 (114) |
-
-**No stale read was found.** In bound, a paused leader kept its leadership
-and its lease through every pause, up to 1.15 s. Out of bound, the
-expectation held in every case:
-
-- The majority elected a successor while the leader was stopped.
-- On resume, the old leader served no read from its lease. Its first reads
-  queued for heartbeat confirmation, and it then learned the new term and
-  stepped down (`leader lost`).
-- The uncommitted tail of its log was overwritten (`WAL index truncated:
-  leader overwrote uncommitted entries`).
-
-go-quicraft's own lease guards showed up in the logs:
-
-- A follower whose acknowledgement might still count toward a lease refused
-  to campaign (`election skipped: a leader may be counting this replica's
-  ack toward a read lease`).
-- A leader with an active lease dropped a higher-term vote request
-  (`dropped higher-term RequestVote, leader lease active`).
-
-Two findings bear on running the gate, not on its verdict:
+Two things bear on running the gate, not on its verdict:
 
 - **The checker's cost grows with indeterminate writes.** An indeterminate
   write never returns, so porcupine must place it everywhere after its
-  invoke. The undecided run had 3,733 indeterminate operations on 16 keys,
-  and its checker was killed for memory before the 10-minute per-key
-  timeout. Size `keys` against the expected indeterminate count, or give the
-  checker host more memory. The repeat of the same seed, without the host
-  load, was proven.
-- **A stalled step loop looks like a lost quorum.** In the undecided run,
-  the 80-thread host was at a load of 110–136. After two follower pauses,
-  the leader saw one active replica and stepped down (`leader lost quorum,
-  stepping down to follower`). The followers' queued messages then arrived
-  in one burst, about 2 s late. The followers were not slow; the leader's
-  step loop had stalled. That is a liveness cost under CPU starvation, and
-  it did not reproduce on the repeat.
+  invoke, and thousands of them on 16 keys can exhaust the checker's memory
+  before the per-key timeout. Size `keys` against the expected indeterminate
+  count, or give the checker host more memory.
+- **A stalled step loop looks like a lost quorum.** On a CPU-starved host the
+  leader's step loop can stall, see too few active replicas and step down
+  (`leader lost quorum, stepping down to follower`), and the followers'
+  queued messages then arrive in one burst. That is a liveness cost of the
+  host, not a slow follower; run the gate on a host that is not overloaded.
 
-**The `clock-rate` runs have not been executed.** They need one kernel per
-replica with `CAP_SYS_TIME`, and the subcommand refuses the harness's kernel
-by design. Its arithmetic and its refusals are covered by unit tests. On one
-kernel, without the capability, it exits 3, and with `-not-kernel` set to
-its own boot ID it exits 4. The expected outcomes follow from the arithmetic
-above:
+The `clock-rate` fault needs one kernel per replica with `CAP_SYS_TIME`, and
+the subcommand refuses the harness's kernel by design; its arithmetic and its
+refusals are covered by unit tests. The expected outcomes follow from the
+arithmetic above:
 
 - at `ppm: -5000` (0.5% slow) the checker must find no violation;
 - at `ppm: -20000` (2% slow), run alone, no stale read is reachable, because
@@ -471,7 +439,7 @@ argument through the remote shell. The commands it runs are:
 | Step | Command (after the template) |
 |---|---|
 | identity | `run --rm --network none -v <tls_dir>:/etc/qrdb/tls:ro <image> node-identity --cert /etc/qrdb/tls/node.pem`; the last line of output is the identity, and it must be `spki:` followed by 64 lower-case hex digits |
-| start | `run -d --name clusterproof-<name> --network <network> [--ip <address>] --cap-add IPC_LOCK --ulimit memlock=-1:-1 -v <tls_dir>:/etc/qrdb/tls:ro -v <data>:/var/lib/qrdb <image> start --config /etc/qrdb/qrdb.yaml --listen 0.0.0.0:63001 --raft-address <address>:63001 --data-dir /var/lib/qrdb --discovery static --peers <id>=<address>:63001,... --member-identities <id>=<identity>,... --replica-id <id> --enable-quic --tls-ca-file /etc/qrdb/tls/ca.pem --tls-cert-file /etc/qrdb/tls/node.pem --tls-key-file /etc/qrdb/tls/node-key.pem` |
+| start | `run -d --name clusterproof-<name> --network <network> [--ip <address>] --cap-add IPC_LOCK --ulimit memlock=-1:-1 -v <tls_dir>:/etc/qrdb/tls:ro -v <data>:/var/lib/qrdb <image> start --config /etc/qrdb/qrdb.yaml --listen 0.0.0.0:63001 --raft-address <address>:63001 --data-dir /var/lib/qrdb --discovery static --peers <id>=<address>:63001,... --member-identities <id>=<identity>,... --replica-id <id> --enable-quic --lease-read=true --check-quorum=true --tls-ca-file /etc/qrdb/tls/ca.pem --tls-cert-file /etc/qrdb/tls/node.pem --tls-key-file /etc/qrdb/tls/node-key.pem` |
 | logs | `logs --tail <n> clusterproof-<name>` |
 | remove | `rm -f clusterproof-<name>`, on every node, before the run and after it |
 
@@ -575,7 +543,7 @@ The evidence bundle is one directory per run. Every JSON file carries a
 | `verdict.json` | the outcome, its exit code, the seal type it was reached under, the reasons it is not proven, each criterion E1–E7 with its status and detail, and every checker's full result (derived) |
 
 The bundle contains no credential, and the node configuration only as a
-digest. Node logs and metrics are not collected yet.
+digest. Node logs and metrics are not collected.
 
 `make cluster-proof-check` verifies every file against the manifest, refuses
 a missing, extra or non-regular file and any path outside the bundle, decodes
@@ -601,7 +569,7 @@ error, a fault that failed or never healed, or no fault injected; otherwise **pr
 ### Checker and replica seams
 
 - **E2.** `Options.Checkers` runs any `history.Checker` beside the ledger,
-  and `cmd/clusterproof` adds the porcupine check through `Env.Configure`,
+  and `soak/cmd/clusterproof` adds the porcupine check through `Env.Configure`,
   for a run and for a check alike. A soak given no checker reports E2
   `no linearizability checker configured`. A checker that examined nothing
   (`Checked` 0) makes E2 unavailable, never failed. The check refuses a

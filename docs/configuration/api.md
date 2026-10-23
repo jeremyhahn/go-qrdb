@@ -1,6 +1,6 @@
 # Configuration — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Configuration is read at boot and is **not** mutable over the wire. Two things
@@ -45,6 +45,7 @@ mode-gated, or config-disabled. See
 | Strict decode | a key naming no field in the schema fails the load as `*UnknownFieldError`, naming the key's full path and, where known, its line |
 | Defaults | `DefaultConfig()` populates every field |
 | YAML | only fields present override |
+| Environment | `QRDB_`-prefixed variables override the file; read only when `--config` names one |
 | Flags | only explicitly-set flags override |
 | `Validate()` | returns the **first** error as `*ValidationError` with the field path and reason |
 | `ValidateCapabilities()` | separate, called by composition roots; fails naming the missing build tag |

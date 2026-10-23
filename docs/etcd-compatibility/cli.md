@@ -1,6 +1,6 @@
 # etcd Compatibility — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 etcd compatibility has **no `qrdb etcd` command group.** It is a per-database
@@ -50,8 +50,7 @@ mirrors this on every transport, CLI included: enabling etcd on any database
 — through `create`, `update-etcd`, or a YAML `databases[].etcd` block in
 `qrdbd`'s own configuration file — is refused before anything is persisted,
 with a typed error whose message, exactly as printed, is `service: database:
-etcd wire protocol not compiled in: requires build tag qrdb_etcd`, rather
-than accepting the setting and never actually starting a listener.
+etcd wire protocol not compiled in: requires build tag qrdb_etcd`.
 
 ## Driving it with etcd's own tools
 

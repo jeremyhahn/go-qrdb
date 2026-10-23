@@ -1,6 +1,6 @@
 # Cluster Verification — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -278,11 +278,11 @@ later change is a configuration or a single implementation, not a redesign.
 
 | Decision | Decided | Seam |
 |---|---|---|
-| Linearizability checker | **porcupine**, as a test-only dependency of the `test/clusterproof` module and of nothing else | `history.Checker`: the soak runs every checker in `Options.Checkers`, and `cmd/clusterproof` adds the porcupine check through `Env.Configure`. The history format is independent of it |
+| Linearizability checker | **porcupine**, as a test-only dependency of the `test/clusterproof` module and of nothing else | `history.Checker`: the soak runs every checker in `Options.Checkers`, and `soak/cmd/clusterproof` adds the porcupine check through `Env.Configure`. The history format is independent of it |
 | Binary or container on the nodes | **the `qrdbd` container**: each node runs the image built from the repository's release `Dockerfile`, the same image a hosted deployment runs | the inventory names the image and the nodes, and container mode brings them up ([Bring-up: BOOT-01](#bring-up-boot-01)); the targets file's `exec`, `signal` and `restart` templates address the node's container, so every fault is a target operation, not a hard-coded command |
 | Seal types | **every seal type the release candidate ships**: the gate is run once per seal type | `PROOF_SEAL`: a run names the seal type it proves, and the run record and verdict carry it ([Seal types](#seal-types)); the cluster under test is configured outside the harness |
 | Soak length | **24 h** for every gate run, and **one 72 h** soak before the release-candidate tag | `PROOF_DURATION` |
-| Lease reads | `raft.lease_read` **stays the default (`true`)**, and the gate runs with it on. A problem the proof finds in lease reads is fixed, not avoided by turning them off; the rate nemesis (`pause` on any deployment, `clock-rate` through `adjtimex(2)` on a kernel per replica) and the in-CI lease probe are what exercise them, in bound and out of it ([engineering.md](engineering.md#the-rate-nemesis)) | the cluster's configuration; the operator declares the read mode in the targets file and the bundle records it with the node's configuration digest |
+| Lease reads | `raft.lease_read` **stays the default (`true`)**, and the gate runs with it on. A problem the proof finds in lease reads is fixed, not avoided by turning them off; the rate nemesis (`pause` on any deployment, `clock-rate` through `adjtimex(2)` on a kernel per replica) and the in-CI lease probe are what exercise them, in bound and out of it ([engineering.md](engineering.md#the-rate-nemesis)) | the cluster's configuration (container mode pins `--lease-read=true` and the `--check-quorum=true` it requires on every node, so the image's file cannot turn them off); the operator declares the read mode in the targets file and the bundle records it with the node's configuration digest |
 
 ## What this feature does not do
 

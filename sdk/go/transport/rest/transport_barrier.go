@@ -37,6 +37,10 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
+	}
 
 	return t.postJSONDecode(ctx, "BarrierInitialize", "/v1/barrier/initialize", req, nil)
 }
@@ -46,6 +50,10 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
 	}
 
 	return t.postJSONDecode(ctx, "BarrierUnseal", "/v1/barrier/unseal", req, nil)
@@ -122,6 +130,10 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
 	// the request carries none, exactly as on QUIC.
@@ -146,6 +158,10 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	var resp transport.BarrierEnableEncryptionResponse
 	if err := t.postJSONDecode(ctx, "BarrierEnableEncryption", "/v1/barrier/enable-encryption", req, &resp); err != nil {
@@ -160,6 +176,10 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
@@ -249,6 +269,13 @@ func (t *Transport) holderPost(ctx context.Context, method, path string, payload
 	return t.postJSONDecode(ctx, method, path, payload, dest)
 }
 
+// guardSecret refuses req, before any request is built, when it carries a
+// barrier secret and the transport's address is not https; on https it marks
+// ctx so a redirect to http:// is refused too (transport.GuardBarrierSecret).
+func (t *Transport) guardSecret(ctx context.Context, req transport.BarrierSecretCarrier) (context.Context, error) {
+	return transport.GuardBarrierSecret(ctx, "rest", transport.IsHTTPS(t.baseURL), req)
+}
+
 // OfficerRegister enrols a share holder of the unseal key.
 // Maps to POST /v1/barrier/officers.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
@@ -336,6 +363,10 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 // BarrierQuorumSubmit submits one authenticated holder's share.
 // Maps to POST /v1/barrier/quorum/submit.
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	var resp transport.QuorumOutcome
 	if err := t.holderPost(ctx, "BarrierQuorumSubmit", "/v1/barrier/quorum/submit", req, &resp); err != nil {
 		return nil, err
@@ -345,6 +376,10 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round. Maps to POST /v1/barrier/rekey/start.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekeyStart", req.SOPin)
@@ -363,6 +398,10 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 // Maps to POST /v1/barrier/officers/revoke.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierOfficerRevoke", req.SOPin)

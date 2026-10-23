@@ -1,6 +1,6 @@
 # RAG — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb rag` — ingest documents, run semantic queries, and manage
@@ -22,10 +22,10 @@ Chunk, embed and store a document.
 | `--namespace` | string | — | vector namespace to store embeddings in; required |
 | `--provider` | string | configured default | embedding provider |
 | `--model` | string | provider default | embedding model |
-| `--chunk-strategy` | string | `fixed` | `fixed \| sentence \| paragraph` |
-| `--chunk-size` | int | 512 | target chunk size in characters |
-| `--chunk-overlap` | int | 50 | overlapping characters between adjacent chunks |
-| `--chunk-min-size` | int | 100 | minimum chunk size; smaller chunks are merged |
+| `--chunk-strategy` | string | empty (server default, `fixed`) | `fixed \| sentence \| paragraph` |
+| `--chunk-size` | int | 0 (server default, 512) | target chunk size in characters |
+| `--chunk-overlap` | int | 0 (server default, 50) | overlapping characters between adjacent chunks |
+| `--chunk-min-size` | int | 0 (server default, 100) | minimum chunk size; smaller chunks are merged |
 
 ```bash
 qrdb rag ingest --namespace docs --id manual-v2 --text "$(cat manual.txt)"

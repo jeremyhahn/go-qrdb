@@ -449,6 +449,8 @@ leaks to a caller with no access to the tier.
 | Dedicated tier without `storage.volume_pools` | 503 | `FAILED_PRECONDITION` — `volume pool not configured on barrier registry` |
 | Barrier endpoint on a `prefix` tenant | 409 | `FAILED_PRECONDITION` |
 | Tenant barrier sealed | 503 | `UNAVAILABLE` |
+| Tenant barrier init, unseal or quorum submission on a connection without TLS, or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
+| A REST or MCP tenant barrier init, unseal or quorum submission redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Unknown tenant, tenant service configured | 404 | `NOT_FOUND` |
 | Tenant lookup that could not run: the system shard has no leader, or the lookup's 3 s bound expired | 503 / 504 | `UNAVAILABLE` / `DEADLINE_EXCEEDED` — classified as the cause, never `NOT_FOUND`: a lookup that did not run has not found the tenant absent |
 | Create without `admin_username`, or with neither or both of `admin_csr_pem` / `admin_cert_pem` | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |

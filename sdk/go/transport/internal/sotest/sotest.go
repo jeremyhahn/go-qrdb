@@ -118,7 +118,7 @@ func NewFixture(t *testing.T) *Fixture {
 	roles := authtest.BuiltInRoles(t, Tenant)
 	verifier := authtest.SOVerifier(t, PIN, Tenant)
 	caller := authtest.NewFixedAuthenticator(Officer())
-	serverTLS, clientTLS := tlsPair(t)
+	serverTLS, clientTLS := TLSPair(t)
 	return &Fixture{
 		Roles:     roles,
 		Verifier:  verifier,
@@ -350,10 +350,10 @@ func describe(err error) string {
 	return fmt.Sprintf("%T %q", err, err.Error())
 }
 
-// tlsPair returns a self-signed TLS 1.3 server config for localhost that
+// TLSPair returns a self-signed TLS 1.3 server config for localhost that
 // requires a client certificate, and a client config that trusts it and
 // presents the same certificate.
-func tlsPair(t *testing.T) (*tls.Config, *tls.Config) {
+func TLSPair(t *testing.T) (*tls.Config, *tls.Config) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

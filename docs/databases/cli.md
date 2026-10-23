@@ -1,7 +1,7 @@
 # Databases — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the multi-model database program in
@@ -287,6 +287,10 @@ server's nonce instead.
 a Shamir database barrier; its holders unseal and seal it with
 `barrier-quorum submit --op unseal|seal`.
 
-## Parity
+## Integration tests
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`make integration-test-databases` drives these verbs through the `qrdb` CLI
+(`test/integration/database_lifecycle_cli_test.go`,
+`database_barrier_cli_test.go`, `database_barrier_holders_cli_test.go`); the
+`_PerProtocol` and `_AllTransports` tests run each verb on every transport.
+`test/integration/COVERAGE.md` records what is not covered.

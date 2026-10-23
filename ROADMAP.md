@@ -73,6 +73,14 @@ The cluster engine and database system for every project in the stack: embedded,
 - **multi-tenancy** — isolation ladder, quotas, per-tenant barriers — [docs/multi-tenancy/](docs/multi-tenancy/) — done
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — done
 - **typescript-sdk** — the `@qrdb/sdk` TypeScript client — [docs/typescript-sdk/](docs/typescript-sdk/) — done
+- **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — done
+- **tenant-undo-id-reuse** — an undone tenant create leaves an undone tombstone; the ID is reusable once every serving node has acknowledged its cleanup — [#774](../../issues/774) — done
+- **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — done
+- **rbac-list-own-permissions** — RBACClient.ListOwnPermissions lists the authenticated caller's own effective permissions, authentication only, on every transport and the CLI — [docs/identity-rbac/](docs/identity-rbac/) — done
+- **iam-policy-enabled-presence** — a presence-tracked enabled field on ABAC policies (absent = enabled, false = skipped), returned unchanged on every read — [docs/auth/](docs/auth/) — done
+- **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — done
+- **range-delete** — engine range delete for dropped databases — [#457](../../issues/457) — done
+- **dead-code-triage** — unreachable symbols triaged, wired or deleted — [#350](../../issues/350) — done
 
 ## Now
 
@@ -80,12 +88,11 @@ The cluster engine and database system for every project in the stack: embedded,
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683) — open
 - **lease-reads** — lease reads documented as linearizable under the 1 % clock-rate bound — [#678](../../issues/678), PR [#681](../../pulls/681) — open
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — open
-- **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681) — open
 - **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — done
 - **rolling-enable-encryption** — `cluster enable-encryption` recycles one node at a time from a replicated per-node step record, behind a cluster feature gate — [#775](../../issues/775) — done
 - **identity-ou-spiffe-agree** — tenant identity requires both a subject OU and a SPIFFE ID SAN that agree; no fallbacks; every issuer sets both — [#777](../../issues/777) — in progress
 - **optional-auth-route** — a `HandleOptional` route mode on `ModuleHTTPRegistrar`: a presented credential runs the auth chain, none admits an anonymous caller, an invalid one is rejected; consumer go-quicbaas #1457 — [docs/api-server/](docs/api-server/) — done
-- **tenant-undo-id-reuse** — an undone tenant create leaves an undone tombstone; the ID is reusable once every serving node has acknowledged its cleanup — [#774](../../issues/774) — in progress
+- **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — in progress
 
 ## Next
 
@@ -99,13 +106,8 @@ The cluster engine and database system for every project in the stack: embedded,
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — open
-- **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — open
 - **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
-- **identity-tenant-owner** — a typed TenantOwner on transport.Identity, set by the identity hydrator from the role store; the field consumers authorize on — [docs/identity-rbac/](docs/identity-rbac/) — open
-- **rbac-list-own-permissions** — RBACClient.ListOwnPermissions lists the authenticated caller's own effective permissions, authentication only, on every transport and the CLI — [docs/identity-rbac/](docs/identity-rbac/) — open
-- **iam-policy-enabled-presence** — a presence-tracked enabled field on ABAC policies (absent = enabled, false = skipped), returned unchanged on every read — [docs/auth/](docs/auth/) — open
-- **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — open
 - **default-roles** — shipped default roles every tenant starts with; they carry the OTA activate and confirm permissions — [#737](../../issues/737) — open
 - **device-onboarding-permission** — device onboarding is a tenant-scoped permission, not a role; each tenant onboards its own devices — [#737](../../issues/737) — open
 - **ota-activate-confirm-permissions** — OTA activate and confirm are tenant-scoped permissions, not roles — [#737](../../issues/737) — open
@@ -113,8 +115,6 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Future
 
-- **range-delete** — engine range delete for dropped databases — [#457](../../issues/457) — open
-- **dead-code-triage** — unreachable symbols triaged, wired or deleted — [#350](../../issues/350) — open
 - **barrier-passphrase-change** — a supported system-barrier passphrase change — [#631](../../issues/631) — open
 - **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627) — open
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open

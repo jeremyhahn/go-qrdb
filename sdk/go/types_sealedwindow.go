@@ -53,6 +53,46 @@ var WithSealedWindowProbe = qrdbserver.WithSealedWindowProbe
 // chain shared by every protocol server.
 type AuthMiddleware = authmw.AuthMiddleware
 
+// AuthMiddlewareOption configures an AuthMiddleware. (Aliases
+// pkg/auth/middleware.Option.)
+type AuthMiddlewareOption = authmw.Option
+
+// NewAuthMiddleware builds the middleware chain over an Authorizer, for a
+// consumer that puts qrdb's authentication and authorization in front of its
+// own router: wrap the router with its RESTMiddleware method over a
+// RESTRouteRegistry naming every route's permission. A middleware built
+// without WithAuthMiddlewareRoleResolver refuses every authenticated request.
+// (Aliases pkg/auth/middleware.New.)
+var NewAuthMiddleware = authmw.New
+
+// WithAuthMiddlewareAuthenticator appends an Authenticator to the chain.
+// Authenticators are tried in the order they are added; the first to succeed
+// provides the identity. (Aliases pkg/auth/middleware.WithAuthenticator.)
+var WithAuthMiddlewareAuthenticator = authmw.WithAuthenticator
+
+// WithAuthMiddlewareUserService configures the user store an authenticated
+// subject is resolved against: it supplies the identity's persistent roles
+// and enforces the account's lifecycle, certificate-binding and
+// permitted-method checks. (Aliases pkg/auth/middleware.WithUserService.)
+var WithAuthMiddlewareUserService = authmw.WithUserService
+
+// WithAuthMiddlewareRoleResolver configures the role store the caller's
+// TenantOwner is decided against, read uncached on every authenticated
+// request. It is required. (Aliases pkg/auth/middleware.WithRoleResolver.)
+var WithAuthMiddlewareRoleResolver = authmw.WithRoleResolver
+
+// RESTRouteRegistry records each REST route's authorization contract -- its
+// permission, or an explicit public, authenticated-only or optional marker --
+// which AuthMiddleware.RESTMiddleware enforces. A registered path requested
+// with a method it has no entry for is refused; a path with no entry at all
+// needs an authenticated caller and no permission. (Aliases
+// pkg/auth/middleware.RESTRouteRegistry.)
+type RESTRouteRegistry = authmw.RESTRouteRegistry
+
+// NewRESTRouteRegistry creates an empty route registry. (Aliases
+// pkg/auth/middleware.NewRESTRouteRegistry.)
+var NewRESTRouteRegistry = authmw.NewRESTRouteRegistry
+
 // WithAuthMiddleware configures authentication and authorization
 // middleware for the protocol servers of an embedded qrdb server.
 var WithAuthMiddleware = qrdbserver.WithAuthMiddleware

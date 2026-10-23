@@ -1,6 +1,6 @@
 # Embedding Service — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Turn text into vectors. The server does not run models — it proxies to an
@@ -117,8 +117,8 @@ in the config; the default is 30 seconds.
 to the configured `base_url`. Point it at something you operate — Ollama or vLLM
 locally — rather than a hosted API.
 
-**Every `embedding` command fails with 404, "unknown method" or "embedding
-service is not configured".** No providers are configured on the daemon, so the
+**Every `embedding` command fails with 404, "unknown method" or "EmbeddingServicer
+must not be nil".** No providers are configured on the daemon, so the
 service was never wired in.
 
 Test reference: `make integration-test-embeddings`; coverage row: `test/integration/COVERAGE.md` `[embeddings](../../docs/embeddings/)`.

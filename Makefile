@@ -2317,7 +2317,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
-	test-artifact-paths check-generated check-mod-tidy test-vet-modules \
+	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
 	test-release-alpha fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
@@ -3513,21 +3513,19 @@ mod-verify:
 # -mod=readonly, `go vet` and `mod-verify` fail only on a MISSING requirement or
 # checksum; a stale extra line -- a superseded version's go.sum pair -- passes
 # all three, and nothing caught it until `release-alpha` refused v0.48.0-alpha.
-# `go mod tidy -diff` reports both directions and mutates nothing. The module
-# set is every tracked go.mod, not a list, so a new module is checked the day it
-# is committed; the root module missing from it means discovery failed, and an
-# empty loop must not report success. Every module is asked before failing, so
-# one run names all of them.
+# `go mod tidy -diff` reports both directions and mutates nothing. The logic is
+# scripts/check-mod-tidy.sh: module discovery with its root-go.mod floor, and
+# the split between a module that is NOT TIDY (a diff) and one whose tidiness
+# is UNKNOWN because the check could not run (no diff, an error such as a
+# download timeout). Both fail. test-mod-tidy drives every branch with
+# fixtures, no network.
 .PHONY: check-mod-tidy
 check-mod-tidy:
-	@mods=$$(git ls-files -- 'go.mod' '*/go.mod'); \
-	case " $$(echo $$mods) " in *" go.mod "*) ;; *) echo "ERROR: module discovery did not find the root go.mod (found: $$mods)"; exit 1 ;; esac; \
-	bad=; for m in $$mods; do \
-	  d=$$(dirname "$$m"); \
-	  ( cd "$$d" && GOWORK=off $(GO) mod tidy -diff ) || bad="$$bad $$d"; \
-	done; \
-	test -z "$$bad" || { echo "ERROR: go.mod/go.sum is not tidy in:$$bad. Run 'GOWORK=off go mod tidy' in each and commit the result"; exit 1; }; \
-	echo "==> every module is tidy: $$(echo $$mods)"
+	@GO="$(GO)" ./scripts/check-mod-tidy.sh
+
+.PHONY: test-mod-tidy
+test-mod-tidy:
+	@GO="$(GO)" ./scripts/check-mod-tidy_test.sh
 
 # Directories excluded from the filesystem scan. This is now the ONLY copy:
 # nightly.yml's gate calls `make trivy` on both hosts, so the list cannot

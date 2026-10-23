@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/cockroachdb/pebble/v2/vfs/errorfs"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -34,9 +36,8 @@ import (
 type fatalRecorder struct {
 	testing.TB
 
-	tempDir string
-	failed  bool
-	msg     string
+	failed bool
+	msg    string
 }
 
 func (r *fatalRecorder) Helper() {}
@@ -47,18 +48,11 @@ func (r *fatalRecorder) Fatalf(format string, args ...any) {
 	runtime.Goexit()
 }
 
-func (r *fatalRecorder) TempDir() string {
-	if r.tempDir != "" {
-		return r.tempDir
-	}
-	return r.TB.TempDir()
-}
-
 // record runs fn against a fatalRecorder on its own goroutine, so a Fatalf
 // inside fn ends that goroutine rather than the test.
-func record(t *testing.T, tempDir string, fn func(tb testing.TB)) *fatalRecorder {
+func record(t *testing.T, fn func(tb testing.TB)) *fatalRecorder {
 	t.Helper()
-	r := &fatalRecorder{TB: t, tempDir: tempDir}
+	r := &fatalRecorder{TB: t}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -122,14 +116,56 @@ func TestNew_HostsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestNew_FailsWhenTheDataDirectoryIsUnusable(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
+func TestNew_WritesNothingToDisk(t *testing.T) {
+	scratch := t.TempDir()
+	t.Chdir(scratch)
+	h := New(t)
+	tr := newTransport(t, h)
+	ctx := context.Background()
+	if err := tr.Put(ctx, "disk/key", []byte("value")); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
-	r := record(t, filepath.Join(file, "sub"), func(tb testing.TB) { New(tb) })
+	kv, err := tr.GetRevision(ctx, "disk/key")
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if string(kv.Value) != "value" {
+		t.Fatalf("value = %q, want %q", kv.Value, "value")
+	}
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatalf("read the test's temp directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("New wrote %d entries under the test's temp directory, want none", len(entries))
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat %s on the host = %v, want it absent", dir, err)
+	}
+}
+
+func TestNew_HostsDoNotShareData(t *testing.T) {
+	a, b := New(t), New(t)
+	ta, tb := newTransport(t, a), newTransport(t, b)
+	ctx := context.Background()
+	if err := ta.Put(ctx, "only/a", []byte("a")); err != nil {
+		t.Fatalf("Put on a: %v", err)
+	}
+	if kv, err := ta.GetRevision(ctx, "only/a"); err != nil || string(kv.Value) != "a" {
+		t.Fatalf("GetRevision on a = %v, %v; want the value a stored", kv, err)
+	}
+	if kv, err := tb.GetRevision(ctx, "only/a"); err == nil {
+		t.Fatalf("GetRevision on b = %v, want an error: b saw a's write", kv)
+	}
+}
+
+func TestNew_FailsWhenTheFilesystemFails(t *testing.T) {
+	fs := errorfs.Wrap(vfs.NewMem(), errorfs.InjectorFunc(func(errorfs.Op) error {
+		return errorfs.ErrInjected
+	}))
+	r := record(t, func(tb testing.TB) { open(tb, fs) })
 	if !r.failed || !strings.Contains(r.msg, "open MVCC state machine") {
-		t.Fatalf("New on an unusable directory: failed=%v msg=%q, want an open failure", r.failed, r.msg)
+		t.Fatalf("open on a failing filesystem: failed=%v msg=%q, want an open failure", r.failed, r.msg)
 	}
 }
 
@@ -210,7 +246,7 @@ func TestHost_ServicesShareOneMachine(t *testing.T) {
 
 func TestCheckBatchRevision_PassesOnTheRealEngine(t *testing.T) {
 	tr := newTransport(t, New(t))
-	r := record(t, "", func(tb testing.TB) { CheckBatchRevision(tb, tr, "ok/") })
+	r := record(t, func(tb testing.TB) { CheckBatchRevision(tb, tr, "ok/") })
 	if r.failed {
 		t.Fatalf("CheckBatchRevision on the real engine failed: %s", r.msg)
 	}
@@ -243,7 +279,7 @@ func TestCheckBatchRevision_FailsOnEachDefect(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := record(t, "", func(tb testing.TB) { CheckBatchRevision(tb, tc.client, "p/") })
+			r := record(t, func(tb testing.TB) { CheckBatchRevision(tb, tc.client, "p/") })
 			if !r.failed || !strings.Contains(r.msg, tc.want) {
 				t.Fatalf("failed=%v msg=%q, want a failure containing %q", r.failed, r.msg, tc.want)
 			}

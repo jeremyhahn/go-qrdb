@@ -278,7 +278,7 @@ database, a drop is:
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
    ones, because both apply through the same engine. The fence is behind the
-   cluster feature gate (ruling 6): a drop in a group whose members do not all
+   cluster feature gate (rule 6): a drop in a group whose members do not all
    support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
    close and remove the local store's directory or object prefix, and remove
@@ -637,8 +637,8 @@ persisted, so nothing else was touched) and for a
 whose store fence could not be cleared, and a backend-close or
 directory-removal failure, leave both fences set, so the database stays
 refused everywhere rather than becoming un-fenced on the replicated table
-while the store still refuses its writes. Persisting `Placement.
-DropCommitted` (below) is held to the identical standard: a failure to set
+while the store still refuses its writes. Persisting
+`Placement.DropCommitted` (below) is held to the identical standard: a failure to set
 it fails the whole `Drop`/`DropForTenant` call rather than being logged and
 discarded, so a later retry is never stranded believing a marker was set
 that never actually committed.
@@ -681,8 +681,9 @@ than served stale — closing the asynchronous window between the placement
 delete and the `TenantShardReconciler`'s own (later) cache eviction.
 
 **The local fence's in-memory flag commits before its durable one, not
-after.** `Manager.Drop`'s step 0 sets `Database.Dropping` in memory FIRST,
-then persists it to `meta.json`: `loadDatabase` (the seam every
+after.** `Manager.Drop`'s step 0 sets the in-memory flag
+(`Database.SetDropping`) FIRST, then persists `DatabaseMeta.Dropping` to
+`meta.json`: `loadDatabase` (the seam every
 `Update*`/`Get` resolution goes through) refuses the instant the in-memory
 flag reads true, and `rewriteMeta` always reads it fresh at call time, never
 a cached value, so a concurrent `Update*` call can never observe the flag
@@ -851,8 +852,8 @@ policies, rekey and revocation that serve the system and tenant barriers.
 - **Drop.** Dropping the database destroys its holder records, every envelope
   still held for its holders and every pending challenge.
 
-Rejected: a per-database custodian system or registry (the owner's ruling is
-one share-holder model); reusing the tenant's holders for its databases
+Rejected: a per-database custodian system or registry (there is one
+share-holder model); reusing the tenant's holders for its databases
 (different keys need different custody, and a holder's share is bound to one
 roster); recovery keys per database (a database barrier, like a tenant
 barrier, has the unseal domain only).
@@ -1487,8 +1488,7 @@ file, pebble or objstore database exists on one node.
   forwarding cannot reach the owner.
 
 **OD-3 — The default backend when a create leaves it empty.**
-- A: run-mode dependent — `raft` in raft mode, `pebble` in standalone mode —
-  overridable by `database_defaults.backend`.
+- A: run-mode dependent — `raft` in raft mode, `pebble` in standalone mode.
 - B: `pebble` always. In a cluster that makes every default database
   node-local and unreplicated.
 - C: no default; `backend` is required.

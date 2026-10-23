@@ -486,6 +486,10 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if req.TenantID == "" {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &emptyTenantIDError{}}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	client, release := t.initProofClient()
 	defer release()
 	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
@@ -574,6 +578,10 @@ func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.Tena
 	}
 	if req.TenantID == "" {
 		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &emptyTenantIDError{}}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
 	}
 	wireReq := restTenantBarrierUnsealRequest{Key: req.Key}
 	path := "/v1/tenants/" + url.PathEscape(req.TenantID) + "/barrier/unseal"
@@ -757,6 +765,10 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierQuorumSubmit", Err: &emptyTenantIDError{}}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	var resp transport.QuorumOutcome
 	if err := t.tenantHolderPost(ctx, "TenantBarrierQuorumSubmit", req.TenantID, "/quorum/submit", req, &resp); err != nil {

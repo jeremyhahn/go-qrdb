@@ -11,6 +11,15 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
+
+### Changed
+
+- **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
+  Host gets its own in-memory Pebble filesystem, so a test built over it
+  writes nothing to disk.
 ## [0.54.0-alpha] - 2026-10-23
 
 ### Added
