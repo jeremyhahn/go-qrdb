@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.53.0-alpha] - 2026-10-23
+
 ### Security
 
 - **The embedded transport binds its caller before every dispatch**

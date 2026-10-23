@@ -14,7 +14,7 @@ require (
 	// on it.
 	github.com/jeremyhahn/go-enclave v0.8.0-alpha
 	github.com/jeremyhahn/go-objstore v0.4.0-alpha
-	github.com/jeremyhahn/go-qrdb v0.52.0-alpha
+	github.com/jeremyhahn/go-qrdb v0.53.0-alpha
 	// go-quicraft: the newest tag, in lockstep with the root module (#659).
 	github.com/jeremyhahn/go-quicraft v0.22.0-alpha
 	github.com/mark3labs/mcp-go v1.3.0
