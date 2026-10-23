@@ -145,7 +145,10 @@ Only for `barrier`, `volume` and `raft` tenants. The tenant's first admin runs
 `barrier-init` with the certificate `tenant create` issued and its own key;
 that also creates the admin's account. The CLI proves it holds the key: it
 signs a one-time challenge from the node, tied to this TLS connection, with
-the `--key-file` key. The key never leaves your machine.
+the `--key-file` key. The key never leaves your machine. The passphrase, unseal
+key and shares go only over TLS: on a connection without it, the Unix socket
+included, the call is refused with `BarrierSecretRequiresTLSError` before
+anything is sent.
 
 ```bash
 qrdb --cert-file alice/cert.pem --key-file alice/key.pem \

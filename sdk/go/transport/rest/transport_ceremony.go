@@ -35,6 +35,10 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
 	// the request carries none, exactly as on QUIC.
@@ -88,6 +92,10 @@ func (t *Transport) CeremonyStatus(ctx context.Context) (*transport.CeremonyStat
 func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRInitRequest) (*transport.SignCSRInitResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when

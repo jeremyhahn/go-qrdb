@@ -132,6 +132,9 @@ func (c *Cluster) startArgv(n Node, identities map[uint64]string) []string {
 		"--member-identities", strings.Join(members, ","),
 		"--replica-id", strconv.FormatUint(n.ReplicaID, 10),
 		"--enable-quic",
+		// The gate runs with lease reads on; pinning them here keeps the
+		// image's file from turning off what the proof exercises.
+		"--lease-read=true", "--check-quorum=true",
 		"--tls-ca-file", tlsMount+"/ca.pem",
 		"--tls-cert-file", tlsMount+"/node.pem",
 		"--tls-key-file", tlsMount+"/node-key.pem",

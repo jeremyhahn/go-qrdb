@@ -1,6 +1,6 @@
 # Release — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -27,7 +27,7 @@ limitations under the License.
 | `scripts/check-tag-lockstep.sh`, `scripts/lockstep-modules.sh`, `lockstep-baseline` | the lockstep audit and the module-set derivation both the publisher and the auditor read |
 | `scripts/check-version-reconciled.sh` | VERSION/CHANGELOG/tag reconciliation, run by `release-alpha`, by the Release Lockstep workflow, and by `validate` above |
 | `.github/workflows/release-lockstep.yml` | the defence-in-depth audit on every tag push |
-| `Makefile` — `check-mod-tidy` | the Lint step that runs `go mod tidy -diff` in every tracked module, so an untidy `go.mod` or `go.sum` fails the change that makes it rather than the release |
+| `Makefile` — `check-mod-tidy`, `scripts/check-mod-tidy.sh` | the Lint step that runs `go mod tidy -diff` in every tracked module, so an untidy `go.mod` or `go.sum` fails the change that makes it rather than the release. It fails two ways: `go.mod/go.sum is not tidy in: <module>` with the diff, when the module is untidy; `tidiness is UNKNOWN in: <module>` with the tool's error, when `go mod tidy -diff` could not run there (a download timeout, a module missing from the cache), which says nothing about whether the module is tidy. Only the second is retried, once. `test-mod-tidy` is its self-test |
 
 ## Invariants
 
@@ -221,9 +221,8 @@ to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. Over
 the bound, it first deletes the build and golangci-lint cache entries unused
 for three days, then one day, 12, 6 and 3 hours, measuring after each, and
 only then removes the largest volume no container mounts; the module cache is
-never thinned, only removed whole. While removal came first, it emptied the
-build cache, and the next `make lint` compiled the tree from nothing: 56
-minutes, against seconds on a warm cache. `make test-trim-ci-caches`, in
+never thinned, only removed whole, because removing a volume empties the build
+cache and the next `make lint` compiles the tree from nothing. `make test-trim-ci-caches`, in
 `make lint-gates`, tests the order on a stub `docker`. The build cache also
 holds `go test`'s result cache: `make coverage`'s bulk run leaves out
 `make test`'s `-count=1`, so a package unchanged since a passing run replays
@@ -410,18 +409,13 @@ tiers").
 
 Each leg runs on a shared `bigdisk` (bare-metal) runner, the label that carries
 Docker and the disk the integration image needs (`ubuntu-latest` on github.com), as
-the image job and the standalone and soak jobs do.
-Those runners are loaded (load averages of 40 to 70 on 80 threads), and
-load breaks a 3-node cluster's elections and a CLI call's 10-second deadline
-first. The `integration` compose service carries the CPU half of the cluster
+the image job and the standalone and soak jobs do. Load on a shared runner breaks a
+3-node cluster's elections and a CLI call's 10-second deadline first. The
+`integration` compose service carries the CPU half of the cluster
 stage's budget (below) as `GOMAXPROCS=8`: the `go test` process and every
 qrdbd and qrdb process the harness spawns inherit it, rather than sizing
-themselves to the runner's 80 threads. The selection runs `go test -timeout=30m` per package, under the job's limit, so a hung test
+themselves to the runner's thread count. The selection runs `go test -timeout=30m` per package, under the job's limit, so a hung test
 still dumps its goroutines.
-
-Measured on a shared host (load average about 66 on 80 threads, no
-`GOMAXPROCS` cap), each well under the limit: `barrier-seal` 6.8 minutes,
-`multi-tenancy` 5.1 minutes, `clustering` 3.9 minutes.
 
 Raft timing is not part of any budget. qrdbd takes no election, heartbeat or
 tick setting from configuration: the values are code defaults
@@ -432,9 +426,8 @@ profile.
 
 `make integration-test-cluster` runs the whole `test/integration` package in
 one compose container, for a local run; CI does not run it. The suite is serial
-(`-p 1`, `-parallel 1`), so its run time is the sum of its tests: measured on a
-4-CPU budget, 36.7 minutes quiet and 43.1 minutes at 2x CPU oversubscription.
-The Makefile sets its budget:
+(`-p 1`, `-parallel 1`), so its run time is the sum of its tests. The Makefile
+sets its budget:
 
 | Makefile variable | Default | Applied as |
 |---|---|---|
@@ -463,8 +456,7 @@ cluster-cpus: capping the cluster stage at 4 CPUs (CLUSTER_CPUS=8, docker host h
 
 A daemon whose count cannot be read fails the stage rather than running
 uncapped. Nothing else assumes 8 CPUs: `CLUSTER_PARALLEL` is 1 regardless, and
-the suite's timings that size `INTEGRATION_GO_TIMEOUT` were measured on a
-4-CPU budget. `make test-cluster-cpus` (Lint) runs the script against a stub
+`INTEGRATION_GO_TIMEOUT` is sized for a 4-CPU budget. `make test-cluster-cpus` (Lint) runs the script against a stub
 docker for the lowering, the pass-through and every refusal.
 
 ### Batch workflow

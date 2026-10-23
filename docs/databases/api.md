@@ -1,7 +1,7 @@
 # Databases — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the multi-model database program in
@@ -124,11 +124,11 @@ reports only that it is set:
   "token":     { "endpoint": "https://db.example.com/join", "clusterSize": 3, "tokenSet": true } }
 ```
 
-The response types cannot carry a secret: `DatabaseRaftInfo` and
-`DatabaseBarrierInfo` in the Go SDK and the protobuf, and `DatabaseRaftInfo`
-in the TypeScript SDK, have a `*Set` flag where the request has the secret. The
-barrier passphrase is never stored, so no response reports it at all. On gRPC
-the secret field numbers are `reserved` in the response messages.
+The response types cannot carry a secret: `DatabaseRaftInfo` in the Go SDK,
+the protobuf and the TypeScript SDK has a `*Set` flag where the request has
+the secret. The barrier passphrase is never stored, so `DatabaseBarrierInfo`
+has no field for it and no response reports it at all. On gRPC the secret
+field numbers are `reserved` in the response messages.
 
 **A Raft update keeps a secret it leaves out.** A Raft update replaces the
 whole Raft block, and a client that reads a database's settings back has no
@@ -322,7 +322,8 @@ identity holds none of them.
 
 Initialization request: `{"policy": "designated"}` — the M-of-N is the
 `sharesRequired`/`sharesTotal` the database was created with, and exactly
-`sharesTotal` holders must be enrolled. Until initialization no more than
+`sharesTotal` holders must be enrolled. The initialization response is
+share-free: `{"threshold", "total_shares", "share_count"}`. Until initialization no more than
 `sharesTotal` can be: one more is refused with
 `ceremony.HolderLimitReachedError` (409, `FAILED_PRECONDITION`). Before
 initialization a holder holds no share, so one enrolled by mistake is removed
@@ -333,8 +334,7 @@ removed by revocation.
 `GET /v1/databases/{name}/barrier/status` reports `initialized_at` once the
 custody is initialized and omits it until then; the TypeScript SDK's
 `database.barrierStatus(name)` reports it as `initializedAt` on both of its
-transports. The response is share-free:
-`{"threshold", "total_shares", "share_count"}`. A create with `mode: "shamir"`
+transports. A create with `mode: "shamir"`
 carries no `secret`; one that does is refused. A completed rekey records its
 new M-of-N on the database's configuration. If that write fails, the rekey is
 still reported complete, because it is: the old shares no longer open the
@@ -373,6 +373,8 @@ with `DatabaseNameRequiredError` before it is sent.
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
 | Target: etcd enabled on a non-`raft` database | 400 | `FAILED_PRECONDITION` — `database.EtcdRequiresRaftBackendError` |
 | Wrong unseal secret | 403 | `PERMISSION_DENIED` — the database stays sealed |
+| A create or barrier update carrying a secret, an unseal, or a holder's quorum submission, on a connection without TLS or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
+| A REST or MCP create, barrier update, unseal or quorum submission carrying a secret, redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
 | Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |

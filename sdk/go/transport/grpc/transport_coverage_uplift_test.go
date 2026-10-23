@@ -35,7 +35,6 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
@@ -359,7 +358,13 @@ func (s *testQRDBServer) CredentialRetrieve(ctx context.Context, req *pb.Credent
 
 func startTestServer(t *testing.T, svc *testQRDBServer) (*Transport, func()) {
 	t.Helper()
-	gs := googlegrpc.NewServer()
+	return startTestServerTLS(t, svc, nil)
+}
+
+// startTestServerTLS is startTestServer over tt; a nil tt is plaintext.
+func startTestServerTLS(t *testing.T, svc *testQRDBServer, tt *testTLS) (*Transport, func()) {
+	t.Helper()
+	gs := googlegrpc.NewServer(tt.serverOptions()...)
 	pb.RegisterQRDBServiceServer(gs, svc)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -368,14 +373,12 @@ func startTestServer(t *testing.T, svc *testQRDBServer) (*Transport, func()) {
 	}
 	go func() { _ = gs.Serve(lis) }()
 
-	conn, err := googlegrpc.NewClient(lis.Addr().String(),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := googlegrpc.NewClient(lis.Addr().String(), tt.dialOption())
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	tr := &Transport{
-		config: &transport.Config{Address: lis.Addr().String()},
+		config: tt.config(lis.Addr().String()),
 		conn:   conn,
 		client: pb.NewQRDBServiceClient(conn),
 	}
@@ -658,7 +661,7 @@ func TestGRPCDatabaseBarrier_SealDatabase_RPCError(t *testing.T) {
 }
 
 func TestGRPCDatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
+	tr, cleanup := startTestServerTLS(t, &testQRDBServer{}, newTestTLS(t))
 	defer cleanup()
 
 	if err := tr.UnsealDatabase(context.Background(), "mydb", "s3cr3t"); err != nil {

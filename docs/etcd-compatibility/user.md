@@ -1,6 +1,6 @@
 # etcd Compatibility — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-etcd-compatibility`; coverage row: `test/integration/COVERAGE.md` `[etcd-compatibility](../../docs/etcd-compatibility/)`.

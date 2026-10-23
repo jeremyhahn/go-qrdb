@@ -112,7 +112,10 @@ _, err = client.Barrier().BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Do
 
 A PIN-bound call on a plaintext connection, or redirected to `http`, is
 refused with `sdk.SOPINRequiresTLSError` before anything is sent. A call
-redirected to another host is refused with `sdk.SOPINForeignHostError`. A Unix
+redirected to another host is refused with `sdk.SOPINForeignHostError`. A
+request that carries a barrier secret in its body (init secret, unseal key,
+passphrase, Shamir share or holder PIN) gets the same TLS check and is refused
+with `sdk.BarrierSecretRequiresTLSError`. A Unix
 socket is a local channel, not an encrypted one: **SO operations over the Unix
 socket need TLS**, like every other transport. The server refuses an SO PIN
 read off a non-TLS connection in any case.

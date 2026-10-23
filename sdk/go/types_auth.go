@@ -145,6 +145,18 @@ type RoleServicer = role.RoleServicer
 // SPKI thumbprint matches one of them.
 const MethodMTLS = auth.MethodMTLS
 
+// NewMTLSAuthenticator returns the built-in mTLS Authenticator, which derives
+// the identity from the verified client certificate the TLS layer accepted.
+// It pins no SPIFFE trust domain; NewMTLSAuthenticatorWithTrustDomain, which
+// does, is the one a production composer uses. (Aliases
+// pkg/auth.NewMTLSAuthenticator.)
+var NewMTLSAuthenticator = auth.NewMTLSAuthenticator
+
+// NewMTLSAuthenticatorWithTrustDomain returns the built-in mTLS Authenticator
+// pinned to the cluster's SPIFFE trust domain. (Aliases
+// pkg/auth.NewMTLSAuthenticatorWithTrustDomain.)
+var NewMTLSAuthenticatorWithTrustDomain = auth.NewMTLSAuthenticatorWithTrustDomain
+
 // MTLSBindingPolicy is the fleet-wide mTLS enrolment posture
 // (auth.mtls_binding_policy, go-qrdb#517). The zero value is
 // MTLSBindingEnrolled.

@@ -41,6 +41,9 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	if err := t.requireTLS(transport.DatabaseUnsealSecret(secret)); err != nil {
+		return err
+	}
 	if _, err := t.client.DatabaseUnseal(ctx, &pb.DatabaseUnsealRequest{Name: name, Secret: secret}); err != nil {
 		return mapGRPCError("UnsealDatabase", err)
 	}

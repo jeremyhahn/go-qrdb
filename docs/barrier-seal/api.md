@@ -403,6 +403,8 @@ seal record from a serving node.
 | `enable-encryption` while another migration on the same barrier (system or tenant) is already in progress | 409 | `FAILED_PRECONDITION` — `seal.ErrMigrationInProgress` |
 | CA operation while sealed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| A call carrying a barrier secret (init secret, unseal key, passphrase, Shamir share, holder PIN) on a connection without TLS, or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value. QUIC always uses TLS |
+| A REST or MCP call carrying a barrier secret redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | No encryption migrator wired (standalone, or a composer that never configured one) | `501` | `UNIMPLEMENTED` |
 | Migrator wired, but this node cannot migrate (no seal store, not yet unsealed, boot parameters not retained) | `501` | `UNIMPLEMENTED` — `ErrMigrationProviderUnavailable` |
 | Tenant `enable-encryption` while a system-scope migration is rebuilding the data plane | `503` | `UNAVAILABLE` — `DataPlaneRecyclingError`; retry |

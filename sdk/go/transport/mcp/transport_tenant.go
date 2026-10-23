@@ -416,6 +416,10 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &nilRequestError{Method: "TenantBarrierInit"}}
 	}
@@ -524,6 +528,10 @@ func tenantBarrierInitRound(ctx context.Context, client *mcpclient.Client, captu
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
 	}
 	if req == nil {
 		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &nilRequestError{Method: "TenantBarrierUnseal"}}
@@ -690,6 +698,10 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 
 // TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	var resp transport.QuorumOutcome
 	if err := t.callHolderTool(ctx, "TenantBarrierQuorumSubmit", "qrdb_tenant_barrier_quorum_submit", req, &resp); err != nil {
 		return nil, err

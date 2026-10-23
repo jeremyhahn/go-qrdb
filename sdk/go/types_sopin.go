@@ -64,3 +64,36 @@ type SOPINForeignHostError = transport.SOPINForeignHostError
 // request's so_pin field carries one PIN.
 // (Aliases sdk/go/transport.SOPINConflictError.)
 type SOPINConflictError = transport.SOPINConflictError
+
+// BarrierSecretRequiresTLSError is returned when a request carrying a barrier
+// secret in its body -- an init secret, unseal key, passphrase, Shamir share
+// or user PIN -- would travel over a connection that is not TLS: a plaintext
+// gRPC or Unix socket connection, or an http hop on REST or MCP, redirects
+// included. It is refused before anything is sent. Its Kind names the secret,
+// never its value. A request's own SOPin is refused with
+// SOPINRequiresTLSError instead. (Aliases
+// sdk/go/transport.BarrierSecretRequiresTLSError.)
+type BarrierSecretRequiresTLSError = transport.BarrierSecretRequiresTLSError
+
+// BarrierSecretForeignHostError is returned when a REST or MCP request
+// carrying a barrier secret in its body is redirected to a host other than the
+// one it was sent to. The redirected request is refused before it is sent, so
+// the secret never reaches that host; its fields name the transport, the kind
+// of secret and both hosts, never the secret. A request's own SOPin is refused
+// with SOPINForeignHostError instead. (Aliases
+// sdk/go/transport.BarrierSecretForeignHostError.)
+type BarrierSecretForeignHostError = transport.BarrierSecretForeignHostError
+
+// BarrierSecretKind is the Kind of a BarrierSecretRequiresTLSError.
+// (Aliases sdk/go/transport.BarrierSecretKind.)
+type BarrierSecretKind = transport.BarrierSecretKind
+
+// The kinds of barrier secret a BarrierSecretRequiresTLSError names.
+// (Alias the sdk/go/transport constants of the same names.)
+const (
+	BarrierSecretInit       = transport.BarrierSecretInit
+	BarrierSecretUnsealKey  = transport.BarrierSecretUnsealKey
+	BarrierSecretPassphrase = transport.BarrierSecretPassphrase
+	BarrierSecretShare      = transport.BarrierSecretShare
+	BarrierSecretUserPIN    = transport.BarrierSecretUserPIN
+)

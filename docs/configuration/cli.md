@@ -1,6 +1,6 @@
 # Configuration — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Configuration is a **daemon** concern. `qrdbd` reads it; the `qrdb` client has
@@ -93,8 +93,9 @@ Feature-specific flags are documented in their own folders: `--mode`
 `--dynamic-membership` / `--cluster-min-peers`
 ([../clustering/cli.md](../clustering/cli.md)),
 `--replica-forwarding` / `--replica-forwarding-timeout`
-([../replica-forwarding/cli.md](../replica-forwarding/cli.md)),
-`--threshold` / `--total` ([../firstboot/cli.md](../firstboot/cli.md)).
+([../replica-forwarding/cli.md](../replica-forwarding/cli.md)). The Shamir
+`--shares` / `--threshold` are `qrdb init` flags, not `qrdbd` ones
+([../firstboot/cli.md](../firstboot/cli.md)).
 
 ## Raft flags
 
@@ -235,7 +236,7 @@ reaches the allocator.
 
 ### Locked memory outside the budget
 
-The budget is not yet a ceiling on every page this process locks. All of the
+The budget is not a ceiling on every page this process locks. All of the
 following lock pages against the same `RLIMIT_MEMLOCK` without being admitted
 against the budget, which is why a derived budget leaves headroom:
 
@@ -246,7 +247,7 @@ against the budget, which is why a derived budget leaves headroom:
   each admitted share with `shamir.NewProtectedShare` and reconstructs with
   `CombineProtected`) go through go-quicraft's `pkg/crypto/shamir`, which
   builds its enclaves with go-enclave's unbudgeted constructors; go-quicraft
-  exposes no allocator-aware variant yet. A share is allocated only after its
+  exposes no allocator-aware variant. A share is allocated only after its
   holder has been authenticated, so an unauthenticated caller cannot lock
   pages this way. Each share is one page-rounded enclave:
   - a round holds at most `threshold - 1` shares before it completes, and one
@@ -254,11 +255,6 @@ against the budget, which is why a derived budget leaves headroom:
   - a completed or failed round destroys its shares at once;
   - an expired round's shares are released when the round is next touched,
     not by a timer, so they can outlive the TTL on an idle node.
-- **The Noise enrollment static key.** `qrdbd` still links
-  `github.com/awnumar/memguard` through go-truststrap's `pkg/noiseproto`, used
-  by cluster enrollment. Its key buffers are locked by memguard, outside this
-  budget, and memguard's failure path on a refused lock is its own
-  purge-and-panic rather than a typed error.
 
 ## Confirming what took effect
 

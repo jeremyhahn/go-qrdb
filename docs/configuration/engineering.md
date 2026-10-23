@@ -1,6 +1,6 @@
 # Configuration — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 ## Exported surface
 
@@ -192,8 +192,8 @@ reference; this folder is the contract around it.
 Per-section detail also appears in the owning feature's folder — `seal` in
 [../barrier-seal/](../barrier-seal/), `tenant` in
 [../multi-tenancy/](../multi-tenancy/), `embedding` and `rag` in
-[../embeddings/](../embeddings/) and [../rag/](../rag/), `audit` in
-[../audit/](../audit/), `discovery` in [../clustering/](../clustering/),
+[../embeddings/](../embeddings/) and [../rag/](../rag/), `discovery` in
+[../clustering/](../clustering/),
 `storage` and `raft.sm_storage` in [../storage-engines/](../storage-engines/),
 `observability` in [../api-server/](../api-server/).
 

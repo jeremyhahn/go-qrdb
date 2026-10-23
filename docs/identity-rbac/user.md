@@ -445,6 +445,24 @@ A Go program that authorizes its own requests imports only the SDK
 - The user and role management permissions are `sdk.PermissionUsers*` and
   `sdk.PermissionRoles*`.
 
+To put the server's own mTLS authentication and authorization in front of a
+router of your own, build the middleware from the SDK:
+
+- `sdk.NewMTLSAuthenticator()` is the built-in mTLS authenticator.
+  `sdk.NewMTLSAuthenticatorWithTrustDomain(trustDomain)` pins your cluster's
+  SPIFFE trust domain. Use that one in production.
+- `sdk.NewAuthMiddleware(authorizer, opts...)` builds the `sdk.AuthMiddleware`.
+  Its options (`sdk.AuthMiddlewareOption`) are
+  `sdk.WithAuthMiddlewareAuthenticator`, `sdk.WithAuthMiddlewareUserService`
+  (an `sdk.UserServicer`) and `sdk.WithAuthMiddlewareRoleResolver` (an
+  `sdk.RoleNameResolver`). The role resolver is required: without it every
+  authenticated request is refused.
+- `sdk.NewRESTRouteRegistry()` returns an `sdk.RESTRouteRegistry`. `Register`
+  each route with its permission, then wrap your router with
+  `middleware.RESTMiddleware(routes, router)`. A request whose method has no
+  registered entry on a registered path is refused. A path you did not register
+  needs an authenticated caller but no permission, so register every route.
+
 ## Troubleshooting
 
 **"role not found" when assigning.** `assign` and `unassign` take role and user

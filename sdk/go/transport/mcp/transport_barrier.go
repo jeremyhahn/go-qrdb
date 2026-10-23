@@ -35,6 +35,10 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
+	}
 
 	args := map[string]any{
 		"secret": secretArg(req.Secret),
@@ -52,11 +56,23 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	return nil
 }
 
+// guardSecret refuses a request carrying a barrier secret when the MCP server
+// is not reached over https, before the request is built, and otherwise marks
+// ctx so the SO PIN round tripper refuses a plaintext redirect hop. An
+// in-process server is no network connection, so it is never refused.
+func (t *Transport) guardSecret(ctx context.Context, req transport.BarrierSecretCarrier) (context.Context, error) {
+	return transport.GuardBarrierSecret(ctx, "mcp", t.mcpServer != nil || transport.IsHTTPS(t.config.Address), req)
+}
+
 // BarrierUnseal unseals the barrier using the master key by calling the
 // qrdb_barrier_unseal MCP tool.
 func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
 	}
 
 	if _, err := t.callTool(ctx, "qrdb_barrier_unseal", map[string]any{
@@ -137,6 +153,10 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
 	// the request carries none, exactly as on QUIC.
@@ -180,6 +200,10 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"strategy": req.Strategy,
@@ -221,6 +245,10 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
@@ -395,6 +423,10 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 
 // BarrierQuorumSubmit submits one authenticated holder's share.
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	var resp transport.QuorumOutcome
 	if err := t.callHolderTool(ctx, "BarrierQuorumSubmit", "qrdb_barrier_quorum_submit", req, &resp); err != nil {
 		return nil, err
@@ -404,6 +436,10 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekeyStart", req.SOPin)
@@ -421,6 +457,10 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierOfficerRevoke", req.SOPin)

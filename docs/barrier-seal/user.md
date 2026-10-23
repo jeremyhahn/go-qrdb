@@ -21,6 +21,11 @@ cannot confirm the cluster seal state; retry` (`SEAL_STATE_UNCONFIRMED`): its
 barrier is not sealed, and it serves again once it reads the records. Read the
 seal record from a node that serves.
 
+**A barrier secret travels only over TLS.** The SDK and the CLI refuse to send
+an init secret, unseal key, passphrase, Shamir share or holder PIN on a
+connection without TLS, the Unix socket included, with
+`BarrierSecretRequiresTLSError`; connect with TLS.
+
 ## Choosing a strategy
 
 You pick this at initialization and it is what protects the master key.

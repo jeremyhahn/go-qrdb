@@ -1,6 +1,6 @@
 # etcd Compatibility — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 This feature is **not** one of the six qrdb transports. It is a separate,
@@ -106,14 +106,13 @@ kube-apiserver \
 - Leader election via `Lease.LeaseGrant` + `KV.Txn` (compare-and-swap)
 - Compaction via `KV.Compact` (triggered by `kube-apiserver` periodically)
 
-
 ## Errors
 
 etcd's own error semantics are preserved: a compacted revision produces etcd's
 compacted-revision error, a failed `Txn` returns `succeeded: false` rather than
 an error, and an authorization failure surfaces on the RPC rather than at
-connection time. Every `Auth` RPC, and every other RPC without a permission mapping, is refused with `PERMISSION_DENIED`.
+connection time.
 
 ## Versioning
 
-etcd v3 only. There is no v2 API and none is planned.
+etcd v3 only. There is no v2 API.

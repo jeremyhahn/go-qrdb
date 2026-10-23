@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -553,7 +554,11 @@ func TestRESTSealDatabase_ServerError(t *testing.T) {
 }
 
 func TestRESTUnsealDatabase_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
+	// The unseal secret is a barrier secret: it is sent only over TLS (#1043).
+	rs := &routerServer{}
+	srv := httptest.NewTLSServer(rs)
+	t.Cleanup(srv.Close)
+	rt := newWiredTransport(srv)
 	rs.handle(pathPrefix(http.MethodPost, "/v1/databases/"), func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

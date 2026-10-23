@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
@@ -319,26 +320,23 @@ func TestCreateExclusive_OpenFailurePropagates(t *testing.T) {
 }
 
 // TestRefuseSymlink_LstatFailurePropagates verifies an Lstat failure that is
-// NOT "does not exist" (here: a parent directory with its execute bit
-// removed, which denies path resolution through it) is returned unwrapped.
+// NOT "does not exist" (here: ENOTDIR, from a regular file used as a path
+// component) is returned unwrapped. ENOTDIR does not depend on permission
+// checks, so the test runs the same as root as it does unprivileged.
 func TestRefuseSymlink_LstatFailurePropagates(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses directory permission checks, so this cannot be exercised as root")
-	}
 	dir := t.TempDir()
-	locked := filepath.Join(dir, "locked")
-	if err := os.Mkdir(locked, 0o000); err != nil {
-		t.Fatalf("Mkdir: %v", err)
+	notDir := filepath.Join(dir, "regular")
+	if err := os.WriteFile(notDir, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) // #nosec G302 -- let t.TempDir() clean up; not a secret file's mode
 
-	path := filepath.Join(locked, "out")
+	path := filepath.Join(notDir, "out")
 	err := refuseSymlink(path)
-	if err == nil {
-		t.Fatal("expected an Lstat failure through a directory with no execute permission")
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("refuseSymlink = %v, want ENOTDIR through a regular-file path component", err)
 	}
 	if os.IsNotExist(err) {
-		t.Fatalf("refuseSymlink = %v, want a permission error, not IsNotExist", err)
+		t.Fatalf("refuseSymlink = %v, want ENOTDIR returned, not treated as IsNotExist", err)
 	}
 }
 

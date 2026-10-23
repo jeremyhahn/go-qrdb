@@ -1,6 +1,6 @@
 # Release — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -178,8 +178,8 @@ which publishes, has no such group.
 ## CI tiers
 
 "CI green" above means `ci-gate` on the commit's **push to `main`**, which
-always runs the full tier. CI runs in two tiers, a code tier that a docs-only
-pull request skips, and a fourth, nightly, for the soak:
+always runs the full tier. CI runs in four tiers; a docs-only pull request
+skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
