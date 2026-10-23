@@ -990,6 +990,20 @@ exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
 (`roles:unassign` in the user's tenant; removing a grant names no role to
 validate).
 
+Every one of those gates also refuses, with `SORoleRequiredError`, a write
+that changes whether the target holds its tenant's `so` role unless the caller
+is a Security Officer of that same tenant. Both sides are read by
+`heldRoleIDs`: the target's `RoleIDs` and `RoleBindings`, and the caller's
+`Roles` and `RoleBindings` (`callerRoleIDs`), counting a binding only where it
+is scoped to the target tenant. The gate reads the record before the write;
+to bind the decision to the version the write replaces, each handler also
+passes `AuthMiddleware.SORoleGuard` as `user.UpdateUserRequest.Guard`. The
+user store calls the guard with the decoded record it commits over and the
+record as the request writes it, before any index mutation, and the commit is
+conditional on those bytes, so a Security Officer grant that lands after the
+gate is either seen by the guard (`SORoleRequiredError`) or fails the write
+(`ConcurrentUpdateError`); it is never overwritten.
+
 The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
 (`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
 context tenant: `UpdateUser` routes its target purely by id, so a

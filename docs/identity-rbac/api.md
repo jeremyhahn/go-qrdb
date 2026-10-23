@@ -791,10 +791,20 @@ A write that changes whether a user holds the tenant's Security Officer role
 (`so`) — `AssignRole` or `UnassignRole` of it, or a `CreateUser`/`UpdateUser`
 whose `roleIDs` or `roleBindings` add or drop it — additionally requires the
 caller to be a Security Officer **of that same tenant**, judged by the
-caller's own roles. `roles:assign`/`roles:unassign` alone, as the tenant Admin
-holds them, is refused with `SORoleRequiredError` before anything is written,
-and so is the `system` tenant's Security Officer or another tenant's. A write
-that leaves the user's Security Officer standing as it was is not affected.
+caller's own roles together with its role bindings scoped to that tenant: a
+caller bound to the tenant's `so` role may grant and revoke it, and a binding
+scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
+alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
+before anything is written, and so is the `system` tenant's Security Officer
+or another tenant's. A write that leaves the user's Security Officer standing
+as it was is not affected.
+
+The user store judges the rule again against the record version the write
+commits over, not the one the request was first checked against. An Admin's
+write that would remove a Security Officer grant committed after its first
+check is refused with `SORoleRequiredError`; a grant that commits after that
+judgement fails the Admin's write with `ConcurrentUpdateError`. Either way the
+grant stands.
 
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
