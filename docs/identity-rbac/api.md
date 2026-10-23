@@ -787,6 +787,15 @@ is written. The role check runs whether or not RBAC is enabled; only the
 `roles:assign` check depends on it. See
 [engineering.md](engineering.md#authorization-model) for the full mechanism.
 
+A write that changes whether a user holds the tenant's Security Officer role
+(`so`) — `AssignRole` or `UnassignRole` of it, or a `CreateUser`/`UpdateUser`
+whose `roleIDs` or `roleBindings` add or drop it — additionally requires the
+caller to be a Security Officer **of that same tenant**, judged by the
+caller's own roles. `roles:assign`/`roles:unassign` alone, as the tenant Admin
+holds them, is refused with `SORoleRequiredError` before anything is written,
+and so is the `system` tenant's Security Officer or another tenant's. A write
+that leaves the user's Security Officer standing as it was is not affected.
+
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
 `transport.CreateUserRequest`/`UpdateUserRequest` — declares a `factors`
@@ -827,6 +836,8 @@ of its own, and the listing never contains one.
 | A request authenticated with a holder (officer or custodian) certificate or a tenant-issued delegation must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`UnsignedForwardRefusedError`) | 502 | — (REST leader forwarding only) |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the tenant's `so` role by a caller that is not that tenant's own Security Officer (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the `so` role when the tenant's `so` role cannot be looked up (`SORoleUnresolvedError`) | 503 | `UNAVAILABLE` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |

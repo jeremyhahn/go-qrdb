@@ -332,7 +332,7 @@ func (s *Server) handleAssignRole(w http.ResponseWriter, r *http.Request) {
 
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
-	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.UserID, []string{req.RoleID}, nil); err != nil {
+	if err := s.authMW.AuthorizeRoleAssignment(ctx, s.userSvc, s.roleSvc, req.UserID, req.RoleID); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -385,7 +385,7 @@ func (s *Server) handleUnassignRole(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID); err != nil {
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID, req.RoleID); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

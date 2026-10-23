@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -27,6 +28,9 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // bindingServer serves the full HTTP chain over the binding fixture as caller.
@@ -211,4 +215,119 @@ func TestUpdateUser_DeadRoleBindingIsRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSORole_OnlyTheTenantSOGrantsOrRevokesIt pins separation of duties over
+// the tenant's Security Officer role on every REST write that can move it:
+// assign, unassign, user create, and user update by role_ids (a replacement,
+// so dropping the role revokes it) or role_bindings. The tenant Admin holds
+// roles:assign and roles:unassign, and is refused with 403 and nothing written;
+// the tenant SO is admitted. A write that leaves alice's SO membership as it
+// was is not a grant or a revocation and stays an Admin's.
+func TestSORole_OnlyTheTenantSOGrantsOrRevokesIt(t *testing.T) {
+	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
+	userRole := role.SystemRoleID(authtest.BindingTenant, role.RoleNameUser)
+	alice := strconv.FormatUint(authtest.UserInBindingTenant, 10)
+	tests := []struct {
+		name       string
+		callerIsSO bool
+		aliceIsSO  bool
+		method     string
+		path       string
+		body       string
+		status     int
+		wantSO     bool
+	}{
+		{name: "admin assigns SO", method: http.MethodPost, path: "/roles/assign", body: `{"user_id":"` + alice + `","role_id":"` + so + `"}`, status: http.StatusForbidden},
+		{name: "SO assigns SO", callerIsSO: true, method: http.MethodPost, path: "/roles/assign", body: `{"user_id":"` + alice + `","role_id":"` + so + `"}`, status: http.StatusOK, wantSO: true},
+		{name: "admin assigns another role to an SO", aliceIsSO: true, method: http.MethodPost, path: "/roles/assign", body: `{"user_id":"` + alice + `","role_id":"` + userRole + `"}`, status: http.StatusOK, wantSO: true},
+		{name: "admin unassigns SO", aliceIsSO: true, method: http.MethodPost, path: "/roles/unassign", body: `{"user_id":"` + alice + `","role_id":"` + so + `"}`, status: http.StatusForbidden, wantSO: true},
+		{name: "SO unassigns SO", callerIsSO: true, aliceIsSO: true, method: http.MethodPost, path: "/roles/unassign", body: `{"user_id":"` + alice + `","role_id":"` + so + `"}`, status: http.StatusOK},
+		{name: "admin grants SO by role_ids", method: http.MethodPut, path: "/users/" + alice, body: `{"role_ids":["` + so + `"]}`, status: http.StatusForbidden},
+		{name: "SO grants SO by role_ids", callerIsSO: true, method: http.MethodPut, path: "/users/" + alice, body: `{"role_ids":["` + so + `"]}`, status: http.StatusOK, wantSO: true},
+		{name: "admin revokes SO by replacing role_ids", aliceIsSO: true, method: http.MethodPut, path: "/users/" + alice, body: `{"role_ids":["` + userRole + `"]}`, status: http.StatusForbidden, wantSO: true},
+		{name: "SO revokes SO by replacing role_ids", callerIsSO: true, aliceIsSO: true, method: http.MethodPut, path: "/users/" + alice, body: `{"role_ids":[]}`, status: http.StatusOK},
+		{name: "admin keeps SO while editing role_ids", aliceIsSO: true, method: http.MethodPut, path: "/users/" + alice, body: `{"role_ids":["` + so + `","` + userRole + `"]}`, status: http.StatusOK, wantSO: true},
+		{name: "admin grants SO by role_bindings", method: http.MethodPut, path: "/users/" + alice, body: `{"role_bindings":[{"role_id":"` + so + `","tenant_id":"` + authtest.BindingTenant + `"}]}`, status: http.StatusForbidden},
+		{name: "SO grants SO by role_bindings", callerIsSO: true, method: http.MethodPut, path: "/users/" + alice, body: `{"role_bindings":[{"role_id":"` + so + `","tenant_id":"` + authtest.BindingTenant + `"}]}`, status: http.StatusOK, wantSO: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, users := soRoleServer(t, tt.callerIsSO, tt.aliceIsSO)
+			writes := len(users.Updated())
+			rec := serve(srv, tt.method, tt.path, tt.body)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
+			}
+			if tt.status != http.StatusOK && len(users.Updated()) != writes {
+				t.Fatalf("refused write was stored: updates %v", users.Updated()[writes:])
+			}
+			if got := holdsSO(users.User(authtest.UserInBindingTenant), so); got != tt.wantSO {
+				t.Fatalf("alice holds SO = %v, want %v", got, tt.wantSO)
+			}
+		})
+	}
+}
+
+// TestSORole_OnlyTheTenantSOCreatesAnSO is the create half of
+// TestSORole_OnlyTheTenantSOGrantsOrRevokesIt: role_ids on a new user are a
+// grant like any other.
+func TestSORole_OnlyTheTenantSOCreatesAnSO(t *testing.T) {
+	body := `{"username":"sam","without_email_login_key":true,"tenant_id":"` + authtest.BindingTenant +
+		`","role_ids":["` + role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO) + `"]}`
+	tests := []struct {
+		name       string
+		callerIsSO bool
+		status     int
+		created    []string
+	}{
+		{name: "admin", status: http.StatusForbidden},
+		{name: "SO", callerIsSO: true, status: http.StatusCreated, created: []string{authtest.BindingTenant}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, users := soRoleServer(t, tt.callerIsSO, false)
+			rec := serve(srv, http.MethodPost, "/users", body)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
+			}
+			if got := users.Created(); !slices.Equal(got, tt.created) {
+				t.Fatalf("users created in %v, want %v", got, tt.created)
+			}
+		})
+	}
+}
+
+// soRoleServer is bindingServer as the acme admin, holding acme's SO role
+// beside Admin when callerIsSO, with alice holding it when aliceIsSO.
+func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool) (*Server, *authtest.BindingUsers) {
+	t.Helper()
+	srv, users := bindingServer(t, authtest.BindingTenantAdmin())
+	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
+	seed := func(id uint64, roleIDs ...string) {
+		ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+		if _, err := users.UpdateUser(ctx, &user.UpdateUserRequest{ID: id, RoleIDs: roleIDs}); err != nil {
+			t.Fatalf("seed user %d: %v", id, err)
+		}
+	}
+	if callerIsSO {
+		seed(authtest.BindingTenantAdminID, role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin), so)
+	}
+	if aliceIsSO {
+		seed(authtest.UserInBindingTenant, so)
+	}
+	return srv, users
+}
+
+// holdsSO reports whether u holds the SO role so, directly or by binding.
+func holdsSO(u *user.User, so string) bool {
+	if slices.Contains(u.RoleIDs, so) {
+		return true
+	}
+	for _, b := range u.RoleBindings {
+		if b.RoleID == so {
+			return true
+		}
+	}
+	return false
 }

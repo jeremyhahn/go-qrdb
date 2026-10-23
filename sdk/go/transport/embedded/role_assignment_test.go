@@ -289,3 +289,80 @@ func TestEmbeddedUpdateUser_WithoutRoleFieldsIsUngatedByRolesAssign(t *testing.T
 		t.Fatal("UpdateUser was never reached")
 	}
 }
+
+// TestEmbeddedSORole_OnlyTheTenantSOGrantsOrRevokesIt holds the embedded
+// transport to the rule every wire transport enforces (go-qrdb#1042): a tenant
+// Admin, holding roles:assign and roles:unassign, cannot give a user the
+// tenant's SO role or take it away, and nothing is written when it tries; the
+// tenant's own SO can do both.
+func TestEmbeddedSORole_OnlyTheTenantSOGrantsOrRevokesIt(t *testing.T) {
+	const soID = "acme-so"
+	roleSvc := &mockRoleServicer{
+		resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
+			return []permission.Permission{permission.RolesAssign, permission.RolesUnassign}, nil
+		},
+		getRoleFn: func(_ context.Context, id string) (*role.Role, error) {
+			return &role.Role{ID: id, TenantID: "acme"}, nil
+		},
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			if tenantID != "acme" || name != role.RoleNameSO {
+				return nil, &role.RoleNotFoundError{ID: name}
+			}
+			return &role.Role{ID: soID, TenantID: "acme", Name: role.RoleNameSO}, nil
+		},
+	}
+
+	tests := []struct {
+		name       string
+		callerRole string
+		holds      []string
+		call       func(*Transport, context.Context) error
+		wantDenied bool
+	}{
+		{"admin assigns SO", "admin", nil, func(tr *Transport, ctx context.Context) error { return tr.AssignRole(ctx, 1, soID) }, true},
+		{"admin unassigns SO", "admin", []string{soID}, func(tr *Transport, ctx context.Context) error { return tr.UnassignRole(ctx, 1, soID) }, true},
+		{"admin assigns another role", "admin", nil, func(tr *Transport, ctx context.Context) error { return tr.AssignRole(ctx, 1, "role-a") }, false},
+		{"SO assigns SO", soID, nil, func(tr *Transport, ctx context.Context) error { return tr.AssignRole(ctx, 1, soID) }, false},
+		{"SO unassigns SO", soID, []string{soID}, func(tr *Transport, ctx context.Context) error { return tr.UnassignRole(ctx, 1, soID) }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writes := 0
+			userSvc := &mockUserServicer{
+				getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
+					return &user.User{ID: id, TenantID: "acme", RoleIDs: tt.holds}, nil
+				},
+				updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+					writes++
+					return &user.User{ID: req.ID, TenantID: "acme"}, nil
+				},
+			}
+			tr, err := New(newMockKVService(), &mockAdminService{},
+				WithUserService(userSvc),
+				WithRoleService(roleSvc),
+				WithAuthMiddleware(authmw.New(rbac.New(roleSvc), authmw.WithRoleResolver(roleSvc))),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			err = tt.call(tr, roleAssignmentIdentityCtx("acme", tt.callerRole))
+			if !tt.wantDenied {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				if writes != 1 {
+					t.Fatalf("want one write, got %d", writes)
+				}
+				return
+			}
+			var denied *authmw.SORoleRequiredError
+			if !errors.As(err, &denied) {
+				t.Fatalf("want *SORoleRequiredError, got %T: %v", err, err)
+			}
+			if writes != 0 {
+				t.Fatalf("a refused SO change must write nothing, got %d writes", writes)
+			}
+		})
+	}
+}
