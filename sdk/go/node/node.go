@@ -4222,6 +4222,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the auth middleware already give them.
 	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
 		n.trustPool.Wire(tlsCfg)
+		// The pool the configuration now verifies through is the one every
+		// listener binds to every call, independent of authentication, so
+		// a share claim on a re-sealed node binds only a certificate it
+		// verifies.
+		allOpts = append(allOpts, server.WithPeerChainVerifier(n.trustPool))
 	}
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)

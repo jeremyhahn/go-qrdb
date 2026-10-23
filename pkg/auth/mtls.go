@@ -393,6 +393,39 @@ func ResolveVerifiedChains(ctx context.Context, state *tls.ConnectionState, veri
 	return [][]*x509.Certificate{chain}, nil
 }
 
+// peerChainVerifierKey carries the listener's IssuerVerifier in a request
+// context, beside the TLS state WithTLSState binds.
+type peerChainVerifierKey struct{}
+
+// WithPeerChainVerifier binds the verifier VerifiedPeerCertificate resolves a
+// connection's chain with when crypto/tls built none: the listener's dynamic
+// trust pool, the same verifier the mTLS authenticator holds. A nil verifier
+// leaves ctx unchanged, so only a chain crypto/tls verified counts.
+func WithPeerChainVerifier(ctx context.Context, v IssuerVerifier) context.Context {
+	if v == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, peerChainVerifierKey{}, v)
+}
+
+// VerifiedPeerCertificate returns the leaf of the request's verified client
+// certificate chain, resolved by ResolveVerifiedChains with the verifier
+// WithPeerChainVerifier bound. A certificate the connection presented but no
+// one verified is ErrInvalidCertificate, never a leaf: anyone can mint one,
+// so it identifies no one. Without TLS state or a presented certificate the
+// error is ErrNoPeerCertificate.
+func VerifiedPeerCertificate(ctx context.Context) (*x509.Certificate, error) {
+	verifier, _ := ctx.Value(peerChainVerifierKey{}).(IssuerVerifier)
+	chains, err := ResolveVerifiedChains(ctx, TLSStateFromContext(ctx), verifier)
+	if err != nil {
+		return nil, err
+	}
+	if len(chains[0]) == 0 {
+		return nil, ErrInvalidCertificate
+	}
+	return chains[0][0], nil
+}
+
 // TrustStateUnavailable reports whether err says the verifier refused a
 // chain while it could not read its trust state in full, so the refusal may
 // not outlast a retry. pkg/clienttrust.PeerCertificateNotTrustedError is the

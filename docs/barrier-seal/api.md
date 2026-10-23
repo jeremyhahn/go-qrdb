@@ -364,7 +364,12 @@ refusal — `503` `{"code":"SEALED"}` on REST, `UNAVAILABLE` with
 `ErrorInfo{qrdb.v1, SEALED}` on gRPC and Unix, and its equivalents on QUIC,
 MCP and embedded. Client certificates are still required at the TLS
 handshake; one authenticates the unseal caller and grants nothing past the
-seal. Once the barrier is unsealed every request is authenticated again.
+seal. A share claim binds the caller's certificate only when the listener's
+client trust pool verifies its chain, on the boot-time listener and the
+re-sealed one alike and on every transport, Unix included: a merely presented
+certificate is refused with `401` / `Unauthenticated`
+([seal/sealed-window.md](../seal/sealed-window.md#auth-model-during-the-sealed-window)).
+Once the barrier is unsealed every request is authenticated again.
 
 **A sealed node's `BarrierStatus` is two facts: `sealed: true` and
 `initialized`.** It answers before the first boot (`initialized: false`, the

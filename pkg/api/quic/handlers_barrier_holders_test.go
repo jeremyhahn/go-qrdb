@@ -134,7 +134,7 @@ func quicPeerContext(t *testing.T) (context.Context, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}), mtls.Thumbprint(der)
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}), mtls.Thumbprint(der)
 }
 
 func mustMarshal(t *testing.T, m proto.Message) []byte {

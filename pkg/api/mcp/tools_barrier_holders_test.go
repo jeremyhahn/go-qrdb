@@ -55,6 +55,8 @@ type holderSvc struct {
 	regUser string
 	// soPINs records the SO PIN each rekey or revocation handed the service.
 	soPINs []string
+	// claims counts the share-claim calls that reached the service.
+	claims int
 }
 
 func (h *holderSvc) BarrierOfficerRegister(_ context.Context, d seal.QuorumDomain, r *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
@@ -75,6 +77,7 @@ func (h *holderSvc) BarrierOfficerList(_ context.Context, d seal.QuorumDomain) (
 
 func (h *holderSvc) BarrierShareClaimBegin(_ context.Context, d seal.QuorumDomain, _ string, peer string) (*service.BarrierShareClaimChallenge, error) {
 	h.domain, h.peer = d, peer
+	h.claims++
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -83,6 +86,7 @@ func (h *holderSvc) BarrierShareClaimBegin(_ context.Context, d seal.QuorumDomai
 
 func (h *holderSvc) BarrierShareClaimComplete(_ context.Context, d seal.QuorumDomain, _, _ string, _ []byte, peer string) (*service.BarrierShareClaimResult, error) {
 	h.domain, h.peer = d, peer
+	h.claims++
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -139,7 +143,10 @@ func peerContext(t *testing.T) (context.Context, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}), mtls.Thumbprint(der)
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}), mtls.Thumbprint(der)
 }
 
 // holderTool finds a tool by name.
@@ -290,6 +297,8 @@ type holderTenant struct {
 	tenant.TenantServicer
 	err  error
 	peer string
+	// claims counts the share-claim calls that reached the service.
+	claims int
 }
 
 func (h *holderTenant) TenantBarrierOfficerRegister(_ context.Context, _ string, r *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
@@ -308,6 +317,7 @@ func (h *holderTenant) TenantBarrierOfficerList(context.Context, string) ([]*cer
 
 func (h *holderTenant) TenantBarrierShareClaimBegin(_ context.Context, _, _, peer string) (*ceremony.ChallengeResponse, error) {
 	h.peer = peer
+	h.claims++
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -316,6 +326,7 @@ func (h *holderTenant) TenantBarrierShareClaimBegin(_ context.Context, _, _, pee
 
 func (h *holderTenant) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, peer string) (*ceremony.ShareClaimResult, error) {
 	h.peer = peer
+	h.claims++
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -435,5 +446,157 @@ func TestTenantHolderTools_Refusals(t *testing.T) {
 		if _, err := holderTool(t, ok, name)(ctx, buildCallToolRequest(t, name, map[string]any{"tenant_id": 7})); err == nil {
 			t.Errorf("%s accepted a malformed tenant_id", name)
 		}
+	}
+}
+
+// claimCert issues a client certificate for cn, signed by parent, or
+// self-signed when parent is nil.
+func claimCert(t *testing.T, cn string, isCA bool, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: cn},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		IsCA: isCA, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	signer, signerKey := tmpl, key
+	if parent != nil {
+		signer, signerKey = parent, parentKey
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer, &key.PublicKey, signerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert, key
+}
+
+// rootsVerifier is the listener's trust pool as auth.IssuerVerifier: it
+// verifies a presented chain against roots, as clienttrust.Pool does on a
+// listener whose handshake builds no VerifiedChains, and counts its calls.
+type rootsVerifier struct {
+	roots *x509.CertPool
+	calls int
+}
+
+var _ auth.IssuerVerifier = (*rootsVerifier)(nil)
+
+func (v *rootsVerifier) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
+	v.calls++
+	pool := x509.NewCertPool()
+	for _, c := range intermediates {
+		pool.AddCert(c)
+	}
+	chains, err := leaf.Verify(x509.VerifyOptions{Roots: v.roots, Intermediates: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	if err != nil {
+		return nil, err
+	}
+	return chains[0], nil
+}
+
+func (v *rootsVerifier) IsClusterCA(context.Context, *x509.Certificate) bool { return false }
+
+func (v *rootsVerifier) VerifyIssuer(context.Context, string, []*x509.Certificate) error { return nil }
+
+// claimToolArgs are the share-claim tools of every domain, system and
+// tenant, with valid arguments.
+func claimToolArgs() map[string]map[string]any {
+	complete := map[string]any{"username": "carol", "nonce_hex": "ab", "signature": base64.StdEncoding.EncodeToString([]byte("sig"))}
+	tenantArgs := tenantHolderArgs("acme")
+	return map[string]map[string]any{
+		"qrdb_barrier_share_claim_begin":             {"username": "carol"},
+		"qrdb_barrier_share_claim_complete":          complete,
+		"qrdb_barrier_recovery_share_claim_begin":    {"username": "carol"},
+		"qrdb_barrier_recovery_share_claim_complete": complete,
+		"qrdb_tenant_barrier_share_claim_begin":      tenantArgs["qrdb_tenant_barrier_share_claim_begin"],
+		"qrdb_tenant_barrier_share_claim_complete":   tenantArgs["qrdb_tenant_barrier_share_claim_complete"],
+	}
+}
+
+// A share claim binds the holder's certificate, so a certificate the
+// connection presented but no one verified must bind nothing: a self-signed
+// certificate is refused as ClientCertRequiredError and the claim never
+// reaches the service, whether the listener has no verifier or its verifier
+// refuses the chain.
+func TestHolderClaims_RefuseAnUnverifiedCertificate(t *testing.T) {
+	ca, _ := claimCert(t, "ca", true, nil, nil)
+	self, _ := claimCert(t, "mallory", false, nil, nil)
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	presented := auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{self}})
+	allow := func(context.Context, string, permission.Permission) error { return nil }
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"no verifier", presented},
+		{"verifier refuses", auth.WithPeerChainVerifier(presented, &rootsVerifier{roots: roots})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, ten := &holderSvc{}, &holderTenant{}
+			tools := append(barrierHolderTools(sys), tenantHolderTools(ten, allow)...)
+			for name, args := range claimToolArgs() {
+				_, err := holderTool(t, tools, name)(tc.ctx, buildCallToolRequest(t, name, args))
+				if !errors.As(err, new(*service.ClientCertRequiredError)) {
+					t.Errorf("%s = %v, want ClientCertRequiredError", name, err)
+				}
+				if code := ServiceErrorCode(err); code != wire.CodeUnauthenticated {
+					t.Errorf("%s code = %d, want CodeUnauthenticated", name, code)
+				}
+			}
+			if sys.claims != 0 || ten.claims != 0 {
+				t.Fatalf("an unverified certificate reached the service: %d system, %d tenant claims", sys.claims, ten.claims)
+			}
+		})
+	}
+}
+
+// A verified certificate binds the claim: the service receives the
+// thumbprint of the verified chain's leaf, whether crypto/tls built the
+// chain or the listener's trust pool verified it.
+func TestHolderClaims_BindTheVerifiedLeaf(t *testing.T) {
+	ca, caKey := claimCert(t, "ca", true, nil, nil)
+	leaf, _ := claimCert(t, "carol", false, ca, caKey)
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	want := mtls.Thumbprint(leaf.Raw)
+	allow := func(context.Context, string, permission.Permission) error { return nil }
+	pool := &rootsVerifier{roots: roots}
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"tls verified chain", auth.WithTLSState(context.Background(), &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{leaf},
+			VerifiedChains:   [][]*x509.Certificate{{leaf, ca}},
+		})},
+		{"trust pool verified", auth.WithPeerChainVerifier(auth.WithTLSState(context.Background(), &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{leaf},
+		}), pool)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, ten := &holderSvc{}, &holderTenant{}
+			tools := append(barrierHolderTools(sys), tenantHolderTools(ten, allow)...)
+			for name, args := range claimToolArgs() {
+				sys.peer, ten.peer = "", ""
+				if _, err := holderTool(t, tools, name)(tc.ctx, buildCallToolRequest(t, name, args)); err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				if got := sys.peer + ten.peer; got != want {
+					t.Fatalf("%s bound %q, want the verified leaf's %q", name, got, want)
+				}
+			}
+			if sys.claims+ten.claims != len(claimToolArgs()) {
+				t.Fatalf("claims reaching the service = %d, want %d", sys.claims+ten.claims, len(claimToolArgs()))
+			}
+		})
+	}
+	if pool.calls != len(claimToolArgs()) {
+		t.Fatalf("trust pool verifications = %d, want one per claim", pool.calls)
 	}
 }

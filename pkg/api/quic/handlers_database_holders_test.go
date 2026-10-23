@@ -56,7 +56,7 @@ func dbHolderCall(t *testing.T, ctx context.Context, handler func(context.Contex
 
 // dbHolderTLS is a context whose stream presents h's certificate.
 func dbHolderTLS(h *servicetest.Holder) context.Context {
-	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{h.Cert}})
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{h.Cert}, VerifiedChains: [][]*x509.Certificate{{h.Cert}}})
 }
 
 // submitQUICDBShare answers h's mtls challenge for op and submits its share.

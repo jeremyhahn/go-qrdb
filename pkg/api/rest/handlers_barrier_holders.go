@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -30,26 +31,28 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// restCertThumbprint returns the verified TLS client certificate's
-// thumbprint, or service.ClientCertRequiredError when the connection
-// carries none. The share claim requires it.
+// restCertThumbprint returns the thumbprint of the caller's verified client
+// certificate (service.VerifiedClientCertThumbprint, with the chain verifier
+// the auth middleware bound): the share claim binds to it. A certificate the
+// connection presented but no trust anchor verified is
+// service.ClientCertRequiredError.
 func restCertThumbprint(r *http.Request) (string, error) {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return "", &service.ClientCertRequiredError{}
+	ctx := r.Context()
+	if r.TLS != nil {
+		ctx = auth.WithTLSState(ctx, r.TLS)
 	}
-	return mtls.Thumbprint(r.TLS.PeerCertificates[0].Raw), nil
+	return service.VerifiedClientCertThumbprint(ctx)
 }
 
-// restOptionalThumbprint returns the verified TLS client certificate's
+// restOptionalThumbprint returns the presented TLS client certificate's
 // thumbprint, or "" when none was presented. A quorum submission does not
 // require mTLS — the factor proof authenticates the holder — but when a
 // certificate is present the mtls factor binds to it.
 func restOptionalThumbprint(r *http.Request) string {
-	thumb, err := restCertThumbprint(r)
-	if err != nil {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return ""
 	}
-	return thumb
+	return mtls.Thumbprint(r.TLS.PeerCertificates[0].Raw)
 }
 
 // decodeHolderJSON decodes the request body into v, answering 400 on failure.

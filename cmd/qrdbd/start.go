@@ -2697,9 +2697,7 @@ func runStart(f *startFlags) (err error) {
 			}
 
 			// Create and start the multi-protocol server.
-			serverOpts := []server.ServerOption{
-				server.WithTLS(bundle.TLSConfig),
-				server.WithCACertPool(bundle.CACertPool),
+			serverOpts := append(bundle.serverTLSOptions(),
 				server.WithLeaderForwarding(registry),
 				server.WithBatch(batchSvc),
 				server.WithTimeSeries(tsSvc),
@@ -2721,7 +2719,7 @@ func runStart(f *startFlags) (err error) {
 				// the node that sweeps it and to its store, through the
 				// same registry the transports resolve requests with.
 				server.WithReclaimSweeper(svcNode.ReclaimSweeper),
-			}
+			)
 			// The data-plane families -- transactions, MVCC, lease, lock and
 			// watch -- are served in BOTH modes, over the same engine, lessor
 			// and watch hub (go-qrdb#62 for transactions, go-qrdb#582 for the

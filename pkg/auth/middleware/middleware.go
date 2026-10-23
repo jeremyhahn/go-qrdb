@@ -382,6 +382,18 @@ func (m *AuthMiddleware) RevocationChecker() auth.RevocationChecker {
 	return m.revocation
 }
 
+// IssuerVerifier returns the verifier WithIssuerVerifier installed: the
+// listener's dynamic trust pool, which a transport binds with
+// auth.WithPeerChainVerifier so auth.VerifiedPeerCertificate resolves a
+// chain crypto/tls left unbuilt. Nil middleware, or none installed, answers
+// nil, and only a chain crypto/tls verified then counts.
+func (m *AuthMiddleware) IssuerVerifier() auth.IssuerVerifier {
+	if m == nil {
+		return nil
+	}
+	return m.issuerVerifier
+}
+
 // WithAuditLogger configures audit logging for authorization decisions.
 // When set, every authorize call is recorded with its outcome, and a failure
 // to record one is acted on per WithAuditFailurePolicy.

@@ -347,6 +347,19 @@ is the Vault model: possession of the unseal credential (passphrase, Shamir
 share, or a hardware-bound authentication context) is itself the
 authorization to drive unseal. Every action is recorded in the audit log.
 
+**No authentication does not mean no certificate verification.** On both
+listeners, and on every transport (REST, gRPC, QUIC, MCP, Unix), the peer's
+TLS state and the listener's chain verifier (the client trust pool, set by
+`server.WithPeerChainVerifier`) are bound to every request outermost, before
+the sealed-window gate and independent of authentication: REST
+`peerTLSMiddleware`, gRPC and Unix `middleware.PeerTLSUnaryInterceptor` /
+`PeerTLSStreamInterceptor`, QUIC `withConnectionState`, MCP
+`authHTTPContext`. A share claim in the sealed window therefore binds the
+caller's certificate only when that chain verifies, exactly as after unseal;
+a merely presented or absent certificate is refused with 401 /
+`Unauthenticated` (`service.ClientCertRequiredError`). See
+[Shamir custody](../shamir-custody/engineering.md).
+
 That is why the allowlist is kept to the verbs that are justified as
 anonymous, and why this listener's gate differs from the regular one: **once
 the barrier is unsealed it refuses every request, allowlisted or not.** It

@@ -62,6 +62,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// authenticator can extract peer certificate identity.
 		if r.TLS != nil {
 			ctx = auth.WithTLSState(ctx, r.TLS)
+			ctx = auth.WithPeerChainVerifier(ctx, m.IssuerVerifier())
 		}
 		// Carry the raw Authorization header for embedder-supplied
 		// credential authenticators (e.g. an OAuth 2.1 bearer validator

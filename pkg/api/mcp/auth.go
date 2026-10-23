@@ -62,6 +62,16 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 	// below so a request authenticateHandler already authenticated carries
 	// it too.
 	ctx = withSOFactor(ctx, r)
+	// The peer's TLS state and the listener's chain verifier, bound before
+	// and independent of authentication: the trust pool verifies a client
+	// certificate in the handshake without building VerifiedChains, and a
+	// share claim resolves its verified certificate through it
+	// (auth.VerifiedPeerCertificate) in the sealed window, which has no auth
+	// middleware, as on the authenticated path.
+	if r != nil && r.TLS != nil {
+		ctx = auth.WithTLSState(ctx, r.TLS)
+	}
+	ctx = auth.WithPeerChainVerifier(ctx, s.chainVerifier())
 	// With an SO gate but no auth middleware there is no one to
 	// authenticate; the gate then refuses every SO-gated tool.
 	if s.authMW == nil {

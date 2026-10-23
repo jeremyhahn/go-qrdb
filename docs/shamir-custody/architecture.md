@@ -283,8 +283,9 @@ distinct, authenticated holders present.
   root key and re-encrypting every byte of stored data.
 - **RBAC-gating claims and submissions.** Holders use them while the barrier is
   sealed, before or without any user store. The routes are identity-gated and
-  the handler enforces the real authorization: roster membership, certificate
-  thumbprint, nonce signature and factor proof.
+  the handler enforces the real authorization: roster membership, the
+  thumbprint of a verified client certificate, nonce signature and factor
+  proof.
 - **Letting one administrator seal a Shamir barrier.** If M holders are needed
   to open it, one person must not be able to close it; seal is a quorum
   operation.

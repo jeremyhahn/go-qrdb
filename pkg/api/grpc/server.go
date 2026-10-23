@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -167,6 +168,11 @@ type Server struct {
 	// arrives while it reports the node barrier sealed down the boot-time
 	// listener's chain. Nil installs no dispatch.
 	sealedWindowDispatch sealedwindow.ListenerProbe
+
+	// peerChainVerifier verifies a client certificate this listener's TLS
+	// configuration accepted without building a chain (the client trust
+	// pool's widened handshake). Nil falls back to authMW's.
+	peerChainVerifier auth.IssuerVerifier
 
 	// awaitingAdminCredentialProbe controls the awaiting-admin-credential
 	// gate (go-qrdb#548 review item 3). While it reports true, only
@@ -584,6 +590,19 @@ func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
 	}
 }
 
+// WithPeerChainVerifier sets the verifier that resolves the caller's client
+// certificate when this listener's TLS configuration accepted it without
+// building a chain: the client trust pool the configuration is wired to. The
+// listener binds it, with the peer's TLS state, to every call before
+// admission, so a share claim binds only a verified certificate on the
+// authenticated chain and in the sealed window alike. Unset, the listener
+// uses its AuthMiddleware's issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(s *Server) {
+		s.peerChainVerifier = v
+	}
+}
+
 // WithAwaitingAdminCredentialProbe installs the awaiting-admin-credential
 // gate (go-qrdb#548 review item 3). See AwaitingAdminCredentialUnaryInterceptor
 // for its admission rule.
@@ -862,7 +881,21 @@ func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServ
 		unaryChain = SealedWindowDispatchUnaryInterceptor(s.sealedWindowDispatch, sealedUnary, unaryChain)
 		streamChain = SealedWindowDispatchStreamInterceptor(s.sealedWindowDispatch, sealedStream, streamChain)
 	}
-	return unaryChain, streamChain
+	// Outermost, independent of authentication: every path above -- the
+	// authenticated chain, the awaiting-admin gate and the sealed window --
+	// sees the peer's TLS state and this listener's chain verifier.
+	v := s.chainVerifier()
+	return ChainUnaryServerInterceptors(authmw.PeerTLSUnaryInterceptor(v), unaryChain),
+		ChainStreamServerInterceptors(authmw.PeerTLSStreamInterceptor(v), streamChain)
+}
+
+// chainVerifier is the verifier the listener binds to every call:
+// WithPeerChainVerifier's, else the AuthMiddleware's issuer verifier.
+func (s *Server) chainVerifier() auth.IssuerVerifier {
+	if s.peerChainVerifier != nil {
+		return s.peerChainVerifier
+	}
+	return s.authMW.IssuerVerifier()
 }
 
 type admissionPath struct {

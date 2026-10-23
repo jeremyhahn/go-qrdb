@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
 // TLSBundle holds the CA and leaf certificate material generated for a
@@ -167,6 +168,22 @@ func (b *TLSBundle) SetClusterCA(ca clienttrust.ClusterCA) {
 // layer. Returns nil until wireClientTrustPool has run.
 func (b *TLSBundle) TrustPool() *clienttrust.Pool {
 	return b.trustPool
+}
+
+// serverTLSOptions are the TLS options of every server this bundle serves,
+// the sealed-window listener and the regular one alike: the configuration,
+// the CA pool the REST forwarding client verifies peers against, and the
+// client trust pool the configuration is wired to. Every listener binds that
+// pool to every call, so a share claim binds only a certificate it verifies.
+func (b *TLSBundle) serverTLSOptions() []server.ServerOption {
+	opts := []server.ServerOption{
+		server.WithTLS(b.TLSConfig),
+		server.WithCACertPool(b.CACertPool),
+	}
+	if b.trustPool != nil {
+		opts = append(opts, server.WithPeerChainVerifier(b.trustPool))
+	}
+	return opts
 }
 
 // wireClientTrustPool installs TLSConfig.GetConfigForClient (via
