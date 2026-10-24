@@ -13,6 +13,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A push to `main` no longer cancels the `main` CI run in progress**:
+  `ci.yml`'s concurrency group on `main` carries the commit as well as the
+  event, so every merge keeps a completed run; `cancel-in-progress` stays a
+  literal `true`, so a newer push to a pull request still cancels that pull
+  request's older run.
+
 - **`github.com/labstack/echo/v4` is v4.16.1** (indirect, through the Wails
   devserver): v4.15.3 carries GHSA-cxf3-9h37-7rr8 (critical) and three high
   advisories, which took the image job's Trivy scan red on `main`.

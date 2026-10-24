@@ -41,9 +41,9 @@ package buildgates
 //     job that needs a full-tier or nightly one, and so skips with it;
 //   - a pull_request trigger with `labeled`, so every label change starts a
 //     run that cancels the PR's run in progress (#853);
-//   - ci.yml without its concurrency block (a main group per event only, so
-//     a newer main push cancels the run in flight, Company Agent m772; a
-//     literal cancel-in-progress, Company Agent m701);
+//   - ci.yml without its concurrency block (on main a group per event and
+//     commit, so no main run cancels another, DS-3465; a literal
+//     cancel-in-progress, Company Agent m701);
 //   - any other pull_request workflow without the ref-keyed concurrency group
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
 //     v1.22.1), or any workflow regaining a `schedule:` (owner ruling
@@ -117,12 +117,12 @@ const (
 	// v1.22.1 pair above.
 	ciWorkflowName = "ci.yml"
 
-	// mainKeyedGroup is ci.yml's concurrency group: a PR ref is one group,
-	// and on main the group carries the event only (Company Agent m772, m774
-	// option (i)), so a newer push on main cancels the main run of the same
-	// event in flight. It reverses m636 (2), which gave each main commit its
-	// own group.
-	mainKeyedGroup = "${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}"
+	// mainKeyedGroup is ci.yml's concurrency group: a PR ref is one group, so
+	// a newer push to a PR cancels that PR's older run, and on main the group
+	// carries the event and the commit (DS-3465, the go-enclave #247 form), so
+	// a push to main never cancels the run of the previous main commit and
+	// every merge keeps a completed run.
+	mainKeyedGroup = "${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}"
 
 	// cancelLiteral is ci-template v1.23's cancel-in-progress. Gitea 1.27.1
 	// never released go-qrdb main runs 57063 and 57200 while it was an
@@ -959,8 +959,8 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 		"other workflow on v1.23": {"x.yml", ciGood},
 		"ci.yml cancel expression": {ciWorkflowName,
 			strings.Replace(ciGood, "cancel-in-progress: "+cancelLiteral, "cancel-in-progress: "+cancelOffMain, 1)},
-		"ci.yml main group per commit": {ciWorkflowName,
-			strings.Replace(ciGood, "format('main-{0}', github.event_name)", "format('main-{0}-{1}', github.event_name, github.sha)", 1)},
+		"ci.yml main group per event": {ciWorkflowName,
+			strings.Replace(ciGood, "format('main-{0}-{1}', github.event_name, github.sha)", "format('main-{0}', github.event_name)", 1)},
 		"ci.yml v1.22.1 group":  {ciWorkflowName, strings.Replace(ciGood, mainKeyedGroup, refKeyedGroup, 1)},
 		"ci.yml v1.22.1 block":  {ciWorkflowName, good},
 		"ci.yml no concurrency": {ciWorkflowName, "on:\n  pull_request:\n"},
