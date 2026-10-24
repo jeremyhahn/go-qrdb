@@ -37,6 +37,11 @@ are not reconstructed here — their history is in the git log.
   than sent without `enabled`, which the `qrdb_database_update_barrier` tool
   reads as a request to disable the barrier.
 
+- **`sdk/go/transport/grpc` `VerifyFactor` and `RevokeFactor` return nil on
+  success**: both passed the RPC's error to `mapGRPCError` unconditionally,
+  which turns a nil error into a `RequestError`, so every successful factor
+  verification and revocation over gRPC was reported as a failure.
+
 ### Changed
 
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each

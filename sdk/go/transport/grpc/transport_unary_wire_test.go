@@ -721,6 +721,12 @@ func unaryCalls() map[string]func(context.Context, *Transport) error {
 		"RejectJoinRequest": func(ctx context.Context, tr *Transport) error {
 			return tr.RejectJoinRequest(ctx, "r", "no")
 		},
+		"VerifyFactor": func(ctx context.Context, tr *Transport) error {
+			return tr.VerifyFactor(ctx, &transport.VerifyFactorRequest{})
+		},
+		"RevokeFactor": func(ctx context.Context, tr *Transport) error {
+			return tr.RevokeFactor(ctx, &transport.RevokeFactorRequest{})
+		},
 		"ImportAppend": func(ctx context.Context, tr *Transport) error {
 			return tr.ImportAppend(ctx, "s", 1, []byte("x"))
 		},
