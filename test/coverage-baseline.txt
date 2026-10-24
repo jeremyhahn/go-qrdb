@@ -220,4 +220,4 @@ github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp 91.41
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/policywire 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic 79.68
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest 83.72
-github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix 76.23
+github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix 91.80
