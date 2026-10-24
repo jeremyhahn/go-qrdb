@@ -250,11 +250,56 @@ func WithBackupSink(sink service.BackupSink) NodeOption {
 }
 
 // WithStorageFactory opens a standalone node's data-plane storage through f in
-// place of the configured backend. A clustered node's replica storage is chosen
-// by its state machine, not by this option. Equivalent to
+// place of the configured backend. A clustered node's replica storage is not
+// reached by this option; see WithReplicaStorageFactory. Equivalent to
 // server.WithStorageFactory.
 func WithStorageFactory(f server.StorageFactory) NodeOption {
 	return func(o *nodeOptions) { o.storageFactory = f }
+}
+
+// WithReplicaStorageFactory opens the storage of every clustered replica on
+// this node through f, in place of raft.sm_storage. f is called once each time
+// a replica opens, with its shard and replica IDs and its own directory,
+// {raft.data_dir}/sm/shard-S-replica-R, which exists when f is called and is
+// stable across restarts. dataPlaneFS, when non-nil, is the seal barrier's
+// encrypting file system: a storage that writes files must do its I/O through
+// it so the data stays under the barrier, as with WithStorageFactory.
+//
+// Each call returns storage owned by that one replica, never shared with
+// another; the node closes what f returns when the replica stops. An error
+// from f fails that replica's open with a statemachine.ReplicaStorageOpenError
+// wrapping it, and the shard does not start.
+//
+// It applies to the storage-generic state machines, raft.sm_type disk and
+// fast. The clustered MVCC store and every other state machine that carries
+// its own storage refuse it at boot with
+// statemachine.ReplicaStorageNotApplicableError rather than ignore it. A nil f
+// keeps raft.sm_storage. A standalone node's storage is WithStorageFactory.
+// ReplicaStorageFactory opens one clustered replica's storage. dir is the
+// replica's own directory, <data-dir>/sm/shard-S-replica-R, which exists when
+// it is called; dataPlaneFS, when non-nil, is the seal barrier's encrypting
+// file system, which a factory that writes files must route its I/O through
+// so the data stays under the barrier. Each call returns storage owned by that
+// one replica, and the node closes it with the replica.
+type ReplicaStorageFactory func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)
+
+// bindReplicaStorage binds f to the data-plane file system: the encryptor's
+// when the barrier is enabled at the replica's open, nil otherwise.
+func bindReplicaStorage(f ReplicaStorageFactory, encryptor *atrest.Encryptor) statemachine.ReplicaStorageOpener {
+	if f == nil {
+		return nil
+	}
+	return func(shardID, replicaID uint64, dir string) (storage.Storage, error) {
+		var dataPlaneFS vfs.FS
+		if encryptor.Enabled() {
+			dataPlaneFS = encryptor.FS()
+		}
+		return f(shardID, replicaID, dir, dataPlaneFS)
+	}
+}
+
+func WithReplicaStorageFactory(f ReplicaStorageFactory) NodeOption {
+	return func(o *nodeOptions) { o.replicaStorageFactory = f }
 }
 
 // WithDEKProvider replaces the software tenant DEK keyring with a composer's
@@ -409,6 +454,7 @@ type nodeOptions struct {
 	// into the server options.
 	backupSink              service.BackupSink
 	storageFactory          server.StorageFactory
+	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
@@ -992,11 +1038,12 @@ type pendingStandaloneBoot struct {
 // pendingClusteredBoot holds the partially-constructed clustered infra that
 // completeClusteredBoot needs to finish wiring after the barrier is unsealed.
 type pendingClusteredBoot struct {
-	members      map[uint64]string
-	serverOpts   []server.ServerOption
-	cfg          *qrdbconfig.Config
-	raftMTLS     *quicraftconfig.MTLSConfig
-	noSyncWrites bool
+	members        map[uint64]string
+	serverOpts     []server.ServerOption
+	cfg            *qrdbconfig.Config
+	raftMTLS       *quicraftconfig.MTLSConfig
+	noSyncWrites   bool
+	replicaStorage ReplicaStorageFactory
 }
 
 // ---------------------------------------------------------------------------
@@ -1865,9 +1912,22 @@ func (n *Node) closeDatabaseManager() {
 // selects under raft.data_dir, exactly as the daemon does, carrying the
 // node's at-rest encryptor: with the seal barrier enabled, pebble and file
 // storage are opened on the barrier's encfs. A non-pebble sm_storage for
-// any other type is refused rather than ignored.
-func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor) (sm.CreateFunc, error) {
+// any other type is refused rather than ignored. A non-nil replicaStorage
+// (WithReplicaStorageFactory) opens each disk or fast replica's storage in
+// place of sm_storage, under the same data-plane file system; every other
+// type, the MVCC store included, refuses it with
+// statemachine.ReplicaStorageNotApplicableError.
+func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor, replicaStorage ReplicaStorageFactory) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
+		// The MVCC store opens its own Pebble database; a composer's replica
+		// storage cannot reach it, so the option is refused, never ignored.
+		if replicaStorage != nil {
+			smType := cfg.Raft.SMType
+			if smType == "" {
+				smType = "pebble"
+			}
+			return nil, &statemachine.ReplicaStorageNotApplicableError{SMType: smType}
+		}
 		if cfg.Raft.SMStorage != "" && cfg.Raft.SMStorage != "pebble" {
 			return nil, &ConfigError{
 				Field:   "raft.sm_storage",
@@ -1878,9 +1938,13 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 		return store.NewMVCCCreateFuncWith(pebbleOpts, opts...), nil
 	}
 	fn, err := statemachine.ResolveTypedWithStorage(cfg.Raft.SMType, cfg.Raft.SMBackend,
-		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor},
+		statemachine.StorageConfig{Root: cfg.Raft.DataDir, Kind: cfg.Raft.SMStorage, Encryptor: encryptor, Replica: bindReplicaStorage(replicaStorage, encryptor)},
 		statemachine.WithKVLessor(lr))
 	if err != nil {
+		var notApplicable *statemachine.ReplicaStorageNotApplicableError
+		if errors.As(err, &notApplicable) {
+			return nil, err
+		}
 		return nil, &ConfigError{Field: "raft.sm_type", Message: err.Error()}
 	}
 	return fn, nil
@@ -2197,7 +2261,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	if pending.noSyncWrites {
 		mvccOpts = append(mvccOpts, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, encryptor, lr)
+	createFn, err := clusteredCreateFunc(pending.cfg, pebbleOpts, mvccOpts, encryptor, lr, pending.replicaStorage)
 	if err != nil {
 		return err
 	}
@@ -3203,11 +3267,12 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 
 		if attemptAutoUnseal(ctx, sub.barrier, cfg.Seal, nOpts.sealPassphrase, log) {
 			if err := n.completeClusteredBoot(ctx, &pendingClusteredBoot{
-				members:      members,
-				serverOpts:   serverOpts,
-				cfg:          cfg,
-				raftMTLS:     n.clusterIdentity,
-				noSyncWrites: nOpts.noSyncWrites,
+				members:        members,
+				serverOpts:     serverOpts,
+				cfg:            cfg,
+				raftMTLS:       n.clusterIdentity,
+				noSyncWrites:   nOpts.noSyncWrites,
+				replicaStorage: nOpts.replicaStorageFactory,
 			}); err != nil {
 				n.closeSeal()
 				return nil, err
@@ -3216,11 +3281,12 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		}
 
 		n.pendingClustered = &pendingClusteredBoot{
-			members:      members,
-			serverOpts:   serverOpts,
-			cfg:          cfg,
-			raftMTLS:     n.clusterIdentity,
-			noSyncWrites: nOpts.noSyncWrites,
+			members:        members,
+			serverOpts:     serverOpts,
+			cfg:            cfg,
+			raftMTLS:       n.clusterIdentity,
+			noSyncWrites:   nOpts.noSyncWrites,
+			replicaStorage: nOpts.replicaStorageFactory,
 		}
 		return n, nil
 	}
@@ -3238,7 +3304,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	if nOpts.noSyncWrites {
 		mvccOptsNoSeal = append(mvccOptsNoSeal, store.WithNoSync())
 	}
-	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, nil, lr)
+	createFn, err := clusteredCreateFunc(cfg, pebbleOpts, mvccOptsNoSeal, nil, lr, nOpts.replicaStorageFactory)
 	if err != nil {
 		return nil, err
 	}

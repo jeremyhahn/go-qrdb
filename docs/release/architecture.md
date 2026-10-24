@@ -270,12 +270,12 @@ of the full tier on the PR branch is the accepted alternative.
 
 `ci.yml`'s concurrency block has a literal `cancel-in-progress: true` and a
 `main`-specific group. A pull request's ref is one group, so a newer push to
-it cancels that ref's older run. On `main` the group carries the event only,
-so a newer push to `main` cancels the `main` run of the same event in flight,
-started jobs included, and the newer commit's run validates the tree that
-contains the cancelled one. No expression reaches `cancel-in-progress`. The
-other workflows on pull requests keep one group per ref (handbook `devops.md`
-§9), whose `cancel-in-progress` expression spares `main`.
+it cancels that ref's older run. On `main` the group carries the event and the
+commit, so no `main` run cancels another: a push to `main` leaves the run of
+the previous `main` commit to finish, and every merge keeps a completed run.
+No expression reaches `cancel-in-progress`. The other workflows on pull
+requests keep one group per ref (handbook `devops.md` §9), whose
+`cancel-in-progress` expression spares `main`.
 `test/buildgates/ci_tiers_test.go` holds both values.
 
 No CI workflow runs on a schedule; `automerge.yml` is the one workflow with a

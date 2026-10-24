@@ -471,7 +471,7 @@ func TestKVFastCreateFunc_StartsFromAnEmptyKeyspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	machine := NewKVFastCreateFunc(func(_, _ uint64) storage.Storage { return stg })(1, 1).(*StandardAdapter)
+	machine := NewKVFastCreateFunc(func(_, _ uint64) (storage.Storage, error) { return stg, nil })(1, 1).(*StandardAdapter)
 	t.Cleanup(func() { _ = machine.Close(context.Background()) })
 
 	cmp := mustEncode(protocol.EncodeCompare([]byte("claim"), txnTargetVersion, txnResultEqual, nil, 0, 0, 0))

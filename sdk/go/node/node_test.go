@@ -192,7 +192,7 @@ func TestNewClusteredNode_EmptyMembers(t *testing.T) {
 
 func TestClusteredCreateFunc_DefaultPebble(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig() // SMType defaults to "pebble"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
@@ -200,7 +200,7 @@ func TestClusteredCreateFunc_DefaultPebble(t *testing.T) {
 func TestClusteredCreateFunc_EmptySMTypeDefaultsPebble(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = ""
-	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
@@ -208,7 +208,7 @@ func TestClusteredCreateFunc_EmptySMTypeDefaultsPebble(t *testing.T) {
 func TestClusteredCreateFunc_MemoryUnsealed(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = "memory"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, fn)
 }
@@ -232,7 +232,7 @@ func TestClusteredCreateFunc_UnderTheSealBarrier(t *testing.T) {
 		cfg.Raft.DataDir = t.TempDir()
 		cfg.Raft.SMType = tc.smType
 		cfg.Raft.SMStorage = tc.storage
-		_, err := clusteredCreateFunc(cfg, nil, nil, sealed, nil)
+		_, err := clusteredCreateFunc(cfg, nil, nil, sealed, nil, nil)
 		require.NoError(t, err, "%s over %q under the barrier", tc.smType, tc.storage)
 	}
 }
@@ -240,7 +240,7 @@ func TestClusteredCreateFunc_UnderTheSealBarrier(t *testing.T) {
 func TestClusteredCreateFunc_UnknownSMTypeErrors(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.SMType = "does-not-exist"
-	_, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+	_, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 	require.Error(t, err)
 	var cfgErr *ConfigError
 	require.ErrorAs(t, err, &cfgErr)
@@ -256,7 +256,7 @@ func TestClusteredCreateFunc_HonoursSMStorage(t *testing.T) {
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Raft.SMType = "disk"
 	cfg.Raft.SMStorage = "file"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	machine := fn(3, 4)
@@ -281,7 +281,7 @@ func TestClusteredCreateFunc_RefusesInapplicableSMStorage(t *testing.T) {
 		cfg.Raft.DataDir = t.TempDir()
 		cfg.Raft.SMType = smType
 		cfg.Raft.SMStorage = "file"
-		_, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+		_, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 		var cfgErr *ConfigError
 		require.ErrorAs(t, err, &cfgErr, "sm_type %q over sm_storage file", smType)
 	}

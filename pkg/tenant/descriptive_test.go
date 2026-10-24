@@ -137,6 +137,12 @@ func TestUpdateTenant_DescriptiveLimitsRefused(t *testing.T) {
 		{"key too long", TenantPatch{Metadata: map[string]string{strings.Repeat("k", MaxMetadataKeyBytes+1): "v"}}, "metadata key"},
 		{"value too long", TenantPatch{Metadata: map[string]string{"k": strings.Repeat("v", MaxMetadataValueBytes+1)}}, "metadata value"},
 		{"value not utf8", TenantPatch{Metadata: map[string]string{"k": "\xc3"}}, "metadata value"},
+		{"key uppercase", TenantPatch{Metadata: map[string]string{"Env": "v"}}, "metadata key"},
+		{"key leading dash", TenantPatch{Metadata: map[string]string{"-env": "v"}}, "metadata key"},
+		{"key trailing dot", TenantPatch{Metadata: map[string]string{"env.": "v"}}, "metadata key"},
+		{"key with slash", TenantPatch{Metadata: map[string]string{"acme.io/env": "v"}}, "metadata key"},
+		{"key with space", TenantPatch{Metadata: map[string]string{"cost center": "v"}}, "metadata key"},
+		{"key not utf8", TenantPatch{Metadata: map[string]string{"a\xffb": "v"}}, "metadata key"},
 	}
 	for _, fx := range descriptiveFixtures {
 		t.Run(fx.name, func(t *testing.T) {
@@ -179,6 +185,23 @@ func TestUpdateTenant_DescriptiveAtLimitsAccepted(t *testing.T) {
 	}
 	if len(got.Metadata) != MaxMetadataEntries || len(got.Description) != MaxDescriptionBytes {
 		t.Fatalf("at-limit update stored %d entries, %d description bytes", len(got.Metadata), len(got.Description))
+	}
+}
+
+func TestCheckMetadataKey_GrammarAccepted(t *testing.T) {
+	for _, k := range []string{"a", "0", "env", "cost-center", "team_a", "v1.2", "a-._b", strings.Repeat("k", MaxMetadataKeyBytes)} {
+		if err := checkMetadataKey(k); err != nil {
+			t.Errorf("checkMetadataKey(%q) = %v, want nil", k, err)
+		}
+	}
+}
+
+func TestCheckMetadataKey_GrammarRefused(t *testing.T) {
+	for _, k := range []string{"", "_a", "a_", ".", "-", "A", "aB", "a b", "a/b", "a:b", "é", strings.Repeat("k", MaxMetadataKeyBytes+1)} {
+		var fe *TenantFieldError
+		if err := checkMetadataKey(k); !errors.As(err, &fe) || fe.Field != "metadata key" {
+			t.Errorf("checkMetadataKey(%q) = %v, want *TenantFieldError{Field: \"metadata key\"}", k, err)
+		}
 	}
 }
 

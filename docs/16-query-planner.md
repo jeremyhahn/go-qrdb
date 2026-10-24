@@ -1,6 +1,6 @@
 # Query Planner & Fluent Query API
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 ## 1. Overview
@@ -93,9 +93,8 @@ func (u *User) EntityID() uint64      { return u.ID }
 func (u *User) SetEntityID(id uint64) { u.ID = id }
 ```
 
-Supported tag values: `index:"true"` (normal), `index:"unique"`,
-`index:"case_insensitive"`, or a comma-separated combination
-(e.g. `index:"unique,case_insensitive"`). Compound indexes are declared
+Tag values are listed in
+[08-secondary-indexes.md §5](08-secondary-indexes.md#5-struct-tag-integration). Compound indexes are declared
 by implementing the `index.CompoundIndexRegisterer` interface — see
 [08-secondary-indexes.md](08-secondary-indexes.md).
 
@@ -172,7 +171,7 @@ products, err := productDAO.Find(ctx).
 users, err := userDAO.Find(ctx).
     Where("Role IN ?", []string{"admin", "moderator"}).
     Execute()
-// Planner selects: Multiple index lookups (cost 10 * cardinality) if indexed
+// Planner selects: IndexLookup on Role index (cost 10, non-unique cost even on a unique index) if indexed
 ```
 
 **Prefix matching:**
@@ -181,7 +180,8 @@ users, err := userDAO.Find(ctx).
 users, err := userDAO.Find(ctx).
     Where("Username PREFIX ?", "alice").
     Execute()
-// Planner selects: Prefix scan on Username index (cost 50) if indexed
+// Planner selects: IndexScan on Username index (cost 50) if indexed; PREFIX
+// stays a post-filter, and a numeric index is never used for PREFIX
 ```
 
 **Pagination:**
@@ -209,84 +209,58 @@ The query planner supports nine comparison operators:
 
 | Operator | Syntax | Example | Index Strategy |
 |----------|--------|---------|-----------------|
-| Equality | `=` | `Age = 30` | IndexLookup (cost 10) |
+| Equality | `=` | `Age = 30` | IndexLookup (cost 1 unique, 10 normal) |
 | Inequality | `!=` | `Status != "inactive"` | FullScan + post-filter |
 | Greater than | `>` | `Price > 100` | IndexScan (cost 50) |
 | Greater or equal | `>=` | `CreatedAt >= 2024-01-01` | IndexScan (cost 50) |
 | Less than | `<` | `Stock < 10` | IndexScan (cost 50) |
 | Less or equal | `<=` | `Score <= 100` | IndexScan (cost 50) |
-| IN (multi-value) | `IN` | `Role IN (admin, user)` | Multiple IndexLookups |
+| IN (multi-value) | `IN` | `Role IN (admin, user)` | IndexLookup (cost 10) |
 | BETWEEN (range) | `BETWEEN` | `Age BETWEEN 18 AND 65` | IndexScan (cost 50) |
-| Prefix matching | `PREFIX` | `Name PREFIX alice` | IndexScan (cost 50) |
+| Prefix matching | `PREFIX` | `Name PREFIX alice` | IndexScan (cost 50) + post-filter; none on a numeric index |
 
-Only these nine operators are accepted. Unrecognized operators result in a validation error at query build time.
+Only these nine operators are accepted (`parseOperator`, `pkg/dao/filter.go`).
+`Where` records an `UnsupportedOperatorError` for any other, and the terminal
+method returns it.
 
 ## 6. Security Model
 
-The query planner enforces multiple layers of security to prevent injection and ensure safe execution:
-
 ### Field Validation
 
-Field names are validated against the entity struct fields in O(1) time using a field map:
-
-```go
-// At index creation time:
-fieldMap := make(map[string]bool)
-for _, field := range entity.Fields() {
-    fieldMap[field.Name] = true
-}
-
-// At query time:
-if !fieldMap[queryField] {
-    return fmt.Errorf("field not found: %s", queryField)
-}
-```
-
-Only fields defined in the entity struct can be queried. This prevents accidental or malicious references to internal fields.
+`Where` parses its expression with `parseExpression` (`pkg/dao/filter.go`),
+which checks the field against `validFieldMap()`: the entity's exported struct
+field names and their JSON names. Any other field returns
+`FieldNotFoundError`, so only fields defined in the entity struct can be
+queried.
 
 ### Operator Whitelist
 
-The planner maintains a fixed set of nine allowed operators. Unrecognized operators are rejected during query parsing:
-
-```go
-validOps := map[string]bool{
-    "=": true, "!=": true,
-    ">": true, ">=": true, "<": true, "<=": true,
-    "IN": true, "BETWEEN": true, "PREFIX": true,
-}
-
-if !validOps[operator] {
-    return fmt.Errorf("unsupported operator: %s", operator)
-}
-```
+`parseOperator` accepts the nine operators of §5 and returns
+`UnsupportedOperatorError` for anything else.
 
 ### Parameterized Values
 
-All user-supplied values are passed via `?` placeholders and never string-interpolated into queries. This prevents SQL injection:
+Values are passed as `?` arguments and never interpolated into the expression:
 
 ```go
-// Safe: values bound separately
 .Where("Email = ?", userInput)
-
-// Unsafe (prevented by API design):
-.Where("Email = '" + userInput + "'")  // Would panic if attempted
 ```
 
-### Zero-Allocation Expression Parser
+### Predicate
 
-The predicate parser is designed to minimize allocations and avoid reflection during hot-path execution:
+The planner works on `planner.Predicate` (`pkg/planner/types.go`):
 
 ```go
-// Predicate structure (copied, not allocated):
 type Predicate struct {
-    Field     string        // 16 bytes
-    Operator  string        // 16 bytes
-    Value     interface{}   // 16 bytes
-    // Total: 48 bytes on stack
+    Field    string
+    Op       Op
+    Value    interface{}
+    ValueEnd interface{}   // upper bound; used with OpBetween
+    Values   []interface{} // membership set; used with OpIn
 }
 ```
 
-Parsing results are checked once at query build time, before execution begins.
+Parse errors are recorded when `Where` is called, before execution begins.
 
 ## 7. Execution Flow
 
@@ -305,33 +279,32 @@ The execution flow from application code through to results is:
    Result: QueryBuilder with predicates, ordering, limit
 
 4. Application calls: .Execute()
-   Action: Invoke planner.Plan(predicates)
+   Action: build planner predicates and the index catalog, then
+   planner.New(catalog).Plan(predicates)
 
-5. Planner inspects indexes:
-   - Does Status have an index? (Cost 10)
-   - Is Name indexed? (Used for ordering)
-   - Can we satisfy ordering from index scan?
-
-6. Planner selects optimal Plan:
+5. Planner selects the cheapest plan:
    - Primary strategy: IndexLookup on Status (cost 10, non-unique index)
-   - Post-filters: None (Status was indexed, ordering from result order)
-   - Limit: 100 items
+   - Post-filters: none
 
-7. Execution engine executes plan:
+6. Execution engine executes the plan:
    a. IndexLookup("Status", "active") → candidate set
-   b. Sort by Name if needed (usually free from index order)
-   c. Apply limit (100 items)
-   d. Return results
+   b. Apply post-filters
+   c. Sort by Name in memory
+   d. Apply limit (100 items)
 
-8. Application receives: []User with 100 active users, sorted by name
+7. Application receives: []User with up to 100 active users, sorted by name
 ```
+
+If the store reports `kvstore.ErrIndexUnsupported` for the chosen plan, the
+query falls back to a full scan with every predicate as a filter. A direct
+`QueryByIndex` or `ScanByIndex` call does not fall back; it returns the error.
 
 The planner **always** ensures:
 
 - **Correctness**: All predicates are evaluated before returning results
 - **Completeness**: Results contain all matching records (within limit)
 - **Ordering**: If OrderBy is specified, results are sorted correctly
-- **Pagination**: Offset and limit are applied after filtering and sorting
+- **Limit**: Limit is applied after filtering and sorting
 
 ## 8. Query Plan Caching
 
@@ -373,38 +346,6 @@ These are useful when:
 Prefer `Find().Where()` in application code. The explicit methods are
 fully supported but require you to know index names and selectivity —
 responsibilities the fluent API handles for you.
-
-## 10. Performance Characteristics
-
-### Plan Selection Time
-
-Plan selection cost is sub-millisecond:
-
-| Predicates | Index count | Plan time |
-|-----------|-------------|-----------|
-| 1 | 10 | <50 µs |
-| 3 | 50 | <100 µs |
-| 10 | 100 | <300 µs |
-
-### Query Execution Time
-
-Depends on the selected strategy:
-
-| Strategy | Expected Time | Example |
-|----------|--------------|---------|
-| Unique index lookup | <1 ms | Find user by email |
-| Index range scan (100 results) | 1–5 ms | List users in age range |
-| Full scan (1M keys, 100 results) | 50–200 ms | Scan without index |
-
-### Memory Usage
-
-Predicate parsing allocates minimal memory:
-
-```
-Single predicate: ~80 bytes (struct + field/operator strings)
-Query builder state: ~200 bytes (predicates + limit + ordering)
-Cached plan: ~500 bytes (execution instructions)
-```
 
 ## Cross-References
 

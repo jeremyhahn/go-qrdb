@@ -169,7 +169,7 @@ func rangeTargets() map[string]func(t *testing.T) rangeTarget {
 			if nb != nil {
 				b = nb()
 			} else {
-				stg := newStorageFactory(StorageConfig{Root: t.TempDir(), Kind: name[len("disk/"):]})(1, 1)
+				stg := mustOpenStorage(t, newStorageFactory(StorageConfig{Root: t.TempDir(), Kind: name[len("disk/"):]}), 1, 1)
 				t.Cleanup(func() { _ = stg.Close() })
 				b = NewDiskBackend(stg)
 			}

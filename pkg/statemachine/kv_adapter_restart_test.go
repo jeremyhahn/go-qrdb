@@ -133,14 +133,14 @@ func TestDiskAdapter_EmptyUpdateDoesNotRegressIndex(t *testing.T) {
 func TestNewKVDiskCreateFunc_ShardIdentityReachesFactory(t *testing.T) {
 	type pair struct{ shard, replica uint64 }
 	var got []pair
-	factory := NewKVDiskCreateFunc(func(shardID, replicaID uint64) storage.Storage {
+	factory := NewKVDiskCreateFunc(func(shardID, replicaID uint64) (storage.Storage, error) {
 		got = append(got, pair{shardID, replicaID})
 		st, err := pebblestore.New(pebblestore.TestConfig(t.TempDir()))
 		if err != nil {
 			t.Fatalf("storage: %v", err)
 		}
 		t.Cleanup(func() { _ = st.Close() })
-		return st
+		return st, nil
 	})
 
 	_ = factory(42, 7)

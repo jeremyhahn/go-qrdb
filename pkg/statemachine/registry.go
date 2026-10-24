@@ -122,8 +122,19 @@ type entry struct {
 }
 
 // StorageFactory creates the storage.Storage one replica of a storage-generic
-// state machine composes. It is called once per (shard, replica).
-type StorageFactory func(shardID, replicaID uint64) storage.Storage
+// state machine composes. It is called once per (shard, replica). A replica
+// whose storage cannot be opened fails to open with the error, wrapped in a
+// ReplicaStorageOpenError.
+type StorageFactory func(shardID, replicaID uint64) (storage.Storage, error)
+
+// ReplicaStorageOpener opens one clustered replica's storage, set as
+// StorageConfig.Replica in place of raft.sm_storage. dir is the replica's own
+// directory, {Root}/sm/shard-S-replica-R, which exists when it is called. The
+// opener is bound to the data-plane file system by its composer
+// (node.WithReplicaStorageFactory), so the storage it opens does its I/O under
+// the seal barrier. Each call returns storage owned by that one replica, and
+// the replica closes it.
+type ReplicaStorageOpener func(shardID, replicaID uint64, dir string) (storage.Storage, error)
 
 // StorageGenericFactory builds a storage-generic state machine's create
 // function over the storage newStorage returns for each replica, configured
@@ -155,6 +166,11 @@ type StorageConfig struct {
 	// a standalone file store are, and memory storage persists nothing. nil
 	// means the barrier is off.
 	Encryptor *atrest.Encryptor
+
+	// Replica, when set, opens every replica's storage in place of Kind. A
+	// state machine that carries its own storage refuses it with
+	// ReplicaStorageNotApplicableError.
+	Replica ReplicaStorageOpener
 }
 
 // storageKinds are the raft.sm_storage values a storage-generic state
@@ -283,7 +299,8 @@ func (r *Registry) ResolveTyped(smType, smBackend string) (sm.CreateFunc, error)
 // where its state machine's storage lives. A storage-generic state machine is
 // built over sc; any other state machine carries its own storage, so a
 // non-pebble sc.Kind is refused for it with SMStorageNotApplicableError rather
-// than silently ignored. An unknown sc.Kind is refused with
+// than silently ignored, and a composer's sc.Replica factory is refused for it
+// with ReplicaStorageNotApplicableError. An unknown sc.Kind is refused with
 // UnknownSMStorageError.
 //
 // opts configure a KVStateMachine type -- the composition root's lessor, for
@@ -299,6 +316,9 @@ func (r *Registry) ResolveTypedWithStorage(smType, smBackend string, sc StorageC
 		return nil, err
 	}
 	if e.generic == nil {
+		if sc.Replica != nil {
+			return nil, &ReplicaStorageNotApplicableError{SMType: name}
+		}
 		if sc.selectsNonDefaultStorage() {
 			return nil, &SMStorageNotApplicableError{SMType: name, Kind: sc.Kind}
 		}
@@ -409,6 +429,39 @@ func (e *SMStorageNotApplicableError) Error() string {
 		strconv.Quote(e.SMType) + ", which carries its own storage; use a storage-generic sm_type (disk or fast)"
 }
 
+// ReplicaStorageNotApplicableError is returned when a composer's replica
+// storage factory (StorageConfig.Replica) is set for a state machine that
+// carries its own storage. Such a state machine, the clustered MVCC store
+// among them, refuses the factory rather than ignore it.
+type ReplicaStorageNotApplicableError struct {
+	SMType string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ReplicaStorageNotApplicableError) Error() string {
+	return "statemachine: a replica storage factory does not apply to sm_type " +
+		strconv.Quote(e.SMType) + ", which carries its own storage; use a storage-generic sm_type (disk or fast)"
+}
+
+// ReplicaStorageOpenError is returned when one replica's storage cannot be
+// opened. The replica fails to open with it and its shard does not start.
+type ReplicaStorageOpenError struct {
+	ShardID   uint64
+	ReplicaID uint64
+	Err       error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *ReplicaStorageOpenError) Error() string {
+	return "statemachine: open storage for shard " + strconv.FormatUint(e.ShardID, 10) +
+		" replica " + strconv.FormatUint(e.ReplicaID, 10) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying failure.
+func (e *ReplicaStorageOpenError) Unwrap() error {
+	return e.Err
+}
+
 // UnknownSMTypeError is returned when a state machine type name cannot
 // be resolved in the registry.
 type UnknownSMTypeError struct {
@@ -487,9 +540,7 @@ func newDefaultRegistry() *Registry {
 	// "fast" is the 256-shard cache SM with ordered asynchronous
 	// write-through to the storage raft.sm_storage selects, backed by
 	// FastBackend.
-	r.RegisterStorageGeneric("fast", func(newStorage StorageFactory, opts ...KVOption) sm.CreateFunc {
-		return NewKVFastCreateFunc(newStorage, opts...)
-	}, Descriptor{
+	r.RegisterStorageGeneric("fast", NewKVFastCreateFunc, Descriptor{
 		Description:  "High-performance 256-shard cache SM with write-through to raft.sm_storage",
 		Persistence:  PersistenceHybrid,
 		Kind:         SMKindRegular,
@@ -498,9 +549,7 @@ func newDefaultRegistry() *Registry {
 
 	// "disk" is a synchronous disk-backed KV state machine using
 	// DiskBackend over the storage raft.sm_storage selects.
-	r.RegisterStorageGeneric("disk", func(newStorage StorageFactory, opts ...KVOption) sm.CreateFunc {
-		return NewKVDiskCreateFunc(newStorage, opts...)
-	}, Descriptor{
+	r.RegisterStorageGeneric("disk", NewKVDiskCreateFunc, Descriptor{
 		Description:  "Synchronous disk-backed KV SM over raft.sm_storage",
 		Persistence:  PersistenceDisk,
 		Kind:         SMKindDisk,
@@ -543,62 +592,76 @@ func newDefaultRegistry() *Registry {
 // Pebble configuration; otherwise each replica gets a fresh temp directory
 // with the test configuration (tests only — see StorageConfig.Root).
 //
+// When sc.Replica is set, the composer's factory opens the storage in that
+// directory instead, handed the encryptor's file system when the barrier is on.
+//
 // sc.Kind has been validated by the caller. A storage that cannot be created
-// panics: sm.CreateFunc has no error return, and a replica without its
-// storage cannot start.
+// is a ReplicaStorageOpenError: the create function turns it into a replica
+// whose Open fails with it, so the shard does not start and nothing panics.
 func newStorageFactory(sc StorageConfig) StorageFactory {
-	return func(shardID, replicaID uint64) storage.Storage {
-		if sc.Kind == "memory" {
-			return memstore.NewStorage()
-		}
-
-		var dir string
-		test := false
-		if sc.Root != "" {
-			dir = filepath.Join(sc.Root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
-			if err := os.MkdirAll(dir, 0o750); err != nil {
-				panic("statemachine: failed to create sm storage dir: " + err.Error())
-			}
-		} else {
-			tmp, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
-			if err != nil {
-				panic("statemachine: failed to create temp dir for storage: " + err.Error())
-			}
-			dir = filepath.Join(tmp, "data")
-			test = true
-		}
-
-		// Under the seal barrier every record file the file engine writes —
-		// key and value, commit journal included — goes through the same
-		// barrier-driven encfs, exactly as a standalone file store does.
-		if sc.Kind == "file" {
-			s, err := filestore.New(dir, filestore.WithEncryptor(sc.Encryptor))
-			if err != nil {
-				panic("statemachine: failed to create file storage: " + err.Error())
-			}
-			return s
-		}
-
-		var cfg *pebblestore.Config
-		if test {
-			cfg = pebblestore.TestConfig(dir)
-		} else {
-			cfg = pebblestore.DefaultConfig(dir)
-		}
-		// Under the seal barrier every file Pebble writes — sstables, WAL,
-		// manifest — goes through the barrier-driven encfs, as it does for
-		// the pebble and mvcc state machines (store.WithEncryptor). The
-		// factory runs when the replica starts, after the barrier is
-		// unsealed.
-		if sc.Encryptor.Enabled() {
-			cfg.FS = sc.Encryptor.FS()
-		}
-		s, err := pebblestore.New(cfg)
+	return func(shardID, replicaID uint64) (storage.Storage, error) {
+		s, err := openReplicaStorage(sc, shardID, replicaID)
 		if err != nil {
-			panic("statemachine: failed to create pebble storage: " + err.Error())
+			return nil, &ReplicaStorageOpenError{ShardID: shardID, ReplicaID: replicaID, Err: err}
 		}
-		return s
+		return s, nil
 	}
+}
+
+// openReplicaStorage opens the storage of one replica as sc selects it.
+func openReplicaStorage(sc StorageConfig, shardID, replicaID uint64) (storage.Storage, error) {
+	if sc.Replica == nil && sc.Kind == "memory" {
+		return memstore.NewStorage(), nil
+	}
+
+	var dir string
+	test := false
+	if sc.Root != "" {
+		dir = filepath.Join(sc.Root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, &StorageError{Op: "create replica storage directory", Inner: err}
+		}
+	} else {
+		tmp, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
+		if err != nil {
+			return nil, &StorageError{Op: "create temporary replica storage directory", Inner: err}
+		}
+		dir = filepath.Join(tmp, "data")
+		test = true
+	}
+
+	// A composer's opener carries the data-plane file system it was bound
+	// to; it is handed the replica's directory, created here like the
+	// built-in kinds'.
+	if sc.Replica != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, &StorageError{Op: "create replica storage directory", Inner: err}
+		}
+		return sc.Replica(shardID, replicaID, dir)
+	}
+
+	// Under the seal barrier every record file the file engine writes —
+	// key and value, commit journal included — goes through the same
+	// barrier-driven encfs, exactly as a standalone file store does.
+	if sc.Kind == "file" {
+		return filestore.New(dir, filestore.WithEncryptor(sc.Encryptor))
+	}
+
+	var cfg *pebblestore.Config
+	if test {
+		cfg = pebblestore.TestConfig(dir)
+	} else {
+		cfg = pebblestore.DefaultConfig(dir)
+	}
+	// Under the seal barrier every file Pebble writes — sstables, WAL,
+	// manifest — goes through the barrier-driven encfs, as it does for
+	// the pebble and mvcc state machines (store.WithEncryptor). The
+	// factory runs when the replica starts, after the barrier is
+	// unsealed.
+	if sc.Encryptor.Enabled() {
+		cfg.FS = sc.Encryptor.FS()
+	}
+	return pebblestore.New(cfg)
 }
 
 // Register adds a factory to the default registry.

@@ -115,8 +115,9 @@ qrdb tenant get acme
 `--metadata` sets the **whole** map: name every entry you want to keep.
 Leave a flag out and that field is unchanged; `--description ""` and
 `--clear-metadata` empty them. A description is at most 1024 bytes; metadata is
-at most 64 entries, keys at most 128 bytes and values at most 1024 bytes. A
-value over a limit is refused and nothing changes. A tenant's own Admin can
+at most 64 entries; a key is 1 to 63 lowercase letters, digits, `.`, `_` or
+`-`, beginning and ending with a letter or digit, and a value is at most 256
+bytes. A value over a limit or a key outside that form is refused and nothing changes. A tenant's own Admin can
 set both on its tenant.
 
 ## Granting the plan

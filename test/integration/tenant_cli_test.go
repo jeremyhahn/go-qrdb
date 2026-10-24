@@ -40,6 +40,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // tenantCLIQuotasJSON mirrors the subset of transport.TenantQuotas this file
@@ -710,16 +712,23 @@ func testTenantDescriptiveFieldsOverProtocol(t *testing.T, node *multiProtoNode,
 		t.Fatalf("[%s] rename changed descriptive fields: %+v", proto.name, got)
 	}
 
-	// --- over limit (1024-byte values): refused, nothing stored ----------
-	out, err := update("--metadata", "k="+strings.Repeat("v", 1025))
-	if err == nil {
-		t.Fatalf("[%s] over-limit metadata value accepted: %s", proto.name, out)
-	}
-	if !strings.Contains(strings.ToLower(out), "invalid") {
-		t.Fatalf("[%s] over-limit metadata: want an invalid-argument error, got: %s", proto.name, out)
-	}
-	if got := get(); !maps.Equal(got.Metadata, want) {
-		t.Fatalf("[%s] refused update changed metadata: %v", proto.name, got.Metadata)
+	// --- over limit or off the key grammar: refused, nothing stored -----
+	for _, bad := range []string{
+		"k=" + strings.Repeat("v", tenant.MaxMetadataValueBytes+1),
+		strings.Repeat("k", tenant.MaxMetadataKeyBytes+1) + "=v",
+		"Env=prod",
+		"acme.io/env=prod",
+	} {
+		out, err := update("--metadata", bad)
+		if err == nil {
+			t.Fatalf("[%s] metadata %.40q accepted: %s", proto.name, bad, out)
+		}
+		if !strings.Contains(strings.ToLower(out), "invalid") {
+			t.Fatalf("[%s] metadata %.40q: want an invalid-argument error, got: %s", proto.name, bad, out)
+		}
+		if got := get(); !maps.Equal(got.Metadata, want) {
+			t.Fatalf("[%s] refused update changed metadata: %v", proto.name, got.Metadata)
+		}
 	}
 
 	// --- clear both ------------------------------------------------------
@@ -732,5 +741,71 @@ func testTenantDescriptiveFieldsOverProtocol(t *testing.T, node *multiProtoNode,
 
 	if out, err := runCLIProto(t, node, proto, "tenant", "delete", tenantID); err != nil {
 		t.Fatalf("[%s] tenant delete: %v\noutput: %s", proto.name, err, out)
+	}
+}
+
+// TestTenant_CLI_DescriptiveFieldsConfined_PerProtocol drives `qrdb tenant
+// get` and `qrdb tenant update --description/--metadata` as a tenant identity
+// holding tenants:read and tenants:update, the tenant Admin's grants on its
+// own record, over every transport: it reads and sets its own tenant's
+// descriptive fields, and is refused another tenant's, whose record the
+// refused update leaves untouched.
+func TestTenant_CLI_DescriptiveFieldsConfined_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	const tenantID = "tdc-acme"
+	const foreignTenantID = "tdc-globex"
+	const foreignDesc = "Globex production"
+	createTenant(t, node, multiProtocols[0], tenantID, "Descriptive Confined Tenant", "prefix", false)
+	createTenant(t, node, multiProtocols[0], foreignTenantID, "Foreign Descriptive Tenant", "prefix", false)
+	if out, err := runCLIProto(t, node, multiProtocols[0], "tenant", "update", foreignTenantID,
+		"--description", foreignDesc, "--metadata", "owner=globex"); err != nil {
+		t.Fatalf("seeding the foreign tenant's descriptive fields: %v\noutput: %s", err, out)
+	}
+
+	certPath, keyPath := provisionTenantIdentity(t, node, tenantID, "tdc-admin",
+		[]string{"tenants:read", "tenants:update"})
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+
+			assertCrossTenantIAMForbidden(t, node, proto, conn, foreignDesc,
+				"--output", "json", "tenant", "get", foreignTenantID)
+			assertCrossTenantIAMForbidden(t, node, proto, conn, "",
+				"tenant", "update", foreignTenantID, "--description", "taken over", "--metadata", "owner=acme")
+
+			out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "get", foreignTenantID)
+			if err != nil {
+				t.Fatalf("[%s] operator tenant get %s: %v\noutput: %s", proto.name, foreignTenantID, err, out)
+			}
+			var foreign tenantDescriptiveCLIJSON
+			if jerr := json.Unmarshal([]byte(out), &foreign); jerr != nil {
+				t.Fatalf("[%s] decode tenant get JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			if foreign.Description != foreignDesc || !maps.Equal(foreign.Metadata, map[string]string{"owner": "globex"}) {
+				t.Fatalf("[%s] refused update changed the foreign tenant: %q, %v", proto.name, foreign.Description, foreign.Metadata)
+			}
+
+			// Its own tenant, by contrast, is read and written.
+			ownDesc := "Acme over " + proto.name
+			if out, err := runQRDB(t, node.cli, conn, "tenant", "update", tenantID,
+				"--description", ownDesc, "--metadata", "env=prod"); err != nil {
+				t.Fatalf("[%s] updating its own tenant: %v\noutput: %s", proto.name, err, out)
+			}
+			out, err = runQRDB(t, node.cli, conn, "--output", "json", "tenant", "get", tenantID)
+			if err != nil {
+				t.Fatalf("[%s] reading its own tenant: %v\noutput: %s", proto.name, err, out)
+			}
+			var own tenantDescriptiveCLIJSON
+			if jerr := json.Unmarshal([]byte(out), &own); jerr != nil {
+				t.Fatalf("[%s] decode own tenant get JSON: %v\noutput: %s", proto.name, jerr, out)
+			}
+			if own.Description != ownDesc || !maps.Equal(own.Metadata, map[string]string{"env": "prod"}) {
+				t.Fatalf("[%s] own tenant = %q, %v; want %q, env=prod", proto.name, own.Description, own.Metadata, ownDesc)
+			}
+		})
 	}
 }

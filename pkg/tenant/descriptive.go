@@ -15,10 +15,11 @@ const (
 	MaxDescriptionBytes = 1024
 	// MaxMetadataEntries bounds the number of TenantInfo.Metadata entries.
 	MaxMetadataEntries = 64
-	// MaxMetadataKeyBytes bounds one TenantInfo.Metadata key.
-	MaxMetadataKeyBytes = 128
+	// MaxMetadataKeyBytes bounds one TenantInfo.Metadata key, the length of
+	// a DNS label (RFC 1035 §2.3.4).
+	MaxMetadataKeyBytes = 63
 	// MaxMetadataValueBytes bounds one TenantInfo.Metadata value.
-	MaxMetadataValueBytes = 1024
+	MaxMetadataValueBytes = 256
 )
 
 // validateDescriptive checks the descriptive fields patch sets against the
@@ -36,10 +37,7 @@ func validateDescriptive(patch TenantPatch) error {
 		return &TenantFieldError{Field: "metadata", Reason: "more than " + strconv.Itoa(MaxMetadataEntries) + " entries"}
 	}
 	for k, v := range patch.Metadata {
-		if k == "" {
-			return &TenantFieldError{Field: "metadata key", Reason: "empty"}
-		}
-		if err := checkText("metadata key", k, MaxMetadataKeyBytes); err != nil {
+		if err := checkMetadataKey(k); err != nil {
 			return err
 		}
 		if err := checkText("metadata value", v, MaxMetadataValueBytes); err != nil {
@@ -47,6 +45,32 @@ func validateDescriptive(patch TenantPatch) error {
 		}
 	}
 	return nil
+}
+
+// checkMetadataKey refuses a key outside the Kubernetes label-name grammar
+// without a prefix: 1 to MaxMetadataKeyBytes bytes of [a-z0-9._-] that begin
+// and end with [a-z0-9].
+func checkMetadataKey(k string) error {
+	if k == "" {
+		return &TenantFieldError{Field: "metadata key", Reason: "empty"}
+	}
+	if len(k) > MaxMetadataKeyBytes {
+		return &TenantFieldError{Field: "metadata key", Reason: "exceeds " + strconv.Itoa(MaxMetadataKeyBytes) + " bytes"}
+	}
+	if !isKeyAlnum(k[0]) || !isKeyAlnum(k[len(k)-1]) {
+		return &TenantFieldError{Field: "metadata key", Reason: "must begin and end with [a-z0-9]"}
+	}
+	for i := 1; i < len(k)-1; i++ {
+		if c := k[i]; !isKeyAlnum(c) && c != '.' && c != '_' && c != '-' {
+			return &TenantFieldError{Field: "metadata key", Reason: "must contain only [a-z0-9._-]"}
+		}
+	}
+	return nil
+}
+
+// isKeyAlnum reports whether c is a lowercase ASCII letter or a digit.
+func isKeyAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 }
 
 // checkText refuses s when it is longer than limit bytes or not valid UTF-8.

@@ -1,6 +1,6 @@
 # Secondary Indexes
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 QRDB provides secondary indexes for efficient lookups and range scans on entity attributes without scanning the entire dataset.
@@ -20,7 +20,7 @@ When you query `Email = "alice@example.com"`, the index is consulted instead of 
 
 ## 2. Index Types
 
-QRDB supports two index types, configured via flags during creation:
+QRDB supports two index types, `index.IndexTypeNormal` and `index.IndexTypeUnique`; sparse is a flag on either. `IndexService.CreateIndex(ctx, name, fieldName, config)` takes the index name and field as arguments and the rest as a `service.IndexConfig`.
 
 ### Unique Index
 
@@ -28,14 +28,11 @@ A unique index enforces that no two entities have the same value for the indexed
 
 ```go
 // Enforce unique email addresses
-createIndex := &service.IndexConfig{
-    Name:      "EmailIndex",
-    Field:     "Email",
-    Unique:    true,  // No duplicates allowed
-    Sparse:    false, // Null values indexed
-}
-
-err := indexService.CreateIndex(ctx, createIndex)
+err := indexService.CreateIndex(ctx, "EmailIndex", "Email", service.IndexConfig{
+    Type:          index.IndexTypeUnique,
+    Unique:        true,
+    CaseSensitive: true,
+})
 // Now: PUT {ID: user2, Email: alice@example.com} fails if alice@ already exists
 ```
 
@@ -50,14 +47,10 @@ A normal index allows multiple entities to have the same value.
 
 ```go
 // Index user status (many users can be "active")
-createIndex := &service.IndexConfig{
-    Name:      "StatusIndex",
-    Field:     "Status",
-    Unique:    false, // Multiple entities allowed
-    Sparse:    false, // Null values indexed
-}
-
-err := indexService.CreateIndex(ctx, createIndex)
+err := indexService.CreateIndex(ctx, "StatusIndex", "Status", service.IndexConfig{
+    Type:          index.IndexTypeNormal,
+    CaseSensitive: true,
+})
 // Now: Can have many users with Status = "active"
 ```
 
@@ -72,14 +65,11 @@ A sparse index excludes null/missing values:
 
 ```go
 // Index only users with an "Department" field set
-createIndex := &service.IndexConfig{
-    Name:      "DeptIndex",
-    Field:     "Department",
-    Unique:    false,
-    Sparse:    true,  // Null/missing values NOT indexed
-}
-
-err := indexService.CreateIndex(ctx, createIndex)
+err := indexService.CreateIndex(ctx, "DeptIndex", "Department", service.IndexConfig{
+    Type:          index.IndexTypeNormal,
+    Sparse:        true, // Null/missing values NOT indexed
+    CaseSensitive: true,
+})
 // Now: Query Department index only sees non-null entries
 ```
 
@@ -91,70 +81,41 @@ err := indexService.CreateIndex(ctx, createIndex)
 
 ## 3. Database-Scoped Index Names
 
-Index names are scoped to a database and entity type, following a hierarchical naming convention:
+Index names are scoped to a database. A DAO names a tag-declared index by entity type (`genericDAO.indexName`, `pkg/dao/generic_dao.go`); a compound index joins its fields with `_`. A collection names its indexes by collection (`collectionIndexName`, `pkg/service/collection_types.go`):
 
 ```
-{database}.{entityType}.{FieldName}
+{database}.{entityType}.{field}     # DAO; {entityType}.{field} with no database
+{database}.{collection}.{field}     # collection
 ```
 
 **Examples:**
 
 ```
-qrdb.User.Email       # Email index on User entities in "qrdb" database
-qrdb.User.Status      # Status index on User entities in "qrdb" database
-qrdb.Order.Total      # Total index on Order entities in "qrdb" database
-myapp.User.Email      # Email index in "myapp" database (different from qrdb.User.Email)
+qrdb.User.Email                 # DAO index on User entities in "qrdb"
+User.ConversationID_Timestamp   # DAO compound index, no database
+qrdb.users.Email                # Email index on the "users" collection in "qrdb"
+myapp.users.Email               # Email index in "myapp" (different from qrdb.users.Email)
 ```
 
 **Benefits:**
 
-- Prevents name collisions across entity types
-- Enables the query planner to route queries to the correct index
+- Prevents name collisions across entity types and collections
 - Supports multi-database deployments
-
-**Creation example:**
-
-```go
-createIndex := &service.IndexConfig{
-    Name:   "qrdb.User.Email",  // Scoped name
-    Field:  "Email",
-    Unique: true,
-}
-err := indexService.CreateIndex(ctx, createIndex)
-```
 
 ## 4. Collection Index Definitions
 
-When creating a collection via the DAO or API, you can define indexes inline:
+`CollectionService.CreateCollection` takes the collection's indexes inline as `service.IndexDefinition` values; each is named `{database}.{collection}.{field}`:
 
 ```go
-// Create collection with indexes
-collection := &service.CollectionConfig{
-    Name:   "users",
-    Entity: User{},
-    Indexes: []*service.IndexConfig{
-        {
-            Name:   "users.User.Email",
-            Field:  "Email",
-            Unique: true,
-        },
-        {
-            Name:   "users.User.Status",
-            Field:  "Status",
-            Unique: false,
-            Sparse: false,
-        },
-        {
-            Name:   "users.User.Department",
-            Field:  "Department",
-            Unique: false,
-            Sparse: true,
-        },
+err := collectionService.CreateCollection(ctx, &service.CreateCollectionRequest{
+    Name:     "users",
+    Database: "qrdb",
+    Indexes: []service.IndexDefinition{
+        {FieldName: "Email", Unique: true},
+        {FieldName: "Status"},
+        {FieldName: "Department", Sparse: true},
     },
-}
-
-err := collectionService.Create(ctx, collection)
-// All three indexes are created atomically
+})
 ```
 
 ## 5. Struct Tag Integration
@@ -177,9 +138,12 @@ type User struct {
 **Tag syntax:**
 
 ```go
-`index:"true"`                      // Non-unique index
+`index:"true"`                      // Non-unique index (also "normal")
 `index:"unique"`                    // Unique index
-`index:"case_insensitive"`          // Case-insensitive (strings)
+`index:"sparse"`                    // Skip absent or empty values
+`index:"case_insensitive"`          // Case-insensitive strings (also "ci")
+`index:"case_sensitive"`            // Case-sensitive strings (also "cs")
+`index:"fulltext"`                  // Full-text index (also "fts")
 `index:"unique,case_insensitive"`   // Combine options (comma-separated)
 ```
 
@@ -188,50 +152,11 @@ The canonical tag key is `index`. Parsing lives in
 queryable through `Find().Where("Field = ?", v)` with automatic index
 selection — see [16-query-planner.md](16-query-planner.md).
 
-The DAO layer reads these tags at collection creation and automatically creates the declared indexes.
+## 6. Storage
 
-## 6. Storage Backends
+Both engines build every index as an `index.StoragePebbleIndex` (`index.NewStoragePebbleIndex`) over the store's own `storage.Storage`, so an index lives on whichever backend the store uses (memory, file or PebbleDB) and supports ordered range scans. There is no per-index backend option.
 
-Indexes are stored in separate key-value namespaces, allowing different backend implementations per index:
-
-### PebbleDB Index
-
-The default backend for production. Indexes are stored in PebbleDB, enabling fast ordered scans and range queries.
-
-```
-Index storage:
-email:alice@example.com → [user1, user3]
-email:bob@example.com   → [user2]
-```
-
-**Characteristics:**
-- Persistent to disk
-- Ordered key-value store
-- Supports range scans
-- Suitable for large indexes
-
-### Memory Index
-
-For testing or non-persistent indexes, the memory backend stores indexes in-memory in a sync.Map:
-
-```go
-// Create in-memory index
-createIndex := &service.IndexConfig{
-    Name:    "SessionIndex",
-    Field:   "SessionID",
-    Unique:  true,
-    Backend: "memory",  // In-memory
-}
-
-err := indexService.CreateIndex(ctx, createIndex)
-// Index is fast but lost on restart
-```
-
-**Characteristics:**
-- Fast for small datasets
-- Lost on restart
-- No persistence
-- Useful for ephemeral data (sessions, caches)
+`index.MemoryIndex` (`pkg/index/memory_index.go`) is a map under a `sync.RWMutex`; the engines do not use it.
 
 ## 7. Query Planner Integration
 
@@ -258,73 +183,40 @@ The planner picks the lowest-cost strategy.
 ### Creation
 
 ```go
-createIndex := &service.IndexConfig{
-    Name:   "qrdb.User.Email",
-    Field:  "Email",
+err := indexService.CreateIndex(ctx, "EmailIndex", "Email", service.IndexConfig{
+    Type:   index.IndexTypeUnique,
     Unique: true,
-}
-
-err := indexService.CreateIndex(ctx, createIndex)
-if err != nil {
-    // Handle error (index exists, field not found, etc.)
-}
+})
 ```
 
 ### Lookup
 
 ```go
-// Exact match
-results, err := indexService.Query(ctx, &service.IndexQueryRequest{
-    IndexName: "qrdb.User.Email",
-    Value:     "alice@example.com",
-})
-// Returns all entities with Email = "alice@example.com"
+// Exact match: returns the keys of every entity with Email = "alice@example.com"
+keys, err := indexService.Query(ctx, "EmailIndex", []byte("alice@example.com"))
 ```
 
 ### Range Scan
 
 ```go
-// Range query
-results, err := indexService.Scan(ctx, &service.IndexScanRequest{
-    IndexName: "qrdb.User.Status",
-    Start:     "active",
-    End:       "inactive",
-})
-// Returns all entities with Status in ["active", "inactive"]
+// Returns indexed value -> entity keys for values in ["active", "inactive")
+byValue, err := indexService.Scan(ctx, "StatusIndex", []byte("active"), []byte("inactive"))
 ```
 
 ### Listing
 
 ```go
-// List all indexes
-indexes, err := indexService.List(ctx, &service.IndexListRequest{
-    Database: "qrdb",
-})
-
-for _, idx := range indexes {
-    fmt.Printf("%s: %s (unique=%v, sparse=%v)\n",
-        idx.Name, idx.Field, idx.Unique, idx.Sparse)
-}
+names, err := indexService.ListIndexes(ctx) // []string
 ```
 
 ### Deletion
 
 ```go
-// Drop index
-err := indexService.Delete(ctx, "qrdb.User.Email")
-if err != nil {
-    // Handle error (not found, in use, etc.)
-}
-// Index is removed; queries on this field revert to full scan
+err := indexService.DropIndex(ctx, "EmailIndex")
+// Queries on this field revert to full scan
 ```
 
-### Rebuild
-
-```go
-// Rebuild index (compaction, deduplication)
-err := indexService.Rebuild(ctx, "qrdb.User.Email")
-// Index is rebuilt from entity data; old entries cleaned up
-```
+`DropOwnedIndex(ctx, name, owner)` drops an index only when `owner` matches its `IndexConfig.Owner`.
 
 ## 9. Index-Accelerated WHERE Clauses
 
@@ -352,32 +244,8 @@ results, err := userDAO.QueryByIndex(ctx, "Email", "alice@example.com")
 See [16-query-planner.md](16-query-planner.md) for the full fluent API
 reference, supported operators, and when to prefer each path.
 
-## 10. Performance Characteristics
+## 10. Write Amplification
 
-### Lookup Time
-
-| Index Type | Cardinality | Time |
-|-----------|------------|------|
-| Unique index | 1M entries | <1 ms |
-| Non-unique (100 matches) | 1M entries | 1–5 ms |
-| Index range scan (1000 matches) | 1M entries | 5–20 ms |
-| Full scan (1000 matches) | 1M entries | 100–500 ms |
-
-### Storage Overhead
-
-```
-Original data: 1M users × 500 bytes = 500 MB
-
-Index storage (Email, unique):
-  ~1M entries × 64 bytes (hash + key + value) = 64 MB
-
-Index storage (Status, non-unique):
-  ~1M entries × 64 bytes = 64 MB
-
-Total overhead: ~128 MB for two indexes (25% of original)
-```
-
-### Write Amplification
 
 Every write to an indexed field updates the index. With multiple indexes:
 
@@ -399,23 +267,22 @@ Use sparse indexes and selective indexing to minimize write amplification.
 ```yaml
 index:
   max_indexes: 64              # Maximum number of indexes
-  # per-index configuration not yet exposed; use API
 ```
 
 ### CLI
 
 ```bash
 # Create index
-qrdb index create EmailIndex --field Email --unique
+qrdb index create EmailIndex --field Email --unique   # also --sparse, --numeric
 
 # List indexes
 qrdb index list
 
 # Query index
-qrdb index query EmailIndex alice@example.com
+qrdb index query EmailIndex --value alice@example.com
 
-# Scan index range
-qrdb index scan StatusIndex active inactive
+# Scan index range (start inclusive, end exclusive)
+qrdb index scan StatusIndex --start active --end inactive
 
 # Drop index
 qrdb index drop EmailIndex
@@ -463,12 +330,12 @@ contiguous prefix of its fields:
 
 | Query Pattern | Usable? | Plan Type |
 |---|---|---|
-| `A = ?` | Yes (1 field prefix) | CompoundIndexScan |
+| `A = ?` | **No** (a compound plan needs 2+ matched fields) | Falls back to single-field |
 | `A = ? AND B = ?` | Yes (2 field prefix) | CompoundIndexLookup |
 | `A = ? AND B = ? AND C = ?` | Yes (full match) | CompoundIndexLookup |
 | `A = ? AND B > ?` | Yes (prefix + range) | CompoundIndexScan |
 | `B = ?` alone | **No** (no leading prefix) | Falls back to single-field |
-| `A = ? AND C = ?` (gap) | Partial: uses `A=?` prefix only, `C=?` is post-filter | CompoundIndexScan |
+| `A = ? AND C = ?` (gap) | **No** (only 1 field matched) | Falls back to single-field |
 
 ### Query Builder Integration
 

@@ -52,7 +52,7 @@ func TestClusteredCreateFunc_AppliesVerifiableLog(t *testing.T) {
 		t.Run("sm_type="+smType, func(t *testing.T) {
 			cfg := qrdbconfig.DefaultConfig()
 			cfg.Raft.SMType = smType
-			fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil)
+			fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
 			require.NoError(t, err)
 
 			machine, ok := fn(1, 1).(sm.DiskStateMachine)
@@ -86,7 +86,7 @@ func TestClusteredCreateFunc_LogRegistryPerReplica(t *testing.T) {
 	create, err := protocol.EncodeVerifiableLogCreate(id, vlog.Descriptor{Origin: "db.example.com/acme/certs", Hash: vlog.HashSHA256, VerifierKeys: []string{"key-1"}})
 	require.NoError(t, err)
 
-	fn, err := clusteredCreateFunc(qrdbconfig.DefaultConfig(), nil, nil, nil, nil)
+	fn, err := clusteredCreateFunc(qrdbconfig.DefaultConfig(), nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 	open := func(shardID uint64) sm.DiskStateMachine {
 		machine := fn(shardID, 1).(sm.DiskStateMachine)

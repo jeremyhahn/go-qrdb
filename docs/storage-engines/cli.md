@@ -43,8 +43,10 @@ Objstore is a snapshot and backup tier and is **refused** as a hot apply path.
 
 `sm_storage` is read by the storage-generic state machines (`sm_type: disk` or
 `fast`), which keep their per-replica storage under
-`<data-dir>/sm/shard-<S>-replica-<R>`. Every other state machine carries its
-own storage and rejects a non-pebble `sm_storage`. With the seal barrier
+`<data-dir>/sm/shard-<S>-replica-<R>`. An embedder's
+`node.WithReplicaStorageFactory` opens that per-replica storage in place of
+`sm_storage`. Every other state machine carries its own storage and rejects a
+non-pebble `sm_storage`. With the seal barrier
 enabled, `disk` and `fast` over `pebble` storage are encrypted at rest by the
 barrier, like the `pebble` and `mvcc` state machines, and so is `file`
 storage: every record and journal file goes through the barrier's encrypting

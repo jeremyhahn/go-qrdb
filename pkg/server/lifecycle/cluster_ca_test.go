@@ -238,7 +238,10 @@ func TestAwaitReplicatedClusterCACertificate_RetriesSettlingShard(t *testing.T) 
 func TestAwaitReplicatedClusterCACertificate_NeverReplicatedFailsAtDeadline(t *testing.T) {
 	stub := &flakyClusterCAProvider{notLeaderCalls: 1 << 30, transientErr: &cakey.NotInitializedError{}}
 
-	_, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, 30*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	// The budget is many retry delays long, not a few: CI saw the first
+	// attempt alone take 44 ms against a 30 ms budget on a loaded runner,
+	// leaving no time for the retry this test asserts.
+	_, err := AwaitReplicatedClusterCACertificate(context.Background(), stub, 300*time.Millisecond, time.Millisecond, 5*time.Millisecond)
 	var readErr *server.StartupReadError
 	if !errors.As(err, &readErr) {
 		t.Fatalf("AwaitReplicatedClusterCACertificate = %v, want *server.StartupReadError", err)
