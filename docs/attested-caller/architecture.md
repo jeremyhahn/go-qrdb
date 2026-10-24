@@ -1,6 +1,6 @@
 # Attested Caller — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 An authorization gate that admits a request for a chosen set of operations only
@@ -39,7 +39,7 @@ mTLS handshake → authenticate (identity) → RBAC grants the permission
   this peer") and state ("is its state acceptable now") are different claims.
   Keeping them apart is what lets attestation be withdrawn — evidence goes
   stale, a measurement changes — without touching authentication.
-- **It runs only on a request RBAC granted.** It is a second condition on
+- **It runs only on a request the authorization decision granted.** It is a second condition on
   admission, never a substitute for the first, and a denied request costs no
   verification.
 - **qrdb owns the seam; go-xkms owns the verifier.** qrdb defines
@@ -94,7 +94,7 @@ follows `auth.audit_failure_policy` like every other gate.
 ### Alternatives rejected
 
 - **An authenticator in the chain** that produces an identity only for attested
-  peers. Rejected by ruling: it would make "attested" unrevocable independently
+  peers. Rejected: it would make "attested" unrevocable independently
   of "authenticated", and conflate two claims.
 - **Fresh evidence per request.** Rejected: a quote per request is a TPM
   operation on the request path. Evidence comes from a background collector's
@@ -115,12 +115,12 @@ follows `auth.audit_failure_policy` like every other gate.
 | MCP | yes | `AuthorizeMCP` → `authorize` |
 | Tenant-targeted handlers on any of the above | yes | `AuthorizeTenant` → `authorize` |
 | Embedded (in-process) | **no** | there is no peer: the caller is the process itself |
-| etcd-compatible listener | **no** | it does not route through the auth middleware at all, so it never reaches `authorize` |
-| MySQL and PostgreSQL wire frontends | **no** | they authenticate through the middleware but authorize with their own SQL privilege checks, never `authorize` |
+| etcd-compatible listener | yes | `etcdRequestAuthorizer.AuthorizeRequest` → `AuthorizeTenant` → `authorize` |
+| MySQL and PostgreSQL wire frontends | **partly** | `CREATE DATABASE` and `DROP DATABASE` authorize through `AuthorizeTenant` → `authorize`; every other statement is authorized by the frontends' own SQL privilege checks, never `authorize` |
 
 The gate lives in `authorize`, so it applies exactly where `authorize` runs.
 A deployment that must attest every caller of an operation has to keep that
-operation off the three frontends in the last rows.
+operation off the rows marked **no** or **partly**.
 
 A transport that authenticates without a verified client certificate has no
 peer to attest, so a gated operation reached that way is refused with
@@ -132,8 +132,10 @@ real authorization in the handler (an officer registry lookup, a thumbprint
 match). The gate sees the sentinel, so it applies to that route only if the
 policy lists `permission.IdentityGated` itself — which gates every such route —
 and never on the permission the handler checks internally. The tenant-barrier
-bootstrap windows are the exception: they authorize through
-`AuthorizeTenant` with the real barrier permission, and that is gated.
+bootstrap windows are the exception: `AuthorizeTenantBarrierInit` and
+`AuthorizeTenantBarrierSealedOp` authorize through `AuthorizeTenant` with the
+real barrier permission, which is gated, and their fallback grant runs the gate
+too.
 
 ## Trust boundaries
 

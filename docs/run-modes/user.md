@@ -1,6 +1,6 @@
 # Run Modes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-run-modes`; coverage row: `test/integration/COVERAGE.md` `[run-modes](../../docs/run-modes/)`.
@@ -20,10 +20,6 @@ vectors. Your application code is the same as against a raft server.
 cluster: replication, cluster membership, rebalance, shard backup/restore and
 etcd compatibility. A single-node raft deployment is a one-replica group —
 same write path as a cluster, and it scales out cleanly later.
-
-*(Watch, leases, locks and revisions were previously listed here as raft-only.
-They are served in standalone too since 2026-10-01; corrected to match the
-code. Transactions were listed as raft-only before that, and were not.)*
 
 **Run standalone** when one process is enough and you want no cluster to
 operate. **Run raft** when you need replicas, or expect to grow into a cluster.
@@ -71,11 +67,8 @@ lock, _ := client.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{
 it alive, and if the process dies the lease expires and the lock is free for
 the next holder. On a standalone node the server runs the expiry itself.
 
-**Pick a backend that serves what you need.** The pebble and memory backends
-serve every data-plane family. The file and objstore backends keep no
-revisions and no leases, so they serve watch and value/version transactions
-but refuse leases, locks, revisions, revision compares and any write that
-names a lease with a typed "unsupported" error.
+**Pick any backend.** The memory, file, pebble and objstore backends all serve
+the whole data plane, revisions, watch, leases and locks included.
 
 **Compile in the optional features you want.** Build tags are the outermost
 gate — config cannot switch on something the binary does not contain.
@@ -99,13 +92,10 @@ from the last revision it saw.
 
 ## Troubleshooting
 
-**"requires mode: raft".** The feature needs a cluster: membership, rebalance,
-shard backup, or the etcd listener. Move to raft mode — a single-node raft
-server is enough — or do without it.
-
-**A lease or lock call is refused as "unsupported" on a standalone node.** The
-node runs on the file or objstore backend, which keeps no leases. Use pebble or
-memory.
+**"requires mode: raft" or "cluster operation not supported".** The feature
+needs a cluster: the etcd listener, membership or a snapshot. Rebalance and
+shard backup need one too. Move to raft mode — a single-node raft server is enough — or do without
+it.
 
 **A capability reports `false` and you do not know why.** Three possibilities:
 it was not compiled in, the run mode forbids it, or config disabled it. Check
@@ -126,10 +116,6 @@ is refused as a hot apply path. Use `pebble` (the default), `file` or `memory`.
 Note also that `sm_storage` applies only to `sm_type: disk` and `fast`; every
 other state machine carries its own storage and rejects a non-pebble
 `sm_storage`.
-
-**Time series or vector operations are unavailable even though the tags are
-compiled in.** Both need the MVCC-capable engine, so they do not work over the
-file or objstore backends.
 
 **A restarted raft node has not started serving `/health`.** It is waiting on
 its cluster, and its log says on what: every 5 seconds it logs a WARN line,

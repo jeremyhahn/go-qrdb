@@ -35,13 +35,14 @@ import (
 )
 
 // mcpCertThumbprint returns the verified TLS client certificate's
-// thumbprint; the share claim requires one.
+// thumbprint (service.VerifiedClientCertThumbprint); the share claim
+// requires one.
 func mcpCertThumbprint(ctx context.Context, toolName string) (string, error) {
-	tlsState := auth.TLSStateFromContext(ctx)
-	if tlsState == nil || len(tlsState.PeerCertificates) == 0 {
-		return "", &ToolError{Tool: toolName, Err: &service.ClientCertRequiredError{}}
+	thumb, err := service.VerifiedClientCertThumbprint(ctx)
+	if err != nil {
+		return "", &ToolError{Tool: toolName, Err: err}
 	}
-	return mtls.Thumbprint(tlsState.PeerCertificates[0].Raw), nil
+	return thumb, nil
 }
 
 // mcpOptionalThumbprint returns the verified TLS client certificate's

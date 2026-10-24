@@ -25,15 +25,26 @@ type vectorBatch struct {
 	db      *pebble.DB
 	count   int
 	metrics *vectorMetrics
+	// durably runs Commit's write: PebbleVectorStorage.durably for a batch
+	// the store makes (newBatch), so a store that syncs writes syncs and
+	// times its batches too; noSync otherwise.
+	durably func(write func(*pebble.WriteOptions) error) error
 }
 
-// newVectorBatch creates a new vector batch.
+// newVectorBatch creates a new vector batch that commits without syncing;
+// the store's batches come from PebbleVectorStorage.newBatch.
 func newVectorBatch(db *pebble.DB, metrics *vectorMetrics) *vectorBatch {
 	return &vectorBatch{
 		batch:   db.NewBatch(),
 		db:      db,
 		metrics: metrics,
+		durably: noSync,
 	}
+}
+
+// noSync runs write with pebble.NoSync.
+func noSync(write func(*pebble.WriteOptions) error) error {
+	return write(pebble.NoSync)
 }
 
 // UpsertVector adds a vector upsert to the batch.
@@ -148,13 +159,14 @@ func (b *vectorBatch) DeleteVector(namespace string, id uint64) error {
 	return nil
 }
 
-// Commit atomically commits all operations.
+// Commit atomically commits all operations, durably when the batch's store
+// syncs writes.
 func (b *vectorBatch) Commit() error {
 	if b.count == 0 {
 		return ErrEmptyBatch
 	}
 
-	err := b.batch.Commit(pebble.NoSync)
+	err := b.durably(b.batch.Commit)
 	if err == nil && b.metrics != nil {
 		b.metrics.batchCommits.Inc()
 	}

@@ -1,7 +1,7 @@
 # Databases — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the multi-model database program in
@@ -14,8 +14,7 @@ in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 ## `qrdb database create <name>`
 
-`--engine` is removed (shipped, Lane 1C); passing it is an unknown-flag
-error. Every database serves every compiled-in engine.
+There is no `--engine` flag; passing one is an unknown-flag error. Every database serves every compiled-in engine.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
@@ -31,6 +30,7 @@ error. Every database serves every compiled-in engine.
 | `--etcd` | bool | false | enable the etcd wire protocol |
 | `--etcd-listen-addr` | string | `localhost:2379` | etcd listen address |
 | `--etcd-advertise-urls` | strings | — | advertised etcd client URLs |
+| `--sql-concurrency` | string | `optimistic` | `optimistic \| pessimistic` — the database's SQL concurrency mode |
 
 ```bash
 qrdb database create app
@@ -48,17 +48,16 @@ on any database of a volume- or raft-isolated tenant
 (`BarrierOffDataPathError`): each is served from a store the barrier would not
 wrap. Both refusals are `422` / `FAILED_PRECONDITION`.
 
-**Reserved names.** `wal` and `nodehost` (in any case) name node state and
-are refused for every database.
+**Reserved names.** `wal`, `nodehost` and `__home` (in any case) name node
+state and are refused for every database.
 
-Measured: `--backend` is recorded and, for most databases, not where the data
+`--backend` is recorded and, for most databases, not where the data
 lives, and `--backend objstore` fails when the store is opened. See
 [architecture.md](architecture.md) "Current state".
 
 ### Target: `qrdb database create <name>` (remaining, unshipped)
 
-`--engine`'s removal shipped in Lane 1C, above; the remaining rows are not yet
-implemented.
+These rows are not yet implemented.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
@@ -211,7 +210,7 @@ restart and a backup; `qrdb database info` shows it.
 | `--advertise-urls` | strings | — | advertised client URLs |
 
 ```bash
-qrdb database update-etcd --name k8s --enabled --listen-addr :2379
+qrdb database update-etcd k8s --enabled --listen-addr :2379
 ```
 
 ### `qrdb database update-raft <name>`
@@ -219,11 +218,14 @@ qrdb database update-etcd --name k8s --enabled --listen-addr :2379
 | Flag | Type | Meaning |
 |---|---|---|
 | `--cluster-mode` | string | `none \| local \| distributed` |
+| `--replica-id` | uint64 | raft replica ID |
+| `--raft-address` | string | raft address, `host:port` |
 
 ### `qrdb database update-connection <name>`
 
-For a database backed by a remote node. Measured: the connection is recorded and
-never used — no remote proxy is constructed. Removed in the target design, with remote mode (OD-9, ruled A).
+For a database backed by a remote node. The connection is recorded and never
+used — no remote proxy is constructed. The target design removes it, with
+remote mode (OD-9).
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
@@ -285,6 +287,10 @@ server's nonce instead.
 a Shamir database barrier; its holders unseal and seal it with
 `barrier-quorum submit --op unseal|seal`.
 
-## Parity
+## Integration tests
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`make integration-test-databases` drives these verbs through the `qrdb` CLI
+(`test/integration/database_lifecycle_cli_test.go`,
+`database_barrier_cli_test.go`, `database_barrier_holders_cli_test.go`); the
+`_PerProtocol` and `_AllTransports` tests run each verb on every transport.
+`test/integration/COVERAGE.md` records what is not covered.

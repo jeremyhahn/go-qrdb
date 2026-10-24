@@ -630,6 +630,104 @@ func TestRAGRetrieverAdapter_Retrieve(t *testing.T) {
 	}
 }
 
+// TestRAGService_DeleteDocumentRemovesVectors proves on the node's real
+// vector and KV services that deleting a document removes every one of its
+// chunk vectors, not only the chunk text, and leaves the other document's.
+func TestRAGService_DeleteDocumentRemovesVectors(t *testing.T) {
+	srv := fakeEmbeddingServer(t)
+	defer srv.Close()
+
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+		Logger:   slog.Default(),
+		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
+			DefaultProvider: "fake",
+			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "fake")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
+
+	ctx := context.Background()
+	const ns = "del-ns"
+	ingest := func(id, text string) int {
+		t.Helper()
+		resp, err := node.RAG.IngestDocument(ctx, &service.IngestDocumentRequest{
+			DocumentID: id,
+			Text:       text,
+			Namespace:  ns,
+			Model:      "fake-model",
+			Provider:   "fake",
+			ChunkConfig: &service.ChunkConfig{
+				Strategy:  "fixed",
+				ChunkSize: 32,
+				Overlap:   8,
+			},
+		})
+		if err != nil {
+			t.Fatalf("IngestDocument %s: %v", id, err)
+		}
+		return resp.ChunkCount
+	}
+	gone := ingest("doc-gone", strings.Repeat("Deleted documents leave nothing. ", 8))
+	kept := ingest("doc-kept", strings.Repeat("Kept documents stay. ", 4))
+
+	if _, err := node.RAG.DeleteDocument(ctx, &service.DeleteRAGDocumentRequest{
+		DocumentID: "doc-gone",
+		Namespace:  ns,
+	}); err != nil {
+		t.Fatalf("DeleteDocument: %v", err)
+	}
+
+	list, err := node.Vector.ListVectors(ctx, &service.ListVectorsRequest{
+		Namespace:       ns,
+		Limit:           1000,
+		IncludeMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("ListVectors: %v", err)
+	}
+	if len(list.Vectors) != kept {
+		t.Fatalf("namespace holds %d vectors after deleting a %d-chunk document, want doc-kept's %d",
+			len(list.Vectors), gone, kept)
+	}
+	for _, v := range list.Vectors {
+		if v.Metadata["doc_id"] != "doc-kept" {
+			t.Errorf("vector %d of %v survived the delete", v.ID, v.Metadata["doc_id"])
+		}
+	}
+
+	qResp, err := node.RAG.Query(ctx, &service.RAGQueryRequest{
+		Query:     "Deleted documents",
+		Namespace: ns,
+		TopK:      gone + kept,
+		Model:     "fake-model",
+		Provider:  "fake",
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(qResp.Results) != kept {
+		t.Fatalf("query returned %d results, want doc-kept's %d", len(qResp.Results), kept)
+	}
+	for _, r := range qResp.Results {
+		if r.DocumentID != "doc-kept" {
+			t.Errorf("query after delete returned a chunk of %q", r.DocumentID)
+		}
+	}
+}
+
 // TestRAGIngestorAdapter_IngestWithChunkConfig verifies the ChunkConfig
 // conversion branch inside ragIngestorAdapter.Ingest (req.ChunkConfig != nil).
 func TestRAGIngestorAdapter_IngestWithChunkConfig(t *testing.T) {

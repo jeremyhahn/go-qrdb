@@ -1,6 +1,6 @@
 # Desktop GUI — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 **No `qrdb` verb launches the GUI.** The same binary is both the CLI and the
@@ -43,20 +43,18 @@ instead.
 
 ## The `embedded` transport
 
-The GUI build is also what enables the CLI's in-process transport:
-
-```bash
-qrdb --transport embedded kv get hello
-```
-
-`embedded` is listed in `--transport`'s values on every build, but it works only
-in the desktop/GUI build.
+`--transport embedded` is an accepted value, but every CLI verb given it fails
+with `EmbeddedTransportUnavailableError`: the CLI does not link the server
+in-process. The embedded server is reached only from the GUI, through its
+connection manager, in a build with the `qrdb_embedded` tag
+(`WITH_QRDB_EMBEDDED=1`, the default).
 
 ## What the GUI does
 
-- **First run** — a setup wizard: choose embedded or remote server, pick a
-  storage backend, configure Raft, configure the encryption barrier, review,
-  initialize.
+- **First run** — **Add Server** opens: create an embedded server or connect
+  to an external one. In a browser, a server never initialized gets the
+  initialization wizard: barrier, share holders when Shamir, first admin
+  credential.
 - **Returning** — if the server is sealed it shows the unseal prompt; otherwise
   the full application.
 - **Views are capability-gated**: what appears follows what the server reports
@@ -71,6 +69,6 @@ GUI is exactly as privileged as the certificate it presents — no more.
 ## Parity
 
 The GUI has no `CommandDefinition`s; it is not a verb surface. The bindings
-behind it are covered by Go unit tests. Note that the TypeScript SDK's seven
-contract suites are **not run in CI** — see
-[engineering.md](engineering.md#known-test-gap).
+behind it are covered by Go unit tests; the TypeScript SDK's contract suites run
+in CI's `test-typescript` job — see
+[engineering.md](engineering.md#typescript-in-ci).

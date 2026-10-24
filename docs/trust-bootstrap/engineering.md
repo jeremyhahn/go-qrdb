@@ -13,13 +13,9 @@ and its `RunE` returns:
 return &PendingBootstrapBackendError{Mode: mode}
 ```
 
-The source comment states the intent plainly: *"the underlying TOFU
-implementation lives in xkms; qrdb exposes the command shape so the canonical
-surface is identical across binaries."*
-
-This is recorded here rather than described as working behaviour. An agent
-picking up work on trust bootstrap in **this** repo is working on a shape, not
-on a protocol.
+The TOFU implementation lives in go-xkms; qrdb exposes the command shape so
+the canonical surface is identical across binaries. Work on trust bootstrap in
+this repository is work on that shape, not on a protocol.
 
 ## Exported surface
 
@@ -64,32 +60,34 @@ yet. It is the server half of the `direct` mode, and it is real.
   Configuring both refuses startup with `*rest.CABootstrapConflictError`
   (`sdk.CABootstrapConflictError`); qrdb never picks one.
 - **`/v1/ca/bootstrap` does not exist unless configured.** Unconfigured, the
-  path is not even claimed. Until v0.25.1-alpha it was claimed
-  unconditionally, so a host serving its own bundle there panicked at boot
-  with a route collision. An unconfigured
-  deployment returns 404 rather than an empty or self-signed bundle.
+  path is not even claimed, so a host serving its own bundle there does not
+  collide with it. An unconfigured deployment returns 404 rather than an empty or self-signed bundle.
 
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Any `qrdb bootstrap <mode>` | `PendingBootstrapBackendError{Mode}` | **yes** — no partial or insecure fallback |
-| `/v1/ca/bootstrap` with no bootstrap certificate configured | route unregistered, 404 | **yes** |
+| `/v1/ca/bootstrap` with no bootstrap source configured | route unregistered, 404 | **yes** |
 | `/v1/ca/bootstrap` configured with bytes that include key material | reduced to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`); no key is ever served; input with no certificate registers no route | **yes** |
 
 ## Configuration
 
-The bootstrap certificate served by `/v1/ca/bootstrap` is a server
-configuration item; see [../configuration/](../configuration/). The client-side
+qrdbd serves the cluster CA certificate from its cluster TLS bundle on every
+member that holds one; a node started on explicit TLS files serves no
+bootstrap route (`servesAnchor`, `cmd/qrdbd/bootstrap.go`). No configuration
+key names the certificate. The client-side
 modes have no configuration here because they have no implementation here.
 
 ## Test strategy
 
-- **Unit**: each mode subcommand returns `PendingBootstrapBackendError` with the
-  right `Mode`, and the command tree registers exactly the five canonical modes.
-  That is the whole testable surface, and testing it is what keeps the shape
-  from drifting away from the other binaries.
-- **Server side**: `/v1/ca/bootstrap` is registered when a bootstrap certificate
+- **Unit**: each of the five mode subcommands returns
+  `PendingBootstrapBackendError` with the right `Mode`
+  (`cmd/qrdb/coverage_gap_final_test.go`).
+- **Integration**: `test/integration/bootstrap_cli_test.go` runs each mode on
+  every transport, which is what keeps the shape from drifting away from the
+  other binaries.
+- **Server side**: `/v1/ca/bootstrap` is registered when a bootstrap source
   is configured and absent when it is not. The raw response body is asserted to
   carry no `PRIVATE KEY` block, including when the key is handed in with the
   certificate (`pkg/api/rest/ca_bootstrap_nokey_test.go`).

@@ -1,7 +1,6 @@
 # Run Modes — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06 ·
-> Ratified 2026-08-17
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -42,24 +41,15 @@ semantics as raft mode:
 
 Plus the **always-on security core** (below). What stays raft-only is
 cluster-shaped — membership, rebalance, shard backup/restore, IsolationRaft
-tenancy — and the etcd compatibility listener; those are refused with a typed
-error whose text names the remedy: `requires mode: raft`.
+tenancy — and the etcd compatibility listener. The etcd listener is refused
+with a typed error whose text names the remedy, `requires mode: raft`; a
+membership or snapshot call fails in `LocalBackend` with
+`backend.ClusterOperationError`, naming the operation.
 
-**The engine, not the mode, bounds the data plane.** Pebble and memory compose
-the MVCC engine and serve all of it. File and objstore compose the plain KV
-engine (`pkg/engine/kv_engine.go`), which publishes changes to the watch hub but
-keeps no revisions and no leases: it serves watch and value/version
-transactions, and refuses MVCC, lease, lock, time series, vector, revision
-compares and lease-carrying writes per call with a typed capability error —
-the same answer a raft `sm_type` without those planes gives.
+Every backend — memory, file, pebble and objstore — composes the MVCC engine
+(`lifecycle.NewLocalEngine`), so the backend does not narrow the data plane.
 
 ### Watch, lease and lock in standalone
-
-*(This section replaces the earlier rule that "everything consensus-shaped —
-MVCC revisions, watch, lease, lock — is refused". QuicBaaS and go-xkms depend on
-them for client watch, secret-rotation events and scheduler leader election, and
-worked around the refusal with in-process fallbacks and a one-member raft
-cluster.)*
 
 **Same code by construction.** The standalone engine is `engine.MVCCEngine` —
 the engine raft `sm_type: mvcc` wraps in `store.MVCCStateMachine`. Standalone
@@ -99,11 +89,7 @@ watch does not survive a restart in either mode.
 **Transactions** are served in both modes: consensus is what makes a swap linearizable across *replicas*, and
 a standalone node is engine-direct, single-process and has none, so its
 compare-and-swap is already linearizable. The etcd-style `Txn` endpoint is
-still refused on a standalone node, as part of etcd compatibility.
-*(Corrected: this paragraph described a per-database registry gate,
-`raftOnlyGatedRegistry`, that refused MVCC, watch and lease and passed
-transactions through. The gate is deleted; every data-plane family resolves
-through the same registry in both modes.)*
+refused on a standalone node, as part of etcd compatibility.
 
 Status: implemented everywhere — the SDK (`node://` /
 `sdk/go/node.NewStandaloneNode`, the flat `embedded://` driver) and the
@@ -135,7 +121,7 @@ all of them. What differs is what else a type carries:
 | `mvcc` | yes | yes | yes | yes |
 | `pebble` (default) | yes | refused (value and version compares only) | yes | yes |
 | `memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf` | yes | refused (value and version compares only) | yes, durable | no |
-| `regular` (legacy) | yes | refused (value and version compares only) | no — refused at start | no |
+| `regular` | yes | refused (value and version compares only) | no — refused at start | no |
 
 Every state machine but `regular` keeps durable leases in its own keyspace
 (see [../leases/engineering.md](../leases/engineering.md)). Cluster
@@ -147,15 +133,14 @@ A node's capability report names exactly what its `sm_type` serves.
 
 `raft.sm_storage` selects the storage backend the storage-generic state
 machines (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`,
-or `memory`. The file backend earned the hot-apply role with real
-durability: atomic temp-file+rename+fsync writes and an all-or-nothing
+or `memory`. The file backend is durable: atomic temp-file+rename+fsync writes and an all-or-nothing
 commit journal replayed at open (`pkg/storage/file/journal.go`), plus the
 `storage.Syncer` seam. Its layout maps each key to a record named by a hash
-of the key (a breaking on-disk format change; no migration) — see
+of the key — see
 [storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
 Keep `sm_storage` identical across a shard's replicas. Objstore is a
 snapshot/backup tier and is refused
-as a hot apply path with a pointed validation error. Every other state
+as a hot apply path by config validation. Every other state
 machine carries its own storage and rejects a non-pebble `sm_storage`.
 
 
@@ -168,7 +153,7 @@ errors, not silent no-ops).
 
 | Gate | Question | Mechanism |
 |---|---|---|
-| Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (existing: `qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`, `codec_*`) |
+| Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (`qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`) |
 | Run mode | Structurally possible? | `mode: standalone \| raft` (implemented in config, daemon, and SDK); raft-only features are not composed in standalone |
 | Config | Operator-enabled? | Existing sections plus `enabled` on `mvcc`/`watch`/`lease` to disable even in raft mode (implemented) |
 
@@ -181,8 +166,8 @@ composition root seals the effective profile (build tags ∩ mode ∩ config)
 via `capabilities.Seal(cfg.EffectiveCapabilities())`, and
 `admin capabilities` reports it faithfully, including a `mode` field. A
 `false` can therefore mean not-compiled, mode-gated, or config-disabled.
-Before sealing, `Get` keeps the historical compile-time fallback for
-library embeddings.
+Before sealing, `Get` reports the compile-time profile, for library
+embeddings.
 
 ## The always-compiled CORE
 
@@ -208,9 +193,8 @@ security posture or breaks a dependency of everything else:
   and the mode selects it at runtime. A tag would bifurcate the release matrix
   for no gain.
 - **Silently degrading raft-only features in standalone.** Rejected: a watch
-  that never fires or a lease that never expires is worse than an error. Every
-  raft-only call in standalone returns a typed error whose text names the
-  remedy — `requires mode: raft`.
+  that never fires or a lease that never expires is worse than an error. A
+  raft-only call in standalone returns a typed error.
 - **Config enabling what the mode forbids.** Rejected: precedence is
   **build tag > run mode > config**, and config can only ever narrow. Asking for
   more is a validation error, not a silent no-op.
@@ -255,13 +239,11 @@ Reaching zero is a package split, one feature at a time. The splits so far:
 - **The flat composer is its own package.** `standalone.NewServer`
   (`sdk/go/standalone`) builds a single-node server — storage backend,
   engine, seal barrier, lease sweeper, audit trail — and hands it to the
-  embedded transport. It used to live in `sdk/go/transport/embedded`, so every
-  importer of the transport compiled PebbleDB and the node lifecycle with it.
-  The transport package now holds only the transport.
+  embedded transport. The transport package holds only the transport.
 - **The index package does not carry PebbleDB.** The index that works on a
   raw `*pebble.DB`, which only the Raft state machine builds, is
   `pkg/index/pebbleindex`. `pkg/index`, which the DAO imports, holds the index
-  types and the storage-backed index, and no longer imports PebbleDB.
+  types and the storage-backed index, and does not import PebbleDB.
 
 ## Component boundaries
 
@@ -269,7 +251,7 @@ Reaching zero is a package split, one feature at a time. The splits so far:
 |---|---|---|
 | Mode selection and validation | `pkg/config` | go-qrdb |
 | Standalone composition (`LocalBackend`) | `pkg/backend/local.go` | go-qrdb |
-| Canonical composition roots | `pkg/lifecycle` (`NewLocalStorage`, `NewLocalEngine`) | go-qrdb |
+| Canonical composition roots | `pkg/server/lifecycle` (`NewLocalStorage`, `NewLocalEngine`) | go-qrdb |
 | Capability registry and sealing | `pkg/capabilities` | go-qrdb |
 | Standalone mode option (etcd refusal) | `pkg/server/standalone_gate.go` | go-qrdb |
 | Standalone lease-expiry sweeper | `pkg/server/lifecycle` (`StartLocalLeaseExpiry`) | go-qrdb |

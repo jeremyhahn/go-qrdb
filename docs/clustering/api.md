@@ -12,7 +12,7 @@ and refuses in standalone with `requires mode: raft`.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Admin()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Health | `GET /health` — **public** | `Health` | `admin.Health` | `qrdb_health` | `Health` | none (public) |
+| Health | `GET /health` — **public** | `Health` | `admin.Health` | `qrdb_health` | `Health` | none on REST; `admin:health` on the others |
 | Status | `GET /status` | `Status` | `admin.Status` | `qrdb_status` | `Status` | `admin:status` |
 | Peers | `GET /peers` | `Peers` | `admin.Peers` | `qrdb_peers` | `Peers` | `admin:peers` |
 | Capabilities | `GET /capabilities` | `Capabilities` | `admin.Capabilities` | `qrdb_capabilities` | `Capabilities` | `admin:capabilities` |
@@ -37,22 +37,16 @@ and refuses in standalone with `requires mode: raft`.
 
 **Promote member is on every transport.** Server-side it is served through
 `service.MemberPromoter`, a capability interface separate from
-`AdminServicer` (mirroring `ClusterJoinTokenMinter`'s own reason: every
-`AdminServicer` test double in this repo keeps compiling without growing a
-method most of them have no `Host` to serve; the five transport bindings and
-the real `AdminService` each type-assert for it). Client-side, because every
-SDK transport now implements it for real, `PromoteMember` is a plain method
-on `transport.AdminClient` (`Client.Admin().PromoteMember(...)`), the same as
-`AddMember`/`RemoveMember` — no type assertion needed from a caller.
+`AdminServicer`, which the five transport bindings and `AdminService` each
+type-assert for. Client-side `PromoteMember` is a plain method on
+`transport.AdminClient` (`Client.Admin().PromoteMember(...)`), the same as
+`AddMember`/`RemoveMember`.
 
 **Add member as observer is `service.ObserverMemberAdder`**, a capability
-interface for the identical reason `MemberPromoter` is one, and the SDK
-client side mirrors `ClusterJoinTokenMinter`'s shape: a caller type-asserts
-`client.Admin().(transport.ObserverMemberAdder)` rather than every
-`AdminClient` implementation growing the method. It is the add-side
-counterpart promote's success path depends on — a plain `AddMember` always
-votes, so a cluster running only the original verbs could never produce a
-replica `PromoteMember` succeeds against.
+interface like `MemberPromoter`. On the SDK side a caller type-asserts
+`client.Admin().(transport.ObserverMemberAdder)`. It is the add-side
+counterpart of promote: a plain `AddMember` always adds a voter, so promote
+needs an observer added this way to act on.
 
 **Transfer leadership is `service.LeaderTransferrer`**, a capability
 interface for the same reason `MemberPromoter` is one, and it is on every
@@ -137,8 +131,7 @@ with `service.UserRangeShardError` (400 / `INVALID_ARGUMENT`) on every
 transport before the host is touched, so no group started by hand can hold an
 ID the claimer gives a database.
 
-**`GET /health` is one of only two unauthenticated routes in the server** (the
-other is `GET /v1/config/initialized`), so a load balancer can probe a node it
+**`GET /health` is unauthenticated**, so a load balancer can probe a node it
 has no credentials for.
 
 ## Capability matrix — rebalance
@@ -155,8 +148,8 @@ are separate calls, so a plan can be reviewed (or stored) before it runs.
 
 ## Membership through the SDK facade
 
-`Client.Cluster()` exposes `Members`, `Leader`, `AddReplica`, `RemoveReplica`,
-`TransferLeadership` and `WatchMembership`. **It adds no wire RPCs** — every
+`Client.Cluster()` exposes `Members`, `Leader`, `LeaderEndpoint`, `AddReplica`,
+`RemoveReplica`, `PromoteReplica`, `TransferLeadership` and `WatchMembership`. **It adds no wire RPCs** — every
 method is a composition of the rows above. `WatchMembership` polls at `DefaultMembershipPollInterval`
 rather than streaming, so it works over unary-only REST.
 
@@ -184,11 +177,11 @@ replica's member identity, or `""` to use the one go-quicraft already committed
 for the replica or its host. Every transport carries it: the gRPC, Unix and
 QUIC `AddMemberRequest.member_identity` field, the REST body's `identity`, the
 MCP `qrdb_add_member` tool's `identity` argument, and the embedded transport's
-`AddMemberRequest.Identity`. The refusals are typed and coded alike on every
+`identity` argument. The refusals are typed and coded alike on every
 transport; see [engineering.md](engineering.md#error-semantics). Start shard
 takes no identities: it resolves every other member's from the committed
 memberships, as a dedicated database's founders do, and answers the same typed
-refusals with the same codes (REST no longer answers them `500`).
+refusals with the same codes.
 
 ## Replica state hashes
 
@@ -385,8 +378,8 @@ other than `Owner` carries it, the same as `admin:shard_state` and
 
 `failures` carries one entry per failed move, in plan order, so its length
 equals `moves_failed`; it is omitted when every move completed. `step` names
-the phase of a dedicated-group move that failed (`dropping`, `wait-leader`,
-`find-source`, `add-placement`, `add-observer`, `remove-placement`,
+the phase of a dedicated-group move that failed (`dropping`, `leader-routing`,
+`wait-leader`, `find-source`, `add-placement`, `add-observer`, `remove-placement`,
 `remove-node`) and is empty for a generic shard move. gRPC, QUIC and Unix
 carry the same entries as repeated `RebalanceMoveFailure` messages.
 
@@ -476,11 +469,11 @@ identical typed errors above for every other failure — there is exactly one
 implementation of the mint logic (`service.AdminService.MintJoinToken`),
 never one per transport.
 
-**Embedded does not enforce `ScopeCross` at all**, because
-`AdminService.MintJoinToken` carries no permission check of its own — like
-every other `AdminServicer` verb, enforcement lives in the transport
-handler, and the embedded transport has none. Embedded is a fully trusted,
-in-process surface: the embedding process IS its own admission control.
+**Embedded authorizes through the same `AuthMiddleware` as the network
+transports** when one is installed; with none installed it admits every
+call, as a network transport run with `--auth-enabled=false` does.
+`AdminService.MintJoinToken` carries no permission check of its own: like
+every other `AdminServicer` verb, enforcement lives in the transport.
 The rule this implies is about what a response CARRIES, not which verb it
 names: a secret-bearing output -- `MintJoinToken`'s minted token, in
 particular -- must never be returned through a less-trusted local surface

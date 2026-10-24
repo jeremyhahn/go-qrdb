@@ -1,6 +1,6 @@
 # Row Locking — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 QRDB's SQL transactions are optimistic by default: two transactions that write

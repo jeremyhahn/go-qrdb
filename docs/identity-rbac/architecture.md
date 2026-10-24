@@ -1,6 +1,6 @@
 # Identity and RBAC — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Users, roles, the permission vocabulary, and the single policy decision point
@@ -129,7 +129,7 @@ or an email change does not move. A caller that resolves to no account (a
 holder certificate, a certificate naming no account under a non-`required`
 binding policy) keeps the name its authenticator produced; one whose
 unresolved Subject is shaped like a user id is refused
-(`*UnresolvedUserSubjectError`, 401), so a CN of digits cannot pose as one.
+(`*middleware.UnresolvedUserSubjectError`, 401), so a CN of digits cannot pose as one.
 
 The certificate CN still **selects** the account by its username. After a
 rename, a certificate naming the old username selects nothing; re-certify the
@@ -139,12 +139,12 @@ same key under the new name and its SPKI binding carries over unchanged.
 
 `auth.Identity.TenantOwner`, and its projection
 `transport.Identity.TenantOwner` (JSON `tenantOwner`), say whether the
-identity holds the **Admin** system role of its own `TenantID`. Consumers
+identity holds the **`admin`** system role of its own `TenantID`. Consumers
 authorize on this field. Exactly one function decides it:
 `role.IsTenantOwner`. That function collects the identity's role ids, plus its
 role bindings in `TenantID` (bindings in any other tenant are dropped), and
 asks `role.HoldsSystemRole` whether one of them is the id the role store
-persisted for that tenant's Admin role. It compares by id and never by name. A
+persisted for that tenant's `admin` role. It compares by id and never by name. A
 built-in role can be neither renamed nor deleted, and no custom role can be
 renamed to `admin`, so no rename can turn a role into the owner role. An
 unseeded tenant has no owner. A missing role store or a store error is
@@ -162,7 +162,7 @@ The step that establishes the identity sets the field:
 so every embedded projection agrees. The reverse mapping, `identityToDomain`,
 used when a caller hands an identity back for `Authorize` or `ListPermissions`,
 never takes `TenantOwner` from that input. The module's own authorizer does not
-read the field either: it decides from roles and grants, as before.
+read the field either: it decides from roles and grants.
 
 Because the value is computed when the identity is established, its lifetime
 follows the path. On the network transports the identity is established per
@@ -204,8 +204,8 @@ load-bearing:
   certificate is validly signed by the cluster CA, and even when its OU and
   SPIFFE SAN agree. **The SAN carries no extra weight: it is issued by the
   same CA as the OU.**
-- **An unenrolled account authenticates by the CA's assertion alone**, exactly
-  as every deployment did before enrolment was enforced. An empty binding set
+- **An unenrolled account authenticates by the CA's assertion alone**, under
+  the `enrolled` policy below. An empty binding set
   states no restriction, the same statement an empty `AuthMethods` makes.
 
 **Enrolment narrows; withdrawal can widen.** The first binding closes an
@@ -254,10 +254,9 @@ have the server relax to match:
 names no account by design, so it is excepted from the refusal under BOTH
 postures — see "What `required` does not reach" below.
 
-Under `required` **possession is the only way a certificate identifies anyone**,
-so the residual hole above closes: an unguarded issuance path can no longer
-mint an identity for an unenrolled account, because no unenrolled account
-admits a certificate. An unrecognised value fails the boot rather than
+Under `required` **possession is the only way a certificate identifies anyone**:
+an unguarded issuance path cannot mint an identity for an unenrolled account,
+because no unenrolled account admits a certificate. An unrecognised value fails the boot rather than
 resolving to either posture.
 
 **`required` boots into "awaiting admin credential" rather than locking the
@@ -272,9 +271,9 @@ restart required once it does (`firstboot.AwaitingAdminCredentialProbe`,
 [../firstboot/architecture.md](../firstboot/architecture.md)). This posture
 is decided in two places, because two different layers create the admin:
 
-- **`firstboot.Initialize`** no longer refuses when it would create an admin
-  it cannot bind (no `CertBinder`, or no admin certificate path): that is now
-  the ordinary "awaiting" case. It still refuses outright, before writing
+- **`firstboot.Initialize`** does not refuse when it would create an admin
+  it cannot bind (no `CertBinder`, or no admin certificate path): that is
+  the ordinary "awaiting" case. It refuses outright, before writing
   anything, for a genuine wiring bug — a credential path configured with no
   way to bind it at all — and for a lifecycle or permitted-method block no
   certificate could fix regardless.
@@ -285,7 +284,7 @@ is decided in two places, because two different layers create the admin:
   binding the leader enrolled, and judging it would wrongly enter "awaiting"
   on a boot that should serve normally. A read that cannot be served yet is
   retried for up to 30 seconds (`firstboot.VerifyAdminCertBindingWithin`),
-  and only a lookup FAILURE (not a verdict) still logs and serves normally
+  and only a lookup FAILURE (not a verdict) logs and serves normally
   rather than entering "awaiting" over an infrastructure fault alone. **The
   daemon's own first boot DOES wire a `CertBinder`**
   (`firstboot.UserCertBinder` over its own user store) and an
@@ -337,7 +336,7 @@ The admin is identified the way the boot check finds it — `admin` in the
 rename is therefore itself refused, so under `required` the admin cannot stop
 being the admin, and the username index keeps any other account from taking
 the name. It is also the `System` user: first boot creates it with
-`System: true` (and promotes an admin created before the flag existed), so
+`System: true` (and promotes an existing admin record that lacks it), so
 `DeleteUser` refuses it whatever the binding policy.
 
 **A live binding is not the whole check.** The boot check also refuses an admin
@@ -390,7 +389,7 @@ cannot be shown to hold, and starting anyway is the lockout the check prevents.
   other permission on its empty role set, holder or not — **including officer
   registration itself**: enrolling a NEW holder (`seal:officer_register`,
   `tenant_barrier:officer_register`, `databases:officer_register`) is a real,
-  registered RBAC permission requiring an Admin or Security Officer role
+  registered RBAC permission requiring an `admin` or `so` role
   grant, never `IdentityGated`, on every transport. A holder certificate can
   only ever complete its own enrolment or claim its own share; it cannot
   register another holder. Its binding for the verbs it CAN reach is the
@@ -401,12 +400,12 @@ cannot be shown to hold, and starting anyway is the lockout the check prevents.
 - **Non-certificate methods.** The posture is about certificate logins; other
   methods are governed by the account's permitted-method policy.
 
-**Migration and rollback (the direction reversed from an earlier release).** `required` is
+**Migration and rollback.** `required` is
 the default, so a FRESH fleet needs no migration at all — every composition
 enrols the bootstrap admin as part of first boot, and every other account is
 enrolled the ordinary way (`POST /users/{id}/cert-bindings`) before it ever
-logs in. An EXISTING fleet upgrading from a release that defaulted to
-`enrolled` sets `auth.mtls_binding_policy: enrolled` explicitly first — the
+logs in. An EXISTING fleet with unenrolled accounts sets
+`auth.mtls_binding_policy: enrolled` explicitly first — the
 pre-flight is listing the accounts whose `cert_bindings` are empty (see
 [user.md](user.md#moving-a-fleet-to-required-certificate-enrolment)) — enrols
 every one, then removes the explicit `enrolled` setting (or sets `required`
@@ -440,13 +439,9 @@ module, not to the subject.
 tenant is refused on write on every transport and by the store, for a
 system-tenant user as for any other, so no binding grants anything outside
 its holder's tenant. A tenant's own administrators act only in their tenant.
-**Known gap:** a system-tenant Admin can still administer a tenant's users
+**Known gap:** a system-tenant `admin` can administer a tenant's users
 and roles — the routed services resolve a system-tenant caller into the
-tenant it names, and the system-tenant scope rule admits it there. Closing
-that is the strict tenant-isolation design, which has not landed.
-
-Tenant-scoped bindings are the reason a control-plane user can be tenant-admin
-for tenant X without being an admin of the system tenant.
+tenant it names, and the system-tenant scope rule admits it there.
 
 All three fields influence an authorization decision. `finalizeIdentity`
 carries `RoleBindings` and `Attributes` onto the authenticated identity
@@ -455,8 +450,7 @@ authenticator carried in is always cleared, and the store's current state
 replaces it, so a withdrawn binding or a cleared attribute stops applying on
 the next request — including when the record is not found, the tenant is
 sealed, or no user store is configured at all (then the identity carries
-none). `pkg/auth/rbac.RBACAuthorizer.
-Authorize` resolves `RoleIDs` in the identity's own tenant and, separately,
+none). `rbac.RBACAuthorizer.Authorize` (`pkg/auth/rbac`) resolves `RoleIDs` in the identity's own tenant and, separately,
 resolves any `RoleBindings` entry whose `TenantID` equals the tenant the
 check targets, in THAT tenant, then unions the two permission sets — a
 binding for tenant A grants there and nowhere else. The FIPS 140-3 SO
@@ -515,9 +509,10 @@ hold a binding only in its own tenant; any other is refused with
   the binding. `CertBindingFullCertFingerprint` exists for exact-certificate
   pinning where that is genuinely wanted, and is **not** the default.
 - **Per-subsystem authorization.** Rejected — one PDP, one vocabulary.
-- **Interpreting factor enrollment blobs.** Rejected: qrdb stores
-  `FactorEnrollment.Data` and **never interprets it**. Verification belongs to
-  the registered `authfactors.Factor`, which is go-xkms's.
+- **Interpreting factor credential blobs.** Rejected: qrdb stores
+  `auth.AuthFactor.Credential` and **never interprets it**. Verification
+  belongs to the registered `authfactors.Factor`; the hardware factors are
+  go-xkms's.
 
 ## Built-in roles
 
@@ -533,10 +528,9 @@ A built-in role is immutable — `UpdateRole` refuses to replace its permission
 set and `DeleteRole` refuses to remove it — so that an operator cannot widen
 `auditor` or re-permission `so` by hand.
 
-That invariant assumed nothing ever needed to rewrite a built-in's grants. The
-assumption expired the first time a permission was **renamed**. Roles are copied
-out of `BuiltInRoles()` when a tenant is provisioned and never touched again, so
-a tenant created before the rename keeps the retired verbs forever, never gains
+A **renamed** permission breaks that. Roles are copied out of `BuiltInRoles()`
+when a tenant is provisioned and never touched again, so a tenant created
+before the rename keeps the retired verbs forever, never gains
 the live ones, and every write path that could repair it is closed: update is
 refused, delete-and-reseed is refused, and create-over-the-top collides with the
 name index. The symptom is a 403 on a live endpoint with nothing explaining it.
@@ -593,11 +587,45 @@ since `ScopeSelf` carries no system-tenant lift. The confinement is checked
 against the target tenant the handler names (`AuthorizeTenant`), never against
 the caller's own.
 
-Of the default roles, the tenant **Admin** carries all three: it does
+Of the built-in roles, the tenant **`admin`** carries all three: it does
 everything in its tenant except key custody, and onboarding a device or rolling
-out an update is neither. **User** (a crypto consumer) and **Auditor**
-(read-only) carry none. A tenant provisioned before these grants existed gains
-them through `ReconcileBuiltInRoles`; a custom role may grant any of them.
+out an update is neither. **`user`** (a crypto consumer) and **`auditor`**
+(read-only) carry none. A tenant whose stored built-ins lack them gains them
+through `ReconcileBuiltInRoles`; a custom role may grant any of them.
+
+A custom role is created in one tenant, and so is its grant. A role in `acme`
+holding `ota:activate` authorizes activation on `acme` and is denied on any
+other tenant. Another tenant's identity that presents the role's ID gets
+nothing, because roles are resolved within the caller's own tenant, where that
+ID does not exist. Activation and confirmation are separate grants, so a tenant
+can give them to different roles. A layer above asks the question through the
+`Authorize` endpoint on any transport, which decides with this same PDP: either
+for the caller itself, or, with `permissions:resolve`, for another identity in
+the caller's own tenant. A caller never gets an answer about another tenant's
+identity. The task-shaped version, with commands, is in
+[user.md](user.md#common-tasks).
+
+#### Granting device onboarding through a custom role
+
+To let someone onboard devices without the rest of `admin`, the tenant's admin
+defines a custom role in its own tenant carrying `devices:onboard` alone and
+assigns it ([cli.md](cli.md#granting-device-onboarding-alone)). The grant
+belongs to the tenant that defined the role:
+
+- A holder in tenant A is allowed `devices:onboard` against A and refused
+  against B, as is every `ScopeSelf` grant.
+- A custom role carries exactly the permissions it lists: `devices:onboard`
+  brings neither OTA permission with it.
+- A role ID is resolved in the tenant that defined it, so an identity of
+  tenant B presenting tenant A's role ID is granted nothing, in B or in A.
+
+Nothing inside qrdb onboards a device, so qrdb gates no operation of its own on
+`devices:onboard`. The layer that admits devices asks the PDP through the
+remote `Authorize` endpoint (`RBACClient.Authorize`, [api.md](api.md)) on any
+transport, and gets the same answer on each: allowed in the holder's tenant,
+denied with a reason in any other. Asking about an identity other than the
+caller needs `permissions:resolve` in that identity's tenant, and is never
+answered across tenants.
 
 ## The canonical login key
 
@@ -613,12 +641,6 @@ names the account by its immutable user id
 ([The Subject is the user id](#the-subject-is-the-user-id)); the handles only
 find the account.
 
-Before this existed, each layer above kept its own answer — go-xkms named
-credentials from one field, go-quicbaas held an email in a side table beside the
-qrdb record — and a login could verify a factor and then fail to find anybody it
-belonged to. Owning the key here, and exporting it through the SDK, is what
-makes those layers agree by construction rather than by convention.
-
 The key is tenant-scoped, not global: the same person may legitimately hold an
 account in two tenants, and every login path supplies the tenant alongside the
 handle, so a global index would forbid that while buying nothing.
@@ -629,28 +651,27 @@ The unified-login ceremony ends by turning the resolved account and the
 verified factor into the identity the session bearer carries. That step is an
 `IdentityHydrator`, and a composer replaces it with `node.WithIdentityHydrator`
 ([api.md](api.md#login-identity-nodewithidentityhydrator)). The account's
-immutable user id reaches it as `Principal.ID`, so a composer whose sessions
-must survive a rename can make the subject the id and not the username. The
-default keeps the username.
+immutable user id reaches it as `Principal.ID`, and `FinishLogin` binds the
+identity's Subject to that id (`auth.Identity.BindUser`) after the hydrator
+returns, so a hydrator cannot name the account.
 
 There is one hydrator per node because there is one ceremony per node: the
 embedded transport serves it. The network transports never mint a login
 identity. Each request on them carries its own credential, and the
-authentication chain decides who it is, so the subject of a REST, gRPC, QUIC,
-MCP or Unix request is whatever the chain's authenticator produced. The
-authorization layer then resolves that subject to an account by username.
+authentication chain decides who it is. The auth middleware then resolves the
+name the authenticator produced to an account by username and binds the
+Subject to that account's id.
 
 ## Invitation self-enrolment
 
-An invitation is how an ORDINARY account — one certs:issue's strict-subset
-history never let a tenant Admin mint a credential for directly — gets its
-first certificate: the Admin creates the account `pending` and hands the
+An invitation is how an ORDINARY account gets its first certificate without
+anyone else minting a credential for it: the admin creates the account `pending` and hands the
 user a single-use token out of band, and the user enrols a key of their own
 with it. The inviter never holds a credential for the account, which is the
 property direct issuance cannot offer: whoever signs the CSR holds the
 account.
 
-`users:invite` (`ScopeSelfStrict`, granted to the built-in Admin and SO)
+`users:invite` (`ScopeSelfStrict`, granted to the built-in `admin` and `so`)
 creates the pending account in the caller's own tenant — or re-invites one
 still pending, taking no other field — and returns the token exactly once
 (`pkg/service.InvitationService.InviteUser`). Only the token's SHA-256
@@ -693,10 +714,7 @@ error) and reports the fault as `*invite.StoreError`;
 `InvitationService.RedeemInvitation` propagates that type unchanged instead
 of collapsing it, so it classifies as a server fault
 (`pkg/api/errclass`: Internal) rather than the credential refusal
-(Unauthenticated) a bad token gets. Formerly tracked as the
-"invite-notfound-ambiguity" open question; resolved by giving `pkg/dao` the
-typed not-found every DAO consumer can check for, rather than a one-off fix
-inside `pkg/invite`.
+(Unauthenticated) a bad token gets.
 
 Because the caller is unauthenticated, two further controls apply only to
 redemption:
@@ -849,10 +867,10 @@ go-trusted-platform and go-xkms.
 | Roles | `pkg/role` | go-qrdb |
 | Permission vocabulary and registry | `pkg/permission` | go-qrdb |
 | The RBAC PDP, ABAC, middleware, authenticators | `pkg/auth` | go-qrdb |
+| Stored ABAC policies (tenant records at `__sys:abac_policy/<name>`; not yet read by the evaluator) | `pkg/service` (`PolicyServicer`) | go-qrdb |
 | Certificate issuance | `pkg/cert` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
 | Auth factors framework and the mTLS factor | `pkg/authfactors` — see [../auth-factors/](../auth-factors/) | go-qrdb |
 | FIDO2 / PIV / PKCS#11 factor implementations | — | **go-xkms**, injected |
-| External auth backends (LDAP, PAM, TACACS+, RADIUS) | — | **go-auth**, if composed |
 
 ## Trust boundaries
 
@@ -872,7 +890,7 @@ go-trusted-platform and go-xkms.
   [../api-server/engineering.md](../api-server/engineering.md#service-principal).
 - **No caller mints another tenant's identities or reads another tenant's
   audit trail — the system tenant included.** `certs:issue`, `certs:enroll`,
-  `certs:list`, `certs:revoke`, `certs:read`, `certs:export` and
+  `certs:list`, `certs:revoke`, `certs:read` and
   `trust_anchors:add|list|remove` are `ScopeSelfStrict`, which the
   system-tenant rule does not lift: a certificate this node's CA signs — or
   one chaining to a tenant's trust anchor — authenticates as the user and
@@ -932,8 +950,7 @@ go-trusted-platform and go-xkms.
   constant (`MethodMTLS`, `MethodPIV`, `MethodWebAuthn`).
 - **Group membership is not a qrdb field.** qrdb authorization resolves
   user → role bindings → roles → permissions, and nothing in it reads a group.
-  A layer that needs group membership stores it itself; the former `GroupIDs`
-  field, which influenced no decision, has been removed.
+  A layer that needs group membership stores it itself.
 - **`System: true` marks exactly one user — the cluster-wide bootstrap admin —
   and it, like the built-in roles, cannot be deleted.** No request on any
   transport can set the flag; it is populated once, in-process, by first-boot.
@@ -951,8 +968,7 @@ go-trusted-platform and go-xkms.
 - **No passwords.**
 - **No hardware factor verification.** The `Factor` framework and the software
   mTLS factor are here; FIDO2, PIV and PKCS#11 come from go-xkms.
-- **No external identity providers.** LDAP, PAM, TACACS+ and RADIUS are
-  go-auth's, composed above.
+- **No external identity providers** (LDAP, PAM, TACACS+, RADIUS).
 - **No permission invention at runtime.** The vocabulary is a registry populated
   at `init()`; `Parse` validates against it.
 - **No groups.** qrdb stores no group membership, owns no group catalog, no
@@ -961,26 +977,9 @@ go-trusted-platform and go-xkms.
   users, and the layer that owns the mapping stores the membership and resolves
   it.
 
-> **Ruled change — strict tenant isolation.** The multi-tenancy design
-> [Strict tenant isolation](../multi-tenancy/architecture.md#strict-tenant-isolation--design)
-> (RULED 2026-10-01, not implemented) changes this feature in five places:
->
-> - `ScopeSelf` loses its system-tenant lift. Cross-tenant reach exists only
->   through `ScopeCross` platform permissions.
-> - The system-tenant exception in `user.NormalizeRoleBindings` is removed:
->   a role binding names its holder's own tenant, for every holder.
-> - The global identity index (`tenant.IdentityIndex`) is removed. A by-id
->   operation resolves in the caller's own tenant, and an operator verb names
->   its tenant explicitly.
-> - A strict tenant's users, roles, factors, bindings, certificates and CA
->   move out of the system store into the tenant's own home store, and its
->   users authenticate only with certificates that chain to the tenant's own
->   CA, with SPKI binding required.
-> - A tenant's first admin comes from a CSR supplied at tenant creation. Barrier
->   init proves possession of that key, replacing trust-on-first-init by "a
->   certificate naming the tenant".
->
-> Until that ships, this document describes the code.
+[Strict tenant isolation](../multi-tenancy/architecture.md#strict-tenant-isolation--design)
+is partly built; where its design and this document differ, this document
+describes the code.
 
 ## Companion documents
 

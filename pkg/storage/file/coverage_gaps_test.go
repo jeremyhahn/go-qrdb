@@ -51,7 +51,7 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 	if err := e.Set(key, []byte("v1")); err != nil {
 		t.Fatalf("seed Set: %v", err)
 	}
-	shardDir, _ := e.recordPaths(key)
+	shardDir, _ := mustRecordPaths(t, e, key)
 	if err := os.RemoveAll(shardDir); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestSet_CreateTempErrorPropagates(t *testing.T) {
 // non-ENOENT read failure, reachable when the suite runs as root.
 func replaceRecordWithDirLink(t *testing.T, e *Engine, key []byte) {
 	t.Helper()
-	_, path := e.recordPaths(key)
+	_, path := mustRecordPaths(t, e, key)
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestGet_DecodeRecordErrorPropagates(t *testing.T) {
 	defer func() { _ = e.Close() }()
 
 	key := []byte("corrupt")
-	dir, path := e.recordPaths(key)
+	dir, path := mustRecordPaths(t, e, key)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestList_DecodeRecordErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	dir, path := e.recordPaths([]byte("corrupt"))
+	dir, path := mustRecordPaths(t, e, []byte("corrupt"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestIterator_DecodeRecordErrorPropagates(t *testing.T) {
 	}
 	defer func() { _ = e.Close() }()
 
-	dir, path := e.recordPaths([]byte("corrupt"))
+	dir, path := mustRecordPaths(t, e, []byte("corrupt"))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestNew_CleanupTempSetFilesErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	shardDir, _ := e.recordPaths([]byte("k"))
+	shardDir, _ := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

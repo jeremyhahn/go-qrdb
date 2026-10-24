@@ -1,6 +1,6 @@
 # Run Modes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The run mode is a **server** property, selected on `qrdbd`. The `qrdb` client
@@ -17,9 +17,6 @@ has no verb that changes it — it only reports the result.
 qrdbd start --mode standalone
 qrdbd start                      # raft (the default when mode is absent)
 ```
-
-Absent means `raft` for full backward compatibility with configurations written
-before the mode existed.
 
 Standalone skips the raft identity requirements; only `raft.data_dir` remains
 mandatory.
@@ -41,31 +38,25 @@ the binary was built is what tells them apart.
 
 ## Recognising a mode refusal
 
-Cluster verbs in a standalone daemon fail with a typed error naming the
-remedy:
+`qrdb admin capabilities` reports `cluster`, `backup` and `rebalance` false on a
+standalone daemon. The raft-only families are the etcd protocol, `backup`,
+`rebalance` and the `admin` cluster verbs (`member`, `snapshot`). The etcd
+listener's refusal names the remedy:
 
-```bash
-$ qrdb admin member list
-error: requires mode: raft
+```text
+etcd: not implemented on this server: requires mode: raft
 ```
 
-The families that refuse in standalone: the etcd protocol, `backup`, and the
-`admin` cluster verbs (`member`, `peers`, `snapshot`, `topology`, rebalance).
+The `admin member` and `admin snapshot` verbs fail with the standalone
+backend's error, which names the operation:
+`backend: cluster operation not supported: <op>`.
 
-The families that work in standalone, exactly as in raft mode: `kv`
-(get/put/del/list/scan/range, `revision`, `get --at-revision`, `compact`,
-`restore`), `watch`, `lease`, `lock`, `tx`, `batch`, `index`, `collection`,
-`database`, `sql` (with `qrdb_sql`), `ts` and `vector` (with their tags), plus
-the always-compiled core — `auth`, `users`, `roles`, `barrier`, `ceremony`,
-`credential`, `ca`, `audit`.
-
-*(Corrected: `watch`, `lease`, `lock` and the `kv` revision verbs were listed
-as refusing until 2026-10-01, and `tx` was listed in error before that.)* On
-the file and objstore backends, `lease`, `lock` and the revision verbs refuse
-as unsupported, because those engines keep no leases or revisions; `tx` is
-served there, except that a revision compare or an op naming a lease is
-refused; see
-[api.md](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families).
+The families that work in standalone, exactly as in raft mode, on every
+backend: `kv` (put/get/del/list/exists/range, `revision`, `get --at-revision`,
+`compact`, `restore`), `watch`, `lease`, `lock`, `tx`, `batch`, `index`,
+`collection`, `database`, `sql` (with `qrdb_sql`), `ts` and `vector` (with
+their tags), plus the always-compiled core — `auth`, `users`, `roles`,
+`barrier`, `ceremony`, `credential`, `ca`, `audit`.
 
 ## Build-time feature selection
 
@@ -82,6 +73,7 @@ mode selects it at runtime.
 
 ## Parity
 
-`qrdb admin capabilities` has a `CommandDefinition` in the integration parity
-suite. `qrdbd start` is a daemon entry point, not a client verb, and is
+`qrdb admin capabilities` runs on every transport in the integration suite
+(`test/integration/admin_cluster_cli_test.go`,
+`test/integration/run_modes_standalone_cli_test.go`). `qrdbd start` is a daemon entry point, not a client verb, and is
 exercised by the daemon's own tests.

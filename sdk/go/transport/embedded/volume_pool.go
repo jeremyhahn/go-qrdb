@@ -35,7 +35,8 @@ func WithVolumeService(svc volume.Service) Option {
 // ListPools lists every pool in the catalog by delegating to the
 // volume.Service.
 func (t *Transport) ListPools(ctx context.Context) ([]transport.VolumePool, error) {
-	if err := t.gate("ListPools"); err != nil {
+	ctx, err := t.admit(ctx, "ListPools")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListPools"); err != nil {
@@ -60,7 +61,8 @@ func (t *Transport) ListPools(ctx context.Context) ([]transport.VolumePool, erro
 
 // GetPool inspects one pool by delegating to the volume.Service.
 func (t *Transport) GetPool(ctx context.Context, name string) (*transport.VolumePoolDetail, error) {
-	if err := t.gate("GetPool"); err != nil {
+	ctx, err := t.admit(ctx, "GetPool")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetPool"); err != nil {
@@ -81,7 +83,8 @@ func (t *Transport) GetPool(ctx context.Context, name string) (*transport.Volume
 
 // CreatePool adds a pool to the catalog by delegating to the volume.Service.
 func (t *Transport) CreatePool(ctx context.Context, req *transport.CreateVolumePoolRequest) (*transport.VolumePool, error) {
-	if err := t.gate("CreatePool"); err != nil {
+	ctx, err := t.admit(ctx, "CreatePool")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "CreatePool"); err != nil {
@@ -110,7 +113,8 @@ func (t *Transport) CreatePool(ctx context.Context, req *transport.CreateVolumeP
 // UpdatePool changes a pool's description, capacity or overcommit by
 // delegating to the volume.Service.
 func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumePoolRequest) (*transport.VolumePool, error) {
-	if err := t.gate("UpdatePool"); err != nil {
+	ctx, err := t.admit(ctx, "UpdatePool")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "UpdatePool"); err != nil {
@@ -137,7 +141,8 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 // DeletePool removes a pool from the catalog by delegating to the
 // volume.Service.
 func (t *Transport) DeletePool(ctx context.Context, name string) error {
-	if err := t.gate("DeletePool"); err != nil {
+	ctx, err := t.admit(ctx, "DeletePool")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "DeletePool"); err != nil {
@@ -155,7 +160,8 @@ func (t *Transport) DeletePool(ctx context.Context, name string) error {
 // ListPoolTenants lists the tenants assigned to a pool by delegating to
 // the volume.Service.
 func (t *Transport) ListPoolTenants(ctx context.Context, req *transport.ListVolumePoolTenantsRequest) (*transport.ListVolumePoolTenantsResponse, error) {
-	if err := t.gate("ListPoolTenants"); err != nil {
+	ctx, err := t.admit(ctx, "ListPoolTenants")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListPoolTenants"); err != nil {

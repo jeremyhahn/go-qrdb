@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -36,7 +36,7 @@ func RefuseRotationCondition(cond *FactorAddCondition) error
 type FactorConditionFailedError struct{ UserID; Type; Condition; ExpectedVersion; CurrentVersion; ExistingFactorID }
 var ErrFactorConditionFailed error // sentinel FactorConditionFailedError matches
 
-// pkg/service — UserAuthFactorServicer gains
+// pkg/service — UserAuthFactorServicer methods and helpers
 AddConditional(ctx, userID, factor, cond auth.FactorAddCondition) (uint64, error)
 FactorSetVersion(ctx, userID) (uint64, error)
 func AddAuthFactor(ctx, svc, userID, factor, cond *auth.FactorAddCondition) (uint64, error)
@@ -81,8 +81,6 @@ type PINBackend interface {
 }
 ```
 
-Twelve methods, no more. Backends fall into two categories:
-
 **Twelve methods, no more.** Backends fall into two categories:
 
 - **Software** (`pkg/pin.SoftwareBackend`) — Argon2id or PBKDF2 hashing,
@@ -106,11 +104,6 @@ func VerifyFIDO2PINHash(expected, actual []byte) bool
 type FIDO2HashVerifier interface{ /* optional PINBackend capability */ }
 func (s *Service) VerifyFIDO2Hash(hash []byte) bool
 ```
-
-> **Correction carried forward.** The retired `docs/pin/README.md` spelled this
-> constant `FIPO2PINHashSize`. The real identifier is **`FIDO2PINHashSize`**
-> (`pkg/pin/service.go`); the older spelling was a typo, and anything copied
-> from that document should be re-checked against the code.
 
 `PINRecord` (`pkg/pin/hash.go`):
 
@@ -150,10 +143,12 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   `embedded.WithPINBackend` -- and by `CeremonyService.SetPINBackend`, so a
   raw backend handed straight to any of them is still throttled, and the
   ceremony and every transport share it. It keeps **a counter per caller**
-  (`auth.CallerPrincipal`): one for anonymous sealed-window checks, and one
-  per authenticated principal -- the identity, or else the verified client
-  certificate's leaf digest -- under an aggregate cap of 64 authenticated
-  failures per 15-minute window. No caller can lock another out: neither
+  (`auth.CallerPrincipal`): one per anonymous sealed-window source host
+  (`addr:`, an IPv6 address masked to its /64; the bare anonymous counter
+  when no remote address is recorded), and one per authenticated principal --
+  the identity, or else the verified client certificate's leaf digest. The
+  authenticated principals and the `addr:` principals each have their own
+  aggregate cap of 64 failures per 15-minute window. No caller can lock another out: neither
   anonymous guesses nor a tenant user's certificate lock out the officer;
   only several principals guessing together can engage the cap, for one
   window, and never against a known-good principal (one that has presented
@@ -288,9 +283,9 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   the old factor's own included, is refused before anything is written.
 - **Rotate takes no condition.** A rotation request carrying one is refused by
   `auth.RefuseRotationCondition` on every transport before any write.
-- **qrdb never interprets `FactorEnrollment.Data`.**
 - **The qrdb CLI performs no hardware verification.** `auth login` resolves a
-  `(method, lookup key)` tuple to a user through the `LoginAuthFactor` RPC.
+  `(method, lookup key)` tuple to a user through the transport's
+  `LoginAuthFactor` method.
 
 ## Factor types and lookup keys
 
@@ -354,11 +349,7 @@ having to agree. The refusal holds it where the write is.
 
 `service.AuthFactorServicer` (`Client.AuthFactors()`, the ceremony-time
 custodian surface `pkg/server` exposes at `/v1/authfactors/*` for consumers
-like xkms) used to be the one place left binding to a single flat KV after the
-user-side surface above was routed — `pkg/server/server.go`'s
-`ensureAuthFactorService` and `cmd/qrdbd/start.go` each built it directly over
-a bare `KVServicer`. This is closed the same way the flat construction was
-closed for the user-side service above:
+like xkms) is routed the same way as the user-side service above:
 
 ```go
 func NewAuthFactorService(cfg AuthFactorServiceConfig) (AuthFactorServicer, error)               // ONE tenant's store
@@ -390,23 +381,14 @@ func NewRoutingAuthFactorService(cfg RoutingAuthFactorServiceConfig) (AuthFactor
   hands `EnrollFactorRequest.TenantID` through with no validation of its own —
   and routing is decided entirely by the context tenant. An empty value is
   filled in from the context; a value matching the context passes; anything
-  else is refused with `*service.AuthFactorTenantMismatchError`. An
-  acme-context caller who writes `globex` there is exactly the shape this
-  catches: silently correcting the field to `acme` was considered and
-  rejected, because it would place the enrolment in the context tenant while
-  leaving the caller's mistaken belief about where it went uncorrected —
-  hiding the caller's bug rather than surfacing it. Refusing is what a caller
-  bound to the wrong context, or one that mistyped the tenant, needs to find
-  out.
-- **No migration.** Records that a build before this change wrote at the flat
-  `__sys:authfactor/{id}` key are left exactly where they are, inert. A
-  resolved store confines every key under `{tenant}/` — the reserved
-  `__sys:` prefix included, no tenant exempt — so those records are not
-  reachable through the routed service for **any** tenant, the system tenant
-  included. go-qrdb is pre-release alpha and this cutover carries no
-  migration guarantee (owner ruling), the same posture
-  [../collections/engineering.md](../collections/engineering.md) recorded for
-  its own tenant-namespace cutover. An operator who needs a pre-cutover
+  else is refused with `*service.AuthFactorTenantMismatchError`. The field is
+  not silently corrected, because that would hide a caller bound to the wrong
+  context or one that mistyped the tenant.
+- **No migration.** A record at the flat `__sys:authfactor/{id}` key, with no
+  tenant segment, is left where it is, inert. A resolved store confines every
+  key under `{tenant}/` — the reserved `__sys:` prefix included, no tenant
+  exempt — so such a record is not reachable through the routed service for
+  **any** tenant, the system tenant included. An operator who needs that
   custodian enrolment re-runs the enrolment ceremony.
 
 ### The custodian surface's pending challenge is persisted, not cached
@@ -433,28 +415,18 @@ already expired (a zero or negative TTL) is filed in the current bucket rather
 than a past one, so no record is ever written behind the sweep; `VerifyFactor`
 still refuses it on its own `ExpiresAt`.
 
-This replaced an earlier design that cached one `authFactorService` per
-tenant in the router, keyed first on the resolved store's identity, then on
-the tenant id, then a hybrid of both — and each scheme broke a case a
-production `tenant.StoreResolver` can legitimately produce: identity-keying
-loses track of a non-comparable resolved store or one a resolver rebuilds
-fresh on every call; tenant-ID keying misses a later isolation transition.
-Every version of that cache was solving the wrong problem — what actually
-broke when two calls landed on different service instances was the pending
-challenge sitting in ONE instance's memory, invisible to the other. Moving it
-into the store both calls already share removes the dependency on instance
-identity entirely: the router now builds a fresh `authFactorService` on every
-call, with no cache to keep coherent across resolver behavior.
+The router builds a fresh `authFactorService` on every call and caches none.
+Because the pending challenge lives in the store both calls share, a
+`ChallengeFactor` and its `VerifyFactor` need not reach the same service
+instance.
 
 - **The enrollment's factor is authoritative.** `VerifyFactor` consumes the
   challenge, loads the enrollment it names, refuses a revoked enrollment
   (`*authfactors.EnrollmentRevokedError`), refuses a non-empty caller
   `factorName` that differs from `Enrollment.FactorName`
   (`*authfactors.FactorMismatchError`), and then dispatches to the
-  enrollment's factor. It used to dispatch to whatever name the caller passed
-  and consult the enrollment only when the name was empty, so with two
-  factors registered a caller could answer a strong factor's challenge
-  through a weaker one. The name is kept on every transport as an assertion
+  enrollment's factor, so with two factors registered a caller cannot answer
+  a strong factor's challenge through a weaker one. The name is kept on every transport as an assertion
   rather than dropped, so a caller that states the wrong factor learns it
   instead of silently being verified against a different one. Names are
   compared through the same normalisation the registry uses to register and
@@ -483,9 +455,7 @@ call, with no cache to keep coherent across resolver behavior.
   `kvstore.AtomicKVStore` — supports it.
 - **An unclaimed, expired challenge is reclaimed by later `ChallengeFactor`
   calls, at a cost independent of how many challenges are outstanding.**
-  Previously only an explicit `VerifyFactor` ever cleared a challenge record,
-  so one nobody ever answered occupied storage indefinitely. Each
-  `ChallengeFactor` call now runs a bounded sweep before issuing and
+  Each `ChallengeFactor` call runs a bounded sweep before issuing and
   persisting its own challenge:
   - A persisted cursor, `__sys:authfactor:challenge-sweep-cursor`, names the
     last bucket whose records have all been reclaimed. The sweep walks forward
@@ -528,12 +498,9 @@ call, with no cache to keep coherent across resolver behavior.
   a fixed `map<string, string>` wire schema: a non-string value would arrive
   over gRPC and Unix as whatever string `pkg/api/grpc.authFactorServer`
   stringifies it to (`true`, not the JSON boolean `true`) while REST, QUIC,
-  MCP and embedded carried the native type — a six-transport contract
-  violation. `persistChallenge` refuses a non-string value with
-  `*authfactors.EnrollmentInvalidError` rather than let one ship silently
-  divergent; every factor in this repository and in go-xkms already only
-  puts strings in `MethodData`, so this closes an opening no shipped factor
-  actually uses. It is also the reason `MethodData` must survive the JSON
+  MCP and embedded would carry the native type. `persistChallenge` refuses a
+  non-string value with `*authfactors.EnrollmentInvalidError`. It is also the
+  reason `MethodData` must survive the JSON
   round trip `persistChallenge`/`consumeChallenge` perform between
   `ChallengeFactor` and `VerifyFactor` (which may run against a different
   service instance) unchanged — see the doc comment on
@@ -554,18 +521,13 @@ call, with no cache to keep coherent across resolver behavior.
   `pkg/api/rest/handlers.go`'s IAM mapping), `codes.Unavailable` (gRPC,
   inherited by Unix, matching `pkg/api/grpc/errors.go`), and
   `wire.StatusUnavailable` (QUIC, via the shared `mapServiceError` every
-  handler on that transport already routes through, which mirrors gRPC's
-  addition row for row). MCP needed no clause of its own — see the
-  "classified consistently" bullet above. Embedded preserves whichever typed
-  error it received unchanged, as it always does: `tenant.ErrTenantSealed` is
-  exported to the SDK as `sdk.ErrTenantStoreSealed` in
-  `sdk/go/types_tenant.go` (deliberately not reusing `sdk.ErrTenantSealed`,
-  which aliases the distinct `pkg/seal.ErrTenantSealed` raised by barrier
-  operations rather than store resolution — conflating the two would have let
-  `errors.Is(err, sdk.ErrTenantSealed)` silently never match this condition),
-  and `seal.ErrSealed` is separately exported as `sdk.ErrSealed` already, so
-  an embedded caller recognizes both forms through the SDK without importing
-  either internal package.
+  handler on that transport routes through). Embedded preserves the typed
+  error unchanged: `tenant.ErrTenantSealed` is exported to the SDK as
+  `sdk.ErrTenantStoreSealed` in `sdk/go/types_tenant.go`, distinct from
+  `sdk.ErrTenantSealed`, which aliases `pkg/seal.ErrTenantSealed` raised by
+  barrier operations rather than store resolution; `seal.ErrSealed` is
+  exported as `sdk.ErrSealed`. An embedded caller recognizes both forms
+  through the SDK without importing either internal package.
 
 ### `LastUsedAt` is detached with `context.WithoutCancel`
 
@@ -577,11 +539,10 @@ would resolve the system tenant, look in the wrong store, and silently stop
 advancing `LastUsedAt` for every other tenant. Nothing would fail; the value
 would simply stop moving.
 
-### Migrating records written before routing
+### Migrating factor records without a tenant
 
-Deployments written by an earlier build hold their factor records at the flat
-root, with no tenant anywhere in the key or in the record.
-`service.MigrateFactorsToTenants` moves them, and the routed service runs it
+A factor record at the flat root has no tenant anywhere in the key or in the
+record. `service.MigrateFactorsToTenants` moves such records, and the routed service runs it
 itself: hand it the legacy store as `RoutingUserAuthFactorServiceConfig.LegacyStore`
 and it migrates ONCE, before it answers anything.
 
@@ -683,9 +644,9 @@ Typed errors carrying payload:
 |---|---|
 | `ErrTPMLocked` | `*LockoutStatus` — hardware lockout with recovery time |
 | `ErrPINInvalidWithStatus` | `*LockoutStatus` — wrong PIN with attempt-counter info |
-| `ErrStoragePersistFailed` | `Key` plus the wrapped cause |
-| `ErrStorageLoadFailed` | `Key` plus the wrapped cause (other than not-found) |
-| `ErrUnsupportedPBKDF2Hash` | the unsupported hash name |
+| `StoragePersistFailedError` | `Key` plus the wrapped `Cause` |
+| `StorageLoadFailedError` | `Key` plus the wrapped `Cause` (other than not-found) |
+| `UnsupportedPBKDF2HashError` | `Hash`, the unsupported hash name |
 
 **Every one of these fails closed.** A PIN that cannot be verified is not
 accepted, and a corrupted record is an error rather than a re-initialization.

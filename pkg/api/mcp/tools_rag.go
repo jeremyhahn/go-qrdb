@@ -85,6 +85,9 @@ func toolRAGIngest() mcp.Tool {
 		mcp.WithNumber("chunk_overlap",
 			mcp.Description("Overlap characters between adjacent chunks. Default: 50."),
 		),
+		mcp.WithNumber("chunk_min_size",
+			mcp.Description("Minimum chunk size in characters; smaller chunks are merged. Default: the node's configured minimum."),
+		),
 		mcp.WithString("metadata",
 			mcp.Description("Optional JSON object of key-value metadata for the document."),
 		),
@@ -165,23 +168,21 @@ func handleRAGIngest(svc service.RAGServicer) mcpserver.ToolHandlerFunc {
 		chunkStrategy := mcp.ParseString(req, "chunk_strategy", "")
 		chunkSize := mcp.ParseInt(req, "chunk_size", 0)
 		chunkOverlap := mcp.ParseInt(req, "chunk_overlap", 0)
+		chunkMinSize := mcp.ParseInt(req, "chunk_min_size", 0)
 
 		var metadata map[string]string
 		if raw := mcp.ParseString(req, "metadata", ""); raw != "" {
 			_ = json.Unmarshal([]byte(raw), &metadata)
 		}
 
+		// An omitted chunk field stays zero; the node's default fills it.
 		var chunkCfg *service.ChunkConfig
-		if chunkStrategy != "" || chunkSize > 0 {
-			chunkCfg = service.DefaultChunkConfig()
-			if chunkStrategy != "" {
-				chunkCfg.Strategy = chunkStrategy
-			}
-			if chunkSize > 0 {
-				chunkCfg.ChunkSize = chunkSize
-			}
-			if chunkOverlap > 0 {
-				chunkCfg.Overlap = chunkOverlap
+		if chunkStrategy != "" || chunkSize != 0 || chunkOverlap != 0 || chunkMinSize != 0 {
+			chunkCfg = &service.ChunkConfig{
+				Strategy:  chunkStrategy,
+				ChunkSize: chunkSize,
+				Overlap:   chunkOverlap,
+				MinSize:   chunkMinSize,
 			}
 		}
 
@@ -195,12 +196,12 @@ func handleRAGIngest(svc service.RAGServicer) mcpserver.ToolHandlerFunc {
 			ChunkConfig: chunkCfg,
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 		return mcp.NewToolResultText(string(out)), nil
 	}
@@ -229,12 +230,12 @@ func handleRAGQuery(svc service.RAGServicer) mcpserver.ToolHandlerFunc {
 			Filter:    filter,
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 		return mcp.NewToolResultText(string(out)), nil
 	}
@@ -252,12 +253,12 @@ func handleRAGDeleteDocument(svc service.RAGServicer) mcpserver.ToolHandlerFunc 
 			Namespace:  namespace,
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 		return mcp.NewToolResultText(string(out)), nil
 	}
@@ -277,12 +278,12 @@ func handleRAGListDocuments(svc service.RAGServicer) mcpserver.ToolHandlerFunc {
 			Offset:    offset,
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, err
 		}
 		return mcp.NewToolResultText(string(out)), nil
 	}

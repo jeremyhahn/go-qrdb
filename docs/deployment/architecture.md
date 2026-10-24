@@ -1,6 +1,6 @@
 # Deployment — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -37,9 +37,9 @@ against a process-wide secure-memory budget
 ([../configuration/cli.md](../configuration/cli.md#secure-memory-budget)). The
 kernel bounds how much a process may lock with `RLIMIT_MEMLOCK`, and the stock
 limits are small: 8 MiB for a default Docker container or systemd service, 64
-KiB on some older hosts. A fixed 64 MiB default budget could never be
-satisfied there, so an unconfigured node failed at start on exactly the hosts
-most deployments use.
+KiB on some older hosts. A fixed 64 MiB default budget cannot be satisfied
+there, so an unconfigured node would fail at start on exactly the hosts most
+deployments use.
 
 ## Shape chosen
 
@@ -193,9 +193,8 @@ the read guarantee.
 
 `.devcontainer/Dockerfile`, `.devcontainer/docker-compose.yml` and
 `.github/workflows/ci.yml` take the fleet's `DEVCACHE_*` variables
-(`../../handbook/software/conventions/devops.md` §2a) and behave exactly as
-they did before the cache existed when a variable is unset, empty, or its
-cache does not answer:
+(`../../handbook/software/conventions/devops.md` §2a) and behave as if no cache
+existed when a variable is unset, empty, or its cache does not answer:
 
 - The Dockerfile accepts `DEVCACHE_APT_PROXY` and `DEVCACHE_NPM_REGISTRY` as
   build args. Around each `apt-get` `RUN` it writes
@@ -210,19 +209,18 @@ cache does not answer:
   as build args (so the Dockerfile can use them) and, with the rest of the
   `DEVCACHE_*` set, as plain `${VAR:-}` environment passthrough. `GOPROXY`
   follows the devops.md §2a formula
-  (`${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct`) beside the existing
+  (`${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct`) beside the
   `GOPRIVATE` line in `client-build` and `e2e`: `GOPRIVATE` already resolves
   every `github.com/jeremyhahn/*` module direct, so the cache can only ever
   accelerate the public modules it was allowed to touch.
-- `ci.yml`'s `test-typescript` and `trivy` jobs — the ones that run `npm`,
-  Playwright or trivy — load the dev-cache client helper from the dev-cache
-  repo's `v0.1.0` tag over `github.server_url`, guarded to the internal Gitea
-  host (the route does not exist on github.com). The step fails OPEN: a
-  failed fetch or an unreachable cache sets nothing, and the job runs
-  uncached, exactly as it did before this change.
+- `ci.yml`'s `test-typescript` job — the one that runs `npm` and Playwright —
+  loads the dev-cache client helper from the dev-cache repo's `v0.1.0` tag over
+  `github.server_url`, and skips the step on github.com, where the route does
+  not exist. The step fails OPEN: a failed fetch or an unreachable cache sets
+  nothing, and the job runs uncached.
 
-`.devcontainer/Dockerfile.gpu` is unchanged; it bakes no frontend and no apt
-proxy of its own.
+`.devcontainer/Dockerfile.gpu` takes none of these variables; it bakes no
+frontend and no apt proxy of its own.
 
 ## Not in scope
 

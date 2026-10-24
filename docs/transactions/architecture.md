@@ -1,6 +1,6 @@
 # Transactions and Batch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -43,13 +43,12 @@ Raft commit ordering.
   from `transaction:execute`, which is the grant most callers actually want.
 - **Client-side fan-out with retries.** Rejected: it cannot be atomic and it
   turns every consumer into a partial-failure handler.
-- **A single-message `BatchImport` RPC carrying the whole file** (the
-  earlier design). Rejected outright, no compat: it required a transport
-  to accept a message far larger than anything else on its wire — 100 MB on
-  REST/gRPC/Unix/MCP, ~63 MB on QUIC — which is exactly the allocate-before-
-  auth exposure the universal pre-auth cap fixed everywhere else. There is no size at which
-  "one big message" and "one small pre-auth cap, no exceptions" can both
-  hold, so the capability moved to a session of many small calls instead.
+- **A single-message import RPC carrying the whole file.** Rejected: it
+  requires a transport to accept a message far larger than anything else on
+  its wire, which is the allocate-before-auth exposure the universal pre-auth
+  cap closes. There is no size at which "one big message" and "one small
+  pre-auth cap, no exceptions" can both hold, so import is a session of many
+  small calls.
 - **An in-memory, per-connection session object** (the shape
   `pkg/rowlock.Session` uses for a SQL connection's lock leases). Rejected
   for import specifically: a SQL session is pinned to one TCP connection on
@@ -65,7 +64,7 @@ Raft commit ordering.
 
 | Piece | Package | Owner |
 |---|---|---|
-| Transaction and batch semantics | `pkg/service`, `pkg/batch` | go-qrdb |
+| Transaction and batch semantics | `pkg/service` | go-qrdb |
 | Compare evaluation against MVCC state (`sm_type: mvcc`) | `pkg/mvcc`, `pkg/engine` | go-qrdb |
 | Compare evaluation against a state machine's own keyspace (every other `sm_type`) | `pkg/store` (`pebble`), `pkg/statemachine` (`native_txn.go`) | go-qrdb |
 | Import parsing (CSV/JSON/NDJSON/YAML/archive) | `pkg/service` (`BatchService.ImportCommit`), `pkg/codec` | go-qrdb, decoding via **go-codec** |
@@ -89,8 +88,7 @@ Raft commit ordering.
    resulting revision and per-op results.
 
 A bulk import adds a staging stage in front of that: `ImportCommit` decodes
-the session's combined staged bytes into records exactly as the old
-single-message import decoded one file, and the records are applied —
+the session's combined staged bytes into records, and the records are applied —
 either row by row (default) or as one all-or-nothing unit when
 `--transactional` is set.
 
@@ -100,8 +98,8 @@ A dataset larger than the pre-auth message cap is never sent as one
 message on any transport. Instead the caller drives a four-call lifecycle,
 every call an ordinary small, authenticated unary RPC:
 
-1. **`ImportBegin(format, options)`** → `session_id`. Validates the options
-   exactly as a single-message import did, grants a lease (the session's
+1. **`ImportBegin(format, options)`** → `session_id`. Validates the options,
+   grants a lease (the session's
    liveness) with a bounded TTL, and writes one hidden metadata record
    binding the session to the lease, to the caller's (tenant, identity),
    and to the (tenant, database) keyspace it will import into.
@@ -113,9 +111,9 @@ every call an ordinary small, authenticated unary RPC:
    call — a client that did not see the previous response retries safely);
    any other `seq` is refused.
 3. **`ImportCommit(session_id)`** → `ImportResult`. Reads every staged
-   chunk back in sequence order, concatenates them, and imports the result
-   exactly as a single-message import always has — same parsing, same
-   per-row error reporting, same `--transactional` all-or-nothing option.
+   chunk back in sequence order, concatenates them, and imports the result: it
+   parses the format, reports errors per row, and honours the
+   `--transactional` all-or-nothing option.
    The staged chunks and the session's lease are then released.
 4. **`ImportAbort(session_id)`** → ok. Releases the session's lease (which
    deletes every record bound to it — the metadata record and every staged
@@ -146,19 +144,15 @@ import exactly as `sm_type: mvcc` does. They are:
   (`isStateMachineKey`), so a staged record is not a hidden key inside the
   ordinary keyspace — it is in a different keyspace altogether, reachable
   only through `protocol.OpImportStage`, which no client request encodes.
-  An earlier design staged records as hidden MVCC keys, filtered only at
-  enumeration, and a security review found that to be a discovery guard,
-  not storage isolation — a plain `Get`/`Range`/`Put` of the literal key in
-  an `IsolationRaft` database could read, overwrite, or forge it. This
-  design closes that: see `pkg/engine/mvcc_import_stage.go` and
+  See `pkg/engine/mvcc_import_stage.go` and
   `pkg/statemachine/kv_import_stage.go`.
 - **Replicated, not node-local**: the write still commits through the same
   Raft proposal path as any other write, so it is included in snapshots and
   covered by the replica hash and state digest. The `pebble` and `mvcc` state
   machines treat every other `\x00`-prefixed record as node-local, so
   `store.isNodeLocalKey` names this table beside the lease, compaction and
-  audit tables. (It once did not, and those two state machines' snapshots
-  silently dropped staged sessions; a test now pins the recovery.)
+  audit tables; without that, those two state machines' snapshots would
+  drop staged sessions.
 - **Lease-bound**, every one of them, to the session's single lease ID
   (`pkg/lease.Lessor.Bind`), so revoking or expiring that lease deletes the
   metadata record, every staged chunk, and the tenant-index entry below
@@ -173,7 +167,7 @@ import exactly as `sm_type: mvcc` does. They are:
   (`storage.IteratorOptions.OnlyKeys`), never a session's staged bytes.
 - **Isolated per (tenant, database) the same way imported data already is**:
   the composite namespace prefix the per-database wrapper applies to every
-  imported key (`ImportOptions.KeyPrefix`) is still recorded in the
+  imported key (`ImportOptions.KeyPrefix`) is recorded in the
   session's metadata at `Begin` and reused as part of the session's own
   storage key for every chunk — so two tenants (or two databases) sharing
   one underlying shard under prefix isolation can never collide on a
@@ -189,23 +183,16 @@ reclaimed.
 
 ### Why not the ordinary MVCC keyspace
 
-An earlier design kept a session's metadata and chunks as hidden, user-
-shaped MVCC keys, reusing the EXISTING internal-key-prefix convention
-(`pkg/service.IsInternalKey`) that already hides `__sys:`/`__tbl:`/`__idx:`/
-`ts:` records from bulk enumeration. That required `sm_type: mvcc` — the
-only state machine with a keyspace those hidden keys could live in — and,
-more seriously, was reachable by any client write of the identical literal
-key in a database whose isolation does not filter by key shape
-(`IsolationRaft`). The lease table's own raw, non-MVCC, every-`sm_type`
-storage design (`pkg/lease.TablePrefix`) was rejected as "too invasive" when
-this feature first shipped; a later security review overturned that
-call: a session with no narrower `sm_type` requirement than any other
-`BatchServicer` capability has no justification for a keyspace only one
-`sm_type` provides, and "ordinary MVCC-managed key, hidden at enumeration"
-is a guard a client with direct Raft access through `IsolationRaft` can
-step around entirely. `pkg/importstage` now mirrors the lease table's own
-raw-keyspace, lease-bound, every-`sm_type` design exactly, rather than
-inventing a second variant of it.
+Staging a session as hidden, user-shaped MVCC keys behind the internal-key
+convention (`pkg/service.IsInternalKey`) is rejected on two counts. It would
+need `sm_type: mvcc`, the only state machine with a keyspace those keys could
+live in, while a session has no narrower `sm_type` requirement than any other
+`BatchServicer` capability. And hiding a key at enumeration is a discovery
+guard, not storage isolation: in a database whose isolation does not filter
+by key shape (`IsolationRaft`), a plain `Get`/`Range`/`Put` of the identical
+literal key could read, overwrite or forge it. `pkg/importstage` therefore
+mirrors the lease table's raw-keyspace, lease-bound, every-`sm_type` design
+(`pkg/lease.TablePrefix`).
 
 ### Transactions on every state machine
 
@@ -219,13 +206,14 @@ against its own keyspace with the same compare semantics:
 - **Version** is 0 when the key is absent and 1 when it is present — exactly
   enough for "must be absent" (`version == 0`), the fence every guarded create
   is built on.
-- **Create- and mod-revision compares are refused**, with the error
-  `transaction: create_revision/mod_revision compares require an MVCC state
-  machine`, before anything is evaluated. Answering "revision 0" for every
+- **Create- and mod-revision compares are refused**, with an error that
+  begins `transaction: create_revision/mod_revision compares require an MVCC
+  state machine` (`statemachine.RevisionCompareUnsupportedMessage`), before
+  anything is evaluated. Answering "revision 0" for every
   key would let two read-then-CAS writers both win and lose an update with no
   signal.
 - **A write that carries a lease binds its key to that lease**, on every
-  `pkg/statemachine` type except the legacy `regular`, which keeps no lease
+  `pkg/statemachine` type except `regular`, which keeps no lease
   table and refuses the whole set with a capability error. A lease ID the
   state machine's own table does not hold refuses the whole set with the same
   `lease-not-found` error a plain lease-bound `Put` naming it would give — not

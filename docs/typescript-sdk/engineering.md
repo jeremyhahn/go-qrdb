@@ -1,6 +1,6 @@
 # TypeScript SDK — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported Surface
@@ -11,8 +11,8 @@ to `dist/index.d.ts`, and the root export mapped to the same files.
 
 The public API is exported from `sdk/typescript/src/index.ts`. The concrete
 clients are `RestClient` in `rest.ts` and `WailsClient` in `wails.ts`.
-`getClient(config?: ClientConfig)` chooses Wails when the runtime exposes the
-Wails namespace and otherwise returns the REST client. `isDesktop()` reports
+`getClient(config?: ClientConfig)` chooses Wails when the Wails runtime has
+defined `window.go` and otherwise returns the REST client. `isDesktop()` reports
 the same runtime test.
 
 The client contract is `Client` in `interfaces.ts`. It exposes connection, KV,
@@ -20,7 +20,8 @@ admin, MVCC, transactions, batches, watches, leases, locks, indexes, optional
 time-series and vector clients, users, invitations, roles, certificates,
 databases, SQL, seal, ceremony, officers, embedded server, daemon, collections,
 tenants, volume pools, server config, backup, rebalance, credentials, audit,
-and connection-manager clients.
+and connection-manager clients. `databaseScoped(name)` returns a `Client`
+whose data-plane calls target the named database.
 
 ## Invariants
 
@@ -29,19 +30,29 @@ fields where needed. Wails calls preserve the Go binding contract and normalize
 wire enum and identifier fields through `transform.ts`.
 
 Desktop-only operations fail with `DesktopOnlyError` outside Wails mode.
-Compile-time feature absence is represented with nullable feature clients or
-`FeatureDisabledError`, depending on the operation.
+`timeSeries` and `vector` are typed `| null`, but `RestClient` and `WailsClient`
+always return a client; a feature the server was built without fails on the
+call.
 
 ## Error Semantics
 
-All SDK-specific errors extend `QRDBError` from `errors.ts`. Transport setup and
-runtime failures use `ConfigError`, `ConnectionError`, `NotConnectedError`,
-`ClosedError`, `TransportError`, and `TLSError`. Service-level conditions map
-to typed errors such as `KeyNotFoundError`, `NotLeaderError`,
-`TransactionFailedError`, `LeaseNotFoundError`, `WatchCanceledError`,
-`IndexExistsError`, vector namespace errors, user/role errors,
-`CertNotFoundError`, `FeatureDisabledError`, `DesktopOnlyError`, and
-`NotImplementedError`.
+The classes in `errors.ts` extend `QRDBError`, one per condition. `RestClient`
+and `WailsClient` raise these:
+
+| Error | Raised by |
+|---|---|
+| `TransportError` | `RestClient`, for every failed request; carries the HTTP status |
+| `KeyNotFoundError` | `RestClient` `kv.get`, on a 404 |
+| `NotConnectedError` | `RestClient`, on a call before `connection.connect` |
+| `DesktopOnlyError` | `RestClient`, for desktop-only operations |
+| `ShamirSplitMissingError`, `ShamirSplitMismatchError` | `RestClient` `tenants.barrierInit`, Shamir split rounds |
+| `NotImplementedError` | `WailsClient`, for `admin.mintJoinToken` and `volumePools.*` |
+
+`WailsClient` calls otherwise reject with the error the Go binding returns. The
+other classes in `errors.ts` are not raised by either client.
+
+`AuthFactorClient` raises `AuthFactorError`, which extends `Error` and carries
+the operation and HTTP status. `AuditClient` raises a plain `Error`.
 
 ## Configuration
 

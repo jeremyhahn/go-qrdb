@@ -212,6 +212,12 @@ func (c *Client) Credentials() transport.CredentialClient {
 	return capability[transport.CredentialClient](c, "Credentials")
 }
 
+// ABACPolicies returns an ABACPolicyClient for the tenant's stored ABAC
+// policy documents: create, get, list, update and delete.
+func (c *Client) ABACPolicies() transport.ABACPolicyClient {
+	return capability[transport.ABACPolicyClient](c, "ABACPolicies")
+}
+
 // Collections returns a CollectionClient for document collection
 // management operations.
 func (c *Client) Collections() transport.CollectionClient {

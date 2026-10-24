@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -81,6 +82,7 @@ type Server struct {
 	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	collectionSvc     service.CollectionServicer
 	mvccSvc           service.MVCCKVServicer
 	txSvc             service.TransactionServicer
@@ -112,6 +114,9 @@ type Server struct {
 	tls      *tls.Config
 	tlsErr   error
 	authMW   *authmw.AuthMiddleware
+	// peerChainVerifier verifies a client certificate the TLS
+	// configuration accepted without building a chain.
+	peerChainVerifier auth.IssuerVerifier
 
 	// replicaForwarding, when set, makes the socket forward what it refuses
 	// as a non-replica (WithReplicaForwarding), over gRPC to the replica's
@@ -243,6 +248,17 @@ func tlsVersionName(v uint16) string {
 // transport instead of bypassing it as a "local trust" shortcut.
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) { s.authMW = mw }
+}
+
+// WithPeerChainVerifier sets the verifier that resolves the caller's client
+// certificate when the socket's TLS configuration accepted it without
+// building a chain: the client trust pool the configuration is wired to. The
+// socket binds it, with the peer's TLS state, to every call before
+// admission, so a share claim binds only a verified certificate on the
+// authenticated chain and in the sealed window alike. Unset, the socket uses
+// its AuthMiddleware's issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(s *Server) { s.peerChainVerifier = v }
 }
 
 // WithUserService configures the Unix socket server with a user management service.
@@ -405,6 +421,12 @@ func WithCredentialService(svc service.CredentialServicer) ServerOption {
 // keyring service.
 func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(s *Server) { s.dekSvc = svc }
+}
+
+// WithPolicyService configures the Unix socket server with the tenant ABAC
+// policy store.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) { s.policySvc = svc }
 }
 
 // WithCollectionService configures the Unix socket server with a collection service.
@@ -729,6 +751,9 @@ func (s *Server) Start() error {
 	if s.dekSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterDEKService(s.dekSvc))
 	}
+	if s.policySvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterPolicyService(s.policySvc))
+	}
 	if s.collectionSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCollectionService(s.collectionSvc))
 	}
@@ -882,7 +907,21 @@ func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServ
 		unaryChain = grpcpkg.SealedWindowDispatchUnaryInterceptor(s.sealedWindowDispatch, sealedUnary, unaryChain)
 		streamChain = grpcpkg.SealedWindowDispatchStreamInterceptor(s.sealedWindowDispatch, sealedStream, streamChain)
 	}
-	return unaryChain, streamChain
+	// Outermost, independent of authentication: every path above -- the
+	// authenticated chain, the awaiting-admin gate and the sealed window --
+	// sees the peer's TLS state and this socket's chain verifier.
+	v := s.chainVerifier()
+	return grpcpkg.ChainUnaryServerInterceptors(authmw.PeerTLSUnaryInterceptor(v), unaryChain),
+		grpcpkg.ChainStreamServerInterceptors(authmw.PeerTLSStreamInterceptor(v), streamChain)
+}
+
+// chainVerifier is the verifier the socket binds to every call:
+// WithPeerChainVerifier's, else the AuthMiddleware's issuer verifier.
+func (s *Server) chainVerifier() auth.IssuerVerifier {
+	if s.peerChainVerifier != nil {
+		return s.peerChainVerifier
+	}
+	return s.authMW.IssuerVerifier()
 }
 
 type admissionPath struct {

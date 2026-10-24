@@ -135,7 +135,7 @@ func TestLockWrites_LockFailureReleasesWriteMu(t *testing.T) {
 func TestSetAndCompareAndSwap_RenameFailureDiscardsTemp(t *testing.T) {
 	e := newCASEngine(t)
 	key := []byte("k")
-	dir, path := e.recordPaths(key)
+	dir, path := mustRecordPaths(t, e, key)
 	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestMkdirShardDurable_ComponentIsFile(t *testing.T) {
 // instead of treating it as already gone.
 func TestDelete_RecordIsDirectory(t *testing.T) {
 	e := newCASEngine(t)
-	_, path := e.recordPaths([]byte("k"))
+	_, path := mustRecordPaths(t, e, []byte("k"))
 	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o700); err != nil {
 		t.Fatal(err)
 	}

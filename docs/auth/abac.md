@@ -1,13 +1,12 @@
 # ABAC Authorization Decorator
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-17
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 `pkg/auth/abac` layers attribute-based access control over the RBAC
-authorizer. It is the canonical home of the policy engine ported from
-go-quicbaas's IAM module (compiler, resource trie, condition parser,
-evaluator); distribution concerns (policy storage, Raft sync, PEP cache)
-were intentionally not ported.
+authorizer. It is the canonical home of the policy engine (compiler,
+resource trie, condition parser, evaluator); it does not store, replicate or
+cache policies, which the host supplies.
 
 ## Decorator semantics
 
@@ -21,7 +20,7 @@ ABAC with the wrapped (RBAC) authorizer:
 3. **No rule matched** → delegate to the inner authorizer. RBAC decides.
 
 With zero policies configured (and `WithLiveReload` not supplied), `Decorate`
-returns the inner authorizer unchanged (zero overhead). Deny rules of
+returns the inner authorizer unchanged. Deny rules of
 **all** applicable policies are evaluated before any allow rule
 (deny-overrides combining), so an allow in one policy can never shadow a
 deny in another.
@@ -34,9 +33,10 @@ reserved system tenant's policies** — system-tenant policies are
 platform-wide guardrails. One tenant's policies never affect another
 tenant. When the target *is* the system tenant, the set is evaluated once.
 
-The check subject is built from the `auth.Identity`: `Subject`,
-`TenantID`, `Roles` map directly; `Authenticated` is true only for a
-non-nil identity. A nil identity matches no policy and always falls through
+The check subject is built from the `auth.Identity`: `Subject` becomes
+the subject's `ID` (`subject.id`), `AccountName()` its `Name`
+(`subject.name`), and `TenantID` and `Roles` map directly; `Authenticated`
+is true only for a non-nil identity. A nil identity matches no policy and always falls through
 to the inner authorizer. The target tenant is available in conditions as
 `request.tenant`.
 
@@ -172,8 +172,7 @@ spec:
 
 `spec.enabled` switches a policy off without deleting it. The field is
 optional and presence-tracked: in Go it is `PolicySpec.Enabled *bool`, `nil`
-when the document did not set it, and an absent field means enabled, so a
-document written before the field existed keeps its meaning. With
+when the document did not set it, and an absent field means enabled. With
 `enabled: false` the evaluator skips the policy: its deny rules do not deny
 and its allow rules do not allow, and a policy set holding only disabled
 policies behaves as an empty one. A disabled policy is still validated and
@@ -185,14 +184,23 @@ held and re-serialised without it, and one written with `false` keeps
 `false`, so a reader sees whether the field was set and not only its
 effective value. `PolicySpec.EnabledSet()` reports presence and
 `PolicySpec.IsEnabled()` the effective value (true when absent). The field
-reaches qrdb through the two policy inputs, the `policy_dir` files and the
-SDK's `ABACPolicySpec`. No network transport accepts or returns a policy
-document today, so there is no wire form yet.
+reaches the evaluator through its two policy inputs, the `policy_dir` files
+and the SDK's `ABACPolicySpec`.
+
+Every transport also carries a policy document, through the stored-policy
+API: `qrdb abac policy create|get|list|update|delete`, REST
+`/v1/abac/policies[/{name}]`, and the gRPC, Unix socket, QUIC and MCP
+equivalents (the identity-rbac feature's [api.md](../identity-rbac/api.md)
+and [cli.md](../identity-rbac/cli.md)). It stores the document as a record
+of the caller's own tenant and returns it unchanged, `enabled` included: the
+gRPC message's `spec.enabled` is an `optional bool`, so an unset field stays
+unset. A stored policy does **not** feed the evaluator; the evaluator reads
+only the two inputs above.
 
 Condition expressions support comparison (`==`, `!=`, `>`, `>=`, `<`,
-`<=`, `between`), string (`startswith`, `endswith`, `contains`, `matches`,
-`like`), set (`in` — including CIDR for IPs — `notin`, `containsall`,
-`containsany`, `overlaps`, `disjoint`), existence (`exists`, `notexists`),
+`<=`, `between`), string (`startswith`, `endswith`, `contains`,
+`matches`, `like`), set (`in` — including CIDR for IPs — `notin`, `containsall`,
+`containsany`, `notcontains`, `overlaps`, `disjoint`), existence (`exists`, `notexists`),
 and logical (`and`, `or`, `not`) operators over `subject.*`, `request.*`,
 `resource`, and `time.*` fields. Parentheses group a sub-expression.
 

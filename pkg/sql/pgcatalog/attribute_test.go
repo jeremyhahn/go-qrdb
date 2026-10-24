@@ -17,6 +17,7 @@
 package pgcatalog
 
 import (
+	"errors"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -189,4 +190,16 @@ func TestFormatTypeStringNamesTheCall(t *testing.T) {
 		expression.NewLiteral(uint32(20), types.Uint32),
 		expression.NewLiteral(int32(-1), types.Int32))
 	assert.Equal(t, FormatTypeFunction+"(20, -1)", call.String())
+}
+
+func TestTypeOIDErrorNamesTheFunctionAndValue(t *testing.T) {
+	err := &TypeOIDError{Value: "not-an-oid"}
+	assert.Equal(t, "pgcatalog: format_type cannot read not-an-oid as a type OID", err.Error())
+}
+
+func TestTypeOIDErrorIsFoundThroughAWrap(t *testing.T) {
+	err := errors.Join(errors.New("query failed"), &TypeOIDError{Value: int64(-1)})
+	var want *TypeOIDError
+	require.ErrorAs(t, err, &want)
+	assert.Equal(t, int64(-1), want.Value)
 }

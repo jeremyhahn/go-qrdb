@@ -1,6 +1,6 @@
 # Audit — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb audit` — query and verify the compliance-grade audit
@@ -17,9 +17,8 @@ replicated audit chain exists at the storage/Raft layer
 ([architecture.md](architecture.md#cluster-wide-replicated-trail)); both
 verbs take a `--replicated` flag that reads it instead, per-tenant opt-in via
 the tenant's `AllowReplicatedAudit` entitlement (off by default — see
-[architecture.md](architecture.md#opt-in-not-default-on)). There is still no
-verb to WRITE either trail directly: entries are emitted by the subsystems
-that perform the audited operations.
+[architecture.md](architecture.md#opt-in-not-default-on)). No verb writes
+either trail.
 
 ## `--replicated`
 
@@ -30,12 +29,12 @@ With it:
   Raft-replicated, so the SAME tenant's trail reads identically from any
   node in the group, unlike the node-local file. A tenant whose
   `AllowReplicatedAudit` entitlement is off sees an empty result
-  (`Total: -1`), never an error: indistinguishable from "no replicated audit
-  configured on this node."
+  (`Total: -1`), never an error. A node with no replicated audit configured
+  refuses the query as not implemented.
 - `qrdb audit verify --replicated [--tenant-id ID]` verifies the hash-chain
   CONTINUITY of the replicated chain for one tenant (the caller's own by
   default; `--tenant-id` names another and is refused unless it IS the
-  caller's). This is a different check from the node-local `verify`'s
+  caller's), and requires `audit:verify_replicated`. This is a different check from the node-local `verify`'s
   rotation-archive walk — see
   [architecture.md](architecture.md#chain-hash-continuity-verification) for
   what it means and what it cannot prove. A tenant not entitled to the
@@ -109,7 +108,7 @@ while :; do
   OUT=$(qrdb audit query --from 2026-08-01T00:00:00Z --limit 1000 \
         ${CURSOR:+--cursor "$CURSOR"} --output json)
   echo "$OUT" | jq -c '.events[]'
-  CURSOR=$(echo "$OUT" | jq -r '.next_cursor // empty')
+  CURSOR=$(echo "$OUT" | jq -r '.next // empty')
   [ -z "$CURSOR" ] && break
 done
 ```
@@ -119,8 +118,14 @@ The server caps `--limit` at 1000; a wider query must be paged.
 ## `qrdb audit verify`
 
 Verify the audit log's tamper-evidence hash chain across the active file and
-every rotation archive. No flags — the target is always the server's own
-configured trail. **Requires the `audit:verify` permission.**
+every rotation archive. Without `--replicated` the target is always the
+server's own configured trail and `--tenant-id` is ignored. **Requires the
+`audit:verify` permission.**
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--replicated` | bool | `false` | verify the cluster-wide replicated chain instead of the node-local trail |
+| `--tenant-id` | string | the caller's own | tenant whose replicated chain to verify (`--replicated` only); any other tenant is refused |
 
 ```bash
 qrdb audit verify
@@ -134,7 +139,7 @@ Verified: true
 Files: 3
 Records: 1842
 Genesis: true
-Order: audit-events.20260810-1.ndjson, audit-events.20260811-1.ndjson, audit-events.ndjson
+Order: audit-events-2026-08-10-000.ndjson, audit-events-2026-08-11-000.ndjson, audit-events.ndjson
 ```
 
 **A tamper finding exits non-zero.** `verify` prints the report either way,
@@ -152,15 +157,15 @@ the message before treating any non-zero exit as a tamper finding; see
 
 ## What gets audited
 
-Identity (`user.*`, `role.*`), certificates (`cert.issue`, `cert.enroll`,
+Identity (resources `user:<id>` and `role:<id>`, actions `create`, `update`,
+`delete` and the rest), certificates (`cert.issue`, `cert.enroll`,
 `cert.revoke`),
 every barrier (`initialize`, `unseal`, `seal`, `quorum-complete`,
-`distribute` and the rest, resource `barrier`), cluster
-administration (`admin.drain`, `admin.snapshot`, `admin.member.add/remove`),
-share holders (`holder-register`, `holder-claim`, `holder-quorum-submit`,
+`distribute` and the rest, resource `barrier`), share holders (`holder-register`, `holder-claim`, `holder-quorum-submit`,
 `holder-rekey-start`, `holder-revoked`, `holder-unenrol`, resource
 `share-holder`), and **every
-permission denial** (`auth.denied`).
+authorization decision** (action `auth.authorize`, resource the permission,
+outcome `denied` for a denial).
 
 ```bash
 # Who submitted shares to the last unseal quorum?
@@ -189,17 +194,10 @@ auth:
 It decides what happens when an audit record **cannot be written**, not what is
 audited or where it goes. See [user.md](user.md).
 
-> An earlier version of this page documented an `audit:` block with `enabled`,
-> `kv_backend`, `file_backend` and `file_path`, and said that `kv_backend: true`
-> makes entries queryable. **None of those keys has ever existed**, and setting
-> them does nothing. The claim was also backwards in a way that mattered:
-> `audit query` works today, against the file and the in-memory ring, with no
-> KV backend anywhere.
-
 ## Parity
 
-`qrdb audit query` and `qrdb audit verify` each have a `CommandDefinition` in
-the integration parity suite. `verify` is Tier-1 across all six transports
+`qrdb audit query` and `qrdb audit verify` run end to end on every CLI
+transport in `test/integration/audit_cli_test.go`. `verify` is Tier-1 across all six transports
 (REST, gRPC, QUIC, MCP, Unix, embedded) — see
 [api.md](api.md#capability-matrix). The `--replicated` form of each verb
 reaches the same six transports plus the Go SDK, through the same

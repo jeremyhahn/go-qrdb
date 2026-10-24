@@ -252,11 +252,15 @@ func TestAuthenticationError_Error_DifferentReason(t *testing.T) {
 	}
 }
 
-func TestAuthenticationError_NoUnwrap(t *testing.T) {
-	ae := &AuthenticationError{Reason: "invalid token"}
-	var unwrapper interface{ Unwrap() error }
-	if errors.As(ae, &unwrapper) {
-		t.Fatal("AuthenticationError should not implement Unwrap")
+// The wrapper keeps the middleware's typed cause, so the frame's status can
+// follow its class; one built with no cause unwraps to nil.
+func TestAuthenticationError_Unwrap(t *testing.T) {
+	cause := errors.New("invalid token")
+	if got := (&AuthenticationError{Reason: cause.Error(), Err: cause}).Unwrap(); got != cause {
+		t.Fatalf("Unwrap = %v, want the middleware's error", got)
+	}
+	if got := (&AuthenticationError{Reason: "no client certificate provided"}).Unwrap(); got != nil {
+		t.Fatalf("Unwrap with no cause = %v, want nil", got)
 	}
 }
 

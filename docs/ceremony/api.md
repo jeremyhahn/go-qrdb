@@ -1,6 +1,6 @@
 # Initialization Ceremony — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -74,10 +74,9 @@ names the factor fixed at enrolment under the designated factor policy;
 identical holder-engine call `BarrierOfficerRegister` makes — there is no
 second registration path.
 
-**`secret` is `bytes`, base64-encoded on the wire** (**BREAKING**: it was a
-plain string before; see CHANGELOG) -- a Go string is immutable and can
-never be wiped from memory after use the way a `[]byte` can, matching
-`BarrierInitializeRequest.secret`'s existing convention. It is the system
+**`secret` is `bytes`, base64-encoded on the wire**, like
+`BarrierInitializeRequest.secret`: a Go string is immutable and can never be
+wiped from memory after use the way a `[]byte` can. It is the system
 barrier's passphrase for the single-admin path (`threshold < 2`); omit it for
 `--barrier-strategy none` and for M-of-N, where the barrier stays sealed
 until officers reconstruct it from their shares. The MCP tool's `secret`
@@ -105,8 +104,7 @@ claims its own envelope) — and the bootstrap admin's credential result:
   "admin_key_pem": "LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCuKApg==" }
 ```
 
-**`admin_key_pem` is `bytes`, base64-encoded on the wire** (**BREAKING**: it
-was a plain string before; see CHANGELOG) -- the PEM text re-encoded as
+**`admin_key_pem` is `bytes`, base64-encoded on the wire**: the PEM text re-encoded as
 base64 by the JSON marshaler: decode it to recover the PEM. It is present
 **only** when `admin_credential_source` is
 `"generated"`. It is returned exactly once; the server retains no copy and
@@ -142,13 +140,11 @@ requires an authenticated, authorized caller rather than only the SO PIN.
 | Duplicate holder, self-enrolment, bad CSR or role | per [../shamir-custody/api.md](../shamir-custody/api.md#error-classes) | |
 | Wrong SO PIN (sign-csr) | 401 | `UNAUTHENTICATED` |
 | No PIN backend | 412 | `FAILED_PRECONDITION` |
-| No `CeremonyCA` wired | 503 | `FAILED_PRECONDITION` |
+| CSR-sign or generate admin path on a node with no CA key | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError` |
 | Ceremony already performed | 409 | `FAILED_PRECONDITION` — `ErrAlreadyInitialized` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
 ## Versioning
 
-Ceremony REST paths are under `/v1/`. The ceremony's former share-claim,
-certificate-claim, custodian enrolment and unseal-share routes were removed;
-see the CHANGELOG. The CLI's `qrdb ceremony init` verb was removed in favour
-of the root `qrdb init`.
+Ceremony REST paths are under `/v1/`; none is deprecated. The CLI entry point
+is the root `qrdb init`; there is no `qrdb ceremony init` verb.

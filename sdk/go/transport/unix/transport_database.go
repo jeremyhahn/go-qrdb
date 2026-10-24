@@ -38,6 +38,9 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 
 	pbReq := &pb.DatabaseCreateRequest{
 		Name:     req.Name,
@@ -219,6 +222,9 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
 	}
 
 	pbReq := &pb.DatabaseUpdateBarrierRequest{

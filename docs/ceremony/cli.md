@@ -1,15 +1,13 @@
 # Initialization Ceremony — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb ceremony`. All verbs accept the root persistent flags
 documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
-> **`qrdb ceremony init` has been REMOVED.** Use the root `qrdb init` command —
-> see [../firstboot/cli.md](../firstboot/cli.md). The verb is no longer
-> registered at all; running it reports cobra's normal "unknown command"
-> error.
+> **There is no `qrdb ceremony init` verb.** The root `qrdb init` runs the
+> ceremony — see [../firstboot/cli.md](../firstboot/cli.md).
 
 ## `qrdb init` with share holders
 
@@ -133,6 +131,7 @@ qrdb ceremony sign-csr --csr-file dave.csr --username dave \
 - **`qrdb ca …`** — post-init CA operations.
   [../certificate-authority/cli.md](../certificate-authority/cli.md)
 
-## Parity
+## Integration tests
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`make integration-test-ceremony` drives these verbs end to end
+(`test/integration/officer_ceremony_cli_test.go`).

@@ -1,6 +1,6 @@
 # etcd Compatibility — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** `qrdb_etcd` (`WITH_QRDB_ETCD=1`, on by default in the
@@ -15,7 +15,7 @@ protocol is not a realistic migration path.
 ## Shape chosen
 
 **Per-database etcd listeners, not one global facade.** Each database with
-`etcd: enabled` gets its own etcd-compatible gRPC server, confined to that
+`etcd.enabled: true` gets its own etcd-compatible gRPC server, confined to that
 database: its MVCC, transaction, watch and lease services are resolved through
 the node's per-(tenant, database) service registry for the database's owning
 tenant, exactly as every other transport resolves a request.
@@ -40,14 +40,11 @@ is its database's keyspace, and nothing else:
   history below the revision and nothing else, on the shared shard as on a
   dedicated one: the store keeps a compaction floor per database namespace (see
   [../key-value/architecture.md](../key-value/architecture.md)).
-- **Encryption at rest** is the store's: the node or tenant barrier, not a
-  per-database one.
+- **Encryption at rest** is the store's: the node or tenant barrier, or the
+  database's own barrier where it has a dedicated store.
 
 Two databases on one node are two listeners that cannot see each other's keys,
 watches or leases; on the shared shard they do share one revision sequence.
-*(Corrected: this section used to call each database an independent etcd
-cluster with its own revision counter and encryption barrier; see
-[api.md](api.md).)*
 
 ### Alternatives rejected
 
@@ -64,7 +61,7 @@ cluster with its own revision counter and encryption barrier; see
   security regression.
 - **Reimplementing etcd's storage semantics.** Rejected: the MVCC engine, watch
   service, leases and transactions already provide them. The etcd server is a
-  translation layer (`translate.go`), not a second implementation.
+  translation layer (`pkg/api/etcd`), not a second implementation.
 
 ## Authentication
 
@@ -78,9 +75,7 @@ and authorized against the database's owning tenant:
   [../databases/architecture.md](../databases/architecture.md)). The refusal
   names neither the database nor its owning tenant, so it does not tell a
   stranger what the port serves; the caller, its tenant, the owner and the
-  database are logged on the server. *(Corrected: this said the system tenant
-  was admitted as the store-global administrator; the listener has refused it
-  since database ownership became one rule for every tenant.)*
+  database are logged on the server.
 - The RPC's permission (table below) is checked for the owning tenant. For
   `Compact` that admits only the owning tenant's own identities:
   `mvcc:compact` is `ScopeSelfStrict`.
@@ -105,65 +100,22 @@ Client cert (CN=alice, OU=acme-corp)
 ## Authorization
 
 Per-request RBAC authorization maps each etcd RPC to a qrdb permission. The map
-is default-deny: an RPC without a row is refused before its handler runs.
-
-| etcd service | RPC | Backed by | Permission |
-|---|---|---|---|
-| `KV` | `Range` | `MVCCKVService.Range` / `GetRevision` | `kv:range` |
-| `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
-| `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
-| `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
-| `KV` | `Compact` | `MVCCKVService.Compact` (this database only) | `mvcc:compact` |
-| `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
-| `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
-| `Lease` | `LeaseRevoke` | `LeaseService.Revoke` | `lease:revoke` |
-| `Lease` | `LeaseKeepAlive` | `LeaseService.KeepAlive` | `lease:keepalive` |
-| `Lease` | `LeaseTimeToLive` | `LeaseService.TimeToLive` | `lease:ttl` |
-| `Lease` | `LeaseLeases` | `LeaseService.Leases` | `lease:list` |
-| `Cluster` | `MemberList` | `AdminService.Peers` | `admin:peers` |
-| `Maintenance` | `Status` | current revision | `admin:status` |
-| `Maintenance` | `Alarm` | — | `admin:status`; returns no alarms |
-| every other RPC — `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` before any handler runs |
-
-## API Operations
-
-The served RPCs, the services behind them and their permissions are the table under Authorization above.
-
-The `translate.go` module handles bidirectional type conversion between etcd protobuf types (`mvccpb.KeyValue`, `etcdserverpb.RangeRequest`, etc.) and QRDB service types (`service.KeyValue`, `service.RangeOptions`, etc.).
-
+is default-deny: an RPC without a row is refused before its handler runs. The
+map, with the service behind each RPC, is [api.md](api.md#rpc-coverage)
+(`methodPermissions` in `pkg/api/etcd/authorize.go`).
 
 ## Multi-Tenancy
 
-The listener is **confined to its database**. Its MVCC, transaction, watch and
-lease services are resolved through the same per-(tenant, database) service
-registry every other transport uses, for the tenant that owns the database. On
-the shared shard that is the `<owner-tenant>/<database>/` namespace: the prefix
-is added on write and stripped on read, and a range can never leave it.
+What a listener sees is listed under "Shape chosen"; the key-namespacing
+example is in [api.md](api.md#key-namespacing). A database that is sealed,
+dropped or whose tenant barrier is sealed is refused on the next request: the
+listener re-resolves the database on every RPC.
 
-```bash
-# etcd enabled on database "k8s" owned by tenant "acme-corp"
-etcdctl put /registry/pods/default/nginx '{"kind":"Pod",...}'
-# Stored as: acme-corp/k8s//registry/pods/default/nginx
-etcdctl get "" --from-key
-# Returns only keys of acme-corp/k8s, prefix stripped
-```
-
-A volume- or raft-isolated tenant's database is served from the tenant's own
-store exactly as on every other transport. A database that is sealed, dropped
-or whose tenant barrier is sealed is refused on the next request: the listener
-re-resolves the database on every RPC.
-
-Revision counters are those of the store serving the database: a database on
-the shared shard sees the shard's store-global revisions, and a raft-isolated
-tenant's database has its own group and its own counter. `Compact` compacts
-the database's own history in either case: a `kube-apiserver` compacting its
-database never discards another database's or another tenant's revisions.
-*(Corrected: `Compact` was reserved to the system tenant on the shared shard,
-because it then discarded every tenant's history; it is now per database.)* Watches and leases resolve through the
-same scoped services, so events and lease-attached keys never cross databases.
-*(Corrected: earlier revisions of this document claimed every database had its
-own revision counter starting at 1, and that keys were prefixed with the
-client's tenant; neither was what the code did.)*
+`Compact` compacts the database's own history, on the shared shard as on a
+dedicated one: a `kube-apiserver` compacting its database never discards
+another database's or another tenant's revisions. Watches and leases resolve
+through the same scoped services, so events and lease-attached keys never cross
+databases.
 
 ## Package Structure
 
@@ -173,10 +125,11 @@ pkg/api/etcd/
   kv.go            KVServer (Range, Put, DeleteRange, Txn, Compact)
   watch.go         WatchServer with stream multiplexing
   lease.go         LeaseServer (Grant, Revoke, KeepAlive, TTL, Leases)
-  auth.go          AuthServer stub (mTLS instead)
+  auth.go          AuthServer, registered but never reached (Auth RPCs are refused)
+  authorize.go     RPC-to-permission map; unary and stream authorize interceptors
   cluster.go       ClusterServer (MemberList)
-  maintenance.go   MaintenanceServer (Status, Defrag, Alarm)
-  translate.go     Type translation: qrdb <-> etcd protobuf
+  maintenance.go   MaintenanceServer (Status, Alarm; the rest are refused)
+  translate.go     kv.KeyValue -> mvccpb.KeyValue; response headers
   config.go        Config validation
   errors.go        Typed errors
 ```
@@ -217,7 +170,7 @@ graph, and not affected by `WITH_QRDB_ETCD`.
 | Per-database etcd gRPC server and its services | `pkg/api/etcd` | go-qrdb |
 | Type translation, etcd protobuf ⇄ qrdb service types | `pkg/api/etcd/translate.go` | go-qrdb |
 | MVCC, watch, lease, transaction semantics | `pkg/mvcc`, `pkg/watch`, `pkg/lease`, `pkg/service` | go-qrdb |
-| Per-database barrier | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
+| Encryption barriers (node, tenant, database) | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
 | etcd protobuf definitions | — | **upstream etcd** (`etcdserverpb`, `mvccpb`) |
 
 ## What this feature deliberately does not do
@@ -226,14 +179,7 @@ graph, and not affected by `WITH_QRDB_ETCD`.
 - **No global etcd cluster view.** `MemberList` and `Status` report the qrdb
   cluster, per database.
 - **No etcd v2 API.**
-- **No support on a standalone node.** A standalone node's listener refuses
-  to start, because the etcd listener is a raft-only surface. *(The reason
-  given here was that MVCC, leases and watches are raft-only; a standalone
-  node serves those since 2026-10-01, and the listener stays raft-only by its
-  own capability flag.)* Any backend serves it. *(Corrected twice:
-  `backend: raft` was documented as required and was neither required nor
-  checked; and this section previously also read "No support outside
-  `engine: kv`", refusing any other engine at create and on update with
-  `database.EtcdEngineUnsupportedError` -- Lane 1C deleted the `engine`
-  concept and that error entirely, OD-12/OD-13, so etcd now serves any
-  database regardless of what it stores.)*
+- **No support on a standalone node.** Its listener refuses to start
+  (`service.CapabilityUnsupportedError`): the etcd listener is a raft-only
+  surface by its own capability flag, although a standalone node serves MVCC,
+  leases and watches on its other transports. Any backend serves it.

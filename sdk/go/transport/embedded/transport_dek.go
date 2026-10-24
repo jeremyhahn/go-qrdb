@@ -32,7 +32,8 @@ var _ transport.DEKClient = (*Transport)(nil)
 
 // TenantDEKStatus returns the caller's keyring versions.
 func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
-	if err := t.gate("TenantDEKStatus"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKStatus")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKStatus"); err != nil {
@@ -50,7 +51,8 @@ func (t *Transport) TenantDEKStatus(ctx context.Context, req *transport.TenantDE
 
 // TenantDEKRotate adds a key version and makes it current.
 func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDEKRequest) (*transport.TenantDEKStatusResponse, error) {
-	if err := t.gate("TenantDEKRotate"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKRotate")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKRotate"); err != nil {
@@ -68,7 +70,8 @@ func (t *Transport) TenantDEKRotate(ctx context.Context, req *transport.TenantDE
 
 // TenantDEKRetire destroys an old key version.
 func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDEKRetireRequest) (*transport.TenantDEKStatusResponse, error) {
-	if err := t.gate("TenantDEKRetire"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKRetire")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKRetire"); err != nil {
@@ -86,7 +89,8 @@ func (t *Transport) TenantDEKRetire(ctx context.Context, req *transport.TenantDE
 
 // TenantDEKEncrypt seals plaintext under the current key version.
 func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantDEKEncryptRequest) (*transport.TenantDEKEncryptResponse, error) {
-	if err := t.gate("TenantDEKEncrypt"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKEncrypt")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKEncrypt"); err != nil {
@@ -104,7 +108,8 @@ func (t *Transport) TenantDEKEncrypt(ctx context.Context, req *transport.TenantD
 
 // TenantDEKDecrypt opens a ciphertext sealed for the caller's tenant.
 func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantDEKDecryptRequest) (*transport.TenantDEKDecryptResponse, error) {
-	if err := t.gate("TenantDEKDecrypt"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKDecrypt")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKDecrypt"); err != nil {
@@ -122,7 +127,8 @@ func (t *Transport) TenantDEKDecrypt(ctx context.Context, req *transport.TenantD
 
 // TenantDEKRewrap re-seals a ciphertext under the current key version.
 func (t *Transport) TenantDEKRewrap(ctx context.Context, req *transport.TenantDEKRewrapRequest) (*transport.TenantDEKRewrapResponse, error) {
-	if err := t.gate("TenantDEKRewrap"); err != nil {
+	ctx, err := t.admit(ctx, "TenantDEKRewrap")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "TenantDEKRewrap"); err != nil {

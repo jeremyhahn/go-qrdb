@@ -1,12 +1,12 @@
 # Time Series — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented.
 
 Test reference: `make integration-test-time-series`; coverage row: `test/integration/COVERAGE.md` `[time-series](../../docs/time-series/)`.
 
@@ -56,8 +56,8 @@ JSON
 qrdb ts write-batch --file points.json
 ```
 
-**Query a window, filtered by tag.** The range is start-inclusive,
-end-exclusive.
+**Query a window, filtered by tag.** The range includes both `--start` and
+`--end`.
 
 ```bash
 qrdb ts query --metric cpu.usage \
@@ -104,12 +104,11 @@ Setting a retention policy that keeps thirty days at hourly resolution:
 ```bash
 curl --cert client.pem --key client-key.pem --cacert ca.pem \
      -X PUT https://db.example.com/ts/series/cpu.usage/retention \
-     -d '{"policy":{"duration_ns":2592000000000000,
-                    "resolution_ns":3600000000000,"aggregation":1}}'
+     -d '{"duration_ns":2592000000000000,
+          "resolution_ns":3600000000000,"aggregation":"avg"}'
 ```
 
-`aggregation` is a number: 1 avg, 2 sum, 3 min, 4 max, 5 count, 6 percentile,
-7 first, 8 last.
+`aggregation` is a name: `avg`, `sum`, `min`, `max`, `count` or `percentile`.
 
 ## Troubleshooting
 
@@ -117,9 +116,6 @@ curl --cert client.pem --key client-key.pem --cacert ca.pem \
 `--start` and `--end` are nanoseconds; a second- or millisecond-based timestamp
 lands so far in the past that nothing is in range. `date +%s%N` gives you
 nanoseconds.
-
-**The last point is missing from your range.** The range is `[start, end)` —
-end is exclusive. Add one nanosecond, or widen the window.
 
 **Tag filtering returns nothing.** Tag matching is exact on both key and value.
 `--tag host=web-01` does not match a point tagged `Host=web-01`.
@@ -138,10 +134,10 @@ an expired point with a downsampled one, so a policy that wanted to keep a
 year at hourly resolution instead loses that year outright once
 `duration_ns` passes — plan storage as if retention only deletes.
 
-**Time-series calls fail with "not open" or "not configured".** Time series
-works on every backend — memory, file, pebble and objstore — as long as the
-binary was built with time-series support (`WITH_QRDB_TS=1`; see below). If
-it still answers "not configured", confirm with `qrdb admin capabilities`.
+**Time-series calls fail with "not configured".** Time series works on every
+backend — memory, file, pebble and objstore — as long as the binary was built
+with time-series support (`WITH_QRDB_TS=1`). Confirm with
+`qrdb admin capabilities`.
 
 **You deleted a series and more went than you expected.** `TSDeleteSeries` with
 no time range deletes the whole series. Pass `start_ns`/`end_ns` to bound it.

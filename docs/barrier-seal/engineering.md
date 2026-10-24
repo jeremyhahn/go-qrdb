@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -46,11 +46,8 @@ composer that would rather select by name registers its strategy under the
 name `seal.strategy` selects. `qrdbd` composes no hardware strategy and passes
 no composer. `ResolveSystemStrategies` builds the selected strategy, which must
 resolve, then the one the persisted root key names when it differs (the
-`enable-encryption` restart path), best effort. **Correction (2026-10-07):**
-`pkg/server` also carried a `WithSealStrategy`, surfaced by
-`ResolveCryptoOptions` and consumed by nothing; it is deleted, and the system
-barrier no longer selects its strategy with a `switch` that bypassed the
-registry.
+`enable-encryption` restart path), best effort. `pkg/server` has no
+`WithSealStrategy`.
 
 The SDK node builders forward `WithStrategyRegistry` and
 `WithBarrierKeyProvider` into `lifecycle.Infra` before `BuildServices`, because
@@ -67,7 +64,7 @@ type StrategyRegistry interface {
 }
 type StrategyFactory func() (SealingStrategy, error)
 
-func NewDefaultStrategyRegistry() StrategyRegistry
+func NewDefaultStrategyRegistry() *DefaultStrategyRegistry
 
 // The per-node barrier key seam (architecture.md, "The barrier key seam").
 type BarrierKeyProvider interface {
@@ -87,9 +84,9 @@ type BarrierKeyStrategy struct {
 }
 func NewBarrierKeyProvider(reg StrategyRegistry) BarrierKeyProvider // nil reg: NewDefaultStrategyRegistry()
 
-func NewSoftwareStrategy(passphrase []byte) (*SoftwareStrategy, error)
-func NewSoftwareStrategyWithParams(passphrase []byte, time, memory uint32, threads uint8) (*SoftwareStrategy, error) // Argon2id, refused under FIPS
-func NewSoftwareStrategyFIPS(passphrase []byte, iterations int) (*SoftwareStrategy, error)                        // PBKDF2-SHA256
+func NewSoftwareStrategy(ctx context.Context, passphrase []byte) (*SoftwareStrategy, error)
+func NewSoftwareStrategyWithParams(ctx context.Context, passphrase []byte, time, memory uint32, threads uint8) (*SoftwareStrategy, error) // Argon2id, refused under FIPS
+func NewSoftwareStrategyFIPS(ctx context.Context, passphrase []byte, iterations int) (*SoftwareStrategy, error)                        // PBKDF2-SHA256
 func NewDeferredSoftwareStrategy() *SoftwareStrategy
 func NewDeferredSoftwareStrategyWithParams(version KDFVersion, params KDFParams) (*SoftwareStrategy, error)
 func NewNoneStrategy() SealingStrategy
@@ -98,9 +95,9 @@ type KDFVersion = quicraftseal.KDFVersion // KDFArgon2id, KDFPbkdf2SHA256
 type KDFParams  = quicraftseal.KDFParams  // read off a strategy with KDFVersion() / KDFParams()
 
 func (b *StorageBarrier) OnUnsealed(fn func(context.Context)) // runs fn on every transition to unsealed
-func NewCredentials(secret []byte) (Credentials, error)  // consumes (wipes) secret
-func CredentialsFor(secret []byte) (Credentials, error)  // borrows secret; empty -> zero Credentials
-func MustCredentials(secret []byte) Credentials           // fixtures
+func NewCredentials(ctx context.Context, secret []byte) (Credentials, error)  // consumes (wipes) secret
+func CredentialsFor(ctx context.Context, secret []byte) (Credentials, error)  // borrows secret; empty -> zero Credentials
+func MustCredentials(ctx context.Context, secret []byte) Credentials           // fixtures
 
 func FIPSEnabled() bool // the stack's single FIPS 140 predicate
 ```
@@ -119,14 +116,13 @@ Strategy IDs: `seal.StrategyPassphrase`, `seal.StrategyShamir`,
 
 `StorageBarrier` (`pkg/seal/barrier.go`) key fields:
 
-For field documentation and the complete struct definition, see the `StorageBarrier` struct in `pkg/seal/barrier.go`. The key fields are:
-- `state` (atomic): 0 = sealed, 1 = unsealed
-- `activeStrategy` (atomic.Value): StrategyID that sealed the root key
-- `persistedStrategyCache` (atomic.Value): cached strategy ID from sealed root key blob
-- `accumulator` (atomic.Value): Shamir share accumulator for quorum unsealing
-- `initializedAt` (atomic.Value): initialization timestamp
-- `strategies` (map, RW-locked): all registered strategies
-- `strategiesMu`, `accumulatorMu` (sync.RWMutex, sync.Mutex): synchronization for concurrent access
+- `state` (`atomic.Int32`): 0 = sealed, 1 = unsealed
+- `activeStrategy` (`atomic.Value`): StrategyID that sealed the root key
+- `persistedStrategyCache` (`atomic.Value`): cached strategy ID from the sealed root key blob
+- `initializedAt` (`atomic.Value`): initialization timestamp
+- `strategies` (map, guarded by `strategiesMu`): all registered strategies
+- `shamirMu` (`sync.RWMutex`): guards `config.Shamir`
+- `quorumState` (embedded): the share-holder quorum rounds and the holder verifier
 
 `pkg/clusterseal` — cluster-wide sealing (see
 [architecture.md](architecture.md#sealing-in-a-cluster)):
@@ -212,6 +208,7 @@ type ClusterSealParts struct {               // what a composer hands NewCluster
 	Barriers    *seal.BarrierRegistry
 	Shards      *RaftBackendFactory          // tenant raft shards, stopped before a tenant seal
 	Hosts       *TenantHostRegistry          // tenant volume hosts, likewise
+	Pauser      *ShardPauser                 // pauses every hosted shard before a node seal; nil pauses nothing
 	Databases   service.DatabaseServicer     // SealDatabaseLocal seals a database here
 	Membership  featuregate.ShardMembershipReader
 	SystemShard uint64
@@ -236,8 +233,7 @@ services and to the server, which wraps the node's sealed-window probe with
   and protected memory from there on.** The transport request field, the
   protobuf field and the service-layer parameter are all `[]byte`, never
   `string`, because a Go string is immutable and therefore cannot be zeroized.
-  `seal.Credentials.Secret` is a `*enclave.SealedEnclave` (go-enclave, as of
-  go-quicraft v0.11.0-alpha): the service copies the borrowed slice into a
+  `seal.Credentials.Secret` is a `*enclave.SealedEnclave` (go-enclave): the service copies the borrowed slice into a
   sealed enclave with `seal.CredentialsFor`, and the strategy that needs the
   passphrase opens that enclave itself for exactly as long as its KDF runs.
   Nothing between the decoder and the KDF holds the plaintext as a `[]byte`.
@@ -247,8 +243,7 @@ services and to the server, which wraps the node's sealed-window probe with
   - **The callee borrows the slice and retains nothing.** `BarrierServicer`
     and `TenantServicer` read it for the duration of the call, build a
     credential from a copy, and destroy that credential when the call returns.
-    `InitializeShamir` opens the credential into a working copy of its own
-    that `SealAndDistribute` wipes. Nothing keeps a reference past the call,
+    Nothing keeps a reference past the call,
     which is what makes the caller free to wipe.
   - **The owner of the slice is whoever decoded it, and it wipes on every exit
     path.** Each protocol handler `defer secure.Wipe`s the slice its decoder
@@ -281,9 +276,9 @@ services and to the server, which wraps the node's sealed-window probe with
   `sdk/go/transport/mcp.secretArg` are the single documented conversion points
   on each side. The residue is one string per call and goes no further.
 
-  The rule does **not** yet reach SO/User PINs, which are still text strings
-  on every transport. See
-  [api.md](api.md#known-limitation--share-and-pin-fields-are-still-text-strings).
+  The rule does **not** reach SO/User PINs, which are text strings on every
+  transport. See
+  [api.md](api.md#known-limitation--pin-fields-are-text-strings).
   Quorum submissions carry the share as bytes and every transport wipes it.
 
 - **The default registry holds exactly two strategies**: `StrategyPassphrase`
@@ -303,8 +298,7 @@ services and to the server, which wraps the node's sealed-window probe with
   barrier, which is why the default registry and `pkg/database` use it and why
   `ChangePassword` installs one.
 
-  Two consequences worth stating separately, because each has already cost an
-  incident:
+  Two consequences:
 
   - **Replacing a registered strategy can silently change whether the barrier
     authenticates anyone**, with no signature, type or error to notice. A
@@ -320,8 +314,7 @@ services and to the server, which wraps the node's sealed-window probe with
     and every test in this repo that asserts a wrong secret is refused must
     build its fixture with the deferred constructor. The **vacuous** shape is
     the opposite one: a test asserting only that the root key comes back passes
-    with either constructor, which is how a whole suite stayed green over a
-    barrier that checked nothing.
+    with either constructor.
 - **A barrier's KDF work factor is preserved across a password change, and
   that is correctness, not hardening.** A sealed root-key blob records the KDF
   *version* byte and never the params, so a blob sealed at a non-default factor
@@ -331,13 +324,12 @@ services and to the server, which wraps the node's sealed-window probe with
   `KDFParams()`) and builds the replacement with
   `NewDeferredSoftwareStrategyWithParams`, which is deferred (it still
   authenticates the caller) and tuned (it still opens the blob). The
-  no-argument deferred constructor reset the factor to the library defaults on
-  every password change, silently: the blob it wrote could be opened only by a
-  default-factor strategy, so a restart that constructed the deployment's
-  tuned strategy from its configuration could not unseal it — whichever
-  direction the tuning went — and a deployment tuned above the defaults was
-  also weakened on the credential that wraps the root key. The version
-  travels with the params
+  no-argument deferred constructor would reset the factor to the library
+  defaults: the blob it wrote could be opened only by a default-factor
+  strategy, so a restart that constructed the deployment's tuned strategy from
+  its configuration could not unseal it, and a deployment tuned above the
+  defaults would be weakened on the credential that wraps the root key. The
+  version travels with the params
   so the FIPS leg cannot be got wrong: a PBKDF2 strategy stays PBKDF2 and an
   Argon2id one stays Argon2id, and a version the build or runtime policy
   refuses is refused by the constructor. A strategy of another type registered
@@ -384,7 +376,7 @@ services and to the server, which wraps the node's sealed-window probe with
   registry is an `OnUnsealed` observer of the node barrier and unseals, when it
   unseals, only the system-managed (`StrategySystemBarrier`) barriers its last
   node seal moved from unsealed to sealed; no database barrier is
-  system-managed today, so a passphrase or Shamir database stays sealed for its
+  system-managed, so a passphrase or Shamir database stays sealed for its
   owner or quorum. The database registry's gate
   (`DatabaseBarrierManager.SetUnsealGate`, wired by lifecycle) vetoes a
   database whose record is sealed or whose owner this node cannot name;
@@ -435,9 +427,7 @@ services and to the server, which wraps the node's sealed-window probe with
   holds its own node-barrier key. A tenant root key is re-wrapped under the
   *receiving* node's node barrier, but the root key itself is the same on every
   replica of a raft tenant, so a node whose key and disk are both compromised
-  exposes the tenant key used on the other replicas. **Correction
-  (2026-10-01):** this line previously said a compromised node key does not
-  expose tenant keys elsewhere.
+  exposes the tenant key used on the other replicas.
 - **A seal record carries no key material.** `clusterseal.Record` has no field
   that can hold a key, a share, a credential or an envelope, and a unit test
   pins its encoded field set.
@@ -578,8 +568,7 @@ services and to the server, which wraps the node's sealed-window probe with
   which the unseal does not clear (see *The node barrier waits for every
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
-  close it. (Corrected: this paragraph used to say the library refuses the
-  entry without halting the shard; it does not.)
+  close it.
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -589,13 +578,13 @@ services and to the server, which wraps the node's sealed-window probe with
   `system` tenant is refused. Database barrier: the owning tenant only.
 - **The CA key is never a plain `[]byte` or `*ecdsa.PrivateKey`; it is reached
   only through an opaque, barrier-checked `crypto.Signer`.** Both Key A and
-  Key B are `cakey.SoftwareProvider` instances now; neither `pkg/clusterca`
+  Key B are `cakey.SoftwareProvider` instances; neither `pkg/clusterca`
   nor `pkg/cert` holds key material in a field of its own. `Signer` cannot be
   type-asserted back to the concrete key and re-checks the barrier's sealed
   state and the provider's own `Seal` generation on every `Sign` call, so a
   `Signer` obtained before a `Seal()` refuses afterward even though the
   caller is still holding it. The stored record itself carries no additional
-  barrier encryption (the owner's CA-at-rest ruling) — the barrier only gates
+  barrier encryption — the barrier only gates
   whether this process will touch the key at all. The decrypted key is held
   in memory only until the next `Seal()`, which zero-fills it with
   `secure.Wipe` (a plain overwrite, not a go-enclave locked-memory enclave)
@@ -637,24 +626,22 @@ services and to the server, which wraps the node's sealed-window probe with
   epoch below the floor its WAL and snapshots still need. That floor knows
   nothing of the values a `StorageBarrier` stores, or of a tenant root key that
   `system-barrier` wraps under the system barrier. Every unseal rotates the
-  epoch, so after one restart and one snapshot such a value's epoch fell below
-  the floor and was dropped, and the value stopped decrypting: an
-  auto-unsealed tenant stayed sealed after its node's next restart. A
-  `StorageBarrier` now pins (`RegisterInFlightEpoch`) each epoch it encrypts
+  epoch, so without a pin, after one restart and one snapshot such a value's
+  epoch would fall below the floor and be dropped, and the value would stop
+  decrypting: an auto-unsealed tenant would stay sealed after its node's next
+  restart. A `StorageBarrier` pins (`RegisterInFlightEpoch`) each epoch it encrypts
   under, in the same step as the encrypt. Each unseal also pins every epoch the
   persisted blob still knows, before the `EpochBarrier` unseals and so before
   any purge can run (`pkg/seal/epoch_pins.go`). The cost is that a barrier's
   `KnownEpochs` keeps one entry per rotation. Retiring an epoch safely would
-  mean re-encrypting what was written under it, and nothing does that yet.
+  mean re-encrypting what was written under it, and nothing does that.
 
 ## Dual-mode operation
 
-### Dual-Mode Operation
-
 | Mode | Strategy Type | Encrypt/Decrypt | Key Rotation |
 |------|--------------|-----------------|--------------|
-| **Software / Shamir** | `SoftwareStrategy`, `ShamirStrategy` | Epoch-based HKDF DEKs via embedded barrier | `Rotate()` generates new epoch DEK |
-| **None** | `NoneStrategy` | Passthrough (no encryption) | n/a |
+| **Software / Shamir** | `SoftwareStrategy`, `ShamirStrategy` | Epoch-based HKDF DEKs via embedded barrier | every unseal rotates the epoch |
+| **None** | `NewNoneStrategy()` | Passthrough (no encryption) | n/a |
 | **Hardware** (xkms-registered) | TPM2, PKCS#11, cloud KMS, Vault | Delegates to `BarrierEncryptor` from strategy | Hardware manages key lifecycle |
 
 
@@ -702,10 +689,10 @@ leadership to a peer before it stops anything (`handOffLeadership`,
 replica leads or `leaderHandoffTimeout` (5s) passes. It picks the voter it has
 heard from within the election timeout that holds the most of its log; when it
 has heard from none -- the peers are down for their own migration -- it skips
-the transfer. A leader that closed without handing off left every peer's
-system-shard reads forwarded to a replica that no longer answered until they
-elected one themselves, and those reads are the TLS handshake's trust
-resolution and each request's revocation check: the peers stopped serving
+the transfer. A leader that closes without handing off leaves every peer's
+system-shard reads forwarded to a replica that no longer answers until they
+elect one themselves, and those reads are the TLS handshake's trust
+resolution and each request's revocation check: the peers stop serving
 authenticated requests for that window. A handoff that fails or times out is
 logged at WARN and the recycle proceeds; it costs only the election it was
 meant to spare.
@@ -809,23 +796,20 @@ type CredentialSource interface {
 }
 type LocalCredentials struct{ /* ... */ }                                // the source every node runs
 func NewLocalCredentials(dir string) *LocalCredentials                   // dir = seal.migration_credentials_dir
-func (l *LocalCredentials) Hold(m *ClusterMigration, credential []byte) error // the accepting node's request credential, copied to protected memory
+func (l *LocalCredentials) Hold(ctx context.Context, m *ClusterMigration, credential []byte) error // the accepting node's request credential, copied to protected memory
 const PhaseAwaitingCredential seal.MigrationPhase = "awaiting-credential"
 var ErrCredentialAwaited error
-func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64) *Coordinator
+func NewCoordinator(store *Store, owners OwnerResolver, isLeader func() bool, nowUnix func() int64, opts ...CoordinatorOption) *Coordinator
 func (c *Coordinator) Request(ctx context.Context, tenantID, database string, opts seal.MigrationOptions, ropts ...RequestOption) (*ClusterMigration, error)
 type Prepare func(m *ClusterMigration) (undo func(), err error)
 func WithPrepare(p Prepare) RequestOption // the accepting node Holds its credential before the record is written
 ```
 
-Earlier releases sealed the credential to each owner with HPKE and stored the
-envelopes in the record; that path is gone, together with the per-node
-migration receiver.
-
 **An indeterminate record write leaves the accepting node awaiting its
 credential.** The accepting node holds the request's credential through
 `WithPrepare` before the record is written, and the prepare's undo releases
-it -- destroying the protected copy -- when `PutMigration` returns an error.
+it -- destroying the protected copy -- when `CompareAndSwapMigration` returns
+an error.
 A write can fail and still commit: a proposal that times out, or whose
 leader is lost after it was appended, may be applied afterwards. The undo has
 run by then, so the record exists while this node holds no credential for its
@@ -933,10 +917,10 @@ type LocalRecycler interface {
 }
 ```
 
-Node barrier status reports the system-scope migration (#775).
+Node barrier status reports the system-scope migration.
 `Store.Report` joins the intent record with the per-node statuses of its
-current generation: owners in step order (owner order for a request written
-before the gate), each with its step and its own phase, attempts and detail,
+current generation: owners in step order (owner order for a request without
+steps), each with its step and its own phase, attempts and detail,
 and `Acked` counted over the owners at `PhaseComplete`. The service layer reads
 it under its own bound, `migrationReportTimeout`, so a read that fails or times out
 reports `unconfirmed` and the status call itself succeeds. Every transport
@@ -957,17 +941,18 @@ every acknowledged write afterwards. At every turn it asks
 step counts it expects, and it ends when every node, over every transport,
 reports no migration: the record was reaped. It also reads the nodes' logs for
 the three hand-on lines: each turn's `catch_up_index` must be above zero and
-above the previous turn's. A stale coordinator's conditional write, which
+above the previous turn's.
+`TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` stops the
+coordinating leader while the second owner holds its turn, and starts it
+again. Every node, over every transport, then reports the same generation and
+the same steps as before the stop. The restarted node, leading again, hands
+that turn on. Its own turn comes last and waits for its credential file,
+because the restart discarded the request credential. The rollout ends with
+one hand-on per owner. A stale coordinator's conditional write, which
 loses and is decided again on the record it re-reads, and a shard with no
 leader, are unit-tested in `pkg/clustermig`. A write is retried only in the class the
 key-value API documents as retryable: `503 UNAVAILABLE`, or a node that does
 not answer, retried on another node.
-
-> **Correction to `seal/README.md`.** That document states the strategy is fixed
-> at initialization and that moving off `none` is "a planned backup/restore
-> migration into a freshly-keyed instance". `barrier enable-encryption` has
-> since shipped and performs an in-place re-encryption. The code is correct and
-> the older prose is stale.
 
 ## Per-node barrier keys: init statement
 
@@ -978,10 +963,12 @@ shipped surface, `pkg/barrierinit`:
 type InitStatement struct {
 	Barrier           clusterseal.Barrier
 	Epoch             uint64 // 1, then +1 per re-key or strategy change
+	IssuedAt          int64  // Unix seconds; a certificate is validated at it
 	StrategyID        seal.StrategyID
 	KeyRef            string // opaque; read only by an injected strategy
 	Threshold         int    // Shamir only
 	RosterHash        []byte // Shamir only
+	Roster            []byte // Shamir only; the roster RosterHash commits to
 	VerifierSalt      []byte // passphrase only
 	UnsealKeyCheck    []byte // Shamir only
 	SignerSPKI        []byte // DER SubjectPublicKeyInfo of the signing key
@@ -995,7 +982,8 @@ func Verify(s InitStatement, a Anchors) error
 type Anchors struct {
 	FirstAdmin string         // user.PublicKeySPKIThumbprint of the pending first admin
 	CA         *x509.CertPool // the owner's CA, pinned in the system tenant
-	At         time.Time      // certificate validity time; zero is now
+	Platform   *x509.CertPool // the cluster CA; set only for platform custody (auto-unseal)
+	At         time.Time      // a statement issued after it is refused; zero is now
 }
 
 const Prefix = "__sys:cluster/barrier/init/"
@@ -1015,10 +1003,18 @@ func (w *Watcher) Run(ctx context.Context) error
 func (w *Watcher) Poll(ctx context.Context) error
 
 // The wire form a client sends beside an init request.
-const MaxEncodedLength = 16 * MaxFieldLength
+const MaxEncodedLength = 16*MaxFieldLength + 2*MaxRosterLength
 func (s InitStatement) Marshal() ([]byte, error)
 func Parse(raw []byte) (InitStatement, error) // *InitStatementError (ReasonMalformed); no signature check
-type Expect struct{ Barrier clusterseal.Barrier; Epoch uint64; StrategyID seal.StrategyID; KeyRef string }
+type Expect struct {
+	Barrier    clusterseal.Barrier
+	Epoch      uint64
+	StrategyID seal.StrategyID
+	KeyRef     string
+	Threshold      int    // Shamir only: the split the claiming node prepared
+	Roster         []byte
+	UnsealKeyCheck []byte
+}
 func (s InitStatement) Matches(e Expect) error // ReasonMismatch
 
 // The epoch-1 anchor: the first admin's SPKI thumbprint, pinned at onboarding.
@@ -1031,6 +1027,7 @@ func (p *Pins) Anchors(ctx context.Context, b clusterseal.Barrier) (Anchors, err
 type AnchorSource func(ctx context.Context, b clusterseal.Barrier) (Anchors, error)
 func NewClaimer(book *Book, anchors AnchorSource) *Claimer
 func (c *Claimer) ClaimTenantInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string, raw []byte) error
+func (c *Claimer) ClaimTenantShamirInit(ctx context.Context, tenantID string, prepared *seal.ShamirInitParams, raw []byte) error
 ```
 
 The pins live under `__sys:cluster/barrier/anchor/<barrier>` through the same
@@ -1042,7 +1039,8 @@ records are behind its barrier.
 
 `pkg/tenant` cannot import `pkg/barrierinit` (`barrierinit` imports `user`,
 which imports `tenant`), so the tenant seam carries the encoded statement:
-`tenant.BarrierInitBook` is the `ClaimTenantInit` method,
+`tenant.BarrierInitBook` is the `ClaimTenantInit` and `ClaimTenantShamirInit`
+methods,
 `tenant.WithBarrierInitBook` injects it and `tenant.WithInitStatement` passes
 a request's statement to `TenantBarrierInitWithStrategy`. With a book
 injected, an init claims the statement before this node registers or
@@ -1097,10 +1095,14 @@ self-initialise. Pinned by
   `Signature` length-prefixed (uint32 big-endian) or fixed-width (uint64
   big-endian). Changing any covered field invalidates the signature.
 - `Verify` checks, in order: every field present and within
-  `MaxFieldLength` (16 KiB); the SPKI parses; the signer is the anchor's
-  (epoch 1: its thumbprint equals `Anchors.FirstAdmin`; later: the
-  certificate chains to `Anchors.CA` for client authentication at
-  `Anchors.At` and its SPKI is byte-equal to `SignerSPKI`); the signature
+  `MaxFieldLength` (16 KiB), `Roster` within `MaxRosterLength` (128 KiB); the
+  statement was not issued after `Anchors.At`; the SPKI parses; the signer is
+  the anchor's (epoch 1 without a certificate: its thumbprint equals
+  `Anchors.FirstAdmin`; epoch 1 with a certificate: the certificate chains to
+  `Anchors.Platform`; later: it chains to `Anchors.CA` or `Anchors.Platform`),
+  where a certificate must be valid at `IssuedAt`, chain for client
+  authentication at that time, and carry an SPKI byte-equal to `SignerSPKI`;
+  the signature
   verifies (`mtls.VerifyNonceSignature`: ECDSA and RSA over SHA-256, Ed25519).
 - `Claim` and `Advance` verify before they write, so an unverified statement
   is never stored. Both are idempotent for the stored statement, compared by
@@ -1120,20 +1122,18 @@ self-initialise. Pinned by
 ```go
 // pkg/barrierinit
 const AnchorPrefix = "__sys:cluster/barrier/anchor/"
-func NewPins(kv KV) *Pins
-func (p *Pins) PinFirstAdmin(ctx context.Context, b clusterseal.Barrier, thumbprint string) error
-func (p *Pins) FirstAdmin(ctx context.Context, b clusterseal.Barrier) (string, error)
-func (p *Pins) Anchors(ctx context.Context, b clusterseal.Barrier) (Anchors, error) // an AnchorSource
+// Pins.Anchors is an AnchorSource.
 
-func NewClaimer(book *Book, anchors AnchorSource) *Claimer
-func (c *Claimer) ClaimTenantInit(ctx context.Context, tenantID string, strategyID seal.StrategyID, keyRef string, raw []byte) error
 // TenantInit returns the latest claimed statement for tenantID's barrier,
 // verified against its anchors; *NoInitStatementError when none is recorded.
 func (c *Claimer) TenantInit(ctx context.Context, tenantID string) (InitStatement, error)
 
 // SignTenantInit is what every client transport calls: the encoded epoch-1
 // statement for tenantID's barrier, or nil for a nil signer.
-func SignTenantInit(signer crypto.Signer, tenantID, strategy string) ([]byte, error)
+func SignTenantInit(signer crypto.Signer, tenantID, strategy string, issuedAt time.Time) ([]byte, error)
+// SignTenantShamirInit signs a Shamir barrier's epoch-1 statement, which
+// carries the threshold, roster and unseal key check value.
+func SignTenantShamirInit(signer crypto.Signer, tenantID string, threshold int, roster, check []byte, issuedAt time.Time) ([]byte, error)
 
 // pkg/tenant
 func WithBarrierInitBook(book BarrierInitBook) TenantServiceOption // *barrierinit.Claimer
@@ -1246,10 +1246,13 @@ key.
   harmless. It serialises with the owner's init on the same per-tenant lock,
   and it runs no barrier-ready hook.
 - The pending-admin completion (the tenant service's barrier-ready hook,
-  `bootstrap.CompletePendingTenantAdmin` composed in `pkg/server/lifecycle`) runs
-  as the caller on `context.WithoutCancel` of the caller's context with its own
-  15-second deadline, so its replicated writes are not cut short by the
-  request's.
+  composed in `pkg/server/lifecycle`) runs
+  `bootstrap.CompletePendingTenantAdminWithin` on `context.WithoutCancel` of
+  the caller's context, cancelled only when the node stops, within
+  `bootstrap.AdminCompletionBounds` (10 s per attempt, 2 min in all, by
+  default), so its replicated writes are not cut short by the request's. A
+  request that must not wait for the tenant's home group -- a Shamir barrier
+  init -- makes one attempt instead (`CompletePendingTenantAdminOnce`).
 - A tenant barrier's trust-on-first-init window admits the pending first
   admin's certificate while its record exists. The record is consumed when the
   admin's account is created, which a passphrase fan-out reaches before every
@@ -1321,10 +1324,10 @@ key.
 **Cross** is `ScopeCross` (`pkg/permission/node_barrier_scope.go`): only a
 `system`-tenant identity may exercise it. These routes name no tenant, and
 `ScopeSelf` compares the caller's tenant with the request's -- for a request
-naming none, with itself -- so as `ScopeSelf` they admitted any tenant's holder.
-That let a tenant's SO register holders into the node barrier's unseal and
-recovery domains; since every rekey, revocation and recovery-key generation
-sends a share to every registered holder, M planted holders could
+naming none, with itself -- so as `ScopeSelf` they would admit any tenant's
+holder, letting a tenant's SO register holders into the node barrier's unseal
+and recovery domains; since every rekey, revocation and recovery-key
+generation sends a share to every registered holder, M planted holders could
 reconstruct the node unseal key. The six-transport proof is
 `TestNodeOfficerScope` (REST, gRPC, Unix, QUIC, MCP, and the embedded
 `RBACClient`); the per-permission proof over the real built-in roles is
@@ -1353,10 +1356,9 @@ submit: every share is verified against the tenant's holder roster
 (`HolderVerifier.VerifyHolder`), so the system tenant can open a round but only
 the tenant's holders can complete one. `databases:seal`, `databases:unseal` and `databases:barrier_status` are
 `ScopeSelfStrict`, and `DatabaseService` resolves the database through the
-caller's own tenant for these three operations, the `system` tenant included.
-**Correction (2026-10-01):** these three were `ScopeSelf`, which the
-system-tenant rule lifts across tenants, and `DatabaseService` let the `system`
-tenant act on any tenant's database.
+caller's own tenant for these three operations, the `system` tenant included:
+as `ScopeSelf`, which the system-tenant rule lifts across tenants, the `system`
+tenant could act on any tenant's database.
 
 ## Configuration
 
@@ -1391,8 +1393,7 @@ Per-database and per-tenant barrier configuration lives in
 - The sealed root-key blob records the strategy that sealed it
   (`persistedStrategyCache`).
 - Each tenant's Key B CA (key and certificate together, as one JSON record
-  with no additional barrier encryption of its own — the owner's
-  CA-at-rest ruling) is stored at `__sys:cert_ca/{tenantID}/material`.
+  with no additional barrier encryption of its own) is stored at `__sys:cert_ca/{tenantID}/material`.
 - **Compatibility**: the sealed blob format carries a version sentinel — see
   [seal/sealed-window.md](../seal/sealed-window.md).
 - **Cluster seal records** live in the replicated system store under
@@ -1417,8 +1418,8 @@ that a node can bring a dedicated-isolation tenant back up after a restart:
 
 | Record | Written by | Read by |
 |---|---|---|
-| `__registry:tenant_root/{id}` | `RegisterVolumeTenant` | `RestoreVolumeTenants` at boot |
-| `__sys:volumepool/assign/{id}` | `recordSlotAssignment` | `resolveTenantPoolBase` on the next provision |
+| `__registry:tenant_posture/{id}` | `RegisterVolumeTenant` | `RestoreVolumeTenants` at boot |
+| `__sys:volumepool/assign/{id}` | `volume.Allocator.Reserve` | `volume.Allocator.Resolve`, and `ListAll` in `RestoreVolumeTenants` |
 
 **`UnregisterTenant` is therefore not a delete.** It seals and forgets the
 in-memory barrier and leaves both records in place, so a tenant "removed" that
@@ -1428,9 +1429,7 @@ deletion needs: it releases the barrier and closes the per-tenant Pebble
 (`ReleaseTenant`), removes the `DataRoot`, and only then removes both records
 (`DropTenantRecords`), **in that order** — the files are released before the
 directory holding them is unlinked, and a removal that fails leaves the
-records, so a re-issue still finds the directory. (This section previously
-listed the records before the directory; the code removes the directory
-first.)
+records, so a re-issue still finds the directory.
 
 The `DataRoot` is removed by `RemoveDataRoot`, contents first and then the
 root. A dedicated `DataRoot` is often a mount point, whose rmdir fails with
@@ -1570,10 +1569,9 @@ is tracked rather than assumed away.
 ### Lifetimes: where a copy of protected bytes ends
 
 The three rules are about declarations and access. None of them asks what
-happens to bytes once they are copied out of protected memory, and that is how
-an unrecoverable plaintext copy once landed with every rule green: a
-passphrase moved into a `secure.Buffer`, read back with
-`append([]byte(nil), b...)` inside `WithBytes`, and never wiped. A second
+happens to bytes once they are copied out of protected memory: a passphrase
+moved into a `secure.Buffer`, read back with `append([]byte(nil), b...)`
+inside `WithBytes` and never wiped passes all three. A second
 analyzer in the same tool, `securecopy`, follows every such copy.
 
 **A copy-out** is `append(x, view...)`, `copy(dst, view)` into a
@@ -1620,12 +1618,6 @@ allowlist.
 - callbacks passed to `WithBytes` by variable rather than as a literal;
 - copies the compiler or runtime makes, and plaintext that never lived in
   protected memory (a decoded request field, for example).
-
-Measured when the analyzer landed: 24 copy-outs across both modules. 19 are
-returned to a caller that owns them, 3 are wiped or consumed, and 2 carry
-`//secure:unwiped`: the per-tenant credential retrieval returned through a
-function value to the resolver that wipes it, and the officer share claim
-returned to its transport response.
 
 ### The gate is checked against a known instance
 
@@ -1675,9 +1667,6 @@ distinguishes them.
   `barrier-seal` leg of the `integration-features` job
   (`make integration-test-barrier-seal`), part of the result gate, tenant-scope
   case included.
-  *(Corrected 2026-10-02: this said the stage was not wired into CI.
-  Corrected 2026-10-05: the stage moved from the nightly to every push.
-  Corrected 2026-10-12: every push to `main`, not every PR push.)*
 - **Feature target**: `make integration-test-barrier-seal` runs this feature's
   self-spawned suites (`test/integration/features.mk`, no Docker). The
   per-transport accounting, including the embedded-transport gap, is the
@@ -1714,7 +1703,7 @@ operation's outcome stands.
 | `distribute` | a domain's key is split to its holders |
 | `change_password` | a passphrase barrier's passphrase is changed |
 | `enable_encryption` | a barrier is migrated to a keyed strategy |
-| `import-root-key` / `import-sealed-blob` | a root key or sealed blob is imported |
+| `import-sealed-blob` | a sealed blob is imported |
 | `holder-record-conflict` | a holder cached while sealed conflicts with a persisted holder |
 
 The outcome is `success` for an allowed operation, `failure` for one that
@@ -1724,11 +1713,7 @@ HSM or TPM strategy's among them -- and stays on the operational log. **One emit
 share submission and a rekey opening are the holder engine's records
 (`holder-quorum-submit`, `holder-rekey-start`; see
 [../shamir-custody/engineering.md](../shamir-custody/engineering.md)), and the
-barrier records no copy of them. *(Corrected: this table listed `rotate`,
-`rekey`, `recovery_generate` and `tenant_init`, which no barrier emits, and
-said events were emitted "when an AuditLogger is configured" -- no composer
-configured one, so none reached any trail.)*
-
+barrier records no copy of them.
 
 With strategy `none`, every one of those events is marked `strategy: none`, so
 the absence of encryption is permanently visible in the trail rather than
@@ -1802,15 +1787,14 @@ own construction has fully succeeded, so it never fires for a node whose
 service graph failed to build there — it says nothing about a later failure
 elsewhere in boot (`server.New`, transport listen, etc.), which
 `BuildServices` cannot observe. Requiring `SealBarrier` to also be nil means
-an older call site that supplies a real barrier without yet setting
-`SealEnabled` is not wrongly accused of running one it doesn't have.
+a call site that supplies a real barrier without setting `SealEnabled` is not
+accused of running without one.
 
 The wording mirrors go-quicraft's own `StrategyNone` WARN
 (`quicraft/seal: barrier performs NO encryption; at-rest data is stored in
 plaintext`) so an operator sees the same fact whether a do-nothing barrier
 exists or none exists at all; it does not fire when a barrier of any kind is
-present, including under `StrategyNone`, whose own WARN is unchanged and
-owned by go-quicraft.
+present, including under `StrategyNone`, whose own WARN is go-quicraft's.
 
 **The `hint` deliberately does not name a procedure to run in place.**
 `enable-encryption` only migrates an *existing* barrier whose current

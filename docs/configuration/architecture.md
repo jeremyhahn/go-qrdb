@@ -44,25 +44,15 @@ Two shapes follow from it:
 
 - **The resolved value reaches the consumer.** `server.host` is not merely
   defined and validated; `cmd/qrdbd` puts it in the `*config.Config` handed to
-  `server.New`, and every listener joins that field with its port. The defect
-  this ruling was filed against was the missing middle: the field was defined,
-  validated, Viper-registered, then replaced with a literal on the only path
-  that built that struct, so `server.host` and `QRDB_SERVER_HOST` were
-  discarded for every listener.
+  `server.New`, and every listener joins that field with its port.
 - **Where a value is genuinely absent, fail closed.** `clusterenroll` returns
   `*MissingBindHostError` rather than binding the enrollment listener somewhere
   the operator did not ask for, and `*MissingAdminPortError` rather than
-  completing a bootstrap URL with a guessed port. The guessed port used to be
-  `8443`, which exists nowhere in the defaults layer and contradicts
-  `DefaultConfig().Server.AdminPort`, so the enroll client dialed a port nothing
-  in the system listens on.
+  completing a bootstrap URL with a guessed port.
 
 Before any of that, `config.Load` decodes the file **strictly**: a key that
 names no field anywhere in the `Config` schema fails the load rather than
-being silently dropped. This closed a real gap — a documented-but-wrong
-`databases[].protocol.etcd` key loaded cleanly and had no effect, so an
-operator who believed etcd was configured was running without it, with no
-error and no log line. The check walks the YAML document tree against the
+being silently dropped. The check walks the YAML document tree against the
 same struct tags Viper's own decode step reads, so the known-key set can
 never drift from what `Load` actually honors into a second, separately
 maintained list.
@@ -82,23 +72,21 @@ config: validation failed for "raft.shard_id": must be greater than 0
 | `*UnknownFieldError` | the YAML file carries a key that names no field in the schema |
 | `*ValidationError` | a field has an invalid value |
 
-All three implement `error`; `LoadError` also implements `Unwrap()` for
-`errors.Is` and `errors.As`.
+All three implement `error`; `LoadError` and `ValidationError` also implement
+`Unwrap()` for `errors.Is` and `errors.As`.
 
 ### Unknown keys are refused, not dropped
 
-A config carrying a stale or misspelled key must fail to load, naming the key. Precedence was already
-**build tag > run mode > config** for *values* config asks for beyond what the
-mode or binary allow (see "Alternatives rejected" below); this closes the
-matching gap for *keys* the schema never defined in the first place, which
-previously loaded and did nothing.
+A config carrying a stale or misspelled key must fail to load, naming the key.
+Precedence is **build tag > run mode > config** for *values* config asks for
+beyond what the mode or binary allow (see "Alternatives rejected" below); the
+schema check is the matching gate for *keys* the schema never defined.
 
 A key for a feature this binary was not compiled with (e.g. `protocols.mysql`
 without build tag `qrdb_mysql`) is **not** an unknown key: `pkg/config`
 declares every field unconditionally regardless of build tags, so the schema
 check passes and `Config.ValidateCapabilities` refuses it by name instead,
-keeping the two gates — schema shape and build-tag availability — separate for
-the same reason they were already separate for values.
+keeping the two gates — schema shape and build-tag availability — separate.
 
 ### The separate capability gate
 
@@ -116,22 +104,21 @@ present.
 - **Ignoring unknown or impossible settings.** Rejected both ways: config
   asking for more than the mode or the binary allows is a **validation error,
   never a silent no-op** — see [../run-modes/](../run-modes/architecture.md) —
-  and a key the schema never defined at all is now a load error rather than a
-  no-op key.
+  and a key the schema never defined at all is a load error.
 - **Folding the capability check into `Validate()`.** Rejected on the
   build-independence argument above.
 - **Reporting all validation errors at once.** Not done — `Validate()` returns
-  the **first** error. That is a real ergonomic cost on a large config, and it is
-  the current behaviour.
+  the **first** error. That is a real ergonomic cost on a large config.
 
 ## Sections
 
-`server`, `protocols`, `raft`, `storage`, `tls`, `logging`, `discovery`,
-`mvcc`, `watch`, `lease`, `index`, `timeseries`, `auth`, `cors`,
-`databases` (with per-database `mysql`, `postgresql`, `etcd` and
-`sql.concurrency` — flat on the entry, no `protocol` wrapper field),
-`embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`, plus `seal` and
-`mode`. There is no `audit:` section — audit logging is always on and is not
+`mode`, `server`, `protocols`, `raft`, `storage`, `tls`, `mtls`, `unix`, `mcp`,
+`logging`, `discovery`, `observability`, `replica_forwarding`, `mvcc`, `watch`,
+`lease`, `index`, `timeseries`, `write_mode`, `auth`, `cors`, `sql`, `codec`,
+`seal`, `bootstrap`, `cluster_join`, `databases` (with per-database `mysql`,
+`postgresql`, `etcd` and `sql.concurrency` — flat on the entry, no `protocol`
+wrapper field), `embedding` (with `EmbeddingProviderConfig`), `rag`, `tenant`,
+`transport` and `import_session`. There is no `audit:` section — audit logging is always on and is not
 configured; see [../audit/](../audit/architecture.md). See
 [../etcd-compatibility/](../etcd-compatibility/architecture.md) for the
 per-database `etcd` block's own validation (engine/backend/build-tag
@@ -145,8 +132,8 @@ reference with defaults is [12-configuration.md](../12-configuration.md).
 
 The authoritative listener table — port, transport protocol, on by default, and
 who must reach it — is [Network ports](../clustering/user.md#network-ports).
-Configuration owns only the fields that move each listener: `raft.listen_address`
-(63001), `server.admin_port` (63002), `server.grpc_port` (63003),
+Configuration owns only the fields that move each listener: `raft.raft_address`
+(63001; `raft.listen_address` overrides the bind address), `server.admin_port` (63002), `server.grpc_port` (63003),
 `server.quic_port` (63004), `mcp.port` (63005), `bootstrap.noise_port` (63006),
 `cluster_join.listen_port` (63007), `server.mysql_port` (3306),
 `server.pgsql_port` (5432) and the per-database `databases[].etcd.listen_addr` (no default; `qrdb database
@@ -154,9 +141,10 @@ create --etcd` uses `localhost:2379`).
 
 ## Trust boundaries
 
-- **Secret-bearing fields must reference a secret, not embed one.** Protected
-  fields resolve `credential://` or `literal://` references into enclave-backed
-  values at boot, and **fail closed** if they cannot — see
+- **`qrdbd`'s configuration carries no secret reference.** An embedding
+  application's protected fields resolve `credential://` or `literal://`
+  references into enclave-backed values at boot, and **fail closed** if they
+  cannot — see
   [../credentials/](../credentials/architecture.md#secret-resolution).
 - **TLS and auth are mandatory for the SQL and etcd protocols**; validation
   refuses the combination otherwise.
@@ -170,7 +158,7 @@ create --etcd` uses `localhost:2379`).
 - **No environment-variable configuration without a config file.** The
   `QRDB_`-prefixed overlay is part of `config.Load`, which runs only for
   `--config`. The command-scoped bindings (`QRDB_SO_PIN`, `QRDB_USER_PIN`,
-  `QRDB_BARRIER_STRATEGY`, `QRDB_SHARES`, `QRDB_THRESHOLD`, `QRDB_HOSTNAME`,
+  `QRDB_BARRIER_STRATEGY`, `QRDB_PASSPHRASE`, `QRDB_SHARES`, `QRDB_THRESHOLD`, `QRDB_HOSTNAME`,
   `QRDB_SANS`) are bound separately by their own commands and are unaffected.
 - **No separate bind host per protocol.** All API listeners share
   `server.host`. The two Noise NK listeners are the exceptions

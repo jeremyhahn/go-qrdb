@@ -1,6 +1,6 @@
 # Trust Anchors — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A trust anchor is a CA certificate your tenant registers so that certificates
@@ -50,15 +50,15 @@ first admin's certificate with `--admin-cert` and your CA with
 qrdb tenant trust-anchors remove --tenant-id acme --fingerprint <fingerprint>
 ```
 
-Logins by certificates that only that anchor vouched for stop within seconds
-(at once on the node that served the removal). The
-bindings stay on the accounts; remove them with the identity commands if the
+Logins by certificates that only that anchor vouched for stop at once: every
+login checks your tenant's anchors fresh. The bindings stay on the accounts; remove them with the identity commands if the
 certificates are retired for good.
 
 ## Limits
 
 - At most 32 anchors per tenant.
-- Each anchor must be a CA certificate inside its validity window. An expired
+- Each anchor must be a CA certificate inside its validity window, with a
+  strong key and signature algorithm ([api.md](api.md#validation)). An expired
   anchor cannot be registered; one that expires after registration stops
   vouching when it expires.
 

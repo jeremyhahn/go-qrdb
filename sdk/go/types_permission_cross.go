@@ -61,6 +61,9 @@ const (
 	// PermissionTenantsSetIsolation ("tenants:set_isolation") changes a
 	// tenant's isolation mode.
 	PermissionTenantsSetIsolation = permission.TenantsSetIsolation
+	// PermissionTenantsSetStatus ("tenants:set_status") changes a tenant's
+	// status (active, suspended, disabled).
+	PermissionTenantsSetStatus = permission.TenantsSetStatus
 
 	// PermissionTenantsSetEntitlements ("tenants:set_entitlements") changes a
 	// tenant's entitlements.

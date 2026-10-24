@@ -1,6 +1,6 @@
 # Watch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -16,7 +16,7 @@ sampling loop.
 A server-pushed event stream, scoped to a single key or a prefix, optionally
 replayed from a caller-named revision.
 
-- The stream carries `WatchEvent`s (`Put` or `Delete`) with the resulting
+- The stream carries `WatchEvent`s (`EventPut` or `EventDelete`) with the resulting
   `MVCCKeyValue`, and optionally the previous one.
 - **Replay from a revision is opt-in** (`StartRevision`) and requires the MVCC
   state machine, because only it retains the history to replay from.
@@ -78,17 +78,17 @@ died rather than ended.
 
 ## Run modes
 
-Watch is served identically in both run modes (it was refused on
-a standalone node before). In both, the engine that applies a write is the one
+Watch is served identically in both run modes. In both, the engine that applies a write is the one
 publisher into the node's `watch.Hub`, and the watch service subscribes to that
 hub through the same per-(tenant, db) registry, so prefix watches, revision
 resume and cancellation behave the same and a tenant sees only its own
-namespace. Revision resume needs the store's revision index: the MVCC engine
-(raft `sm_type: mvcc`, standalone pebble and memory) keeps one; the plain KV
-engine (standalone file and objstore) does not, and answers a start revision
-with `WatchStartRevisionUnsupportedError`. MCP's polling watch needs replay
-after its first event, so on those backends an MCP watch ends with that typed
-error rather than dropping changes between polls.
+namespace. Revision resume needs the store's revision index. A standalone node composes
+the MVCC engine on every backend (`lifecycle.NewLocalEngine`), so it keeps one;
+a raft node keeps one when `raft.sm_type` is `mvcc`. A raft node on another
+state machine answers a start revision with an error the SDK classifies as
+`WatchStartRevisionUnsupportedError`. MCP's polling watch needs replay after its
+first event, so on such a node an MCP watch ends with that typed error rather
+than dropping changes between polls.
 
 ## Component boundaries
 
@@ -104,8 +104,7 @@ error rather than dropping changes between polls.
 
 1. The caller opens a watch on a key or prefix, optionally naming a
    `StartRevision`.
-2. Tenant and database are resolved; `watch:watch` or `watch:watch_prefix` is
-   checked.
+2. Tenant and database are resolved; `watch:watch` is checked.
 3. If `StartRevision` is set, the server replays committed history from that
    revision forward, then switches to live delivery with no gap.
 4. Every subsequent commit in scope produces a `WatchEvent` on the stream.
@@ -119,8 +118,8 @@ is not defined beyond each stream's own revision sequence.
 
 - A watch is scoped to one (tenant, database) pair, resolved from the
   authenticated identity — a prefix watch cannot escape its tenant.
-- Prefix watches carry their own permission (`watch:watch_prefix`) distinct from
-  single-key watches, because a prefix watch is a far broader read grant.
+- Key and prefix watches check the same permission, `watch:watch`, on every
+  transport.
 - Internal namespaces are not observable through a user watch, on the same
   reasoning as the enumeration guard in
   [../key-value/](../key-value/architecture.md).

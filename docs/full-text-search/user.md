@@ -1,21 +1,20 @@
 # Full-Text Search — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Full-text search finds documents that *mention* a word, as opposed to
 [secondary indexes](../secondary-indexes/user.md), which find records whose
 field *equals* a value.
 
-**Read this first:** FTS is currently reachable only from Go code that imports
+**Read this first:** FTS is reachable only from Go code that imports
 `pkg/fts` directly, in a build compiled with the `qrdb_fts` tag. There is no
-CLI verb and no API endpoint. If you are looking for a `qrdb fts search`
-command, it does not exist yet — see [api.md](api.md).
+`qrdb fts` CLI verb and no API endpoint — see [api.md](api.md).
 
 ## Prerequisites
 
 - A build with FTS compiled in: `make build WITH_QRDB_FTS=1`.
-- Confirm it is present: `qrdb admin capabilities` lists `fts`.
+- Confirm it is present: `qrdb admin capabilities` reports `fts` as `true`.
 - In code, `fts.Available()` reports the same thing, so you can branch on it
   without build tags of your own.
 
@@ -56,7 +55,7 @@ keys, _ := idx.SearchOr("coffee tea")
 _ = idx.RemoveDocument([]byte("messages/12345"))
 ```
 
-**Turn on stemming**, so "running" also matches "run"-ish queries. Stemming is
+**Turn on stemming**, so "runs" also matches "run". Stemming is
 off by default because it is language-specific and lossy.
 
 ```go
@@ -65,8 +64,8 @@ idx := fts.NewFTSIndex(store, "messages.Body", fts.WithAnalyzer(analyzer))
 ```
 
 `SimpleStemmer` strips common English suffixes — `running` → `runn`,
-`messages` → `messag`, `quickly` → `quick`. It is a rough tool. For real
-accuracy, implement the `Stemmer` interface with Porter2 or a
+`messages` → `messag`, `quickly` → `quick` — so `running` does not match `run`,
+nor `messages` match `message`. For real accuracy, implement the `Stemmer` interface with Porter2 or a
 language-specific stemmer.
 
 **Change the stop-word list.**
@@ -74,6 +73,8 @@ language-specific stemmer.
 ```go
 analyzer := fts.NewAnalyzer(fts.WithStopWords([]string{"the", "and", "foo"}))
 ```
+
+The list replaces the default one; it is not added to it.
 
 **Search CJK text.** Nothing to configure — Han, Katakana and Hiragana
 characters are each indexed as their own token, so character-level search works
@@ -89,8 +90,8 @@ analyzer means reindexing — the tokens on disk were produced by the old one.
 
 **Searching a phrase matches documents with the words scattered.** Phrase
 queries do not exist. `Search("coffee shop")` is "contains coffee AND contains
-shop", not "contains the phrase". Position data is stored for a future phrase
-implementation but nothing reads it yet.
+shop", not "contains the phrase". Term positions are stored, but no query reads
+them.
 
 **The results are in a useless order.** There is no relevance ranking; results
 are unordered. Sort them yourself on whatever your application considers
@@ -107,6 +108,5 @@ usually faster than removing document by document.
 **`fts.Available()` is false.** The binary was built without the `qrdb_fts`
 tag. Rebuild with `WITH_QRDB_FTS=1`.
 
-**You need this over the network.** There is no transport surface today. That is
-a tracked gap, and the shape of the fix is an owner decision — see
-[api.md](api.md).
+**You need this over the network.** There is no transport surface;
+[api.md](api.md) lists what is missing.

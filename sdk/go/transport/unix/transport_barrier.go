@@ -37,6 +37,9 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return err
+	}
 	_, err := t.client.BarrierInitialize(ctx, &pb.BarrierInitializeRequest{
 		Secret:  req.Secret,
 		SoPin:   req.SOPin,
@@ -48,10 +51,21 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	return nil
 }
 
+// requireTLS refuses a request carrying a barrier secret on a socket that is
+// not TLS, before the request is built, exactly as the SO PIN interceptor
+// refuses the SO PIN: a Unix socket is a plaintext connection unless TLS is
+// configured on it.
+func (t *Transport) requireTLS(req transport.BarrierSecretCarrier) error {
+	return transport.RequireTLSForBarrierSecret("unix", t.config.TLSEnabled, req)
+}
+
 // BarrierUnseal unseals the barrier using the master key.
 func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return err
 	}
 	_, err := t.client.BarrierUnseal(ctx, &pb.BarrierUnsealRequest{
 		Secret: req.Secret,
@@ -120,6 +134,9 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
 	// the request carries none, exactly as on QUIC.
@@ -150,6 +167,9 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	resp, err := t.client.BarrierEnableEncryption(ctx, &pb.BarrierEnableEncryptionRequest{
 		TenantId:        req.TenantID,
 		Strategy:        req.Strategy,
@@ -173,6 +193,9 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field too, which the
 	// server reads; it comes from the PIN bound by transport.WithSOPIN when
@@ -343,6 +366,9 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	resp, err := t.client.BarrierQuorumSubmit(ctx, holderconv.SubmitToPB(req))
 	if err != nil {
 		return nil, mapGRPCError("BarrierQuorumSubmit", err)
@@ -354,6 +380,9 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
@@ -374,6 +403,9 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
 	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.

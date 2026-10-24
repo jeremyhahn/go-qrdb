@@ -1,6 +1,6 @@
 # Barrier and Seal — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The barrier is what encrypts your data at rest. Sealed, the database refuses
@@ -21,6 +21,11 @@ cannot confirm the cluster seal state; retry` (`SEAL_STATE_UNCONFIRMED`): its
 barrier is not sealed, and it serves again once it reads the records. Read the
 seal record from a node that serves.
 
+**A barrier secret travels only over TLS.** The SDK and the CLI refuse to send
+an init secret, unseal key, passphrase, Shamir share or holder PIN on a
+connection without TLS, the Unix socket included, with
+`BarrierSecretRequiresTLSError`; connect with TLS.
+
 ## Choosing a strategy
 
 You pick this at initialization and it is what protects the master key.
@@ -37,7 +42,7 @@ they are just another `--barrier-strategy` name.
 
 ## Auth requires the seal
 
-`auth.enabled` defaults to `true`, and an auth-enabled node now requires
+`auth.enabled` defaults to `true`, and an auth-enabled node requires
 `seal.enabled: true` too: the bootstrap admin's certificate
 binding depends on `qrdb init` being able to bring the system barrier up at
 all, which does not exist when the seal is off. Config validation refuses to
@@ -211,25 +216,19 @@ done, the cluster removes the record and the line reads
 `Migration:       none in progress`. `unconfirmed` means the node could not
 read the record just now, for example during an election; ask again. A node
 that is itself sealed shows no migration: ask another node. Only the node
-barrier's status carries the line; `qrdb tenant barrier status` and the
+barrier's status carries the line; `qrdb tenant barrier-status` and the
 database barrier status do not.
 
-**Dual control on the system barrier moved to `qrdb init`, not lost.**
-`barrier init --so-pin/--user-pin` was always the system barrier only
-(`POST /v1/barrier/initialize` carries no tenant scope), and now refuses it
-unconditionally. `qrdb init` is where that control lives now: `--so-pin`
-and `--user-pin` are both required on every call, not optional the way
-`barrier init`'s pair was, so the system barrier's bring-up (the same call
-that brings it up, since `qrdb init` is the only way a fresh node's system
-barrier is ever brought up) already satisfies FIPS 140-3 / PCI-DSS v4
-dual control -- one party supplying the SO PIN alone, or the user PIN
-alone, is never enough. **Tenant barriers are a real, separate gap**:
-`tenant barrier-init` has never accepted a PIN pair at all, and there is
-no dual-control path for a tenant's own barrier today. Documented as a
-gap, not built here.
+**Dual control on the system barrier is in `qrdb init`.** `barrier init`
+refuses the system barrier, PINs included (`POST /v1/barrier/initialize`
+carries no tenant scope). `qrdb init` requires both `--so-pin` and
+`--user-pin` on every call, so the system barrier's bring-up satisfies
+FIPS 140-3 / PCI-DSS v4 dual control: one party supplying the SO PIN alone, or
+the user PIN alone, is never enough. `tenant barrier-init` accepts no PIN
+pair, so a tenant's own barrier has no dual-control path.
 
 **Give one database its own key.** Only a non-raft database with its own
-`--data-dir`, created by an operator as the system tenant, accepts one today;
+`--data-dir`, created by an operator as the system tenant, accepts one;
 see [../databases/user.md](../databases/user.md) for why the other shapes are
 refused:
 
@@ -313,11 +312,11 @@ requests, ends its streams and closes every SQL connection, keeping its keys.
 When it can read them again it resumes on its own — unless something was
 sealed in the meantime, in which case it seals first. SQL clients reconnect.
 
-**Every node gets its own key (rolling out).** An isolated tenant's barrier is
-moving to one key per node, each initialised on its node from a signed init
-statement; no key is carried between nodes. What you see today:
+**Every node gets its own key.** An isolated tenant's barrier has one key per
+node, each initialised on its node from a signed init statement; no key is
+carried between nodes. A Shamir key is the exception (below).
 
-- A `raft` tenant whose key auto-unseals already has one key per node: the
+- A `raft` tenant whose key auto-unseals has one key per node: the
   platform signs its statement and each node initialises its own key, so
   barrier status on two nodes shows different key fingerprints. A node newly
   placed in the tenant's group reports the barrier sealed and uninitialised
@@ -328,7 +327,7 @@ statement; no key is carried between nodes. What you see today:
   embedded node given the cluster CA but no node certificate cannot sign,
   and refuses such a tenant.
 - A tenant whose own admin initialises a `passphrase` or `none` barrier
-  already has one key per node, and no key is carried between them. Run the
+  has one key per node, and no key is carried between them. Run the
   init once, through any node: under `passphrase` it reaches every node
   serving the tenant at once, over the transport you connected with, and
   prints one result per node; under `none` the other nodes initialise from
@@ -340,7 +339,7 @@ statement; no key is carried between nodes. What you see today:
   qrdb tenant barrier-init --id acme --strategy passphrase --passphrase "$PASS"
   ```
 
-- A tenant whose own admin holds a Shamir key still has it delivered, sealed,
+- A tenant whose own admin holds a Shamir key has it delivered, sealed,
   to each node that serves it.
 - On a cluster, creating a `barrier`, `volume` or `raft` tenant is refused as
   unavailable until every node runs a release with the
@@ -365,7 +364,7 @@ Shamir one (a passphrase unseal of a Shamir barrier is refused with an error
 that says so). On a node held by a cluster seal, `qrdb barrier cluster-unseal`
 clears the record.
 
-**"no strategy specified".** More than one strategy is registered (typically
+**"no sealing strategy specified".** More than one strategy is registered (typically
 because hardware strategies were composed in) and the server will not guess.
 Name one with `--barrier-strategy`.
 
@@ -406,8 +405,6 @@ refuses such a deployment.
 **One node in the cluster will not unseal.** Each node's node barrier holds
 its own key — there is no shared cluster DEK — so unsealing is per node: connect
 to that node and unseal it there. Nothing unseals a node from its peers.
-(An earlier version of this page said nodes exchange shares between
-themselves; no deployment does.)
 
 **Every request on a node says "barrier sealed", but it is unsealed.** The
 cluster seal holds it, and it refuses `barrier status` too. Run

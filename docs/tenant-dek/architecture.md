@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A per-tenant, versioned keyring of AES-256-GCM data encryption keys. A caller
@@ -126,10 +126,9 @@ provider ID, a bad key reference, or a KEK authentication failure
 `*dek.KeyWrapFailedError` — deliberately not distinguished further, the
 same discipline `*AuthenticationFailedError` holds one layer up.
 
-**A record written before this integration existed stored a version's key
-in plaintext.** Such a record is refused with a typed error,
-`*dek.LegacyKeyringFormatError`, on every verb that reads it — never
-treated as merely corrupt, and never migrated to the new format silently.
+**A record that stores a version's key in plaintext is refused** with a
+typed error, `*dek.LegacyKeyringFormatError`, on every verb that reads it:
+never treated as merely corrupt, and never migrated.
 
 ### Ciphertext
 
@@ -157,28 +156,19 @@ keyring service deliberately does not.
 A barrier configured with `none` stores data in plaintext, and so it stores the
 keyring record: the keyring follows the barrier's at-rest protection exactly as
 identity records do. Encrypt and decrypt still work; what is absent is at-rest
-protection of the keys themselves. This matches qrdb's existing `none`
+protection of the keys themselves. This matches qrdb's `none`
 semantics — a deliberate operator choice for dev/test or OS-level full-disk
 encryption, refused by go-xkms's `--require-encryption` gate — rather than
 adding a refusal only this feature would make. Operators that need at-rest
 protection select a keyed barrier strategy; enabling encryption later migrates
 the keyring record with the rest of the tenant's records.
 
-## What it replaced
-
-Before this feature, `pkg/dek` held a cluster DEK in process memory only — never
-initialised by the daemon, never persisted, discarded on rotation — and tenant
-DEKs wrapped by it in a node-local Pebble directory. A restart or a second node
-could not read them, no transport served them, and `DEKClient` returned only
-metadata. A third, unused tenant key manager (`seal.TenantKeyManager`) also
-existed. All three are gone; this keyring is the one tenant DEK in the stack.
-
 ## Alternatives rejected
 
 - **Expose the barrier's epoch AEAD directly.** Least code, but retiring a
   version would endanger the tenant's stored data, and `none` and hardware
   barriers cannot rotate.
-- **Persist and replicate the old cluster-DEK hierarchy.** A second key
+- **A replicated cluster-DEK hierarchy.** A second key
   hierarchy beside the barriers, with its own rotation and recovery story, for
   no property the barrier-wrapped record lacks.
 - **Cache keys in memory per node.** A node would keep using a version another

@@ -11,6 +11,7 @@ package seal
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -36,6 +37,91 @@ func newTestRegistry(t *testing.T) *BarrierRegistry {
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 	return reg
+}
+
+// registerSoftwareShell registers tenantID's barrier under a software
+// strategy, uninitialized and sealed.
+func registerSoftwareShell(t *testing.T, reg *BarrierRegistry, tenantID string) *TenantBarrier {
+	t.Helper()
+	tb, err := reg.RegisterTenant(context.Background(), tenantID, NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "tenants/" + tenantID + "/root-key"},
+		testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant(%s): %v", tenantID, err)
+	}
+	return tb
+}
+
+// unsealedLog records the tenant IDs OnTenantUnsealed reports, in order.
+type unsealedLog struct{ tenants []string }
+
+func (l *unsealedLog) observe(_ context.Context, tenantID string) {
+	l.tenants = append(l.tenants, tenantID)
+}
+
+func TestBarrierRegistry_OnTenantUnsealed_ReportsExistingAndLaterTenants(t *testing.T) {
+	reg := newTestRegistry(t)
+	ctx := context.Background()
+	registerSoftwareShell(t, reg, "existing")
+	var log unsealedLog
+	reg.OnTenantUnsealed(log.observe)
+	registerSoftwareShell(t, reg, "later")
+
+	if err := reg.InitializeTenant(ctx, "existing", Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(existing): %v", err)
+	}
+	if err := reg.InitializeTenant(ctx, "later", Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(later): %v", err)
+	}
+	if err := reg.SealTenant("existing"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if err := reg.UnsealTenant(ctx, "existing", Credentials{}); err != nil {
+		t.Fatalf("UnsealTenant: %v", err)
+	}
+	want := []string{"existing", "later", "existing"}
+	if !slices.Equal(log.tenants, want) {
+		t.Fatalf("reported %v, want %v (init, init, unseal)", log.tenants, want)
+	}
+}
+
+func TestBarrierRegistry_OnTenantUnsealed_FollowsAReplacedBarrier(t *testing.T) {
+	reg := newTestRegistry(t)
+	ctx := context.Background()
+	registerSoftwareShell(t, reg, "acme")
+	var log unsealedLog
+	reg.OnTenantUnsealed(log.observe)
+
+	replacement, err := NewTenantBarrier("acme", testLogger(), NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "tenants/acme/root-key"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewTenantBarrier: %v", err)
+	}
+	if err := reg.ReplaceTenantBarrier("acme", replacement); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+	// Replacing a barrier with itself attaches nothing twice.
+	if err := reg.ReplaceTenantBarrier("acme", replacement); err != nil {
+		t.Fatalf("ReplaceTenantBarrier(same): %v", err)
+	}
+	if err := replacement.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if want := []string{"acme"}; !slices.Equal(log.tenants, want) {
+		t.Fatalf("reported %v, want %v", log.tenants, want)
+	}
+}
+
+func TestBarrierRegistry_OnTenantUnsealed_IgnoresNilAndUnregisteredReplace(t *testing.T) {
+	reg := newTestRegistry(t)
+	registerSoftwareShell(t, reg, "acme")
+	reg.OnTenantUnsealed(nil)
+	if err := reg.InitializeTenant(context.Background(), "acme", Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant with a nil observer registered: %v", err)
+	}
+	if err := reg.ReplaceTenantBarrier("ghost", nil); !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("ReplaceTenantBarrier(ghost) = %v, want %v", err, ErrTenantNotFound)
+	}
 }
 
 // ---------- NewBarrierRegistry tests ----------

@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -106,16 +106,13 @@ creator's whole database by intent. It is reachable only from a single-tenant,
 registry-less composition, because every transport namespaces both keys and
 index names.
 
-**This was not always true, and the gap was a tenancy boundary.** Maintenance
-on the apply path used to iterate every registered index and decide purely on
-whether the written JSON happened to carry a field of the right name — so an
-index named for one database also indexed another database's keys, another
-collection's documents, and plain key-value keys, and under `prefix` tenant
-isolation (where tenants share one state machine) it indexed another tenant's
-keys, which `IndexQuery` then returned. The correctly scoped path existed and
-was wired only to the DAO helpers, which almost nothing takes. Both halves of
-the scope above, and the tests that pin them, exist to close that. That
-includes a DAO built `WithDatabase`: its qualified name
+**The scope is a tenancy boundary.** Without it, maintenance would decide only
+on whether the written JSON carries a field of the right name, so an index
+named for one database would also index another database's keys, another
+collection's documents and plain key-value keys, and under `prefix` tenant
+isolation (where tenants share one state machine) another tenant's keys, which
+`IndexQuery` would then return. A DAO built with `dao.WithDatabase` is scoped
+the same way: its qualified name
 `{database}.{entityType}.{FieldName}` carries no `{tenant}/{database}/`
 namespace of its own, so the namespace half is empty and the declared half —
 `{entityType}/`, read off the entity type the adapter was given, not the
@@ -128,8 +125,7 @@ the engine answers a query against it with the write.
 Two consequences worth stating:
 
 - **Index creation backfills inside the scope**, and bounds its scan by it.
-  An unscoped backfill would do in one step what unscoped maintenance did over
-  time.
+  An unscoped backfill would cross the boundary in one step.
 - **A unique index cannot reject a write outside its scope.** The unique
   pre-check is scoped too, so one tenant's stored value can neither deny
   another tenant's write nor reveal, by denying it, that the value exists.
@@ -137,8 +133,8 @@ Two consequences worth stating:
 ## Store capability: not every store can maintain an index
 
 The catalog above describes what the ENTITY declares. It is not the same
-question as what the STORE can serve, and conflating the two produced the worst
-class of bug this subsystem has had.
+question as what the STORE can serve, and conflating the two makes a query
+return nothing with no error.
 
 A `kvstore.KVStore` implementation that cannot maintain secondary indexes
 **must** say so, by returning `kvstore.ErrIndexUnsupported` from
@@ -173,17 +169,16 @@ type rather than replacing, and a store that cannot serve a definition
 it verbatim (`EntityIndex.ResolvedName`). The caller is the only party that
 knows the name it will later look the index up by: a DAO configured with
 `WithDatabase` resolves `{database}.{entityType}.{FieldName}`, while a store
-composing its own name produces the unqualified form — so the DAO advertised
-an index, planned a lookup, and queried a name nobody created. The entity type
+composing its own name produces the unqualified form, so the DAO would
+advertise an index, plan a lookup, and query a name nobody created. The entity type
 stays a separate argument because it is also the `{entityType}/` key prefix a
 store filters writes by, and the two must not be conflated.
 
-The empty catalog is the load-bearing part. Before it, the planner built its
-catalog purely from struct tags and never asked the store, so a field tagged
-`index:"true"` routed to `QueryIndex` on a store maintaining nothing and
-returned zero rows with a nil error — while the *same field without the tag*
-fell back to a full scan and was correct. **Adding the index was what broke the
-query**, and it failed toward "nothing found".
+The empty catalog is the load-bearing part. A catalog built from struct tags
+alone, without asking the store, would route a field tagged `index:"true"` to
+`QueryIndex` on a store maintaining nothing and return zero rows with a nil
+error, while the *same field without the tag* falls back to a full scan and is
+correct: **adding the index would break the query**, toward "nothing found".
 
 The two outcomes are deliberately different by entry point. A planned query can
 choose another access path, so it does and stays correct. `QueryByIndex` names
@@ -198,11 +193,11 @@ full scans over a store that was only briefly unavailable.
 
 | Store | Indexes | Why |
 |---|---|---|
-| `lifecycle.kvStoreAdapter` (system tenant, via `StoreResolver`) | **yes**, when built with the node's `IndexServicer` | It routes to the same engine host that applies its writes (`engine.MVCCEngine` on every backend as of Lane 1A — see [../databases/](../databases/)), so index entries are maintained inside the Raft-applied batch, backfilled on registration, and replicated |
+| `lifecycle.kvStoreAdapter` (system tenant, via `StoreResolver`) | **yes**, when built with the node's `IndexServicer` | It routes to the same engine host that applies its writes (`engine.MVCCEngine` on every backend — see [../databases/](../databases/)), so index entries are maintained inside the Raft-applied batch, backfilled on registration, and replicated |
 | `kvstore.MemoryKVStore` | **yes** | Maintains entries on the write path from the value's JSON fields; single-process |
 | `seal.tenantBarrierKVStore` (an isolated tenant's home store on a standalone node, via `StoreResolver`) | no — refuses | Stores only ciphertext under the tenant's barrier, so nothing beneath it can read a field value to index. See below |
 | `lifecycle.NewKVStoreAdapter` (volume-pool cursor) | no — refuses | Built without an `IndexServicer`; its record is a single cluster-wide scalar with nothing to index |
-| `embedded.serverKVAdapter` | no — refuses | Wraps a bare `KVServicer` with no index subsystem behind it |
+| `standalone.serverKVAdapter` | no — refuses | Wraps a bare `KVServicer` with no index subsystem behind it |
 
 **Open range bounds cross every transport.** `transport.IndexClient.IndexScan`
 takes each bound as an optional string (`transport.OptionalString`), so the
@@ -210,26 +205,26 @@ one-sided ranges the planner produces — `Team >= "beta"` has no upper bound �
 reach the server as unbounded rather than as an empty string that would match
 nothing.
 
-**`index:"case_insensitive"` is honoured on every backend** (#34). The
+**`index:"case_insensitive"` is honoured on every backend.** The
 case-sensitivity flag is threaded end to end: `protocol.IndexFlagCaseInsensitive`
 carries it on the wire, and `KVEngine.handleIndexCreate`, `MVCCEngine`'s
 equivalent handler, the storage-backed `StoragePebbleIndex` (any
 `storage.Storage`, not only Pebble), and
 `kvStoreAdapter.RegisterEntityIndexes` all derive `index.IndexConfig.CaseSensitive`
 from it rather than defaulting to case-sensitive. A case-insensitive
-definition now produces a real case-insensitive index everywhere, so a lookup
+definition produces a real case-insensitive index everywhere, so a lookup
 for `Alpha` over a stored `alpha` matches instead of returning empty with a
 nil error. `MemoryKVStore` honours the flag the same way.
 
-**Open: indexing barrier-encrypted tenant stores.** The two `seal` stores exist
+**Open: indexing barrier-encrypted tenant stores.** The `seal` store exists
 to guarantee that an operator reading the shared store sees only ciphertext. An
 index built above the encryption — the only layer where plaintext exists —
 would place the indexed field value into an index KEY in that same shared
 store, in the clear, defeating the property. A keyed/deterministic index term
 preserves it for exact-match lookups but destroys the ordering that range scans
 need. Choosing between those is a cryptographic design decision, and it is
-deliberately not made in the implementation. Until it is ruled on, these stores
-refuse, and a DAO over them answers correctly by full scan.
+deliberately not made in the implementation. Until it is ruled on, the store
+refuses, and a DAO over it answers correctly by full scan.
 
 ## Numeric indexes and range plans
 
@@ -374,7 +369,8 @@ create by a different owner is refused before the value type is compared.
 | CompoundIndexLookup, non-unique | 3 | 3 / N |
 | CompoundIndexLookup, unique | 1 | 1 |
 | CompoundIndexScan | 20 | 20 / N |
-| Single-field IndexLookup | 10 | n/a |
+| Single-field IndexLookup, non-unique | 10 | n/a |
+| Single-field IndexLookup, unique | 1 | n/a |
 
 A compound index covering two or more predicates is normally cheaper than any
 single-field index, because it avoids post-filtering.
@@ -398,15 +394,6 @@ key (see [Index key scope](#index-key-scope--a-name-is-not-a-predicate) above),
 so an index created through any transport — where the name carries the
 `{tenant}/{database}/` namespace — can hold only its own tenant's and its own
 database's keys.
-
-The statement this replaces read *"Each index write is scoped to the same
-(tenant, database) pair as the entity it indexes, so an index can never span
-tenants"*, and it was **false when it was written**: it described the DAO
-helpers, while the Raft apply path — the path a key-value write, a collection
-document insert and a SQL row write all take — filtered nothing. It is recorded
-here rather than quietly deleted because it was the security section of this
-feature's own requirements contract, which is the document a reviewer consults
-to decide whether a change is safe.
 
 The residual is named rather than implied: an **unscoped** index — no namespace
 in its name and no declared prefix — still spans the whole state machine. No

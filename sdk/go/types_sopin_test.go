@@ -25,6 +25,9 @@ func TestWithSOPIN_IsTheTransportBinding(t *testing.T) {
 	var _ *SOPINConflictError = (*transport.SOPINConflictError)(nil)
 	var _ *SOPINRequiresTLSError = (*transport.SOPINRequiresTLSError)(nil)
 	var _ *SOPINForeignHostError = (*transport.SOPINForeignHostError)(nil)
+	var _ *BarrierSecretRequiresTLSError = (*transport.BarrierSecretRequiresTLSError)(nil)
+	var _ *BarrierSecretForeignHostError = (*transport.BarrierSecretForeignHostError)(nil)
+	var _ transport.BarrierSecretKind = BarrierSecretShare
 	ctx, release, err := WithSOPIN(context.Background(), []byte("1234"))
 	if err != nil {
 		t.Fatalf("WithSOPIN: %v", err)

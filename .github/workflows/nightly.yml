@@ -5,45 +5,16 @@
 # issue, or that verifies a slow-moving property, does NOT run per push. It
 # produces information we already have, and it does it while holding a runner.
 #
-# The cost here was not theoretical. `fips` has `timeout-minutes: 90` and runs
-# the RACE-enabled suite under GODEBUG=fips140=only, so it took ~50 minutes per
-# pull request and then failed, exactly as its tracked issues say it will —
-# while go-qrdb#60's one-line CI fix waited over an hour for a free runner
-# behind it, on a run whose every gating job was already green (measured
-# 2026-08-21, run 4401).
+# `trivy` gates nothing: it is in no required check's `needs`, per go-qrdb#48.
 #
-# Neither job gates anything. `fips` was already absent from ci-gate's `needs`
-# for the reasons below; `trivy` was in it and is removed by this change, per
-# go-qrdb#48.
-#
-# WHEN THEIR REASON FOR BEING HERE ENDS, moving a job back to ci.yml is a
-# deliberate act, not an automatic one: add it to ci.yml, add it to ci-gate's
-# `needs`, and add a `check` call to the gate loop. A job that can pass and is
-# not required is a fail-open gate, and `fips` and `trivy` are now BOTH in
-# exactly that state — a cost being carried deliberately, with a stated
-# condition for ending it, rather than an oversight. Read the per-job notes
-# below for what each is waiting on; they are not waiting on the same thing,
-# and `signal` is waiting on nothing because it is not that kind of job: it
+# WHEN ITS REASON FOR BEING HERE ENDS, moving it to ci.yml is a deliberate act,
+# not an automatic one: add it to ci.yml, add it to ci-gate's `needs`, and add
+# a `check` call to the gate loop. A job that can pass and is not required is
+# a fail-open gate, and `trivy` is in exactly that state — a cost carried
+# deliberately, with a stated condition for ending it, rather than an
+# oversight. `signal` waits on nothing because it is not that kind of job: it
 # reports this workflow's verdict and is never a candidate for ci.yml.
 #
-#   * fips — go-qrdb#18 and #20. This line read "two upstream findings keep it
-#     red" until go-qrdb#523; both are closed, and on 2026-09-12 run 17302
-#     became the FIRST green scheduled run on main in the workflow's retained
-#     history — the twenty-two scheduled runs before it, back to 2026-08-22,
-#     all failed. So it is no longer a known-red job and it stays here anyway,
-#     on a DIFFERENT reason that is written down rather than assumed: arming it
-#     waits on a stability record of fourteen consecutive green nightly runs
-#     on main, because one pass is not a track record and a required check that
-#     is bypassed the first time it fails is worth less than no check. The
-#     other half is shape: required checks gate pull requests, this is a
-#     nightly, and its five green runs took 17m54s to 34m57s — a required check
-#     is paid at the worst of those on EVERY push. The reasoning, the numbers
-#     and the four moves that arm it are in docs/seal/fips140-mode.md
-#     §"Arming the gate", which is the authority; this comment is a pointer.
-#     What is forbidden meanwhile is unchanged and now matters more, because a
-#     green job is easier to keep green dishonestly than a red one: no setting
-#     it back to fips140=on, no continue-on-error, no tag-gating a failing
-#     package out, no trimming the package list.
 #   * trivy — go-qrdb#48, and the reason is the PHASE, not a known-red job.
 #     This line read "go-qrdb#42" until #451; #42 is the golangci-lint panic
 #     that reddened Lint, closed long ago, and it never had anything to do with
@@ -92,181 +63,6 @@ env:
   GOFLAGS: "-buildvcs=false"
 
 jobs:
-  fips:
-    name: FIPS 140-3
-    runs-on: ubuntu-latest
-    # needs: none — nightly runs standalone, and build health is ci.yml's job.
-    # In ci.yml this staged behind build so a broken tree did not burn the slot,
-    # and it deliberately did NOT stage behind lint (#143): a linter tooling
-    # outage must never stop tests from EXECUTING. Neither concern survives the
-    # move, because there is nothing here to stage behind.
-    #
-    # timeout-minutes stays at 90 rather than the template's 30: this job runs
-    # the RACE-enabled suite under fips140=only, which is what takes the time.
-    # Unattended and gating nothing, a generous ceiling costs nothing; on the
-    # push path it cost a runner slot per pull request, which is why it moved.
-    timeout-minutes: 90
-    # GOFIPS140 selects the Go Cryptographic Module at BUILD time; GODEBUG
-    # selects the enforcement level at RUN time, and both are needed.
-    #
-    # "only" rather than "on": "on" loads the module but still PERMITS
-    # non-approved algorithms, so a regulated path using MD5, SHA-1 or GCM with
-    # a caller-chosen IV passes silently and the gate reports green on exactly
-    # the thing it exists to catch. "only" makes those operations error or
-    # panic. Ratified by the owner 2026-08-17; see
-    # ../handbook/software/conventions/configuration.md §5 and
-    # docs/seal/fips140-mode.md.
-    #
-    # If this job goes red, the failure IS the finding: something on a tested
-    # path is using non-approved cryptography. Fix the call site, or -- when an
-    # external format mandates the primitive -- isolate it and record a cited
-    # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
-    # a build tag that skips the job, or narrow the package list.
-    #
-    # It is GREEN as of 2026-09-12 and still deliberately not part of ci-gate
-    # -- this line said "It IS red today, on three tracked findings" until
-    # go-qrdb#523, and all three are closed. What keeps it out is now the
-    # stability record in the header comment, not a finding.
-    #
-    # The sentence that does NOT change with the colour: nothing in this
-    # repository claims the module operates under fips140=only until this job
-    # passes AND joins ci-gate. It passes. It has not joined. A measurement is
-    # not an enforceable property, and the gap between the two is exactly what
-    # docs/seal/fips140-mode.md §"Arming the gate" is carrying deliberately.
-    env:
-      GOFIPS140: latest
-      GODEBUG: fips140=only
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      # GODEBUG is a runtime setting and cannot fail a compile, but building
-      # against the module first keeps a genuine build break from being
-      # reported as a test failure.
-      - name: Build all packages against the FIPS module
-        run: go build ./...
-
-      # The same target the Test job runs, with the same build tags. The scope
-      # is deliberately identical: a FIPS job over a subset of the suite
-      # cannot tell you the product is FIPS-clean.
-      #
-      # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
-      # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
-      # iterations, which measured 2.6x on pkg/seal; against a runner already
-      # ~4x slower than a development box that leaves no margin under 30m, and
-      # on 2026-08-26 pkg/seal was killed at exactly 30m having already passed
-      # 17,787 tests (go-qrdb#147). The job ceiling above is 90 minutes, so a
-      # 60m package budget still cannot outlive the job.
-      #
-      # This raises a runaway guard. It does not skip a package, weaken an
-      # assertion, or narrow the scope -- all of which are forbidden here for
-      # the reasons in the header comment.
-      #
-      # pipefail matters: without it tee's exit status hides a failing suite.
-      - name: Unit tests (race, FIPS 140-only)
-        run: |
-          set -o pipefail
-          make test GOTEST_TIMEOUT=60m 2>&1 | tee fips-test.log
-
-      # `sdk/go` IS A SEPARATE GO MODULE (#142). `make test` is
-      # `./pkg/... ./cmd/...`, so it has never reached one line of the SDK, and
-      # this job had silently become the "FIPS job over a subset of the suite"
-      # its own comment above rules out. go-qrdb#132 added `make test-sdk` to
-      # ci.yml so the gate covers both modules; this job was not updated and the
-      # two scopes diverged. The uncovered surface was the whole SDK — every
-      # transport, sdk/go/node, the driver, the DAO layer and the conformance
-      # matrix (go-qrdb#121). It is covered now, and MEASURED: 18 packages, 0
-      # failures, 0 rejections of any class, run 17302 on 2026-09-12. This line
-      # said "still unknown" until go-qrdb#523.
-      #
-      # `if: always()` IS LOAD-BEARING AND IS NOT BOILERPLATE. It is what got
-      # that first SDK number at all: the root module was known-red (#18, #20)
-      # for the whole of the period this step was added in, so a plain
-      # sequential step would never have executed — the root suite fails, the
-      # job stops, and sdk/go stays exactly as unexercised as it was, satisfying
-      # the words of #142 while delivering none of it. KEEP IT NOW THAT BOTH
-      # ARE GREEN. Its value is unchanged and only becomes visible again at the
-      # next root-module regression, which is precisely when removing it would
-      # cost a measurement. Both suites run; either failing fails the job.
-      #
-      # Its own log file, because the reporting step below parses these by
-      # package and a single file could not say which module a `FAIL` came from
-      # when both modules define a package of the same name.
-      #
-      # Same GOTEST_TIMEOUT=60m as the root suite, for the same reason and with
-      # more force: sdk/go/node boots real nodes including raft groups, whose
-      # leader election alone costs ~2.4s per shard under -race before FIPS
-      # swaps the KDF to PBKDF2-HMAC-SHA256 at 600,000 iterations. Budget for
-      # it: the job ceiling is 90 minutes and the root suite already takes ~50.
-      # If the pair does not fit, the answer is to raise the ceiling — NOT to
-      # trim a package list, which the header comment forbids for exactly the
-      # reason this step exists.
-      - name: Unit tests (race, FIPS 140-only, sdk/go module)
-        if: always()
-        run: |
-          set -o pipefail
-          make test-sdk GOTEST_TIMEOUT=60m 2>&1 | tee fips-test-sdk.log
-
-      # A per-package timeout panic names whichever test was running when the
-      # alarm fired, NOT the test that consumed the budget -- on 2026-08-26 it
-      # accused a 3-second test while two tests holding 948s of the 1800s had
-      # already finished and were named nowhere. Anyone reading the panic alone
-      # is sent to the wrong file. This step is the antidote, and it runs on
-      # success too so the trend is visible before the cliff is reached.
-      #
-      # It reports BOTH modules since #142. A missing log is reported rather
-      # than passed over in silence: with two suites, "fips-test-sdk.log is
-      # absent" means the sdk step never ran, which is precisely the condition
-      # #142 exists to make visible and would otherwise look identical to a
-      # clean sdk run in a log nobody reads to the end.
-      - name: Package results and slowest tests
-        if: always()
-        run: |
-          report() { # report <label> <logfile>
-            label="$1"
-            log="$2"
-            echo "######## ${label} ########"
-            if [ ! -f "$log" ]; then
-              echo "no ${log}: this suite never started -- see the step above" >&2
-              echo
-              return 0
-            fi
-            # Captured into variables rather than piped straight to stdout so
-            # the "nothing parsed" case can actually be reported. A `grep ...
-            # | sort || echo fallback` cannot do that: the pipeline's status is
-            # sort's, which is 0 on empty input, so the fallback is unreachable.
-            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
-              "$log" | sort -u || true)
-            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
-              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
-              | sort -rn | head -25 || true)
-
-            echo "== package results =="
-            if [ -n "$pkgs" ]; then
-              echo "$pkgs"
-              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
-            else
-              echo "(no package result lines parsed -- the suite may have died before any package finished)"
-            fi
-
-            echo
-            echo "== 25 slowest tests that COMPLETED =="
-            echo "A timeout panic names the test holding the alarm, not the one"
-            echo "that spent the budget. These are the candidates that did."
-            if [ -n "$slow" ]; then
-              echo "$slow"
-            else
-              echo "(no completed top-level tests parsed)"
-            fi
-            echo
-          }
-
-          report "root module (./pkg/... ./cmd/...)" fips-test.log
-          report "sdk/go module" fips-test-sdk.log
-
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
@@ -420,16 +216,16 @@ jobs:
   # IT GATES NOTHING. It is absent from ci-gate's `needs` because it is not in
   # ci.yml at all, it does not make this workflow a required check, and it does
   # not move `trivy fs` onto the push path -- both are separate decisions
-  # (devops.md §8a, docs/seal/fips140-mode.md "Arming the gate").
+  # (devops.md §8a).
   #
   # ITS OWN RED MEANS ITS OWN FAILURE, never the nightly's. The tool exits 0
   # when every job was decided and every decision applied, INCLUDING when the
-  # answer was "both jobs are on fire". It exits non-zero only when it could not
+  # answer was "every watched job is on fire". It exits non-zero only when it could not
   # do its job -- which is the only way a silent notifier can be told apart from
   # a quiet night.
   signal:
     name: Signal
-    needs: [fips, trivy]
+    needs: [trivy]
     # `always()` IS LOAD-BEARING. Without it this job is skipped on exactly the
     # runs it exists for, and the workflow would look complete while signalling
     # nothing.
@@ -466,7 +262,6 @@ jobs:
           # agent's own, filed on its own repository, which is what §0/§1 of
           # conventions/sdlc.md describe.
           NIGHTLY_SIGNAL_TOKEN: ${{ secrets.AGENT_TOKEN }}
-          RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
           set -euo pipefail
@@ -485,5 +280,4 @@ jobs:
           go run ./test/tools/nightlysignal \
             -mode apply \
             -self signal \
-            -job "fips=FIPS 140-3=${RESULT_FIPS}" \
             -job "trivy=Trivy=${RESULT_TRIVY}"

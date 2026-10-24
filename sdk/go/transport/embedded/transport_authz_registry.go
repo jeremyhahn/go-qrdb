@@ -224,6 +224,13 @@ var operationPermissions = map[string]permission.Permission{
 	"TenantDEKRotate":  permission.DEKRotate,
 	"TenantDEKStatus":  permission.DEKStatus,
 
+	// ABAC policy documents (ABACPolicyClient).
+	"CreateABACPolicy": permission.ABACPoliciesCreate,
+	"GetABACPolicy":    permission.ABACPoliciesRead,
+	"ListABACPolicies": permission.ABACPoliciesList,
+	"UpdateABACPolicy": permission.ABACPoliciesUpdate,
+	"DeleteABACPolicy": permission.ABACPoliciesDelete,
+
 	// Backup (ScopeCross: a backup is of shards, holding every tenant's data).
 	"CreateBackup":  permission.BackupCreate,
 	"ListBackups":   permission.BackupList,

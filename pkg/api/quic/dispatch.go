@@ -413,6 +413,15 @@ func (s *Server) buildHandlers() {
 	s.handleIf(dekOn, "dek.Decrypt", permission.DEKDecrypt, s.handleDEKDecrypt)
 	s.handleIf(dekOn, "dek.Rewrap", permission.DEKRewrap, s.handleDEKRewrap)
 
+	// Tenant ABAC policy documents. Every method acts on the caller's own
+	// tenant.
+	policyOn := s.policySvc != nil
+	s.handleIf(policyOn, "abacpolicy.Create", permission.ABACPoliciesCreate, s.handlePolicyCreate)
+	s.handleIf(policyOn, "abacpolicy.Get", permission.ABACPoliciesRead, s.handlePolicyGet)
+	s.handleIf(policyOn, "abacpolicy.List", permission.ABACPoliciesList, s.handlePolicyList)
+	s.handleIf(policyOn, "abacpolicy.Update", permission.ABACPoliciesUpdate, s.handlePolicyUpdate)
+	s.handleIf(policyOn, "abacpolicy.Delete", permission.ABACPoliciesDelete, s.handlePolicyDelete)
+
 	// Per-tenant barrier lifecycle and SO distribution. These carry the
 	// tenant-scoped (ScopeTenantOnly) permissions; the handler additionally
 	// enforces the fine-grained gate against the request's tenant_id.

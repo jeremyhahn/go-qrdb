@@ -124,7 +124,7 @@ func TestWriteDurable_FileFaultsPropagateAndDiscardTemp(t *testing.T) {
 			if string(got) != "v1" {
 				t.Errorf("Get = %q, want the previous value %q", got, "v1")
 			}
-			shardDir, _ := e.recordPaths(key)
+			shardDir, _ := mustRecordPaths(t, e, key)
 			if left := tempFilesIn(t, shardDir, tmpSetPrefix); len(left) != 0 {
 				t.Errorf("temp files left after a failed %s: %v", failOn, left)
 			}

@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -53,14 +54,26 @@ func (m *AuthMiddleware) EvaluateAuthorization(ctx context.Context, target *auth
 	if m == nil || caller == nil || caller.Subject == "" {
 		return nil, auth.ErrUnauthenticated
 	}
-	if target == nil || (target.Subject == caller.Subject && target.TenantID == caller.TenantID) {
-		return m.authorizer.Authorize(ctx, caller, resource, action), nil
+	subject := caller
+	if target != nil && (target.Subject != caller.Subject || target.TenantID != caller.TenantID) {
+		if target.Subject == "" || target.TenantID == "" {
+			return nil, &InvalidAuthorizeTargetError{}
+		}
+		if err := m.AuthorizeTenant(ctx, target.TenantID, permission.PermissionsResolve); err != nil {
+			return nil, err
+		}
+		subject = target
 	}
-	if target.Subject == "" || target.TenantID == "" {
-		return nil, &InvalidAuthorizeTargetError{}
-	}
-	if err := m.AuthorizeTenant(ctx, target.TenantID, permission.PermissionsResolve); err != nil {
+	// The decision is the one the subject's own operation would get from
+	// decide, tenant status first: a suspended or disabled tenant's identity
+	// is never answered allowed. A status that cannot be read is an error,
+	// not a decision, so the caller retries rather than caching a denial.
+	if err := m.checkTenantActive(ctx, subject.TenantID); err != nil {
+		var notActive *TenantNotActiveError
+		if errors.As(err, &notActive) {
+			return err, nil
+		}
 		return nil, err
 	}
-	return m.authorizer.Authorize(ctx, target, resource, action), nil
+	return m.authorizer.Authorize(ctx, subject, resource, action), nil
 }

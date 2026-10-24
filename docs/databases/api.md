@@ -1,7 +1,7 @@
 # Databases — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the multi-model database program in
@@ -44,9 +44,7 @@ is set by its own verb alone -- never by create, which would let
 replicated state in the database's own store (see
 [../key-value/engineering.md](../key-value/engineering.md) "Scheduled
 compaction"): every replica of the database's group holds it, the group's
-leader runs it, and a backup carries it. *(Corrected: the policy was a field
-of the node-local catalog record and a `databases[].compaction` key of the
-node's configuration file; both are removed.)*
+leader runs it, and a backup carries it.
 
 The TypeScript SDK sets it with `client.database.updateCompaction(name,
 compaction?)` (`DatabaseCompactionConfig`: `mode` `'off' | 'revision' |
@@ -107,18 +105,12 @@ Shipped:
 Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
 `storageCodec` (absent for the node's default codec) and `dedicatedWal`. A
 Raft block reports no shard ID of its own: the database's is `shardId`.
-*(Changed: `storageCodec` was reported only on QUIC and MCP, under the
-internal record's `storage_codec`, and on no transport once responses were
-unified; `raft.shardId` repeated the top-level field.)* Every transport sends
-the same shape: REST, QUIC, MCP, the
-embedded transport and the desktop bindings emit the JSON form, gRPC and the
+Every transport sends the same shape: REST, QUIC, MCP, the embedded transport and the desktop bindings emit the JSON form, gRPC and the
 Unix socket the protobuf `DatabaseInfoResponse`, both produced by one converter
 (`pkg/api/dbwire`). Its keys are pinned by a recorded REST response that the Go
 handler test (`TestDatabaseInfoWire_*`) and the TypeScript SDK test
 (`database-info-wire.test.ts`) both decode, with no exceptions in either
-direction. *(Corrected: the TypeScript SDK read `shard_id` and `data_dir`, keys
-REST never sends; QUIC and MCP sent the server's internal snake_case shape,
-which the Go SDK decoded as zero shard ID, data directory and tenant.)*
+direction.
 
 **Secrets are write-only.** A request may set a discovery secret
 (`raft.static.sharedSecret`, `raft.multicast.sharedSecret`,
@@ -132,13 +124,11 @@ reports only that it is set:
   "token":     { "endpoint": "https://db.example.com/join", "clusterSize": 3, "tokenSet": true } }
 ```
 
-The response types cannot carry a secret: `DatabaseRaftInfo` and
-`DatabaseBarrierInfo` in the Go SDK and the protobuf, and `DatabaseRaftInfo`
-in the TypeScript SDK, have a `*Set` flag where the request has the secret. The
-barrier passphrase is never stored, so no response reports it at all. On gRPC
-the secret field numbers are `reserved` in the response messages. *(Changed:
-every read of a database -- get, list, and the response to every update --
-returned the stored discovery secrets on every transport.)*
+The response types cannot carry a secret: `DatabaseRaftInfo` in the Go SDK,
+the protobuf and the TypeScript SDK has a `*Set` flag where the request has
+the secret. The barrier passphrase is never stored, so `DatabaseBarrierInfo`
+has no field for it and no response reports it at all. On gRPC the secret
+field numbers are `reserved` in the response messages.
 
 **A Raft update keeps a secret it leaves out.** A Raft update replaces the
 whole Raft block, and a client that reads a database's settings back has no
@@ -165,13 +155,8 @@ secrets to send. So in an update:
     normalised, so `db.example.com:63001` and `DB.example.com:63001`, or a
     host name and its IP address, are different destinations: rewriting one
     as the other needs the secret.
-  *(Changed: the top-level `peers` were not treated as a static destination,
-  so re-pointing them under static discovery kept the stored secret.)*
 
-The response to the update reports each kept secret as set. *(Changed: an
-update without the secrets cleared the static shared secret and failed
-validation for multicast and token discovery, so a read-modify-write was
-impossible once secrets became write-only.)*
+The response to the update reports each kept secret as set.
 
 A raft-backed database's Raft configuration carries its shard ID, so an
 update can change it but not remove it: a Raft update with no configuration is
@@ -179,15 +164,14 @@ refused with `database.RaftConfigRequiredError` (400 / `INVALID_ARGUMENT`).
 Configuration validation failures -- an unknown cluster mode or discovery
 method, a missing discovery block, secret, domain, endpoint or token, an
 invalid cluster size, mode, storage codec or etcd listen address -- are
-400 / `INVALID_ARGUMENT` on every transport. *(Corrected: they reached REST as
-500.)*
+400 / `INVALID_ARGUMENT` on every transport.
 
-**`engine` is removed (shipped, Lane 1C).** A request carrying it on REST,
+**There is no `engine` field.** A request carrying it on REST,
 QUIC or MCP is refused as an unknown field, and on gRPC the field numbered 2
 in `DatabaseCreateRequest` and `DatabaseInfoResponse` is
-`reserved 2; reserved "engine";` so there is no field to set (OD-13, ruled
-A). `backend` is `memory`, `file`, `pebble`, `raft` or `objstore`. Measured:
-the backend does not decide where most databases' data lives, and
+`reserved 2; reserved "engine";` so there is no field to set (OD-13).
+`backend` is `memory`, `file`, `pebble`, `raft` or `objstore`. The backend
+does not decide where most databases' data lives, and
 `objstore` is refused when the store is opened — see
 [architecture.md](architecture.md) "Current state".
 
@@ -220,10 +204,11 @@ the replica nodes of a raft one; `encryption` is `node`, `tenant` or
 `tenant+database`; `generation` increments each time the name is created, so a
 dropped-and-recreated database is distinguishable from its predecessor.
 
-`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field
-(the field-2 reservation itself shipped in Lane 1C, above). The `connection`
-block and the update-connection capability are removed on every transport
-(OD-9, ruled A).
+`DatabaseInfoResponse` gains a `DatabaseBindingInfo binding` message field.
+The `connection` block and the update-connection capability are removed on
+every transport (OD-9).
+
+### Updates, scale and unseal
 
 `PATCH /v1/databases/{name}/compaction` — the database's scheduled-compaction
 policy, off unless set:
@@ -253,9 +238,7 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 changes, and it is reported only as `DatabaseInfo.shardId`. gRPC reserves
 field 2 (`shard_id`) of `DatabaseRaftConfig`; on the JSON transports the key is
 not a field and is ignored. See
-[engineering.md](engineering.md#cluster-wide-shard-ids). *(Changed: `shardId`
-was a request field on every transport, and a caller-chosen ID was accepted
-unchecked.)*
+[engineering.md](engineering.md#cluster-wide-shard-ids).
 
 On MCP the Raft configuration is flat tool arguments, reaching every field the
 other transports carry. `qrdb_database_create` names the top-level fields with
@@ -279,11 +262,7 @@ A discovery block is sent when `discovery_method` names it or any of its
 arguments is given -- an empty string counts, which is how a block whose only
 stored field is its secret is sent back without the secret. A block not sent
 is absent from the request, so an update removes it with its secret, as
-leaving a block out does on every other transport. *(Changed: MCP built only
-the block `discovery_method` named, so every MCP Raft update removed the other
-blocks and their secrets, and it had no arguments for `peers`,
-`localNodeCount`, `announceInterval`, `discoverTimeout`, `lookupTimeout` or the
-token `timeout`.)*
+leaving a block out does on every other transport.
 
 Both SDKs set every one of these fields. The request type -- `DatabaseRaftConfig`
 in the Go SDK (`transport.DatabaseRaftConfig`) and the TypeScript SDK -- carries
@@ -295,10 +274,7 @@ request keys are pinned by a recorded request,
 `sdk/typescript/test/fixtures/rest-database-raft-request.json`: the Go test
 `TestDatabaseRaftRequestWire_*` holds it to the Go SDK's encoding and decodes it
 through the REST handler refusing unknown keys, and the TypeScript test
-`database-raft-request-wire.test.ts` holds the TypeScript types to it. *(Changed:
-the SDK request types had no discovery fields, so no SDK caller could set
-discovery on any transport; the Go SDK's MCP transport also dropped `peers` and
-`localNodeCount`.)*
+`database-raft-request-wire.test.ts` holds the TypeScript types to it.
 
 `DatabaseBarrierConfig` fields: `enabled`, `mode` (`passphrase|shamir`),
 `sharesRequired`, `sharesTotal`, `secret`. On a create with `enabled` and
@@ -311,19 +287,18 @@ create with `mode: "shamir"` registers an uninitialized barrier at
 see the share-holder matrix below. Either strategy is accepted only where the
 barrier is on the database's data path: a non-raft database with its own
 `dataDir`, which only the system tenant can set (`BarrierOffDataPathError`,
-`SharedStoreBarrierUnsupportedError` otherwise). Until per-database storage
-bindings land, a non-system tenant cannot create a barrier-backed database of
-either kind.
+`SharedStoreBarrierUnsupportedError` otherwise). A non-system tenant therefore
+cannot create a barrier-backed database of either kind.
 
 `DatabaseConnectionConfig` fields: `transport` (`tcp|quic`), `address`,
 `caFile`, `certFile`, `keyFile`.
 
 ## Capability matrix — database barrier share holders
 
-A database barrier with Shamir custody
-has the unseal domain only; the holder model, error classes and identity
-> gating are [../shamir-custody/api.md](../shamir-custody/api.md)'s. `{name}`
-> is the database, resolved in the caller's tenant.
+A database barrier with Shamir custody has the unseal domain only; the holder
+model, error classes and identity gating are
+[../shamir-custody/api.md](../shamir-custody/api.md)'s. `{name}` is the
+database, resolved in the caller's tenant.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Database()`) | `scp` permission |
 |---|---|---|---|---|---|---|
@@ -341,15 +316,14 @@ has the unseal domain only; the holder model, error classes and identity
 Unseal and seal of a Shamir database barrier have no route of their own: each
 is the quorum submission with `op` `unseal` or `seal`; a single caller's
 `db.Seal` / `POST /v1/databases/{name}/seal` is refused (422) and a secret
-unseal is refused by the strategy. The new permissions are self-scoped like the
+unseal is refused by the strategy. These permissions are self-scoped like the
 rest of `databases:*`: no built-in role but Owner carries them, and a holder
-identity holds none of them. (Correction: the contract first said they were
-granted to Admin; the `databases:*` family is granted to no built-in role but
-Owner, and these follow it.)
+identity holds none of them.
 
 Initialization request: `{"policy": "designated"}` — the M-of-N is the
 `sharesRequired`/`sharesTotal` the database was created with, and exactly
-`sharesTotal` holders must be enrolled. Until initialization no more than
+`sharesTotal` holders must be enrolled. The initialization response is
+share-free: `{"threshold", "total_shares", "share_count"}`. Until initialization no more than
 `sharesTotal` can be: one more is refused with
 `ceremony.HolderLimitReachedError` (409, `FAILED_PRECONDITION`). Before
 initialization a holder holds no share, so one enrolled by mistake is removed
@@ -360,10 +334,7 @@ removed by revocation.
 `GET /v1/databases/{name}/barrier/status` reports `initialized_at` once the
 custody is initialized and omits it until then; the TypeScript SDK's
 `database.barrierStatus(name)` reports it as `initializedAt` on both of its
-transports. (Correction: the contract first carried
-`threshold` and `total_shares` here; the create already fixes them, and a
-second copy could only disagree.) The response is share-free:
-`{"threshold", "total_shares", "share_count"}`. A create with `mode: "shamir"`
+transports. A create with `mode: "shamir"`
 carries no `secret`; one that does is refused. A completed rekey records its
 new M-of-N on the database's configuration. If that write fails, the rekey is
 still reported complete, because it is: the old shares no longer open the
@@ -384,9 +355,9 @@ with `DatabaseNameRequiredError` before it is sent.
 | Success | 200 | `OK` |
 | Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
 | Database already live on another node (the catalog is node-local until it is replicated) | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` with `Elsewhere` set; the other node's database is untouched |
-| Name reserved for node state (`wal`, `nodehost`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
+| Name reserved for node or tenant state (`wal`, `nodehost`, `__home`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
-| Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` *(corrected: documented as 400; this refusal is Unprocessable)* |
+| Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` |
 | Barrier enabled off the data path (raft backend, volume/raft-isolated tenant) | 422 | `FAILED_PRECONDITION` — `database.BarrierOffDataPathError` |
 | Barrier strategy other than `passphrase` or `shamir` (`UnsupportedBarrierStrategyError`) | 400 | `INVALID_ARGUMENT` |
 | A `secret` on a `shamir` create (`ShamirSecretNotAllowedError`) | 400 | `INVALID_ARGUMENT` |
@@ -400,8 +371,10 @@ with `DatabaseNameRequiredError` before it is sent.
 | Turning an existing database's barrier on or off (`BarrierMigrationNotSupportedError`) | 409 | `FAILED_PRECONDITION` |
 | `cluster_mode` / `replicas` on a non-raft backend | 400 | `INVALID_ARGUMENT` |
 | `target_replicas < 1` | 400 | `INVALID_ARGUMENT` |
-| etcd enabled on a non-`raft` database (target — no check exists today) | 400 | `FAILED_PRECONDITION` — `database.EtcdRequiresRaftBackendError` |
+| Target: etcd enabled on a non-`raft` database | 400 | `FAILED_PRECONDITION` — `database.EtcdRequiresRaftBackendError` |
 | Wrong unseal secret | 403 | `PERMISSION_DENIED` — the database stays sealed |
+| A create or barrier update carrying a secret, an unseal, or a holder's quorum submission, on a connection without TLS or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
+| A REST or MCP create, barrier update, unseal or quorum submission carrying a secret, redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Operating on a sealed database | 503 | `UNAVAILABLE` |
 | Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
@@ -414,15 +387,15 @@ with `DatabaseNameRequiredError` before it is sent.
 | Invalid compaction policy (unknown mode, a field of another mode, `retainRevisions < 1`, `retainPeriod` unparseable or under `1s`) | 400 | `INVALID_ARGUMENT` — `compaction.InvalidPolicyError` |
 | Compaction policy on another tenant's database (the system tenant included) | 404 | `NOT_FOUND` — indistinguishable from a missing database |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| A create carrying `engine` on REST, QUIC or MCP; gRPC/Unix have no field to set (shipped, Lane 1C; OD-13, ruled A) | 400 | `INVALID_ARGUMENT` |
-| A pre-v0.45 `meta.json` still carrying `"engine"` (shipped, Lane 1C) | 409 | `FAILED_PRECONDITION` — `database.LegacyMetadataError`; the database must be recreated |
+| A create carrying `engine` on REST, QUIC or MCP; gRPC/Unix have no field to set (OD-13) | 400 | `INVALID_ARGUMENT` |
+| A `meta.json` still carrying `"engine"` | 409 | `FAILED_PRECONDITION` — `database.LegacyMetadataError`; the database must be recreated |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |
 | Target: barrier on `backend: memory` | 400 | `FAILED_PRECONDITION` — `database.BarrierRequiresPersistentBackendError` |
 | Target: `data_dir` outside a volume/raft tenant's root | 400 | `INVALID_ARGUMENT` — `database.DataDirOutsideTenantRootError` |
-| Target: backend conflicts with the tenant's isolation (OD-7, ruled B) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
+| Target: backend conflicts with the tenant's isolation (OD-7) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
 | Target: a database's binding cannot be opened | 503 | `UNAVAILABLE` — `database.BindingUnavailableError` |
-| Target: a local-binding database's owning node is unreachable (OD-2, ruled A) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
+| Target: a local-binding database's owning node is unreachable (OD-2) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
 | Target: the cluster feature gate for a command is not yet open on every member | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`, the one feature-gate refusal |
 
 ## Pagination
@@ -432,6 +405,6 @@ count is bounded by operator action.
 
 ## Versioning
 
-Database REST paths are under `/v1/`. The target design's removals (`engine`,
-and `connection` under OD-9 A) are breaking and ship together in one MINOR
-release; there is no deprecation period in the pre-1.0 series.
+Database REST paths are under `/v1/`. The target design's removal of
+`connection` (OD-9) is breaking and ships in a MINOR release; there is no
+deprecation period in the pre-1.0 series.

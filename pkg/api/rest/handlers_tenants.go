@@ -90,6 +90,14 @@ type tenantAdminResponse struct {
 type updateTenantRequest struct {
 	Name          string               `json:"name,omitempty"`
 	IsolationType tenant.IsolationType `json:"isolation_type,omitempty"`
+	// Description, when present, replaces the description ("" clears it).
+	Description *string `json:"description,omitempty"`
+	// Metadata, when present and not null, replaces the whole map; {}
+	// clears it.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Status, when present, moves the tenant to that status along the
+	// allowed transitions; it needs tenants:set_status.
+	Status *tenant.Status `json:"status,omitempty"`
 }
 
 // setTenantQuotasRequest is the JSON payload for POST /v1/tenants/{id}/quotas.
@@ -206,8 +214,13 @@ type tenantResponse struct {
 	VolumePool   string              `json:"volume_pool,omitempty"`
 	Quotas       *quota.Quotas       `json:"quotas,omitempty"`
 	Entitlements *quota.Entitlements `json:"entitlements,omitempty"`
-	CreatedAt    string              `json:"createdAt"`
-	UpdatedAt    string              `json:"updatedAt"`
+	Description  string              `json:"description,omitempty"`
+	Metadata     map[string]string   `json:"metadata,omitempty"`
+	// Status is the tenant's operational status; a principal of a tenant
+	// that is not active is refused.
+	Status    tenant.Status `json:"status"`
+	CreatedAt string        `json:"createdAt"`
+	UpdatedAt string        `json:"updatedAt"`
 	// Refusal is set when the answering node will not serve this tenant's
 	// data; absent otherwise. Another node may still serve it.
 	Refusal *tenantRefusal `json:"refusal,omitempty"`
@@ -590,6 +603,9 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: req.IsolationType,
+		Description:   req.Description,
+		Metadata:      req.Metadata,
+		Status:        req.Status,
 	}
 	if !s.authorizeTenantUpdate(ctx, w, id, patch) {
 		return
@@ -922,6 +938,9 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 		VolumePool:    info.VolumePool,
 		Quotas:        info.Quotas,
 		Entitlements:  info.Entitlements,
+		Description:   info.Description,
+		Metadata:      info.Metadata,
+		Status:        info.Status,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
 	}

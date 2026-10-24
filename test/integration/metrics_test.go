@@ -102,3 +102,91 @@ func TestMetricsEndpointServesRaftWALFsyncLatency(t *testing.T) {
 		}
 	}
 }
+
+// sampleSum returns the sum of every sample of the family named name in the
+// exposition text, labelled or not, and whether there was one.
+func sampleSum(t *testing.T, exposition, name string) (float64, bool) {
+	t.Helper()
+	var sum float64
+	found := false
+	sc := bufio.NewScanner(strings.NewReader(exposition))
+	for sc.Scan() {
+		line := sc.Text()
+		rest, ok := strings.CutPrefix(line, name)
+		if !ok || rest == "" || (rest[0] != ' ' && rest[0] != '{') {
+			continue
+		}
+		if rest[0] == '{' {
+			end := strings.LastIndexByte(rest, '}')
+			if end < 0 {
+				t.Fatalf("sample %s: unterminated labels in %q", name, line)
+			}
+			rest = rest[end+1:]
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
+		if err != nil {
+			t.Fatalf("sample %s: %v", name, err)
+		}
+		sum += v
+		found = true
+	}
+	return sum, found
+}
+
+// TestMetricsEndpointServesRaftHostSeries boots a three-node raft cluster:
+// every node's /metrics serves go-quicraft's election, proposal and ReadIndex
+// series, the cluster's election counters have counted the campaign that
+// elected its leaders, and on every CLI transport a write and a linearizable
+// read advance the cluster's proposal and ReadIndex histograms. The counts
+// are summed over the three nodes because a shard's leader, which proposes,
+// need not be the node the CLI talks to. A cluster, not a single node:
+// go-quicraft counts an election when the node sends its vote requests, and
+// a single voter sends none.
+func TestMetricsEndpointServesRaftHostSeries(t *testing.T) {
+	t.Parallel()
+	nodes, _ := startMultiProtocolCluster(t, 0)
+
+	const (
+		proposals = "quicraft_raft_proposal_latency_seconds_count"
+		readIndex = "quicraft_raft_read_index_latency_seconds_count"
+		elections = "quicraft_raft_elections_total"
+	)
+	families := []string{proposals, readIndex, elections}
+	// scrape returns each family's sum over every node's /metrics.
+	scrape := func() map[string]float64 {
+		t.Helper()
+		sums := make(map[string]float64, len(families))
+		for i, node := range nodes {
+			exposition := scrapeMetrics(t, node.ca, node.restPort)
+			for _, name := range families {
+				v, ok := sampleSum(t, exposition, name)
+				if !ok {
+					t.Fatalf("node %d: /metrics does not serve %s", i, name)
+				}
+				sums[name] += v
+			}
+		}
+		return sums
+	}
+
+	after := scrape()
+	if after[elections] == 0 {
+		t.Fatalf("%s = 0 on every node of a cluster that elected a leader", elections)
+	}
+	for _, proto := range multiProtocols {
+		key := "metrics-host-series-" + proto.name
+		before := after
+		if out, err := runCLIProto(t, nodes[0], proto, "kv", "put", key, "v"); err != nil {
+			t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, key, err, out)
+		}
+		if out, err := runCLIProto(t, nodes[0], proto, "kv", "get", key, "--consistency", "linearizable"); err != nil {
+			t.Fatalf("[%s] kv get %s --consistency linearizable: %v\noutput: %s", proto.name, key, err, out)
+		}
+		after = scrape()
+		for _, name := range []string{proposals, readIndex} {
+			if after[name] <= before[name] {
+				t.Fatalf("[%s] %s %v -> %v across a committed write and a linearizable read", proto.name, name, before[name], after[name])
+			}
+		}
+	}
+}

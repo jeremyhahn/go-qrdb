@@ -48,6 +48,9 @@ func (t *Transport) RAGIngestDocument(ctx context.Context, req *transport.RAGIng
 	if req.ChunkOverlap != 0 {
 		args["chunk_overlap"] = req.ChunkOverlap
 	}
+	if req.ChunkMinSize != 0 {
+		args["chunk_min_size"] = req.ChunkMinSize
+	}
 	if len(req.Metadata) > 0 {
 		meta, err := json.Marshal(req.Metadata)
 		if err != nil {

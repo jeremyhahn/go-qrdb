@@ -56,9 +56,8 @@
 // title, its own note, and priority:critical rather than priority:high.
 //
 // WHAT IT DOES NOT DO. It does not make the nightly a required check, and it
-// does not move `trivy fs` onto the push path — both are separate decisions
-// (docs/seal/fips140-mode.md "Arming the gate", and the phase rule in
-// conventions/devops.md §8a).
+// does not move `trivy fs` onto the push path — that is a separate decision
+// (the phase rule in conventions/devops.md §8a).
 //
 // EXIT STATUS IS ABOUT THIS TOOL, NOT ABOUT THE NIGHTLY. It exits 0 when every
 // job was decided and every decision applied, INCLUDING when the answer was

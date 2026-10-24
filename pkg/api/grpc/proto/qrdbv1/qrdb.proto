@@ -1297,6 +1297,42 @@ service QRDBService {
     }
 
     // -----------------------------------------------------------------------
+    // ABAC policy operations
+    //
+    // Policies are records of the CALLER's tenant. A tenant_id, or a
+    // document's metadata.tenant, is optional and, when set, must name that
+    // tenant; any other value is PermissionDenied, from the system tenant
+    // too. Every read returns the stored document unchanged.
+    // -----------------------------------------------------------------------
+
+    // CreateABACPolicy validates, compiles and stores a new policy. A name
+    // the tenant already holds is AlreadyExists.
+    rpc CreateABACPolicy(ABACPolicy) returns (ABACPolicy) {
+        option (qrdb.v1.permission) = "abac_policies:create";
+    }
+
+    // GetABACPolicy returns one stored policy document.
+    rpc GetABACPolicy(ABACPolicyRequest) returns (ABACPolicy) {
+        option (qrdb.v1.permission) = "abac_policies:read";
+    }
+
+    // ListABACPolicies returns every policy of the tenant, sorted by name.
+    rpc ListABACPolicies(ABACPolicyListRequest) returns (ABACPolicyListResponse) {
+        option (qrdb.v1.permission) = "abac_policies:list";
+    }
+
+    // UpdateABACPolicy replaces an existing policy's document, keeping its
+    // creation time. A concurrent change is Aborted.
+    rpc UpdateABACPolicy(ABACPolicy) returns (ABACPolicy) {
+        option (qrdb.v1.permission) = "abac_policies:update";
+    }
+
+    // DeleteABACPolicy removes one policy.
+    rpc DeleteABACPolicy(ABACPolicyRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "abac_policies:delete";
+    }
+
+    // -----------------------------------------------------------------------
     // Backup operations
     // -----------------------------------------------------------------------
 
@@ -4455,6 +4491,13 @@ message TenantResponse {
     // refusal is set when the answering node will not serve this tenant's
     // data; absent otherwise.
     TenantRefusal refusal = 10;
+    // description is the tenant's free-text description; empty when unset.
+    string description = 11;
+    // metadata is the tenant's caller-defined string map; empty when unset.
+    map<string, string> metadata = 12;
+    // status is the tenant's operational status: "active", "suspended" or
+    // "disabled". A principal of a tenant that is not active is refused.
+    string status = 13;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -4704,6 +4747,22 @@ message TenantUpdateRequest {
     string id             = 1;
     string name           = 2;
     string isolation_type = 3;
+    // description, when present, replaces the tenant's description; an
+    // empty string clears it. Absent leaves it unchanged.
+    optional string description = 4;
+    // metadata, when present, replaces the tenant's whole metadata map; an
+    // empty entries map clears it. Absent leaves it unchanged. A bare proto
+    // map cannot tell "clear" from "unchanged", hence the wrapper message.
+    TenantMetadata metadata = 5;
+    // status, when present, moves the tenant to that status ("active",
+    // "suspended" or "disabled"), along the allowed transitions; it needs
+    // tenants:set_status. Absent leaves it unchanged.
+    optional string status = 6;
+}
+
+// TenantMetadata carries a tenant's caller-defined string map on an update.
+message TenantMetadata {
+    map<string, string> entries = 1;
 }
 
 // TenantDeleteRequest removes a tenant by ID.
@@ -4799,6 +4858,82 @@ message TenantDEKRewrapResponse {
     bytes  ciphertext   = 1;
     uint64 from_version = 2;
     uint64 to_version   = 3;
+}
+
+// ABACPolicy is one ABAC policy document, field for field the document the
+// policy_dir files hold (pkg/auth/abac.Policy).
+message ABACPolicy {
+    string             api_version = 1;
+    string             kind        = 2;
+    ABACPolicyMetadata metadata    = 3;
+    ABACPolicySpec     spec        = 4;
+}
+
+message ABACPolicyMetadata {
+    string              name        = 1;
+    // tenant is optional on a write and, when set, must name the caller's
+    // tenant. A read always carries it.
+    string              tenant      = 2;
+    string              description = 3;
+    map<string, string> labels      = 4;
+    int64               priority    = 5;
+    // created and updated are RFC 3339 timestamps the server sets; a value
+    // sent on a write is ignored.
+    string              created     = 6;
+    string              updated     = 7;
+}
+
+message ABACPolicySpec {
+    // enabled is presence-tracked: unset means the document does not set it
+    // (enabled), false disables the policy. A read returns it exactly as it
+    // was written, set or unset.
+    optional bool          enabled   = 1;
+    ABACSubjectSelector    subjects  = 2;
+    map<string, string>    variables = 3;
+    repeated ABACRule      rules     = 4;
+}
+
+message ABACSubjectSelector {
+    repeated string        users         = 1;
+    repeated string        groups        = 2;
+    repeated string        roles         = 3;
+    repeated string        services      = 4;
+    // match holds the attribute criteria, a JSON object (RFC 8259) of
+    // attribute names to values or operator objects such as {"gte": 3}.
+    // Empty means none.
+    string                 match_json    = 5;
+    bool                   authenticated = 6;
+    bool                   any           = 7;
+}
+
+message ABACRule {
+    string                 name      = 1;
+    // effect is "allow" or "deny".
+    string                 effect    = 2;
+    int64                  priority  = 3;
+    repeated string        actions   = 4;
+    repeated string        resources = 5;
+    repeated ABACCondition when      = 6;
+    repeated ABACCondition unless    = 7;
+}
+
+message ABACCondition {
+    string expression = 1;
+}
+
+// ABACPolicyRequest names one policy of the caller's tenant. tenant_id is
+// optional and, when set, must name that tenant.
+message ABACPolicyRequest {
+    string tenant_id = 1;
+    string name      = 2;
+}
+
+message ABACPolicyListRequest {
+    string tenant_id = 1;
+}
+
+message ABACPolicyListResponse {
+    repeated ABACPolicy policies = 1;
 }
 
 // ===========================================================================

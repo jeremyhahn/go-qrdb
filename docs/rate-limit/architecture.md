@@ -1,6 +1,6 @@
 # Rate Limiting — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 A single request-throttling engine, enforced at the one place every
@@ -9,15 +9,10 @@ regardless of which protocol carried its request.
 
 ## Problem
 
-Rate limiting kept getting written again at the point of need instead of
-once at the point every request already passes through. Auth and audit had
-already been centralized the same way qrdb centralizes everything a
-transport needs — one interface in the core, several transport-specific
-adapters that are all thin — but throttling was left to grow independently
-in each layer above, and it multiplied: measured across this codebase and
-its downstream consumers, over a dozen independent limiter types existed,
-several duplicating each other's name and purpose within the same
-repository.
+A limiter written at each point of need, in each transport or service layer,
+duplicates the same policy in several places and lets the copies drift. Auth
+and audit avoid that with one interface in the core and thin per-transport
+adapters; throttling needs the same shape.
 
 ## Shape chosen
 
@@ -50,12 +45,13 @@ do — so a `Policy` declared once per permission is enforced identically
 everywhere that permission is checked, with no second declaration to drift
 out of step with the first the way per-transport declarations would.
 
-Enforcement lives inside the auth middleware's single `authorize` call,
-which every transport's request path already reaches after authentication
-and before dispatching to a handler: REST middleware, the gRPC unary
-interceptor (shared by the TCP and unix-socket listeners), the QUIC method
+Enforcement lives inside `AuthMiddleware.authorize`, which every
+transport's request path already reaches after authentication and before
+dispatching to a handler: the REST middleware, the gRPC unary and stream
+interceptors (shared by the TCP and unix-socket listeners), the QUIC method
 authorizer, and the MCP tool-invocation authorizer all fall through the same
-function. A caller past its `Policy`'s burst is refused there, before the
+function. A delegated identity's certificate is re-verified first; then a
+caller past its `Policy`'s burst is refused, before the
 RBAC/ABAC authorizer or the audit logger's store lookups do any further work
 on its behalf — throttling is cheaper than authorizing, so it runs first.
 
@@ -73,8 +69,8 @@ comes and goes rather than staying fixed.
 
 ### Alternatives rejected
 
-- **A rate-limiting middleware per transport.** Rejected — this is exactly
-  the shape that produced the duplication in the first place: each
+- **A rate-limiting middleware per transport.** Rejected — this is the
+  shape that duplicates policy: each
   transport's adapter would need its own declaration of the same policy,
   and nothing would stop the two from drifting.
 - **Policy keyed by route, gRPC method, or MCP tool name.** Rejected — see
@@ -85,13 +81,11 @@ comes and goes rather than staying fixed.
   denies an ungranted permission because an ungranted permission must never
   be reachable at all; a permission with no declared `Policy` is simply
   unthrottled, because most operations need no capacity bound, and inventing
-  one without a real constraint to derive it from produces exactly the kind
-  of wrong, guessed number the request-body-size bound in
-  [key-value](../key-value/) went through several rounds correcting before
-  settling on deriving the number from the protocol's own framing instead of
-  guessing it. A rate limit has no equivalent protocol fact to derive from —
-  it is a capacity decision an operation's owner takes deliberately, one
-  permission at a time.
+  one without a real constraint to derive it from produces a guessed
+  number. Unlike the request-body-size bound in [key-value](../key-value/),
+  which derives from the protocol's own framing, a rate limit has no
+  protocol fact to derive from: it is a capacity decision an operation's
+  owner takes deliberately, one permission at a time.
 - **A dependency on an external token-bucket library.** Rejected in favor of
   a lock-free implementation in this package: the engine is small, the
   concurrency property (no lock contention across keys) is exactly the one
@@ -106,8 +100,8 @@ comes and goes rather than staying fixed.
 - **Rate limiting is a capacity control, not a security boundary.** Its
   absence for a given permission is never a denial; it is silence, exactly
   like an unconfigured `Policy`. Do not rely on it to prevent an
-  unauthorized action — that is authorization's job, and it always runs
-  after the rate-limit check regardless of whether the check refused.
+  unauthorized action — that is authorization's job, and it runs on every
+  request the rate-limit check admits.
 - **Keys are scoped by tenant, subject, and permission together.** Two
   tenants may share a subject name without sharing a bucket, and one
   caller's exhaustion of one permission's bucket never touches another
@@ -120,8 +114,8 @@ comes and goes rather than staying fixed.
   tenant's bucket rather than a second, fresh one obtained by alternating
   between the empty string and the system tenant's canonical id.
 - **The reaper's eviction race can only make the next request MORE
-  permissive, never less** (see `pkg/ratelimit`'s package documentation for
-  the exact race and why the direction it fails in is the correct one for a
+  permissive, never less** (see the documentation of `TokenBucketLimiter`'s
+  `sweep` method in `pkg/ratelimit/token_bucket.go` for the exact race and why the direction it fails in is the correct one for a
   capacity control rather than a security boundary).
 - **Invitation redemption throttles OUTSIDE this mechanism**, on the same
   `ratelimit.Limiter`/`Policy` primitives but not through the per-permission
@@ -148,8 +142,8 @@ comes and goes rather than staying fixed.
   embedder.
 - **No dynamic policy reload.** A `Registry` is built once, at process
   wiring time, and is read-only afterward; changing a `Policy` requires a
-  restart. A live-reload path (the way ABAC policies can be reloaded) is a
-  natural extension this feature does not implement yet.
+  restart. Unlike ABAC policies, rate-limit policies have no live-reload
+  path.
 - **No per-tenant or per-role policy tiers.** A `Policy` is declared per
   permission, not per tenant or per role holding that permission. A caller
   who needs, for example, a higher burst for one tenant than another has to

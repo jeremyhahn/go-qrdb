@@ -72,6 +72,13 @@ GO            := go
 # the push path should surface in 30m.
 GOTEST_TIMEOUT ?= 30m
 GOTEST        := $(GO) test -race -count=1 -v -timeout=$(GOTEST_TIMEOUT)
+# COVER_GOTEST is GOTEST without -count=1, for `make coverage`'s bulk run
+# alone (#1046). Every flag left is a build flag or one of go test's cacheable
+# flags, so a package whose test binary, and the files and environment its
+# tests read, are unchanged since a passing run replays that run's result and
+# its coverage profile instead of running again: the figure is the same, the
+# time is not. `make test` keeps -count=1 and runs everything.
+COVER_GOTEST  := $(GO) test -race -v -timeout=$(GOTEST_TIMEOUT)
 # INT_GOTEST is GOTEST without -race, for the integration suites alone. Race
 # detection is the unit suites' job, which keep GOTEST; under -race the
 # multi-node cluster suites cost several times the CPU and wall time, and the
@@ -666,7 +673,7 @@ _build-client: build-frontend
 # artifact.
 #
 # The FIPS variant links Go's native FIPS 140-3 module, selected at BUILD time
-# by GOFIPS140 -- the same `latest` the nightly FIPS leg tests against
+# by GOFIPS140 -- the same `latest` ci.yml's full-tier `fips` job tests against
 # (docs/seal/fips140-mode.md). Enforcement is still the operator's GODEBUG at
 # run time; the plain variant is built with GOFIPS140=off so a GOFIPS140 in
 # the caller's environment cannot turn it into a second FIPS binary.
@@ -1745,6 +1752,12 @@ COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/
 # needs this treatment at all and why concatenation, not `covdata merge`, is
 # the right operation here.
 #
+# The two runs are concurrent (#1046): the script compiles and runs its eight
+# packages one at a time, 171s on a warm cache, and run after the bulk run it
+# was a serial tail on top of it. It writes its output to subprocess.log,
+# printed once both are done, and each run's exit status is kept and checked
+# before either profile is read.
+#
 # `set -e`: without it, a `;`-joined recipe has NO fail-fast of its own -- a
 # failed bulk test run or a failed subprocess merge would leave `head`/`tail`
 # to run anyway over whatever partial output exists, and the recipe's exit
@@ -1785,8 +1798,11 @@ define COVERAGE_MERGE_SUBPROCESS
 	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
 	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
 	BULK_PKGS=$$($(GO) list $(TAG_FLAG) ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
-	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS; \
-	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out; \
+	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out > $(COVER_DIR)/subprocess.log 2>&1 & SUBPROCESS_PID=$$!; \
+	BULK_RC=0; $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS || BULK_RC=$$?; \
+	SUBPROCESS_RC=0; wait $$SUBPROCESS_PID || SUBPROCESS_RC=$$?; \
+	cat $(COVER_DIR)/subprocess.log; \
+	if [ $$BULK_RC -ne 0 ] || [ $$SUBPROCESS_RC -ne 0 ]; then echo "coverage: bulk run exit $$BULK_RC, subprocess run exit $$SUBPROCESS_RC" >&2; exit 1; fi; \
 	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
@@ -2164,7 +2180,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2278,8 +2294,9 @@ lint-sdk:
 vet-sdk:
 	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
 
-# lint-gates is every repository gate CI's image job runs beside `make lint`
-# on every run (ci-template v1.21, one image job): the gates over the scripts,
+# lint-gates is every repository gate CI's lint job runs beside `make lint`
+# on every run (ci-template v1.21's one image job, split into lint and image
+# here by #1046): the gates over the scripts,
 # the workflows, the generated code and the module files, `make vet` over the
 # default tag set, the secure analyzer's self-test and the sdk/go linters. Run
 # with `make -k lint-gates` it reports every failing gate in one pass.
@@ -2288,17 +2305,19 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of the image job, so CI runs them on a push to main and on the daily
+# hour of CI's lint stages, so CI runs them on a push to main and on the daily
 # full-tier dispatch, not on a pull request; release.yml still runs both
 # before a tag. `make lint-gates lint-sweeps` is the whole set.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
-	test-cluster-cpus check-action-pins check-integration-feature-coverage \
-	check-no-deprecated-credential-retrieve check-lean-standalone \
+	test-cluster-cpus test-trim-ci-caches check-action-pins \
+	check-integration-feature-coverage \
+	check-no-deprecated-credential-retrieve check-no-alias-language \
+	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
-	test-artifact-paths check-generated check-mod-tidy test-vet-modules \
+	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
 	test-release-alpha fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
@@ -2482,6 +2501,14 @@ check-integration-feature-coverage:
 check-no-deprecated-credential-retrieve:
 	$(GOTEST) -run '^(TestNoInRepoCallerOfDeprecatedCredentialRetrieve|TestRetrieveSelectors_)' ./test/buildgates/...
 
+# The one gate in the unit suite that reads docs/*.md (the no-compatibility-
+# surface ruling: no legacy or deprecated alias language). It is here as well
+# because a docs-only pull request runs lint and skips the unit suite
+# (ci-template v1.24's `changes` job, ci.yml). Scoped with -run to that gate.
+.PHONY: check-no-alias-language
+check-no-alias-language:
+	$(GOTEST) -run '^TestNoLegacyOrDeprecatedAliasLanguage$$' ./test/buildgates/...
+
 # A lean standalone embedder -- sdk/go/node on the file backend, the embedded
 # transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not
 # compile features it does not use: the Raft host, PebbleDB, the network API
@@ -2508,14 +2535,13 @@ check-lean-standalone:
 # workstation the forge address has to be given, and an unset one fails with a
 # sentence naming the flag rather than by talking to nothing.
 #
-# The two RESULT knobs default to `failure` because "what would the signal do if
+# The RESULT knob defaults to `failure` because "what would the signal do if
 # this went red" is the question a developer has to ask, and the answer is
 # uninteresting when everything is green.
 NIGHTLY_SIGNAL_SERVER ?= $(GITHUB_SERVER_URL)
 NIGHTLY_SIGNAL_API    ?= $(if $(NIGHTLY_SIGNAL_SERVER),$(NIGHTLY_SIGNAL_SERVER)/api/v1,)
 NIGHTLY_SIGNAL_REPO   ?= $(if $(GITHUB_REPOSITORY),$(GITHUB_REPOSITORY),jeremyhahn/go-qrdb)
 NIGHTLY_SIGNAL_REF    ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
-NIGHTLY_SIGNAL_FIPS   ?= failure
 NIGHTLY_SIGNAL_TRIVY  ?= failure
 
 # REPORT MODE HERE, deliberately. devops.md §4 says CI runs the same target a
@@ -2533,7 +2559,6 @@ nightly-signal: ## Report what the nightly signal would open, update or close
 		-api $(NIGHTLY_SIGNAL_API) \
 		-ref $(NIGHTLY_SIGNAL_REF) \
 		-self signal \
-		-job "fips=FIPS 140-3=$(NIGHTLY_SIGNAL_FIPS)" \
 		-job "trivy=Trivy=$(NIGHTLY_SIGNAL_TRIVY)"
 
 # The decision table, the coverage floor and the rendering, over the REAL
@@ -2584,6 +2609,14 @@ test-compose-targets: ## Test the compose-target guard
 .PHONY: test-cluster-cpus
 test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
 	@./scripts/cluster-cpus_test.sh
+
+# The CI cache trim (scripts/trim-ci-caches.sh) evicts the build and
+# golangci-lint cache entries unused longest before it removes a whole volume,
+# which emptied the build cache and made the next image job compile the tree
+# from nothing (#1046). Tested on a stub docker: a real run needs the runner's.
+.PHONY: test-trim-ci-caches
+test-trim-ci-caches: ## Test the CI cache trim's age-first eviction
+	@./scripts/trim-ci-caches_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
@@ -3480,21 +3513,19 @@ mod-verify:
 # -mod=readonly, `go vet` and `mod-verify` fail only on a MISSING requirement or
 # checksum; a stale extra line -- a superseded version's go.sum pair -- passes
 # all three, and nothing caught it until `release-alpha` refused v0.48.0-alpha.
-# `go mod tidy -diff` reports both directions and mutates nothing. The module
-# set is every tracked go.mod, not a list, so a new module is checked the day it
-# is committed; the root module missing from it means discovery failed, and an
-# empty loop must not report success. Every module is asked before failing, so
-# one run names all of them.
+# `go mod tidy -diff` reports both directions and mutates nothing. The logic is
+# scripts/check-mod-tidy.sh: module discovery with its root-go.mod floor, and
+# the split between a module that is NOT TIDY (a diff) and one whose tidiness
+# is UNKNOWN because the check could not run (no diff, an error such as a
+# download timeout). Both fail. test-mod-tidy drives every branch with
+# fixtures, no network.
 .PHONY: check-mod-tidy
 check-mod-tidy:
-	@mods=$$(git ls-files -- 'go.mod' '*/go.mod'); \
-	case " $$(echo $$mods) " in *" go.mod "*) ;; *) echo "ERROR: module discovery did not find the root go.mod (found: $$mods)"; exit 1 ;; esac; \
-	bad=; for m in $$mods; do \
-	  d=$$(dirname "$$m"); \
-	  ( cd "$$d" && GOWORK=off $(GO) mod tidy -diff ) || bad="$$bad $$d"; \
-	done; \
-	test -z "$$bad" || { echo "ERROR: go.mod/go.sum is not tidy in:$$bad. Run 'GOWORK=off go mod tidy' in each and commit the result"; exit 1; }; \
-	echo "==> every module is tidy: $$(echo $$mods)"
+	@GO="$(GO)" ./scripts/check-mod-tidy.sh
+
+.PHONY: test-mod-tidy
+test-mod-tidy:
+	@GO="$(GO)" ./scripts/check-mod-tidy_test.sh
 
 # Directories excluded from the filesystem scan. This is now the ONLY copy:
 # nightly.yml's gate calls `make trivy` on both hosts, so the list cannot

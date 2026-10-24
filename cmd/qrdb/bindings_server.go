@@ -328,6 +328,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
 	}
+	if svcNode.Policy != nil {
+		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
+	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, embedded.WithCertProvider(svcNode.CertProv))
 	}

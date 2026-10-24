@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The `Factor` framework, the user-side N-factor model, and PIN custody with
@@ -183,9 +183,6 @@ the batch.
 - **Verifying hardware factors in qrdb.** Rejected — the whole point of the
   registry is that qrdb never imports a hardware SDK. It ships the framework and
   one reference factor.
-- **Interpreting the enrolment blob.** Rejected: qrdb stores
-  `FactorEnrollment.Data` and never parses it, so a factor implementation cannot
-  smuggle an authorization decision through it.
 - **A lockout inside the software backend.** Deliberately absent:
   `SoftwareBackend.GetLockoutStatus()` returns **nil** and `ResetLockout()` is a
   **no-op**. The SO PIN lockout is a separate decorator,
@@ -194,8 +191,7 @@ the batch.
   counters for anonymous sealed-window checks and authenticated ones. Its
   counters are in memory and a process restart clears them; a deployment that
   needs a lockout that survives restarts injects a hardware backend, which the
-  decorator then fronts. This is stated rather than implied so nobody assumes
-  protection that is not there.
+  decorator then fronts.
 - **Choosing the hash algorithm from the runtime.** Rejected: the algorithm is
   persisted **inside each `PINRecord`** and resolved at verification time. That
   is what lets a FIPS binary verify a PIN hashed by a non-FIPS binary and vice
@@ -278,11 +274,8 @@ they return are part of the seam and every one of them has an `sdk/go` surface:
 | Caller named a factor other than the enrollment's | `AuthFactorMismatchError` |
 | Device unreachable | `AuthFactorHardwareUnavailableError`, or the sentinel `ErrAuthFactorHardwareUnavailable` |
 
-The last row is the reason this table exists. Both transports map a
-hardware-unavailable condition to 503, but the type and its sentinel were the
-only members of the contract with no SDK surface, so no out-of-repo factor
-could construct the error the handler was waiting for and the arm was
-unreachable in a deployed system rather than merely unused here.
+Both transports map a hardware-unavailable condition to 503; the SDK alias is
+what lets an out-of-repo factor construct the error that arm waits for.
 
 An error on this seam that has no SDK alias is a handler arm that can never
 fire. When a condition is added to the contract, export it here in the same
@@ -294,4 +287,3 @@ change.
 - **No hardware verification in the qrdb CLI.**
 - **No lockout counter inside the software backend** (the SO PIN lockout is
   the separate decorator described above).
-- **No interpretation of enrolment data.**

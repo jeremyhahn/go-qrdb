@@ -1,6 +1,6 @@
 # Document Collections — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -83,21 +83,15 @@ ID changed on the way in — so the SQL surface, where a collection is exposed a
 a table whose column 0 is `_id`, carries the claim exactly as the document
 bodies on REST, gRPC, QUIC, MCP and the SDK do.
 
-It did not, and the shape of the failure is the one this rule exists to remove:
-column 0 was read on `UPDATE` and `DELETE` and **discarded on `INSERT`**, so
-`INSERT INTO events (_id, kind) VALUES (42, 'deploy')` stored the document under
-the next generated ID and reported success. The column was declared, accepted
-and thrown away.
-
 The refusal travels with the claim, and on this surface it is load-bearing
 beyond its error message. A collection table reports a taken `_id` as a
 **primary key violation** — MySQL error 1062, PostgreSQL `SQLSTATE 23505`,
 `gorm.ErrDuplicatedKey` — which is both the SQL equivalent of REST's 409 and
 the error `REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are built
 on: each is "insert, and on a primary-key violation carry the existing row into
-a delete or an update". Without it neither statement did what it says. Both
-silently inserted a *second* document under a generated ID and left the first
-one untouched.
+a delete or an update". Without it neither statement does what it says: each
+would insert a *second* document under a generated ID and leave the first one
+untouched.
 
 Two consequences follow, and both are contract rather than implementation
 detail:
@@ -105,18 +99,15 @@ detail:
 - **An `UPDATE` that changes `_id` is a re-identification**, and the new
   identity is claimed before the old one is released. The claim reserves the
   counter and is refused if the destination is occupied, so a move that cannot
-  complete leaves the document where it was. Done the other way round — release
-  first — a move onto a taken ID destroyed the document it was moving and
-  reported an error. A move to `_id = 0` is refused outright: zero means
+  complete leaves the document where it was. Releasing first would let a move
+  onto a taken ID destroy the document it was moving. A move to `_id = 0` is refused outright: zero means
   "allocate one" on an insert and nothing at all here, and allocating a fresh
   identity for a statement that named zero would be the same silent
   substitution one statement over.
 - **`_id` may be omitted on an insert**, spelled either as leaving the column
   out or as `_id = 0`, and then the collection allocates from its strategy.
-  This is MySQL's convention for an `AUTO_INCREMENT` column and already what
-  the service reads a zero `_id` as. Before, the column was `NOT NULL` with no
-  default, so SQL could not reach the generated path at all: every insert had
-  to name an ID, and every ID it named was discarded.
+  This is MySQL's convention for an `AUTO_INCREMENT` column and what the
+  service reads a zero `_id` as.
 
 #### The identity is not a field
 
@@ -125,13 +116,12 @@ detail:
 alongside the data, on any transport.
 
 This matters twice. A collection's schema is auto-discovered from the keys of
-the documents written to it, so an `_id` stored as a field became an entry in
-that schema — and the SQL surface builds a collection table's columns from it,
-on top of the `_id` it already declares as column 0. `SELECT *` returned two
-columns called `_id`, one holding the document's real ID and one holding the
-echo. It also made a document's *shape* depend on how its ID was decided: an
-explicitly identified document carried a field a generated one did not, in the
-same collection.
+the documents written to it, so an `_id` stored as a field would become an entry in
+that schema, and the SQL surface builds a collection table's columns from it,
+on top of the `_id` it already declares as column 0: `SELECT *` would return
+two columns called `_id`. It would also make a document's *shape* depend on how
+its ID was decided: an explicitly identified document would carry a field a
+generated one does not, in the same collection.
 
 So the document read back from any transport is the document's data, and its
 identity is the `id` beside it. `UpdateDocument` takes its ID from the request
@@ -162,13 +152,11 @@ it.** An insert that may not overwrite is written with `PutIfAbsent`, the only
 write whose outcome is defined under concurrency, and the
 `CollectionDocumentExistsError` above reports that the write did not store.
 
-It was a read followed by an unguarded write for one release, which closed only
-the overwrite a single caller reaches with no concurrency at all — and not the
-race between two concurrent inserts claiming the same explicit `_id`, where
-both observed the ID free, both wrote, and one document was gone with no error
-anywhere. It was written that way because a database with its own store had no
-guarded write to reach for; its backend now offers one, and every other engine
-already did, so the guard is the write itself on every path.
+A read followed by an unguarded write would close only the overwrite a single
+caller reaches with no concurrency, and not the race between two concurrent
+inserts claiming the same explicit `_id`: both would observe the ID free, both
+would write, and one document would be gone with no error anywhere. The guard is
+the write itself on every path.
 
 **`WriteMode` is not honoured for an insert that may not overwrite.** The
 guarded write is synchronous because its purpose is to report which caller won,
@@ -178,12 +166,11 @@ overwrite makes no claim and still honours it.
 **A backend without the guarded write refuses the insert rather than degrading
 to a read-then-write.** The only such backend is the remote proxy, whose wire
 protocol does not carry the verbs; an insert through it fails with
-`database: backend does not support atomic conditional writes` instead of
-quietly offering the weaker promise.
+`kvstore.ErrAtomicWriteUnsupported` (`kvstore: store does not support atomic
+conditional writes`) instead of quietly offering the weaker promise.
 
-**The SQL surface inherits the strengthened guarantee the same way it inherited
-the weak one.** A collection table's writes go through the same
-`InsertDocument`, so its `PRIMARY KEY` is now enforced by the same guarded
+**The SQL surface inherits the guarantee.** A collection table's writes go
+through the same `InsertDocument`, so its `PRIMARY KEY` is enforced by the same guarded
 write that enforces the collection's, and a declared `PRIMARY KEY` answering
 with MySQL 1062 means what the surface invites a reader to assume.
 
@@ -194,10 +181,11 @@ primary-key violation, delete the existing row and insert again (`REPLACE`), or
 update it with expressions evaluated over it (`ON DUPLICATE KEY UPDATE`) — and a
 collection table is autocommit-only, so no transaction can hold the calls
 together. Left as separate writes, two concurrent `REPLACE INTO`s on one `_id`
-interleaved: one found the ID free between the other's delete and re-insert,
-reported an insert, and then had its document written over with nobody told.
+would interleave: one would find the ID free between the other's delete and
+re-insert, report an insert, and then have its document written over with
+nobody told.
 
-Both are now **one guarded write per row** — `CollectionService.UpsertDocument`,
+Both are **one guarded write per row** — `CollectionService.UpsertDocument`,
 which decides "insert or replace" and stores the document in the same guarded
 write: `PutIfAbsent` when nothing is stored, `CompareAndSwap` against the exact
 bytes it read when something is, re-decided if a concurrent writer wins the
@@ -261,30 +249,24 @@ statement-level writes, not a wire field.
   without an `_id`, is the one who gets the error. Reserving the counter is
   what makes that unreachable; refusing the collision is what makes the
   remaining cases loud. Both, not either.
-- **Treating an insert with an explicit `_id` as an upsert.** This is what the
-  code did before, and it was not a decision — it was the absence of one. An
+- **Treating an insert with an explicit `_id` as an upsert.** Rejected. An
   insert that destroys a stored document and reports success is
   indistinguishable from one that stored a new document, and `UpdateDocument`
   already exists for callers that mean "replace whatever is there".
 - **Refusing an explicit `_id` on the SQL surface alone,** so the discard
-  becomes an error instead of silence. This was the defensible fallback if
-  honouring the claim proved impractical, and it did not: the SQL layer can
-  read column 0, can reach the same reservation, and already had a vocabulary
-  for the refusal in `sql.NewUniqueKeyErr`. Taking it anyway would have forked
-  the contract per-surface — a caller who learned it from any other transport
-  would carry a false expectation into this one — for no gain. The measurement
-  that would have justified it was whether the column projection was
-  load-bearing; it is not, it is index arithmetic over the field list, and
-  moving it cost one line.
+  becomes an error instead of silence. Rejected: the SQL layer can read
+  column 0, can reach the same reservation, and has a vocabulary for the
+  refusal in `sql.NewUniqueKeyErr`. Refusing there alone would fork the
+  contract per surface, so a caller who learned it from any other transport
+  would carry a false expectation into this one.
 - **Keeping `_id` as a stored document field and filtering it out of the SQL
   projection instead.** Narrower, and wrong in the direction that matters. It
   suppresses the duplicate column without addressing why the field is there,
   and it leaves a document's shape depending on how its ID was decided — so the
   next surface to enumerate a document's keys finds the echo again. The SQL
-  table still skips a discovered `_id` when building its columns, but as the
-  projection's own contract (column 0 *is* the identity), not as the fix:
-  collections written before this change still carry the key in their stored
-  schema.
+  table still skips a discovered `_id` when building its columns, as the
+  projection's own contract (column 0 *is* the identity), because a stored
+  schema can still carry the key.
 
 ## Component boundaries
 
@@ -330,13 +312,13 @@ metadata reports it:
 | `active` | the create, once every declared index exists | **yes** | `DropCollection` (`dropping`) |
 | `dropping` | `DropCollection`'s first write, a failed create's unwind, the sweeper | no | the metadata delete that ends the teardown |
 
-Metadata written before the state existed carries none and reads as `active`.
+Metadata that carries no state reads as `active`.
 
-**A create never exposes a collection whose indexes are not built.** It used
-to write the metadata live first and build the indexes after, so a create whose
-second index failed left a collection that resolved, served writes, declared
-three indexes with one built — and could not be retried, because the retry
-failed with already-exists. Now the metadata is written `creating`, the indexes
+**A create never exposes a collection whose indexes are not built.** Writing the
+metadata live first and building the indexes after would let a create whose
+second index failed leave a collection that resolved, served writes, declared
+three indexes with one built, and could not be retried, because the retry would
+fail with already-exists. So the metadata is written `creating`, the indexes
 are built, and a single guarded swap makes it `active`. The first write is a
 `PutIfAbsent`, so it is also the claim on the name: of two concurrent creates
 one wins and the other is told the collection exists, having built nothing. A
@@ -375,8 +357,7 @@ See [Incarnation-scoped keyspaces](#incarnation-scoped-keyspaces).
 from.** A create's activation cannot resurrect a collection a drop has marked,
 and the schema discovery an insert performs — which rewrites the metadata to
 record new field names — cannot write a `dropping` collection back to `active`,
-or a deleted one back into existence. It used to be a plain write of a copy read
-at the start of the insert, and could do both.
+or a deleted one back into existence.
 
 #### Incarnation-scoped keyspaces
 
@@ -409,8 +390,7 @@ keyspace no earlier one ever wrote, so a document orphaned by a crashed writer
 of an earlier incarnation can never appear in it — and there is nothing for a
 create to purge.
 
-**Legacy collections need no migration.** Metadata written before incarnations
-existed carries none. Such a collection keeps the unsuffixed prefix
+**Metadata with no incarnation needs no migration.** Such a collection keeps the unsuffixed prefix
 `__col:{database}:{collection}/` and the unsuffixed sequence name
 `__collection:{collection}` its documents and counter already have, and is read,
 written and dropped there. The next create of the name after it is dropped draws
@@ -548,8 +528,7 @@ between the documents and the indexes, or between the indexes and the metadata,
 is completed by running it again or by the sweeper. The index drop is
 idempotent, so the retry costs nothing where it has already succeeded.
 
-Every ordering has a bad interruption state, and before the `dropping` state
-existed the chosen one left a live collection whose indexes were gone:
+Every ordering has a bad interruption state:
 
 | Order | If it is interrupted before the last step |
 |---|---|
@@ -560,10 +539,7 @@ existed the chosen one left a live collection whose indexes were gone:
 The `dropping` state is what makes the chosen order's interrupted state
 harmless rather than merely small. The collection is empty, partially indexed,
 and — because it is `dropping` — refuses every write that would otherwise have
-landed unindexed with its `unique` constraints unenforced. It used to accept
-them, in a window one metadata delete wide when every index drop succeeded and
-as wide as an operator's response time when one failed partway through the
-list.
+landed unindexed with its `unique` constraints unenforced.
 
 An index that cannot be dropped **fails the whole operation** rather than being
 skipped. Index creation is idempotent for an index's own owner and the
@@ -589,8 +565,7 @@ beside the index in the state machine, carried on the index-create command (see
   explicit index API, by another collection whose `.`-joined name collides
   (`users` + `v2.email` and `users.v2` + `email` derive the same name), or by
   an earlier incarnation of the same collection — refuses the create, which
-  unwinds and reports the collision. It used to be adopted silently, with the
-  existing definition rather than the requested one.
+  unwinds and reports the collision.
 - **A drop removes only what it owns.** Its index drops are owner-checked on
   the apply path, in the same step as the removal, so an index somebody else
   now holds under one of its names is left in place.
@@ -607,8 +582,7 @@ beside the index in the state machine, carried on the index-create command (see
 - **Two definitions of one field are refused.** They derive one index name, so
   the second would silently be the first.
 
-Metadata written before ownership existed records no owner: its indexes were
-created ownerless, and its drop removes the names it declares claiming the
+Metadata with no `index_owner` names ownerless indexes, and its drop removes the names it declares claiming the
 explicit owner they were created with — so an index a collection has since
 come to own under one of those names is left in place. Whole-scope teardowns — `DROP DATABASE`, deleting a tenant — remove every
 index in their scope whoever owns it: the scope owns everything in it.
@@ -634,17 +608,7 @@ as it resolves KV and MVCC. What that accessor returns is a collection service
 built over the `<tenant>/<database>/`-namespaced engines, so the physical key
 is `<tenant>/<database>/__col:{database}:{collection}#{incarnation}/{id}`.
 
-**This was not always true, and the failure mode is worth recording.** Until the
-accessor existed, every transport held ONE process-wide collection servicer
-built over the raw, pre-namespace engines. Under `prefix` isolation — where
-tenants share one state machine and are separated only by that prefix — two
-tenants naming the same database and the same collection addressed the same
-documents: one could read another's, one's insert could overwrite another's at a
-`field_hash`-derived ID, and one's collection name denied the other's. The
-registry wrapper that isolates every other engine was applied to the bundle's
-KV and index servicers, and the collection service was copied past it.
-
-The lesson generalises beyond collections: **a service inherits isolation from
+The rule generalises beyond collections: **a service inherits isolation from
 the engines it holds, never from the engines its neighbours hold.** A composite
 service that is copied rather than rebuilt over the wrapped engines is
 unisolated no matter how well isolated the rest of the bundle is.
@@ -655,8 +619,7 @@ would change the key format and require moving existing documents, and this
 design moves no keys (see the upgrade note in
 [engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)).
 
-These compositions legitimately keep a single collection servicer, and each is
-recorded rather than treated as an exception to explain away:
+These compositions legitimately keep a single collection servicer:
 
 - **A registry-less composition** — single-database servers, and the
   embedded transport when its composition configures no service registry —

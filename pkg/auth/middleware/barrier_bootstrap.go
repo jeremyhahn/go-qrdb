@@ -117,8 +117,15 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	// whether the caller holds the grant -- and treating it as a denial let
 	// the fallback below issue the grant anyway, which made the policy on
 	// this permission unenforceable for exactly the callers the window
-	// admits. The limiter's answer is final. isGateRefusal is the one predicate
-	// for all three.
+	// admits. The limiter's answer is final.
+	//
+	// NOR IS A TENANT-STATUS REFUSAL. decide refuses a suspended or disabled
+	// tenant's identity before RBAC is consulted, so an embedded caller
+	// holding a context authenticated while the tenant was active would
+	// otherwise be granted init or unseal of a suspended tenant's barrier
+	// here. Nor is a tenant status that could not be READ
+	// (*TenantStatusUnavailableError): the tenant was never found active.
+	// isGateRefusal is the one predicate for all of them.
 	if isGateRefusal(rbacErr) {
 		return rbacErr
 	}
@@ -402,7 +409,8 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 	// why it is AuthFailureAuditUnavailable specifically rather than
 	// AuthFailureUnavailable (which carries the sealed-tenant signal this
 	// fallback acts on). An attested-caller refusal is not one either, nor is
-	// a rate-limit refusal: the sealed window must not grant past the limiter.
+	// a rate-limit refusal: the sealed window must not grant past the limiter,
+	// nor past a tenant status it could not read.
 	if isGateRefusal(rbacErr) {
 		return rbacErr
 	}
@@ -482,14 +490,28 @@ func isRateLimited(err error) bool {
 // the middleware could not record the decision (isAuditFailure), the caller
 // is over its rate limit (isRateLimited: authorize returns a
 // *RateLimitedError before RBAC is consulted at all), or the attested-caller
-// gate refused a request RBAC had granted. None of them may be read as "RBAC
-// said no", which is the only thing the bootstrap fallbacks exist to act on --
-// a window that opened on a rate-limit refusal would let a throttled caller
-// straight through the throttle.
+// gate refused a request RBAC had granted, or the caller's tenant is
+// suspended or disabled (*TenantNotActiveError: decide checks the tenant's
+// status before RBAC, at every decision, so a context authenticated while the
+// tenant was active is refused once it is not). None of them may be read as
+// "RBAC said no", which is the only thing the bootstrap fallbacks exist to act
+// on -- a window that opened on a rate-limit refusal would let a throttled
+// caller straight through the throttle, and one that opened on a tenant-status
+// refusal would initialize or unseal a suspended tenant's barrier.
+//
+// A status that could not be READ is one too (*TenantStatusUnavailableError,
+// whatever it wraps): the tenant was never found active, so a window opened on
+// it would grant without the check the status gate exists to make. Only the
+// tenant-IAM-sealed signal -- a *StoreUnavailableError wrapping
+// tenant.ErrTenantSealed, which decide returns for an identity marked sealed,
+// and which is NOT wrapped in *TenantStatusUnavailableError -- is left for
+// the fallbacks to act on.
 func isGateRefusal(err error) bool {
 	if isAuditFailure(err) || isRateLimited(err) {
 		return true
 	}
 	var refused *PeerAttestationRefusedError
-	return errors.As(err, &refused)
+	var notActive *TenantNotActiveError
+	var unreadable *TenantStatusUnavailableError
+	return errors.As(err, &refused) || errors.As(err, &notActive) || errors.As(err, &unreadable)
 }

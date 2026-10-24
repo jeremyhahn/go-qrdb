@@ -30,11 +30,10 @@ const (
 	testBranch = "main"
 )
 
-// harness wires run() to a fakeGitea and to the repository's real nightly.yml.
-//
-// THE REAL WORKFLOW FILE ON PURPOSE. The coverage floor is part of what is under
-// test, and pointing it at a fixture would test the floor against a file nobody
-// ships.
+// harness wires run() to a fakeGitea and to twoJobWorkflow, a workflow with two
+// watched jobs: these tests turn on how one job's verdict sits beside
+// another's, and the shipped nightly.yml watches one. The coverage floor
+// against the file that ships is TestTheWorkflowsJobListCoversEveryJobItDeclares.
 type harness struct {
 	t     *testing.T
 	forge *fakeGitea
@@ -62,7 +61,7 @@ func (h *harness) nightly(runID int64, ref, fipsResult, trivyResult string) erro
 		"-api", h.forge.api(),
 		"-ref", ref,
 		"-run-id", itoa(runID),
-		"-workflow-file", filepath.Join(repoRoot(h.t), ".github", "workflows", "nightly.yml"),
+		"-workflow-file", twoJobWorkflow(h.t),
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=" + fipsResult,
 		"-job", "trivy=" + trivyName + "=" + trivyResult,
@@ -340,7 +339,7 @@ func TestReportModeWritesNothing(t *testing.T) {
 		"-api", h.forge.api(),
 		"-ref", testBranch,
 		"-run-id", "100",
-		"-workflow-file", filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml"),
+		"-workflow-file", twoJobWorkflow(t),
 		"-self", "signal",
 		"-job", "fips=" + fipsName + "=" + resultFailure,
 		"-job", "trivy=" + trivyName + "=" + resultFailure,
@@ -506,7 +505,7 @@ func TestAFailedWriteFailsTheSignalJob(t *testing.T) {
 		err := run([]string{
 			"-mode", modeApply,
 			"-repo", testRepo, "-api", h.forge.api(), "-ref", testBranch, "-run-id", "100",
-			"-workflow-file", filepath.Join(repoRoot(t), ".github", "workflows", "nightly.yml"),
+			"-workflow-file", twoJobWorkflow(t),
 			"-self", "signal",
 			"-job", "fips=" + fipsName + "=" + resultFailure,
 			"-job", "trivy=" + trivyName + "=" + resultFailure,

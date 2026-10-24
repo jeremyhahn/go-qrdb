@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -95,9 +96,10 @@ func (h *hardConfinedWatch) WatchPrefix(ctx context.Context, prefix string, opts
 // WatchResponse event whose key lies in the hard-confined namespace
 // before it reaches the caller.
 type hardConfinedFilteredWatcher struct {
-	inner  watch.Watcher
-	events chan watch.WatchResponse
-	done   chan struct{}
+	inner     watch.Watcher
+	events    chan watch.WatchResponse
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func newHardConfinedFilteredWatcher(inner watch.Watcher) *hardConfinedFilteredWatcher {
@@ -151,11 +153,7 @@ func (w *hardConfinedFilteredWatcher) Events() <-chan watch.WatchResponse { retu
 func (w *hardConfinedFilteredWatcher) WatchID() int64 { return w.inner.WatchID() }
 
 func (w *hardConfinedFilteredWatcher) Close() error {
-	select {
-	case <-w.done:
-	default:
-		close(w.done)
-	}
+	w.closeOnce.Do(func() { close(w.done) })
 	return w.inner.Close()
 }
 

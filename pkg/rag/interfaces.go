@@ -132,6 +132,9 @@ type VectorStore interface {
 	// distance metric (e.g. "cosine", "L2"). This must be called before the
 	// first UpsertVector on a new namespace.
 	EnsureNamespace(ctx context.Context, name string, dimension int, metric string) error
+	// DeleteVector removes the vector id from namespace. Removing a vector
+	// that is not there succeeds, so a removal can be retried.
+	DeleteVector(ctx context.Context, namespace string, id uint64) error
 }
 
 // ---------------------------------------------------------------------------

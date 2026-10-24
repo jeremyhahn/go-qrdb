@@ -1,6 +1,6 @@
 # RAG — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -16,7 +16,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Delete document | `POST /v1/rag/documents/delete` | `RAGDeleteDocument` | `rag.DeleteDocument` | `qrdb_rag_delete_document` | `RAGClient.RAGDeleteDocument` | `rag:delete_document` |
 
 All four are present on all six transports. Routes are registered only when the
-RAG service is wired (`server.WithRAG()`), which requires an embedding service.
+RAG service is wired (`server.WithRAG`), which requires an embedding service.
 
 Delete is a `POST` to `/v1/rag/documents/delete` rather than a `DELETE` on the
 document path, because the request carries both a document ID and a namespace.
@@ -33,8 +33,10 @@ document path, because the request carries both a document ID and a namespace.
   "chunk_overlap": 50, "chunk_min_size": 100 }
 ```
 
-`chunk_strategy` is `fixed`, `sentence` or `paragraph`; omitted fields fall back
-to the `rag` config defaults. Response:
+`chunk_strategy` is `fixed`, `sentence` or `paragraph`; an omitted or zero
+chunk field takes the node's `rag` configuration default
+(`default_chunk_strategy`, `default_chunk_size`, `default_overlap`; built in
+`fixed`, 512, 50) and `chunk_min_size` takes 100. Response:
 
 ```json
 { "document_id": "manual-v2", "chunk_count": 37, "namespace": "docs" }
@@ -85,10 +87,11 @@ by `top_k` and are not paginated.
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Success | 200 | `OK` |
-| Unknown vector namespace | 404 | `NOT_FOUND` — `*RAGNamespaceNotFoundError`, never auto-created |
+| Unknown vector namespace on query | 404 | `NOT_FOUND` — `*NamespaceNotFoundError`; ingest creates the namespace on first use |
 | Unknown document on delete | 404 | `NOT_FOUND` — `*RAGDocumentNotFoundError` |
-| Chunking or embedding failure during ingest | 502 | `INTERNAL` — `*RAGIngestionError` |
-| Document over `max_document_size` | 413 | `RESOURCE_EXHAUSTED` — refused before chunking |
+| Empty document text, or a chunk setting the chunker refuses | 400 | `INVALID_ARGUMENT` — `*RAGIngestError` wrapping `*rag.ChunkingError` |
+| Document over `max_document_size` | 413 | `RESOURCE_EXHAUSTED` — `*RAGIngestError` wrapping `*rag.DocumentTooLargeError`, refused before chunking |
+| Embedding or store failure during ingest | 500 | `INTERNAL` — `*RAGIngestError` |
 | Unknown embedding provider | 404 | `NOT_FOUND` — nothing is stored |
 | Service closed | 503 | `UNAVAILABLE` — `*RAGServiceClosedError` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

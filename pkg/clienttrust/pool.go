@@ -63,10 +63,11 @@ import (
 // a reseal.
 const poolCacheTTL = 2 * time.Second
 
-// refreshTimeout bounds one rebuild's storage reads. A rebuild that runs
-// out of time has failed, and a failed rebuild withdraws Key B trust
-// (go-qrdb#591, blocker 2), so a store that stops answering costs Key B
-// logins until it answers again, never the handshake itself. It sits well
+// refreshTimeout bounds one rebuild's storage reads. A rebuild whose Key B
+// read runs out of time keeps the previous snapshot's trust, but only for
+// snapshotMaxAge after Key B was last read (build), so a store that stops
+// answering costs Key B logins until it answers again, never the handshake
+// itself. It sits well
 // inside the 5 s handshake deadline the listeners set, as a second line of
 // defence: the handshake does not wait on a rebuild at all.
 //
@@ -77,9 +78,14 @@ var refreshTimeout = 2 * time.Second
 // snapshotMaxAge is how old a snapshot may grow before the handshake
 // treats it as withdrawn. Run replaces it every poolCacheTTL, so one three
 // intervals old means rebuilds have stopped landing -- Run never started,
-// or a store read that ignores its deadline -- and Key B trust must not
+// a store read that ignores its deadline, or Key B reads that keep timing
+// out, each of which keeps the old snapshot (build) -- and Key B trust must not
 // outlive its source of truth without bound.
 const snapshotMaxAge = 3 * poolCacheTTL
+
+// keyBRebuildPending is the KeyBUnavailableError reason of the snapshot a
+// trust setter publishes until Run's rebuild lands (withdraw).
+const keyBRebuildPending = "trust configuration changed; rebuild pending"
 
 // CertSource is the capability DefaultCertProvider provides: every tenant's
 // Key B CA certificate (or, with an injected cakey.Provider, the single one
@@ -223,6 +229,19 @@ type trustSnapshot struct {
 	// err is non-nil.
 	err error
 
+	// unread is the read that failed while this snapshot was built -- Key B
+	// or the cluster CA not answering, a rebuild still pending, or a
+	// tenant's trust anchors unreadable -- and nil when every source this
+	// node is configured with answered. A snapshot can lack trust because
+	// nothing grants it or because a source did not answer; only the
+	// second is a condition a retry can outlast (VerifyPeerChain).
+	unread error
+
+	// keptAcross is the failed Key B read this snapshot carried the previous
+	// one's trust across (build), or nil for a snapshot built from what its
+	// own rebuild read.
+	keptAcross error
+
 	// base is the static pool widened was built over (staticBase when the
 	// rebuild ran); extra is every certificate added to it.
 	base    *x509.CertPool
@@ -365,10 +384,8 @@ func (p *Pool) SetTrustAnchors(src trustanchor.Source, tenants TenantLister) {
 // IsStaticallyTrusted's exemption to a registered Key B CA until the
 // rebuild lands.
 func (p *Pool) withdraw(keepKeyBOnly bool) {
-	next := &trustSnapshot{
-		built: time.Now(),
-		err:   &KeyBUnavailableError{Reason: "trust configuration changed; rebuild pending"},
-	}
+	pending := &KeyBUnavailableError{Reason: keyBRebuildPending}
+	next := &trustSnapshot{built: time.Now(), err: pending, unread: pending}
 	if prev := p.snapshot.Load(); prev != nil && keepKeyBOnly {
 		next.keyBOnly = prev.keyBOnly
 	}
@@ -412,7 +429,8 @@ func (p *Pool) Run(ctx context.Context) {
 
 // Refresh reads the current trust state from storage, bounded by
 // refreshTimeout, and publishes it as the snapshot the handshake loads.
-// It returns the reason the new snapshot grants no widening, or nil.
+// It returns the reason the new snapshot grants no widening, the failed
+// Key B read it kept the previous trust across (build), or nil.
 //
 // When Refresh returns, the published snapshot was built after the call
 // began. A change that lands while the read is in flight -- a setter's
@@ -433,7 +451,10 @@ func (p *Pool) Refresh(ctx context.Context) error {
 		prev := p.snapshot.Load()
 		snap := p.build(ctx)
 		if p.snapshot.CompareAndSwap(prev, snap) {
-			return snap.err
+			if snap.err != nil {
+				return snap.err
+			}
+			return snap.keptAcross
 		}
 		if err := ctx.Err(); err != nil {
 			return &RefreshSupersededError{Err: err}
@@ -458,11 +479,14 @@ func (p *Pool) Refresh(ctx context.Context) error {
 //     is a signal this function must not paper over. keyBOnly is still
 //     filled (B3, see trustSnapshot).
 //
-// A failed Key B read also grants no widening (go-qrdb#591, blocker 2):
-// Key B stops being trusted once its source of truth stops answering, at
-// the latest one rebuild later -- a reseal is the ordinary cause in Raft
-// mode (docs/certificate-authority/architecture.md's "a runtime reseal must
-// make the dynamic client-auth trust pool drop Key B immediately" rule).
+// A sealed barrier grants no Key B widening (go-qrdb#591, blocker 2): a
+// reseal drops Key B at the next rebuild (docs/certificate-authority/
+// architecture.md's "a runtime reseal must make the dynamic client-auth trust
+// pool drop Key B immediately" rule). Any other failed Key B read -- a store
+// read that ran out of time on a busy node -- is not an answer about the CA
+// set, so the previous snapshot's trust is kept across it (keepAcross), but
+// never past snapshotMaxAge from the rebuild that last read Key B: a source
+// that stops answering costs Key B trust within that bound.
 func (p *Pool) build(ctx context.Context) *trustSnapshot {
 	snap := &trustSnapshot{built: time.Now(), base: p.staticBase.Load()}
 	keyBCerts, keyBErr := p.readKeyB(ctx)
@@ -483,17 +507,79 @@ func (p *Pool) build(ctx context.Context) *trustSnapshot {
 		snap.err = keyBErr
 	}
 	if snap.err != nil {
+		if kept := p.keepAcross(snap, keyBErr); kept != nil {
+			return kept
+		}
+		snap.unread = unansweredRead(snap.err)
 		return snap
 	}
 	if snap.clusterCA != nil {
 		snap.extra = append(snap.extra, snap.clusterCA)
 	}
 	snap.extra = append(snap.extra, keyBCerts...)
-	for _, bundle := range p.anchorBundles(ctx) {
+	bundles, anchorsErr := p.anchorBundles(ctx)
+	for _, bundle := range bundles {
 		snap.extra = append(snap.extra, parsePEMCertificates(bundle)...)
 	}
+	snap.unread = anchorsErr
 	snap.widened = widen(snap.base, snap.extra)
 	return snap
+}
+
+// keepAcross returns the published snapshot's trust, carried across
+// keyBErr, when snap failed on nothing but a Key B read that did not answer
+// and the published snapshot still grants widening over the same static
+// pool and cluster CA; otherwise nil, and snap is published. The carried
+// snapshot keeps its build time, so current() and the next rebuild stop
+// honoring it snapshotMaxAge after Key B was last read. A sealed barrier
+// (*cert.BarrierSealedError), a missing provider and a pending rebuild are
+// answers, never carried across.
+func (p *Pool) keepAcross(snap *trustSnapshot, keyBErr error) *trustSnapshot {
+	var keyB *KeyBUnavailableError
+	if errors.As(snap.err, new(*ClusterCAUnavailableError)) || !errors.As(keyBErr, &keyB) || keyB.Err == nil ||
+		errors.As(keyBErr, new(*cert.BarrierSealedError)) {
+		return nil
+	}
+	prev := p.snapshot.Load()
+	if prev == nil || prev.widened == nil || prev.base != snap.base ||
+		!sameCertificate(prev.clusterCA, snap.clusterCA) ||
+		time.Since(prev.built) >= snapshotMaxAge {
+		return nil
+	}
+	return &trustSnapshot{
+		built:      prev.built,
+		unread:     keyBErr,
+		keptAcross: keyBErr,
+		base:       prev.base,
+		extra:      prev.extra,
+		widened:    prev.widened,
+		keyBOnly:   prev.keyBOnly,
+		clusterCA:  prev.clusterCA,
+	}
+}
+
+// sameCertificate reports whether a and b are both nil or the same
+// certificate.
+func sameCertificate(a, b *x509.Certificate) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(b)
+}
+
+// unansweredRead returns err when it says a trust source did not answer --
+// the cluster CA resolver failing, or Key B's CACertPEMs failing or its
+// rebuild still pending -- and nil when it says no source is configured (no
+// cluster CA, no Key B provider), which no retry changes.
+func unansweredRead(err error) error {
+	var keyB *KeyBUnavailableError
+	switch {
+	case errors.As(err, new(*ClusterCAUnavailableError)):
+		return err
+	case errors.As(err, &keyB) && (keyB.Err != nil || keyB.Reason == keyBRebuildPending):
+		return err
+	}
+	return nil
 }
 
 // readKeyB returns every tenant's Key B CA certificate, or why Key B
@@ -948,6 +1034,11 @@ func (p *Pool) verifyPeerConnection(cs tls.ConnectionState, pool *x509.CertPool)
 // operator-trusted leaf across a reseal, exactly as a new connection made
 // in that same sealed state would. Only a Key B-issued leaf -- never part
 // of the static baseline -- is refused once Key B stops resolving.
+//
+// A refusal made while a trust source did not answer carries that read in
+// PeerCertificateNotTrustedError.Unread: the chain may be one the next
+// rebuild admits, so the caller is told to retry rather than that its
+// certificate is bad. It is still a refusal.
 func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, intermediates []*x509.Certificate) ([]*x509.Certificate, error) {
 	if leaf == nil {
 		return nil, &PeerCertificateNotTrustedError{}
@@ -969,9 +1060,19 @@ func (p *Pool) VerifyPeerChain(_ context.Context, leaf *x509.Certificate, interm
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if verifyErr != nil {
-		return nil, &PeerCertificateNotTrustedError{Err: verifyErr}
+		return nil, &PeerCertificateNotTrustedError{Err: verifyErr, Unread: p.unread()}
 	}
 	return chains[0], nil
+}
+
+// unread returns the read that failed while the published snapshot was
+// built, or nil when every configured source answered (or no rebuild has
+// run yet).
+func (p *Pool) unread() error {
+	if snap := p.snapshot.Load(); snap != nil {
+		return snap.unread
+	}
+	return nil
 }
 
 // fallbackClientCAs returns the pool a FRESH handshake would be verified
@@ -998,23 +1099,29 @@ func (p *Pool) fallbackClientCAs() *x509.CertPool {
 // pool. A failure to enumerate the tenants omits every anchor, and a failure
 // to read one tenant's anchors omits that tenant's: an anchor the pool cannot
 // read is not trusted, and Key B trust does not depend on it. Either omission
-// lasts only until the next rebuild.
-func (p *Pool) anchorBundles(ctx context.Context) [][]byte {
+// lasts only until the next rebuild, and the first failure is returned with
+// the bundles that were read, so a chain refused meanwhile is told apart from
+// one nothing trusts.
+func (p *Pool) anchorBundles(ctx context.Context) ([][]byte, error) {
 	ab := p.anchors.Load()
 	if ab == nil || ab.tenants == nil {
-		return nil
+		return nil, nil
 	}
 	ids, err := ab.tenants.TenantIDs(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make([][]byte, 0, len(ids))
+	var firstErr error
 	for _, id := range ids {
 		bundle, err := ab.src.CABundle(ctx, id)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 		if err != nil || len(bundle) == 0 {
 			continue
 		}
 		out = append(out, bundle)
 	}
-	return out
+	return out, firstErr
 }

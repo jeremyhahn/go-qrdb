@@ -11,6 +11,89 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
+
+### Changed
+
+- **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
+  Host gets its own in-memory Pebble filesystem, so a test built over it
+  writes nothing to disk.
+## [0.54.0-alpha] - 2026-10-23
+
+### Added
+
+- **`sdk/go` re-exports `role.EffectivePermissions`** (#1089), so a composer
+  that issues tokens below authz expands a role's whole-segment wildcards
+  (`objstore:*`, `*:read`, `*:*`) through the SDK instead of copying the
+  expansion.
+
+## [0.53.0-alpha] - 2026-10-23
+
+### Security
+
+- **The embedded transport binds its caller before every dispatch**
+  (#1084). `embedded.WithContextBinder`, re-exported as
+  `node.WithContextBinder`, runs once before every unary and streaming call,
+  ahead of the auth middleware; its error fails the call unchanged with no
+  handler reached, and the context it returns is the one authorized and
+  served. A nil binder fails `embedded.New` with `NilContextBinderError`; a
+  binder that returns a nil context fails the call with
+  `NilBoundContextError`. With no binder installed nothing changes.
+
+## [0.52.0-alpha] - 2026-10-23
+
+### Added
+
+- **The tenant Admin creates and updates roles in its own tenant** (#940).
+- **Tenant `Status` is enforced in the auth chain**, and a tenant carries
+  `Metadata` and `Description`, on every transport (#809, #792).
+- **The tenant-scoped stored-policy API for ABAC** on every transport (#899).
+- **Device onboarding, OTA activate and OTA confirm are tenant-scoped
+  permissions** (#902, #903), and `audit:delete` is a permission (#993).
+- **PIN lockout and ceremony challenge expiry read the composer's clock**
+  through the seam, not the wall clock (#904).
+- **A restarted coordinator resumes a rolling `cluster enable-encryption`**
+  (#894).
+- **FIPS 140-3 is a required gate in CI's full tier** (#20).
+
+### Changed
+
+- **An encrypted `file` store names its records under a barrier-held key**
+  (#911). A record's file name is the HMAC-SHA-256 (RFC 2104) of its key under
+  the store's random record-name key, kept in `.qrdb-file-names` and written
+  through the barrier, so a name can no longer be matched to a guessed key. On
+  a store opened while the barrier is sealed, `Exists` and `Delete` now fail
+  with `seal.ErrSealed`, as `Get` and `Set` already did. **Breaking (on-disk
+  format):** the format marker is version `4`, and a version `3` data
+  directory, plaintext or encrypted, is refused at open. See
+  `docs/storage-engines/architecture.md`.
+
+- **The feature documentation names what the code has** (#658): every
+  `docs/<feature>/` folder and the numbered guides were checked name by name
+  against the code, and claims about behaviour the code lacks were removed.
+
+### Fixed
+
+- **A write or read that meets a leadership transfer is `503`, not `500`**
+  (#775).
+- **A concurrent user update is a retryable `ErrConflict`** on every transport
+  (#938).
+- **A tenant replica starts when its barrier unseals**, not on the next poll.
+- **Client trust:** a chain is refused as unavailable, not invalid, while a
+  trust read fails, and a loaded Key B set survives a Key B read that times
+  out.
+- **The `cors` config block reaches the REST server** (#658).
+- **The sealed-window listener closes the connection that ends its window**
+  (#1031).
+- **`transport.BuildTLSConfig` returns a copy of the caller's `tls.Config`**
+  instead of changing it (#949).
+- **An isolation-policy change refusal is `failed-precondition`** (#658).
+- **RAG ingest, delete and config keys match `docs/rag`** (#658).
+- **Every storage sync is timed, and a synced vector batch is durable**
+  (#905).
+
 ## [0.51.0-alpha] - 2026-10-21
 
 ### Added

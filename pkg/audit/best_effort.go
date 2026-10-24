@@ -35,8 +35,8 @@ import (
 //
 // component is the label because it is the one thing that tells an operator
 // WHICH trail is incomplete. A single undifferentiated total says the audit
-// plane is unwell; qrdb_audit_write_failures_total{component="custodian"} says
-// the custodian enrolment records for this window are missing.
+// plane is unwell; qrdb_audit_write_failures_total{component="share-holder"} says
+// the share-holder records for this window are missing.
 var bestEffortWriteFailures = sync.OnceValue(func() *metrics.CounterVec {
 	return metrics.NewCounterVec(metrics.CounterOpts{
 		Namespace: "qrdb",
@@ -72,8 +72,10 @@ var bestEffortWriteFailures = sync.OnceValue(func() *metrics.CounterVec {
 // the request is already being refused, and a failed audit write cannot make
 // it more refused.
 //
-// component names the subsystem ("user", "role", "custodian", "ceremony",
-// "credentials", "so-auth", "so-dual-factor") and appears BOTH on the
+// component names the subsystem ("user", "role", "credentials", "so-auth",
+// "share-holder", "barrier", "cert", "cert-enrollment", "backup",
+// "invitation", "tenant-onboarding", "tenant-status", "user_authfactor",
+// "trust-anchor") and appears BOTH on the
 // operational log line and as the label on
 // qrdb_audit_write_failures_total{component=...}, so an operator reading the
 // stream -- or alerting on the counter, which is the part a human is not

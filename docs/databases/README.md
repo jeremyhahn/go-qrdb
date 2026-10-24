@@ -1,6 +1,6 @@
 # Multi-Database Architecture
 
-> **Status: REFERENCE** · Last verified: 2026-10-13
+> **Status: REFERENCE** · Last verified: 2026-10-21
 > Index of the `databases` feature folder. The folder's five documents are the contract; this page holds no requirements of its own.
 
 <!--
@@ -21,15 +21,9 @@ limitations under the License.
 
 A QRDB **database** is a named, isolated data store owned by a tenant. A request
 selects its database with the `X-QRDB-Database` header (REST), the
-`x-qrdb-database` gRPC/Unix metadata key, the QUIC envelope `database` field, or
+`x-qrdb-database` gRPC/Unix metadata key, the QUIC request frame's `database` field, or
 the MCP `database` tool argument. The **tenant** is never client-supplied; it
 comes from the authenticated identity.
-
-An earlier revision of this page described an engine type per database
-(`kv`, `timeseries`, `vector`), a per-database `meta.json` directory layout, and
-a one-time migration from a flat layout. The engine type was removed from
-`database create`, so those sections were deleted rather than kept as a second,
-disagreeing copy.
 
 | Document | Holds |
 |----------|-------|

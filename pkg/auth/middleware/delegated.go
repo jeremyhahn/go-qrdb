@@ -147,6 +147,9 @@ func (m *AuthMiddleware) revalidateDelegation(ctx context.Context, identity *aut
 // and a grant the host withdraws stops applying at once.
 func (m *AuthMiddleware) finalizeDelegated(ctx context.Context, identity *auth.Identity, d auth.Delegation) (context.Context, *auth.Identity, error) {
 	identity.TenantID = tenantid.Normalize(identity.TenantID)
+	if err := m.checkTenantActive(ctx, identity.TenantID); err != nil {
+		return ctx, nil, err
+	}
 	identity.Roles = nil
 	identity.RoleBindings = nil
 	identity.Attributes = nil

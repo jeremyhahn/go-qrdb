@@ -176,11 +176,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.TenantUpdate(ctx, &pb.TenantUpdateRequest{
-		Id:            req.TenantID,
-		Name:          req.Name,
-		IsolationType: string(req.IsolationType),
-	})
+	resp, err := t.client.TenantUpdate(ctx, tenantconv.UpdateRequest(req))
 	if err != nil {
 		return nil, mapGRPCError("UpdateTenant", err)
 	}
@@ -260,6 +256,9 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &transport.NilRequestError{}}
 	}
@@ -310,6 +309,9 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return err
 	}
 	if req == nil {
 		return &transport.RequestError{Method: "TenantBarrierUnseal", Err: &transport.NilRequestError{}}
@@ -464,6 +466,9 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
 	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierQuorumSubmit", Err: &transport.NilRequestError{}}

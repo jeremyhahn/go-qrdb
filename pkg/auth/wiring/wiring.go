@@ -239,6 +239,14 @@ type AuthMiddlewareConfig struct {
 	// onboarding. qrdb's composers pass the node's lifecycle.Node.BarrierInit.
 	FirstAdminPins middleware.FirstAdminPins
 
+	// TenantStatusReader is the tenant record store the auth chain refuses a
+	// principal of a suspended or disabled tenant against
+	// (middleware.WithTenantStatusReader), at every authentication and
+	// authorization, through a cache bounded by middleware.TenantStatusTTL.
+	// qrdb's composers pass the node's tenant servicer. Nil enforces no
+	// tenant status.
+	TenantStatusReader middleware.TenantStatusReader
+
 	// CertTargetGuard is the certificate target guard users:add_cert_binding
 	// is held to, the same one certs:issue and certs:enroll apply
 	// (lifecycle.Node.CertTargets). Nil leaves add_cert_binding failing
@@ -515,6 +523,10 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.FirstAdminPins != nil {
 		opts = append(opts, middleware.WithFirstAdminPins(cfg.FirstAdminPins))
+	}
+	if cfg.TenantStatusReader != nil {
+		opts = append(opts, middleware.WithTenantStatusReader(
+			middleware.NewTenantStatusCache(cfg.TenantStatusReader, middleware.TenantStatusTTL)))
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))

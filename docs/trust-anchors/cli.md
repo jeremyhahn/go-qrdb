@@ -1,6 +1,6 @@
 # Trust Anchors — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 `qrdb tenant trust-anchors` manages your own tenant's trust anchors. Every
@@ -33,7 +33,7 @@ FINGERPRINT                                                       SUBJECT       
 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  CN=Acme Issuing CA,O=Acme  2031-01-01
 ```
 
-`-o json` and `-o yaml` print every field, including each anchor's PEM.
+`--output json` and `--output yaml` print every field, including each anchor's PEM.
 
 ## remove
 

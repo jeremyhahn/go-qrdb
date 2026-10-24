@@ -20,6 +20,8 @@ import (
 	"io"
 	"testing"
 
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/retry"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -304,6 +306,48 @@ func TestIndexCompensationError_Message(t *testing.T) {
 	}
 	if !errors.Is(err, cause) {
 		t.Fatal("errors.Is(err, cause) = false, want true via Unwrap")
+	}
+}
+
+// A failed rollback over a lost race is a non-retryable ErrDataLoss: its
+// classification dominates the retryable conflict it wraps (go-qrdb#938).
+func TestIndexCompensationError_DominatesARetryableCause(t *testing.T) {
+	err := &IndexCompensationError{Op: "update", UserID: 7, Cause: &ConcurrentUpdateError{ID: 7}}
+
+	var qe *dberrors.QRDBError
+	if !errors.As(err, &qe) {
+		t.Fatal("errors.As(err, *dberrors.QRDBError) = false")
+	}
+	if qe.Code != dberrors.ErrDataLoss || qe.Op != "user.update" || qe.Retry {
+		t.Fatalf("QRDBError = {Code: %v, Op: %q, Retry: %v}, want {ErrDataLoss, user.update, false}", qe.Code, qe.Op, qe.Retry)
+	}
+	if dberrors.IsRetryable(err) {
+		t.Error("dberrors.IsRetryable(err) = true, want false")
+	}
+	if dberrors.Is(err, dberrors.ErrConflict) {
+		t.Error("dberrors.Is(err, ErrConflict) = true, want false")
+	}
+	var lost *ConcurrentUpdateError
+	if !errors.As(err, &lost) || lost.ID != 7 {
+		t.Errorf("errors.As(err, *ConcurrentUpdateError) = %v, want the wrapped cause", lost)
+	}
+}
+
+// pkg/retry's default classifier makes exactly one attempt at a failed
+// rollback, where it retries the bare lost race it wraps.
+func TestIndexCompensationError_IsNotRetriedByDefault(t *testing.T) {
+	cfg := &retry.Config{MaxAttempts: 3, Backoff: &retry.ConstantBackoff{}}
+	attempts := 0
+	err := retry.Do(context.Background(), cfg, func(context.Context) error {
+		attempts++
+		return &IndexCompensationError{Op: "update", UserID: 7, Cause: &ConcurrentUpdateError{ID: 7}}
+	})
+	if attempts != 1 {
+		t.Fatalf("retry.Do made %d attempts, want 1", attempts)
+	}
+	var comp *IndexCompensationError
+	if !errors.As(err, &comp) {
+		t.Fatalf("retry.Do returned %T (%v), want the *IndexCompensationError", err, err)
 	}
 }
 

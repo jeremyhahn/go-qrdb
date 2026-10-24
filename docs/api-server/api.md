@@ -1,6 +1,6 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -246,11 +246,7 @@ class from exactly one row of `pkg/api/errclass`, and a transport's own refusal
 types (a REST body-size refusal, a "service not configured" refusal) declare
 their class beside the type. `TestEveryTransportAgreesOnEveryCondition` feeds
 every row of the table through the real REST, gRPC, QUIC and MCP mappings and
-fails when any two disagree in meaning, whichever side moved. Before this, REST
-and gRPC ran twelve and nine per-family ladders respectively and QUIC ran a
-third of its own: a backup checksum mismatch was 409 over REST and `INTERNAL`
-over gRPC, and QUIC answered `StatusError` for most of the identity, tenant,
-credential, ceremony and auth-factor families.
+fails when any two disagree in meaning, whichever side moved.
 
 ### The QUIC status vocabulary
 
@@ -259,31 +255,23 @@ statuses — one for each of gRPC's seventeen status codes, so the set of
 conditions the two transports can express is identical and one event never
 reaches a QUIC caller and a gRPC caller as two different conditions.
 
-It carried **six** until that change, and everything outside those six arrived
-as the generic `StatusError`: a missing key, a missing user, a bad argument, a
-quota rejection and a broken node were one frame. Four separate pieces of work
-escalated to the gap rather than inventing a status locally, which is why the
-whole vocabulary was settled at once instead of a status at a time.
+Before adding to it:
 
-Three things follow from the decision and are worth knowing before adding to it:
-
-- **The numbering is qrdb's own, not gRPC's.** Statuses 0–5 predate the
-  vocabulary and were not renumbered, so `StatusNotFound` is 6 while
+- **The numbering is qrdb's own, not gRPC's.** `StatusNotFound` is 6 while
   `codes.NotFound` is 5. The correspondence is by MEANING and goes through one
   table in the wire package (`wire.StatusForGRPCCode`,
   `wire.GRPCCodeForStatus`); there is no arithmetic relating the two.
 - **A new condition is a lookup, not a protocol change.** Anything the service
   layer can express already has a status, because gRPC's set is closed and this
   set matches it. A genuinely new condition appends at the next free number.
-- **Two statuses are reachable only through a projected capability module**
-  (`StatusDeadlineExceeded`, `StatusUnknown`). The QUIC transport dispatches a
-  module's unary gRPC methods as frames, so a module answers in gRPC's
-  vocabulary by construction; a partial correspondence would silently degrade
-  its answers to `StatusError`.
+- **`StatusUnknown` is reachable only through a projected capability module.**
+  The QUIC transport dispatches a module's unary gRPC methods as frames, so a
+  module answers in gRPC's vocabulary by construction; a partial
+  correspondence would silently degrade its answers to `StatusError`.
 
-**Version skew.** A client built before a status existed reads it as an
-unrecognised number and falls through to its generic request error — degraded
-to exactly the behaviour it had before, never a misclassification. The server
+**Version skew.** A client that does not know a status reads it as an
+unrecognised number and falls through to its generic request error, never a
+misclassification. The server
 and the Go SDK ship from one repository, so a mixed deployment loses precision
 on old clients and nothing else.
 
@@ -294,13 +282,8 @@ The QUIC listener speaks exactly one protocol, selected by TLS ALPN:
 Go SDK offers only `qrdb-quic/3` and refuses a connection on which any other
 protocol was selected.
 
-**Breaking change.** The listener no longer accepts `qrdb-quic/2`, the
-identifier before it, nor `qrdb-quic` before that. `qrdb-quic/3` changed the
-body of every error frame (below); `qrdb-quic/2` changed when the client
-closes its half of each request stream, which a server cannot tell apart from
-an old client's close. A Go SDK older than this change cannot connect to a
-current server, and a current Go SDK cannot connect to an older server.
-Upgrade both together.
+No other identifier is accepted, so a Go SDK and a server that do not both
+speak `qrdb-quic/3` cannot connect. Upgrade both together.
 
 **Error frames.** The body of every response frame whose status is not
 `StatusOK` is a protobuf `google.rpc.Status` (`wire.ErrorPayload`):
@@ -347,14 +330,10 @@ shared with the REST listener, whose `h3` and `h2` it does not speak.
 ### Absence is typed over QUIC, and never read out of the message
 
 `StatusNotFound` is what lets an SDK consumer's `errors.As` mean the same thing
-over QUIC as it does over REST, gRPC, unix, MCP and embedded. Two message-text
-classifications were deleted when it landed:
-
-- the client's `strings.Contains(msg, "key not found")` test, which read a
-  transport failure whose text happened to carry the phrase as "this key does
-  not exist";
-- the lease client's gate on `StatusError`-plus-message, which could not tell a
-  gone lease from a broken node.
+over QUIC as it does over REST, gRPC, unix, MCP and embedded. No client reads
+absence out of message text: a transport failure whose text carries the phrase
+"key not found" is not a missing key, and the lease client tells a gone lease
+from a broken node by status alone.
 
 The typed error a consumer receives is reconstructed from the id or key the
 **caller** supplied, not from the server's prose. Where a not-found can mean
@@ -369,13 +348,7 @@ codes, for the same reason QUIC does: the service layer behind the `qrdb_*`
 tools is the one the gRPC transport classifies, and a narrower set is not
 simpler, it is lossy.
 
-It had **none** until that change — not a small set, none. A tool failure
-reached the client as a sentence, so every typed condition the SDK promises
-degraded to matching words in prose, and a transport failure whose text
-happened to contain "not found" read as a successful determination that
-something was absent.
-
-Four things follow from the decision:
+Four rules:
 
 - **The codes ride in the TOOL RESULT, not in a JSON-RPC `error` object.** The
   Model Context Protocol draws a line the JSON-RPC layer does not: a failure to
@@ -399,15 +372,14 @@ Four things follow from the decision:
   }
   ```
 
-  The text content is unchanged, so a client that only reads text sees exactly
-  what it saw before.
+  A client that reads only the text content still gets the server's message.
 
 - **The numbers are JSON-RPC numbers even so.** They are drawn from the
   −32000..−32099 band JSON-RPC 2.0 sets aside for implementation-defined server
   errors, and they do not collide with the codes the protocol layer emits for a
   dispatch failure. A consumer therefore reads one integer space whichever
   envelope carried the failure. `INTERNAL` is JSON-RPC's own −32603 for the
-  same reason: an unclassified fault keeps the number it already had.
+  same reason: an unclassified fault carries JSON-RPC's internal-error number.
 
 - **Three numbers in the band are deliberately unassigned** — −32002, −32005
   and −32010. The portfolio's error convention names fourteen application codes
@@ -422,18 +394,17 @@ Four things follow from the decision:
   A condition cannot mean one thing over gRPC and another over MCP, and a new
   condition needs one row in one table.
 
-**Argument refusals carry no code yet**, and that is a stated gap rather than
+**Argument refusals carry no code**, and that is a stated gap rather than
 an oversight. A tool that refuses before it reaches the service layer —
 `key is required`, `value must be valid base64` — builds its own error result
 from a string literal, and stamping a code on it centrally would mean guessing
 one from prose, which is the classification this vocabulary exists to remove.
-Those refusals reach a client as an uncoded failure, exactly as they did
-before, and giving them codes means giving their call sites typed errors first.
+Those refusals reach a client as an uncoded failure; giving them codes means
+giving their call sites typed errors first.
 
-Every refusal that had a TYPED error to hand already carries a code, including
-the ones that used to render one as text: a tool that cannot resolve the
-service for its `(tenant, database)` scope now returns the error rather than
-its message, so it is classified like everything else.
+Every refusal with a TYPED error to hand carries a code: a tool that cannot
+resolve the service for its `(tenant, database)` scope returns the error rather
+than its message, so it is classified like everything else.
 
 **A module's tools get the envelope without building it.** The error-code
 middleware is server-wide and outermost, so a tool a `ServiceModule` registers
@@ -449,23 +420,17 @@ seventeen `sdk.MCPCode*` constants, `sdk.MCPErrorPayload`,
 `sdk.MCPErrorEnvelope`, `sdk.NewMCPErrorEnvelope`, `sdk.DecodeMCPErrorPayload`
 and `sdk.MCPCodes`.
 
-**Version skew** behaves as it does on QUIC: a client built before a code
-existed reads an unrecognised number and falls through to its generic request
-error — degraded to the behaviour it had before, never a misclassification. An
-uncoded failure from an older server degrades the same way.
+**Version skew** behaves as it does on QUIC: a client that does not know a code
+reads an unrecognised number and falls through to its generic request error,
+never a misclassification. An uncoded failure degrades the same way.
 
 ### Absence over MCP is typed, and never read out of the message
 
 `NOT_FOUND` (−32004) is what lets an SDK consumer's `errors.As` mean the same
-thing over MCP as over every other transport. Two message-text classifications
-were deleted when it landed:
+thing over MCP as over every other transport. No client reads absence out of
+message text.
 
-- the client's `strings.Contains(msg, "not found")` test, which ran on **every**
-  tool failure because the message was the only signal there was;
-- the lease client's ungated `"lease expired"` test, which could report a
-  broken node as a gone lease.
-
-The lease split survives in one place and under one condition: a failure has to
+The lease client reads the message in one place and under one condition: a failure has to
 be a `NOT_FOUND` **first**, at a call site that already knows its subject is a
 lease, before the message is consulted at all. No transport here has an
 expired-specific sibling of not-found, and gRPC's lease client makes the same
@@ -482,15 +447,12 @@ can disagree with the first.
 A request whose **path** is a registered API route but whose **method** carries
 no registered permission gets **405 Method Not Allowed** with an `Allow` header
 listing the verbs that path does serve. It is still rejected before the handler
-— default-deny has not changed — but the response says the **verb** is wrong
+— default-deny holds — but the response says the **verb** is wrong
 rather than the caller's authorization.
 
 This distinction is not cosmetic. Answering 403 there asserts an authorization
 decision about a route that was never registered, and points an operator at
-their grants when the problem is the verb. Measured: an operator
-probing with `PUT` where the write verb is `POST` read the 403 as a permissions
-defect and filed a bug against the route-permission table — a fix that would
-have been inert, because that table only decorates routes that exist.
+their grants when the problem is the verb.
 
 **The 405 is only reachable after authentication.** An anonymous caller still
 gets 401 with no `Allow` header, so the verb set is never disclosed to an
@@ -501,9 +463,8 @@ grants do not cover a route that exists.
 
 **A module's own callers reach the 405 too.** A caller on a capability
 module's session-token plane (`ModuleAuthFallback`) is not authenticated by the
-host, so it would otherwise be stopped one layer earlier, at 401 — and a 401 is
-a worse signpost than the 403 this section replaced. 403 at least says "you got
-in"; 401 says the credentials failed, sending the operator off to re-issue a
+host, so it would otherwise be stopped one layer earlier, at 401. A 401 says
+the credentials failed, sending the operator off to re-issue a
 token or suspect clock skew for what is a wrong verb. So when the request's
 method matches no route on the path, the fallback lookup widens from the
 (method, path) route to the **path's owning module**: a module owns a path's
@@ -522,7 +483,7 @@ method *and* pattern, so two modules may split one path's verbs between them
 and bring one auth plane each; which of them owns a verb that neither
 registered is not answerable, and the caller keeps its 401.
 
-The disclosure guarantee is unchanged throughout: a caller the fallback also
+The disclosure guarantee holds throughout: a caller the fallback also
 rejects gets 401 with no `Allow` header.
 
 **gRPC does not have this case.** grpc-go rejects an unregistered method with
@@ -551,10 +512,10 @@ Path versioning is inconsistent across features and that is the current state,
 not a scheme: control-plane and newer surfaces are under `/v1/`
 (`/v1/tenants`, `/v1/barrier`, `/v1/ceremony`, `/v1/backups`, `/v1/credentials`,
 `/v1/collections`, `/v1/databases`, `/v1/rag`, `/v1/embeddings`, `/v1/audit`,
-`/v1/rebalance`), while the data plane and several older surfaces are
+`/v1/rebalance`), while the data plane, identity and node-status surfaces are
 unversioned (`/kv`, `/watch`, `/lease`, `/lock`, `/index`, `/ts`, `/vector`,
 `/tx`, `/batch`, `/certs`, `/users`, `/roles`, `/health`, `/status`, `/peers`).
 The gRPC service is `qrdb.v1` throughout.
 
-Nothing is deprecated at the route level. The `qrdb certs` **CLI** group has
-been removed in favour of `qrdb ca`, but its REST paths were not renamed.
+Nothing is deprecated at the route level. The certificate routes are under
+`/certs`; the CLI group that drives them is `qrdb ca`.

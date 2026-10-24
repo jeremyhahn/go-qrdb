@@ -1,6 +1,6 @@
 # Barrier and Seal — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The barrier is the at-rest encryption boundary. Everything persistent passes
@@ -50,11 +50,6 @@ hardware code**; it calls a registered factory by name.
 | `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. Valid enable-encryption source (plaintext→keyed migration). |
 | `system-barrier` | `seal.StrategySystemBarrier` | go-qrdb (tenant strategy only) | Auto-unseal with per-tenant root key wrapped under the system barrier; no per-tenant credential required. System-managed convenience mode for dedicated tenants. Valid enable-encryption source (credential-free→keyed migration). |
 
-Hardware strategies (`tpm2`, `pkcs11`, `aws-kms`, `gcp-kms`, `azure-kv`, `vault`) live in go-xkms and register themselves through `StrategyRegistry.Register` at composition time.
-
-When multiple strategies are registered, the caller must specify which one to use at initialization via `--barrier-strategy <name>`. qrdb returns `ErrNoStrategySpecified` if multiple strategies are available but none was explicitly selected. When only one strategy is registered (e.g., Software or None in development), that strategy is selected unconditionally.
-
-
 Hardware strategies (`tpm2`, `pkcs11`, `aws-kms`, `gcp-kms`, `azure-kv`,
 `vault`) live in go-xkms and register themselves through
 `StrategyRegistry.Register` at composition time.
@@ -81,7 +76,7 @@ type StrategyFactory func() (SealingStrategy, error)
 
 ### Defaults — `NewDefaultStrategyRegistry`
 
-`NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-97`) returns a registry pre-populated with the two software strategies qrdb owns outright:
+`NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-98`) returns a registry pre-populated with the two software strategies qrdb owns outright:
 
 - `StrategyPassphrase` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
 - `StrategyNone` — built via `NewNoneStrategy()`.
@@ -93,7 +88,7 @@ type StrategyFactory func() (SealingStrategy, error)
 Higher layers add hardware strategies on top by handing qrdb's server constructor a registry through `WithStrategyRegistry`:
 
 ```go
-// pkg/server/server.go:478-486
+// pkg/server/server.go:1133-1135
 func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
     return func(o *serverOptions) { o.strategyRegistry = reg }
 }
@@ -123,7 +118,7 @@ The same registry can be used to inject test/fake strategies in integration test
 ### Who consults the registry
 
 - **A tenant barrier** resolves its strategy through the registry (`TenantService` built with `WithStrategyRegistry`).
-- **A database barrier** resolves its mode through the same registry first (`database.WithBarrierStrategyRegistry`, fed from `Infra.StrategyRegistry` by `BuildServices`), then falls back to the built-in `passphrase`, empty and `shamir` modes. A mode neither holds is refused with `database.UnsupportedBarrierStrategyError`, never downgraded to a passphrase barrier. So a hardware strategy a composer registers once can seal a tenant barrier and a database barrier, and `database.DatabaseBarrierManager.SupportsMode` and `UpdateBarrier` follow the same answer.
+- **A database barrier** resolves its mode through the same registry first (`database.WithBarrierStrategyRegistry`, fed from `Infra.StrategyRegistry` by `BuildServices`), then falls back to the built-in `passphrase`, empty and `shamir` modes. A mode neither holds is refused with `database.UnsupportedBarrierStrategyError`, never downgraded to a passphrase barrier. So a hardware strategy a composer registers once can seal a tenant barrier and a database barrier, and `database.DatabaseBarrierManager.SupportsMode` and `database.Manager.UpdateBarrier` follow the same answer.
 - **The system barrier** resolves its strategies through it too: `seal.NewSystemStrategyRegistry` overlays a composer's registry on the software strategies, and an injected `WithSealStrategy` is registered under its ID. See [extension-seams](../release/extension-seams.md).
 - **The seal store** is node-local by design and is not a composition seam: per-node seal keys are the one node-local state the architecture allows.
 
@@ -160,7 +155,7 @@ The provider answers two questions besides the strategy:
 
 - **`Credential`** — what a client must supply to initialize and unseal. The
   tenant service requires a passphrase when, and only when, the provider says
-  `CredentialPassphrase`; it no longer infers that from the strategy's name.
+  `CredentialPassphrase`, never from the strategy's name.
 - **`Custody`** — who can release the key without the owner present. It
   records the owner's own choice: an owner that opts into auto-unseal hands
   custody to the platform, and that is the owner's posture to choose. go-qrdb
@@ -193,13 +188,10 @@ runs, so the SDK node builders resolve the option through
 default provider runs over `WithStrategyRegistry`'s registry. The node names
 itself by its Raft address, or `local` on a standalone node.
 
-**Scope today.** Tenant barrier initialization resolves through the seam. The
+**Scope.** Tenant barrier initialization resolves through the seam. The
 Shamir tenant path keeps its own constructor, because a parameterless factory
 cannot carry a threshold and share count. The node barrier and database
-barriers move onto the same seam as the
-[per-node init design](#per-node-init-design) lands;
-until then they keep `WithSealStrategy` and the registry.
-
+barriers do not use the seam; they use `WithSealStrategy` and the registry.
 
 ### Alternatives rejected
 
@@ -210,9 +202,9 @@ until then they keep `WithSealStrategy` and the registry.
   Shamir strategy needs a threshold and share count only the daemon's init
   command can supply, so the daemon constructs it inline at init time.
 - **A shared cluster-wide DEK.** Rejected in favour of the per-node key model
-  below: each node's node barrier has its own key. Tenant raft replicas are
-  the exception today — they share the tenant root key (see the correction
-  under *Per-node key architecture*).
+  below: each node's node barrier has its own key. A tenant barrier whose
+  strategy is not `none`, `passphrase` or `shamir` is the exception: its
+  replicas share the tenant root key (see *Per-node key architecture*).
 - **Making `none` invisible.** Rejected: with `none` selected the audit log
   marks every barrier operation `strategy: none`, so the absence of encryption
   is permanently visible in the trail.
@@ -223,23 +215,14 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
 
 - Each cluster node holds its own **system barrier** with its own **master key (KEK)**. The KEK is never
   shared across nodes and is managed per-node by the system barrier's configured strategy.
-- **Per-tenant barriers** in multi-node clusters: when a tenant database replicates across nodes,
-  each replica node receives the tenant's key material over a secure channel. A system-managed
-  tenant's replica receives the tenant **root key** and re-wraps it under that *node's own node
-  barrier*; a self-managed tenant's replica receives the tenant's already-wrapped root-key blob and
-  is unsealed on that node with the tenant's own credential.
-
-  > **Correction:** this section previously said a compromised node key does not
-  > expose tenant keys on other nodes. The wrapping key is per node, but the tenant root key — and
-  > the keys derived from it — is the **same on every replica**: `ExportRootKeyContext` ships the
-  > epoch and salt precisely so replicas derive identical keys (`pkg/seal/import_key.go`). A node
-  > whose node key and disk are both compromised therefore yields the tenant key that also
-  > decrypts that tenant's data on every other replica. Replacing the shared tenant key with one
-  > key per replica waits on a separate design for where a dedicated tenant's identity records
-  > are stored: today they are encrypted with the tenant key and replicated through the system
-  > shard, so every node that serves the tenant must hold the same key.
-  > That design is decided; see [Per-node barrier keys](#per-node-barrier-keys) for what has
-  > shipped of it.
+- **Per-tenant barriers** in multi-node clusters: a tenant barrier sealed with `none`, `passphrase`
+  or `shamir` has its own key on every node that serves it
+  ([Per-node barrier keys](#per-node-barrier-keys)). For any other strategy,
+  `clusterkeys.Sender.DistributeTenantKey` ships the owner-sealed root-key blob verbatim to every
+  follower replica (`pkg/clusterkeys/sender.go`), which imports it
+  (`StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) and is unsealed on that node. No
+  plaintext root key crosses nodes, but those replicas share one tenant root key, so a key
+  recovered from one replica decrypts that tenant's data on every other replica.
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the
@@ -282,9 +265,7 @@ pause finds its shard. A pause that fails is reported, and the
 keys are wiped regardless. Shutdown and a failed boot wipe without pausing:
 the host is closing anyway. Every
 open stream ends with the node's sealed refusal, through the stream registry,
-exactly as a tenant seal ends that tenant's. Sealing the node barrier alone, as
-before, left every unsealed tenant's keys in memory behind a gate that only
-refused requests.
+exactly as a tenant seal ends that tenant's.
 
 A **cut-off** is not a seal: a node that cannot read the seal records stops
 serving and ends its streams, but keeps every key, and resumes on its own once
@@ -297,7 +278,7 @@ seal records each system-managed tenant it moves from unsealed to sealed, and
 the node barrier's unseal (`StorageBarrier.OnUnsealed`, by passphrase, Shamir
 quorum or recovery keys) brings back exactly those. Databases follow the same rule:
 the node unseal brings back only a system-managed database the node seal
-sealed, and no database barrier is system-managed today -- a passphrase
+sealed, and no database barrier is system-managed -- a passphrase
 database stays sealed until its owner unseals it, a Shamir database until its
 holder quorum does, and either unseal then works as it always does. A tenant
 or database sealed for its own reasons stays sealed: one its admin sealed, before the node seal or since; one
@@ -459,8 +440,7 @@ in this order:
 2. **End open streams.** Every watch on every transport — REST, gRPC, Unix,
    QUIC, MCP, embedded and the etcd listener — opened against the barrier's
    data ends with the barrier's sealed error, as do the etcd watch and lease
-   keep-alive streams themselves. Before this, a stream was checked only when
-   it opened. Every one subscribes to the node's one stream registry: the
+   keep-alive streams themselves. Every one subscribes to the node's one stream registry: the
    network listeners' watches through the server's service registry, and the
    embedded client's unscoped watches directly (as the caller's tenant's
    default database), both through `clusterseal.Streams.GuardWatcher`.
@@ -468,8 +448,8 @@ in this order:
    (`clusterseal.Streams.SubscribeServing`), and the order is what makes a seal
    unmissable: a seal closes its gate before it ends streams, so one that
    lands before the subscription is refused by the check, and one that lands
-   after it ends the subscription. Checking first and subscribing second left
-   a window in which a stream opened as the seal landed outlived it. A missed
+   after it ends the subscription. Checking first and subscribing second would
+   leave a window in which a stream opened as the seal landed outlived it. A missed
    seal is enforced on a clear record, so its gate is the wipe itself: streams
    are ended once more after the wipe, and a stream opening after that finds
    the barrier sealed.
@@ -593,15 +573,15 @@ listener.
 
 A node running a binary that does not read the records would keep serving
 after a cluster seal. Cluster sealing is therefore gated on the cluster
-feature gate: this release advertises the `cluster-seal` feature, and records
+feature gate: every binary advertises the `cluster-seal` feature, and records
 are written and enforced only once the feature is **activated** — every
 member of the system shard advertises it. Activation, not per-group
 enablement, is the right test, because enforcement is per node, not per Raft
 group. Once activated, a binary without the feature refuses to start, which
 is the gate's existing downgrade rule.
 
-**Until the feature is activated, a seal acts on the receiving node only** —
-the behaviour of every earlier release — and every barrier status reports
+**Until the feature is activated, a seal acts on the receiving node only**,
+and every barrier status reports
 `cluster_seal.active: false`, so an operator can see that a seal did not
 reach the other nodes. Each node still reads the records on every poll,
 acting on none of them, so that it holds a fresh read when the feature turns
@@ -652,18 +632,15 @@ bound, and it falls on nodes that already cannot serve linearizable reads.
 
 ## CA key lifecycle
 
-The CA private key is one of the things the barrier GATES, and its
-lifecycle is the clearest illustration of what sealing means — though, per
-the owner's CA-at-rest ruling, the barrier no longer ENCRYPTS the stored
-record itself the way an earlier revision did; see
+The CA private key is one of the things the barrier GATES: while the barrier
+is sealed, no CA key signs. The barrier does not encrypt the stored record;
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md)
-for the normative description and this section's own correction below.
+is the normative description.
 
 Both CA keys — Key A (the cluster CA, `__sys:cluster_ca/`) and Key B (the
 per-tenant login CA, `__sys:cert_ca/{tenantID}/`, resolved lazily by
-`pkg/cert.DefaultCertProvider`) — are `cakey.SoftwareProvider` instances
-now, not key material `pkg/cert` or `pkg/clusterca` holds directly: neither
-package has a `caKey` field of its own any more. `cakey.SoftwareProvider`
+`pkg/cert.DefaultCertProvider`) — are `cakey.SoftwareProvider` instances,
+not key material `pkg/cert` or `pkg/clusterca` holds directly. `cakey.SoftwareProvider`
 caches the live key as a `*secure.Secret` — a go-enclave `SealedEnclave`,
 AES-256-GCM under the process Sealer — never as a bare `*ecdsa.PrivateKey`
 on the ordinary Go heap. Signing opens it into a `secure.Buffer` (mlocked,
@@ -671,11 +648,10 @@ guard-paged) for exactly the duration of one `Sign` call and destroys the
 Buffer before returning; `Seal` destroys the `Secret` outright. The one
 thing go-enclave protection cannot reach is the `*ecdsa.PrivateKey`
 `crypto/ecdsa` itself parses the DER bytes into for the duration of that
-one `Sign` call — Go 1.26 deprecated reaching into
-`(*ecdsa.PrivateKey).D` to scrub it by hand, so this is left to the
-garbage collector like any other `crypto/ecdsa` caller's ephemeral key,
-exactly as it was before this fix; what changed is that the key no longer
-sits cached in the clear BETWEEN signatures.
+one `Sign` call. Go deprecates reaching into `(*ecdsa.PrivateKey).D` to
+scrub it by hand, so the garbage collector reclaims it as it does any other
+`crypto/ecdsa` caller's ephemeral key. Between signatures the key is never
+cached in the clear.
 
 ### Bootstrap
 
@@ -706,35 +682,17 @@ sits cached in the clear BETWEEN signatures.
    `Unseal` runs again
 
 
-## Per-replica tenant keys — ruled
+## Per-replica tenant keys
 
-> **Status: decided — not implemented.** The multi-tenancy design
-> [Strict tenant isolation](../multi-tenancy/architecture.md#per-replica-tenant-keys)
-> replaces the shared tenant root key of a `raft` tenant's replicas with an
-> **independent replica key per node**:
->
-> - Each key is born on its node, under the tenant's credential presented to
->   that node, and never leaves it.
-> - `ExportRootKeyContext`, `ImportRootKey`, `ImportSealedBlob` and the
->   tenant-key modes of `pkg/clusterkeys` are removed. `clusterkeys` keeps
->   node-identity checks and delivers only a credential verifier to a new
->   replica.
-> - Init, unseal and rekey of a tenant barrier are sent by the client to every
->   node in the tenant's serving set (client fan-out). No node relays a
->   credential, share or key to another.
-> - A per-node tenant bootstrap record (sealed replica-key blob, credential
->   verifier, unseal roster, SO PIN commitment) sits beside the sealed blob in
->   the tenant's node-local barrier store. It is MAC-bound to the replica key.
->
-> This constrains the cluster-wide sealing design: its unseal model for the
-> tenant scope must be per node, with client fan-out, rather than delivery of
-> a root-key context from the unsealing node.
+Independent replica keys for a tenant's nodes are specified in
+[Strict tenant isolation](../multi-tenancy/architecture.md#per-replica-tenant-keys)
+and built as [Per-node barrier keys](#per-node-barrier-keys).
 
 ## Per-node barrier keys
 
-> **Status: decided — partly implemented.** The design is
+> **Status: partly implemented.** The design is
 > [Per-node init design](#per-node-init-design).
-> Shipped: the init statement, its verification, its record and the watcher
+> Implemented: the init statement, its verification, its record and the watcher
 > (`pkg/barrierinit`); the definition of the `per-node-barrier-keys`
 > feature; the first admin pinned as a tenant barrier's epoch-1 anchor at
 > onboarding; the owner's signed statement on every tenant barrier init
@@ -742,19 +700,20 @@ sits cached in the clear BETWEEN signatures.
 > composed into every node, which initialises the node's own key for a tenant
 > it serves from a claimed statement; and the feature, advertised by every
 > binary and wired as the gate on isolated tenants and on the claim (see
-> **Feature gate** below). Since PN-4 a `none` or `passphrase` tenant barrier
+> **Feature gate** below). A `none` or `passphrase` tenant barrier
 > is initialised on every serving node by that node, the client sending a
 > passphrase init to each of them, and `DistributeTenantKey` ships neither.
 > A Shamir tenant barrier is not shipped either: every serving node is armed
 > from the claimed statement and keys itself at its holders' first quorum, and
 > a replica refuses a Shamir sealed blob rather than import a key it could
-> never unwrap. Not yet: database and node barriers, and the owner-CA anchor a
-> later epoch verifies against.
+> never unwrap. Not implemented: database and node barriers, and the owner-CA
+> anchor a later epoch verifies against.
 
-Every node that serves a barrier — an isolated tenant's, a database's, and the
-node barrier, all through one `BarrierKeyProvider` seam — initialises **its
-own** key from one replicated, signed, keyless **init statement**. No key is
-carried between nodes.
+Every node that serves an isolated tenant's barrier initialises **its own**
+key from one replicated, signed, keyless **init statement**, through the
+`BarrierKeyProvider` seam. No key is carried between nodes. The design applies
+the same mechanism to database barriers and the node barrier, which do not use
+it.
 
 **The statement** (`barrierinit.InitStatement`) names the barrier
 (`clusterseal.Barrier`: `node`, `tenant/<t>`, `database/<t>/<d>`), an epoch
@@ -783,10 +742,8 @@ offline-guessing oracle.
 | 2 and later | a holder of a client certificate from the owner's CA | the owner's CA certificate, pinned in the system tenant; the certificate must be valid when verified |
 
 The statement carries the signer's whole DER `SubjectPublicKeyInfo`, and
-after epoch 1 its certificate. *(Deviation from the decision draft, which
-carried a SHA-256 of the SPKI: a thumbprint cannot verify a signature, and
-the epoch-1 anchor is itself a thumbprint, so the key has to travel with the
-statement.)* Signing goes through a `crypto.Signer`, the same seam the init
+after epoch 1 its certificate: a thumbprint cannot verify a signature, and the
+epoch-1 anchor is itself a thumbprint, so the key travels with the statement. Signing goes through a `crypto.Signer`, the same seam the init
 proof uses, so a device-held key signs without leaving its device. A
 statement the platform, or one compromised node, writes — naming a key the
 platform controls, say — fails on every honest node with
@@ -874,8 +831,8 @@ delivery that fails refuses the request.
    opened, and a system strategy that merely shares the stated ID is never
    used. A raft-isolated tenant with no statement is refused
    (`*tenant.InitStatementMissingError`): it could not have been initialised
-   without one. Three cases unseal through the shell's registrations as
-   before: a Shamir barrier, whose shares are the credential; a `barrier` or
+   without one. Three cases unseal through the shell's registrations: a
+   Shamir barrier, whose shares are the credential; a `barrier` or
    `volume` tenant initialised without a statement; and a tenant whose
    statement names `none` but whose root key `enable-encryption` has since
    re-sealed with a passphrase, because that migration records no later
@@ -904,7 +861,7 @@ only transiently during a rolling upgrade. Nothing activates it by hand.
 **Custody is the tenant's choice.** A platform-sealed key — one that
 auto-unseals because the platform holds what wraps it — is not refused under
 any isolation policy. The statement's strategy records the tenant's opt-in,
-and the barrier status will show it, so the choice is auditable.
+so the choice is auditable.
 
 **Shared tenants have no keys of their own.** The shared Raft group is one
 more tenant with its own barrier, which the platform manages. A shared
@@ -930,25 +887,23 @@ as the barriers it serves, a standalone node with every tenant barrier.
 
 **Terminology.** A **platform-sealed** tenant key is one wrapped under a key
 the platform, not the tenant, controls — for example under a node's barrier.
-The code names this mode `SystemManaged` (`deliverSystemManaged`,
-`AllowSystemManagedBarrier`). This page says *platform-sealed* everywhere, so
+The code names this mode system-managed (`AllowSystemManagedBarrier`). This page says *platform-sealed* everywhere, so
 that it is never confused with the **system tenant**, which is the platform's
 own tenant.
 
-### Decided
+### Rules
 
-| Decision | What it fixes |
+| Rule | What it fixes |
 |---|---|
-| **Option A approved.** | Init is node-local where no client credential is needed, and fanned out by the client where one is. Both are driven by a signed, keyless init statement. |
+| **Node-local init where no client credential is needed, client fan-out where one is.** | Both are driven by a signed, keyless init statement. |
 | **Passphrase joiner verifier: HPKE from a serving peer.** | An unsealed serving node delivers the tenant-wide verifier to a joining node over the `clusterkeys` HPKE channel. |
 | **KMS `KeyRef`: one tenant-controlled key by default, a per-node template allowed.** | The statement's `KeyRef` names one KMS key the tenant controls, and the tenant grants each node's identity. A provider may resolve `KeyRef` as a per-node template instead. |
-| **One barrier mechanism.** | `BarrierKeyProvider` covers the node barrier, isolated-tenant barriers and database barriers; the system barrier is folded in (PN-12). |
-| **Auto-unseal is the tenant's choice.** | There is **no** strict-mode refusal of platform-sealed keys and no `PlatformSealedKeyError`. `Custody` records the tenant's opt-in, and the auditable barrier status shows it. qrdb ships no native hardware or cloud crypto, only seams; `KeyRef` stays opaque. |
-| **Shared tenants: the envelope scheme is rejected.** | The shared Raft group is one more tenant with its own barrier, platform-managed. Tenants in it have no keys of their own, and **their data is readable by the platform**. A tenant that needs confidentiality from the platform chooses an isolated type. PN-11 is withdrawn. |
-| **Serving set = the tenant's replica count, a tenant quota.** | The system owner or a system admin sets it through the existing quota and entitlement records; a tenant admin cannot change its own. It replaces the PN-13 cap. |
-| **MT-17 is not a prerequisite.** | MT-18 depends on MT-15 and the cluster seal record only. |
-| **The tenant signs its serving set.** | The tenant signs the set of nodes that may hold its key with the same signer chain as its `InitStatement`; placement adds members only for nodes in that set. For a tenant that chose auto-unseal, the platform signs. Part of PN-6. Trusting platform placement instead is rejected: placement is platform-controlled, and the platform could otherwise add a member that receives the tenant's statement. |
-| **Moving off `none` in place is a signed epoch (SL-02, folded in).** | `none` → keyed is a new signed `InitStatement` epoch through `BarrierKeyProvider`, the same for every tenant type, strict included. The passphrase reaches other nodes over HPKE from a serving peer. `seal.migration_credentials_dir` is deleted. A verified backup is a precondition only; there is no separate backup/restore migration path. Part of PN-8. |
+| **One barrier mechanism.** | `BarrierKeyProvider` covers the node barrier, isolated-tenant barriers and database barriers; the system barrier is folded in (§11). |
+| **Auto-unseal is the tenant's choice.** | No isolation policy refuses a platform-sealed key. `Custody` records the tenant's opt-in, and the auditable barrier status shows it. qrdb ships no native hardware or cloud crypto, only seams; `KeyRef` stays opaque. |
+| **Shared tenants have no keys of their own.** | A shared (`prefix`) tenant's data sits in the shared store under each node's barrier, so **it is readable by the platform**. A tenant that needs confidentiality from the platform chooses an isolated type. A per-tenant envelope scheme for shared tenants is rejected. |
+| **Serving set = the tenant's replica count, a tenant quota.** | The system owner or a system admin sets it through the existing quota and entitlement records; a tenant admin cannot change its own. |
+| **The tenant signs its serving set.** | The tenant signs the set of nodes that may hold its key with the same signer chain as its `InitStatement`; placement adds members only for nodes in that set. For a tenant that chose auto-unseal, the platform signs. Trusting platform placement instead is rejected: placement is platform-controlled, and the platform could otherwise add a member that receives the tenant's statement. |
+| **Moving off `none` in place is a signed epoch.** | `none` → keyed is a new signed `InitStatement` epoch through `BarrierKeyProvider`, the same for every tenant type, strict included. The passphrase reaches other nodes over HPKE from a serving peer. A verified backup is a precondition only; there is no separate backup/restore migration path. |
 
 ### The governing requirement
 
@@ -971,43 +926,25 @@ isolated type.
 ### The problem
 
 On a cluster of more than one node, an isolated tenant (`raft`, `barrier` or
-`volume`) whose key is sealed by its own credential cannot finish onboarding:
+`volume`) whose key is sealed by its own credential needs a key on every node
+that serves it:
 
 1. **Tenant create places the home group on every node.** The home group gets
    a replication factor of `max(ClusterSize(), 1)` and `DedicatedWAL = true`
    (`pkg/service/tenant_home.go`, `ProvisionTenantHome`).
-2. **`barrier init` runs on one node only.** That node resolves a strategy,
-   registers the tenant barrier and initializes it (`pkg/tenant/service.go`,
-   `resolveStrategy`, `InitializeTenantWithStrategy`). No other node has a
-   tenant barrier.
-3. **The home group never reaches quorum.** Every other node defers its
-   home-group replica, because the barrier is not registered there or is
-   sealed (`pkg/server/tenant_shard_reconciler.go`, `ensureStarted`). With one
-   replica started out of three, the group has no quorum, the pending first
-   admin is never written, and init never completes.
+2. **`barrier init` reaches one node.** That node resolves a strategy and
+   registers and initializes the tenant barrier (`pkg/tenant/service.go`,
+   `resolveStrategy`; `pkg/seal/barrier_registry.go`,
+   `InitializeTenantWithStrategy`).
+3. **A replica starts only behind an unsealed barrier.** Every other node
+   defers its home-group replica while the barrier is not registered there or
+   is sealed (`pkg/server/tenant_shard_reconciler.go`, `ensureStarted`). With
+   one replica started out of three, the group has no quorum and the pending
+   first admin is never written.
 
-**Key transport was the only path.** Before this design the only way a second
-node got the tenant barrier was `clusterkeys.Sender.DistributeTenantKey`, and
-both of its modes gave every replica the same key (both deleted in PN-6; see
-§14):
-
-- **Platform-sealed:** it exports the root key (`deliverSystemManaged` →
-  `ExportRootKeyContext`).
-- **Tenant-sealed:** it ships the sealed blob (`deliverSelfManaged` →
-  `ExportSealedBlob`).
-
-Both modes are forbidden by the cluster-wide sealing ruling.
-
-**What the test suite shows:**
-
-- `TestClusterEnableEncryption_TenantScope_RF3` fails on its expected follower
-  key delivery.
-- The replica-forwarding and mixed-cluster suites fail with `tenant: barrier is
-  sealed` on the nodes where init did not run.
-
-**Shared tenants are short of the governing requirement too.** Their values sit
-in the shared store, encrypted only under each node's barrier, so whoever holds
-the node barrier can read them.
+Shipping one node's key to the others
+(`clusterkeys.Sender.DistributeTenantKey`) gives every replica the same key,
+which the binding rules below forbid.
 
 ### Binding rules
 
@@ -1040,30 +977,19 @@ the node barrier can read them.
   - The multiplexed WAL is always built.
   - A multi-replica raft database's barrier is a per-node barrier.
 
-### What already exists
+### Alternatives
 
-| Prerequisite | State | Needed? |
-|---|---|---|
-| Home store for every isolated tenant, its Raft log on a dedicated WAL under each node's tenant barrier (S4: G1–G4, G6) | lands with WP-21-1 | **Yes. This is the part of MT-15 this needs.** Until WP-21-1, tenant users, roles, the DEK keyring and invitations sat in the system store under the tenant key, so a node holding its own key failed the lookup (the 2026-10-06 blocker, `quicraft/seal: decryption failed`). WP-21-1 moves them into the tenant's home group: plain Raft entries that each node encrypts at rest under its own tenant barrier, so a replica with its own key reads what another replica wrote. `TestIsolationRaft_EndToEnd` looks the tenant's users up on all three nodes. Key delivery still races self-init until PN-3 removes it, so no test yet asserts that the nodes' keys differ. |
-| Reconciler gates each tenant shard on a registered, unsealed barrier and the cluster seal record (`ensureStarted`) | shipped | **Yes, unchanged.** Once the barrier exists and is unsealed on each node, the replica starts and the group forms at a majority. |
-| Cluster seal record (`pkg/clusterseal`, feature `cluster-seal`) | shipped | **Yes.** It names every barrier level (`NodeBarrier`, `TenantBarrier`, `DatabaseBarrier`). Unseal is checked against it, and its epoch fences a node that is cut off. |
-| Proof of possession for init (`pkg/initproof`) | shipped | **Yes, extended.** Today it signs the tenant, the nonce and the TLS exporter, but not the init parameters. |
-| Replicated database catalog (MT-16) | in flight | Only for the database-barrier work package. |
-| Opaque database-id placement (MT-17, S5) | blocked | **No.** It changes no key path. |
-| Records still in the system shard (custodian records, SO PIN commitment, unseal roster, encryption-migration state, pending first admin) | present | **No.** They are under each node's own barrier, not a tenant key. Moving them is phase 8. |
+The alternatives differ only in **who starts init on each node**. In every
+one, each node generates its own random key and seals it through its own
+strategy.
 
-### Options (Option A decided)
-
-The options differ only in **who starts init on each node**. In every option,
-each node generates its own random key and seals it through its own strategy.
-
-- **A — node-local where no client credential is needed, client fan-out where
-  one is. Decided.**
-- **B — client fan-out for every mode.** Rejected. It leaves hardware and KMS
+- **Node-local where no client credential is needed, client fan-out where one
+  is.** Chosen.
+- **Client fan-out for every mode.** Rejected. It leaves hardware and KMS
   joins needing a person, even though nothing secret is needed.
-- **C — node-local reaction for every mode.** Rejected. It needs the
+- **Node-local reaction for every mode.** Rejected. It needs the
   credential to be relayed between nodes, or replicated.
-- **Already rejected, not to be re-proposed:**
+- **Also rejected:**
   - transporting the root key or the sealed blob;
   - deriving every node's key from one root with a per-node salt;
   - one shared KMS data key for every node.
@@ -1072,9 +998,8 @@ each node generates its own random key and seals it through its own strategy.
 
 #### 1. One mechanism for every barrier
 
-The **node barrier** (the system tenant's own key), the **shared group's
-barrier** (one platform-managed tenant; §8), an **isolated tenant's barrier**
-and a **database barrier** are all built the same way. Each one has:
+The **node barrier** (the system tenant's own key), an **isolated tenant's
+barrier** and a **database barrier** are all built the same way. Each one has:
 
 - the same seam;
 - the same signed statement;
@@ -1085,8 +1010,7 @@ Only two things differ by barrier kind:
 - **The init statement's signer** is the system tenant's first admin for the
   node barrier, and the owning tenant for a tenant or database barrier.
 - **What the key protects:**
-  - a node's whole data plane;
-  - the shared store, for every shared tenant in it;
+  - a node's whole data plane, the shared store included;
   - an isolated tenant's stores and dedicated WALs;
   - one database.
 
@@ -1116,14 +1040,18 @@ type BarrierKeyProvider interface {
 type BarrierKeyRequest struct {
 	// Barrier is the barrier's cluster-wide name: "node", "tenant/<tenant>"
 	// or "database/<tenant>/<database>" (the clusterseal.Barrier grammar).
-	Barrier    string
-	NodeID     string
+	Barrier string
+	// NodeID is the node whose key this is. Every node seals its own key.
+	NodeID string
+	// StrategyID is the strategy the barrier's owner chose.
 	StrategyID StrategyID
-	// KeyRef is the opaque key reference from the init statement: one
-	// tenant-controlled KMS key by default, or a per-node template the
-	// provider resolves (decided). Empty for the software strategies.
+	// KeyRef is the owner's opaque reference to the key that wraps this
+	// node's key: one key the owner controls, or a per-node template the
+	// provider resolves. go-qrdb never interprets it. Empty for the software
+	// strategies.
 	KeyRef string
-	// Epoch is the init statement's credential epoch.
+	// Epoch is the credential epoch: 1 at init, one more per credential
+	// change.
 	Epoch uint64
 }
 
@@ -1154,40 +1082,38 @@ role, and maps the built-in strategies like this:
 
 **Composition and what it replaces.**
 
-- `WithBarrierKeyProvider` is added to `pkg/server`, `sdk/go/node` and
-  `pkg/server/lifecycle`.
-- It replaces the `switch` in `resolveStrategy`.
-- With PN-12, it also replaces `WithSealStrategy` (`pkg/server/server.go`,
-  `sdk/go/node/node.go`), whose only job is choosing the node barrier's
-  strategy.
+- `server.WithBarrierKeyProvider` injects the provider; an SDK node takes it
+  as a server option, and `pkg/server/lifecycle` hands it to the tenant
+  service (`tenant.WithBarrierKeyProvider`).
+- The tenant service's `resolveStrategy` asks it for every tenant barrier.
+- Under §11 it also replaces `node.WithSealStrategy` (`sdk/go/node/node.go`),
+  whose only job is choosing the node barrier's strategy.
 
 #### 3. The init statement — replicated, keyless, signed
 
 ```go
-// InitStatement is the replicated, signed statement of how every node's key
-// for one barrier is sealed. It carries no key material and no credential
-// verifier; every field is public.
+// pkg/barrierinit/statement.go (field comments shortened)
 type InitStatement struct {
-	Barrier        string // clusterseal.Barrier grammar
-	Epoch          uint64 // 1 at init; +1 per credential change
-	StrategyID     StrategyID
-	KeyRef         string
-	Threshold      int    // Shamir only
-	RosterHash     []byte // Shamir only: digest of the holder roster
-	VerifierSalt   []byte // passphrase only: salt of the barrier-wide verifier
-	UnsealKeyCheck []byte // Shamir only: HKDF-SHA256 check value of the unseal key
-	SignerSPKI     []byte // the signing key's DER SPKI (see below)
-	SignerCertificate []byte // epoch 2 and later: DER, chaining to the owner's CA
-	Signature      []byte
+	Barrier           clusterseal.Barrier `json:"barrier"`
+	Epoch             uint64              `json:"epoch"`      // 1 at init; +1 per re-key or strategy change
+	IssuedAt          int64               `json:"issued_at"`  // signed; a certificate is validated at it
+	StrategyID        seal.StrategyID     `json:"strategy_id"`
+	KeyRef            string              `json:"key_ref,omitempty"`
+	Threshold         int                 `json:"threshold,omitempty"`        // Shamir only
+	RosterHash        []byte              `json:"roster_hash,omitempty"`      // Shamir only
+	Roster            []byte              `json:"roster,omitempty"`           // Shamir only: the roster RosterHash commits to
+	VerifierSalt      []byte              `json:"verifier_salt,omitempty"`    // passphrase only
+	UnsealKeyCheck    []byte              `json:"unseal_key_check,omitempty"` // Shamir only
+	SignerSPKI        []byte              `json:"signer_spki"`                // the whole DER SubjectPublicKeyInfo
+	SignerCertificate []byte              `json:"signer_certificate,omitempty"` // after epoch 1: DER, chaining to the owner's CA
+	Signature         []byte              `json:"signature"`
 }
 ```
 
-*(As implemented in `pkg/barrierinit`: `SignerSPKI`
-is the whole DER `SubjectPublicKeyInfo`, not its SHA-256. A hash cannot
-verify a signature, and the epoch-1 anchor is itself a thumbprint, so the key
-travels with the statement and is checked against the thumbprint. A later
-epoch also carries its `SignerCertificate`, whose SPKI must equal
-`SignerSPKI`.)*
+`SignerSPKI` is the whole key, not its hash: a hash cannot verify a
+signature, and the epoch-1 anchor is itself a thumbprint, so the key travels
+with the statement and is checked against the thumbprint. A later epoch also
+carries its `SignerCertificate`, whose SPKI must equal `SignerSPKI`.
 
 **Signature.**
 
@@ -1250,7 +1176,7 @@ the node.
   platform-sealed where policy allows it):
   - the node watches the statement, and when one verifies for a barrier it
     serves, it generates its own key and seals it;
-  - failures retry with backoff (`BarrierKeyProviderError`);
+  - a provider failure is retried with backoff;
   - a node that was down catches up when it returns.
 - **`CredentialPassphrase`:** the CLI or SDK sends the signed statement and the
   passphrase to every serving node. Each node:
@@ -1270,15 +1196,13 @@ the node.
     digest in the AAD), and unseals;
   - each holder submits once, and its client sends the share to every serving
     node;
-  - the unseal key is never relayed between nodes.
-
-  This drops the "pending key held in memory" of the earlier design, which a
-  restart lost and which bought nothing.
+  - the unseal key is never relayed between nodes, and no node holds a
+    pending key in memory.
 
 **Data never needs a shared root key.** Raft entries and snapshots of an
 isolated tenant move as logical plaintext over node mTLS, and each node
 re-encrypts them under its own barrier. A sealed node runs no replica, so it
-receives none of the tenant's entries. Shared tenants work differently (§8).
+receives none of the tenant's entries.
 
 #### 5. Quorum and the first admin
 
@@ -1310,7 +1234,7 @@ A joining node comes up sealed. It has a shell and the verified statement.
   the tenant's consent.
 - **`CredentialShares`:** holders submit their shares to the joiner, which
   checks the result against `UnsealKeyCheck`.
-- **`CredentialPassphrase` (decided):** an unsealed serving node delivers the
+- **`CredentialPassphrase`:** an unsealed serving node delivers the
   verifier `(VerifierSalt, tag)` to the joiner over the `clusterkeys` HPKE
   channel. That channel is placement-gated, revocation-checked and addressed
   to one node.
@@ -1321,7 +1245,7 @@ A joining node comes up sealed. It has a shell and the verified statement.
 **Replacement** is a join followed by removing the old member. The old key dies
 with its disk.
 
-**Admission** — decided.
+**Admission.**
 Placement adds a node to a tenant's group only if the node is in the tenant's
 **signed serving set**.
 
@@ -1332,8 +1256,8 @@ Placement adds a node to a tenant's group only if the node is in the tenant's
 - **Who checks.** Placement, and every node before it registers a shell: a node
   not named in a verified set is not added and does not serve.
 - **What it buys.** The tenant's consent is explicit for every credential kind,
-  not only KMS. The size of the set is still the tenant's replica-count quota
-  (PN-13); the signed set says *which* nodes, the quota says *how many*.
+  not only KMS. The size of the set is the tenant's replica-count quota; the
+  signed set says *which* nodes, the quota says *how many*.
 - **Cost.** One tenant action per join, which the tenant's own automation can
   do through the `crypto.Signer` seam. It stays unattended for an auto-unseal
   tenant, where the platform signs.
@@ -1343,27 +1267,25 @@ Placement adds a node to a tenant's group only if the node is in the tenant's
 **Unseal** is per node.
 
 - **Credential:** the holder's client fans the credential out to each node
-  (`--all`) and reports each node's result.
+  and reports each node's result.
 - **What a node checks:**
   - the sealed window admits only a certificate chaining to the owner's CA;
   - the bootstrap record (sealed blob, verifier, roster and statement epoch)
-    is bound to the node's key (`seal.BootstrapRecordMismatchError`).
-    *Implemented as AEAD encryption under the node's barrier key with the
-    record's path inside the plaintext, not a separate MAC; the record holds
-    the epoch and the verifier so far;*
+    is bound to the node's key;
   - the cluster seal record must not say the barrier is sealed.
 - **A cut-off node** stops serving after the monitor's window and keeps its
   key.
 
 **Rekey** comes in three kinds:
 
-- **Key rotation:** node-local, as today's barrier epoch rotation is. Nothing
+- **Key rotation:** node-local, as the barrier epoch rotation is. Nothing
   replicates.
 - **Credential change** (a new passphrase, a Shamir re-split, a new `KeyRef`):
   the client signs epoch N+1, claims it with a compare-and-set, and fans out.
   An unsealed node needs only the new credential to re-wrap its key.
-- **Strategy change:** a credential change to another strategy. This is what
-  **enable-encryption** becomes (*decided, SL-02*):
+- **Strategy change:** a credential change to another strategy. In this
+  design it is what **enable-encryption** does (not implemented: a tenant
+  migration runs through `pkg/clustermig` and `seal.migration_credentials_dir`):
   - moving off `none` in place is a new signed `InitStatement` epoch, `none`
     → keyed, through `BarrierKeyProvider`; it is the same for every tenant
     type, strict included, and for a tenant that started platform-sealed
@@ -1373,8 +1295,7 @@ Placement adds a node to a tenant's group only if the node is in the tenant's
   - a verified backup is a precondition only. There is no separate
     backup/restore migration path.
 
-**A node that missed a credential change** refuses the old credential
-(`StaleCredentialEpochError`). It catches up by taking the old and new
+**A node that missed a credential change** refuses the old credential. It catches up by taking the old and new
 credentials together in one call. If the old credential is lost and a quorum
 holds elsewhere, the operator removes the replica and the node rejoins fresh.
 A stale node never wipes itself, because a stale majority would lose the
@@ -1382,25 +1303,22 @@ group.
 
 #### 8. Shared tenants
 
-**Shared tenants are removed.** Every tenant is isolated on keys of its own,
-and only the system tenant, whose records live under each node's own barrier,
-has no tenant key. Where this design still mentions shared tenants, this rule
-wins. The per-tenant envelope scheme once proposed for them — per-node
-recipient keys, per-epoch data keys wrapped to each serving node, values
-encrypted at proposal — is rejected, and its work package (PN-11) and feature
-(`shared-tenant-keys`) are withdrawn.
+**Shared tenants have no keys of their own.** A shared (`prefix`) tenant's
+records live in the shared store under each node's own barrier, so the
+platform can read them; a tenant that needs confidentiality from the platform
+chooses an isolated type. A per-tenant envelope scheme for shared tenants
+(per-node recipient keys, per-epoch data keys wrapped to each serving node,
+values encrypted at proposal) is rejected.
 
 #### 9. Key custody
 
-**Auto-unseal is the tenant's choice.** The
-custody policy this section proposed — refusing a platform-sealed key under
-`strict` with `PlatformSealedKeyError` — is **rejected**; no such error
-exists.
+**Auto-unseal is the tenant's choice.** No isolation policy, `strict`
+included, refuses a platform-sealed key.
 
 - `Custody` records the tenant's opt-in: a platform-sealed key
   (`CustodyPlatform`) is what a tenant that wants auto-unseal chooses, under
-  either isolation policy. The `AllowSystemManagedBarrier` entitlement still
-  gates the choice.
+  either isolation policy. The `AllowSystemManagedBarrier` entitlement gates
+  the choice.
 - The tenant's barrier status shows the custody, so the choice is auditable.
 - qrdb ships no native hardware or cloud crypto, only seams. `KeyRef` is
   opaque to qrdb: an injected strategy (go-xkms) reads it.
@@ -1409,33 +1327,33 @@ exists.
 
 A multi-replica raft database with its own barrier uses the same machinery,
 keyed by `clusterseal.DatabaseBarrier(tenant, database)`. It reads the
-database's barrier settings from the replicated catalog (PN-9).
-
-*Implemented (PN-9):*
+database's barrier settings from the replicated catalog.
 
 - The barrier encrypts the state machine of the database's own group on each
   replica, in place of the tenant's; the log and snapshots stay under the
   tenant's barrier.
 - The create carries the epoch-1 statement, signed by a tenant admin under the
-  tenant's CA (`barrierinit.SignDatabaseInit`, CLI `--barrier-signer-cert`).
-  A database has no first admin of its own, so its statement verifies against
-  the tenant's CA at every epoch, and the platform never signs one.
-- The accepting node claims the statement and holds the passphrase. Every
-  replica placed in the database's group and admitted by the tenant's serving
-  set fetches the passphrase through that group and makes its own key; no key
-  is transported.
-- Refused: a Shamir raft database barrier (a split is one node's key) and any
-  barrier of a system-tenant raft database (no owner to sign), both with
-  `database.RaftBarrierUnsupportedError`.
-- Proved by `TestDatabaseBarrierPerNode_CLI_PerProtocol`: three nodes, the real
-  CLI on every transport, every replica serving, three distinct fingerprints.
-- Not covered here and left to PN-10: restart (each replica's barrier comes up
-  sealed and is unsealed on its node) and scale-up past the passphrase hold.
+  tenant's CA. A database has no first admin of its own, so its statement
+  verifies against the tenant's CA at every epoch, and the platform never
+  signs one.
+- Every replica placed in the database's group and admitted by the tenant's
+  serving set makes its own key; no key is transported.
+- A Shamir raft database barrier (a split is one node's key) and any barrier
+  of a system-tenant raft database (no owner to sign) are refused.
+
+Not implemented: a database barrier is accepted only on a non-raft database
+with its own store, and a raft database's barrier is refused with
+`database.BarrierOffDataPathError` (`pkg/database/manager.go`,
+`barrierDataPathError`; see
+[../databases/architecture.md](../databases/architecture.md)).
 
 #### 11. The system barrier folded in
 
-The node barrier is already per node, so nothing about its keys moves. What
-changes is how it is resolved and recorded:
+Not implemented: the node barrier's strategy comes from `node.WithSealStrategy`
+and the strategy registry.
+
+The node barrier is per node, so nothing about its keys moves. The design
+changes how it is resolved and recorded:
 
 - **Resolution.** Its strategy is resolved through `BarrierKeyProvider`, with
   `Barrier = "node"`.
@@ -1448,8 +1366,7 @@ changes is how it is resolved and recorded:
   - initializes its own node barrier by credential kind, exactly as a tenant
     joiner does.
 - **Deletions.** `WithSealStrategy` and the node-barrier branch of strategy
-  selection are deleted. `AGENTS.md`'s composition list is updated in the same
-  change.
+  selection are deleted.
 
 #### 12. Failure modes
 
@@ -1458,14 +1375,14 @@ changes is how it is resolved and recorded:
 | Two inits race with different parameters | the guarded claim admits one; the other is refused with `BarrierAlreadyInitializedError` before any key exists | none needed |
 | First node crashes after the claim | the statement exists and that node is uninitialized | re-run init; it is idempotent against the same statement |
 | Fan-out reaches only some nodes | each node's result is reported; the group forms at a majority | re-run; nodes already done return success |
-| Key provider down on one node | that node stays sealed (`BarrierKeyProviderError`) and retries | none while a majority holds |
+| Key provider down on one node | that node stays sealed and retries | none while a majority holds |
 | Majority sealed or down | `TenantHomeUnavailableError` (503) | unseal more nodes |
 | Forged or tampered statement | `InitStatementError`; nothing is sealed | investigate; that node stays sealed |
-| Tampered bootstrap record | `seal.BootstrapRecordMismatchError`; the node seals | restore, or rejoin fresh |
+| Tampered bootstrap record | the node seals | restore, or rejoin fresh |
 | Statement epoch skipped, repeated or raced | `EpochConflictError` naming the recorded epoch; nothing written | re-read the record and sign the next epoch |
 | Guarded writes not yet active | `GuardedWritesUnavailableError`; nothing written | retry after the rollout |
 | Node cut off from the system shard | it stops serving after the monitor window and keeps its key | reconnect |
-| Owner credential lost | the data is unrecoverable, as today; Shamir has its recovery domain | — |
+| Owner credential lost | the data is unrecoverable; Shamir has its recovery domain | — |
 
 #### 13. Feature gates and Raft impact
 
@@ -1478,35 +1395,24 @@ changes is how it is resolved and recorded:
     activates at once.
   - After activation, `AdmitReplica` refuses a node that does not advertise
     the feature.
-  - *Implemented (PN-2):* until activation an isolated create, a tenant
+  - *Implemented:* until activation an isolated create, a tenant
     update to an isolated type, and recording a statement are each refused
     with `NotActiveError{Feature: per-node-barrier-keys}`. A single-member
     cluster activates at its first check; a standalone node gates nothing.
-- *(Withdrawn: `shared-tenant-keys` went with PN-11; see §8.)*
 
-#### 14. What is deleted
+#### 14. What the design deletes
+
+Not implemented: every row below is still in the code.
 
 | Where | What |
 |---|---|
-| `pkg/clusterkeys` | `DistributeTenantKey`, `deliverSystemManaged`, `deliverSelfManaged`, the receiver's import modes and their mode table. The package keeps node identity, the HPKE envelope and the decided verifier mode. |
-| `pkg/seal` | `ExportRootKeyContext`, `ImportRootKey`, `ExportSealedBlob`, `ImportSealedBlob` (`import_key.go`); `BarrierRegistry.ImportTenant`, `importTenantKey`. |
+| `pkg/clusterkeys` | `DistributeTenantKey`, `deliverSelfManaged`, the receiver's import mode (`keydelivery.ModeSelfManaged`), and the `/v1/cluster/keydelivery` and `/v1/cluster/nodekey` routes. The package keeps node identity and the HPKE envelope. |
+| `pkg/seal` | `ExportSealedBlob`, `ImportSealedBlob` (`import_key.go`); `BarrierRegistry.ImportTenant`. |
 | `pkg/service` | `KeyDistributor`, `deliverTenantKeyToReplica`, the key step in `inviteReplicas`, the rebalance deliverer (`rebalance_options.go`). |
-| `pkg/tenant` | the `resolveStrategy` switch. |
-| `pkg/server`, `sdk/go/node` | `WithSealStrategy` (PN-12). |
+| `sdk/go/node` | `WithSealStrategy` (§11). |
 | `pkg/clustermig` | the tenant arm, tenant `NodeMigrationStatus`, the tenant credential files (`seal.migration_credentials_dir`). |
-| interim refusal | `StrictEncryptionMigrationError`. |
 
 `pkg/keydelivery` stays, because the ceremony envelopes use it too.
-
-*Implemented (PN-6):* the `pkg/clusterkeys`, `pkg/seal` and `pkg/service` rows
-are deleted outright, with no shim. The cluster peer plane is
-`POST /v1/cluster/verifier` alone: `/v1/cluster/keydelivery` and
-`/v1/cluster/nodekey` are no longer routes, and `pkg/keydelivery` carries only
-the `passphrase-verifier` mode. *(PN-8 adds `POST /v1/cluster/passphrase` and
-the `strategy-passphrase` and `node-passphrase` modes, and implements the
-`pkg/clustermig` and interim-refusal rows: both are deleted outright.)* Scale-up and rebalance persist the placement
-and admit the new replica as an observer; the joiner initializes its own key
-once the signed serving set names it.
 
 ### Limits
 
@@ -1515,9 +1421,8 @@ What this design does not reach, stated plainly:
 - **The key is in a serving node's memory while it is unsealed.** Anyone who
   controls that node's memory controls that node's copy, and also sees the
   plaintext the node is handling.
-  - **What protects it today:** go-enclave. Shares are already held in
-    go-enclave `ProtectedShare`, and the barrier key is to be held the same way
-    under the go-enclave-everywhere ruling.
+  - **What protects it:** go-enclave, through `pkg/secure` (see *Trust
+    boundaries*).
   - **The full answer:** release bound to hardware or a TEE, through go-xkms
     providers. The key is unwrapped only inside attested hardware, on a node
     whose measured state the tenant's policy accepts. This design is the seam
@@ -1533,36 +1438,8 @@ What this design does not reach, stated plainly:
 - **Shared tenants are readable by the platform** (§8): their data is under a
   platform-managed barrier.
 - **Some metadata stays visible:** isolated-tenant database names in system
-  records until phase 8.
+  records.
 
-### Work packages
-
-Each package is sized for one lane, opens with a red test, and updates
-`docs/multi-tenancy/` and `docs/barrier-seal/` in the same change.
-
-| WP | Delivers | Red test | Depends on |
-|---|---|---|---|
-| **PN-1 Seam** | `BarrierKeyProvider`, `BarrierKeyRequest`, `BarrierKeyStrategy`, `CredentialKind`, `Custody`; the default provider over `StrategyRegistry`; `WithBarrierKeyProvider` on server, lifecycle and the SDK node; it replaces the `resolveStrategy` switch | an injected provider seals a tenant key with `KeyRef` and node passed through; an unknown strategy returns `InvalidStrategyError` | — |
-| **PN-2 Statement and gate** *(shipped)* | `InitStatement` encoding and signature verification (first-admin SPKI, owner CA); the guarded claim and compare-and-set; a watcher; the `per-node-barrier-keys` feature. No custody policy (§9, ruled) | a statement signed by another key is refused with `InitStatementError`; of two concurrent claims, one wins; an isolated create on 3 nodes before activation is refused with `NotActiveError` | PN-1 (by name only: PN-2 needs none of its types) |
-| **PN-3 Shells and node-local init** | Shell registration on placement; self-init for `CredentialNone`; platform-sealed tenants (the tenant's auto-unseal opt-in) on per-node keys; delete the platform-sealed transport | a platform-sealed raft tenant on 3 nodes serves on every node, **and two replicas' key fingerprints differ** | PN-2 |
-| **PN-4 Fan-out init** | the statement signed by the init `crypto.Signer`; SDK and CLI fan-out with a result per node; first-admin completion on the leader, with guarded writes; on six transports and the CLI | the create step of `TestClusterEnableEncryption_TenantScope_RF3`, rewritten for strict: a passphrase raft tenant inits on 3 nodes and its group forms | PN-3 |
-| **PN-5 Shamir per node** | the check value; holder share fan-out; the key generated at quorum | a Shamir raft tenant on 3 nodes unseals from one submit per holder; a quorum from the wrong share set fails the check | PN-4 |
-| **PN-6 Verifier, joiner and serving set** | bootstrap records; the HPKE verifier mode; joiner init for every credential kind; the tenant-signed serving set (signed with the statement's signer chain, the platform signing for an auto-unseal tenant) and placement admitting only nodes in it; delete the tenant-sealed transport and the `pkg/seal` export and import functions | scale-up to 4 nodes: a KMS joiner serves once granted; a passphrase joiner refuses a wrong passphrase and accepts the right one; placement refuses to add a node absent from the signed set | PN-4 |
-| **PN-7 Unseal and rekey** | unseal and rekey fan-out (`--all`); epochs; `StaleCredentialEpochError` and the old-and-new catch-up | change the passphrase with one node down: that node refuses the old passphrase, then the catch-up re-wraps it | PN-6 |
-| **PN-8 Enable-encryption (SL-02 folded in)** *(shipped)* | moving off `none` in place as a strategy-change statement (a new signed epoch, `none` → keyed, through `BarrierKeyProvider`, for every tenant type including strict); the passphrase reaching other nodes over HPKE from a serving peer; a verified backup as a precondition only, with no backup/restore migration path; delete the `clustermig` tenant arm, `seal.migration_credentials_dir` and the credential files, and `StrictEncryptionMigrationError` | a tenant moves from `none` to `passphrase` on 3 nodes with no credential directory, strict included; the move is refused without a verified backup | PN-7 |
-| **PN-9 Database barrier** *(shipped)* | the same design under `DatabaseBarrier` | a barrier-encrypted raft database on 3 nodes: every replica serves, and the fingerprints differ | PN-8, replicated catalog |
-| **PN-10 Cluster suite** | for every credential kind: distinct fingerprints, cross-key snapshot catch-up, restart, scale-up and replacement; the replica-forwarding and mixed-cluster suites green; CLI tests on every transport | the named suites, which today fail with `tenant: barrier is sealed` | PN-6 |
-| ~~PN-11 Shared tenants~~ | **Withdrawn:** shared tenants have no keys of their own (§8) | — | — |
-| **PN-12 System barrier** | node-barrier resolution through `BarrierKeyProvider`; the firstboot-signed statement; statement delivery at cluster enroll; delete `WithSealStrategy` and update `AGENTS.md` | a joiner given a node statement signed by another key refuses to initialize; a 3-node first boot runs through the seam | PN-2 |
-| **PN-13 Replica count as a tenant quota** | the tenant's serving set is its replica count, a tenant quota in the existing quota and entitlement records, set by the system owner or a system admin and used by `ProvisionTenantHome` and placement | a tenant with a replica quota of 3 on a 5-node cluster gets a 3-node serving set, and init fans out to those 3 only; the tenant's own admin changing it is refused | PN-4 |
-
-**Order.**
-
-- PN-1 and PN-2 can run in parallel.
-- PN-3 is the first package a user sees.
-- PN-4 closes the RF3 create.
-- PN-12 and PN-13 can run alongside PN-7 to PN-10 once their dependencies
-  land.
 
 ## Protected key material across the barrier — parked
 
@@ -1579,7 +1456,7 @@ interface should carry protected material instead (a borrowed buffer in, a
 protected buffer out). It is not answered here, because the answer depends on
 the shape of the go-enclave interface it would carry.
 
-### go-enclave bindings today
+### go-enclave bindings
 
 go-enclave v0.8.0-alpha exports interfaces only for providers
 (`KeyProtector`, `RootUnsealer`, `HealthReporter`); go-qrdb implements none of
@@ -1617,7 +1494,7 @@ memory. They convert after the interface ships, not before:
   `EncryptionBarrier.Decrypt` at `:167` (copied in at `:174`), then keyed into
   the block cipher at `pkg/seal/encfs/encfile.go:58` and `:73`. This is the
   barrier crossing the parked question is about.
-- `pkg/seal/recovery.go:185` — `secure.CopyOut` of the recovered key.
+- `pkg/seal/recovery.go:186` — `secure.CopyOut` of the recovered key.
 - `pkg/ceremony/share_store.go:247` — `secure.CopyOut` of a share for delivery.
 - `pkg/secret/resolver.go:214` — `secure.CopyOut` of a resolved secret.
 - `pkg/service/credential_service.go:109` — `secure.CopyOut` of a retrieved
@@ -1650,8 +1527,8 @@ memory. They convert after the interface ships, not before:
   `secure.Buffer` only for the duration of one `Sign` call, and destroyed
   on `Seal`.
 - **Protected memory is not readable from outside the process.** `qrdbd
-  start` and the `qrdb` desktop/CLI binary mark themselves non-dumpable (Linux) or denies debugger attach (macOS)
-  before it holds any key, so a same-user process cannot read the mlocked pages
+  start` and the `qrdb` desktop/CLI binary mark themselves non-dumpable (Linux) or deny debugger attach (macOS)
+  before they hold any key, so a same-user process cannot read the mlocked pages
   through ptrace, `/proc/<pid>/mem` or a core file. The environment opt-out for
   debugging logs a warning; see
   [../deployment/architecture.md](../deployment/architecture.md#process-inspection-hardening).
@@ -1679,8 +1556,8 @@ memory. They convert after the interface ships, not before:
   wraps the store the database is served from, and a sealed database is refused
   at request resolution on every engine. Once the `cluster-seal` feature is
   activated, a database seal is a cluster seal record that every node holding
-  the database's barrier enforces (see *Sealing in a cluster*). Until
-  per-database storage bindings land, only the system tenant can create one.
+  the database's barrier enforces (see *Sealing in a cluster*). Only the
+  system tenant can create one.
   See [../databases/](../databases/architecture.md).
 - **No key moves between nodes when sealing or unsealing.** A seal record holds
   no key material, and every node unseals itself with its own credential.

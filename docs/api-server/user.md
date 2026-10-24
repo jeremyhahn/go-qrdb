@@ -1,6 +1,6 @@
 # Unified API Server — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 One server, six ways to reach it. Which one you pick is a deployment and
 performance question, not a capability question — the same operations are
@@ -45,7 +45,8 @@ A URL scheme on `--server` picks the transport, so you rarely need
 REST and gRPC are on by default; QUIC, MCP and Unix are off until enabled. The
 REST port also serves HTTP/3 on UDP. Plus, when enabled: MySQL 3306, PostgreSQL
 5432, and a per-database etcd listener at the database's `listen_addr` (no
-daemon default; `qrdb database create --etcd` suggests `localhost:2379`).
+daemon default; `qrdb database create --etcd` takes it from
+`--etcd-listen-addr`, default `localhost:2379`).
 
 ## Calling from a browser — gRPC-Web
 
@@ -112,13 +113,52 @@ curl -k https://db.example.com/v1/config/initialized
 curl -k https://db.example.com/v1/ca/bootstrap     # only if configured
 ```
 
-Everything else needs a certificate.
+Everything else needs a certificate. The cluster key routes
+(`/v1/cluster/nodekey`, `/v1/cluster/keydelivery`) also take no credential, but
+they serve joining nodes and run their own certificate and placement checks.
 
 Over MCP, nothing answers an anonymous caller unless the deployment's embedder
 declared public tools — typically health, liveness, readiness and a login
 ceremony. Then an anonymous client can `initialize`, list exactly those tools
 and call them, and nothing else. Once authenticated, `tools/list` shows the
 tools your grants let you call, not the whole surface.
+
+## Binding the caller on the embedded transport
+
+A network transport learns who is calling from the connection. The embedded
+transport has no connection: whatever identity is on the `context.Context`
+your code passes is the caller. A program that serves its own users through an
+embedded node — a desktop application, a service that fronts qrdb with its own
+login — installs a **context binder** so that no call reaches qrdb without one.
+
+```go
+n, err := node.NewStandaloneNode(ctx, cfg, nil,
+	node.WithContextBinder(func(ctx context.Context) (context.Context, error) {
+		id, err := sessions.Identity(ctx) // your application's own session lookup
+		if err != nil {
+			return ctx, err // the call fails with this error; nothing runs
+		}
+		return auth.WithIdentity(ctx, id), nil
+	}),
+)
+```
+
+The binder runs once before every call through `Node.Client()`: every KV,
+SQL, barrier, ceremony, credential, IAM and admin request, and every watch
+stream. It runs before authorization, so the identity it binds is the one the
+permission check and the operation see. When it returns an error, the call
+fails with that same error (`errors.Is` matches it) and nothing is executed.
+
+- It binds only the client `Node.Client()` returns. The node's own internal
+  calls, and the services `Node.Services()` returns, are not behind it.
+- A binder that returns a `nil` context fails the call with
+  `*embedded.NilBoundContextError`, which names the operation.
+- `node.WithContextBinder(nil)` fails node construction with
+  `*embedded.NilContextBinderError`. Leave the option out to install no
+  binder; then the context you pass is used as it is.
+
+A program that builds the transport itself passes `embedded.WithContextBinder`
+to `embedded.New`, with the same behaviour.
 
 ## Metrics
 
@@ -165,6 +205,11 @@ The other go-quicraft series:
   `quicraft_transport_snapshots_rejected_total` and the snapshot byte counters;
 - security: `quicraft_security_unauthorized_messages_dropped_total`,
   `quicraft_security_unauthorized_snapshots_dropped_total`.
+
+`quicraft_raft_elections_total{shard_id}` counts the campaigns this node
+launched for that shard, one per round of vote requests it sent. A
+single-replica shard elects itself without sending any, so on a one-node
+deployment the counter stays at zero.
 
 ### Slow-sync warning
 
@@ -219,7 +264,8 @@ capability needs raft mode and the server is standalone, or it needs a build tag
 the binary lacks. `qrdb admin capabilities` distinguishes them.
 
 **A route 404s that you are sure exists.** Some routes are registered
-conditionally — `/v1/ca/bootstrap` only with a bootstrap certificate,
+conditionally — `/v1/ca/bootstrap` only when exactly one CA bundle source
+(the cluster CA or a host bundle) is configured,
 `/metrics` unless the embedder turned it off. An unregistered route is a 404,
 not a 501.
 `/v1/barrier/enable-encryption` is *not* one of these: it is always

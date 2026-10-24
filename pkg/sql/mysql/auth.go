@@ -93,5 +93,9 @@ func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr strin
 		return nil, err
 	}
 
-	return provider.NewSession(base, identity), nil
+	// The chain authenticated the principal once, for the connection; the
+	// session re-admits it before each statement, so the connection is
+	// refused once its tenant is suspended, and the seal guard closes it
+	// (sessionguard.TenantAdmission), ending a cursor no statement gate sees.
+	return provider.NewSession(base, identity, provider.WithSessionAdmitter(b.authMW)), nil
 }

@@ -1,7 +1,7 @@
 # Vector Database — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > Sections headed **Target** are the vector half of the multi-model database
@@ -66,8 +66,12 @@ Fixed at creation, immutable thereafter:
 | Field | Values | Default |
 |---|---|---|
 | `dimension` | uint32 | required |
-| `distance_metric` | `cosine`, `euclidean`, `dot-product` | `cosine` |
-| `index_type` | `hnsw`, `flat`, `ivf-flat` | `hnsw` |
+| `distance_metric` | `cosine`, `euclidean` (alias `l2`), `dot_product` | `euclidean` |
+| `index_type` | `hnsw`, `flat`, `ivf_flat` | `hnsw` |
+
+These are the wire values (`transport.DistanceMetric`,
+`transport.VectorIndexType`). The CLI spells them `dot-product` and `ivf-flat`
+and defaults `--distance-metric` to `cosine`.
 
 ## Invariants
 
@@ -116,7 +120,7 @@ the search cheaper.
 | Namespace already exists | `service.NamespaceExistsError` | yes |
 | Unknown namespace | not-found | **yes** — never auto-created |
 | Vector length ≠ namespace dimension | invalid-argument | **yes** |
-| Unknown distance metric or index type | invalid-argument | **yes** |
+| Unknown distance metric or index type at the CLI or MCP | invalid-argument | **yes** |
 | Unknown vector ID on get/delete/search-by-id | not-found | yes |
 | Malformed metadata filter JSON | invalid-argument | **yes** |
 | Progress polled for an unknown job/operation ID | not-found | yes |
@@ -165,12 +169,10 @@ distribution however many queries it averages.
 ### A test that asserts on the clustering must set a seed
 
 An unseeded test of a randomised algorithm is a gate that flips a coin on every
-run. `TestKMeans_Cluster` asserted that three centroids on twelve planted points
-end up more than 1.0 apart and set no seed; measured over 60,000 seeds on that
-dataset, **28 land in a local minimum where two centroids collapse to within
-1.0** — about 1 in 2,143. One of them reached CI and reddened the gate on a pull
-request whose diff could not touch this package, which is how the rate below
-came to be measured at all.
+run. `TestKMeans_Cluster` asserts that three centroids on twelve planted points
+end up more than 1.0 apart; measured over 60,000 seeds on that dataset, **28
+land in a local minimum where two centroids collapse to within 1.0** — about 1
+in 2,143.
 
 The rule is about the assertion, not the test. Asserting an **invariant** —
 that an error came back, that the centroid slice has the requested length, that
@@ -187,8 +189,8 @@ being returned. On the other two exits — convergence by centroid movement, and
 the iteration bound — the update step replaced the centroids after the counts
 were measured, so they describe the previous set.
 
-That reads like a defect and the correction is obvious, so it was measured
-before being applied, over 60,000 seeds:
+That reads like a defect with an obvious correction. Measured over 60,000
+seeds:
 
 | Config | Runs with stale counts | Degenerate as shipped | Degenerate if recomputed |
 |---|---|---|---|
@@ -225,14 +227,11 @@ vector's minimum distance from scratch, rescanning every previously-chosen
 centroid, which is O(n·k²·d): choosing the k-th centroid re-derives every
 minimum already found while choosing the first k-1. At `DefaultConfig`'s 256
 centroids over 1000 training vectors that is ~32.6 million distance
-evaluations instead of ~256 thousand — a 128x difference that only shows up
-once something amplifies it. The race detector's per-memory-access
-instrumentation was that amplifier: the from-scratch form took 77 seconds for
-one call under `-race`, and three of those in one `-count=3` invocation
-crossed testing's 10-minute alarm, killing the test binary before it could
-write `pkg/vector/ivf`'s coverage profile — which is why the failure mode was
-a CI coverage gate reporting the package **missing**, not a normal test
-failure.
+evaluations instead of ~256 thousand — a 128x difference. Under the race
+detector's per-memory-access instrumentation the from-scratch form takes over
+a minute per call, enough to cross testing's 10-minute alarm in a `-count=3`
+run and kill the test binary before it writes `pkg/vector/ivf`'s coverage
+profile.
 
 **Both implementations always return exactly k centroids, for any input that
 passes their own upfront validation** (non-empty, and at least k vectors).
@@ -243,7 +242,7 @@ fewer distinct points than k, that scan can come up empty, and skipping the
 append on that iteration returns a centroid slice **shorter than k**. That
 silently violates an invariant `recomputeCentroids` (ivf) and the refinement
 loop (PQ) both assume: they size their per-centroid working arrays to k
-unconditionally. The fix in both places is to draw uniformly at random
+unconditionally. Both therefore draw uniformly at random
 instead of scanning for an "unchosen" point when every remaining distance is
 zero. `TestKMeans_Cluster_FewerDistinctPointsThanK` asserts this directly on
 `initializeKMeansPlusPlus`'s own return value, not merely on `Cluster()`'s:
@@ -253,13 +252,11 @@ produced, which hides a short initializer result from any assertion made
 only at the `Cluster()` level.
 
 **The duplicate centroid this uniform draw can produce is repaired by a
-mechanism BOTH refinement loops now share:
+mechanism both refinement loops share:
 `pkg/vector/kmeans.RepairEmptyClusters`.** ivf's `handleEmptyClusters` (see
-above) is now a one-line call into it; PQ's `kmeansCluster` gained the same
-call it did not have before, at the same point in its own refinement loop —
-after the loop, using whatever `assignments`/`counts` it left behind, exactly
-as ivf's own call does. `pkg/vector/kmeans` was extracted rather than PQ
-reimplementing ivf's repair a second time: it takes vectors, assignments,
+above) is a one-line call into it; PQ's `kmeansCluster` makes the same call at
+the same point in its own refinement loop — after the loop, using whatever
+`assignments`/`counts` it left behind, exactly as ivf's own call does. It takes vectors, assignments,
 per-cluster sizes, centroids and a `func(a, b []float32) float32` distance
 callback — needing no true metric, since it only ever compares outputs to
 find a maximum. The two callers do not even agree on what that callback
@@ -274,12 +271,12 @@ create a cycle back to either caller.
 
 The repair moves the single farthest displaceable point into each empty
 cluster, in turn, so a duplicate centroid is transient rather than permanent
-for BOTH implementations now, **provided the training data actually contains
+for both implementations, **provided the training data actually contains
 enough distinct positions to fill every cluster**.
 
 **The donor search considers EVERY cluster with more than one member, not
 only the largest one.** Restricting the search to the single largest cluster
-was a real bug caught by review, not a simplification: a cluster can be large
+misses donors: a cluster can be large
 in COUNT while every one of its points sits exactly on its own centroid (a
 mass of exact duplicates), in which case every distance in it is zero and the
 largest cluster has nothing usable to donate — even though a SMALLER cluster
@@ -290,20 +287,18 @@ elsewhere.
 `TestRepairEmptyClusters_LargestClusterIsDegenerate` (`pkg/vector/kmeans`)
 and `TestKMeans_HandleEmptyClusters_LargestClusterIsDegenerate`
 (`pkg/vector/ivf`) both pin this exact shape — a large duplicate-cored
-cluster beside a smaller but genuinely spread one — and were verified by hand
-to fail against the largest-cluster-only version.
+cluster beside a smaller but genuinely spread one.
 
 **The donor search also does not assume distFunc is non-negative.** It seeds
 its running maximum from the first eligible candidate rather than a fixed
-zero, and compares candidates only against each other. A version seeded at a
-fixed zero is a second bug review caught: `ivf.KMeans`'s own call passes its
+zero, and compares candidates only against each other. A fixed-zero seed would
+reject real donors: `ivf.KMeans`'s own call passes its
 signed `DistanceFunc` (`DotProductDistance`, where a MORE NEGATIVE value is
 CLOSER — see below), and a cluster whose points are all reasonably close can
 have every one of its raw distances negative, in which case a
 zero-seeded threshold rejects every candidate and reports no donor even
 though a real one exists. `TestRepairEmptyClusters_SignedDistanceFunction`
-pins this with a synthetic signed distance function and was verified by hand
-to fail against the zero-seeded version.
+pins this with a synthetic signed distance function.
 
 A vector whose value is **identical to its own centroid is excluded from the
 donor search** rather than rejected after it. Moving such a vector could only
@@ -330,13 +325,11 @@ NaN for large-but-finite input (dividing one float32 overflow by another is
 Inf/Inf), and `DotProductDistance` can overflow to a clean `+Inf` or `-Inf`.
 A NaN candidate cannot be meaningfully compared as farther or nearer than
 anything — IEEE 754 makes both `x > NaN` and `NaN > x` false — so accepting
-one as the running maximum (an earlier version of this code did, for
-whichever candidate happened to be scanned first) poisons every later
+one as the running maximum poisons every later
 comparison and the search silently keeps the first candidate scanned
 instead of the true farthest one, regardless of scale.
 `TestRepairEmptyClusters_SkipsNaNCandidates` reproduces this with
-`Cosine({1e20, 0}, {5e19, 0})` — perfectly finite input — and was verified by
-hand to fail against the version that does not skip NaN.
+`Cosine({1e20, 0}, {5e19, 0})` — perfectly finite input.
 Clamping cannot change the ORDER of candidates (-Inf < any finite value <
 +Inf either way); what it changes is ties. A clamped `+Inf` ties with, rather
 than beats, an earlier `+MaxFloat32` candidate, and a clamped `-Inf` ties with
@@ -456,32 +449,19 @@ reclaims space from deleted vectors; `RebuildIndex` reconstructs the ANN
 index from the stored vectors on demand, the same way the automatic
 construction-time rebuild does.
 
-**Correction (found and fixed by the lane 1B restart-blocker fix,
-2026-10-06).** An earlier revision of this document, and the shipped code it
-described, left ANN indexes unreloaded at startup: `loadNamespaces`
-pre-registered a blank index hardcoded to the L2 metric for every namespace
-the store already held, which permanently satisfied the lazy rebuild's
-"index already exists" check -- so the rebuild branch that reads a
-namespace's real configured metric from storage, and scans its vectors back
-in, never ran for a namespace that predated the current process. A restart
-therefore came up with an empty index silently ranking under the wrong
-metric for every namespace but a freshly-metric'd `L2` one. `CreateNamespace`
-carried the identical defect one level up: its non-Raft path also hardcoded
-the L2 metric onto the index it created, independent of restart, so a
-`COSINE` or `DOT_PRODUCT` namespace searched under the wrong metric from the
-moment it was created. Both call sites, and the lazy-rebuild path itself,
-now derive the index's metric from one function
-(`distanceMetricFromString`), and `loadNamespaces` builds each namespace's
-index through the same rebuild `ensureHNSWIndex` uses rather than a
-placeholder. `TestVectorService_RestartPreservesConfiguredMetric` and
+`CreateNamespace`, `loadNamespaces` and the lazy rebuild all derive the
+index's metric from one function (`distanceMetricFromString`), and
+`loadNamespaces` builds each namespace's index through the same rebuild
+`ensureHNSWIndex` uses, so a restarted node ranks every namespace under its
+configured metric. `TestVectorService_RestartPreservesConfiguredMetric` and
 `TestVectorService_SnapshotInstallPreservesConfiguredMetric`
 (`pkg/service/vector_restart_test.go`) pin both call paths against a real
 PebbleDB-backed store, with a query vector chosen so that L2 and cosine
-ranking disagree; both were verified to fail against the pre-fix code.
+ranking disagree.
 
 ## Target: the vector engine
 
-### Status (2026-10-05)
+### Status
 
 This section is the five-phase program's target design, written ahead of the
 code it specifies. Two of the five phases have shipped; the rest of this
@@ -492,10 +472,9 @@ section still describes work not yet wired to anything a caller can reach.
   cluster feature gate, and apply handlers on both `MVCCEngine` and `KVEngine`
   (`pkg/engine/vector_handlers.go`) that read and write vector namespaces,
   vectors, and their metadata index inside the shared `storage.Batch`, on
-  every local backend (memory, file, pebble, objstore). Includes the B1-B4,
-  N1-N3, N6-N7, N9 review fixes and the B3-residual re-review fix (the
-  reserved `__vec:` namespace is closed against every write verb and every
-  compare, on both engines).
+  every local backend (memory, file, pebble, objstore). The reserved `__vec:`
+  namespace is closed against every write verb and every compare, on both
+  engines.
 - **Phase 2 — index, checkpoint, determinism: shipped.** The in-memory ANN
   index (`pkg/engine.VectorIndexManager`), HNSW/IVF/flat `LiveIndex`
   adapters, deterministic layer/seed derivation (`pkg/vector.Deterministic*`),
@@ -503,14 +482,6 @@ section still describes work not yet wired to anything a caller can reach.
   `RebuildNamespace` recovery. Wired into `MVCCEngine` and `KVEngine` via
   `WithMVCCVectorIndex` / `WithKVVectorIndex`, exercised by the acceptance
   tests in `pkg/engine/vector_acceptance_test.go`.
-- **Restart blocker in the pre-Phase-4 service, independent of the above:
-  fixed 2026-10-06.** `pkg/service/vector.go` is what Phase 4 rewrites and is
-  unaffected by phases 1-2 above (nothing proposes their opcodes yet, per
-  "Phase 4" below) -- it is the node-local-Pebble-store service described in
-  "Persistence" above, and it is still what production traffic uses today.
-  Its restart path discarded both a namespace's stored vectors and its
-  configured distance metric; see "Persistence" above for the fix. This is
-  not Phase 3 or Phase 4 work and does not change either phase's status.
 - **Phase 3 — Raft snapshot + multi-node parity: not started.** The vector
   keyspace is ordinary state-machine state and travels in today's snapshot by
   construction, but multi-node parity (join, catch-up, recovery) for it is
@@ -520,30 +491,30 @@ section still describes work not yet wired to anything a caller can reach.
   opcodes above. The node-local Pebble vector store (`pkg/server/lifecycle`)
   is untouched and still serves production traffic. This phase also owns: the
   per-database storage-binding precondition noted under "Keys in the
-  database's store" (N9); count/byte totals and quota enforcement (N5); the
+  database's store"; count/byte totals and quota enforcement; the
   database-drop key-reclaim forward hazard (acceptance test 11); and OD-14
   shard_id removal across transports.
 - **Phase 5 — backup/restore coverage: not started.**
 
 Both shipped phases are additive and dormant: nothing proposes the new
-opcodes yet (phase 4 does that), so main's observable behaviour is unchanged
-except for the B3/B3-residual `__vec:` key-forgery refusal, which affects
-only keys under a prefix no existing caller writes.
+opcodes yet (phase 4 does that). Their one observable effect is the `__vec:`
+key-forgery refusal, which affects only keys under a prefix no existing caller
+writes.
 
 ### Commands
 
 Every vector write is a command in the extended protocol, proposed to the
-database binding's host and applied by the engine. Opcode numbers are assigned
-in the implementing change and are wire format from then on.
+database binding's host and applied by the engine. The opcodes, 70-77 in
+`pkg/protocol/vector.go`, are wire format.
 
 | Command | Applies |
 |---|---|
-| `VectorNamespaceCreate` | namespace record with geometry, index parameters, `seq = 0`, `next_id = 1`, training generation 0 |
-| `VectorNamespaceDelete` | deletes the namespace record, every record, metadata index entry and mutation-log entry under it |
-| `VectorUpsert`, `VectorBatchUpsert` | records, metadata index entries, `seq`, `next_id` for omitted IDs, mutation-log entries |
-| `VectorDelete`, `VectorBatchDelete` | the same, removing |
-| `VectorUpdateMetadata` | the record's metadata and its index entries; no ANN change |
-| `VectorIndexReconfigure` | new index parameters and training generation; each replica rebuilds its index locally |
+| `OpVectorNamespaceCreate` | namespace record with geometry, index parameters, `seq = 0`, `next_id = 1`, training generation 0 |
+| `OpVectorNamespaceDelete` | deletes the namespace record, every record, metadata index entry and mutation-log entry under it |
+| `OpVectorUpsert`, `OpVectorBatchUpsert` | records, metadata index entries, `seq`, `next_id` for omitted IDs, mutation-log entries |
+| `OpVectorDelete`, `OpVectorBatchDelete` | the same, removing |
+| `OpVectorUpdateMetadata` | the record's metadata and its index entries; no ANN change |
+| `OpVectorIndexReconfigure` | new index parameters and training generation; each replica rebuilds its index locally |
 
 Each is wrapped by the guarded-write wrapper carrying the database's drop fence,
 exactly like a KV write. The vector commands are new Raft commands, so they sit
@@ -554,7 +525,7 @@ index stats — are engine lookups through the host with the request's
 consistency level.
 
 `RebuildIndex` with unchanged parameters is a node-local rebuild on the serving
-node; with changed parameters it proposes `VectorIndexReconfigure`. Rebuild and
+node; with changed parameters it proposes `OpVectorIndexReconfigure`. Rebuild and
 compaction job handles are node-local: the progress call is routed to the node
 that issued the handle, and a handle that node no longer knows (after a restart
 or a leader change) is not-found, after which `GetIndexStats` reports the
@@ -572,20 +543,13 @@ __vec:md/<ns>/<field, hex>/<value, hex>/<id: 16 hex digits, big-endian>  metadat
 __vec:ml/<ns>/<seq: 16 hex digits, big-endian>          mutation-log entry: operation and ID
 ```
 
-**Deviation from an earlier revision of this document, found by the lane 1B
-engine-foundation implementation (2026-10-02) and corrected here in the same
-change.** This section previously specified the ID, sequence, field, and value
-components as raw bytes -- an 8-byte big-endian integer for IDs and sequences,
-and the field/value strings verbatim either side of a `0x00` separator. Built
-and run against every local backend (`pkg/engine`'s cross-backend test
-matrix), that layout failed on `objstore`: go-objstore's local provider
-refuses any key containing a NUL byte, and a raw big-endian `uint64` is NUL
-for every leading byte up to the value itself -- the common case, since small,
-sequentially-allocated IDs (1, 2, 3, ...) are the ones with the MOST leading
-zero bytes, not an edge case. Every integer component is therefore hex-encoded
-(16 lowercase hex digits for the 8-byte value), which preserves the same
-lexicographic ordering a raw big-endian scan depended on, one hex digit per
-nibble. The metadata field and value -- caller-supplied, unconstrained
+Every integer component is hex-encoded (16 lowercase hex digits for the
+8-byte value), which preserves the lexicographic ordering of a raw big-endian
+value, one hex digit per nibble. Raw bytes would fail on `objstore`:
+go-objstore's local provider refuses any key containing a NUL byte, and a raw
+big-endian `uint64` is NUL for every leading byte up to the value itself --
+the common case, since small, sequentially-allocated IDs (1, 2, 3, ...) are
+the ones with the MOST leading zero bytes. The metadata field and value -- caller-supplied, unconstrained
 strings, unlike a namespace name -- are hex-encoded too, both to remove any
 NUL byte they might contain and to remove `/` as a possible segment-boundary
 collision; because the metadata index is an EQUALITY index ("Shape chosen" in
@@ -605,13 +569,12 @@ has no tenant or database prefix because it relies on this; it is an
 assertion about the CALLER (whatever constructs the binding this engine is
 wired into), not something `pkg/engine` can check from inside an apply
 handler, which sees only a `storage.Batch` and has no way to ask "whose is
-this?". Phase 1 (this change) wires nothing to a real binding, so the
+this?". Phases 1-2 wire nothing to a real binding, so the
 precondition is latent and unenforced. Phase 4 (service-layer rewrite) is
 where `pkg/service/vector.go` is wired to a real per-database storage
 binding, and is where this precondition becomes checkable and must be
 enforced -- e.g. by construction, if the binding type itself cannot be shared
-across two databases -- rather than left as a comment (go-qrdb
-vector-replicated review, N9).
+across two databases -- rather than left as a comment.
 
 **Forward hazard for phase 4: a database drop's key reclaim does not know
 about `__vec:` keys.** `pkg/service.reclaimKeys` walks a fixed, explicit list
@@ -629,8 +592,7 @@ namespace the database holds -- through the same apply handler every other
 vector delete goes through -- rather than teach `reclaimKeys` a fifth raw
 prefix. This is a phase-4 acceptance test (see "Target: acceptance tests",
 below), not phase-1's or phase-2's to fix: neither phase wires a real
-database binding for `reclaimKeys` to run against (go-qrdb vector-replicated
-review, phase-2 forward hazard).
+database binding for `reclaimKeys` to run against.
 
 ### Apply and the index
 
@@ -650,22 +612,18 @@ namespace vector/byte counts and any quota check against them belong at the
 service layer that proposes these commands -- phase 4 of the vector-replicated
 program ("service-layer rewrite and transport parity", the same phase that
 rewrites `pkg/service/vector.go` to propose through this engine instead of the
-node-local Pebble store) -- and are not implemented in any phase before it. An
-earlier revision of this document listed them as something `VectorUpsert` and
-`VectorBatchUpsert` already apply; they do not (go-qrdb vector-replicated
-review, N5).
+node-local Pebble store) -- and are not implemented in any phase before it.
+`OpVectorUpsert` and `OpVectorBatchUpsert` do not apply them.
 
 The mutation log keeps the last N entries per namespace, where N
-(`defaultMutationLogWindow` in `pkg/engine/vector_handlers.go`, 50,000 as
-shipped in phase 1) is a COMPILE-TIME CONSTANT, not a node setting: every
-replica trims at the identical sequence only because every replica's binary
-carries the identical value. An earlier revision of this document called it
-"a node setting", which would let two nodes running different configuration
-trim at different points from the same log and diverge -- correctable only by
-making it a constant (as shipped) or, if it ever needs to be configurable, a
-REPLICATED value stored in the namespace record itself and changed only
-through a command every replica applies identically (go-qrdb vector-replicated
-review, N4). Trimming itself happens in apply by sequence, so every replica
+(`defaultMutationLogWindow` in `pkg/engine/vector_handlers.go`, 50,000) is a
+COMPILE-TIME CONSTANT, not a node setting: every replica trims at the
+identical sequence only because every replica's binary carries the identical
+value. A node setting would let two nodes running different configuration
+trim at different points from the same log and diverge; if the window ever
+needs to be configurable, it must be a REPLICATED value stored in the
+namespace record itself and changed only through a command every replica
+applies identically. Trimming itself happens in apply by sequence, so every replica
 holds the same window regardless.
 
 ### Checkpoints
@@ -687,7 +645,7 @@ For each namespace record: load the newest checkpoint whose format version is
 current and whose sequence is at least the oldest mutation-log sequence; replay
 the log from the checkpoint's sequence; otherwise rebuild from the records.
 Until a namespace is ready, searches on it return a retryable
-`service.VectorIndexWarmingError` (new); get, list and metadata search work
+`service.VectorIndexWarmingError`; get, list and metadata search work
 from the store immediately.
 
 ### Snapshot
@@ -712,40 +670,35 @@ snapshot without it restores correctly.
 `vectorstorage.NewPebbleVectorStorage` as the service's store, the vector store
 in `pkg/server/lifecycle`, `shard.ShardVector` and `service.VectorShardID`,
 `statemachine.VectorStateMachine`, `statemachine.VectorConsensusFSM` and their
-factory, `service.WithRaftNode` for vectors, `service.WithStrictTenantIsolation`
-and the service's tenant scoping of namespace names, and the namespaced vector
+factory, `service.WithRaftNode` for vectors, the vector service's
+`SetClusterIsolationPolicyReader` and its tenant scoping of namespace names, and the namespaced vector
 wrapper in `pkg/server` for any database with its own store. The vector
 storage schema package is kept only if the engine's record codec reuses it.
 
-### Target: acceptance tests (lane 1B)
+### Target: acceptance tests
 
 1. **Restart keeps search working.** Upsert, restart, search returns the same
-   top-k. This failed against the shipped (pre-Phase-4) service, whose
-   startup index was empty; fixed 2026-10-06 and pinned by
-   `TestVectorService_RestartPreservesConfiguredMetric`
-   (`pkg/service/vector_restart_test.go`), run against a real PebbleDB
-   store. Still open for the Phase-3/4 engine once `pkg/service/vector.go`
-   is rewired to it -- `pkg/engine`'s own `Warm`/checkpoint recovery is a
-   separate, already-shipped mechanism this item has not yet been re-run
-   against end to end.
+   top-k. `TestVectorService_RestartPreservesConfiguredMetric`
+   (`pkg/service/vector_restart_test.go`) pins this for the node-local service
+   against a real PebbleDB store. Open for the engine once
+   `pkg/service/vector.go` is rewired to it: `pkg/engine`'s own
+   `Warm`/checkpoint recovery has not been run against this item end to end.
 2. **The namespace's metric survives restart.** A cosine namespace searched
-   after restart ranks by cosine. Same fix and test as item 1: the query
-   vector `TestVectorService_RestartPreservesConfiguredMetric` searches with
-   is chosen so L2 and cosine ranking disagree, so the test fails if the
-   metric is ever discarded again.
+   after restart ranks by cosine. The query vector
+   `TestVectorService_RestartPreservesConfiguredMetric` searches with is chosen
+   so L2 and cosine ranking disagree.
 3. **Replicas agree.** On a three-replica database, upsert through the leader
    and search with follower reads on each replica: identical top-k.
 4. **Snapshot install.** A replica added after 10,000 upserts serves searches
    without a rebuild when the snapshot carries a matching checkpoint, and after
-   one when it does not; both give the same results. Still open: this item is
-   about the Phase-3/4 engine's Raft snapshot, which this lane has not wired
-   up. `TestVectorService_SnapshotInstallPreservesConfiguredMetric`
+   one when it does not; both give the same results. Open: this item is about
+   the engine's Raft snapshot, which is not wired.
+   `TestVectorService_SnapshotInstallPreservesConfiguredMetric`
    (`pkg/service/vector_restart_test.go`) pins the analogous case for the
-   pre-Phase-4 service -- which has no Raft snapshot of its node-local store
-   at all, so a "new replica" there is modeled as a fresh service opened
-   over a filesystem copy of an already-populated store -- and shares this
-   item's defect (and fix) at the `loadNamespaces` construction path, but it
-   is not a test of checkpoint-carrying Raft snapshots.
+   node-local service -- which has no Raft snapshot of its store at all, so a
+   "new replica" there is modeled as a fresh service opened over a filesystem
+   copy of an already-populated store -- through the same `loadNamespaces`
+   construction path; it is not a test of checkpoint-carrying Raft snapshots.
 5. **Crash between commit and index update.** Inject the crash; after reopen the
    vector is searchable.
 6. **The drop fence.** An upsert proposed before a database's drop fence and
@@ -764,7 +717,7 @@ storage schema package is kept only if the engine's record codec reuses it.
     index and the mutation log alike -- because teardown issued an
     `OpVectorNamespaceDelete` per namespace rather than a raw prefix delete
     that `reclaimKeys` does not know to run (see the forward hazard noted
-    beside the N9 precondition, above).
+    beside the single-database precondition, above).
 
 ## Test strategy
 

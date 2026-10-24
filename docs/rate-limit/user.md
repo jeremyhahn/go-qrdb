@@ -1,6 +1,6 @@
 # Rate Limiting — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 This feature has two audiences: the **embedder** who wires qrdb into a
@@ -39,7 +39,8 @@ mw, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 ```
 
 That is the whole surface. No further wiring is needed per transport: every
-one of REST, gRPC, the unix-socket gRPC listener, QUIC, and MCP already
+one of REST, gRPC, the unix-socket gRPC listener, QUIC, MCP and the
+embedded transport already
 calls through the same authorization function this `Policy` is checked
 inside, so declaring it once throttles the permission everywhere it is
 reachable.
@@ -54,8 +55,7 @@ derived constant — there is no protocol fact to compute a request-frequency
 budget from the way, for example, a request-body-size bound can be derived
 from a maximum entry size. Base it on what the operation and its backing
 store can actually sustain per caller, and revisit it if it turns out to be
-wrong; changing it requires a process restart (see the known gap in
-[engineering.md](engineering.md)).
+wrong; changing it requires a process restart.
 
 ## For an API caller: what a refusal looks like
 
@@ -69,12 +69,16 @@ all:
   `PermissionDenied` — your credential and your grant are both fine, so
   retrying after the indicated wait is the correct response, not
   re-authenticating.
-- **QUIC / MCP**: an error naming the permission and the reason; there is no
-  separate numeric status for this refusal class on either transport today.
+- **QUIC**: status `StatusResourceExhausted`, with the permission and the
+  reason in the frame.
+- **MCP**: error code `RESOURCE_EXHAUSTED` (−32008) in the tool result,
+  with the refusal text.
+- **Embedded (Go)**: a `*middleware.RateLimitedError` carrying the
+  permission, subject, tenant and `RetryAfter`.
 
-**What to do**: back off for at least the duration the error names (REST's
-`Retry-After` header, or the wait mentioned in the error message on the
-other transports), then retry the same request. A refusal here never means
+**What to do**: back off for at least the duration the refusal names (REST's
+`Retry-After` header, `RetryAfter` on the embedded error, or the wait
+mentioned in the error message on the other transports), then retry the same request. A refusal here never means
 your request was malformed or your grant was insufficient — those are
 different error classes with different codes.
 
@@ -98,8 +102,8 @@ burst. This is not persisted state, and is not meant to be.
 
 **You expected a caller connecting through two different nodes to share one
 budget, and it did not.** Rate limiting is enforced **per node**, not
-cluster-wide — see the known limitation in
-[architecture.md](architecture.md). A caller load-balanced across nodes gets
+cluster-wide — see
+[architecture.md](architecture.md#what-this-feature-deliberately-does-not-do). A caller load-balanced across nodes gets
 one bucket per node it reaches, not one shared bucket for the cluster.
 
 **You declared a `Policy` and nothing changed.** Confirm the permission

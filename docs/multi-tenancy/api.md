@@ -1,7 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Two gRPC services: tenant lifecycle and governance on
@@ -16,7 +15,7 @@ wire over a UDS.
 | Create | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create` (platform operator) |
 | Get | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | `tenants:read` |
 | List | `GET /v1/tenants/list` | `TenantList` | `tenant.List` | `qrdb_tenant_list` | `ListTenants` | `tenants:list`; the full list needs `tenants:list:cross` |
-| Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation` (platform operator) |
+| Update | `PUT /v1/tenants/{id}` | `TenantUpdate` | `tenant.Update` | `qrdb_tenant_update` | `UpdateTenant` | `tenants:update`; an isolation change also needs `tenants:set_isolation`, a status change `tenants:set_status` (platform operator) |
 | Delete | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | `tenants:delete` |
 | Update quotas | `POST /v1/tenants/{id}/quotas` | `TenantUpdateQuotas` | `tenant.UpdateQuotas` | `qrdb_tenant_update_quotas` | `UpdateTenantQuotas` | `tenants:set_quotas` (platform operator) |
 | Update entitlements | `PATCH /v1/tenants/{id}/entitlements` | `TenantUpdateEntitlements` | `tenant.UpdateEntitlements` | `qrdb_tenant_update_entitlements` | `UpdateTenantEntitlements` | `tenants:set_entitlements` (platform operator) |
@@ -30,12 +29,6 @@ every tenant and the reconcile acts on a node's disk across every tenant.
 Provisioning-governance permissions checked in addition where relevant:
 `tenants:set_isolation`, `databases:create_raft`, `databases:create_volume`.
 
-> **Corrected 2026-09-29.** This table previously gave the REST routes as
-> `GET /v1/tenants`, `PATCH /v1/tenants/{id}` and `PATCH /v1/tenants/{id}/quotas`,
-> and the quotas permission as `tenants:update_quotas`. None of those exist. The
-> routes are `GET /v1/tenants/list`, `PUT /v1/tenants/{id}` and
-> `POST /v1/tenants/{id}/quotas`, and quotas are gated by `tenants:set_quotas`
-> (before this release, by `tenants:update`).
 
 ## Who may call what
 
@@ -53,15 +46,9 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
   built-in Admin role carries them in every tenant, as it carries its other
   cross-scope grants, so only Admin in the `system` tenant can use them. A
   tenant's Admin cannot raise its own quotas, grant itself entitlements, change
-  its own isolation tier, or create tenants. The embedded transport runs no
-  AuthMiddleware, so it enforces this rule itself
-  (`tenant.RequirePlatformOperator`): `CreateTenant`, `UpdateTenantQuotas`,
-  `UpdateTenantEntitlements`, and an isolation-tier change through
-  `UpdateTenant`, are refused with `*tenant.PlatformOperatorRequiredError`
-  for a caller whose context identity is not in the `system` tenant. A
-  context with no identity bound at all (a trusted in-process host with no
-  auth wired up) resolves to the `system` tenant, as it already does for
-  `tenant.Confine`.
+  its own isolation tier, or create tenants. A tenant-local caller is refused
+  with `*rbac.PermissionDeniedError` (403 / `PERMISSION_DENIED`), on every
+  transport including the embedded one.
 - **Get, update and delete are authorized against the tenant they name.** A
   tenant's Admin may read, rename and delete its own tenant and no other; the
   platform operator may act on any tenant. Deleting its own tenant is
@@ -80,13 +67,11 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
   relational tables included. When the node cannot verify that the tenant is
   empty -- the data plane is unreachable, or no data probe is wired -- the
   change is refused with 503 / `UNAVAILABLE` rather than risk orphaning data.
-  Only REST enforced this before.
 - **List is narrowed, not refused.** A caller holding `tenants:list:cross`
   (the platform operator) gets every tenant. Anyone else gets only its own
-  tenant, because the full list carries every tenant's configuration,
-  `data_root` included.
+  tenant, because the full list carries every tenant's configuration.
 - **A tenant id that cannot name a tenant is refused before anything else.**
-  An id containing `/`, `\` or a control byte, or the relative segments `.` and
+  An id containing `/`, `\` or a byte below 0x20, or the relative segments `.` and
   `..`, is a 400 / `INVALID_ARGUMENT`, on create and on every by-id operation.
   On REST a `/` in the URL is a path separator, so a by-id route never sees
   one; it reaches a tenant id only through the create body.
@@ -95,10 +80,9 @@ tenant, and these rules are what keep a tenant's Admin inside its own tenant.
   when RBAC cannot, but a refusal from a rate-limit policy (for example on
   `tenant_barrier:unseal`) is final: 429 / `RESOURCE_EXHAUSTED`.
 
-The embedded transport (`Client.Tenants()`) runs in the caller's process and
-runs no AuthMiddleware, so most of this section's per-route checks do not
-apply to it; the platform-operator rule above is the exception it enforces
-directly.
+The embedded transport (`Client.Tenants()`) applies the same decisions through
+the same middleware. A node run with authentication disabled applies none of
+them, on any transport.
 
 ## Capability matrix — per-tenant barrier
 
@@ -106,12 +90,13 @@ Served by `qrdb.v1.TenantBarrierService`.
 
 | Capability | REST | gRPC / Unix (`TenantBarrierService/`) | QUIC | MCP tool | `scp` permission |
 |---|---|---|---|---|---|
-| Init | `POST /v1/tenants/{id}/barrier/init` | `Init` | `tenant.BarrierInit` | `qrdb_tenant_barrier_init` | **identity-gated** |
+| Init begin (nonce) | `POST /v1/tenants/{id}/barrier/init/begin` | `InitBegin` | `tenant.BarrierInitBegin` | `qrdb_tenant_barrier_init_begin` | **identity-gated** |
+| Init complete | `POST /v1/tenants/{id}/barrier/init/complete` | `InitComplete` | `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_complete` | **identity-gated** |
 | Status | `GET /v1/tenants/{id}/barrier/status` | `Status` | `tenant.BarrierStatus` | `qrdb_tenant_barrier_status` | **identity-gated** |
 | Unseal | `POST /v1/tenants/{id}/barrier/unseal` | `Unseal` | `tenant.BarrierUnseal` | `qrdb_tenant_barrier_unseal` | **identity-gated** |
-| Seal | `POST /v1/tenants/{id}/barrier/seal` | `Seal` | `tenant.BarrierSeal` | `qrdb_tenant_barrier_seal` | `TenantBarrierSeal` |
-| Officer register | `POST /v1/tenants/{id}/barrier/officers` | `OfficerRegister` | `tenant.BarrierOfficerRegister` | `qrdb_tenant_barrier_officer_register` | `TenantBarrierOfficerRegister` |
-| Officer list | `GET /v1/tenants/{id}/barrier/officers` | `OfficerList` | `tenant.BarrierOfficerList` | `qrdb_tenant_barrier_officer_list` | `TenantBarrierOfficerList` |
+| Seal | `POST /v1/tenants/{id}/barrier/seal` | `Seal` | `tenant.BarrierSeal` | `qrdb_tenant_barrier_seal` | `tenant_barrier:seal` |
+| Officer register | `POST /v1/tenants/{id}/barrier/officers` | `OfficerRegister` | `tenant.BarrierOfficerRegister` | `qrdb_tenant_barrier_officer_register` | `tenant_barrier:officer_register` |
+| Officer list | `GET /v1/tenants/{id}/barrier/officers` | `OfficerList` | `tenant.BarrierOfficerList` | `qrdb_tenant_barrier_officer_list` | `tenant_barrier:officer_list` |
 | Share claim begin | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/begin` | `ShareClaimBegin` | `tenant.BarrierShareClaimBegin` | `qrdb_tenant_barrier_share_claim_begin` | **identity-gated** |
 | Share claim complete | `POST /v1/tenants/{id}/barrier/officers/{username}/claim/complete` | `ShareClaimComplete` | `tenant.BarrierShareClaimComplete` | `qrdb_tenant_barrier_share_claim_complete` | **identity-gated** |
 
@@ -121,7 +106,7 @@ A Shamir tenant barrier is unsealed and sealed only through its holder quorum.
 
 ### Init's inline Shamir officer roster
 
-`TenantBarrierInitRequest` carries an optional `officers` field (the same
+`TenantBarrierInitRequest` (the init-complete request) carries an optional `officers` field (the same
 `username`/`role`/`csr_pem`/`encryption_kem`/`encryption_key`/`factors`/
 `designated` shape as `OfficerRegister`) and a `policy` field (factor
 policy, `""` = `designated`). Supplying `officers` on the Shamir strategy
@@ -133,8 +118,7 @@ or the barrier's own key split). The response's `holders` field then
 carries each officer's issued certificate, in roster order. Supplying
 `officers` on any strategy but Shamir is refused (not silently discarded);
 an empty/absent `officers` is the pre-enrolled-holders path (every holder
-already registered standalone via `OfficerRegister`), unchanged from before
-this field existed.
+already registered standalone via `OfficerRegister`).
 
 `officers`/`holders` are wired on every transport: REST, gRPC, QUIC, MCP,
 Unix and the embedded transport. gRPC and Unix carry `officers` as
@@ -144,8 +128,8 @@ CeremonyHolderCert`.
 
 **Identity-gated** means the caller's own authenticated identity authorizes the
 call — a tenant acts on its own barrier, and a share holder authorizes itself
-with its certificate or factor proof. Seal and officer registration carry
-named permissions because they are administrative acts on the tenant.
+with its certificate or factor proof. Seal and the officer register and list
+carry named permissions because they are administrative acts on the tenant.
 
 These endpoints apply only to tenants with a **dedicated** isolation type. A
 tenant on the shared system barrier has no barrier of its own.
@@ -171,11 +155,10 @@ separately by `X-QRDB-Database` or its per-transport equivalent. Detail:
 
 `isolation_type`: `prefix` (default) · `barrier` · `volume` · `raft`.
 `barrier_auto_unseal` selects **system-managed** auto-unseal over the secure
-self-managed default and is **entitlement-gated**. A request carrying
-`data_root` is refused (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`): a
-tenant's location is a volume pool and slot, resolved on each node. In a
-response, `data_root` is the tenant's directory **on the node that answered**,
-resolved from that pool and slot; it is never stored.
+self-managed default and is **entitlement-gated**. `volume_pool` (optional)
+names the volume pool a `volume` or `raft` tenant is placed on; empty uses the
+tenant's default pool, the first of its allowed pools. A tenant's location is a
+volume pool resolved on each node; no request or response names a directory.
 
 The first admin:
 
@@ -257,9 +240,36 @@ and the undo then runs on its own 30-second budget. An onboarding the deadline
 cuts short answers 504 / `DEADLINE_EXCEEDED`; because undoing retires the id,
 retry under a new id.
 
-**BREAKING:** `admin_username` and one admin credential are required, and the
-response carries `admin`. A tenant can no longer be created without its first
-admin. The caller still needs `tenants:create` (platform operator).
+### Description and metadata
+
+A tenant carries two free-form descriptive fields, returned on every read
+(`TenantInfo` / `TenantResponse`) and set only by **Update**, a patch. Neither
+field affects isolation, quotas or authorization; qrdb stores them and returns
+them.
+
+| Field | Patch semantics | Limits |
+|---|---|---|
+| `description` | absent: unchanged · present: replaces · `""`: clears | at most 1024 bytes of UTF-8 |
+| `metadata` | absent: unchanged · present: **replaces the whole map** · empty map: clears | at most 64 entries; keys non-empty, at most 128 bytes; values at most 1024 bytes; all UTF-8 |
+
+On each transport:
+
+| Transport | `description` | `metadata` |
+|---|---|---|
+| REST `PUT /v1/tenants/{id}` | `"description"`; omitted or `null` is unchanged | `"metadata": {…}`; omitted or `null` is unchanged, `{}` clears |
+| gRPC / Unix `TenantUpdate`, QUIC `tenant.Update` | `optional string description` | `TenantMetadata metadata` (`map<string,string> entries`); an unset message is unchanged, a set empty message clears |
+| MCP `qrdb_tenant_update` | `description` string | `metadata` as a JSON object string; `clear_metadata: true` clears when `metadata` is absent |
+| Go SDK `UpdateTenantRequest`, every SDK transport (embedded included) | `Description *string`: nil unchanged, `""` clears | `Metadata map[string]string`: nil unchanged, non-nil empty clears |
+
+```json
+PUT /v1/tenants/acme
+{ "description": "Acme production",
+  "metadata": { "env": "prod", "team": "storage" } }
+```
+
+A value over a limit is refused before anything is written —
+`*tenant.TenantFieldError` naming the field, 400 / `INVALID_ARGUMENT` — so a
+refused update changes none of the tenant's fields.
 
 Quotas — `-1` unlimited, `0` system default:
 
@@ -293,6 +303,42 @@ may wipe the slice it supplied as soon as the call returns, and the daemon
 wipes the slice its decoder produced before the handler returns. See
 [../barrier-seal/api.md](../barrier-seal/api.md#the-barrier-credential-is-bytes-and-therefore-base64-in-rest-json).
 
+### Status
+
+Every tenant read returns `status`: `active`, `suspended` or `disabled`. A
+tenant is created `active`. The update request's optional `status` moves it;
+absent leaves it unchanged. Any status may move to any other except
+`disabled` → `suspended`; a disabled tenant is reactivated first.
+
+| Transport | Field |
+|---|---|
+| REST `PUT /v1/tenants/{id}` | `"status"`; omitted or `null` is unchanged |
+| gRPC / Unix `TenantUpdate`, QUIC `tenant.Update` | `optional string status`; `TenantResponse.status` |
+| MCP `qrdb_tenant_update` | `status` string |
+| Go SDK `transport.UpdateTenantRequest` | `Status *TenantStatus`: nil unchanged; `TenantInfo.Status` |
+| CLI | `qrdb tenant update <id> --status suspended`; `tenant get` / `list` show it |
+
+A status change needs `tenants:set_status`, which is cross-scope: only a
+system-tenant Admin holds it, so a tenant's own Admin cannot suspend or
+reactivate its tenant. While a tenant is not active the auth chain refuses
+every principal of it on every transport and credential — a token issued
+before the change included — with 403 / `PERMISSION_DENIED`. Reactivating it
+restores access on the next request. Principals of other tenants and the
+system administrator's calls on the tenant are unaffected.
+
+Every status change is audited as `tenant.status_change`, keyed by the
+affected tenant and carrying the caller and the `from` and `to` status. A
+`permitted` record is written before the change is stored and a `success` or
+`failure` record once it is. Under the default `fail-closed`
+`auth.audit_failure_policy` a change whose record cannot be written is
+refused and nothing is stored. An update that leaves the status as it was
+records nothing.
+
+```json
+PUT /v1/tenants/acme
+{ "status": "suspended" }
+```
+
 ## Delete semantics
 
 `DELETE /v1/tenants/{id}` (and its peers on every transport) is **permanent in
@@ -325,7 +371,7 @@ ascending id order:
 ```json
 { "tombstones": [
     { "id": "acme", "name": "Acme Corp", "isolation_type": "volume",
-      "data_root": "<install-dir>/pool/acme",
+      "volume_pool": "pool-a",
       "created_at": "2026-08-01T10:00:00Z",
       "deleted_at": "2026-09-20T14:31:07Z" } ],
   "next_page_token": "YWNtZQ" }
@@ -339,7 +385,8 @@ ascending id order:
   `next_page_token` is absent on the last page.
 - A record whose body cannot be decoded is still listed, by id, with a zero
   `deleted_at`: the id is retired either way.
-- `data_root` is the path on the node that ran the delete.
+- `volume_pool` is the volume pool the tenant was placed on; absent for
+  prefix isolation.
 
 `POST /v1/tenants/deleted/reconcile` reclaims, **on the node that serves the
 request**, the directories of retired tenant ids — what a replica keeps when it
@@ -402,6 +449,8 @@ leaks to a caller with no access to the tier.
 | Dedicated tier without `storage.volume_pools` | 503 | `FAILED_PRECONDITION` — `volume pool not configured on barrier registry` |
 | Barrier endpoint on a `prefix` tenant | 409 | `FAILED_PRECONDITION` |
 | Tenant barrier sealed | 503 | `UNAVAILABLE` |
+| Tenant barrier init, unseal or quorum submission on a connection without TLS, or redirected to `http` | not sent | not sent — the SDK returns `sdk.BarrierSecretRequiresTLSError`, naming the transport and the kind of secret, never its value |
+| A REST or MCP tenant barrier init, unseal or quorum submission redirected (307 or 308) to a host other than the one it was sent to | not sent — the SDK returns `sdk.BarrierSecretForeignHostError`, naming the transport, the kind of secret and both hosts, never its value. A redirect to the same host is followed | not applicable — gRPC and Unix do not redirect |
 | Unknown tenant, tenant service configured | 404 | `NOT_FOUND` |
 | Tenant lookup that could not run: the system shard has no leader, or the lookup's 3 s bound expired | 503 / 504 | `UNAVAILABLE` / `DEADLINE_EXCEEDED` — classified as the cause, never `NOT_FOUND`: a lookup that did not run has not found the tenant absent |
 | Create without `admin_username`, or with neither or both of `admin_csr_pem` / `admin_cert_pem` | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
@@ -412,7 +461,7 @@ leaks to a caller with no access to the tier.
 | Tenant onboarding not configured on this node | 501 | `UNIMPLEMENTED` |
 | Barrier init by any certificate other than the onboarded admin's | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitCertificateMismatchError` |
 | Barrier init, `auth.mtls_binding_policy: required`, tenant has no onboarded admin | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitNotOnboardedError` |
-| Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError`. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
+| Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError` |
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |
 | Delete: tombstone write or metadata delete failed | 500 | `INTERNAL` — `*StoreError`; **nothing changed**, the tenant and its key are intact |
@@ -420,69 +469,42 @@ leaks to a caller with no access to the tier.
 | List deleted: bad `page_size` or `page_token` | 400 | `INVALID_ARGUMENT` — `*InvalidPageRequestError` |
 | Reconcile deleted: a live tenant record is unreadable, or the tombstones cannot be listed | 500 | `INTERNAL` — `*ResidueReconcileError` naming the step; the pass stopped, and re-running resumes |
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
-| Create with `data_root` | 400 | `INVALID_ARGUMENT` — `*DataRootRetiredError`; nothing is created at the path |
-| Read a tenant whose stored record names a path | 409 | `FAILED_PRECONDITION` — `*PersistedDataRootError`; the record is refused, never trusted, and its data is never opened. Listing still returns the tenant, marked refused, beside every other tenant. Delete it — the delete removes its records and touches no directory — and re-create it |
+| Update with a `description` or `metadata` over its limit, an empty metadata key, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
+| Update with a `status` that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values; nothing written |
+| Update with a `status` the tenant cannot move to from its current one (`disabled` → `suspended`) | 409 | `FAILED_PRECONDITION` — `*StatusTransitionError`; nothing written |
+| Any request by a principal of a suspended or disabled tenant | 403 | `PERMISSION_DENIED` — `*middleware.TenantNotActiveError`, classed as a disabled account |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| A tenant's Admin naming another tenant, or setting its own plan | 403 | `PERMISSION_DENIED` |
-| Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError`. Previously 500 / `INTERNAL` on create |
+| A tenant's Admin naming another tenant, or setting its own plan or status | 403 | `PERMISSION_DENIED` |
+| Tenant id containing `/`, `\`, a control byte, or `.`/`..` | 400 | `INVALID_ARGUMENT` — `*InvalidTenantIDCharError` / `*InvalidTenantIDError` |
 | Rate-limit policy exhausted, including inside a barrier bootstrap window | 429 | `RESOURCE_EXHAUSTED` |
 | Isolation change while the tenant cannot be verified empty | 503 | `UNAVAILABLE` — `ErrTenantDataUnverifiable` / `*TenantDataProbeError` |
-| A tenant read or write whose raft wait ran out (`quicraft: timeout`) | 503 | `UNAVAILABLE` — previously 500 / `INTERNAL`. On create it means the tenant's record did not commit within the deadline: the create answers with the record it committed and reads nothing back, and its admin-account step for a system-managed tenant runs after the answer. A proposal cut off by the deadline can still commit, so read the tenant before retrying; a create retried after its commit answers 409 |
+| A tenant read or write whose raft wait ran out (`quicraft: timeout`) | 503 | `UNAVAILABLE`. On create it means the tenant's record did not commit within the deadline: the create answers with the record it committed and reads nothing back, and its admin-account step for a system-managed tenant runs after the answer. A proposal cut off by the deadline can still commit, so read the tenant before retrying; a create retried after its commit answers 409 |
 
-> **Deployment gap, recorded deliberately.** If the data-plane service registry
-> is wired **without** a tenant service — a backward-compatibility path for
-> single-tenant embeddings — the unknown-tenant rejection is **skipped**. Any
-> tenant name presented by an authenticated client is accepted; it is still
-> namespaced and barrier-checked, but **not validated against a tenant
-> registry**. Production multi-tenant deployments must configure the tenant
-> service.
+> **Deployment gap.** If the data-plane service registry is wired **without**
+> a tenant service, the unknown-tenant rejection is **skipped**: a tenant name
+> the auth chain accepts is namespaced and barrier-checked but **not validated
+> against a tenant registry**. Production multi-tenant deployments must
+> configure the tenant service.
 
 ## Strict isolation — RULED
 
-> **Status: ruled — partially implemented.** Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
-> Plan: [engineering.md](engineering.md#implementation-plan). Every row below
-> ships on REST, gRPC, Unix, QUIC, MCP and embedded together, in one change, or
-> not at all.
->
-> **Correction (2026-10-05):** the first-admin-at-create capability below is
-> already shipped, unconditionally — see the architecture correction linked
-> above and the rows marked "already shipped".
->
-> **Correction (2026-10-06):** the "Removed" list below is done, and done
-> unconditionally rather than gated by the isolation-policy rows above it —
-> see the architecture correction linked above for exactly what shipped at the
-> Go service/RBAC layer. None of the table rows below are reachable from any
-> transport yet: there is no REST/gRPC/QUIC/Unix/MCP/embedded surface for the
-> isolation-policy get/set verbs, `tenant_identity:read`/`write`, or anything
-> else in this table. `tenants:read:cross` and `tenants:delete:cross` exist as
-> permissions and are consulted by `AuthorizeTenantTarget`'s existing
-> `GET`/`DELETE /v1/tenants/{id}` routes (and their gRPC/QUIC/Unix/MCP/embedded
-> equivalents) today — those two rows are the only ones with a live transport
-> path, through routes that already existed before this ruling.
+> **Status: partially implemented.** Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
+> Plan: [engineering.md](engineering.md#implementation-plan).
 
-### New and changed capabilities
+Every node applies the `tenant.isolation_policy` configuration key (`strict`
+or `operator-access`) to the cluster isolation-policy floor before it serves.
+The floor only tightens, and cannot become `strict` over tenants that are not:
+a refused transition is logged and the stored floor stands. No transport
+reads or sets the floor or a tenant's policy.
+
+### Capabilities
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
-| Read the cluster floor | `GET /v1/cluster/isolation-policy` | `IsolationPolicyGet` | `cluster.IsolationPolicyGet` | `qrdb_isolation_policy_get` | `IsolationPolicy` | any authenticated caller |
-| Tighten the floor to `strict` | `PUT /v1/cluster/isolation-policy` | `IsolationPolicySet` | `cluster.IsolationPolicySet` | `qrdb_isolation_policy_set` | `SetIsolationPolicy` | `cluster:set_isolation_policy` (ScopeCross) |
-| Opt a tenant into `strict` | `PUT /v1/tenants/{id}/isolation-policy` | `TenantSetIsolationPolicy` | `tenant.SetIsolationPolicy` | `qrdb_tenant_set_isolation_policy` | `SetTenantIsolationPolicy` | `tenants:set_isolation_policy` (ScopeSelf: the tenant's own Admin) |
-| Create a tenant | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create`. `admin_username` plus `admin_csr_pem`/`admin_cert_pem` are **already required** (shipped 2026-10-03, independent of this ruling). What this ruling adds: the request may also carry `isolation_policy: strict`. |
+| Create a tenant | `POST /v1/tenants` | `TenantCreate` | `tenant.Create` | `qrdb_tenant_create` | `CreateTenant` | `tenants:create`; the request carries `admin_username` plus one of `admin_csr_pem` / `admin_cert_pem` |
 | Read another tenant's registry entry | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | own tenant: `tenants:read`; any other: **`tenants:read:cross`** |
-| Delete another tenant (S8) | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | own tenant: `tenants:delete`; any other: **`tenants:delete:cross`**, audited |
-| Tenant barrier init, as proof of possession of the first admin's key | `POST /v1/tenants/{id}/barrier/init/begin`, `…/init/complete` | `TenantBarrierService.InitBegin`, `InitComplete` | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_begin`, `qrdb_tenant_barrier_init_complete` | `Tenants().TenantBarrierInit` (in process: no connection to bind, no proof asked) | **identity-gated by the CSR key**: `complete` carries a signature by the pending first admin's key over the tenant, the `begin` nonce and the connection's TLS 1.3 exporter, and the owner's signed epoch-1 init statement (`init_statement`; see [../barrier-seal/api.md](../barrier-seal/api.md#status-and-error-mapping)), which the node claims before its key and from which every other serving node initialises its own. Today the client sends it to the node it is connected to; sending a passphrase or Shamir init to every serving node ships with phase 7 |
-| Tenant barrier unseal and rekey | unchanged routes | unchanged | unchanged | unchanged | unchanged | unchanged; the client sends it to every serving node, and each node answers for itself |
-| Operator: read a named tenant's users, roles, factors and bindings | `GET /v1/tenants/{id}/identity/users[/{uid}]`, `…/roles[/{rid}]` | `TenantIdentityRead` | `tenantidentity.Read` | `qrdb_tenant_identity_read` | `TenantIdentity().Read` | `tenant_identity:read` (ScopeCross; only where the target's effective policy is `operator-access`) |
-| Operator: change a named tenant's identity records | `POST`, `PUT`, `DELETE` `/v1/tenants/{id}/identity/...` | `TenantIdentityWrite` | `tenantidentity.Write` | `qrdb_tenant_identity_write` | `TenantIdentity().Write` | `tenant_identity:write` (the same) |
-| Back up a strict tenant's groups (S10) | `POST /v1/tenants/{id}/backups` | `TenantBackupCreate` | `tenant.BackupCreate` | `qrdb_tenant_backup_create` | `TenantBackups().Create` | `backup:tenant` (ScopeTenantOnly) |
-
-> **Correction (2026-10-14):** the barrier-init row named the QUIC methods
-> `tenantbarrier.InitBegin`/`InitComplete` and the embedded call
-> `TenantBarrier().Init`. What shipped is `tenant.BarrierInitBegin`/
-> `tenant.BarrierInitComplete`, beside the other `tenant.Barrier*` QUIC
-> methods, and the existing `Tenants().TenantBarrierInit`, which on a network
-> transport runs `begin` and `complete` on one connection when the request
-> carries a `Signer`.
+| Delete another tenant | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | own tenant: `tenants:delete`; any other: **`tenants:delete:cross`**, audited |
+| Tenant barrier init, as proof of possession of the first admin's key | `POST /v1/tenants/{id}/barrier/init/begin`, `…/init/complete` | `TenantBarrierService.InitBegin`, `InitComplete` | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_begin`, `qrdb_tenant_barrier_init_complete` | `Tenants().TenantBarrierInit` (in process: no connection to bind, no proof asked) | **identity-gated by the CSR key**: `complete` carries a signature by the pending first admin's key over the tenant, the `begin` nonce and the connection's TLS 1.3 exporter, and the owner's signed epoch-1 init statement (`init_statement`; see [../barrier-seal/api.md](../barrier-seal/api.md#status-and-error-mapping)), which the node claims before its key and from which every other serving node initialises its own. The SDK sends it to the node it is connected to; `qrdb tenant barrier-init` sends a passphrase init to every serving node `barrier-status` lists |
 
 #### Barrier init proof of possession
 
@@ -507,78 +529,23 @@ initializes nothing; ask a fresh nonce. The SDK takes a `crypto.Signer` on
 in place. A connection that is not TLS 1.3 has no exporter, and `begin` is
 refused.
 
-**Removed:**
-- the system-tenant lift on every `ScopeSelf` permission;
-- the cross-tenant `tenant_id` filter on audit query. A caller reads its own
-  tenant's trail; `audit:read:cross` reads the platform trail only;
-- by-id identity routing to any tenant other than the caller's;
-- trust-on-first-init by "a certificate naming the tenant";
-- platform `backup:*` over a strict tenant's groups.
-
-### Reaching a strict tenant from any node
-
-- **Set the tenant in SNI.** A client addresses a strict tenant at
-  `<tenant>.<tenancy.sni_suffix>`, for example `acme.tenants.db.example.com`.
-  - Any node accepts the connection.
-  - A node that does not serve the tenant relays the still-encrypted
-    connection to one that does, and the client's TLS session ends at the
-    serving node.
-  - Nothing else about the API changes. The SDK and CLI set the SNI
-    themselves.
-- **Unix socket and embedded** are node-local. On a node that does not serve
-  the tenant, they answer `TENANT_NOT_SERVED_HERE` with the list of serving
-  nodes.
-
-### Schemas
-
-`POST /v1/tenants` — `admin_username` and `admin_csr_pem` (shown here) or
-`admin_cert_pem` are already required today, as described above
-([api.md](#schemas)); `isolation_policy` is this ruling's only addition:
-
-```json
-{ "id": "acme", "name": "Acme Corp", "isolation_type": "raft",
-  "isolation_policy": "strict",
-  "admin_username": "alice",
-  "admin_csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\n..." }
-```
-
-The response for a self-managed tenant adds the serving set and the effective
-policy to today's `admin` object:
-
-```json
-{ "id": "acme", "isolation_type": "raft", "barrier_mode": "self-managed",
-  "effective_isolation_policy": "strict",
-  "serving_set": ["node-a.db.example.com:7443", "node-b.db.example.com:7443", "node-c.db.example.com:7443"],
-  "admin": { "username": "alice", "spki_thumbprint": "q3x...",
-             "awaits_barrier_init": true } }
-```
-
-For a system-managed tenant, `admin.awaits_barrier_init` is absent (as today)
-and the response carries the issued certificate.
-
-`GET /v1/cluster/isolation-policy`:
-
-```json
-{ "policy": "strict", "set_at": "2026-10-01T12:00:00Z" }
-```
+**Not granted:**
+- a system-tenant identity holds no `ScopeSelf` permission over another
+  tenant; `tenants:read:cross` and `tenants:delete:cross` are the cross-tenant
+  grants;
+- an audit query's `tenant_id` filter is confined to the caller's own tenant;
+- barrier init by "a certificate naming the tenant": only the onboarded
+  admin's certificate may init.
 
 ### Status and error mapping
 
 | Condition | REST | gRPC / Unix / QUIC / MCP |
 |---|---|---|
-| A strict tenant not served by this node (Unix, embedded, or no tenant SNI) | 421 + `X-QRDB-Serving-Nodes` | `UNAVAILABLE`, reason `TENANT_NOT_SERVED_HERE` — `*TenantNotServedHereError` |
-| The certificate's tenant differs from the SNI tenant | TLS alert / 421 | `UNAUTHENTICATED` — `*TenantSNIMismatchError` |
 | Home group without quorum, or sealed on a quorum | 503 | `UNAVAILABLE` — `*TenantHomeUnavailableError` |
 | This node's home-group replica is still catching up after it joined (retry on another node) | 503 | `UNAVAILABLE` — `*TenantHomeUnavailableError` wrapping `*lifecycle.TenantHomeCatchingUpError` |
 | A system identity in another tenant on a non-cross permission | 403 | `PERMISSION_DENIED` |
-| `tenant_identity:*` against a strict tenant | 403 | `PERMISSION_DENIED` — `*IsolationPolicyError` |
-| Loosening the floor or a tenant's policy | 409 | `FAILED_PRECONDITION` — `*IsolationPolicyChangeError` |
-| Create without `admin_username`, or with neither/both of `admin_csr_pem`/`admin_cert_pem` (already shipped; see "Status and error mapping" above) | 400 | `INVALID_ARGUMENT` — `*service.TenantOnboardingFieldError`, `*bootstrap.MissingAdminCredentialError`, `*bootstrap.ConflictingAdminCredentialError` |
 | Init proof of possession absent, stale or by the wrong key | 401 | `UNAUTHENTICATED` — `*FirstAdminProofError` |
-| The credential does not match this node's verifier | 403 | `PERMISSION_DENIED` — `*seal.CredentialVerifierError` |
-| A database replica outside the serving set | 409 | `FAILED_PRECONDITION` — `*placement.ReplicaOutsideServingSetError` |
-| `strict-isolation` not yet activated cluster-wide | 409 | `FAILED_PRECONDITION` — `*featuregate.FeatureNotActiveError` |
-| Creating a `barrier`, `volume` or `raft` tenant, or updating a tenant to one of those types, before `per-node-barrier-keys` is activated cluster-wide (retry after rollout). **Not raised yet:** no release advertises the feature or wires its gate, so these requests are admitted ([architecture.md](architecture.md#feature-gate-and-upgrade)) | 503 | `UNAVAILABLE` — `*featuregate.NotActiveError` |
+| Creating a `barrier`, `volume` or `raft` tenant, or updating a tenant to one of those types, before `per-node-barrier-keys` is activated cluster-wide (retry after rollout) | 503 | `UNAVAILABLE` — `*featuregate.NotActiveError` |
 
 ## Pagination
 

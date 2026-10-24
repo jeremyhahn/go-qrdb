@@ -706,6 +706,11 @@ func (l *SOPINLockout) check(state *soPINKeyState, key, principal string, verify
 	if !mismatch(err) {
 		return false, err
 	}
+	// The failure happened when verify returned, not when it started: a
+	// backoff counted from the start loses the verification time, and a KDF
+	// slower than the backoff (PBKDF2 under fips140=only) would leave no
+	// lockout at all.
+	now = l.now()
 	c.fail(now)
 	if capped {
 		state.aggregate.fail(now, SOPINAggregateWindow)

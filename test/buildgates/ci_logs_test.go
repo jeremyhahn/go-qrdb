@@ -19,7 +19,7 @@ package buildgates
 // nothing compared it with the Makefile's. Three properties, each one edit
 // from going false with no other check noticing:
 //
-//   - the image job and every integration job mask the forge credentials as
+//   - the lint and image jobs and every integration job mask the forge credentials as
 //     their first step after the checkout, the token inside
 //     GIT_CONFIG_KEY_0's URL included;
 //   - no step prints an env file or the job environment (`env`, `printenv`,
@@ -43,9 +43,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// credentialJobs are the jobs the runner injects the forge credentials into
-// and that run a step which could print them.
-var credentialJobs = []string{"image", "integration-standalone", "integration-features"}
+// credentialJobs are the jobs that run a step which could print the forge
+// credentials: a make target, a script, npm or curl. The runner injects the
+// credentials into every job (dependency-resolution.md §6), so each of these
+// masks them in its first step after the checkout.
+var credentialJobs = []string{"docker-build", "lint", "image", "test-typescript", "arch-gates", "integration-standalone", "integration-features", "fips", "soak"}
+
+// unmaskedJobs are the jobs that hold the credentials but run only inline
+// steps that cannot print them, each with the reason. Every job in ci.yml is
+// in one of the two lists, so a new job fails the gate until it is placed.
+var unmaskedJobs = map[string]string{
+	"changes": "prints only the changed file names",
+	"ci-gate": "prints only the jobs' results",
+}
 
 const maskStepName = "Mask the forge credentials"
 
@@ -87,6 +97,11 @@ func readLogWorkflow(t *testing.T) ciLogWorkflow {
 // checkout is not the masking step, or whose masking step misses a variable.
 func maskProblems(wf ciLogWorkflow) []string {
 	var problems []string
+	for _, name := range slices.Sorted(maps.Keys(wf.Jobs)) {
+		if _, ok := unmaskedJobs[name]; !ok && !slices.Contains(credentialJobs, name) {
+			problems = append(problems, name+": in neither credentialJobs nor unmaskedJobs")
+		}
+	}
 	for _, name := range credentialJobs {
 		job, ok := wf.Jobs[name]
 		if !ok {
@@ -205,6 +220,12 @@ func TestMaskProblems_CanFail(t *testing.T) {
 				t.Fatal("the gate accepted it")
 			}
 		})
+	}
+	if p := maskProblems(parseLogWorkflow(t, jobs(good)+"  new-job:\n    steps:"+checkout+other+"\n")); len(p) == 0 {
+		t.Fatal("a job in neither list passed")
+	}
+	if p := maskProblems(parseLogWorkflow(t, jobs(good)+"  changes:\n    steps:"+checkout+other+"\n")); len(p) != 0 {
+		t.Fatalf("an unmasked job in unmaskedJobs reported %v", p)
 	}
 	delete(good, "image")
 	if p := maskProblems(parseLogWorkflow(t, jobs(good))); len(p) == 0 {

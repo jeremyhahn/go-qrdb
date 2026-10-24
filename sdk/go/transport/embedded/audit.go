@@ -56,7 +56,8 @@ var _ transport.AuditClient = (*auditClient)(nil)
 // returned nil unconditionally, which told an embedder its compliance record
 // had landed when it had not.
 func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) error {
-	if err := c.transport.gate("AuditClient.EmitAudit"); err != nil {
+	ctx, err := c.transport.admit(ctx, "AuditClient.EmitAudit")
+	if err != nil {
 		return err
 	}
 	if c.transport.closed.Load() {
@@ -83,7 +84,8 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 // identity in ctx when there is one, otherwise the tenant bound to ctx. A
 // filter naming another tenant is refused with *tenant.CrossTenantDeniedError.
 func (c *auditClient) QueryAudit(ctx context.Context, f transport.AuditFilter) (*transport.AuditPage, error) {
-	if err := c.transport.gate("AuditClient.QueryAudit"); err != nil {
+	ctx, err := c.transport.admit(ctx, "AuditClient.QueryAudit")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.authorize(ctx, "AuditClient.QueryAudit"); err != nil {
@@ -136,7 +138,8 @@ func auditVerificationReportToTransport(r *audit.VerificationReport) *transport.
 // backend, missing file, or a rotation race); a successful result with
 // Verified=false is a TAMPER VERDICT, not an error -- see pkg/audit.Verify.
 func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyResult, error) {
-	if err := c.transport.gate("AuditClient.VerifyChain"); err != nil {
+	ctx, err := c.transport.admit(ctx, "AuditClient.VerifyChain")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.authorize(ctx, "AuditClient.VerifyChain"); err != nil {
@@ -162,7 +165,8 @@ func (c *auditClient) VerifyChain(ctx context.Context) (*transport.AuditVerifyRe
 // entitlement is off is refused rather than answering a trivially-true
 // report for a chain that was never written to.
 func (c *auditClient) VerifyReplicatedChain(ctx context.Context, tenantID string) (*transport.ChainContinuityResult, error) {
-	if err := c.transport.gate("AuditClient.VerifyReplicatedChain"); err != nil {
+	ctx, err := c.transport.admit(ctx, "AuditClient.VerifyReplicatedChain")
+	if err != nil {
 		return nil, err
 	}
 	if err := c.transport.authorize(ctx, "AuditClient.VerifyReplicatedChain"); err != nil {

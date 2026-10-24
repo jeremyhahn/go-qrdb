@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Firstboot is a **composition-plane capability**: it runs inside the daemon's
@@ -20,13 +20,13 @@ calling an endpoint. What clients see over the wire is the ceremony
 `GET /v1/config/initialized` and `GET /v1/ca/bootstrap` are **two of the very
 few unauthenticated routes in the server**, and they exist precisely because a
 client in the bootstrap window has no credentials yet. `/v1/ca/bootstrap` is
-registered **only when a bootstrap certificate is configured**
-(`len(s.caBootstrapCert) > 0`); otherwise the route does not exist.
+registered **only when exactly one bootstrap source is configured**
+(`WithCABootstrap` or `WithCABootstrapProvider`); with none the route does not
+exist, and two are refused at start.
 
 The two public routes are REST-only, marked `MISSING` on the other transports
-per the convention. That is defensible for `/v1/config/initialized` — a client
-that has not yet fetched a CA bundle cannot complete an mTLS handshake on the
-other transports anyway — but it is recorded rather than assumed correct.
+per the convention: a client that has not yet fetched a CA bundle cannot
+complete an mTLS handshake on the other transports.
 
 `firstboot.Initialize` has **no wire surface at all**, by design: it is the
 daemon bootstrapping itself, and exposing "create the platform admin" as an
@@ -84,10 +84,10 @@ is returned exactly once and never persisted.
 | Conflicting admin-credential inputs | 400 | `INVALID_ARGUMENT` |
 | No admin-credential path selected | 400 | `INVALID_ARGUMENT` |
 | Admin credential rejected | 400 | `INVALID_ARGUMENT` |
-| CSR-sign/generate on a BYO-TLS node (no CA) | 412 | `FAILED_PRECONDITION` |
+| CSR-sign/generate on a BYO-TLS node (no CA) | 409 | `FAILED_PRECONDITION` |
 | Follower attempted creation | — | retried after replication (`NotLeader` only) |
 | Any other first-boot failure | the underlying cause | returned, not retried — it is this node's own failure |
-| No bootstrap certificate configured | 404 (`/v1/ca/bootstrap` unregistered) | — |
+| No bootstrap source configured | 404 (`/v1/ca/bootstrap` unregistered) | — |
 
 ## Versioning
 

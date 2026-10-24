@@ -1,6 +1,6 @@
 # Configuration — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Configuration is read at boot and is **not** mutable over the wire. Two things
@@ -45,6 +45,7 @@ mode-gated, or config-disabled. See
 | Strict decode | a key naming no field in the schema fails the load as `*UnknownFieldError`, naming the key's full path and, where known, its line |
 | Defaults | `DefaultConfig()` populates every field |
 | YAML | only fields present override |
+| Environment | `QRDB_`-prefixed variables override the file; read only when `--config` names one |
 | Flags | only explicitly-set flags override |
 | `Validate()` | returns the **first** error as `*ValidationError` with the field path and reason |
 | `ValidateCapabilities()` | separate, called by composition roots; fails naming the missing build tag |
@@ -56,10 +57,11 @@ unknown key — the schema always declares it — and surfaces only through
 
 ## Secret references
 
-Configuration fields may carry `credential://` or `literal://` references,
-resolved at boot into enclave-backed values rather than plain strings. **A
-protected field must reference a secret, and resolution fails closed.** This is
-a composition-plane (Tier 2) surface with no wire endpoint — see
+`qrdbd`'s configuration has no field that takes a secret reference. An
+application embedding qrdb resolves `credential://` and `literal://`
+references in its own configuration at boot, into enclave-backed values rather
+than plain strings; **a protected field whose reference cannot be resolved
+fails the boot.** This is a composition-plane (Tier 2) surface with no wire endpoint — see
 [../credentials/api.md](../credentials/api.md#secret-resolution-spi).
 
 ## Versioning

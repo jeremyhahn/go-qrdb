@@ -1,6 +1,6 @@
 # Transactions and Batch — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
@@ -32,7 +32,7 @@ cat > claim.json <<'JSON'
 {
   "compares":    [ { "key": "Y29uZmlnL2xvY2s=", "target": 3, "result": 0, "value": "ZnJlZQ==" } ],
   "success_ops": [ { "type": 0, "key": "Y29uZmlnL2xvY2s=", "value": "aGVsZA==" } ],
-  "failure_ops": [ { "type": 1, "key": "Y29uZmlnL2xvY2s=" } ]
+  "failure_ops": []
 }
 JSON
 qrdb tx execute --file claim.json --output json
@@ -56,10 +56,7 @@ echo '{"ops":[
 The response carries `revision`: the one MVCC revision every write in the batch
 committed at, which is the `mod_revision` a later read of any of those keys
 reports. A batch with no put or delete commits nothing and answers `0`. Every
-transport returns it — `revision` in the REST JSON, gRPC, QUIC and Unix
-responses, `Revision` on the embedded client's `BatchResponse`, and on MCP
-`qrdb_batch_execute` answers `{"Revision": N, "Responses": [...]}`, an object
-whose `Responses` holds the per-op results.
+transport returns it; [api.md](api.md) gives each one's field.
 
 **Load a CSV.** Pick which column is the key; by default the whole row is stored
 as JSON under it.
@@ -101,7 +98,7 @@ jq -c '.[]' export.json | qrdb batch import --file - --format ndjson --key-field
 back the key you compared on, decide whether to retry, and re-run. This is the
 normal way a compare-and-swap loop works.
 
-**"format could not be inferred".** `auto` looks at the extension and the first
+**"unable to detect format".** `auto` looks at the extension and the first
 8 KB. Piping from stdin with no extension often defeats it — pass `--format`
 explicitly.
 
@@ -123,5 +120,6 @@ stored as JSON under that field's value.
 collection-targeted import. Collections take one document at a time via
 `qrdb collection doc insert` — see [../collections/user.md](../collections/user.md).
 
-**Some rows failed and you cannot tell which.** Use `--output json`; the
-`errors` array names the row number, the key, and the message for each failure.
+**Some rows failed and you need to know which.** The default output lists
+each failure under `Errors:`; with `--output json` the `errors` array names
+the row number, the key, and the message for each failure.

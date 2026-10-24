@@ -109,12 +109,22 @@ type restServiceRegistry struct {
 	// sealed, and ends a watch when its barrier is sealed or this node is cut
 	// off. nil when the server enforces no cluster seals.
 	clusterSeal ClusterSeal
+	// streamAdmitter re-admits a watch's identity before each event, so a
+	// stream opened before its tenant was suspended ends on its next
+	// event. nil when the server runs no auth middleware.
+	streamAdmitter service.StreamAdmitter
 }
 
 // withClusterSealRegistry makes the registry enforce cluster seals; see
 // WithClusterSeal.
 func withClusterSealRegistry(cs ClusterSeal) RESTRegistryOption {
 	return func(r *restServiceRegistry) { r.clusterSeal = cs }
+}
+
+// withStreamAdmitter installs the admission check every watch the
+// registry resolves re-runs before each event it forwards.
+func withStreamAdmitter(a service.StreamAdmitter) RESTRegistryOption {
+	return func(r *restServiceRegistry) { r.streamAdmitter = a }
 }
 
 // NewRESTServiceRegistry creates a rest.ServiceRegistry that resolves
@@ -1019,7 +1029,7 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 			return r.StreamRefusal(tenantID, db)
 		})
 	}
-	return watchSvc, nil
+	return service.NewAdmittedWatch(watchSvc, r.streamAdmitter), nil
 }
 
 // databaseUnservedError is the refusal a stream on dbase ends with once the

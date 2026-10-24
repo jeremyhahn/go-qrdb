@@ -114,7 +114,7 @@ func TestCommit_FailedRecordSyncIsRecoveredFromTheJournal(t *testing.T) {
 		t.Fatalf("warm-up commit: %v", err)
 	}
 
-	failDir, _ := e.recordPaths(keys[7])
+	failDir, _ := mustRecordPaths(t, e, keys[7])
 	sentinel := errors.New("record directory sync failed")
 	restore := fsync.SetForTest(func(d string) error {
 		if d == failDir {

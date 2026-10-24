@@ -1,12 +1,12 @@
 # Time Series — API
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the time-series half of the multi-model database
 > program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented. OD-n refers to that document's ruled decisions.
+> are approved and not implemented.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. Every capability
@@ -33,7 +33,8 @@ gap.
 
 ## Schemas
 
-`TSDataPoint`:
+The SDK types in `sdk/go/transport/timeseries_types.go` are the reference
+shapes. `TSDataPoint`:
 
 ```json
 { "metric": "cpu.usage", "value": 0.42, "timestamp_ns": 1755561600000000000,
@@ -49,15 +50,15 @@ gap.
   "limit": 1000, "descending": false, "consistency": "linearizable" }
 ```
 
-`TSAggregateRequest` adds `function` (an `AggFunc` **number**) and
-`interval_ns`. Response `TSAggResult` carries `timestamp_ns`, `value` and
-`count` per bucket.
+`TSAggregateRequest` adds `function` (an `AggFunc`) and `interval_ns`.
+Response `TSAggResult` carries `timestamp_ns`, `value` and `count` per bucket.
 
-`TSRichQueryRequest` adds `group_by` (tag keys) and `percentile`. The response
-carries `points`, an optional `aggregated_value`, and `grouped_results` when
+`TSRichQueryRequest` takes `aggregation` (an `AggFunc`), `interval_ns`,
+`group_by` (tag keys), `limit` and `percentile`. The response carries
+`points`, an optional `aggregated_value`, and `grouped_results` when
 `group_by` is set.
 
-**`AggFunc` wire values** — fixed numbers, not names:
+**`AggFunc` values** (`sdk/go/transport`, `pkg/timeseries`):
 
 | Value | Function |
 |---|---|
@@ -79,41 +80,58 @@ carries `points`, an optional `aggregated_value`, and `grouped_results` when
 
 `duration_ns` is how long points are kept; `resolution_ns` and `aggregation`
 are intended to make retention a downsampling policy rather than a delete
-horizon. **Measured: `duration_ns` is enforced by a leader-driven sweep
-within about a minute of a point aging out; `resolution_ns`/`aggregation`
+horizon. **`duration_ns` is enforced by a leader-driven sweep every
+`DefaultRetentionInterval` (one minute); `resolution_ns`/`aggregation`
 downsampling is stored and returned but not applied** — see
-[engineering.md](engineering.md) and OD-16.
+[engineering.md](engineering.md).
 
 **Target:** no request or response changes. Every capability is served for
 every database on every backend that `MVCCEngine` composes over — memory,
-file, pebble and objstore, shipped (Lane 1A) — and answers as not configured
-only where time-series support was not compiled in (`WITH_QRDB_TS`). A
-dedicated per-database raft binding remains target work (Phase 2).
+file, pebble and objstore, shipped — and answers as not configured only where
+time-series support was not compiled in (`WITH_QRDB_TS`). A dedicated
+per-database raft binding remains target work.
 
 `TSDeleteRequest`: `metric`, optional `tags`, optional `start_ns`/`end_ns`.
 **With no range, the whole series is deleted.**
 
 `TSListMetricsRequest`: optional `prefix` and `limit`.
 
+### Wire forms per transport
+
+The field names and encodings differ by transport:
+
+| Transport | Point timestamp | Tags | Range | Aggregation function |
+|---|---|---|---|---|
+| Embedded | `timestamp_ns` | list of `{key, value}` | `start_ns`, `end_ns` | `AggFunc` number, table above |
+| gRPC / Unix | `timestamp_ns` | repeated `TSTag` | `start_ns`, `end_ns` | `qrdb.v1.AggFunc` enum: `AGG_AVG` 0, `AGG_SUM` 1, `AGG_MIN` 2, `AGG_MAX` 3, `AGG_COUNT` 4, `AGG_PERCENTILE` 5 |
+| QUIC | `timestamp_ns` | `ts.Write`, `ts.WriteBatch`, `ts.Query`, `ts.Aggregate` carry the gRPC messages; the other six carry JSON with tags as an object | `start_ns`, `end_ns` | gRPC enum on `ts.Aggregate`; `AggFunc` number on the JSON methods |
+| REST | `timestamp` | object in a body; `host=web-01,region=eu` in the `tags` query parameter | `start_ns`, `end_ns` | name: `avg`, `sum`, `min`, `max`, `count`, `percentile` |
+| MCP | `timestamp` | JSON object in a string | `start`, `end` | name: `avg`, `sum`, `min`, `max`, `count`, `percentile`, `first`, `last` (`func` on `qrdb_ts_aggregate`, `aggregation` elsewhere) |
+
+`GET /ts/query`, `GET /ts/aggregate` and `GET /ts/metrics` take their
+fields as query parameters. `qrdb_ts_set_retention_policy` takes
+`duration_seconds` and `resolution_seconds`, not nanoseconds.
+
 ## Ranges and units
 
-Every timestamp field is **nanoseconds**. Every range is half-open
-`[start_ns, end_ns)`.
+Every timestamp field is **nanoseconds**, except where the MCP row above
+says seconds. Every range is closed: `[start_ns, end_ns]`, both ends
+included.
 
 ## Pagination
 
-`TSQuery` and `TSListMetrics` bound their result with `limit`; there is no
-cursor or page token. A query over a wide range with no limit returns
-everything in the range and should be treated as an unbounded read.
-Aggregate and rich-query results are bounded by the bucket count.
+`TSQuery`, `TSRichQuery` and `TSListMetrics` bound their result with `limit`;
+there is no cursor or page token. A query over a wide range with no limit
+returns everything in the range and should be treated as an unbounded read.
+Aggregate results are bounded by the bucket count.
 
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Success | 200 | `OK` |
-| `end_ns <= start_ns` | 400 | `INVALID_ARGUMENT` |
-| Unknown `AggFunc` value | 400 | `INVALID_ARGUMENT` |
+| `end_ns < start_ns` | 400 | `INVALID_ARGUMENT` |
+| Unknown aggregation function | 400 | `INVALID_ARGUMENT` |
 | `percentile` function without a percentile value | 400 | `INVALID_ARGUMENT` |
 | Retention with `duration_ns <= 0` | 400 | `INVALID_ARGUMENT` |
 | Unknown metric on query | 200 with an empty result | `OK` |

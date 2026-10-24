@@ -25,9 +25,15 @@
 // PostgreSQL alike -- registers each connection here when its session is
 // built, and the guard closes it the moment the node's seal probe closes or a
 // cluster seal or cut-off ends its subscription.
+//
+// A tenant's suspension reaches an open session the same way: the statement
+// gate refuses its next statement, and a guard built WithAdmission closes the
+// connections of a tenant its Admission revokes, ending the cursor the gate
+// never sees.
 package sessionguard
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -56,9 +62,10 @@ func (e *SealedError) Error() string { return "sessionguard: the node is sealed"
 // Guard tracks the open connections of one SQL listener and closes them when
 // a seal reaches them. The zero Guard is not usable; build one with New.
 type Guard struct {
-	probe    Probe
-	streams  *clusterseal.Streams
-	interval time.Duration
+	probe     Probe
+	streams   *clusterseal.Streams
+	interval  time.Duration
+	admission Admission
 
 	mu       sync.Mutex
 	sessions map[*Session]struct{}
@@ -66,38 +73,81 @@ type Guard struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
+
+	// admitCtx bounds every admission read; Stop cancels it, ending a read
+	// in flight. admitDone closes when watchAdmission returns.
+	admitCtx    context.Context
+	cancelAdmit context.CancelFunc
+	admitDone   chan struct{}
+}
+
+// Admission reports whether a tenant's open sessions are still admitted. A
+// session is admitted when it opens; Admission is how the guard learns that
+// its tenant has since been suspended or disabled.
+type Admission interface {
+	// Revoked reports whether tenantID's open sessions must end. It reports
+	// a definitive refusal only: a status it cannot read revokes nothing.
+	// It returns once ctx is done, which the guard's Stop brings about.
+	Revoked(ctx context.Context, tenantID string) bool
+}
+
+// Option configures a Guard.
+type Option func(*Guard)
+
+// WithAdmission makes the guard ask a, every interval the seal probe is
+// open, about the tenant of each open session, once per tenant, and close the
+// sessions of every tenant a revokes. It asks from a watch of its own, apart
+// from the seal probe's, so a slow answer never delays a seal.
+func WithAdmission(a Admission) Option {
+	return func(g *Guard) { g.admission = a }
 }
 
 // New returns a guard over probe and streams, either of which may be nil, that
 // asks probe every interval (DefaultProbeInterval when interval is not
 // positive). Start runs it.
-func New(probe Probe, streams *clusterseal.Streams, interval time.Duration) *Guard {
+func New(probe Probe, streams *clusterseal.Streams, interval time.Duration, opts ...Option) *Guard {
 	if interval <= 0 {
 		interval = DefaultProbeInterval
 	}
-	return &Guard{
-		probe:    probe,
-		streams:  streams,
-		interval: interval,
-		sessions: make(map[*Session]struct{}),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+	admitCtx, cancelAdmit := context.WithCancel(context.Background())
+	g := &Guard{
+		probe:       probe,
+		streams:     streams,
+		interval:    interval,
+		sessions:    make(map[*Session]struct{}),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		admitCtx:    admitCtx,
+		cancelAdmit: cancelAdmit,
+		admitDone:   make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
 }
 
-// Start runs the probe watch until Stop. A guard with no probe watches
-// nothing, but Stop must still be called.
+// Start runs the probe watch, and the admission watch of a guard built
+// WithAdmission, until Stop. A guard with neither watches nothing, but Stop
+// must still be called.
 func (g *Guard) Start() {
 	go g.watchProbe()
+	go g.watchAdmission()
 }
 
-// Stop ends the probe watch and waits for it. It does not close sessions.
+// Stop ends both watches and waits for them, cancelling an admission read in
+// flight rather than waiting it out. It does not close sessions.
 func (g *Guard) Stop() {
-	g.stopOnce.Do(func() { close(g.stop) })
+	g.stopOnce.Do(func() {
+		g.cancelAdmit()
+		close(g.stop)
+	})
 	<-g.done
+	<-g.admitDone
 }
 
-// watchProbe closes every session while the probe reports sealed.
+// watchProbe closes every session while the probe reports sealed. It never
+// reads a tenant record, so a slow admission read cannot delay a seal.
 func (g *Guard) watchProbe() {
 	defer close(g.done)
 	if g.probe == nil {
@@ -114,6 +164,33 @@ func (g *Guard) watchProbe() {
 			if g.probe.IsSealed() {
 				g.endAll()
 			}
+		}
+	}
+}
+
+// watchAdmission closes, every interval the seal probe is open, the sessions
+// of each tenant the admission revokes. It runs apart from watchProbe, so an
+// admission read that is slow or failing -- a store that does not answer --
+// never delays sealing a connection, and Stop cancels the read in flight
+// rather than waiting it out.
+func (g *Guard) watchAdmission() {
+	defer close(g.admitDone)
+	if g.admission == nil {
+		return
+	}
+	ticker := time.NewTicker(g.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-g.stop:
+			return
+		case <-ticker.C:
+			// A sealed node reads no tenant record: the seal ends every
+			// session itself.
+			if g.probe != nil && g.probe.IsSealed() {
+				continue
+			}
+			g.endRevoked(g.admitCtx)
 		}
 	}
 }
@@ -145,7 +222,7 @@ func Refusal(p Probe) error {
 // SubscribeTenantServing), so a seal landing as the session opens either
 // refuses it or ends it: a seal closes its gate before it ends streams.
 func (g *Guard) Open(tenantID string, closeConn func()) (*Session, error) {
-	s := &Session{guard: g, closeConn: closeConn, released: make(chan struct{})}
+	s := &Session{guard: g, tenantID: tenantID, closeConn: closeConn, released: make(chan struct{})}
 	if g.streams != nil {
 		sub, err := g.streams.SubscribeTenantServing(tenantID, g.refuses)
 		if err != nil {
@@ -177,6 +254,32 @@ func (g *Guard) endAll() {
 	}
 }
 
+// endRevoked closes the open sessions of every tenant the admission revokes,
+// asking it once per tenant, under ctx. Once ctx is done it asks no further
+// tenant.
+func (g *Guard) endRevoked(ctx context.Context) {
+	if g.admission == nil {
+		return
+	}
+	g.mu.Lock()
+	byTenant := make(map[string][]*Session)
+	for s := range g.sessions {
+		byTenant[s.tenantID] = append(byTenant[s.tenantID], s)
+	}
+	g.mu.Unlock()
+	for tenantID, open := range byTenant {
+		if ctx.Err() != nil {
+			return
+		}
+		if !g.admission.Revoked(ctx, tenantID) {
+			continue
+		}
+		for _, s := range open {
+			s.end()
+		}
+	}
+}
+
 // Len reports how many sessions are open.
 func (g *Guard) Len() int {
 	g.mu.Lock()
@@ -187,6 +290,7 @@ func (g *Guard) Len() int {
 // Session is one open connection's registration.
 type Session struct {
 	guard     *Guard
+	tenantID  string
 	closeConn func()
 	sub       *clusterseal.Subscription
 

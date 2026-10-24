@@ -20,11 +20,9 @@ import (
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest"
 )
 
@@ -34,7 +32,11 @@ import (
 // its claim is refused.
 func TestGRPCRoundTrip_DatabaseHolders(t *testing.T) {
 	fx := dbholdertest.NewFixture(t)
-	srv := googlegrpc.NewServer()
+	// A holder's quorum submission carries a barrier secret: it is sent only
+	// over TLS. The client presents no certificate, so the claim refusals
+	// below are the server's answer to a caller without the holder's.
+	tt := newAnonymousTestTLS(t)
+	srv := googlegrpc.NewServer(tt.serverOptions()...)
 	grpcpkg.RegisterService(srv, nil, nil, grpcpkg.WithRegisterDatabaseService(fx.Service))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -42,11 +44,11 @@ func TestGRPCRoundTrip_DatabaseHolders(t *testing.T) {
 	}
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
-	conn, err := googlegrpc.NewClient(lis.Addr().String(), googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := googlegrpc.NewClient(lis.Addr().String(), tt.dialOption())
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	tr := &Transport{config: &transport.Config{Address: lis.Addr().String()}, conn: conn, client: pb.NewQRDBServiceClient(conn)}
+	tr := &Transport{config: tt.config(lis.Addr().String()), conn: conn, client: pb.NewQRDBServiceClient(conn)}
 	dbholdertest.Run(t, tr, fx, dbholdertest.ClaimRefusedWithStatus(int(codes.Unauthenticated)))
 }

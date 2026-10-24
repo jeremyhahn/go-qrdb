@@ -254,6 +254,46 @@ func TestSealedWindowListener_RefusesEverythingOnceUnsealed(t *testing.T) {
 	}
 }
 
+// TestSealedWindowListener_ClosesConnectionWhenTheWindowEnds: the listener is
+// torn down once the barrier unseals, so a response that may end the window
+// (a Transition verb) or follows its end carries the HTTP/1.1 close option
+// (RFC 9112 §9.6); no other response does, and HTTP/2 never carries it.
+func TestSealedWindowListener_ClosesConnectionWhenTheWindowEnds(t *testing.T) {
+	probe := newFakeSealed(true)
+	listener := SealedWindowListenerMiddleware(probe, nil)(okHandler)
+	send := func(h http.Handler, protoMajor int, method, path string) string {
+		req := httptest.NewRequest(method, path, nil)
+		req.ProtoMajor = protoMajor
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr.Header().Get("Connection")
+	}
+	sealed := []struct {
+		method, path, want string
+	}{
+		{http.MethodPost, "/v1/barrier/unseal", "close"},
+		{http.MethodGet, "/v1/barrier/status", ""},
+		{http.MethodGet, "/v1/credentials", ""},
+	}
+	for _, tc := range sealed {
+		if got := send(listener, 1, tc.method, tc.path); got != tc.want {
+			t.Errorf("sealed %s %s: Connection = %q, want %q", tc.method, tc.path, got, tc.want)
+		}
+	}
+	if got := send(listener, 2, http.MethodPost, "/v1/barrier/unseal"); got != "" {
+		t.Errorf("HTTP/2 unseal: Connection = %q, want none", got)
+	}
+	probe.unseal()
+	for _, path := range []string{"/v1/barrier/status", "/v1/barrier/recovery"} {
+		if got := send(listener, 1, http.MethodGet, path); got != "close" {
+			t.Errorf("unsealed GET %s: Connection = %q, want close", path, got)
+		}
+	}
+	if got := send(SealedWindowMiddleware(probe, nil)(okHandler), 1, http.MethodPost, "/v1/barrier/unseal"); got != "" {
+		t.Errorf("regular listener unseal: Connection = %q, want none", got)
+	}
+}
+
 // TestSealedWindowListener_NilProbeFailsClosed: without a probe the
 // listener's gate cannot know the barrier is sealed, so it refuses.
 func TestSealedWindowListener_NilProbeFailsClosed(t *testing.T) {

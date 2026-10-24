@@ -141,6 +141,10 @@ type startFlags struct {
 	// it. buildServerConfig carries it to the server, which serves gRPC-Web
 	// from the REST server when it is enabled.
 	grpcWeb qrdbconfig.GRPCWebConfig
+	// cors is the config file's cors section; no flag moves it.
+	// buildServerConfig carries it to the server, which hands the REST
+	// server a CORS policy when the section lists an allowed origin.
+	cors qrdbconfig.CORSConfig
 	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
 	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
 	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
@@ -637,7 +641,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.logLevel, "log-level", "info", "Minimum log level: debug, info, warn, error")
 	cmd.Flags().BoolVar(&f.debugRaft, "debug-raft", false, "Enable verbose Raft protocol logging (sets log level to debug)")
 	cmd.Flags().Uint64Var(&f.snapshotEntries, "snapshot-entries", 0,
-		"Number of applied entries between automatic snapshots (0=disabled)")
+		"Number of applied entries between automatic snapshots (0 = default, 100000)")
 	cmd.Flags().Uint64Var(&f.compactionOverhead, "compaction-overhead", 0,
 		"Number of entries to keep after compaction (0=use default 5000)")
 	cmd.Flags().BoolVar(&f.join, "join", false,
@@ -797,6 +801,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	f.observability = cfg.Observability
 	f.grpcWeb = cfg.Server.GRPCWeb
+	f.cors = cfg.CORS
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
 	}
@@ -2692,9 +2697,7 @@ func runStart(f *startFlags) (err error) {
 			}
 
 			// Create and start the multi-protocol server.
-			serverOpts := []server.ServerOption{
-				server.WithTLS(bundle.TLSConfig),
-				server.WithCACertPool(bundle.CACertPool),
+			serverOpts := append(bundle.serverTLSOptions(),
 				server.WithLeaderForwarding(registry),
 				server.WithBatch(batchSvc),
 				server.WithTimeSeries(tsSvc),
@@ -2716,7 +2719,7 @@ func runStart(f *startFlags) (err error) {
 				// the node that sweeps it and to its store, through the
 				// same registry the transports resolve requests with.
 				server.WithReclaimSweeper(svcNode.ReclaimSweeper),
-			}
+			)
 			// The data-plane families -- transactions, MVCC, lease, lock and
 			// watch -- are served in BOTH modes, over the same engine, lessor
 			// and watch hub (go-qrdb#62 for transactions, go-qrdb#582 for the
@@ -2893,6 +2896,9 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
+			}
+			if svcNode.Policy != nil {
+				serverOpts = append(serverOpts, server.WithPolicyService(svcNode.Policy))
 			}
 			if barrierRegistry != nil {
 				serverOpts = append(serverOpts, server.WithBarrierRegistry(barrierRegistry))
@@ -3345,6 +3351,7 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			Host:    f.host,
 			GRPCWeb: f.grpcWeb,
 		},
+		CORS: f.cors,
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
 			GRPC:       f.enableGRPC,
@@ -4063,14 +4070,15 @@ type mgmtBootstrapResult struct {
 	// to build one.
 	storeResolver tenant.StoreResolver
 
+	// tenantSvc is the tenant servicer the stores were built over. The auth
+	// middleware reads each principal's tenant Status from it, and the mTLS
+	// authenticator holds a certificate's tenant to it, so a trust domain no
+	// tenant was created for names no one. Nil when none was available.
+	tenantSvc tenant.TenantServicer
+
 	// legacyFactorStore is the UNCONFINED root store the pre-tenant
 	// auth-factor records live in, handed to the go-qrdb#393 migration.
 	legacyFactorStore kvstore.KVStore
-
-	// tenantSvc is the tenant servicer the stores were built over. The mTLS
-	// authenticator holds a certificate's tenant to it: a trust domain no
-	// tenant was created for names no one. Nil when there is none.
-	tenantSvc tenant.TenantServicer
 }
 
 // authBootstrapResult holds the auth enforcement middleware and audit logger
@@ -4403,8 +4411,8 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		bootRoleSvc:   bootRoleSvc,
 
 		storeResolver:     storeResolver,
-		legacyFactorStore: runtimeStore,
 		tenantSvc:         tenantSvc,
+		legacyFactorStore: runtimeStore,
 	}, nil
 }
 
@@ -4618,6 +4626,8 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		// The first admin pinned for each barrier at onboarding: what that
 		// window admits on a node initializing after the record is consumed.
 		FirstAdminPins: pins,
+		// A principal of a suspended or disabled tenant is refused.
+		TenantStatusReader: mgmt.tenantSvc,
 		// users:add_cert_binding is held to the certificate target guard.
 		CertTargetGuard:    certTargets,
 		RevocationCacheTTL: revocationTTL,

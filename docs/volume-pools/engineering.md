@@ -1,19 +1,13 @@
 # Volume Pools — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
-> Conflicts with this document are defects. Fix them here first. Decisions
-> D1-D10 are ruled; the Phase 1 build is in progress.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 >
-> Identifiers marked *(new)* did not exist in the tree when this was last
-> verified; this document is the contract they are built to. The design
-> choices it assumes are the decisions ruled in
-> [architecture.md](architecture.md#decisions-ruled). Tenant moves
-> (decision D5, the `MoveTenant` / `GetMove` surface and the move journal) are
-> **Phase 2** -- everything else here is Phase 1.
+> The design choices it assumes are in [architecture.md](architecture.md).
 
 ## Exported surface
 
-### `pkg/volume` *(new)*
+### `pkg/volume`
 
 ```go
 // Provider realizes a pool's volume on one node. Implementations are safe for
@@ -48,9 +42,9 @@ type Volume interface {
 }
 
 // Lockable is implemented by a Volume whose provider can lock and unlock the
-// underlying device in step with the node's system barrier (decision D6,
-// ruled: see architecture.md's "Encrypted volumes and the cluster
-// seal"). The "dir" provider does not implement it.
+// underlying device in step with the node's system barrier (see
+// architecture.md's "Encrypted volumes and the cluster seal"). The "dir"
+// provider does not implement it.
 type Lockable interface {
 	// Unlock makes the volume's data readable, given the key the caller
 	// derived from the now-unsealed system barrier with DeriveVolumeKey.
@@ -119,7 +113,7 @@ type Pool struct {
 	Name          string
 	Provider      string
 	Description   string
-	CapacityBytes int64   // 0 = derived from health reports (decision D4)
+	CapacityBytes int64   // 0 = derived from health reports
 	Overcommit    float64 // reservations may reach CapacityBytes*Overcommit; default 1.0
 	ReservedBytes int64   // sum of assignment reservations; maintained by CAS
 	CreatedAt, UpdatedAt time.Time
@@ -155,26 +149,27 @@ type Service interface {
 	UpdatePool(ctx context.Context, name string, req UpdatePoolRequest) (*Pool, error)
 	DeletePool(ctx context.Context, name string) error
 	ListAssignments(ctx context.Context, pool, pageToken string, pageSize int) (*AssignmentPage, error)
-	// MoveTenant and GetMove are Phase 2 (decision D5); their journal and
-	// wire surface are not part of this build.
+	// MoveTenant and GetMove return *MoveNotImplementedError; no transport
+	// exposes them.
 	MoveTenant(ctx context.Context, tenantID, toPool string) (*Move, error)
 	GetMove(ctx context.Context, tenantID string) (*Move, error)
 }
 ```
 
 `PoolView` is a `Pool` plus `UsedBytes`, `TenantCount` and per-node health
-counts. `PoolDetail` is a `PoolView` plus every `NodeReport` row for the pool.
+counts. `PoolDetail` is a `PoolView` plus one `NodeReportRow` per node.
 
-### Composition options *(new)*
+### Composition options
 
 | Option | Package | Effect |
 |---|---|---|
-| `WithVolumeProvider(p volume.Provider) ServerOption` | `pkg/server` | registers `p` in the node's volume registry |
-| `WithVolumeProvider(p volume.Provider) NodeOption` | `sdk/go/node` | the same, for embedded nodes |
-| `WithVolumeService(svc volume.Service)` | `pkg/api/{rest,grpc,quic,mcp,unix}` | wires the management handlers |
+| `WithVolumeProvider(p volume.Provider) NodeOption` | `sdk/go/node` | registers `p` in the node's volume registry |
+| `NewVolumeRegistry(extra ...volume.Provider)` | `pkg/server/lifecycle` | builds the node's registry: `dir` plus the composed providers |
+| `WithVolumeService(svc volume.Service) ServerOption` | `pkg/api/{rest,grpc,quic,mcp,unix}` | wires the management handlers |
+| `WithVolumeService(svc volume.Service) Option` | `sdk/go/transport/embedded` | the same, for the embedded transport |
 
-go-xkms calls `WithVolumeProvider(luks2.NewProvider())` at composition, where
-`luks2.NewProvider` takes no qrdb key material -- its `Volume` implements
+go-xkms registers its `luks2` provider with `WithVolumeProvider` at
+composition. The provider takes no qrdb key material: its `Volume` implements
 `volume.Lockable`, and the key for routine `Unlock` arrives as the `VolumeKey`
 argument on each call, derived and passed by `pkg/seal.VolumeLifecycle`.
 Any hardware-backed recovery key go-xkms wants to layer on top (TPM 2.0,
@@ -185,13 +180,13 @@ silently.
 
 `pkg/seal.VolumeLifecycle` (not a `With*` option: it is built directly over
 a node's system barrier, before that node's `BarrierRegistry`) is the
-ordering seam decision D6 requires:
+ordering seam:
 
 ```go
 // NewVolumeLifecycle registers its own unlock/lock observers on system
 // immediately. Build it BEFORE the node's BarrierRegistry so "unlock before
 // stores open" holds by construction order alone.
-func NewVolumeLifecycle(system *StorageBarrier, nodeID string, logger *slog.Logger) *VolumeLifecycle
+func NewVolumeLifecycle(system *StorageBarrier, nodeID string, logger *slog.Logger, opts ...VolumeLifecycleOption) *VolumeLifecycle
 
 // Track registers the Lockable volume opened for pool on this node.
 // *VolumeAlreadyTrackedError on a duplicate pool.
@@ -200,8 +195,8 @@ func (vl *VolumeLifecycle) Untrack(pool string)
 func (vl *VolumeLifecycle) Tracked() []string // sorted
 ```
 
-`StorageBarrier` gains the sealing-side half of the hook pair `OnUnsealed`
-already had:
+`StorageBarrier` carries the sealing-side half of the hook pair, beside
+`OnUnsealed`:
 
 ```go
 // OnSealing registers fn to run once, before the EpochBarrier zeroes the
@@ -210,26 +205,23 @@ already had:
 func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
 ```
 
-### Changes to existing surface
+### Volume pool surface in other packages
 
-| Identifier | Change |
+| Identifier | Role |
 |---|---|
-| `quota.Entitlements` | gains `AllowedVolumePools []string` (`json:"allowed_volume_pools,omitempty"`) |
-| `quota.Entitlements.AllowsVolumePool(name string) bool` *(new)* | true only for a listed pool; fail-closed on an empty list |
-| `tenant.TenantInfo` | `DataRoot` is removed; gains `VolumePool string`; `Refusal error` (in-process, from the recovery fix) gains a wire form |
-| `tenant.WithDataRoot`, `tenant.DataRootRetiredError` | removed: the wire field they refuse no longer exists |
-| `tenant.WithVolumePool(name string) CreateTenantOption` *(new)* | the pool a `volume` or `raft` tenant is placed on |
-| `tenant.Tombstone.DataRoot` | replaced by `VolumePool` |
-| `config.VolumePoolConfig` | `Paths []string` and `Strategy` replaced by `Path string`, `Provider string` (default `dir`) and `Options map[string]string` |
-| `pool.VolumePoolSubsystem`, `pool.BuildVolumePoolSubsystem`, the round-robin state stores | removed; replaced by `pkg/volume` |
-| `seal.BarrierRegistry.LocalTenantDataRoot` (from the recovery fix) | resolves through the assignment and the opened `volume.Volume` |
-| `seal.BarrierRegistry.RequireInsideLocalPool` (from the recovery fix) | checks against the pool's opened `Volume.Root()` |
-| `placement.ReplicaFilter` | gains the tenant id: `func(tenantID string, shardID uint64, raftAddr string) error`; `WithReplicaFilter` composes several |
-| `transport.VolumePoolClient` (`List`, `Pick`, `RegisterPool`) and `Client.VolumePools()` | replaced by the Tier 1 management client (decision D8) |
+| `quota.Entitlements.AllowedVolumePools []string` (`json:"allowed_volume_pools,omitempty"`) | the pools a tenant may be placed on; the first is its default |
+| `quota.Entitlements.AllowsVolumePool(name string) bool` | true only for a listed pool; fail-closed on an empty list |
+| `tenant.TenantInfo.VolumePool`, `tenant.TenantInfo.Refusal` | the tenant's pool, and the answering node's refusal, carried on the wire as `TenantRefusal` |
+| `tenant.WithVolumePool(name string) CreateTenantOption` | the pool a `volume` or `raft` tenant is placed on |
+| `tenant.Tombstone.VolumePool` | the deleted tenant's pool |
+| `config.VolumePoolConfig` | `Name`, `Path`, `Provider` (default `dir`) and `Options map[string]string` |
+| `seal.BarrierRegistry.LocalTenantDataRoot` | resolves through the assignment and the opened `volume.Volume` |
+| `seal.BarrierRegistry.RequireInsideLocalPool` | checks against the pool's opened `Volume.Root()` |
+| `placement.ReplicaFilter` | `func(tenantID string, shardID uint64, raftAddr string) error`; `WithReplicaFilter` composes several |
 
 ## Invariants
 
-0. **Unlock precedes store-open; lock precedes key-wipe (decision D6).**
+0. **Unlock precedes store-open; lock precedes key-wipe.**
    `pkg/seal.VolumeLifecycle`'s `OnUnsealed` observer is registered on a
    node's system barrier before that node's `BarrierRegistry` (which
    restores tenant stores) is built, and its `OnSealing` observer runs
@@ -256,12 +248,11 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    system KV's `service.TransactionServicer`. This is the same transaction
    `lifecycle.NewReplicatedSealBackend` already uses for put-if-absent. Two
    creates racing for the last capacity cannot both succeed.
-5. **Entitlement precedes reservation.** A create or move first checks the
+5. **Entitlement precedes reservation.** A create first checks the
    isolation tier (`AllowVolumeStorage` / `AllowDedicatedRaft`), then
    `AllowsVolumePool`, then reserves. A denial changes nothing.
 6. **A pool that does not open on a node refuses its tenants on that node
-   only -- under `--allow-degraded-volume-boot` (decision D10, ruled
-   2026-10-06).** Without that flag (or its config-file equivalent,
+   only -- under `--allow-degraded-volume-boot`.** Without that flag (or its config-file equivalent,
    `storage.allow_degraded_volume_boot`), which is the default, a pool that
    fails to open fails `qrdbd start` outright with `*volume.OpenAtBootError`,
    naming every inaccessible pool and the reason, before any tenant
@@ -269,18 +260,17 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    assigned to an unavailable pool is listed with a typed refusal
    (`*volume.PoolUnavailableError`, classified `Unavailable` on every
    transport), its data is never opened, and the rest of the node's pools
-   and tenants are served -- the degraded-boot behavior this invariant
-   originally described unconditionally. Each skipped pool is logged at
+   and tenants are served. Each skipped pool is logged at
    ERROR (not the ordinary open-failure WARN), reported in this node's
    health (`qrdb volume-pool get`) and exported as
    `qrdb_volume_pool_ready{pool}` = 0, so the degradation is never silent.
 7. **Removal stays inside the pool root.** Every directory removal — tenant
-   delete, deleted-tenant reconcile, shard purge, move cleanup — passes
+   delete, deleted-tenant reconcile, shard purge — passes
    `RequireInsideLocalPool` against the pool's `Volume.Root()`, with links
    resolved on both sides.
-8. **The catalog is the authority on pool existence.** Node configuration that
-   maps an unknown pool name is reported in the node's health report as
-   `unknown pool`. It is not served, and the node still boots.
+8. **The catalog is the authority on pool existence.** A name in node
+   configuration with no catalog record is not a pool: no tenant can be
+   placed on it, and the node still boots.
 9. **A health report needs an engine that keeps leases.** The report is
    lease-bound, so a composer starts `volume.Reporter` only over an engine
    for which `lifecycle.LocalEngineKeepsLeases` holds. A standalone node on
@@ -289,11 +279,6 @@ func (b *StorageBarrier) OnSealing(fn func(context.Context) error)
    clustered node always reports.
 10. **A pool with assignments cannot be deleted**
     (`*volume.PoolInUseError` naming the tenants, first page).
-11. **A move is resumable and never loses the source** before the assignment
-    flips. The journal's states are `preparing`, `fenced`, `copying`,
-    `committed` and `cleaned`. Before `committed`, an abort releases the target
-    reservation, deletes the target copies and lifts the fence. After
-    `committed`, only cleanup remains.
 
 ## Error semantics
 

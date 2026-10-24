@@ -146,6 +146,21 @@ func (a *VectorStoreAdapter) EnsureNamespace(ctx context.Context, name string, d
 	return err
 }
 
+// DeleteVector implements rag.VectorStore by removing the vector through the
+// underlying service. A vector that is already gone is not an error, so the
+// pipeline can retry a removal it did not finish.
+func (a *VectorStoreAdapter) DeleteVector(ctx context.Context, namespace string, id uint64) error {
+	svc, err := a.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: namespace, ID: id})
+	if notFound := (*VectorNotFoundError)(nil); errors.As(err, &notFound) {
+		return nil
+	}
+	return err
+}
+
 // SearchSimilar implements rag.VectorStore by delegating to the underlying service.
 func (a *VectorStoreAdapter) SearchSimilar(ctx context.Context, req *rag.SearchVecRequest) (*rag.SearchVecResponse, error) {
 	svc, err := a.resolve(ctx)

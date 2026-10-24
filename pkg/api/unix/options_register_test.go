@@ -31,6 +31,7 @@ import (
 // answering with an invented result.
 type (
 	registerDEKSvc            struct{ service.DEKServicer }
+	registerPolicySvc         struct{ service.PolicyServicer }
 	registerUserAuthFactorSvc struct {
 		service.UserAuthFactorServicer
 	}
@@ -46,15 +47,17 @@ type (
 func TestStart_RegistersEveryOptionalService(t *testing.T) {
 	dek, uaf, af := &registerDEKSvc{}, &registerUserAuthFactorSvc{}, &registerAuthFactorSvc{}
 	lock, reg, ca := &registerLockSvc{}, &registerRegistry{}, &registerCeremonyCA{}
+	policy := &registerPolicySvc{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, tempSocketPath(t),
 		WithDEKService(dek),
+		WithPolicyService(policy),
 		WithUserAuthFactorService(uaf),
 		WithAuthFactorService(af),
 		WithLock(lock),
 		WithServiceRegistry(reg),
 		WithCeremonyCA(ca),
 		WithTLS(selfSignedTLSConfig(t)))
-	if srv.dekSvc != dek || srv.userAuthFactorSvc != uaf || srv.authFactorSvc != af ||
+	if srv.dekSvc != dek || srv.policySvc != policy || srv.userAuthFactorSvc != uaf || srv.authFactorSvc != af ||
 		srv.lockSvc != lock || srv.registry != reg || srv.ceremonyCA != ca {
 		t.Fatal("an option did not set its field")
 	}

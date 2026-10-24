@@ -10,14 +10,15 @@
 # talks to (ci-standard.md §6). Go trims its build cache of entries unused for
 # five days, but nothing trims the module cache, so the volumes would grow
 # without bound. This measures them and, while their total is over <max-gib>,
-# removes the largest one no container is using. A removed volume comes back
-# empty at the next stage, which costs one cold build, never a wrong one.
+# first deletes the build and golangci-lint cache entries unused longest (see
+# evict), then removes the largest volume no container is using. An evicted
+# entry or a removed volume costs a rebuild, never a wrong one.
 #
-# Sizes are measured by `du` in <image> (the toolchain image the job just
-# built: it has du, and it is already on the host), run as IN_IMAGE_UID (the
-# volumes' owner, default 10001) with no network, no capability and the volume
-# read-only. A volume any container (running or
-# stopped) mounts is never removed; `docker volume rm` refuses one in use in any
+# Sizes are measured by `du`, and entries evicted by `find`, in <image> (the
+# toolchain image the job just built: it has both, and it is already on the
+# host), run as IN_IMAGE_UID (the volumes' owner, default 10001) with no
+# network and no capability; `du` mounts the volume read-only. A volume any
+# container (running or stopped) mounts is never evicted from or removed; `docker volume rm` refuses one in use in any
 # case.
 #
 # <max-gib> defaults to CI_CACHE_MAX_GIB, else 32: the bound for this repo's
@@ -54,17 +55,67 @@ size() {
 
 list=$(mktemp)
 trap 'rm -f "$list"' EXIT
-total=0
-for vol in $(docker volume ls -q --filter "name=${prefix}cache-"); do
-  case $vol in "${prefix}cache-"*) ;; *) continue ;; esac
-  kib=$(size "$vol")
-  case $kib in
-    '' | *[!0-9]*) echo "warn  $vol: size not read"; continue ;;
-  esac
-  echo "$kib $vol" >> "$list"
-  total=$((total + kib))
-done
+
+# measure: writes "<KiB> <volume>" per cache volume of the prefix to $list and
+# sets total to their sum.
+measure() {
+  : > "$list"
+  total=0
+  for vol in $(docker volume ls -q --filter "name=${prefix}cache-"); do
+    case $vol in "${prefix}cache-"*) ;; *) continue ;; esac
+    kib=$(size "$vol")
+    case $kib in
+      '' | *[!0-9]*) echo "warn  $vol: size not read"; continue ;;
+    esac
+    echo "$kib $vol" >> "$list"
+    total=$((total + kib))
+  done
+}
+
+# CUSTOMIZE (go-qrdb, #1046) begin: evict by age before removing a volume.
+# evict <minutes>: delete every entry of the build and golangci-lint caches,
+# in the volumes no container mounts, last used more than <minutes> ago. Both
+# are Go's cache format, whose own trim deletes entries one at a time by
+# mtime, and Go sets an entry's mtime when it uses it (at most hourly), so an
+# evicted entry is a cache miss, never a wrong build. The module cache is not
+# evicted this way: a module directory with files missing is a broken module,
+# not a miss.
+evict() {
+  local mounts=() _ vol
+  while read -r _ vol; do
+    case $vol in *-gobuild | *-golangci) ;; *) continue ;; esac
+    [ -z "$(docker ps -aq --filter "volume=$vol")" ] || continue
+    mounts+=(-v "$vol:/c/$vol")
+  done < "$list"
+  [ "${#mounts[@]}" -gt 0 ] || return 0
+  if [ "${REAP_DRY_RUN:-0}" = 1 ]; then
+    echo "dry   evict cache entries unused for over $1 min"
+    return 0
+  fi
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
+    --user "$uid:$uid" "${mounts[@]}" --entrypoint find "$image" \
+    /c -type f -mmin "+$1" -delete >/dev/null 2>&1 ||
+    echo "warn  eviction of entries unused for over $1 min did not finish"
+}
+# CUSTOMIZE (go-qrdb, #1046) end.
+
+measure
 echo "caches: $((total / 1024 / 1024)) GiB of ${max_gib} GiB for prefix '$prefix'"
+
+# CUSTOMIZE (go-qrdb, #1046) begin: while the total is over the bound, evict
+# entries unused for three days, then one day, 12 h, 6 h and 3 h, and measure
+# again after each. What the last jobs on this host used is what the next one
+# reads, so it goes last. Removing a whole volume, below, is the fallback: done
+# first, it emptied the build cache whenever the bound was reached, and every
+# stage after it compiled the tree from nothing (#1046).
+for age in 4320 1440 720 360 180; do
+  [ "$total" -gt "$max_kib" ] || break
+  evict "$age"
+  [ "${REAP_DRY_RUN:-0}" = 1 ] && continue
+  measure
+  echo "evict entries unused for over $age min: $((total / 1024 / 1024)) GiB left"
+done
+# CUSTOMIZE (go-qrdb, #1046) end.
 
 removed=0
 while read -r kib vol; do

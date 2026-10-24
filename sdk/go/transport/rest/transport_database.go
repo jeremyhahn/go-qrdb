@@ -37,6 +37,10 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	var info transport.DatabaseInfo
 	if err := t.postJSONDecode(ctx, "CreateDatabase", "/v1/databases", req, &info); err != nil {
@@ -201,6 +205,10 @@ func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDataba
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	var info transport.DatabaseInfo

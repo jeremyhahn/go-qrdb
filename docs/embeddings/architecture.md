@@ -1,6 +1,6 @@
 # Embedding Service — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -13,7 +13,7 @@ implements its own retry and caching, and hardcodes one vendor's API.
 
 A **provider-proxy**: qrdb does not run models. It holds a registry of named,
 OpenAI-compatible HTTP providers and proxies embedding requests to whichever the
-caller names — with an LRU cache in front, batching behind, and the store's own
+caller names — with an optional LRU cache in front, batching behind, and the store's own
 mTLS/RBAC in front of the whole thing.
 
 ```
@@ -34,9 +34,9 @@ OpenAI, vLLM, or anything else with that shape.
   file cover all three.
 - **A qrdb-specific provider protocol.** Rejected: OpenAI-compatible is the de
   facto interface every serving stack already implements.
-- **Caching by text alone.** Rejected: the cache key is the
-  `(provider, model, text)` tuple, because the same text under a different model
-  is a different vector and returning one for the other is silently wrong.
+- **Caching by text alone.** Rejected: the cache key is the `(model, text)`
+  pair, because the same text under a different model is a different vector and
+  returning one for the other is silently wrong.
 
 ## Component boundaries
 

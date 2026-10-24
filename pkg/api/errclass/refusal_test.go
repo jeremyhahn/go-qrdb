@@ -22,6 +22,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 func TestRefusal_factorConditionFailed(t *testing.T) {
@@ -35,6 +37,32 @@ func TestRefusal_factorConditionFailed(t *testing.T) {
 	}
 	if got := auth.FactorConditionFailedFromMetadata(md); *got != *want {
 		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+}
+
+func TestRefusal_userConcurrentUpdate(t *testing.T) {
+	want := &user.ConcurrentUpdateError{ID: 9}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != transport.ReasonUserConcurrentUpdate {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonUserConcurrentUpdate)
+	}
+	if got := transport.UserConcurrentUpdateFromMetadata(md); *got != *want {
+		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+	if got := Classify(want); got != Aborted {
+		t.Fatalf("Classify(lost race) = %v, want Aborted", got)
+	}
+}
+
+// A failed rollback over a lost race is DataLoss, not a conflict to retry, so
+// it carries no refusal a client would rebuild as one.
+func TestRefusal_userConcurrentUpdateUnderDataLossCarriesNone(t *testing.T) {
+	err := &user.IndexCompensationError{Op: "update", Cause: &user.ConcurrentUpdateError{ID: 9}}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify() = %v, want DataLoss", got)
+	}
+	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
 	}
 }
 

@@ -71,7 +71,7 @@ func registerSOGrants() {
 		// Tenant management
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		TenantsSetIsolation, TenantsSetEntitlements,
+		TenantsSetIsolation, TenantsSetEntitlements, TenantsSetStatus,
 		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
 		KeysCreate, KeysDelete, KeysList, KeysGet,
 		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
@@ -84,8 +84,8 @@ func registerSOGrants() {
 		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
-		// Audit (operational oversight)
-		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
+		// Audit (operational oversight, and retention administration)
+		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Admin
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
@@ -152,6 +152,10 @@ func registerAdminGrants() {
 		// everything in its tenant except key custody, and onboarding a
 		// device or rolling out an update is neither.
 		DevicesOnboard, OTAActivate, OTAConfirm,
+		// ABAC policy management, in the Admin's own tenant only
+		// (ScopeSelf, and the policy service refuses another tenant).
+		ABACPoliciesCreate, ABACPoliciesRead, ABACPoliciesList,
+		ABACPoliciesUpdate, ABACPoliciesDelete,
 		// Seal management (operational subset: no bootstrap, rotate, rekey)
 		SealUnseal, SealSeal, SealStatus,
 		// Share-holder enrolment and revocation. An Admin and a Security
@@ -231,8 +235,10 @@ func registerAdminGrants() {
 		// tenant's data. It stays ScopeSelf, so a tenant Admin restores only
 		// their own tenant's keys.
 		MVCCRestore,
-		// Audit (self-scope)
-		AuditRead, AuditQuery,
+		// Audit (self-scope). AuditDelete is retention administration of the
+		// tenant's own events; the Auditor role, which reviews the trail,
+		// does not hold it, so the trail's reviewer cannot remove from it.
+		AuditRead, AuditQuery, AuditDelete,
 		// Cross-scope tenant management — only effective for system-tenant Admin.
 		TenantsListCross, TenantsCreateCross, TenantsApprove,
 		TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
@@ -241,6 +247,7 @@ func registerAdminGrants() {
 		// ScopeCross (tenant_provisioning_scope.go): only effective for
 		// system-tenant Admin, so a tenant Admin cannot raise its own limits.
 		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
+		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,

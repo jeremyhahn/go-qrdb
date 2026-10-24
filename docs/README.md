@@ -1,6 +1,6 @@
 # QRDB Documentation
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Index of the documentation tree.
 
 <!--
@@ -114,14 +114,14 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [desktop-gui](desktop-gui/) | the Wails desktop application *(build tag `desktop`)* |
 | [typescript-sdk](typescript-sdk/) | the `@qrdb/sdk` TypeScript client package, REST/Wails transports, typed errors, and contract tests |
 
-## Migration state
+## Feature folder coverage
 
-**Every currently-implemented feature has a `docs/<feature>/` folder with all
+**Every implemented feature has a `docs/<feature>/` folder with all
 five files.** The portfolio view is derived, not maintained — count
 `docs/*/architecture.md`. A future feature's folder may hold only its
 `architecture.md` design ([sqlite-vfs](sqlite-vfs/)).
 
-Some legacy documents survive **as companions**, not as duplicates: they carry
+Some documents are **companions**, not duplicates: they carry
 deeper reference material the five-file layout points at rather than restates.
 They are listed below and are linked from the feature folder that owns them.
 

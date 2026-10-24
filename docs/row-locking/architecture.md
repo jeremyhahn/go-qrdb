@@ -1,6 +1,6 @@
 # Row Locking — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-30
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated** with the rest of the SQL layer: `qrdb_sql` compiles it,
@@ -36,8 +36,8 @@ replicated lock table.
 | `optimistic` (default) | takes no locks | takes real locks | CAS on the write set |
 | `pessimistic` | takes exclusive row locks implicitly, with **current reads** | takes real locks | CAS on the write set |
 
-The default is `optimistic`, so a database nobody configures behaves exactly as
-it did before this feature existed.
+The default is `optimistic`, so in a database nobody configures only an explicit
+lock clause takes a lock.
 
 **The commit-time compare-and-swap stays in both modes.** Locks reduce how
 often a commit loses; they never replace commit validation. A writer the lock
@@ -116,8 +116,8 @@ state.
 Lock table = lease (holder liveness)  +  CAS transaction (enqueue)  +  revision order (FIFO)  +  watch (wake-up)
 ```
 
-This is the composition [../distributed-locks/](../distributed-locks/) already
-uses, extended with a queue and a lock mode.
+This is the composition [../distributed-locks/](../distributed-locks/) uses,
+extended with a queue and a lock mode.
 
 ### Records and FIFO order
 
@@ -156,16 +156,16 @@ queue.
   abandoned transaction held.
 - A session that crashes, or whose node is lost, stops renewing; the leader's
   expiry sweep deletes its records when the lease runs out, and its waiters
-  wake — exactly as when every transaction had a lease of its own.
+  wake.
 - A lost lease never silently grants the transaction anything: the CAS at
   commit is still there (see above).
 
 Why the lease is the session's and not the transaction's: a lease grant and a
 lease revoke are two Raft proposals, and in pessimistic mode every autocommit
 `UPDATE`, `DELETE` and `INSERT` is a locking transaction, so a lease per
-transaction added two proposals to every write statement whatever it locked.
-What a lease is *for* — the liveness of the holder, so a dead holder's locks
-expire — is a property of the connection, which is what now holds it.
+transaction would add two proposals to every write statement whatever it
+locked. What a lease is *for* — the liveness of the holder, so a dead holder's
+locks expire — is a property of the connection, so the connection holds it.
 
 ### Wait queue and wake-up
 
@@ -244,8 +244,9 @@ holds: a statement that times out leaves none of its rows committed (see
 | Piece | Package | Owner |
 |---|---|---|
 | Lock table: records, grant rule, wait, deadlock detection, lease binding, metrics | `pkg/rowlock` | go-qrdb |
-| Lock clause analysis, current reads, implicit DML locks, session variables | `pkg/sql/provider` | go-qrdb |
-| `FOR SHARE` rewrite (MySQL wire) | `pkg/sql/engine` | go-qrdb |
+| Lock clause analysis | `pkg/sql/lockclause` (`Analyze`) | go-qrdb |
+| Current reads, implicit DML locks, session variables | `pkg/sql/provider` | go-qrdb |
+| `FOR SHARE` rewrite | `pkg/sql/lockclause` (`Normalize`), applied by the parser in `pkg/sql/engine` | go-qrdb |
 | PostgreSQL lock-clause, `SET` and `lock_timeout` translation | `pkg/sql/engine`, `pkg/sql/pgsql` | go-qrdb |
 | Per-database `sql.concurrency` | `pkg/database`, `pkg/service`, every transport | go-qrdb |
 | Error classification on non-SQL transports | `pkg/api/errclass` | go-qrdb |
@@ -277,8 +278,8 @@ holds: a statement that times out leaves none of its rows committed (see
 
 - **A state-machine lock subsystem with new Raft commands.** Grant and
   deadlock decisions would be made deterministically inside the apply loop,
-  but every new command must sit behind a cluster feature gate that does not
-  exist, every state-machine type would need the subsystem, and the lock table
+  but every new command must sit behind a cluster feature gate, every
+  state-machine type would need the subsystem, and the lock table
   would need its own snapshot format and a hook into lease expiry. The records
   above need none of that and reuse primitives that are already proven.
 - **A node-local lock map.** A leader change, or simply two sessions on two

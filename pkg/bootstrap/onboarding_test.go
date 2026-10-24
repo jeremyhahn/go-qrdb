@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
@@ -1222,11 +1223,34 @@ func provisionAutoUnsealTenant(t *testing.T, users firstboot.UserCreator) (*Tena
 	return result, deps, pending
 }
 
-// testAdminCompletionBounds keeps CompletePendingTenantAdminWithin's waits
-// short enough for a unit test while leaving the retry loop real.
-var testAdminCompletionBounds = AdminCompletionBounds{
-	Budget: 2 * time.Second, AttemptTimeout: 50 * time.Millisecond,
-	Delay: time.Millisecond, MaxDelay: 5 * time.Millisecond,
+// testAdminCompletionBounds returns bounds for CompletePendingTenantAdminWithin
+// and CompletePendingTenantAdminOnce that run on a fresh fake clock: no
+// attempt and no budget ends unless the test advances it, so an in-memory
+// attempt on a loaded machine cannot outlast its bound. The retry loop and its
+// short backoff waits stay real.
+func testAdminCompletionBounds() (AdminCompletionBounds, *clocktest.Fake) {
+	clk := clocktest.New()
+	return AdminCompletionBounds{
+		Budget: 2 * time.Second, AttemptTimeout: 50 * time.Millisecond,
+		Delay: time.Millisecond, MaxDelay: 5 * time.Millisecond, Clock: clk,
+	}, clk
+}
+
+// countingPendingAdmins is a tenantadmin.Store that counts its reads, one per
+// completion attempt, and runs onGet with the count as each starts, so a test
+// can advance the clock at a given attempt rather than at a wall-clock instant.
+type countingPendingAdmins struct {
+	tenantadmin.Store
+	gets  int
+	onGet func(n int)
+}
+
+func (s *countingPendingAdmins) Get(ctx context.Context, tenantID string) (*tenantadmin.Pending, error) {
+	s.gets++
+	if s.onGet != nil {
+		s.onGet(s.gets)
+	}
+	return s.Store.Get(ctx, tenantID)
 }
 
 // TestProvisionTenant_BarrierIsolation_AutoUnseal_LeavesAdminCompletionDue
@@ -1289,7 +1313,8 @@ func TestCompletePendingTenantAdminWithin_Completes(t *testing.T) {
 	users := &fakeUsers{}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
 
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	bounds, _ := testAdminCompletionBounds()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
 	if err != nil || !done {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want true, nil", done, err)
 	}
@@ -1312,7 +1337,8 @@ func TestCompletePendingTenantAdminWithin_NothingPending(t *testing.T) {
 		Users: &fakeUsers{}, Roles: &fakeRoles{},
 		PendingAdmins: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), Logger: discardLogger(),
 	}
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	bounds, _ := testAdminCompletionBounds()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
 	if err != nil || done {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, nil", done, err)
 	}
@@ -1320,15 +1346,20 @@ func TestCompletePendingTenantAdminWithin_NothingPending(t *testing.T) {
 
 // stallFirstCreateUsers is a fakeUsers whose first CreateUser hangs until its
 // context ends, the way a proposal forwarded to a leader that is still
-// settling goes unanswered.
+// settling goes unanswered. onStall, when set, runs as that call starts to
+// stall, so a test can pass the attempt's deadline on its fake clock.
 type stallFirstCreateUsers struct {
 	*fakeUsers
 	stalled bool
+	onStall func()
 }
 
 func (s *stallFirstCreateUsers) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
 	if !s.stalled {
 		s.stalled = true
+		if s.onStall != nil {
+			s.onStall()
+		}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -1337,19 +1368,21 @@ func (s *stallFirstCreateUsers) CreateUser(ctx context.Context, req *user.Create
 
 // TestCompletePendingTenantAdminWithin_RetriesAStalledAttempt proves an
 // attempt that stalls is cut off at the attempt bound and the next attempt
-// completes the admin, well inside the overall budget.
+// completes the admin, well inside the overall budget. The stalled attempt's
+// deadline passes on the fake clock, advanced as the attempt starts to stall.
 func TestCompletePendingTenantAdminWithin_RetriesAStalledAttempt(t *testing.T) {
-	users := &stallFirstCreateUsers{fakeUsers: &fakeUsers{}}
+	bounds, clk := testAdminCompletionBounds()
+	users := &stallFirstCreateUsers{fakeUsers: &fakeUsers{}, onStall: func() { clk.Advance(bounds.AttemptTimeout) }}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
 
-	start := time.Now()
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	start := clk.Now()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
 	if err != nil || !done {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want true, nil", done, err)
 	}
-	if elapsed := time.Since(start); elapsed >= testAdminCompletionBounds.Budget {
-		t.Errorf("completion took %v, want it inside the %v budget (the stalled attempt cut off at %v)",
-			elapsed, testAdminCompletionBounds.Budget, testAdminCompletionBounds.AttemptTimeout)
+	if elapsed := clk.Since(start); elapsed >= bounds.Budget {
+		t.Errorf("completion took %v on its clock, want it inside the %v budget (the stalled attempt cut off at %v)",
+			elapsed, bounds.Budget, bounds.AttemptTimeout)
 	}
 	if !users.stalled || len(users.createCalls) != 1 {
 		t.Errorf("stalled = %v, completed createCalls = %d; want the stalled attempt then one completing call",
@@ -1367,7 +1400,8 @@ func TestCompletePendingTenantAdminWithin_StopsWhileSealed(t *testing.T) {
 	users := &fakeUsers{createErr: tenant.ErrTenantSealed}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
 
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	bounds, _ := testAdminCompletionBounds()
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
 	if done || !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, ErrTenantSealed", done, err)
 	}
@@ -1382,39 +1416,54 @@ func TestCompletePendingTenantAdminWithin_StopsWhileSealed(t *testing.T) {
 // TestCompletePendingTenantAdminWithin_StopsOnAMissingSeam proves a permanent
 // error -- here a composition with no user seam -- is not retried.
 func TestCompletePendingTenantAdminWithin_StopsOnAMissingSeam(t *testing.T) {
+	bounds, clk := testAdminCompletionBounds()
 	_, deps, _ := provisionAutoUnsealTenant(t, &fakeUsers{})
 	deps.Users = nil
+	// A second attempt would be the error retried: the budget runs out there,
+	// so a regression fails this test rather than retrying on a clock that
+	// never moves.
+	reads := &countingPendingAdmins{Store: deps.PendingAdmins, onGet: func(n int) {
+		if n == 2 {
+			clk.Advance(bounds.Budget)
+		}
+	}}
+	deps.PendingAdmins = reads
 
-	start := time.Now()
-	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, testAdminCompletionBounds)
+	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
 	var seam *MissingProvisioningSeamError
 	if done || !errors.As(err, &seam) {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false, *MissingProvisioningSeamError", done, err)
 	}
-	if elapsed := time.Since(start); elapsed >= testAdminCompletionBounds.Budget {
-		t.Errorf("completion took %v, want it to stop at once rather than retry to the %v budget",
-			elapsed, testAdminCompletionBounds.Budget)
+	if reads.gets != 1 {
+		t.Errorf("attempts = %d, want 1: a permanent error stops at once rather than retrying to the budget", reads.gets)
 	}
 }
 
 // TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget proves a failure
 // that persists is retried until the budget runs out and then reported, with
-// the pending record left for the hook.
+// the pending record left for the hook. The budget runs out on the fake clock
+// as the third attempt starts, after two have failed.
 func TestCompletePendingTenantAdminWithin_GivesUpAtItsBudget(t *testing.T) {
 	boom := errors.New("boom")
 	users := &fakeUsers{createErr: boom}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
-	bounds := testAdminCompletionBounds
-	bounds.Budget = 100 * time.Millisecond
+	bounds, clk := testAdminCompletionBounds()
+	// The attempt bound outlasts the budget, so advancing to the budget passes
+	// that one deadline alone: the attempt then ends because the budget did.
+	bounds.AttemptTimeout = 2 * bounds.Budget
+	reads := &countingPendingAdmins{Store: deps.PendingAdmins, onGet: func(n int) {
+		if n == 3 {
+			clk.Advance(bounds.Budget)
+		}
+	}}
+	deps.PendingAdmins = reads
 
-	start := time.Now()
 	done, err := CompletePendingTenantAdminWithin(context.Background(), "acme", deps, bounds)
-	elapsed := time.Since(start)
 	if done || !errors.Is(err, boom) {
 		t.Fatalf("CompletePendingTenantAdminWithin = %v, %v; want false and the last attempt's error", done, err)
 	}
-	if elapsed < bounds.Budget || elapsed > 10*bounds.Budget {
-		t.Errorf("completion took %v, want it to give up at its %v budget", elapsed, bounds.Budget)
+	if reads.gets < 3 {
+		t.Errorf("attempts = %d, want the failure retried until the budget ran out on the third", reads.gets)
 	}
 	if len(users.createCalls) < 2 {
 		t.Errorf("user createCalls = %d, want the failure retried", len(users.createCalls))
@@ -1430,7 +1479,8 @@ func TestCompletePendingTenantAdminOnce_Completes(t *testing.T) {
 	users := &fakeUsers{}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
 
-	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, testAdminCompletionBounds)
+	bounds, _ := testAdminCompletionBounds()
+	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, bounds)
 	if err != nil || !done {
 		t.Fatalf("CompletePendingTenantAdminOnce = %v, %v; want true, nil", done, err)
 	}
@@ -1442,6 +1492,25 @@ func TestCompletePendingTenantAdminOnce_Completes(t *testing.T) {
 	}
 }
 
+// TestCompletePendingTenantAdminOnce_ReportsAnAttemptPastItsDeadline proves an
+// attempt that outlasts its bound fails with the deadline inside the typed
+// error and leaves the record for the barrier-ready hook. The deadline passes
+// on the fake clock, advanced as the account step starts to stall.
+func TestCompletePendingTenantAdminOnce_ReportsAnAttemptPastItsDeadline(t *testing.T) {
+	bounds, clk := testAdminCompletionBounds()
+	users := &stallFirstCreateUsers{fakeUsers: &fakeUsers{}, onStall: func() { clk.Advance(bounds.AttemptTimeout) }}
+	_, deps, pending := provisionAutoUnsealTenant(t, users)
+
+	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, bounds)
+	var create *TenantAdminUserCreationError
+	if done || !errors.As(err, &create) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CompletePendingTenantAdminOnce = %v, %v; want false and *TenantAdminUserCreationError wrapping context.DeadlineExceeded", done, err)
+	}
+	if rec, err := pending.Get(context.Background(), "acme"); err != nil || rec == nil {
+		t.Errorf("pending.Get(acme) = %v, %v; want the record left for the hook", rec, err)
+	}
+}
+
 // TestCompletePendingTenantAdminOnce_DoesNotRetry proves a failed attempt is
 // reported at once, with the record left for the barrier-ready hook, where
 // the retrying form would spend its budget.
@@ -1449,7 +1518,7 @@ func TestCompletePendingTenantAdminOnce_DoesNotRetry(t *testing.T) {
 	boom := errors.New("boom")
 	users := &fakeUsers{createErr: boom}
 	_, deps, pending := provisionAutoUnsealTenant(t, users)
-	bounds := testAdminCompletionBounds
+	bounds, _ := testAdminCompletionBounds()
 	bounds.Budget = time.Hour
 
 	done, err := CompletePendingTenantAdminOnce(context.Background(), "acme", deps, bounds)
@@ -1520,16 +1589,15 @@ func (c *expiringContext) Err() error {
 // budget runs under passes once the second attempt has started, by ordering
 // rather than by a race against a short wall clock: the budget's context is
 // derived from the caller's, which expires as that attempt starts to stall,
-// and the budget and the attempt bound both outlast the test, so the second
+// and the budget and the attempt bound run on a fake clock that never moves,
+// so the second
 // attempt is ended by that deadline alone.
 func TestCompletePendingTenantAdminWithin_BudgetCutOffKeepsTheCause(t *testing.T) {
 	boom := errors.New("boom")
 	ctx := newExpiringContext()
 	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, err: boom, onStall: ctx.expire}
 	_, deps, _ := provisionAutoUnsealTenant(t, users)
-	bounds := testAdminCompletionBounds
-	bounds.Budget = time.Minute
-	bounds.AttemptTimeout = time.Minute
+	bounds, _ := testAdminCompletionBounds()
 
 	done, err := CompletePendingTenantAdminWithin(ctx, "acme", deps, bounds)
 	if done || !errors.Is(err, boom) {
@@ -1549,9 +1617,7 @@ func TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget(t *
 	users := &failThenStallUsers{fakeUsers: &fakeUsers{}, onStall: ctx.expire}
 	users.calls = 1 // every call stalls
 	_, deps, _ := provisionAutoUnsealTenant(t, users)
-	bounds := testAdminCompletionBounds
-	bounds.Budget = time.Minute
-	bounds.AttemptTimeout = time.Minute
+	bounds, _ := testAdminCompletionBounds()
 
 	done, err := CompletePendingTenantAdminWithin(ctx, "acme", deps, bounds)
 	if done || !errors.Is(err, context.DeadlineExceeded) {
@@ -1565,7 +1631,8 @@ func TestCompletePendingTenantAdminWithin_FirstAttemptCutOffReportsTheBudget(t *
 // TestCompletePendingTenantAdminWithin_RequiresLogger proves the bounded
 // completion refuses a composition with no logger, as the unbounded one does.
 func TestCompletePendingTenantAdminWithin_RequiresLogger(t *testing.T) {
-	_, err := CompletePendingTenantAdminWithin(context.Background(), "acme", Dependencies{}, testAdminCompletionBounds)
+	bounds, _ := testAdminCompletionBounds()
+	_, err := CompletePendingTenantAdminWithin(context.Background(), "acme", Dependencies{}, bounds)
 	var missing *MissingLoggerError
 	if !errors.As(err, &missing) {
 		t.Fatalf("CompletePendingTenantAdminWithin(no logger) = %v, want *MissingLoggerError", err)
@@ -1576,11 +1643,15 @@ func TestCompletePendingTenantAdminWithin_RequiresLogger(t *testing.T) {
 // a set one is kept.
 func TestAdminCompletionBounds_Defaults(t *testing.T) {
 	got := AdminCompletionBounds{AttemptTimeout: time.Second}.withDefaults()
-	if got.Budget <= 0 || got.Delay <= 0 || got.MaxDelay <= 0 {
+	if got.Budget <= 0 || got.Delay <= 0 || got.MaxDelay <= 0 || got.Clock == nil {
 		t.Errorf("withDefaults() = %+v, want every zero bound defaulted", got)
 	}
 	if got.AttemptTimeout != time.Second {
 		t.Errorf("withDefaults().AttemptTimeout = %v, want the set 1s kept", got.AttemptTimeout)
+	}
+	clk := clocktest.New()
+	if got := (AdminCompletionBounds{Clock: clk}).withDefaults(); got.Clock != clk {
+		t.Errorf("withDefaults().Clock = %v, want the set fake kept", got.Clock)
 	}
 }
 

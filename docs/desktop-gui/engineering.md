@@ -1,6 +1,6 @@
 # Desktop GUI — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Build tags
@@ -14,15 +14,18 @@
 `DESKTOP_TAGS` is `desktop production webkit2_41` plus the ordinary
 `BUILD_TAGS`.
 
-The `embedded` transport value on the CLI's `--transport` flag likewise
-requires the desktop/GUI build.
+The embedded server the GUI's connection manager starts is composed under
+`qrdb_embedded`. The CLI's `--transport embedded` value is accepted but every
+verb given it fails with `EmbeddedTransportUnavailableError`: `buildClient`
+(`cmd/qrdb/config.go`) short-circuits it, in every build.
 
 ## Exported surface
 
 **Go side** — Wails bindings in `cmd/qrdb/bindings_*.go`, one file per subject
 area (kv, mvcc, sql, vector, timeseries, seal, tenant, database, collection,
 index, lease, lock, watch, batch, transaction, users, roles, certs, credential,
-officer, ceremony, backup, rebalance, daemon, config, server). Several have `_stub.go`
+officer, ceremony, invitations, backup, rebalance, admin, audit, daemon, config,
+connection_manager, server). Several have `_stub.go`
 counterparts for builds without the corresponding feature tag, so the binding
 surface exists whether or not the feature is compiled in.
 
@@ -53,8 +56,8 @@ management, feature errors), watch streaming and npm packaging are documented in
   `make test` and `make check-action-pins`) enforces it for non-test code. The
   one exception is the in-process server the `qrdb_embedded` build composes for
   the desktop app (`bindings_server.go`, `embedded_barrier.go`,
-  `database_instance_registry.go`, `host_adapter.go`, `kvstore_adapter.go`); the
-  gate lists those five files and fails when one stops needing its place.
+  `database_instance_registry.go`, `host_adapter.go`); the gate lists those four
+  files and fails when one stops needing its place.
 - **There is no login screen and no password path.** Authentication is mTLS at
   the TLS handshake; the header identity is the client certificate's Subject CN.
 - **The browser path uses the ordinary REST API plus CORS.** No GUI-only
@@ -82,9 +85,7 @@ management, feature errors), watch streaming and npm packaging are documented in
   request -- and the summary step shows only that it is set. Returning to the
   barrier step asks for it again, and tearing the wizard down by any route
   (`onDestroy` → `clearBarrierPassphrase`) clears it. The barrier defaults to
-  none, so the barrier is opt-in. *(Changed: the wizard sent the barrier block without
-  `enabled` and with no secret, so the server never created a barrier and the
-  barrier step had no effect.)*
+  none, so the barrier is opt-in.
 - **The database wizard enrols a Shamir database's share holders.** Choosing
   the Shamir barrier asks for M of N as whole numbers, 2 <= M <= N <= 255,
   the bounds the server's seal enforces (a share's x-coordinate is a non-zero
@@ -112,10 +113,7 @@ management, feature errors), watch streaming and npm packaging are documented in
   an M-of-N it cannot split with `ErrShamirThresholdInvalid`, and a database
   without its own store with `SharedStoreBarrierUnsupportedError`. The create
   step shows the server's refusal, and a refused create leaves no database
-  behind. *(Changed: the Shamir card was disabled, and the create step
-  refused it from a client-side `unavailableSealModes` map, while the server
-  could not yet serve per-database Shamir. It can; the map and
-  `SealModeUnavailableError` are removed.)*
+  behind.
 - **Leaving the holders step before Initialize** leaves the database created,
   sealed and without custody; nothing it holds is usable until custody is
   initialized. The step says so before the wizard closes. Custody is
@@ -132,28 +130,25 @@ management, feature errors), watch streaming and npm packaging are documented in
   enabled only once exactly N are enrolled; the rekey and
   revocation rounds appear only once custody is initialized. The same rule
   holds as in the wizard: holder admin only, no share, envelope or holder key
-  in the page. *(Changed: the panel inferred initialization from the holders'
-  share indices.)*
+  in the page.
 - **Enrolment stops at N.** The server refuses a holder past N before
   initialization (`HolderLimitReachedError`), so two tabs, the wizard beside
   the database view, or the CLI cannot overfill a database. A database
-  enrolled past N before that refusal existed shows why **Initialize** cannot
+  already enrolled past N shows why **Initialize** cannot
   run (`db-holders-over-limit`), offers no further enrolment, and is cleared
   by removing the extra holders.
 
-- **`ServerInitWizard` drives `ceremony.initialize`, not the former
-  `seal.initialize`/`initializeShamir` + `officers.registerOfficer` two-call
-  flow.** `qrdb init` is the ONLY system bootstrap, so a holder cannot be
-  registered on a ceremony-backed system barrier before that one call:
-  `BarrierInitializeShamir` on it refuses outright
-  (`*SystemBarrierInitRefusedError`). Share holders are collected locally by
-  `CeremonyOfficerForms` -- no server call per holder -- and sent together
-  with the chosen barrier secret (passphrase mode) or officer list (Shamir
-  mode) and the bootstrap admin credential (`StepAdminCredential`: CSR,
-  bring-your-own-certificate, or dev/test/evaluation-only generate) in the
-  one request. The response carries every holder's issued certificate
-  already, so the "complete" step shows them directly instead of through a
-  second round trip.
+- **`ServerInitWizard` drives one `ceremony.initialize` call.** `qrdb init` is
+  the only system bootstrap, so a holder cannot be registered on a
+  ceremony-backed system barrier before that call: `BarrierInitializeShamir`
+  on it refuses outright (`*SystemBarrierInitRefusedError`). Share holders are
+  collected locally by `CeremonyOfficerForms` -- no server call per holder --
+  and sent together with the chosen barrier secret (passphrase mode) or
+  officer list (Shamir mode) and the bootstrap admin credential
+  (`StepAdminCredential`: CSR, bring-your-own-certificate, or
+  dev/test/evaluation-only generate) in the one request. The response carries
+  every holder's issued certificate, so the "complete" step shows them
+  directly.
 - **The generated admin key never reaches this page on the desktop
   (Wails) path.** `CeremonyBinding.Initialize`
   (`cmd/qrdb/bindings_ceremony.go`) intercepts
@@ -162,49 +157,49 @@ management, feature errors), watch streaming and npm packaging are documented in
   directory (`os.UserConfigDir()/qrdb/admin-key-<ts>.pem`, mode 0600), wipes
   it from memory, and returns `AdminKeyPath` -- where it was saved -- in
   place of the key itself. `CeremonyInitializeResponse.adminKeyPem` is
-  therefore **never populated on the Wails client**; only
-  `adminKeyPath` is. REST has no such "local machine" of its own to save the
-  key to, so it returns `admin_key_pem` to the browser directly, same as
-  before -- the TypeScript type carries both fields for this reason, mutually
-  exclusive by transport. This is accepted as the desktop path's answer to
-  the generated-admin-key wipe-ordering limitation other transports solve by
-  wiping after a synchronous write: the key is generated and saved locally
-  in Go, so there is nothing to wipe-after-write across the Wails IPC
-  boundary in the first place.
+  therefore **never populated on the Wails client**; only `adminKeyPath` is.
+  REST has no local machine of its own to save the key to, so it returns
+  `admin_key_pem` to the browser directly; the TypeScript type carries both
+  fields, mutually exclusive by transport. The key is generated and saved
+  locally in Go, so nothing crosses the Wails IPC boundary that would need
+  wiping after the write.
 - **`ConnectionManager`'s embedded-server creation wizard drives the same
   `ceremony.initialize` call, for every barrier mode including `none`.**
-  `BarrierInitialize` (passphrase/none) refuses outright exactly like
-  `BarrierInitializeShamir` does, so the former
-  `seal.initialize`/`seal.initializeShamir` calls -- made AFTER the new
-  embedded server was already started and, for Shamir, after pausing the
-  apply to enrol holders against it -- no longer work for any mode. The
-  wizard gained two new steps between "Barrier" and "Summary": "Officers"
-  (Shamir only, `CeremonyOfficerForms`, shown and validated before the
-  server is even created) and "Admin" (`StepAdminCredential`, every mode).
-  "Applying" now makes exactly one `ceremony.initialize` call after
-  starting the server, tolerant of a "none"-strategy barrier
-  `StartEmbedded` already auto-initialized (Initialize's own
-  already-unsealed/matching-credential path), and shows the same
-  admin-certificate/holder-certificate/admin-key-path result panel
+  `BarrierInitialize` (passphrase/none) refuses on a ceremony-backed system
+  barrier exactly as `BarrierInitializeShamir` does. The wizard's steps are
+  name → mode → discovery (Raft only) → barrier → officers (Shamir only,
+  `CeremonyOfficerForms`, validated before the server is created) → admin
+  (`StepAdminCredential`, every mode) → summary → applying. "Applying" makes
+  exactly one `ceremony.initialize` call after starting the server, tolerant
+  of a "none"-strategy barrier `StartEmbedded` already auto-initialized
+  (Initialize's own already-unsealed/matching-credential path), and shows the
+  same admin-certificate/holder-certificate/admin-key-path result panel
   `ServerInitWizard` does before connecting.
 
 ## App shell states
 
-`loading` → (`wizard` on first run) → `unseal` if sealed → `main`.
+`App.svelte`'s `AppState`: `loading` → `init` or `unseal` (browser only) →
+`app`, with `error` when start-up fails.
 
 | State | Condition |
 |---|---|
-| `loading` | initial load, fetching capabilities |
-| `wizard` | first run (`isFirstRun()` is true) |
-| `unseal` | the server is sealed |
-| `main` | unsealed and connected |
+| `loading` | initial load |
+| `init` | browser mode; the server is sealed and has never been initialized (`ServerInitWizard`) |
+| `unseal` | browser mode; the server is sealed and initialized |
+| `app` | unsealed, or desktop mode |
+| `error` | connecting, the seal status check or loading the profiles failed |
 
-## Setup wizard branches
+The desktop goes straight to `app`: `MainApp` holds the saved connection
+profiles and the seal flows, and opens **Add Server** (`ConnectionManager`)
+when there is none.
 
-`ServerMode` → **Embedded**: `StorageBackend` → (`RaftConfig` when Raft) →
-`EncryptionBarrier` → `Summary` → `Initializing` → `Complete`.
+## Wizard steps
 
-`ServerMode` → **Remote**: `ConnectionConfig` → `Summary` → `Complete`.
+`ServerInitWizard`: barrier → officers (Shamir only) → admin → applying →
+complete.
+
+`ConnectionManager`'s embedded-server wizard: name → mode → discovery (Raft
+only) → barrier → officers (Shamir only) → admin → summary → applying.
 
 ## Error semantics
 
@@ -236,16 +231,14 @@ make dev-gui             # Wails dev mode with hot reload
 
 CI's `test-typescript` job, required by the CI gate, runs the TypeScript SDK's
 `tsc`, `npm test` (which typechecks the tests, then runs the vitest suites) and
-build, then `svelte-check` on this frontend against the built SDK. *(Corrected:
-this section recorded that no CI job ran the TypeScript suites; that gap is
-closed.)* The job also runs the mocked Playwright tier
-(`playwright.config.ts`, no backend). *(Corrected: this section said the
-Playwright suites were not in CI; the mocked tier is. The real-backend and DOM
-tiers need a live `qrdbd` and run through `make test-e2e`.)*
+build, then `svelte-check` on this frontend against the built SDK. The job
+also runs the mocked Playwright tier (`playwright.config.ts`, no backend). The
+real-backend (`playwright.real.config.ts`) and DOM (`playwright.dom.config.ts`)
+tiers need a live `qrdbd` and run through `make test-e2e` (all three tiers),
+`make test-e2e-real` or `make test-e2e-dom`.
 
 The mocked tier uses **per-run ports**, never fixed ones: CI job containers use
-host networking, so two jobs on one runner host share a loopback interface and a
-fixed port made the second fail with "already used". `playwright.port.ts` picks
+host networking, so two jobs on one runner host share a loopback interface. `playwright.port.ts` picks
 two distinct free loopback ports when the config loads (or honours
 `PLAYWRIGHT_PORT` and `PLAYWRIGHT_PROXY_PORT`) and exports them so worker
 processes agree. The first goes to `vite preview` with `--strictPort` and to
@@ -263,12 +256,7 @@ Playwright's default start-up timeout. `playwright.bundle.ts` refuses to start
 a run whose `dist/` is missing or older than any of the bundle's inputs (the
 sources, the build configuration, the lockfile and the built SDK), so
 `npx playwright test` run by hand fails with the command to run rather than
-testing a stale bundle. Every test opens a fresh browser context, so every test
-pays the app's boot. Under the dev server that boot was about 140 module
-requests compiled on demand, with Svelte's dev-mode runtime checks; the bundle
-is 8 requests of static files. On a runner host shared with other jobs, the
-dev-server boot was where specs ran out of time: dozens of specs passed only on
-retry, and a different few failed all three attempts on each run.
+testing a stale bundle.
 
 The shared fixtures answer every endpoint the app calls on its own, at start-up
 or on navigation, with a response shaped like the real API: the Wails mock

@@ -331,7 +331,51 @@ func toolTenantUpdate() mcp.Tool {
 		mcp.WithString("isolation_type",
 			mcp.Description("New isolation strategy: 'barrier' or 'prefix'."),
 		),
+		mcp.WithString("description",
+			mcp.Description("New free-text description. Left unchanged when absent; an empty string clears it."),
+		),
+		mcp.WithString("status",
+			mcp.Description("New operational status: 'active', 'suspended' or 'disabled'. Needs tenants:set_status; left unchanged when absent."),
+		),
+		mcp.WithString("metadata",
+			mcp.Description(`JSON object of string key/value pairs replacing the whole metadata map, e.g. {"env":"prod"}. Left unchanged when absent; use clear_metadata to remove every entry.`),
+		),
+		mcp.WithBoolean("clear_metadata",
+			mcp.Description("Remove every metadata entry. Ignored when metadata is given."),
+		),
 	)
+}
+
+// parseTenantPatchArgs reads the description, status, metadata and
+// clear_metadata arguments onto patch. An absent argument leaves its field
+// nil (unchanged).
+func parseTenantPatchArgs(req mcp.CallToolRequest, patch *tenant.TenantPatch) error {
+	if raw, present := req.GetArguments()["description"]; present && raw != nil {
+		desc, ok := raw.(string)
+		if !ok {
+			return &ToolArgumentError{Argument: "description", Reason: "must be a string"}
+		}
+		patch.Description = &desc
+	}
+	if raw, present := req.GetArguments()["status"]; present && raw != nil {
+		s, ok := raw.(string)
+		if !ok {
+			return &ToolArgumentError{Argument: "status", Reason: "must be a string"}
+		}
+		status := tenant.Status(s)
+		patch.Status = &status
+	}
+	metadata, err := parseAttributesArg(req, "metadata")
+	if err != nil {
+		return err
+	}
+	switch {
+	case metadata != nil:
+		patch.Metadata = metadata
+	case mcp.ParseBoolean(req, "clear_metadata", false):
+		patch.Metadata = map[string]string{}
+	}
+	return nil
 }
 
 // handleTenantUpdate returns a tool handler that applies a partial update to a tenant.
@@ -344,6 +388,9 @@ func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mc
 		patch := tenant.TenantPatch{
 			Name:          mcp.ParseString(req, "name", ""),
 			IsolationType: tenant.IsolationType(mcp.ParseString(req, "isolation_type", "")),
+		}
+		if err := parseTenantPatchArgs(req, &patch); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 		if refusal := tenantRequestRefusal("qrdb_tenant_update", mw, id, func(mw *authmw.AuthMiddleware) error {
 			return mw.AuthorizeTenantUpdate(ctx, id, patch)

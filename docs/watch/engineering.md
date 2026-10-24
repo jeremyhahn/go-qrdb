@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-01
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -106,9 +106,7 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
 
   The reason text is the watcher error's own message on every transport, which
   is what lets `WatchResponse.Err()` classify the same hub-side condition into
-  the same typed error everywhere. The embedded transport was the one exception
-  to this invariant until it was fixed; the qualification that used to stand
-  here is gone because the exception is.
+  the same typed error everywhere.
 - **Closing a watcher is synchronous with deregistration.** When `Close`
   returns, the watcher is out of the hub registry and `Hub.WatchCount` no
   longer counts it, so no further event can be dispatched to it. A caller may
@@ -148,7 +146,7 @@ maximum instead of reaching zero.
 | Typed error | Raised when | Caller's move |
 |---|---|---|
 | `WatchCompactedError` | the requested start revision has been compacted away | re-read current state, then watch live |
-| `WatchStartRevisionUnsupportedError` | the store keeps no revision history (`raft.sm_type` is not `mvcc`) | drop `StartRevision` and watch live |
+| `WatchStartRevisionUnsupportedError` | the store keeps no revision history (a raft node whose `raft.sm_type` is not `mvcc`) | drop `StartRevision` and watch live |
 | `WatchCanceledError` | any other cancellation, reason carried verbatim | inspect the reason |
 
 **A refused start revision is validated at open**, before any watcher exists, so
@@ -171,7 +169,7 @@ ordinary service error would hand back a generic `RequestError` and break
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| Missing `watch:watch` / `watch:watch_prefix` | stream refused at open | **yes** |
+| Missing `watch:watch` | stream refused at open | **yes** |
 | Barrier sealed | stream refused | **yes** |
 | Start revision above current | accepted at open; delivers once a change reaches that revision | n/a — nothing to fail; the revision has simply not happened yet |
 | Start revision at or below the watched database's compaction floor | `WatchCompactedError` | **yes** — never silently starts live instead. The floor is the one covering the watched key or range, so another database's compaction never cancels this watch |
@@ -198,8 +196,8 @@ beyond the current one.
 
 ## Configuration
 
-No watch-specific keys. Replay availability is governed by `raft.sm_type`
-(`mvcc` required) and the replay window by the watched database's compaction
+No watch-specific keys. A standalone node replays on every backend; on a raft
+node replay availability is governed by `raft.sm_type` (`mvcc` required). The replay window is the watched database's compaction
 floor -- per database, moved only by that database's owner. See
 [../key-value/engineering.md](../key-value/engineering.md).
 
@@ -217,8 +215,8 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
 - **Error tests**: compacted revision, unsupported-replay store, permission
   denial, context cancellation.
 - **Integration**: watch parity across transports in the standalone stage;
-  multi-node delivery ordering belongs to the cluster stage, which is **not
-  currently wired into CI**.
+  multi-node delivery ordering belongs to the cluster stage, which CI does
+  not run.
 - **Fault injection**: the store interface is injected, so a compaction racing a
   replay is provoked directly rather than timed.
 - **No `time.Sleep` in tests** — synchronization uses channels and waitgroups,
@@ -231,16 +229,6 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
   between polls is then in an inter-poll gap **by construction** — the window in
   which no server-side watcher exists at all — and no-loss is asserted against
   that schedule rather than against elapsed time.
-
-  This matters beyond tidiness. The earlier version of that test arranged gaps
-  statistically, by giving each poll a collection window a thousandth of its
-  cycle, and asserted a fixed delivery count before a wall-clock deadline. It
-  could not tell a poller that genuinely lost an update from a host that was
-  merely busy, so it failed on three unrelated changes and was re-run away each
-  time — and a gate that only passes on a quiet machine is not a gate. Measured
-  on a 2-core cpuset with 16 concurrent `-race` processes: the timed version
-  fails 6 times in 320 runs, the driven version 0 in 320, while a poller mutated
-  to skip one revision fails the driven version every run.
 
 ## Known limitations
 
@@ -276,9 +264,8 @@ start-revision watch may see, and they answer different questions:
 
 ## Observability
 
-- A cancelled watch logs its reason at the transport boundary.
-- Watch establishment and cancellation are audited through
-  [../audit/](../audit/) where the audit logger is configured.
+No watch-specific log events, metrics or audit records. A cancellation's reason
+reaches the caller in the terminal response, not a server log.
 
 ## Integration testing
 

@@ -44,7 +44,8 @@ var _ transport.BarrierClient = (*Transport)(nil)
 // via WithPINBackend, the PINs are persisted on the backend before the
 // barrier is initialized.
 func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.BarrierInitializeRequest) error {
-	if err := t.gate("BarrierInitialize"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierInitialize")
+	if err != nil {
 		return err
 	}
 	// BarrierInitialize is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierInitialize): public on every transport's boot-time sealed listener, because an
@@ -65,7 +66,8 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 // BarrierUnseal unseals the barrier using the master key by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUnsealRequest) error {
-	if err := t.gate("BarrierUnseal"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierUnseal")
+	if err != nil {
 		return err
 	}
 	// BarrierUnseal is a sealed-window verb (pkg/api/sealedwindow.VerbBarrierUnseal): public on every transport's boot-time sealed listener, because an
@@ -83,7 +85,8 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 // BarrierSeal transitions the barrier to the sealed state by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
-	if err := t.gate("BarrierSeal"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierSeal")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "BarrierSeal"); err != nil {
@@ -101,7 +104,8 @@ func (t *Transport) BarrierSeal(ctx context.Context) error {
 // BarrierClusterUnseal clears a cluster-wide seal of the node barrier and
 // returns its cluster seal state. It unseals nothing.
 func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.ClusterSeal, error) {
-	if err := t.gate("BarrierClusterUnseal"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierClusterUnseal")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierClusterUnseal"); err != nil {
@@ -123,7 +127,8 @@ func (t *Transport) BarrierClusterUnseal(ctx context.Context) (*transport.Cluste
 // BarrierStatus returns the current state of the cryptographic barrier
 // by delegating to the injected BarrierServicer.
 func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatusResponse, error) {
-	if err := t.gate("BarrierStatus"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierStatus")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierStatus"); err != nil {
@@ -161,7 +166,8 @@ func (t *Transport) BarrierStatus(ctx context.Context) (*transport.BarrierStatus
 // and a pin.PINBackend has been injected via WithPINBackend, the PINs
 // are persisted on the backend before initialization.
 func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.BarrierInitializeShamirRequest) (*transport.BarrierInitializeShamirResponse, error) {
-	if err := t.gate("BarrierInitializeShamir"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierInitializeShamir")
+	if err != nil {
 		return nil, err
 	}
 	// BarrierInitializeShamir is a sealed-window verb (pkg/api/sealedwindow.VerbShamirInitialize): public on every transport's boot-time sealed listener, because an
@@ -218,7 +224,8 @@ const embeddedMigrationAcceptWindow = 750 * time.Millisecond
 // specific NotImplementedError this method returned unconditionally before
 // sdk/go/node started wiring its own migrator through here.
 func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.BarrierEnableEncryptionRequest) (*transport.BarrierEnableEncryptionResponse, error) {
-	if err := t.gate("BarrierEnableEncryption"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierEnableEncryption")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -333,7 +340,8 @@ func (t *Transport) BarrierEnableEncryption(ctx context.Context, req *transport.
 }
 
 func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transport.BarrierGenerateRecoveryKeysRequest) (*transport.BarrierRecoveryKeysResponse, error) {
-	if err := t.gate("BarrierGenerateRecoveryKeys"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierGenerateRecoveryKeys")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierGenerateRecoveryKeys"); err != nil {
@@ -362,7 +370,8 @@ func (t *Transport) BarrierGenerateRecoveryKeys(ctx context.Context, req *transp
 // BarrierDeleteRecoveryKeys deletes all stored recovery keys by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
-	if err := t.gate("BarrierDeleteRecoveryKeys"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierDeleteRecoveryKeys")
+	if err != nil {
 		return err
 	}
 	if err := t.authorize(ctx, "BarrierDeleteRecoveryKeys"); err != nil {
@@ -380,7 +389,8 @@ func (t *Transport) BarrierDeleteRecoveryKeys(ctx context.Context) error {
 // BarrierHasRecoveryKeys checks whether recovery keys have been generated
 // by delegating to the injected BarrierServicer.
 func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.BarrierHasRecoveryKeysResponse, error) {
-	if err := t.gate("BarrierHasRecoveryKeys"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierHasRecoveryKeys")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierHasRecoveryKeys"); err != nil {
@@ -513,7 +523,8 @@ func (t *Transport) registerHolder(ctx context.Context, domain seal.QuorumDomain
 
 // OfficerRegister enrols a share holder of the unseal key.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if err := t.gate("OfficerRegister"); err != nil {
+	ctx, err := t.admit(ctx, "OfficerRegister")
+	if err != nil {
 		return nil, err
 	}
 	// OfficerRegister is a sealed-window verb (pkg/api/sealedwindow.VerbOfficerRegister): public on every transport's boot-time sealed listener, because an
@@ -524,7 +535,8 @@ func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerR
 
 // RecoveryOfficerRegister enrols a holder of the recovery key.
 func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if err := t.gate("RecoveryOfficerRegister"); err != nil {
+	ctx, err := t.admit(ctx, "RecoveryOfficerRegister")
+	if err != nil {
 		return nil, err
 	}
 	// RecoveryOfficerRegister is a sealed-window verb (pkg/api/sealedwindow.VerbRecoveryOfficerRegister): public on every transport's boot-time sealed listener, because an
@@ -535,7 +547,8 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 
 // OfficerList lists the unseal key's holders and their claim state.
 func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus, error) {
-	if err := t.gate("OfficerList"); err != nil {
+	ctx, err := t.admit(ctx, "OfficerList")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "OfficerList"); err != nil {
@@ -594,7 +607,8 @@ func (t *Transport) claimComplete(ctx context.Context, domain seal.QuorumDomain,
 // or in-process claim claimContext resolves, which requireIdentity does
 // not replace.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if err := t.gate("ShareClaimBegin"); err != nil {
+	ctx, err := t.admit(ctx, "ShareClaimBegin")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -606,7 +620,8 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 // ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 // IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if err := t.gate("ShareClaimComplete"); err != nil {
+	ctx, err := t.admit(ctx, "ShareClaimComplete")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -618,7 +633,8 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 // RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 // IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if err := t.gate("RecoveryShareClaimBegin"); err != nil {
+	ctx, err := t.admit(ctx, "RecoveryShareClaimBegin")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -630,7 +646,8 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 // RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 // IdentityGated -- see ShareClaimBegin's doc comment.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if err := t.gate("RecoveryShareClaimComplete"); err != nil {
+	ctx, err := t.admit(ctx, "RecoveryShareClaimComplete")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -649,7 +666,8 @@ func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transpo
 // (pkg/ceremony.claimCertificate), which the quorum handshake never reads,
 // so marking ctx for it was a no-op.
 func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
-	if err := t.gate("BarrierQuorumBegin"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierQuorumBegin")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -672,7 +690,8 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 // connection carries one) rather than through claimContext, for the same
 // reason BarrierQuorumBegin carries no claimContext marking.
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
-	if err := t.gate("BarrierQuorumSubmit"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierQuorumSubmit")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -691,7 +710,8 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round under SO PIN authorization.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
-	if err := t.gate("BarrierRekeyStart"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierRekeyStart")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierRekeyStart"); err != nil {
@@ -711,7 +731,8 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey, under
 // SO PIN authorization.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
-	if err := t.gate("BarrierOfficerRevoke"); err != nil {
+	ctx, err := t.admit(ctx, "BarrierOfficerRevoke")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "BarrierOfficerRevoke"); err != nil {

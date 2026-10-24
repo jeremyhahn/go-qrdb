@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Named credentials with versioned rotation, plus the SPI that resolves
@@ -15,26 +15,21 @@ in config files would put them on disk in plaintext.
 
 ## Shape chosen
 
-One interface, one service, **two strategies**:
-
-
-`pkg/credentials/config.go:11-24`
+One interface, one service, **two strategies**
+(`pkg/credentials/config.go:11-24`):
 
 | Strategy | Description |
 |----------|-------------|
-| `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). Plaintext is materialized only transiently (`Open → copy → Destroy`) on read; on delete/rotation the backing enclave is destroyed. |
-| `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the production default. |
+| `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). A read opens the enclave straight into a fresh `*secure.Buffer`; a delete, and a rotation with no grace period, destroy the backing enclave. |
+| `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the default. |
 
-Future HSM-only strategies will surface `ErrEnumerationNotSupported` from
-`ListCredentials` rather than break the interface.
+A strategy that cannot enumerate its credentials returns
+`ErrEnumerationNotSupported` from `ListCredentials` rather than break the
+interface.
 
 **PIN management is deliberately separate** — PINs live in `pkg/pin` because
 they need backend-native lockout semantics that credentials do not. See
 [../auth-factors/](../auth-factors/).
-
-## The boundary that matters
-
-Future HSM-only strategies will surface `ErrEnumerationNotSupported` from `ListCredentials` rather than break the interface.
 
 ## Boundary: qrdb credentials (L2) vs quicbaas secrets/KMS (L4)
 
@@ -56,18 +51,19 @@ These are deliberately **not** the same thing and do **not** overlap:
 - **Storing credentials in the user KV store.** Rejected: **credentials never
   live in the user KV store.** They are distinct from the KEK/DEK key custody
   (the seal barrier) and from the Raft data plane.
-- **A `secrets`/`kms` package in qrdb.** The old `secrets-envelope` was removed
-  in the single-KEK/DEK refactor and was not replaced. **`pkg/credentials` is
+- **A `secrets`/`kms` package in qrdb.** Rejected: **`pkg/credentials` is
   the only secret-bearing store in qrdb.**
 - **Resolving secret references into plain strings.** Rejected — see the
   protected-field rule below.
 
 ## Secret resolution
 
-`pkg/secret` resolves `credential://` and `literal://` references in
-configuration at boot, into **enclave-backed `SecretValue` targets rather than
-plain strings**. A protected config field must reference a secret, and
-resolution **fails closed** when it cannot.
+`pkg/secret` resolves `credential://` and `literal://` references in an
+embedding application's configuration at boot (`qrdbd`'s own configuration
+carries none). A `credential://` reference resolves into an **enclave-backed
+`SecretValue` target rather than a plain string**. A protected config field
+must reference a secret held elsewhere, so it refuses an inline `literal://`
+value, and resolution **fails closed** when it cannot.
 
 The design record is
 [credentials/secret-resolution.md](../credentials/secret-resolution.md), which
@@ -89,9 +85,9 @@ the SPI.
 ## Trust boundaries
 
 - **`manual` credentials live only in go-enclave sealed enclaves** — never as raw,
-  garbage-collected heap bytes. Plaintext is materialized transiently
-  (`Open → copy → Destroy`) on read; the enclave is destroyed on delete or
-  rotation.
+  garbage-collected heap bytes. A read opens the enclave straight into a
+  fresh `*secure.Buffer`; the enclave is destroyed on delete, and on a
+  rotation with no grace period.
 - **`barrier` credentials are encrypt-then-store** through the
   `seal.StorageBarrier`, so a sealed barrier makes them unreadable.
 - **Retrieval under `manual` blocks until an operator submits the value.** That
@@ -150,13 +146,10 @@ desktop binding's string, each carry a `//secure:unwiped` directive naming the
 framework that encodes the value after the function returns, so
 `make secure-analyzer` holds every other copy-out to a wipe.
 
-OWNER ruling, 2026-10-07: the `[]byte` forms of these methods
-(`RetrieveCredential`, `RetrieveCredentialVersion`, `CredentialRetrieve`,
-`CredentialRetrieveVersion`) are deleted now from exported Go interfaces and
-implementations, with no compatibility code. Only the `*secure.Buffer` forms
-remain for Go callers. The wire contract is unchanged: REST, gRPC, QUIC, MCP
-and Unix still carry credential retrieve responses as secret-bearing wire DTOs
-at the process boundary.
+The exported Go interfaces and implementations have no `[]byte` form of these
+methods; Go callers get only the `*secure.Buffer` forms. REST, gRPC, QUIC, MCP
+and Unix carry credential retrieve responses as secret-bearing wire DTOs at the
+process boundary.
 
 ## What this feature deliberately does not do
 

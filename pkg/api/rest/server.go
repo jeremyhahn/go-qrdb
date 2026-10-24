@@ -46,6 +46,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
@@ -135,6 +136,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	policySvc         service.PolicyServicer
 	ceremonyCA        ceremony.CeremonyCA
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
@@ -299,6 +301,11 @@ type Server struct {
 	// arrives while it reports the node barrier sealed down the boot-time
 	// listener's path. Nil installs no dispatch.
 	sealedWindowDispatch sealedwindow.ListenerProbe
+
+	// peerChainVerifier verifies a client certificate this listener's TLS
+	// configuration accepted without building a chain (the client trust
+	// pool's widened handshake). Nil falls back to authMW's.
+	peerChainVerifier auth.IssuerVerifier
 
 	// clusterKeyReceiver handles the cluster peer key-delivery endpoints
 	// (/v1/cluster/keydelivery and /v1/cluster/nodekey). When nil these
@@ -645,6 +652,12 @@ func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(s *Server) { s.dekSvc = svc }
 }
 
+// WithPolicyService sets the ABAC policy service. Without it the
+// /v1/abac/policies routes are not registered.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(s *Server) { s.policySvc = svc }
+}
+
 // WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
 // handler. The CA cannot be serialized over HTTP, so it must be injected
 // at server creation time and is held as a server-side reference.
@@ -934,6 +947,28 @@ func WithSealedWindowDispatch(probe sealedwindow.ListenerProbe) ServerOption {
 	return func(s *Server) {
 		s.sealedWindowDispatch = probe
 	}
+}
+
+// WithPeerChainVerifier sets the verifier that resolves the caller's client
+// certificate when this listener's TLS configuration accepted it without
+// building a chain: the client trust pool the configuration is wired to. The
+// listener binds it, with the request's TLS state, to every request before
+// admission, so a share claim binds only a verified certificate on the
+// authenticated chain and in the sealed window alike. Unset, the listener
+// uses its AuthMiddleware's issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(s *Server) {
+		s.peerChainVerifier = v
+	}
+}
+
+// chainVerifier is the verifier the listener binds to every request:
+// WithPeerChainVerifier's, else the AuthMiddleware's issuer verifier.
+func (s *Server) chainVerifier() auth.IssuerVerifier {
+	if s.peerChainVerifier != nil {
+		return s.peerChainVerifier
+	}
+	return s.authMW.IssuerVerifier()
 }
 
 // WithSealedWindowListener installs the gate of the boot-time sealed-window
@@ -1231,6 +1266,10 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// raw router above -- the one path a bound identity's own TLS-state
 	// injection (RESTMiddleware) never reaches. See its doc for why.
 	handler = remoteAddrMiddleware(handler)
+	// Beside it, for the same reason: the sealed-window paths skip
+	// RESTMiddleware, and a share claim on them still binds only a verified
+	// client certificate.
+	handler = peerTLSMiddleware(s.chainVerifier(), handler)
 
 	// ABSOLUTE OUTERMOST: the request-body cap runs before every layer
 	// above, including canonicalPathMiddleware and CORS, neither of which
@@ -2443,6 +2482,14 @@ func (s *Server) registerRoutes() {
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/encrypt", permission.DEKEncrypt, s.handleDEKEncrypt)
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/decrypt", permission.DEKDecrypt, s.handleDEKDecrypt)
 	s.routeIf(dekOn, http.MethodPost, "/v1/dek/rewrap", permission.DEKRewrap, s.handleDEKRewrap)
+
+	// ABAC policy routes. Every route acts on the caller's own tenant.
+	policyOn := s.policySvc != nil
+	s.routeIf(policyOn, http.MethodPost, "/v1/abac/policies", permission.ABACPoliciesCreate, s.handleCreatePolicy)
+	s.routeIf(policyOn, http.MethodGet, "/v1/abac/policies", permission.ABACPoliciesList, s.handleListPolicies)
+	s.routeIf(policyOn, http.MethodGet, "/v1/abac/policies/{name}", permission.ABACPoliciesRead, s.handleGetPolicy)
+	s.routeIf(policyOn, http.MethodPut, "/v1/abac/policies/{name}", permission.ABACPoliciesUpdate, s.handleUpdatePolicy)
+	s.routeIf(policyOn, http.MethodDelete, "/v1/abac/policies/{name}", permission.ABACPoliciesDelete, s.handleDeletePolicy)
 
 	// Audit event retrieval route.
 	s.routeIf(s.auditLogger != nil, http.MethodGet, "/v1/audit/events", permission.AuditQuery, s.handleAuditQuery)

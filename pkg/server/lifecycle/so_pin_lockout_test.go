@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -65,7 +66,7 @@ var lockoutEpoch = time.Unix(1_000_000, 0)
 // against the wall clock.
 func newFrozenClockPINBackend() (pin.PINBackend, error) {
 	return lifecycle.NewSealStorePINBackend(seal.NewMemoryBackend(),
-		pin.WithLockoutClock(func() time.Time { return lockoutEpoch }))
+		pin.WithLockoutClock(clocktest.NewAt(lockoutEpoch)))
 }
 
 // soPINComposition is a node's SO-PIN-gated surface built through the
@@ -160,7 +161,7 @@ func TestSOPINLockout_InjectedComposition_SealGuessesLockRekey(t *testing.T) {
 	// making it here, on a frozen clock, keeps the lockout from expiring
 	// mid-test. WithPINBackend is still handed the RAW backend and resolves
 	// that same decoration.
-	pin.NewLockoutBackend(injected, pin.WithLockoutClock(func() time.Time { return lockoutEpoch }))
+	pin.NewLockoutBackend(injected, pin.WithLockoutClock(clocktest.NewAt(lockoutEpoch)))
 	opts := []server.ServerOption{server.WithPINBackend(injected)}
 	c := composeSOPINSurface(t, server.ResolveCryptoOptions(opts...).PINBackend, opts...)
 	c.guessBySeal(t)

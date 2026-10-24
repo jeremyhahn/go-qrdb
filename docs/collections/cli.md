@@ -1,14 +1,15 @@
 # Document Collections — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb collection`, with a `doc` subgroup for the documents
 inside. All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
 
-Every verb in this group takes its own `--database` flag (default `system`),
-distinct from the root `--database` persistent flag.
+Every verb in this group takes its own `--database` flag (default `system`).
+When it is not given, the root `--database` persistent flag is used if set;
+when both are given, the verb's own flag wins.
 
 ## `qrdb collection create <name>`
 

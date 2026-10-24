@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -101,8 +101,6 @@ type CertProvider interface {
 	// req.Username in req.TenantID, with that tenant's own CA. It never
 	// generates a key.
 	IssueClientCert(ctx context.Context, req *IssueRequest) (*IssuedCert, error)
-	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
-	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
 	// TenantForSerial reports which tenant owns the issued certificate
@@ -113,7 +111,6 @@ type CertProvider interface {
 	// found == false is the deny-by-serial case.
 	TenantForSerial(ctx context.Context, serial string) (tenantID string, found bool, err error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
-	CACertPEM() []byte
 }
 
 // RevokeOutcome distinguishes a revocation of a certificate this node holds
@@ -173,8 +170,8 @@ type CertRecord struct {
 	Delegation *delegation.Grant `json:"delegation,omitempty"`
 }
 
-func NewDefaultProvider(kv kvstore.KVStore, barrier seal.EncryptionBarrier, opts ...Option) *DefaultCertProvider
-func WithDefaultTTL(d time.Duration) Option
+func NewDefaultProvider(kv kvstore.MultiGuardedBatchKVStore, barrier seal.EncryptionBarrier, opts ...ProviderOption) *DefaultCertProvider
+func WithDefaultTTL(d time.Duration) ProviderOption
 
 // FormatSerial is the SINGLE definition of the serial format the CA stores
 // and compares by (lowercase base-16, unpadded). Issuance, the revocation
@@ -289,9 +286,8 @@ type AuthMiddlewareConfig struct {
   (`auth.TenantPrincipalURIs`). A provider with no valid cluster trust domain
   refuses to issue (`*SPIFFEIdentityError`) before the CA key is touched.
 - **No server-side client key generation.** `IssueClientCert` certifies the
-  public key it is handed and never sees a private key. The removed
-  `GenerateClientCert` (`GenerateRequest`, `CertBundle`) generated one and
-  returned it (**BREAKING**). Test code that needs a key and a certificate uses
+  public key it is handed and never sees a private key. Test code that needs a
+  key and a certificate uses
   `pkg/cert/certtest.Generate`, which makes the key locally and calls
   `IssueClientCert`.
 - **Only a CSR's key is used.** `ParseCSR` checks the request's signature
@@ -336,11 +332,8 @@ type AuthMiddlewareConfig struct {
 - **CA validity 10 years, default client validity 1 year**; `TTL: 0` means the
   provider default.
 - **Every mutating operation checks `barrier.IsSealed()` first.** When sealed,
-  `IssueClientCert`, `ExportPKCS12`, `RevokeCert`, `IsRevoked` and
-  `ListCerts` all return `BarrierSealedError`.
-- **`CACertPEM()` has no barrier check** — the CA certificate is public data and
-  is served from cache even while sealed. That is deliberate: a client needs it
-  to connect at all.
+  `IssueClientCert`, `RevokeCert`, `IsRevoked`, `ListCerts` and `CACertPEMs`
+  all return `BarrierSealedError`.
 - **`getCAMaterial()` resolves a `cakey.Provider` and returns its
   `crypto.Signer`**, never raw key bytes: it signs in place, inside the
   provider, so no caller holds CA key material to alias in the first place.
@@ -354,8 +347,8 @@ type AuthMiddlewareConfig struct {
   a CRL and nothing answers OCSP; that is deliberate — see
   [architecture.md](architecture.md).
 - **The MARKER is the authoritative revocation state**, and `IsRevoked` reads
-  its PRESENCE, never its payload: a marker written by an older build (the
-  literal `"1"`) or one whose payload is corrupt still revokes. Reading a
+  its PRESENCE, never its payload: a marker whose payload is the literal `"1"`
+  or is corrupt still revokes. Reading a
   revocation fails closed.
 - **`CertRecord.Revoked` is display-only.** It is what a listing shows; nothing
   consults it for an access-control decision. It is updated best-effort beside
@@ -370,8 +363,8 @@ type AuthMiddlewareConfig struct {
   certificate is a real CA operation. It succeeds either way, and the returned
   `RevokeResult.Outcome` reports which case occurred rather than the error
   return, since both are successes.
-- **Deny-by-serial is authorized as a CA-operator act.** `RevokeCert` itself is
-  unchanged and still writes the marker; what is gated is who may ask for it.
+- **Deny-by-serial is authorized as a CA-operator act.** `RevokeCert` writes the
+  marker; what is gated is who may ask for it.
   A serial that resolves to no record names no tenant, so no tenant-local
   caller can show the certificate is theirs — "revoke another tenant's serial"
   and "revoke a serial a peer issued" are the same request — and the marker is
@@ -384,13 +377,6 @@ type AuthMiddlewareConfig struct {
   `pkg/auth/middleware` (`AuthorizeCertTenant`, `AuthorizeCertRevoke`), once,
   and REST, gRPC, QUIC and MCP all call it. Putting the rule in each handler
   is how three of four surfaces end up enforcing it.
-- **`ExportPKCS12` consults revocation before encoding.** It parses `certPEM`,
-  derives the serial with `FormatSerial`, and refuses with `*CertRevokedError`
-  when `IsRevoked` says the serial is revoked. There is no override: an export
-  of a revoked bundle needs to be added deliberately, not defaulted. This is
-  an operator signal, not a containment control — the caller already supplies
-  `certPEM`/`keyPEM`, so the refusal withholds nothing it did not already
-  have.
 - **The lookup precedes the write.** A store failure while locating the record
   aborts before any marker exists, so a failed revocation never leaves a marker
   behind that nothing reported.
@@ -431,10 +417,6 @@ type AuthMiddlewareConfig struct {
 | `__sys:certs/{tenantID}/{serial}` | `CertRecord` JSON | issued certificate records |
 | `__sys:certs_revoked/{serial}` | revocation-entry JSON | revocation markers |
 
-The `material` row above previously described one combined JSON record written
-with `PutIfAbsent`; the key and certificate are two records written in one
-guarded batch, as `architecture.md` describes.
-
 **An isolated tenant's records live in its home store.** For a tenant whose
 records the node's resolver homes — every `barrier`, `volume` and `raft`
 tenant, whatever its isolation policy — (`tenant.HomeLocator`, see
@@ -454,8 +436,8 @@ The revocation entry is:
 `not_after` is the revoked certificate's expiry, copied from this node's record
 at revocation time, and is **absent when this node held no record** — the
 deny-by-serial case. Only a marker with an expiry is ever reaped, so a marker
-for a serial nobody here can date is permanent. Markers written by an older
-build hold the literal `"1"`; they still revoke and are never reaped.
+for a serial nobody here can date is permanent. A marker whose payload is the
+literal `"1"` carries no expiry; it revokes and is never reaped.
 
 Every key above is inside the internal namespace and invisible to user KV
 enumeration.
@@ -466,10 +448,10 @@ enumeration.
 |---|---|---|
 | `BarrierSealedError` | the barrier is sealed | **yes** — every mutating op |
 | `CAKeyNotAvailableError` | CA private key not loaded or destroyed | **yes** |
-| `CertNotFoundError` | declared for a serial absent from the store. **Currently constructed nowhere**: `RevokeCert` is deny-by-serial by design (see Known limitations) and reports the "no local record" case through `RevokeResult`, not this error | — |
-| `CertRevokedError` | an operation targets a revoked certificate. Produced by `ExportPKCS12` when the supplied certificate's serial is revoked. Authentication-path enforcement is separate and returns `auth.ErrCertificateRevoked` instead | yes |
+| `CertNotFoundError` | declared for a serial absent from the store. **Constructed nowhere**: `RevokeCert` is deny-by-serial by design (see Known limitations) and reports the "no local record" case through `RevokeResult`, not this error | — |
+| `CertRevokedError` | declared for an operation on a revoked certificate. **Constructed nowhere**: authentication-path enforcement returns `auth.ErrCertificateRevoked` | — |
 | `CertGenerateError` | signing failure — wraps the cause | yes |
-| `CertExportError` | PKCS#12 export failure — wraps the cause | yes |
+| `CertExportError` | `EncodePKCS12` failure, in the CLI's local `ca export-bundle` — wraps the cause | yes |
 | `StoreError` | KVStore failure — wraps the cause | yes |
 | `ValidationError` | request field validation | yes |
 | `InvalidCSRError` | a CSR that does not parse or verify, or a key `CheckClientKey` refuses | yes |
@@ -485,7 +467,6 @@ enumeration.
 | Issue a certificate from a CSR | `certs:issue` |
 | Enrol a bring-your-own certificate | `certs:enroll` |
 | Issue a delegation to a service principal | `certs:delegate` (tenant-only) |
-| Export PKCS#12 | `certs:export` |
 | Revoke certificate | `certs:revoke` |
 | Revoke a serial this node holds no record for (deny-by-serial) | `certs:revoke` **and** `certs:revoke:cross` |
 | List certificates | `certs:list` |
@@ -502,10 +483,9 @@ Every other permission in the table is **`ScopeSelfStrict`**
 re-checks the permission against the tenant the REQUEST reaches rather than the
 tenant the caller is in; issue and enrol are checked against the caller's own
 tenant, the only one they can act on. The built-in SO and Admin roles hold
-`certs:issue` and `certs:enroll`; `certs:generate` is removed (**BREAKING**).
+`certs:issue` and `certs:enroll`.
 `ScopeSelfStrict` is not lifted by the system-tenant rule, so the target must
-be the caller's own tenant for every caller, the system tenant included. A
-caller acting inside its own tenant is unaffected. The embedded transport has
+be the caller's own tenant for every caller, the system tenant included. The embedded transport has
 no authorization middleware and applies the same rule with `tenant.Confine`
 against the caller in its context: `IssueCert` and `EnrollCert` act on the
 caller's own tenant, `ListCerts` confines the named tenant, and `RevokeCert`
@@ -524,7 +504,7 @@ Replacing the provider entirely:
 ```go
 import xkmscert "github.com/jeremyhahn/go-xkms/pkg/cert"
 
-server, err := qrdb.NewServer(
+srv := server.New(cfg, kvSvc, adminSvc,
 	server.WithCertProvider(xkmscert.NewProvider(xkmsCA)),
 )
 ```
@@ -543,7 +523,7 @@ key patterns are the on-disk contract for this feature.
 ## Test strategy
 
 - **Unit**: issuance (CN/OU mapping, TTL default and override, ClientAuth-only
-  key usage, 128-bit serial), export, revoke, `IsRevoked`, list, and the
+  key usage, 128-bit serial), revoke, `IsRevoked`, list, and the
   `BarrierSealedError` path for **each** mutating operation. CSR handling
   (signature, each accepted and refused key type) and the enrolment service
   (missing account, refused CSR, binding failure revoking the serial).
@@ -557,9 +537,8 @@ key patterns are the on-disk contract for this feature.
   that would not parse back to the Subject's tenant and name is refused with
   nothing persisted; and a key enrolled under one certificate still matches its
   binding after re-issue under the same CN and tenant.
-- **`CACertPEM()` while sealed is its own test** — it must still work.
-- **Memory tests**: CA key wiping is
-  `pkg/cakey/software_test.go`'s responsibility now that the key lives there;
+- **Memory tests**: CA key wiping is `pkg/cakey/software_test.go`'s
+  responsibility, since the key lives there;
   `pkg/cert/key_provider_test.go` proves the injected-provider path signs
   through the provider and never writes software key material at all.
 - **Error tests** per function, including `Unwrap()` behaviour on the three
@@ -568,8 +547,7 @@ key patterns are the on-disk contract for this feature.
   wiring: issue a certificate from a real provider, authenticate a request with
   it, revoke it, and assert the next request is refused and the handler is not
   reached. A test that hands a mapper a revocation error it constructed itself
-  verifies the handling and leaves the condition unreachable — which is how
-  revocation was recorded, displayed and enforced nowhere.
+  verifies the handling and leaves the condition unreachable.
 - **The two failure modes are separately pinned**: a failed lookup refuses the
   request (retryable), and a sealed barrier admits it, so neither can be
   flipped without a test going red.
@@ -579,9 +557,7 @@ key patterns are the on-disk contract for this feature.
   and every other test still passes.
 - **`RevokeResult.Outcome` is tested for both cases in the same test**: revoke
   a serial this node issued and one it does not hold a record for, and assert
-  the two `RevokeOutcome` values are distinct. `ExportPKCS12`'s revocation
-  refusal is mutation-tested: disabling the check is what proves the test
-  would have caught a revoked certificate shipping in a PKCS#12 archive.
+  the two `RevokeOutcome` values are distinct.
 - **Tenancy is tested at two layers, on purpose.** What the gate DECIDES is
   settled once, against the real RBAC authorizer, beside the gate. What each
   transport must prove is that it CALLS the gate — every transport reaches the
@@ -625,7 +601,7 @@ key patterns are the on-disk contract for this feature.
   `ReapExpiredRevocations` is exported for an embedder that wants one.
 - **`qrdb ca info` and `qrdb ca bundle` are aliases for `list`** — CA-only
   metadata (DN, fingerprint, validity) and a standalone CA+chain bundle export
-  are **not yet exposed through the SDK**. The CLI documents this in its own
+  are **not exposed through the SDK**. The CLI documents this in its own
   help text.
 
 ## Integration Target

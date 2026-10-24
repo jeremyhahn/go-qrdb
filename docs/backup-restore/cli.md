@@ -1,6 +1,6 @@
 # Backup and Restore — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb backup` — create, list, inspect, verify, delete and restore
@@ -14,23 +14,17 @@ standalone mode they refuse with `requires mode: raft`.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--destination` | string | — | storage path or URI, e.g. `/backups/daily` or `s3://bucket/prefix` |
-| `--compression` | string | `none` | `none \| zstd \| snappy` |
+| `--destination` | string | — (required) | the backup's destination label, recorded with it and bound into its authenticated data, e.g. `/backups/daily`; the bytes go to the server's backup sink (`qrdbd start --backup-dir`) |
+| `--compression` | string | `none` | `none \| zstd \| snappy`; validated and recorded in the backup's metadata, not applied to shard data |
 | `--encryption` | string | *(unset)* | `aes256 \| none` — unset defaults to `aes256` server-side |
-| `--encryption-key-file` | string | — | **required unless `--encryption` is explicitly `none`**: the key reference the key-wrap provider resolves — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
-| `--key-provider` | string | `software` | the registered `keywrap.Provider` to wrap this backup's DEK with — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
+| `--encryption-key-file` | string | — | **required unless `--encryption` is explicitly `none`**: the bare name of a key file inside the server's configured key directory, never a path — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
+| `--key-provider` | string | *(unset: `software`)* | the registered `keywrap.Provider` to wrap this backup's DEK with — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
 
-**BREAKING (since the encrypt-by-default change): `--encryption` left unset no
-longer means plaintext.** The server defaults an unset `--encryption` to
-`aes256` and then requires `--encryption-key-file`. A script that relied on
-the old plaintext default must now pass `--encryption-key-file`, or pass
-`--encryption none` to keep writing plaintext.
+An unset `--encryption` is `aes256`, which requires `--encryption-key-file`.
+Plaintext is written only with an explicit `--encryption none`.
 
 ```bash
 qrdb backup create --destination /backups/daily --encryption-key-file backup.key
-
-qrdb backup create --destination s3://acme-backups/qrdb \
-     --compression zstd --encryption-key-file backup.key
 
 # Explicit plaintext override -- the CLI warns, the server logs and audits it.
 qrdb backup create --destination /backups/scratch --encryption none
@@ -61,7 +55,7 @@ destination, compression, encryption, key provider, duration, and any error
 message. No flags.
 
 ```bash
-qrdb backup get bkp-20260819-0300 --output json
+qrdb backup get 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --output json
 ```
 
 ## `qrdb backup verify <id>`
@@ -70,7 +64,7 @@ Verify integrity by recomputing the SHA-256 checksum and comparing it to the
 stored value. No flags.
 
 ```bash
-qrdb backup verify bkp-20260819-0300 --output json
+qrdb backup verify 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --output json
 ```
 
 The result reports both the expected and the actual checksum, so a mismatch is
@@ -82,18 +76,19 @@ Restore shard data from a backup. **This overwrites shard state.**
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--id` | string | — | backup ID to restore from |
+| `--id` | string | — (required) | backup ID to restore from |
 | `--shards` | string | all shards | comma-separated shard IDs to restore |
 | `--validate` | bool | false | run integrity verification **before** restoring |
 | `--decryption-key-file` | string | — | overrides the key reference stored in the backup's own envelope; usually left unset — see [../key-wrapping/cli.md](../key-wrapping/cli.md) |
+| `--allow-plaintext` | bool | false | explicit opt-in to restore a backup whose stored state is plaintext; without it such a restore is refused with a typed error |
 
 ```bash
 # Verify then restore everything -- no key flag needed, even for an
 # encrypted backup: the envelope's own stored key reference resolves it.
-qrdb backup restore --id bkp-20260819-0300 --validate
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --validate
 
 # Restore two shards, overriding the key reference (the key file moved).
-qrdb backup restore --id bkp-20260819-0300 --shards 1,2 \
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --shards 1,2 \
      --decryption-key-file backup.key --validate
 ```
 
@@ -114,7 +109,7 @@ than collapsed into the top-level refusal above.
 Delete a backup by ID. No flags.
 
 ```bash
-qrdb backup delete bkp-20260812-0300
+qrdb backup delete a91d04e6-52c3-4f0b-8e7a-6b3c9f1d2e85
 ```
 
 ## Permissions
@@ -123,10 +118,11 @@ Each verb carries its own grant: `backup:create`, `backup:list`, `backup:read`,
 `backup:verify`, `backup:delete`, `backup:restore`. **Restore is separate
 because it overwrites shard state** — it is not implied by any of the others.
 
-## Parity
+## Integration tests
 
-Every verb here has a `CommandDefinition` in the integration parity suite. Note
-that the end-to-end backup/restore integration test lives in the **cluster
-stage** (`make integration-test-cluster`). CI runs it as the `backup-restore`
-leg of the `integration-features` job (`.github/workflows/ci.yml`), required by
-`ci-gate`.
+`make integration-test-backup-restore` runs the self-spawned CLI suites
+(`test/integration/backup_cli_test.go`, `test/integration/backup_restore_test.go`);
+CI runs them as the `backup-restore` leg of the `integration-features` job
+(`.github/workflows/ci.yml`), required by `ci-gate`. The Docker suite's
+`test/integration/api/cli_backup_test.go` runs under
+`make integration-test-standalone`.

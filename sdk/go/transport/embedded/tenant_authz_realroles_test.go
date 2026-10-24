@@ -166,3 +166,64 @@ func TestEmbeddedTenantBarrierUnseal_OrdinaryIdentityNeedsRBAC(t *testing.T) {
 		t.Fatal("an ordinary identity holding no role must be refused tenant_barrier:unseal")
 	}
 }
+
+// TestEmbeddedTenantBarrier_SuspendedTenantRefusedThroughTheWindows: an
+// embedded caller keeps the context it authenticated while acme was active.
+// Once acme is suspended, both bootstrap windows -- trust on first init for
+// the tenant's own bare identity, the sealed window for its sealed identity --
+// answer the tenant-status refusal, and neither barrier operation reaches the
+// tenant service. Reactivating acme reopens both windows.
+func TestEmbeddedTenantBarrier_SuspendedTenantRefusedThroughTheWindows(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme")
+	status := tenant.StatusActive
+	var reached []string
+	svc := &mockTenantService{
+		getFn: func(_ context.Context, id string) (*tenant.TenantInfo, error) {
+			return &tenant.TenantInfo{ID: id, Name: id, Status: status}, nil
+		},
+		barrierStatusFn: func(context.Context, string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: "acme", Initialized: false}, nil
+		},
+		barrierInitFn: func(context.Context, string, []byte, int, int) error {
+			reached = append(reached, "init")
+			return nil
+		},
+		barrierUnsealFn: func(context.Context, string, []byte) error {
+			reached = append(reached, "unseal")
+			return nil
+		},
+	}
+	// The "enrolled" posture skips the first-admin-onboarding gate, as in
+	// TestEmbeddedTenantBarrierInit_TrustOnFirstInit.
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
+		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled), authmw.WithTenantStatusReader(svc))
+	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(mw))
+
+	bootstrap := ctxFor(&auth.Identity{Subject: "bootstrap", TenantID: "acme"})
+	sealed := ctxFor(authtest.SealedIdentity("acme", "alice"))
+	operations := func() (initErr, unsealErr error) {
+		_, initErr = tr.TenantBarrierInit(bootstrap, &transport.TenantBarrierInitRequest{TenantID: "acme"})
+		unsealErr = tr.TenantBarrierUnseal(sealed, &transport.TenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("k")})
+		return initErr, unsealErr
+	}
+
+	status = tenant.StatusSuspended
+	initErr, unsealErr := operations()
+	for name, err := range map[string]error{"TenantBarrierInit": initErr, "TenantBarrierUnseal": unsealErr} {
+		var notActive *authmw.TenantNotActiveError
+		if !errors.As(err, &notActive) || notActive.TenantID != "acme" || notActive.Status != string(tenant.StatusSuspended) {
+			t.Errorf("%s on suspended acme = %T(%v), want *TenantNotActiveError{acme, suspended}", name, err, err)
+		}
+	}
+	if len(reached) != 0 {
+		t.Fatalf("suspended acme's barrier operations reached the tenant service: %v", reached)
+	}
+
+	status = tenant.StatusActive
+	if initErr, unsealErr := operations(); initErr != nil || unsealErr != nil {
+		t.Fatalf("after reactivation: init = %v, unseal = %v, want both windows' grants", initErr, unsealErr)
+	}
+	if len(reached) != 2 {
+		t.Fatalf("after reactivation the tenant service saw %v, want init and unseal", reached)
+	}
+}

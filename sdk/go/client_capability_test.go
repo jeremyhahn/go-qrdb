@@ -71,6 +71,7 @@ func TestClient_CapabilityAccessors_PanicNamingTheMissingInterface(t *testing.T)
 		{"Barrier", "transport.BarrierClient", func() { c.Barrier() }},
 		{"Ceremony", "transport.CeremonyClient", func() { c.Ceremony() }},
 		{"Credentials", "transport.CredentialClient", func() { c.Credentials() }},
+		{"ABACPolicies", "transport.ABACPolicyClient", func() { c.ABACPolicies() }},
 		{"Collections", "transport.CollectionClient", func() { c.Collections() }},
 		{"SealStore", "transport.SealStoreClient", func() { c.SealStore() }},
 		{"AuthFactors", "transport.AuthFactorClient", func() { c.AuthFactors() }},

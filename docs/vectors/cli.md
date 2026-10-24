@@ -1,7 +1,7 @@
 # Vector Database — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -35,7 +35,7 @@ qrdb --database docs-db vector namespace create --namespace docs --dimension 768
 | `--dimension` | uint32 | — | vector dimensionality |
 | `--distance-metric` | string | `cosine` | `cosine \| euclidean \| dot-product` |
 | `--index-type` | string | `hnsw` | `hnsw \| flat \| ivf-flat` |
-| `--shard-id` | uint | — | target shard |
+| `--shard-id` | uint64 | — | target shard |
 
 ```bash
 qrdb vector namespace create --namespace docs --dimension 768
@@ -68,7 +68,7 @@ qrdb vector namespace delete --namespace scratch
 | `--id` | string | vector ID (uint64, as a string) |
 | `--vector` | string | comma-separated float values |
 | `--metadata` | string | JSON metadata object |
-| `--shard-id` | uint | target shard |
+| `--shard-id` | uint64 | target shard |
 
 ```bash
 qrdb vector upsert --namespace docs --id 1 \
@@ -131,7 +131,7 @@ qrdb vector batch-delete --namespace docs --ids 1,2,3
 | `--min-score` | float | minimum similarity threshold |
 | `--ef-search` | int | HNSW `ef` parameter (HNSW indexes only) |
 | `--consistency` | string | `default \| leader \| any` |
-| `--shard-id` | uint | target shard |
+| `--shard-id` | uint64 | target shard |
 
 ```bash
 qrdb vector search --namespace docs --vector 0.1,0.2,0.3 --k 10
@@ -203,4 +203,4 @@ qrdb vector index-stats --namespace docs --output json
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`test/integration/vector_cli_test.go` drives these verbs through the CLI.

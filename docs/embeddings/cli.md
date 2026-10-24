@@ -1,6 +1,6 @@
 # Embedding Service — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb embedding` — generate vector embeddings for text and list
@@ -64,4 +64,5 @@ namespace you intend to store into** — see
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite.
+`test/integration/embedding_cli_test.go` runs every verb here through the CLI
+binary on every transport.

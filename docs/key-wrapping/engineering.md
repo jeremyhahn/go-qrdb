@@ -1,6 +1,6 @@
 # Key Wrapping — Engineering Contract
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -27,8 +27,8 @@ type Registry interface {
 
 type DefaultRegistry struct { /* unexported */ }
 
-func NewRegistry() *DefaultRegistry          // empty
-func NewDefaultRegistry() *DefaultRegistry   // pre-populated with "software"
+func NewRegistry() *DefaultRegistry                             // empty
+func NewDefaultRegistry(keyDir string) (*DefaultRegistry, error) // pre-populated with "software"
 
 func (r *DefaultRegistry) Register(id string, factory ProviderFactory) error
 func (r *DefaultRegistry) Unregister(id string)
@@ -37,6 +37,7 @@ func (r *DefaultRegistry) ListAvailable() []string
 
 // Lookup resolves and constructs in one call -- the shape every caller
 // other than a registry inspector actually wants.
+func Lookup(r Registry, id string) (Provider, error)
 func (r *DefaultRegistry) Lookup(id string) (Provider, error)
 
 type SoftwareProvider struct { /* unexported */ }
@@ -46,10 +47,11 @@ func NewSoftwareProvider(keyDir string) (*SoftwareProvider, error)
 func (p *SoftwareProvider) ProviderID() string
 func (p *SoftwareProvider) Wrap(ctx context.Context, keyRef string, dek []byte) ([]byte, error)
 func (p *SoftwareProvider) Unwrap(ctx context.Context, keyRef string, wrapped []byte) ([]byte, error)
+func (p *SoftwareProvider) Close() error
 ```
 
 `keyRef` is a bare file NAME inside `keyDir`, opened through an `*os.Root` —
-never a path (go-qrdb security review, backup-encrypt-default #B4).
+never a path. `Close` releases that root.
 
 `pkg/service` (backup), additions over the existing surface in
 [backup-restore/engineering.md](../backup-restore/engineering.md):
@@ -84,15 +86,13 @@ func WithKeyWrapProvider(p keywrap.Provider) BackupServiceOption
 func WithKeyDir(dir string) BackupServiceOption
 func WithAuditFailurePolicy(p audit.FailurePolicy) BackupServiceOption
 
-// NewBackupService now returns an error: a WithKeyWrapProvider collision
-// with an ID already registered is returned typed, never discarded
-// (go-qrdb security review, backup-encrypt-default #B6).
+// NewBackupService returns a WithKeyWrapProvider collision with an ID
+// already registered as a typed error, never discarded.
 func NewBackupService(provider ShardSnapshotProvider, opts ...BackupServiceOption) (BackupServicer, error)
 ```
 
-**`EncryptionKey`/`DecryptionKey` (raw KEK bytes) are retired, not merely
-deprecated** — owner ruling, see
-[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired).
+**No raw KEK bytes** (see
+[architecture.md](architecture.md#no-inline-key)).
 There is no inline-bytes path on `BackupOptions` or `RestoreOptions`; `KeyRef`
 is the only way to name a key, and it is always a provider-resolved
 reference (the bare NAME of a key file inside the server's configured key
@@ -116,8 +116,8 @@ directory for `"software"`, never a path), never raw bytes.
   wrong length -- collapses into ONE detail-free `*KeyAccessError`: the
   directory, the rejected name, the OS error, and the length actually
   read are logged on the server only, never returned, so the error cannot
-  be used as a filesystem oracle by a caller who may be remote
-  (go-qrdb security review, backup-encrypt-default #B4). `*KeyDirectoryError`
+  be used as a filesystem oracle by a caller who may be remote.
+  `*KeyDirectoryError`
   stays separate and detailed: it fires only at construction, when the
   configured directory itself cannot be opened.
 - **AES-256-GCM, both envelope layers, no hand-rolled crypto.** `Wrap`/
@@ -133,9 +133,7 @@ directory for `"software"`, never a path), never raw bytes.
   `*UnwrapFailedError` (keywrap) / `*BackupDecryptionFailedError`
   (service); a failure on a SHARD's own ciphertext is
   `*BackupShardIntegrityError` -- a DIFFERENT type, deliberately, since
-  the latter has nothing to do with the KEK or the wrapped DEK
-  (go-qrdb security review, backup-encrypt-default: conflating the two
-  previously reported a tampered shard as "wrong key-encrypting key").**
+  the latter has nothing to do with the KEK or the wrapped DEK.**
   Neither layer distinguishes "tampered" from "wrong key" WITHIN itself --
   both collapse to one typed, fail-closed outcome per layer so a caller
   cannot use the distinction to narrow down a correct key.
@@ -149,8 +147,8 @@ directory for `"software"`, never a path), never raw bytes.
 - **`KeyRef` empty on an `"aes256"` (defaulted or explicit) create request
   is refused.** `*BackupEncryptionRequiredError` when the default applied,
   `*BackupEncryptionKeyRequiredError` when `"aes256"` was named explicitly
-  — the same two-error split `backup-restore/engineering.md` already
-  documents, now keyed off `KeyRef` instead of a raw key byte slice.
+  — the same two-error split `backup-restore/engineering.md` documents,
+  keyed off `KeyRef`.
 - **An unregistered `KeyProviderID` is refused, not silently treated as
   unencrypted, at EITHER create or restore time.**
   `*ProviderNotRegisteredError` (keywrap) surfaces as
@@ -196,21 +194,19 @@ directory for `"software"`, never a path), never raw bytes.
 | `BackupManifestAlgorithmError` | The authenticated manifest names an `Algorithm` this build does not implement | **yes** |
 | `BackupPlaintextRestoreNotAllowedError` | Restoring a backup whose stored state is plaintext without the caller's explicit `AllowPlaintext` opt-in | **yes** |
 
-`BackupDecryptionFailedError` retires `BackupDecryptionKeyRequiredError`:
-restore no longer requires the caller to supply anything (the envelope's
-own stored `KeyRef` resolves it), so there is nothing left for a
-"decryption key required" refusal to fire on. Both `UnwrapFailedError` and
-`BackupDecryptionFailedError` map to `InvalidArgument` on every transport
-(`pkg/api/errclass`) — a caller-supplied credential or reference that does
+Restore requires the caller to supply nothing (the envelope's own stored
+`KeyRef` resolves it), so there is no "decryption key required" refusal.
+`UnwrapFailedError` surfaces as `BackupDecryptionFailedError`, which maps
+to `InvalidArgument` on every transport (`pkg/api/errclass`) — a caller-supplied credential or reference that does
 not work, not a server-side failure.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-key-wrapping` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test yet, so the target runs zero tests and says so; this is a recorded gap (the `key-wrapping` row marks it), not a pass. Per-transport accounting is the `key-wrapping` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-key-wrapping` (no Docker; selection in `test/integration/features.mk`). It runs `key_wrapping_cli_test.go`, which drives `qrdb backup` per protocol: the encrypted-backup envelope round trip (provider recorded and shown by `backup get`, the stored key reference resolving on restore, a right override accepted and a wrong one refused) and the refusals (unregistered provider, a path or `..` instead of a bare key name, missing and wrong-length key files). Per-transport accounting is the `key-wrapping` row of `test/integration/COVERAGE.md`.
 
 - **Unit, `pkg/keywrap`**: `SoftwareProvider` round-trips a DEK through a
   real 32-byte key file; refuses a 31-byte and a 33-byte file with
-  `*InvalidKeyLengthError`; `Unwrap` with a different 32-byte key file
+  `*KeyAccessError`; `Unwrap` with a different 32-byte key file
   returns `*UnwrapFailedError`; a single-bit flip in `wrapped` also
   returns `*UnwrapFailedError`, not a panic or a different decode. Each
   `Wrap`/`Unwrap` call zeroes its own in-memory key copy, proven the same
@@ -223,14 +219,14 @@ not work, not a server-side failure.
   (`LookupFactory`'s own `slog.Error`), since `id` is reachable from a
   remote caller (`BackupOptions.KeyProviderID`) and the set is server
   configuration a prober should not learn one request at a time;
-  `NewDefaultRegistry()` has exactly `"software"` registered.
+  `NewDefaultRegistry(keyDir)` has exactly `"software"` registered.
 - **Unit, `pkg/keywrap`**: a `fakeHardwareProvider` test double, registered
   through `Registry.Register` exactly as a real go-xkms provider would be,
   proves the registry path works for ANY `Provider`, not only
   `SoftwareProvider` — the same "prove the seam through an interface, not
   the one production type" discipline `cakey.Adapter`'s own tests hold.
-- **Unit, `pkg/service` (backup)**: the three OWNER-RULING scenarios,
-  re-proven under the envelope (not merely "a key was supplied"):
+- **Unit, `pkg/service` (backup)**: the encrypt-by-default scenarios,
+  proven under the envelope (not merely "a key was supplied"):
   the default with no key/provider configured is refused
   (`BackupEncryptionRequiredError`); the default with a key-file `KeyRef`
   produces a backup whose PERSISTED SHARD BYTES ARE NOT THE PLAINTEXT
@@ -243,8 +239,8 @@ not work, not a server-side failure.
   `*BackupVerificationFailedError`, with NOTHING imported; an explicit
   `none` backup's stored bytes ARE the plaintext (negative control for the
   "not the plaintext" assertion above) and still warn/audit exactly as the
-  already-shipped mechanism does.
-- **Unit, `pkg/service` (backup) -- the review's own regression suite**: a
+  plaintext-override mechanism does.
+- **Unit, `pkg/service` (backup), regression suite**: a
   backup whose stored metadata and envelope disagree (either direction) is
   refused with `*BackupMetadataMismatchError`; a tampered manifest is
   refused with `*BackupManifestInvalidError`; a shard dropped from storage
@@ -255,10 +251,9 @@ not work, not a server-side failure.
   `FailOpen` (and `SetAuditFailurePolicy` applied after construction)
   still proceeds; a duplicate `WithKeyWrapProvider` registration returns
   `*keywrap.ProviderAlreadyRegisteredError` from `NewBackupService` rather
-  than being discarded. Each of these is paired with a mutation check:
-  reverting the corresponding fix makes the test fail.
-- **Integration**: a backup created with a `fakeHardwareProvider`
-  registered under a non-`"software"` ID round-trips through create,
+  than being discarded.
+- **Unit, `pkg/service` (backup)**: a backup created with a
+  `fakeKeyWrapProvider` registered under a non-`"software"` ID round-trips through create,
   list (confirms `KeyProviderID` on `BackupInfo` matches), and restore —
   proving the service layer never special-cases `"software"` anywhere in
   its own logic.
@@ -270,15 +265,15 @@ The `Registry` itself is composed in code (`WithKeyWrapRegistry`/
 composition-not-configuration shape. The one genuinely configured value is
 the built-in `"software"` provider's key DIRECTORY (`WithKeyDir`/
 `lifecycle.Infra.KeyDir`/`--backup-key-dir`): every key file it reads must
-live inside it, by NAME, confined via `*os.Root` (go-qrdb security review,
-backup-encrypt-default #B4). The backup surface's own flags/fields
+live inside it, by NAME, confined via `*os.Root`. The backup surface's own flags/fields
 (`--encryption-key-file`, `KeyRef`) are documented in [cli.md](cli.md) and
 [backup-restore/cli.md](../backup-restore/cli.md).
 
 ## Persistence
 
-A backup's envelope (`BackupEnvelope`: `format_version`, `provider_id`,
-`key_ref`, `wrapped_dek`, and `sealed_manifest` -- the AUTHENTICATED
+A backup's envelope (`BackupEnvelope`, stored as JSON under its Go field
+names: `FormatVersion`, `ProviderID`, `KeyRef`, `WrappedDEK`, and
+`SealedManifest` -- the AUTHENTICATED
 manifest described under [architecture.md's envelope
 format](architecture.md#envelope-format), not to be confused with the
 backup's own ordinary metadata record below) is stored SEPARATELY from

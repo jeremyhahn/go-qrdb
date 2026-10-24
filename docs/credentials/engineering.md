@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -22,7 +22,7 @@ type CredentialServicer interface {
     CredentialDelete(ctx context.Context, name string) error
     CredentialStrategy() string
 
-    // Versioned rotation (the new 5 methods added in Phase 8e)
+    // Versioned rotation
     CredentialList(ctx context.Context) ([]string, error)
     CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
     CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error)
@@ -31,19 +31,14 @@ type CredentialServicer interface {
 }
 ```
 
-`CredentialService` (`pkg/service/credential_service.go:75-145`) is the canonical implementation; it is a thin pass-through to `credentials.CredentialService`.
-
 `CredentialService` (`pkg/service/credential_service.go`) is the canonical
 implementation and a thin pass-through to `credentials.CredentialService`.
 
 `transport.CredentialClient` (the SDK surface) carries the same pair:
 `CredentialRetrieveBuffer(ctx, name)` and
 `CredentialRetrieveVersionBuffer(ctx, req)`, each returning a
-`*secure.Buffer` the caller must `Destroy`. The OWNER ruled on 2026-10-07 that
-the `[]byte` forms (`CredentialRetrieve`, `CredentialRetrieveVersion`, and the
-`credentials.CredentialService` `RetrieveCredential` /
-`RetrieveCredentialVersion`) are removed now, with no compatibility code; the
-wire contract does not change.
+`*secure.Buffer` the caller must `Destroy`. Neither it nor
+`credentials.CredentialService` has a `[]byte` retrieve method.
 
 `make check-no-deprecated-credential-retrieve`
 (`test/buildgates/no_deprecated_credential_retrieve_test.go`, in CI's `image` job)
@@ -51,7 +46,8 @@ fails if any Go file reintroduces a deleted credential retrieval declaration
 that returns `[]byte`, or uses the unambiguous removed store-level selectors.
 The protobuf `QRDBService` methods of the same names are allowed because they
 return protobuf response messages, not heap credential bytes. A test that needs
-the bytes uses its package's `retrieveBytes` helper, which goes through the
+the bytes uses its package's `retrieveBytes` helper (`retrieveBytesFrom` in
+`pkg/service`), which goes through the
 Buffer method and copies out.
 
 **Protected-memory handle, end to end.** Retrieval returns a go-enclave-backed
@@ -77,9 +73,9 @@ is the contract for where bytes may leave it. The rules a contributor works to:
   copy through a heap slice.
 - The embedded SDK transport passes the Buffer through untouched. Its Buffer
   methods are declared in the embedded authorization registry under their own
-  names, mapped to the same `credentials:retrieve` /
-  `credentials:retrieve_version` permissions as the `[]byte` forms, so an
-  embedded caller is authorized identically whichever form it calls.
+  names, mapped to the `credentials:retrieve` /
+  `credentials:retrieve_version` permissions that guard the wire retrieve
+  operations, so an embedded caller is authorized as a remote one is.
 - A test double that wraps a `[]byte` hook must clone it before
   `secure.NewBufferFromBytes`, which wipes its source; the real service never
   returns an empty value, and a double must not either.
@@ -91,23 +87,22 @@ is the contract for where bytes may leave it. The rules a contributor works to:
 
 | Strategy | Storage | Read semantics |
 |---|---|---|
-| `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; plaintext materialized transiently (`Open → copy → Destroy`) |
-| `barrier` | encrypt-then-store through `seal.StorageBarrier` | the production default; unreadable while sealed |
+| `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; a read opens the enclave straight into a fresh `*secure.Buffer` |
+| `barrier` | encrypt-then-store through `seal.StorageBarrier` | the default; unreadable while sealed |
 
-`CredentialStrategy()` reports which is active. A future HSM-only strategy will
-return `ErrEnumerationNotSupported` from `ListCredentials` rather than change
-the interface.
+`CredentialStrategy()` reports which is active. A strategy that cannot
+enumerate returns `ErrEnumerationNotSupported` from `ListCredentials` rather
+than change the interface.
 
 ## Invariants
 
 - **Credentials never live in the user KV store.** They are distinct from the
   KEK/DEK custody in the barrier and from the Raft data plane.
 - **`pkg/credentials` is the only secret-bearing store in qrdb.** There is no
-  `secrets` or `kms` package; the old `secrets-envelope` was removed in the
-  single-KEK/DEK refactor and was not replaced.
+  `secrets` or `kms` package.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
-  plaintext exists only transiently during a read; the enclave is destroyed on
-  delete and on rotation.
+  a read opens the enclave into a fresh `*secure.Buffer`; the enclave is
+  destroyed on delete and on a rotation with no grace period.
 - **A read copies under a held borrow, and refuses an unreadable enclave.**
   The copy out of protected memory runs inside a single coordinated borrow
   (`secure.CopyOut`) rather than sizing the destination and then reading it as
@@ -171,13 +166,12 @@ the interface.
   reachable: a stale meta entry whose version key is already gone reads as
   expired, and a stale version key with no meta entry reads as not-found.
   Under `manual` the enclave-backed version map and meta sidecar are dropped
-  under the same lock as the current credential, so this was already true
-  there; the barrier strategy was the gap (go-qrdb creddel blocker).
+  under the same lock as the current credential.
 - **GC reaps only expired historical versions** — it never touches the current
   one.
-- **Secret references resolve to protected targets, not strings.** A protected
-  config field must reference a secret, and resolution **fails closed** when it
-  cannot.
+- **A protected config field resolves to a `SecretValue`, never a string.** It
+  must reference a secret held elsewhere, so an inline `literal://` value is
+  refused, and resolution **fails closed** when it cannot.
 - **PINs are not credentials.** `pkg/pin` owns them, because PIN lockout is
   backend-native and credentials have no equivalent.
 
@@ -191,7 +185,7 @@ the interface.
 | Protected config field with no secret reference | resolution fails | **yes** |
 | Unresolvable `credential://` reference at boot | boot fails | **yes** |
 | Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
-| `ListCredentials` on a future HSM-only strategy | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
+| `ListCredentials` on a backend that cannot enumerate | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
 
 The "blocks rather than returns empty" property is the load-bearing one for the
@@ -200,14 +194,14 @@ continue with no credential at all.
 
 ## Permission model
 
-`credentials:submit`, `credentials:strategy`, `credentials:list`,
-`credentials:store`, `credentials:retrieve`, `credentials:rotate`,
-`credentials:delete`, plus the version-specific grants. **Write, rotate and
-delete custody secret material and are gated separately from reads.**
+One permission per verb, listed in the [API capability matrix](api.md#capability-matrix)
+(`pkg/permission/constants.go`). **Write, rotate and delete custody secret
+material and are gated separately from reads.**
 
 ## Configuration
 
-The active strategy is a server configuration item; `credential strategy`
+The active strategy is `seal.credential_strategy` in the server configuration
+(`manual` or `barrier`; empty selects `barrier`); `credential strategy`
 reports it. Secret references in config use the `credential://` and
 `literal://` schemes and are processed by `ConfigProcessor` at boot. Scheme
 ownership across the stack is documented in
@@ -231,7 +225,7 @@ expiry implied by the rotation's grace period.
   without a grace period, versioned retrieval including `0` meaning current, GC
   reaping only expired versions, and `CredentialStrategy()`.
 - **The enclave lifecycle is tested, not assumed**: destroy on delete and on
-  rotation, and transient materialization on read.
+  rotation, and opening into a fresh Buffer on read.
 - **Delete is tested against the full version history, not just the current
   value**: rotate with a nonzero grace period, delete, then assert every
   version — current and in-grace history alike — is unretrievable, on both
@@ -247,7 +241,6 @@ expiry implied by the rotation's grace period.
   server error, nil request, closed transport).
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
-- **No `time.Sleep`** — grace-period expiry is driven through the clock seam.
 - **Error tests** per function.
 
 ## Observability

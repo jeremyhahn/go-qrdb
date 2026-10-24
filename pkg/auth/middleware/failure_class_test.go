@@ -70,6 +70,16 @@ var classCases = []struct {
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{
+		name:  "TrustStateUnavailableError -- the trust set the chain was verified against could not be read",
+		err:   &auth.TrustStateUnavailableError{Err: errors.New("anchors unreadable")},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
+		name:  "TrustStateUnavailableError wrapping an invalid_cert AuthError -- still unavailable",
+		err:   &auth.TrustStateUnavailableError{Err: auth.ErrInvalidCertificate},
+		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
+	},
+	{
 		name:  "UnknownTenantError -- the certificate names no created tenant",
 		err:   &auth.CertificateTenantError{Err: &auth.UnknownTenantError{TenantID: "ghost"}},
 		class: AuthFailureUnauthenticated, http: http.StatusUnauthorized, grpc: codes.Unauthenticated,
@@ -87,6 +97,11 @@ var classCases = []struct {
 	{
 		name:  "UserDisabledError",
 		err:   &UserDisabledError{Username: "bob", TenantID: "t1", Lifecycle: "suspended"},
+		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,
+	},
+	{
+		name:  "TenantNotActiveError",
+		err:   &TenantNotActiveError{TenantID: "t1", Status: "suspended"},
 		class: AuthFailureUnauthorized, http: http.StatusForbidden, grpc: codes.PermissionDenied,
 	},
 	{

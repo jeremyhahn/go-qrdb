@@ -1,6 +1,6 @@
 # Trust Anchors — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Purpose
@@ -34,7 +34,7 @@ that binding is made for an anchor-issued certificate.
 
 ```
             +---------------------------+
- API verbs  | service.CertEnrollment    |  AddTrustAnchors / List / Remove
+ API verbs  | CertEnrollmentService     |  AddTrustAnchors / List / Remove
  ---------> |   (tenant-self only)      |  EnrollCertificate (BYO cert)
             +-------------+-------------+
                           |

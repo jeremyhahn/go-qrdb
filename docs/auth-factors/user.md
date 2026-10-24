@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 A user can hold several authentication factors — a client certificate, a FIDO2
@@ -134,14 +134,16 @@ Minimum length is **6 characters**, enforced server side.
 
 The software backend has **no attempt counter** of its own. A node fronts its
 PIN backend with an SO PIN lockout that counts each caller separately: one
-counter for anonymous sealed-window callers, and one for each authenticated
-identity or verified client certificate. After 5 wrong SO PINs in a row on a
+counter for each anonymous sealed-window source host (an IPv6 address counts
+by its /64), and one for each authenticated identity or verified client
+certificate. After 5 wrong SO PINs in a row on a
 counter, every SO PIN check by that caller -- the right PIN included -- is
 refused for a backoff that doubles from 1 s up to 15 min, on every operation
 and transport. Neither anonymous guesses nor another certificate holder's
 guesses lock the Security Officer out. Authenticated callers together may
-present at most 64 wrong PINs in 15 minutes; past that every authenticated
-SO PIN check waits for the window to end. Wait the backoff
+present at most 64 wrong PINs in 15 minutes, and anonymous sources together
+the same under a separate budget; past either cap, every SO PIN check of that
+class waits for the window to end. Wait the backoff
 out and present the right PIN to recover. The counters are in memory, so a
 restart clears them. If you need a lockout that survives restarts,
 the deployment must inject a hardware PIN backend.
@@ -149,11 +151,11 @@ the deployment must inject a hardware PIN backend.
 A FIPS binary can verify a PIN hashed by a non-FIPS binary and vice versa —
 the algorithm is stored with each record and resolved at verification time.
 
-## Upgrading from a build without tenant-scoped factors
+## Factor records without a tenant
 
-Earlier builds stored every factor in one keyspace with no tenant in it. The first time the
-server serves an authentication after upgrading, it moves each record into the
-tenant that owns its user and logs what it did.
+A factor record stored in the keyspace with no tenant in it is moved, the
+first time the server serves an authentication, into the tenant that owns its
+user, and the server logs what it did.
 
 You do not have to run anything. Two log lines matter:
 

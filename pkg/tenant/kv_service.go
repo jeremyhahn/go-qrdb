@@ -58,6 +58,10 @@ type kvTenantService struct {
 	// isolation_change.go.
 	isolationChangeGuard
 
+	// statusAuditHook carries UpdateTenant's status-change auditor; see
+	// status_audit.go.
+	statusAuditHook
+
 	// tenantUndoGate decides whether an undone create may release its id;
 	// see SetTenantUndoGate.
 	tenantUndoGate
@@ -145,6 +149,7 @@ func (s *kvTenantService) CreateTenant(ctx context.Context, id, name string, iso
 		Name:          name,
 		IsolationType: isolationType,
 		CreatedAt:     now,
+		Status:        StatusActive,
 		UpdatedAt:     now,
 	}
 
@@ -180,37 +185,14 @@ func (s *kvTenantService) UpdateTenant(ctx context.Context, tenantID string, pat
 	if patch.IsolationType == IsolationBarrier {
 		return nil, ErrBarrierIsolationUnavailable
 	}
+	if err := validateDescriptive(patch); err != nil {
+		return nil, err
+	}
 
-	info, err := s.GetTenant(ctx, tenantID)
+	swapper, _ := s.store.(tenantRecordSwapper)
+	info, err := updateTenantRecord(ctx, s, swapper, tenantID, patch)
 	if err != nil {
 		return nil, err
-	}
-	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
-		return nil, err
-	}
-	if err := checkIsolationPolicyChangeFor(info, patch); err != nil {
-		return nil, err
-	}
-
-	if patch.IsolationType != "" {
-		info.IsolationType = patch.IsolationType
-	}
-	if patch.IsolationPolicy != "" {
-		info.IsolationPolicy = patch.IsolationPolicy
-	}
-	if patch.Name != "" {
-		info.Name = patch.Name
-	}
-	info.UpdatedAt = time.Now().UTC()
-
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 
 	s.logger.Info("tenant updated", slog.String("tenant_id", tenantID))
@@ -223,22 +205,41 @@ func (s *kvTenantService) GetTenant(ctx context.Context, tenantID string) (*Tena
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID
 	}
+	_, info, err := s.readTenantRecord(ctx, tenantID)
+	return info, err
+}
 
-	key := metadataPrefix + tenantID
-	data, err := s.store.Get(ctx, key)
+// readTenantRecord returns the stored bytes of tenantID's record and their
+// decoding: the bytes are what UpdateTenant commits against. See
+// tenantRecordUpdater.
+func (s *kvTenantService) readTenantRecord(ctx context.Context, tenantID string) ([]byte, *TenantInfo, error) {
+	data, err := s.store.Get(ctx, metadataPrefix+tenantID)
 	if err != nil {
-		return nil, newStoreError("get", err)
+		return nil, nil, newStoreError("get", err)
 	}
 	if data == nil {
-		return nil, ErrTenantNotFound
+		return nil, nil, ErrTenantNotFound
 	}
-
 	var info TenantInfo
 	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, &StoreError{Op: "unmarshal", Err: err}
+		return nil, nil, &StoreError{Op: "unmarshal", Err: err}
 	}
+	return data, &info, nil
+}
 
-	return &info, nil
+// checkTenantUpdate runs UpdateTenant's isolation checks of patch against
+// info. See tenantRecordUpdater.
+func (s *kvTenantService) checkTenantUpdate(ctx context.Context, info *TenantInfo, patch TenantPatch) error {
+	if err := s.checkIsolationChange(ctx, info, patch); err != nil {
+		return err
+	}
+	return checkIsolationPolicyChangeFor(info, patch)
+}
+
+// swapRecord commits mutate against tenantID's record. See swapTenantRecord.
+func (s *kvTenantService) swapRecord(ctx context.Context, tenantID string, mutate tenantRecordMutation) (*TenantInfo, error) {
+	swapper, _ := s.store.(tenantRecordSwapper)
+	return swapTenantRecord(ctx, s, swapper, tenantID, mutate)
 }
 
 // ListTenants returns metadata for all tenants stored under the metadata prefix.
@@ -391,22 +392,9 @@ func (s *kvTenantService) UpdateQuotas(ctx context.Context, tenantID string, quo
 		return nil, ErrNilQuotas
 	}
 
-	info, err := s.GetTenant(ctx, tenantID)
+	info, err := s.swapRecord(ctx, tenantID, replaceQuotas(quotas))
 	if err != nil {
 		return nil, err
-	}
-
-	info.Quotas = quotas
-	info.UpdatedAt = time.Now().UTC()
-
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 
 	s.logger.Info("tenant quotas updated", slog.String("tenant_id", tenantID))
@@ -423,22 +411,9 @@ func (s *kvTenantService) UpdateEntitlements(ctx context.Context, tenantID strin
 		return nil, ErrNilEntitlements
 	}
 
-	info, err := s.GetTenant(ctx, tenantID)
+	info, err := s.swapRecord(ctx, tenantID, replaceEntitlements(entitlements))
 	if err != nil {
 		return nil, err
-	}
-
-	info.Entitlements = entitlements
-	info.UpdatedAt = time.Now().UTC()
-
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 
 	s.logger.Info("tenant entitlements updated", slog.String("tenant_id", tenantID))
@@ -537,41 +512,9 @@ func (s *kvTenantService) IncrementQuotaUsage(ctx context.Context, tenantID stri
 	if delta <= 0 {
 		return nil, &StoreError{Op: "increment-quota", Err: errors.New("delta must be positive")}
 	}
-	info, err := s.GetTenant(ctx, tenantID)
+	info, err := s.swapRecord(ctx, tenantID, incrementUsage(tenantID, resource, delta))
 	if err != nil {
 		return nil, err
-	}
-	if info.Quotas == nil {
-		info.Quotas = &quota.Quotas{}
-	}
-	current, qErr := info.Quotas.CurrentUsage(resource)
-	if qErr != nil {
-		return nil, &StoreError{Op: "increment-quota", Err: qErr}
-	}
-	limit, qErr := info.Quotas.Limit(resource)
-	if qErr != nil {
-		return nil, &StoreError{Op: "increment-quota", Err: qErr}
-	}
-	if limit > 0 && current+delta > limit {
-		return nil, &QuotaExceededError{
-			TenantID: tenantID,
-			Resource: resource.String(),
-			Current:  current,
-			Delta:    delta,
-			Limit:    limit,
-		}
-	}
-	if qErr := info.Quotas.SetCurrentUsage(resource, current+delta); qErr != nil {
-		return nil, &StoreError{Op: "increment-quota", Err: qErr}
-	}
-	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 	s.logger.Debug("quota usage incremented",
 		slog.String("tenant_id", tenantID),
@@ -589,32 +532,9 @@ func (s *kvTenantService) DecrementQuotaUsage(ctx context.Context, tenantID stri
 	if delta <= 0 {
 		return nil, &StoreError{Op: "decrement-quota", Err: errors.New("delta must be positive")}
 	}
-	info, err := s.GetTenant(ctx, tenantID)
+	info, err := s.swapRecord(ctx, tenantID, decrementUsage(resource, delta))
 	if err != nil {
 		return nil, err
-	}
-	if info.Quotas == nil {
-		info.Quotas = &quota.Quotas{}
-	}
-	current, qErr := info.Quotas.CurrentUsage(resource)
-	if qErr != nil {
-		return nil, &StoreError{Op: "decrement-quota", Err: qErr}
-	}
-	next := current - delta
-	if next < 0 {
-		next = 0
-	}
-	if qErr := info.Quotas.SetCurrentUsage(resource, next); qErr != nil {
-		return nil, &StoreError{Op: "decrement-quota", Err: qErr}
-	}
-	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 	s.logger.Debug("quota usage decremented",
 		slog.String("tenant_id", tenantID),
@@ -634,24 +554,9 @@ func (s *kvTenantService) SetQuotaUsage(ctx context.Context, tenantID string, re
 	if value < 0 {
 		value = 0
 	}
-	info, err := s.GetTenant(ctx, tenantID)
+	info, err := s.swapRecord(ctx, tenantID, setUsage(resource, value))
 	if err != nil {
 		return nil, err
-	}
-	if info.Quotas == nil {
-		info.Quotas = &quota.Quotas{}
-	}
-	if qErr := info.Quotas.SetCurrentUsage(resource, value); qErr != nil {
-		return nil, &StoreError{Op: "set-quota-usage", Err: qErr}
-	}
-	info.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, &StoreError{Op: "marshal", Err: err}
-	}
-	key := metadataPrefix + tenantID
-	if err := s.store.Put(ctx, key, data); err != nil {
-		return nil, &StoreError{Op: "put", Err: err}
 	}
 	s.logger.Debug("quota usage set",
 		slog.String("tenant_id", tenantID),

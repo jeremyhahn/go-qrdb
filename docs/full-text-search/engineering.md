@@ -1,6 +1,6 @@
 # Full-Text Search — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated: `qrdb_fts`** (`WITH_QRDB_FTS=1` in the Makefile). Without
@@ -76,15 +76,16 @@ keys, _ = idx.SearchOr("meeting lunch")    // OR: either term
 - **Default analysis does not stem.** `NewAnalyzer()` with no options
   tokenizes and lowercases only. Stemming changes what is stored, so turning it
   on requires reindexing.
-- **`Search` is AND, `SearchOr` is OR.** AND intersects postings starting from
-  the smallest set.
+- **`Search` is AND, `SearchOr` is OR.** AND intersects the postings of every
+  query term.
 - **Results are unordered.** There is no relevance score, so a caller must not
   read the slice order as ranking.
 - **Tokenization rules**: whitespace and punctuation split; tokens lowercase;
-  CJK (Han, Katakana, Hiragana) one token per character; English stop words
-  removed by default; emoji treated as punctuation and not indexed.
-- **Positions are stored but unused.** The value at a term key is the position;
-  no search path reads it yet.
+  Han, Katakana and Hiragana one token per character, Hangul split into words;
+  English stop words removed by default; emoji treated as punctuation and not
+  indexed.
+- **Positions are stored but unused.** The value at a term key is the position
+  of the term's last occurrence in the document; no search path reads it.
 - **The index and the documents share one `storage.Storage`.** FTS inherits its
   store's tenant scope and barrier state rather than holding its own.
 - **`Available()` is the only correct availability probe.** Both the real
@@ -121,12 +122,11 @@ used.
 - **Indexing**: O(T) per document, T = unique terms. Writes are batched to
   minimize storage round-trips.
 - **Search**: O(T × K), T = query terms, K = average postings per term. AND
-  search intersects starting from the smallest posting set.
+  search intersects the posting sets of every query term.
 - **Storage**: one entry per term-entity pair. A corpus of 100k documents with
   ~20 unique terms each yields on the order of 2M index entries.
 - **`Remove` scans all term entries** — O(total index entries). This is the
-  sharpest cost in the current implementation and is the reason bulk deletion is
-  expensive.
+  sharpest cost and the reason bulk deletion is expensive.
 
 ## Test strategy
 
@@ -139,7 +139,7 @@ used.
   the Makefile's default `BUILD_TAGS` (`WITH_QRDB_FTS=0`).
 - **The real implementation is gated separately**, `make coverage-fts`
   (`go test -race -tags "$BUILD_TAGS qrdb_fts" ./pkg/fts/...` plus a coverage
-  check), run as its own CI step in the `test` job. `make coverage`'s own
+  check), run as its own CI step in the `image` job. `make coverage`'s own
   profile never compiles this package's real code -- only the stub -- so the
   stub tests above do not exercise it, and this is the step that does, on
   every push. Its coverage is ratcheted against
@@ -148,14 +148,14 @@ used.
   tag sets and the ratchet refuses to compare across a tag mismatch.
   `make coverage-fts-baseline` regenerates it, the same way
   `make coverage-baseline` regenerates the main one.
-- **Lint is a known gap, not yet closed.** `make lint` runs with `LINT_TAGS`,
-  which is `BUILD_TAGS` joined -- true coverage for a tag most features carry
-  by default, but `qrdb_fts` is not one of them (`WITH_QRDB_FTS` defaults to
-  0), so `golangci-lint` never sees `analyzer.go`, `tokenizer.go` or
-  `inverted_index.go`, only `stub.go`. Unlike the test gap above this is not
-  yet closed: `LINT_TAGS` is shared by every `make lint` invocation, so adding
-  `qrdb_fts` to it would lint the whole tree under one more tag rather than
-  add a package-scoped check, which needs its own design.
+- **Lint is a known gap.** `make lint` runs with `LINT_TAGS`, which is
+  `BUILD_TAGS` joined -- true coverage for a tag most features carry by
+  default, but `qrdb_fts` is not one of them (`WITH_QRDB_FTS` defaults to 0), so
+  `golangci-lint` never sees `analyzer.go`, `tokenizer.go` or
+  `inverted_index.go`, only `stub.go`. `LINT_TAGS` is shared by every
+  `make lint` invocation, so adding `qrdb_fts` to it would lint the whole tree
+  under one more tag rather than add a package-scoped check, which needs its
+  own design.
 - **Not covered by the integration parity suite**, because there is no transport
   surface to exercise.
 

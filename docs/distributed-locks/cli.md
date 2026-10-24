@@ -1,6 +1,6 @@
 # Distributed Locks — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lock` — acquire, release, extend, inspect and list
@@ -25,7 +25,7 @@ Acquire a lock, **blocking** until it is available or the wait timeout expires.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--ttl` | int | — | lock TTL in seconds |
+| `--ttl` | int | required | lock TTL in seconds |
 | `--holder` | string | auto-generated UUID | holder identifier |
 | `--reentrant` | bool | false | allow re-acquisition by the same holder |
 | `--wait` | int | 0 | acquisition wait timeout in seconds; `0` uses the request timeout |
@@ -41,12 +41,6 @@ and the resource you are protecting should check it.
 ## `qrdb lock trylock <key>`
 
 Attempt to acquire without blocking. Same flags as `acquire`, minus `--wait`.
-
-| Flag | Type | Default |
-|---|---|---|
-| `--ttl` | int | — |
-| `--holder` | string | auto-generated UUID |
-| `--reentrant` | bool | false |
 
 ```bash
 qrdb lock trylock jobs/nightly-report --ttl 300 || echo "someone else has it"
@@ -83,7 +77,7 @@ For a reentrant lock acquired *n* times, release *n* times.
 ## `qrdb lock status <key>`
 
 Show the current state of a lock: holder, fencing token, lease, TTL, acquire
-count. No flags.
+count. No flags. A lock nobody holds prints `not locked`.
 
 ```bash
 qrdb lock status jobs/nightly-report --output json

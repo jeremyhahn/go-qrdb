@@ -1,6 +1,6 @@
 # Shamir Custody — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Custody verbs live under `qrdb barrier` (`officer`, `quorum`, `rekey`,
@@ -20,12 +20,13 @@ and sends only the factor response and the opened share.
 
 ## Scope flags
 
-Every `officer` and `quorum` verb takes:
+Every `officer`, `quorum` and `rekey` verb takes:
 
 | Flag | Meaning |
 |---|---|
 | `--domain` | `unseal` (default) or `recovery` — system barrier only |
 | `--tenant-id` | the tenant — tenant verbs only |
+| `--database` | the database — database verbs only |
 
 ## Enrolment
 
@@ -78,7 +79,7 @@ qrdb barrier init-shamir --threshold 3 --total 5
 
 Generate the independent recovery key and split it to every enrolled
 recovery-domain holder (`officer register --domain recovery`). Needs the SO
-PIN.
+PIN once one is provisioned.
 
 | Flag | Type |
 |---|---|
@@ -148,7 +149,7 @@ Submit the holder's share to the open round for `--op`.
 qrdb barrier quorum submit --op unseal --username alice \
      --envelope alice.env --key alice.key
 # carol answers her designated FIDO2 factor
-qrdb barrier quorum begin --op unseal --username carol -o json   # -> challenge
+qrdb barrier quorum begin --op unseal --username carol --output json   # -> challenge
 qrdb barrier quorum submit --op unseal --username carol --envelope carol.env \
      --encryption-key-file carol-kem.key \
      --challenge-id "$ID" --factor fido2 --response-file carol.assertion
@@ -206,5 +207,6 @@ removes a holder before initialization only. See
 
 The desktop application's `OfficerBinding` drives the same verbs:
 `RegisterHolder`, `ListHolders`, `ClaimEnvelope`, `SubmitShare`, `StartRekey`,
-`RevokeHolder`. Keys passed to it are used in the application process and
+`RevokeHolder`, and for a database barrier `InitializeDatabaseShamir` and
+`UnenrolDatabaseHolder`. Keys passed to it are used in the application process and
 wiped after the call.

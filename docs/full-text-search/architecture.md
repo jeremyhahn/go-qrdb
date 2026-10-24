@@ -1,6 +1,6 @@
 # Full-Text Search — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** This feature exists only in builds carrying the
@@ -38,9 +38,8 @@ Two search semantics: `Search` (AND — every term must appear) and `SearchOr`
 - **Stemming on by default.** Rejected: stemming is language-specific and lossy.
   The default is **no stemming**; `SimpleStemmer` is opt-in and the `Stemmer`
   interface is the extension point for a real algorithm.
-- **Storing tokens without positions.** Not taken — positions *are* stored, in
-  anticipation of phrase queries. They are currently unused, which is recorded
-  below as a limitation rather than hidden.
+- **Storing tokens without positions.** Not taken — a position is stored with
+  each term entry. No query reads it (see the limitations below).
 - **Building it into the secondary-index path.** Rejected: the write
   amplification profile is completely different (one entry per unique term per
   document, not one per field), and forcing it into the same code path would
@@ -71,9 +70,9 @@ fts:{indexName}:doc:{entityKey}                          ->  uint32BE(termCount)
 ## Tokenization rules
 
 - Text splits on whitespace and punctuation into lowercase tokens.
-- **CJK characters** (Han, Katakana, Hiragana) each become their own token,
-  which is what makes character-level search work for Chinese, Japanese and
-  Korean.
+- **Han, Katakana and Hiragana characters** each become their own token, which
+  is what makes character-level search work for Chinese and Japanese. Hangul is
+  a letter like Latin script: Korean splits into whole words.
 - **Stop words** — common English words are excluded by default; a custom list
   can be supplied.
 - **Emoji** are treated as punctuation (split boundaries) and are not indexed.
@@ -86,21 +85,21 @@ not perform its own authorization, because there is no transport in front of it
 to carry a principal.
 
 That is a consequence of the exposure gap below, not an argument that
-authorization is unnecessary: the day FTS gets a transport surface, it needs its
-own permission vocabulary.
+authorization is unnecessary: a transport surface for FTS needs its own
+permission vocabulary.
 
 ## SDK exposure gap
 
 **`pkg/fts` has no `sdk/go` surface, no CLI verb and no wire API on any
 transport.** The only way to use it is to import the package in-process. Under
 the repo's export obligation — a qrdb capability with no SDK surface is not
-shippable — this is a defect, not a design choice. It is recorded here and in
-[api.md](api.md) rather than left for the next reader to discover.
+shippable — this is a defect, not a design choice; [api.md](api.md) lists what
+closing it needs.
 
 ## What this feature deliberately does not do
 
-- **No phrase queries.** Position data is stored but not yet used for phrase
-  matching.
+- **No phrase queries.** One position per term per document is stored (the
+  last occurrence), and no query reads it.
 - **No relevance ranking.** Results are unordered.
 - **No field-specific boosting.**
 - **No fuzzy matching or typo tolerance.**

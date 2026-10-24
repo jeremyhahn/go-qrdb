@@ -1,6 +1,6 @@
 # Coordination — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -73,17 +73,16 @@ qrdb admin capabilities --output json
 ```
 
 Read `mode`, `lease` and `watch` from the result. Every verb is served in both
-run modes. A standalone node on the file or objstore backend keeps no leases
-and refuses `AcquireLease` with a typed "unsupported" error; it still serves
-`Get`, `Put`, `CompareAndSwap` and `Watch`. See
-[../run-modes/cli.md](../run-modes/cli.md).
+run modes and on every storage backend; `lease` or `watch` reads false only
+where the operator set `lease.enabled` or `watch.enabled` to false. See
+[api.md](api.md) and [../run-modes/cli.md](../run-modes/cli.md).
 
 ## Parity
 
-No verbs, so no `_PerProtocol` CLI test. The surface is covered at SDK level by
-`TestCoordinator_SameOnEveryTransport` (`sdk/go/conformance`), which is not part
-of `make integration-test-coordination`: that target maps to no test files in
-`test/integration/features.mk` and runs zero tests, and says so. The
+No verbs, so no `_PerProtocol` CLI test. `make integration-test-coordination`
+runs `coordination_sdk_test.go`, which drives `Client.Coordination()` over a
+multi-protocol node. `TestCoordinator_SameOnEveryTransport`
+(`sdk/go/conformance`) covers the surface on every transport and backend. The
 `coordination` row of
 [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md) is the
 accounting. A `qrdb coordination` verb appearing in the CLI suite without

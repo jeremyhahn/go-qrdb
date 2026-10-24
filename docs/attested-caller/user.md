@@ -1,6 +1,6 @@
 # Attested Caller — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## What it is
@@ -21,7 +21,7 @@ attestation verifier) enable it for the operations that need it.
 | You see | It means |
 |---|---|
 | `403` / `PERMISSION_DENIED` naming `no-evidence` or `evidence-stale` | your machine has no recent attestation on record. Let the attestation collector run, then retry. |
-| `403` / `PERMISSION_DENIED` naming `state-rejected` | your latest evidence was checked and refused — for example a measurement does not match the baseline. This is recorded as a security event. |
+| `403` / `PERMISSION_DENIED` naming `state-rejected` | your latest evidence was checked and refused — for example a measurement does not match the baseline. It is recorded as a security event when the evidence itself failed (a bad signature, an untrusted key, a mismatched measurement), not when something it needed was missing, such as a baseline. |
 | `403` / `PERMISSION_DENIED` naming `peer-mismatch` or `evidence-from-future` | the evidence on record does not belong to the certificate you connected with, or is dated after now. Recorded as a security event. |
 | `403` / `PERMISSION_DENIED` naming `no-peer-certificate` | you did not connect with a client certificate, so there is no peer to attest. |
 | `403` / `PERMISSION_DENIED` naming `forwarded` | you sent a gated write to a follower, which forwarded it to the leader under its own certificate. Send gated writes to the leader. |

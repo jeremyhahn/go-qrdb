@@ -168,6 +168,7 @@ func TestLookupScope_TenantProvisioningIsCrossScope(t *testing.T) {
 		TenantsSetQuotas,
 		TenantsSetEntitlements,
 		TenantsSetIsolation,
+		TenantsSetStatus,
 	} {
 		if got := mustScope(t, p); got != ScopeCross {
 			t.Errorf("LookupScope(%q) = %v, want %v", p, got, ScopeCross)

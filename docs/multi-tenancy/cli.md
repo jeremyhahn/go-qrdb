@@ -1,7 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
@@ -51,7 +50,8 @@ qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
      --admin-username ops --admin-cert ops.pem --trust-anchors corp-root.pem
 ```
 
-There is no `--data-root` flag: the API field of that name is retired and the server refuses it (`*DataRootRetiredError`, 400 / `INVALID_ARGUMENT`), because a tenant's location is a named volume pool resolved on each node, never a path. *(Corrected 2026-10-06: this guide listed a `--data-root` flag and omitted `--pool` and `--allowed-volume-pools`.)*
+There is no flag that pins a directory: a tenant's location is a named volume
+pool resolved on each node, never a path.
 
 On a cluster, a `barrier`, `volume` or `raft` create, and a
 `qrdb tenant update --isolation-type barrier`, fail as unavailable
@@ -76,9 +76,6 @@ it must name the new tenant) are all checked before anything is written, so a
 refused credential leaves no tenant behind and the id stays usable. A failure
 after that point undoes what was written — but undoing a tenant deletes it,
 and a deleted id is retired (below), so that id cannot be used again.
-
-**BREAKING:** `--admin-username` and one of `--admin-csr` / `--admin-cert` are
-now required; a tenant can no longer be created without its first admin.
 
 **When the admin's account exists.** For a `prefix` tenant the account is
 created at once, with the tenant's Admin role and the certificate bound. A
@@ -174,12 +171,56 @@ system-tenant permission.
 |---|---|---|
 | `--name` | string | new human-readable name |
 | `--isolation-type` | string | **`barrier \| prefix` only** |
+| `--description` | string | new description; `--description ""` clears it |
+| `--metadata` | `key=value`, repeatable | **replaces the whole metadata map** with the given entries |
+| `--clear-metadata` | bool | removes every metadata entry; not with `--metadata` |
+| `--status` | string | **`active \| suspended \| disabled`**; needs `tenants:set_status` (system-tenant Admin only) |
+
+A flag that is not given leaves its field unchanged. `--metadata` splits each
+entry at the first `=`, so a value may contain `=`; an entry with no `=` or an
+empty key is refused before anything is sent. The server's limits: a
+description of at most 1024 bytes; at most 64 metadata entries, keys at most
+128 bytes, values at most 1024 bytes, all UTF-8. Over a limit, the update is
+refused and nothing changes (`invalid description: exceeds 1024 bytes`).
+
+```
+$ qrdb tenant update acme --description "Acme production" \
+    --metadata env=prod --metadata team=storage
+$ qrdb tenant get acme
+ID:         acme
+Name:       Acme Corp
+...
+Description: Acme production
+Metadata:   env=prod,team=storage
+$ qrdb tenant update acme --description "" --clear-metadata
+```
+
+`tenant get` prints the two lines only when set; `tenant list` shows them as
+the `DESCRIPTION` and `METADATA` columns, metadata as sorted `key=value`
+pairs.
+
+`--status` moves the tenant between `active`, `suspended` and `disabled`; a
+disabled tenant cannot move straight to suspended (`409`, reactivate it first),
+and any other value is refused (`400`). While a tenant is not active, every
+principal of it is refused on every transport (`403` / `PERMISSION_DENIED`,
+`tenant is not active`); `--status active` restores access on the next
+request. `tenant get` prints `Status:` and `tenant list` a `STATUS` column.
+
+```
+$ qrdb tenant update acme --status suspended
+$ qrdb tenant get acme
+ID:         acme
+Name:       Acme Corp
+Status:     suspended
+...
+$ qrdb tenant update acme --status active
+```
 
 Note the restriction: `update` accepts only `barrier` and `prefix`, and any
 change is refused once the tenant holds data (`ErrTenantHasData`). Changing
 `--isolation-type` also needs `tenants:set_isolation`, which only a
-`system`-tenant identity can exercise; a tenant's Admin can change `--name` on
-its own tenant only.
+`system`-tenant identity can exercise; a tenant's Admin can change `--name`,
+`--description` and `--metadata` on its own tenant only.
 
 ## Governance
 
@@ -257,6 +298,12 @@ proof is refused locally (`InitSignerRequiredError`); a key file that cannot
 be read is refused before anything is sent. A signature by any other key is
 refused by the node with `FirstAdminProofError`. The key is used only to sign
 and is never sent. An embedded connection is in process and asks no proof.
+
+A barrier served by several nodes holds its own key on each. A `passphrase`
+init reads the serving nodes from `--server`'s `barrier-status` and is sent to
+every one of them, over `--server`'s transport at the endpoint each node
+publishes, with one result printed per node. Under any other strategy the init
+goes to `--server`'s node and the others initialize their own keys from it.
 
 | Flag | Type | Meaning |
 |---|---|---|
@@ -342,39 +389,8 @@ into the caller's own tenant. Trust anchors, for a tenant whose users bring
 certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 [../trust-anchors/cli.md](../trust-anchors/cli.md).
 
-## Strict isolation — RULED
+## Strict isolation
 
-> **Status: ruled — partially implemented.** Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
->
-> **Correction (2026-10-05):** `tenant create --admin-username`/`--admin-csr`
-> and `barrier-init` restricted to the bound admin already shipped — see the
-> architecture correction linked above and the `tenant create` row below.
->
-> **Correction (2026-10-06):** the isolation-policy setting and `ScopeSelf`
-> system-lift removal shipped at the Go service layer
-> (`pkg/tenant/isolation_policy.go`, `pkg/auth/rbac`, `pkg/tenant/context.go`)
-> — see the architecture correction linked above. The two CLI commands below
-> are **not yet wired to any transport**: no REST/gRPC/QUIC/Unix/MCP endpoint
-> exists for them yet, so running them today fails the same way they would
-> against any unimplemented verb. Everything else in this section (the
-> per-node `barrier-init` fan-out, `tenant_identity:read`/`write`, etc.)
-> remains unimplemented.
-
-| Command | What it does |
-|---|---|
-| `qrdb cluster isolation-policy` | Prints the cluster floor (`strict` or `operator-access`). |
-| `qrdb cluster isolation-policy set strict` | Tightens the floor. Loosening is refused. |
-| `qrdb tenant create --id acme ... --admin-username alice --admin-csr ./alice.csr --isolation-policy strict` | `--admin-username`/`--admin-csr` are already required today (see [tenant create](#qrdb-tenant-create) above); `--isolation-policy` is this ruling's only new flag. Once implemented, prints the serving set in addition to today's admin SPKI thumbprint and state. |
-| `qrdb tenant set-isolation-policy acme strict` | The tenant's own Admin opts the tenant into strict. It cannot be undone. |
-| `qrdb tenant barrier-init --id acme --cert-file ./alice.crt --key-file ./alice.key ...` | Proves possession of the first admin's key, then initializes the barrier on **every** serving node and reports per node. *(Corrected 2026-10-14: this named an `--admin-key` flag. The proof shipped signing with the global `--key-file`, the key the connection already authenticates with, so no new flag exists; it initializes the node the CLI is connected to until the phase 7 fan-out ships.)* |
-| `qrdb tenant barrier-unseal --id acme ...` / `barrier-unseal-share` | Sends the credential, or this holder's share, to every serving node and reports per node. `--node` limits it to one node, for example one that has just joined. |
-| `qrdb tenant barrier-status --id acme` | One line per serving node: sealed, unsealed or pending. Also shows the bound admin thumbprint, and each shard's WAL, which is always `tenant` for a strict tenant. |
-| `qrdb users get --tenant acme <id>` (and the other identity verbs) | Operator verbs on a named tenant. They work only where that tenant's effective policy is `operator-access`. Without `--tenant`, identity verbs act in the caller's own tenant. |
-| `qrdb tenant backup create --id acme` | A tenant's own backup of its groups. |
-
-The CLI sets the SNI to the tenant it is configured for, so it works through any
-node.
-
-## Parity
-
-Every verb here has a `CommandDefinition` in the integration parity suite.
+No CLI verb reads or sets an isolation policy. A FIPS 140-3 build raises the
+cluster floor to `strict` when the node starts. Design:
+[architecture.md](architecture.md#strict-tenant-isolation--design).

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 )
 
 func TestRefusalError_factorConditionFailed(t *testing.T) {
@@ -41,6 +42,43 @@ func TestRefusalError_unknownReasonIsNil(t *testing.T) {
 		if err := RefusalError(reason, map[string]string{"k": "v"}); err != nil {
 			t.Fatalf("RefusalError(%q) = %v, want nil", reason, err)
 		}
+	}
+}
+
+func TestRefusalError_userConcurrentUpdate(t *testing.T) {
+	want := &UserConcurrentUpdateError{ID: 17}
+	err := RefusalError(ReasonUserConcurrentUpdate, want.Metadata())
+	got, ok := errors.AsType[*UserConcurrentUpdateError](err)
+	if !ok || *got != *want {
+		t.Fatalf("RefusalError() = %+v, want %+v", got, want)
+	}
+	if !dberrors.Is(err, dberrors.ErrConflict) || !dberrors.IsRetryable(err) {
+		t.Fatalf("RefusalError() = %v, want a retryable ErrConflict", err)
+	}
+}
+
+func TestUserConcurrentUpdateFromMetadata_malformedIDKeepsClassification(t *testing.T) {
+	for _, md := range []map[string]string{nil, {"user_id": "x"}, {"user_id": "-1"}, {"user_id": "99999999999999999999"}} {
+		if got := UserConcurrentUpdateFromMetadata(md); got == nil || got.ID != 0 {
+			t.Fatalf("UserConcurrentUpdateFromMetadata(%v) = %+v, want ID 0", md, got)
+		}
+	}
+}
+
+func TestUserConcurrentUpdateError_isRetryableConflict(t *testing.T) {
+	var err error = &UserConcurrentUpdateError{ID: 9}
+	if want := "user: concurrent update to user 9; re-read and retry"; err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	qe, ok := errors.AsType[*dberrors.QRDBError](err)
+	if !ok || qe.Code != dberrors.ErrConflict || !qe.Retry {
+		t.Fatalf("As QRDBError = %+v, want a retryable ErrConflict", qe)
+	}
+	if inner, ok := errors.AsType[*UserConcurrentUpdateError](qe); !ok || inner.ID != 9 {
+		t.Fatalf("QRDBError unwraps to %+v, want the lost race of user 9", inner)
+	}
+	if (&UserConcurrentUpdateError{}).As(new(*UserNotFoundError)) {
+		t.Fatal("As matched a target that is not a QRDBError")
 	}
 }
 

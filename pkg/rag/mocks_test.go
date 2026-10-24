@@ -76,6 +76,7 @@ type mockVecStore struct {
 	upsertFn          func(context.Context, *UpsertVecRequest) (*UpsertVecResponse, error)
 	searchFn          func(context.Context, *SearchVecRequest) (*SearchVecResponse, error)
 	ensureNamespaceFn func(context.Context, string, int, string) error
+	deleteFn          func(context.Context, string, uint64) error
 }
 
 var _ VectorStore = (*mockVecStore)(nil)
@@ -109,6 +110,13 @@ func (m *mockVecStore) EnsureNamespace(ctx context.Context, name string, dim int
 		return m.ensureNamespaceFn(ctx, name, dim, metric)
 	}
 	return m.ensureNSErr
+}
+
+func (m *mockVecStore) DeleteVector(ctx context.Context, namespace string, id uint64) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, namespace, id)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

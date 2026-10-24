@@ -1,6 +1,6 @@
 # Run Modes — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -23,29 +23,28 @@ func (n *Node) Close()       error            // tears down in reverse order
 
 ```go
 func Register(feature string)        // called from tag-gated init()
-func Seal(profile ...)               // composition root seals the effective profile
-func Get(feature string) bool        // pre-seal, falls back to compile-time
+func Seal(c Capabilities)            // composition root seals the effective profile
+func Get() Capabilities              // pre-seal, falls back to compile-time
 ```
 
 `pkg/server/lifecycle` (the one raft-free composition every root shares):
 
 ```go
-func NewLocalStorage(backend database.BackendType, dataDir string, fs vfs.FS, obj config.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
 func NewLocalEngine(backend database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error)
 func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) (stop func())
 ```
 
 `hub` and `lr` MUST be the instances the composer builds its watch service on
-and runs the expiry sweeper over. `NewLocalEngine` gained `lr` on 2026-10-01
-(it used to build a private lessor nothing swept); a caller passes `nil` only
-for a composition that serves no leases. `stop` cancels the sweeper and
+and runs the expiry sweeper over; a caller passes `nil` for `lr` only for a
+composition that serves no leases. `stop` cancels the sweeper and
 waits for it to exit; every composer calls it before closing the backend the
 sweeper revokes through -- the daemon on shutdown, `node.Node` on `Close` and on
 an encryption-migration teardown, `standalone.Server.Shutdown`, and the `qrdb`
 GUI's `StopEmbedded`.
 
 The daemon selects the mode with `mode: standalone | raft` in YAML or
-`--mode standalone`; **absent means raft**, for full backward compatibility.
+`--mode standalone`; **absent means raft**.
 
 ## Invariants
 
@@ -67,10 +66,12 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   embedding that never seals still gets correct answers.
 - **There is no `qrdb_raft` build tag.** Raft is always compiled; the mode
   selects it.
-- **Raft-only refusals are typed and name the remedy** — `requires mode: raft` —
-  on every transport, not a generic error. The raft-only set is cluster-shaped:
+- **Raft-only refusals are typed.** The raft-only set is cluster-shaped:
   membership, rebalance, shard backup/restore, IsolationRaft, and the etcd
-  listener.
+  listener. The etcd listener refuses with `*service.CapabilityUnsupportedError`
+  naming the remedy, `requires mode: raft` (`server.WithStandaloneMode`);
+  membership and snapshot calls fail in `LocalBackend` with
+  `*backend.ClusterOperationError`, naming the operation.
 - **The data plane is the same in both modes.** MVCC, watch, lease and lock are
   composed over the same engine, lessor and watch hub as raft mode's MVCC state
   machine, resolved through the same per-(tenant, db) registry, and exercised
@@ -100,7 +101,7 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   the default, keeps none): `audit.OpenTrailIn`, confined to `DataDir` -- or
   an absolute path's own directory -- so a symbolic link cannot carry it
   outside, opened before anything else,
-  failing the start with `*embedded.AuditTrailError` when it cannot be opened,
+  failing the start with `*standalone.AuditTrailError` when it cannot be opened,
   closed last by `Shutdown`. Its barrier records on it
   (`seal.NewComplianceAuditLogger`, the system tenant) and the transport
   serves the audit query from it. It has no share-holder authority, so there
@@ -137,7 +138,7 @@ uses (`ServeSealedWindow` on one goroutine, the operator's unseal on another).
 
 ### Guaranteed: `Close` blocks on an in-flight boot or migration
 
-The owner's ruling is that **`Close` blocks**. Every data-plane transition runs
+**`Close` blocks.** Every data-plane transition runs
 under one lifecycle gate (`Node.lifeGate`, a one-slot semaphore plus a
 closing signal that the first `Close` raises before it waits):
 
@@ -154,7 +155,7 @@ it and tears down what it built, or runs first and the late call is refused.
 A tenant-scope migration is admitted through `server.TenantMigrationAdmission`
 on the router every transport uses and on the direct `Node.EnableEncryption`
 call; it keeps its per-tenant guard and still runs concurrently with other
-tenants' migrations. The migration can no longer
+tenants' migrations. The migration cannot
 reload a barrier `Close` retracted, and nothing is republished after `Close`
 returns. `ErrNodeClosed` is a sentinel so a composer can tell "closed" apart
 from a wrong credential (`*UnsealError`) or an unsupported migration
@@ -183,7 +184,7 @@ pointer holds `*Iface`.
 `atomic.Pointer` rather than a mutex because each handle is an independent
 single-word publication with no invariant spanning two of them, and reads
 outnumber the single write by orders of magnitude — the same reasoning
-`pkg/database`, `pkg/secure` and `pkg/storage/pool` apply to their swappable
+`pkg/database` and `pkg/secure` apply to their swappable
 handles. The lifecycle lock orders the WRITERS; a per-handle publication needs
 no mutex.
 
@@ -208,7 +209,7 @@ The scoped encryption router (`Node.encMigrator`, reached through
 `RaftBackendFactory`, which survive a system-scope recycle by design — tenant
 migrations hold the lifecycle gate only shared, so they do not wait for a system
 migration. Clearing
-it mid-recycle would turn a concurrent tenant-scope migration, which today
+it mid-recycle would turn a concurrent tenant-scope migration, which
 proceeds independently, into a typed "not yet fully booted" refusal. `Close`
 clears it directly instead, where no rebuild follows.
 
@@ -227,9 +228,7 @@ system-scope recycle never rebuilds it, and it resolves each tenant's
 `DataRoot` through the `server.TenantLookup` it was built with. The node
 passes the same `nodeTenantResolver`, never `svcNode.Tenant`, so a
 tenant-scope migration issued after a completed system-scope recycle reads the
-live tenant service. It previously captured the first boot's
-`*tenant.Service`, and every such migration failed its `DataRoot` lookup with
-"storage is closed" against the stopped pre-recycle backend.
+live tenant service, not the stopped pre-recycle one.
 
 `server.TenantInfraConfig.TenantLookup` is **required** whenever the
 `IsolationVolume` registry is built; `BuildTenantInfra` refuses a
@@ -246,36 +245,26 @@ path that builds it performs no in-process system recycle.
 ### What none of this promises
 
 It governs **acquiring** a handle, never **using** one. Calling through a handle
-you already hold, concurrently with `Close`, is a use-after-close; the node has
-never promised to survive that and still does not. The nil-while-sealed
-contract is likewise unchanged — this makes the transition safe, not different.
+you already hold, concurrently with `Close`, is a use-after-close, which the
+node does not survive. Accessors read nil while the node is sealed.
 
 ### Verification
 
 The regression tests enumerate the accessors by **reflection over the type**,
-not by hand. A hand-list stops covering the next accessor someone adds, which
-is exactly how `IsSealed` and `BarrierRegistry` were missed on the first pass.
+not by hand, so a new accessor is covered without a list edit.
 `Node.encMigrator` has no no-argument accessor and so cannot be reached
 reflectively; it is asserted directly.
 
-Measured: two independent `-race` sightings from a consumer
-(`Read at Client()` vs `Previous write at wireClientAndServer()`), the second
-reproduced at a clean base, which is what attributed the defect here rather
-than to the consumer.
-
 ## Capability gates
 
-errors, not silent no-ops).
+Three gates decide whether a capability is served; a refusal at any of them is
+a typed error, not a silent no-op.
 
 | Gate | Question | Mechanism |
 |---|---|---|
-| Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (existing: `qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`, `codec_*`) |
-| Run mode | Structurally possible? | `mode: standalone \| raft` (implemented in config, daemon, and SDK); raft-only features are not composed in standalone |
-| Config | Operator-enabled? | Existing sections plus `enabled` on `mvcc`/`watch`/`lease` to disable even in raft mode (implemented) |
-
-Build tags currently registering capabilities: `qrdb_sql`, `qrdb_mysql`,
-`qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`, plus the
-`codec_*` family.
+| Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (`qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`) |
+| Run mode | Structurally possible? | `mode: standalone \| raft`; raft-only features are not composed in standalone |
+| Config | Operator-enabled? | Each feature's config section; `enabled` on `mvcc`/`watch`/`lease` disables it in either mode |
 
 ## Standalone: what is and is not served
 
@@ -290,34 +279,24 @@ Build tags currently registering capabilities: `qrdb_sql`, `qrdb_mysql`,
 - Timeseries and vector (build-tag gated)
 - Plus the always-compiled core below
 
-On the file and objstore backends the engine is the plain KV engine
-(`pkg/engine/kv_engine.go`): watch and value/version transactions are served,
-and MVCC, lease, lock, time series, vector, revision compares and
-lease-carrying writes are refused per call with a typed capability error. A
-transaction op naming a lease is refused before anything is staged, so it
-writes nothing rather than storing a key that would never expire. The run-modes [API table](api.md#the-storage-engine-not-the-mode-bounds-the-coordination-families)
-lists the outcome per family.
+Every backend — memory, file, pebble and objstore — composes the MVCC engine
+(`lifecycle.NewLocalEngine`), so the list above holds whatever the backend.
 
-**Refused with `requires mode: raft`** — cluster membership and topology,
-rebalance, shard backup/restore, IsolationRaft, and the etcd compatibility
-listener (`server.WithStandaloneMode` refuses it in `startEtcd`).
-
-*(Corrected twice. This section listed transactions among the refusals until
-2026-08-23, and MVCC, watch, lease and lock until 2026-10-01. The refusal used
-to be `raftOnlyGatedRegistry`, a wrapper around the transports' service
-registry; it was deleted on 2026-10-01, and `embedded.WithStandaloneMode` with it.
-`server.WithStandaloneMode` remains, now meaning only the etcd refusal.)*
+**Raft only** — cluster membership and topology, rebalance, shard
+backup/restore, IsolationRaft, and the etcd compatibility listener. The etcd
+listener is refused with `requires mode: raft` (`server.WithStandaloneMode`
+refuses it in `startEtcd`); membership and snapshot calls fail in
+`LocalBackend` with `*backend.ClusterOperationError`.
 
 ### How standalone serves the coordination families
 
-- **Composition.** `lifecycle.BuildServices` has always built MVCC, lease,
-  watch and lock services over the local host; they were withheld from the
-  transports. Each root now passes them through: the daemon
+- **Composition.** `lifecycle.BuildServices` builds MVCC, lease, watch and
+  lock services over the local host, and each root passes them to its
+  transports: the daemon
   (`server.WithMVCC/WithLease/WithWatch/WithLockService` in both modes),
   `node.NewStandaloneNode` (the same options, and the embedded transport's
   `WithMVCCService/WithLeaseService/WithWatchService/WithLockService`), and the
-  flat `standalone.NewServer`, which also gained the watch hub it was built
-  without (its watches registered on a hub nothing published to) and a lock
+  flat `standalone.NewServer`, which builds its own watch hub and lock
   service.
 - **Lessor.** Each root builds the lessor and passes it to
   `lifecycle.NewLocalEngine`, so the expiry sweeper runs over the lessor the
@@ -328,7 +307,7 @@ registry; it was deleted on 2026-10-01, and `embedded.WithStandaloneMode` with i
   plane: an in-process encryption migration's teardown stops it, and the
   rebuild starts one over the new engine's lessor. The daemon's runs for the
   process; `standalone.Server.Shutdown` stops its own before closing the backend.
-- **Errors.** The embedded transport now translates the lease or MVCC refusal
+- **Errors.** The embedded transport translates the lease or MVCC refusal
   under a lock (`translateLockError`) and `service.MVCCBackendRequiredError` to
   `transport.CapabilityUnsupportedError`, matching the network transports.
 
@@ -389,16 +368,14 @@ target. The gate works as follows:
 - **Splits, not tags.** Where a forbidden dependency is structural — a package
   that both a lean and a full composition import, holding code only the full
   one needs — the fix is to move that code to its own package, not to put it
-  behind a build tag. The first such move took `NewServer` and its
-  `ServerConfig`, `BarrierConfig` and constructor error types out of
-  `sdk/go/transport/embedded` into `sdk/go/standalone`, and removed the
-  transport's edges to PebbleDB and `pkg/server/lifecycle`.
-  `BarrierSealedError` stayed in the transport, whose seal gate returns it.
-  The second moved the index over a raw `*pebble.DB` out of `pkg/index` into
-  `pkg/index/pebbleindex`, with the key layout shared through the internal
-  `pkg/index/internal/indexkey`. `pkg/index` — which the DAO imports — no
-  longer imports PebbleDB; the moved package is reached only through the Raft
-  state machine in `pkg/store`.
+  behind a build tag. `NewServer` and its `ServerConfig`, `BarrierConfig` and
+  constructor error types live in `sdk/go/standalone`, so
+  `sdk/go/transport/embedded` has no edge to PebbleDB or
+  `pkg/server/lifecycle`; `BarrierSealedError` is in the transport, whose seal
+  gate returns it. The index over a raw `*pebble.DB` is `pkg/index/pebbleindex`,
+  with the key layout shared through the internal `pkg/index/internal/indexkey`,
+  so `pkg/index` — which the DAO imports — does not import PebbleDB; the
+  pebble index is reached only through the Raft state machine in `pkg/store`.
 
 ## Storage selection in raft mode
 
@@ -424,26 +401,25 @@ target. The gate works as follows:
   `kvstore.ProbeGuardedBatch`). The probe stays: it is what refuses a state
   machine registered without a transaction plane, and none in this tree is.
 
-- **The file backend earned the hot-apply role with real durability**: atomic
+- **The file backend is durable**: atomic
   temp-file + rename + fsync writes and an all-or-nothing commit journal
   replayed at open (`pkg/storage/file/journal.go`), plus the `storage.Syncer`
   seam.
 - **Objstore is a snapshot/backup tier** and is **refused as a hot apply path**
-  with a pointed validation error.
+  by config validation.
 - **Every state machine other than `disk` and `fast` carries its own
   storage** and rejects a non-pebble `sm_storage`.
 
 ## Configuration
 
 ```yaml
-mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
+mode: raft   # "standalone" | "raft"; absent = raft
 ```
 
 - `mode: standalone` + `raft.join` or a multi-member `raft.peers` list →
   validation error: `requires mode: raft (a standalone node has no cluster to
   join)`. `mvcc.enabled`, `watch.enabled` and `lease.enabled` are valid in
-  both modes and narrow either one *(corrected: enabling them under standalone
-  was a validation error until 2026-10-01)*. Standalone skips the raft identity
+  both modes and narrow either one. Standalone skips the raft identity
   requirements (only `raft.data_dir` stays mandatory). Etcd is enabled
   per-database at runtime, so its mode gate lives at service composition.
 - Enabling a wire protocol whose build tag is absent → boot-time error
@@ -451,71 +427,38 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
   roots — a deliberate separate gate so pure-config validation stays
   build-independent).
 - The daemon serves `mode: standalone` natively: the data-plane families are
-  wired exactly as in raft mode, and the cluster-shaped families answer
-  501/Unimplemented with the `requires mode: raft` hint on every transport
-  (their singletons are not passed in this mode).
-- Refusals at runtime surface through the existing per-transport typed
-  errors (REST 501 / gRPC & QUIC Unimplemented) with the
-  `requires mode: raft` hint.
-
+  wired exactly as in raft mode. The etcd listener is refused with the
+  `requires mode: raft` hint; membership and snapshot calls fail with
+  `*backend.ClusterOperationError`; the rebalance service is not passed in this
+  mode, so a rebalance call answers each transport's not-configured error
+  (REST `501 Not Implemented`).
 
 ## Error semantics
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| Raft-only call in standalone | typed error, `requires mode: raft`; REST 501, gRPC/QUIC `Unimplemented` | **yes** |
+| etcd listener on a standalone node | `*service.CapabilityUnsupportedError`, `requires mode: raft`; refused at start | **yes** |
+| Membership or snapshot call in standalone | `*backend.ClusterOperationError` naming the operation | **yes** |
 | `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error at boot | **yes** |
-| Lease, lock, MVCC, a revision compare or a lease-carrying write on a standalone file/objstore backend | `CapabilityUnsupportedError` per call; nothing is written | **yes** |
 | Wire protocol enabled whose build tag is absent | boot-time error **naming the tag** (`Config.ValidateCapabilities`) | **yes** |
 | Objstore configured as `raft.sm_storage` | validation error | **yes** |
-| Non-pebble `sm_storage` with a pebble-native state machine | rejected | **yes** |
+| Non-pebble `sm_storage` with an `sm_type` other than `disk` or `fast` | `SMStorageNotApplicableError` at resolution | **yes** |
 
 `Config.ValidateCapabilities` is a deliberately separate gate from ordinary
 config validation, so pure-config validation stays build-independent.
-
-## Behavior change notice
-
-**2026-10-13: the flat composer moved to `sdk/go/standalone`.**
-`embedded.NewServer`, `embedded.Server`, `embedded.ServerConfig`,
-`embedded.BarrierConfig`, `embedded.ErrShamirAutoUnseal` and the server's
-constructor error types are now `standalone.NewServer`, `standalone.Server`,
-and so on, with the same fields and behaviour. Nothing is left at the old
-names. The embedded transport (`embedded.New`, its options and
-`embedded.BarrierSealedError`) did not move.
-
-**2026-10-01: standalone serves MVCC, watch, lease and lock.**
-Code that relied on the refusal — a host's in-process fallback, a check for
-`requires mode: raft` — sees the families served instead. Capability reports
-on a standalone node now say `mvcc`, `watch`, `lease` and `lock` true. The
-exported `embedded.WithStandaloneMode` is removed, and
-`lifecycle.NewLocalEngine` takes the lessor.
-
-### Earlier notice
-
-SDK standalone (`NewStandaloneNode`) historically composed MVCC, lease,
-and transaction services over `LocalBackend`. Under this requirement **MVCC and
-lease** become raft-mode-only everywhere; standalone compositions stop building
-them. Downstream consumers were notified on their own repositories.
-
-**Transactions did not become raft-only**, and this
-notice said they did — corrected to match the shipped composition. Standalone
-still serves the transaction / compare-and-swap family on every transport,
-in-process and on the wire; `pkg/server/standalone_gate.go` passes
-`TransactionService` through by name and says why.
 
 ## Test strategy
 
 - **Unit**: mode validation for each rejected combination, capability sealing
   (build ∩ mode ∩ config), the pre-seal compile-time fallback, the etcd
   refusal, and `StartLocalLeaseExpiry` deleting an expired lease's key.
-- **Parity, not refusal, is the important property now.**
+- **Parity is the important property.**
   `sdk/go/conformance`'s `TestCoordinationFamilies_SameOnStandaloneAndRaft`
   runs one suite against a standalone memory, file and pebble node and a raft
   node on all six transports (and an objstore node embedded): lease lifecycle,
   lease expiry deleting its key (proves the sweeper is wired), prefix watch,
   revision resume, cancellation, lock lifecycle. Every backend composes the
-  MVCC engine. Before this change every standalone cell failed with
-  `requires mode: raft`.
+  MVCC engine.
 - **Restart**: `sdk/go/node`'s `TestStandaloneNode_LeaseAndLockSurviveRestart`
   closes a standalone pebble node holding a lease and a lock and reopens it.
 - **Accessor publication is verified under `-race` only.** An unsynchronised
@@ -528,10 +471,9 @@ in-process and on the wire; `pkg/server/standalone_gate.go` passes
   `ABACPolicyReloader` and the login factor service are non-nil *before*
   `Close`; asserting nil afterwards on a node that never populated them would
   be vacuous.
-- **Integration**: the standalone stage runs the standalone composition; the
-  cluster stage runs raft. CI runs the cluster stage's tests in
-  the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
-  `ci-gate`.
+- **Integration**: CI's `integration-features` job (`.github/workflows/ci.yml`)
+  runs one leg per feature (`make integration-test-<feature>`), required by
+  `ci-gate`; this feature's leg is `make integration-test-run-modes`.
 
 ## Observability
 

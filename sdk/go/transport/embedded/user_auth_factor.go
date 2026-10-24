@@ -85,7 +85,8 @@ func domainToUserAuthRecord(f *auth.AuthFactor) transport.AuthFactorRecord {
 
 // AddAuthFactor persists a new factor for a user via the user-side service.
 func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactorAddRequest) (*transport.AuthFactorAddResponse, error) {
-	if err := t.gate("AddAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "AddAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "AddAuthFactor"); err != nil {
@@ -110,7 +111,8 @@ func (t *Transport) AddAuthFactor(ctx context.Context, req *transport.AuthFactor
 
 // ListAuthFactors returns every factor (active and revoked) for a user.
 func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFactorListRequest) (*transport.AuthFactorListResponse, error) {
-	if err := t.gate("ListAuthFactors"); err != nil {
+	ctx, err := t.admit(ctx, "ListAuthFactors")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "ListAuthFactors"); err != nil {
@@ -142,7 +144,8 @@ func (t *Transport) ListAuthFactors(ctx context.Context, req *transport.AuthFact
 
 // GetAuthFactor returns the factor with the given ID.
 func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactorGetRequest) (*transport.AuthFactorGetResponse, error) {
-	if err := t.gate("GetAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "GetAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "GetAuthFactor"); err != nil {
@@ -166,7 +169,8 @@ func (t *Transport) GetAuthFactor(ctx context.Context, req *transport.AuthFactor
 
 // RemoveAuthFactor soft-deletes a factor (honouring the force flag).
 func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFactorRemoveRequest) (*transport.AuthFactorRemoveResponse, error) {
-	if err := t.gate("RemoveAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "RemoveAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "RemoveAuthFactor"); err != nil {
@@ -191,7 +195,8 @@ func (t *Transport) RemoveAuthFactor(ctx context.Context, req *transport.AuthFac
 // and user index entries, so the credential can be bound again. It rolls
 // back an add; a revoked factor is refused and stays revoked.
 func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFactorDeleteRequest) (*transport.AuthFactorDeleteResponse, error) {
-	if err := t.gate("DeleteAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "DeleteAuthFactor"); err != nil {
@@ -214,7 +219,8 @@ func (t *Transport) DeleteAuthFactor(ctx context.Context, req *transport.AuthFac
 
 // RotateAuthFactor atomically adds the new factor and revokes the old one.
 func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFactorRotateRequest) (*transport.AuthFactorRotateResponse, error) {
-	if err := t.gate("RotateAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "RotateAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "RotateAuthFactor"); err != nil {
@@ -241,7 +247,8 @@ func (t *Transport) RotateAuthFactor(ctx context.Context, req *transport.AuthFac
 
 // RelabelAuthFactor updates the label on a factor.
 func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFactorRelabelRequest) (*transport.AuthFactorRelabelResponse, error) {
-	if err := t.gate("RelabelAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "RelabelAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "RelabelAuthFactor"); err != nil {
@@ -271,7 +278,8 @@ func (t *Transport) RelabelAuthFactor(ctx context.Context, req *transport.AuthFa
 // responsibility; this only performs the database mapping, mirroring the
 // network transports' contract.
 func (t *Transport) LoginAuthFactor(ctx context.Context, req *transport.AuthFactorLoginRequest) (*transport.AuthFactorLoginResponse, error) {
-	if err := t.gate("LoginAuthFactor"); err != nil {
+	ctx, err := t.admit(ctx, "LoginAuthFactor")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorize(ctx, "LoginAuthFactor"); err != nil {

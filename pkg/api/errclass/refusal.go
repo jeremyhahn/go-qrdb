@@ -19,6 +19,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // refusalEncoder returns the structured refusal of the errors it knows.
@@ -30,6 +32,7 @@ type refusalEncoder func(err error) (reason string, md map[string]string, ok boo
 var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
+	userConcurrentUpdateRefusal,
 }
 
 // Refusal returns the structured refusal err carries -- a reason and its
@@ -50,6 +53,21 @@ func Refusal(err error) (reason string, md map[string]string, ok bool) {
 func factorConditionRefusal(err error) (string, map[string]string, bool) {
 	if e, ok := errors.AsType[*auth.FactorConditionFailedError](err); ok {
 		return auth.ReasonFactorConditionFailed, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// userConcurrentUpdateRefusal encodes a user update that lost a race with
+// another committed update, so a remote client rebuilds the retryable
+// conflict rather than an opaque Aborted. Only an error that classifies as
+// Aborted is one: a failed rollback wrapping the lost race is DataLoss, and
+// telling the client to re-read and retry it would hide the corruption.
+func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
+	if Classify(err) != Aborted {
+		return "", nil, false
+	}
+	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
+		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
 	}
 	return "", nil, false
 }

@@ -32,6 +32,10 @@ func (t *Transport) SealDatabase(ctx context.Context, name string) error {
 
 // UnsealDatabase unseals a database's barrier via the qrdb_database_unseal tool.
 func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) error {
+	ctx, err := t.guardSecret(ctx, transport.DatabaseUnsealSecret(secret))
+	if err != nil {
+		return err
+	}
 	if _, err := t.callTool(ctx, "qrdb_database_unseal", map[string]any{"name": name, "secret": secret}); err != nil {
 		return &transport.RequestError{Method: "UnsealDatabase", Err: err}
 	}

@@ -66,12 +66,10 @@ func (e *CertificateLoadError) Unwrap() error {
 // TLSBuildOptions configures BuildTLSConfig. The zero value disables TLS.
 type TLSBuildOptions struct {
 	// Custom is a pre-built tls.Config that takes precedence over all
-	// file-based fields. When set with no NextProtos, and either no
-	// single static Certificates entry or one paired with the caller's
-	// own GetClientCertificate already, it is returned unmodified;
-	// otherwise a clone is returned with the ALPN protocols appended
-	// and/or GetClientCertificate applied over a lone static certificate
-	// -- see BuildTLSConfig's own doc comment for why the latter matters.
+	// file-based fields. BuildTLSConfig returns a clone of it, never
+	// the caller's own pointer, with the ALPN protocols appended and/or
+	// GetClientCertificate applied over a lone static certificate -- see
+	// BuildTLSConfig's own doc comment for why the latter matters.
 	Custom *tls.Config
 
 	// Enabled controls whether a file-based configuration is built when
@@ -115,16 +113,17 @@ type TLSBuildOptions struct {
 // otherwise, which is exactly what a Key B leaf hits against a listener
 // composed over pkg/clienttrust.Pool. A caller supplying its own
 // GetClientCertificate, or more than one static certificate (an ambiguous
-// case this function cannot resolve on the caller's behalf), is left
-// untouched.
+// case this function cannot resolve on the caller's behalf), gets no hook.
+//
+// The result never aliases Custom: it is always a Clone. A transport
+// mutates the config it is handed (net/http appends "h2" to NextProtos
+// when it attempts HTTP/2), and the caller's config may be shared with
+// clients that cannot speak what such a mutation offers.
 func BuildTLSConfig(opts TLSBuildOptions) (*tls.Config, error) {
 	if opts.Custom != nil {
-		cfg := opts.Custom
+		cfg := opts.Custom.Clone()
 		needsALPN := len(opts.NextProtos) != 0
 		needsClientCertFix := len(cfg.Certificates) == 1 && cfg.GetClientCertificate == nil
-		if needsALPN || needsClientCertFix {
-			cfg = opts.Custom.Clone()
-		}
 		if needsALPN {
 			cfg.NextProtos = mergeALPN(cfg.NextProtos, opts.NextProtos)
 		}

@@ -1,6 +1,6 @@
 # GUI System
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion to `docs/desktop-gui/`, which is the contract.
 
 <!--
@@ -9,9 +9,9 @@ Licensed under the Apache License, Version 2.0
 -->
 
 The `qrdb` binary serves as both a CLI and a desktop GUI application. When
-launched without arguments on a system with a graphical display, it opens
-the desktop GUI powered by Wails v2 and Svelte 5. When launched with
-arguments (or without a display), it behaves as the standard CLI.
+launched with no subcommand (log flags only) on a system with a graphical
+display, it opens the desktop GUI powered by Wails v2 and Svelte 5.
+Otherwise it behaves as the standard CLI.
 
 ## Architecture
 
@@ -58,7 +58,7 @@ The `desktop` build tag requires CGO for native window integration.
 ## Display Detection
 
 Platform-specific display detection determines whether the GUI should
-launch when no CLI arguments are provided.
+launch when no subcommand is given.
 
 Source: `cmd/qrdb/display_{linux,darwin,windows}.go`
 
@@ -70,22 +70,23 @@ Source: `cmd/qrdb/display_{linux,darwin,windows}.go`
 
 ## Entry Point
 
-Source: `cmd/qrdb/main.go`
+Source: `run()` in `cmd/qrdb/main.go`
 
 ```go
-func main() {
-    if len(os.Args) == 1 && hasDisplay() {
-        if err := launchGUI(); err != nil {
-            // falls through to CLI on GUIUnavailableError
-        } else { return }
+if isGUIOnly() && hasDisplay() {
+    if err := launchGUI(log, file); err != nil {
+        // a *GUIUnavailableError falls through to the CLI; any other error exits 1
+    } else {
+        return 0
     }
-    rootCmd := newRootCmd()
-    rootCmd.Execute()
 }
+rootCmd := newRootCmd()
+rootCmd.ExecuteContext(ctx)
 ```
 
-When the binary is compiled without `desktop`, `launchGUI()` returns a
-`GUIUnavailableError` and the CLI takes over transparently.
+`isGUIOnly()` is true when the arguments are log flags only. When the binary
+is compiled without `desktop`, `launchGUI()` returns a `GUIUnavailableError`
+and the CLI takes over transparently.
 
 ## Wails Integration
 
@@ -98,51 +99,58 @@ The desktop build embeds the compiled frontend assets:
 var assets embed.FS
 ```
 
-The Wails application registers 25 Go binding objects, each wrapping a
+The Wails application registers 31 Go binding objects, each wrapping a
 domain of the Go SDK (the authoritative list is `guiBindings.bindList()`
 in `cmd/qrdb/gui_desktop_bindings.go`, pinned by
 `TestGUIBindings_AllBindingsPresent`):
 
-| Binding                    | Domain                  | Service Interface Used       |
-|----------------------------|-------------------------|------------------------------|
-| `ConnectionBinding`        | Transport lifecycle     | `sdk.Client`                 |
-| `ConnectionManagerBinding` | Connection profiles     | `sdk.Client` (multi-profile) |
-| `EmbeddedServerBinding`    | In-process server       | `server.Server`              |
-| `KVBinding`                | Key-value CRUD          | `sdk.KVClient`               |
-| `AdminBinding`             | Cluster admin           | `sdk.AdminClient`            |
-| `MVCCBinding`              | MVCC operations         | `sdk.MVCCClient`             |
-| `TransactionBinding`       | Transactions            | `sdk.TransactionClient`      |
-| `BatchBinding`             | Batch operations        | `sdk.BatchClient`            |
-| `WatchBinding`             | Real-time events        | `sdk.WatchClient`            |
-| `LeaseBinding`             | Distributed leases      | `sdk.LeaseClient`            |
-| `IndexBinding`             | Secondary indexes       | `sdk.IndexClient`            |
-| `TimeSeriesBinding`        | Time-series data        | `sdk.TimeSeriesClient`       |
-| `VectorBinding`            | Vector database         | `sdk.VectorClient`           |
-| `UserBinding`              | User management         | `sdk.UserClient`             |
-| `RoleBinding`              | Role management         | `sdk.RoleClient`             |
-| `CertBinding`              | Certificates            | `sdk.CertClient`             |
-| `DatabaseBinding`          | Database management     | `sdk` Database client        |
-| `CollectionBinding`        | Collection management   | `sdk` Collections client     |
-| `SQLBinding`               | SQL queries             | SQL engine                   |
-| `SealBinding`              | Seal/unseal             | `sdk.SealClient`             |
-| `ConfigBinding`            | App config state        | Local file I/O               |
-| `TenantBinding`            | Tenant management       | `sdk` Tenants client         |
-| `BackupBinding`            | Backup/restore          | `sdk` Backup client          |
-| `OfficerBinding`           | Share holders           | `sdk` Barrier + Tenants clients |
-| `DaemonBinding`            | Local qrdbd lifecycle   | `os/exec` process control    |
+| Binding                    | Domain                  |
+|----------------------------|-------------------------|
+| `ConnectionBinding`        | Transport lifecycle     |
+| `ConnectionManagerBinding` | Connection profiles     |
+| `EmbeddedServerBinding`    | In-process server       |
+| `KVBinding`                | Key-value CRUD          |
+| `AdminBinding`             | Cluster admin           |
+| `MVCCBinding`              | MVCC operations         |
+| `TransactionBinding`       | Transactions            |
+| `BatchBinding`             | Batch operations        |
+| `WatchBinding`             | Real-time events        |
+| `LeaseBinding`             | Distributed leases      |
+| `IndexBinding`             | Secondary indexes       |
+| `TimeSeriesBinding`        | Time-series data        |
+| `VectorBinding`            | Vector database         |
+| `UserBinding`              | User management         |
+| `InvitationBinding`        | User invitations        |
+| `RoleBinding`              | Role management         |
+| `CertBinding`              | Certificates            |
+| `DatabaseBinding`          | Database management     |
+| `CollectionBinding`        | Collection management   |
+| `SQLBinding`               | SQL queries             |
+| `SealBinding`              | Seal/unseal             |
+| `ConfigBinding`            | App config state        |
+| `TenantBinding`            | Tenant management       |
+| `BackupBinding`            | Backup/restore          |
+| `OfficerBinding`           | Share holders           |
+| `CeremonyBinding`          | Initialization ceremony |
+| `RebalanceBinding`         | Shard rebalancing       |
+| `LockBinding`              | Row locks               |
+| `CredentialBinding`        | Named credentials       |
+| `AuditBinding`             | Audit log               |
+| `DaemonBinding`            | Local qrdbd lifecycle   |
 
 `OfficerBinding` exposes share-holder operations to the desktop GUI for
-the system barrier (unseal and recovery domains) and tenant barriers:
-`RegisterHolder`, `ListHolders`, `ClaimEnvelope` (signs the claim nonce with
-the holder's key in the application process), `SubmitShare` (answers the
-`mtls` factor, opens the envelope and submits the share), `StartRekey` and
-`RevokeHolder`. Keys passed in are wiped after each call; only factor
-responses and the opened share leave the process. See
+the system barrier (unseal and recovery domains), tenant barriers and
+database barriers: `RegisterHolder`, `ListHolders`, `ClaimEnvelope` (signs
+the claim nonce with the holder's key in the application process),
+`SubmitShare` (answers the `mtls` factor, opens the envelope and submits the
+share), `StartRekey`, `RevokeHolder`, `InitializeDatabaseShamir` and
+`UnenrolDatabaseHolder`. Keys passed in are wiped after each call; only
+factor responses and the opened share leave the process. See
 [../shamir-custody/](../shamir-custody/) for the contract.
 
 Watch events are delivered to the frontend in real time via Wails
-`runtime.EventsEmit`, which the Svelte watch store subscribes to using
-the Wails runtime event listener.
+`runtime.EventsEmit` on the event `qrdb:watch:<id>`, which the TypeScript
+SDK's `WailsClient` subscribes to with `EventsOnMultiple`.
 
 ## Frontend Structure
 
@@ -158,21 +166,26 @@ Source: `cmd/qrdb/frontend/`
 
 ```
 cmd/qrdb/frontend/
-  package.json               - qrdb-frontend (private)
-  vite.config.ts             - Vite + Svelte + Tailwind plugins
-  tsconfig.json              - Strict TypeScript configuration
+  package.json                   - qrdb-frontend (private)
+  vite.config.ts                 - Vite + Svelte + Tailwind plugins
+  tsconfig.json                  - TypeScript configuration
   src/
-    main.ts                  - Application entry point
-    App.svelte               - Root component, app shell state machine
+    main.ts                      - Application entry point
+    App.svelte                   - Root component, app shell state machine
     stores/
-      connection.svelte.ts   - Transport connection state
-      capabilities.svelte.ts - Server feature flags
-      identity.svelte.ts     - Current user identity from mTLS
-      wizard.svelte.ts       - Setup wizard flow state
-      seal.svelte.ts         - Seal/unseal lifecycle state
-      toast.svelte.ts        - Notification toast queue
-      theme.svelte.ts        - Light/dark theme preference
-      watch.svelte.ts        - Real-time watch event store
+      connection.svelte.ts         - Transport connection state
+      connection-manager.svelte.ts - Saved connection profiles
+      capabilities.svelte.ts       - Server feature flags
+      identity.svelte.ts           - Current user identity from mTLS
+      setup-wizard.svelte.ts       - Server setup wizard flow state
+      database-wizard.svelte.ts    - Database creation wizard flow state
+      database.svelte.ts           - Database selection state
+      navigation.svelte.ts         - Navigation state
+      seal.svelte.ts               - Seal/unseal lifecycle state
+      daemon.svelte.ts             - Local qrdbd daemon state
+      toast.svelte.ts              - Notification toast queue
+      theme.svelte.ts              - Light/dark theme preference
+      watch.svelte.ts              - Real-time watch event store
 ```
 
 Stores use Svelte 5 runes (`$state`, `$derived`, `$effect`) for reactive
@@ -187,96 +200,89 @@ The frontend depends on the TypeScript SDK as a local npm package:
 ## App Shell State Machine
 
 The root `App.svelte` component manages application lifecycle as a state
-machine:
+machine (`AppState`):
 
-```
-loading --> wizard --> unseal --> main app
-  |           |
-  |           +--> (first run: setup wizard)
-  |
-  +--> unseal --> main app  (returning user)
-```
+| State     | Condition                                          | View                     |
+|-----------|----------------------------------------------------|--------------------------|
+| `loading` | Initial load: creating the client                  | Loading spinner          |
+| `init`    | Browser mode, server sealed and not initialized    | Setup wizard (`ServerInitWizard`) |
+| `unseal`  | Browser mode, server sealed and initialized        | Unseal prompt            |
+| `app`     | Profiles loaded                                    | Full application (`MainApp`) |
+| `error`   | Initialization failed                              | Error message            |
 
-| State     | Condition                                | View                     |
-|-----------|------------------------------------------|--------------------------|
-| `loading` | Initial load, fetching capabilities      | Splash/loading spinner   |
-| `wizard`  | First run (`isFirstRun()` returns true)  | Setup wizard             |
-| `unseal`  | Server is sealed                         | Unseal prompt            |
-| `main`    | Server is unsealed and connected         | Full application         |
+On desktop the shell goes from `loading` to `app`; `MainApp` handles empty
+profiles, connection errors and seal flows.
 
 ## Setup Wizard
 
-The setup wizard guides first-time users through server configuration.
-The flow branches based on the selected server mode:
+The setup wizard (`setup-wizard.svelte.ts`) guides first-time server
+configuration. The flow branches on the selected server mode:
 
 ```
-ServerMode --> [Embedded] --> StorageBackend --> [Raft] --> RaftConfig
-                                                       --> EncryptionBarrier
-                                                       --> Summary
-                                                       --> Initializing
-                                                       --> Complete
-
-ServerMode --> [Remote] --> ConnectionConfig --> Summary --> Complete
+welcome --> serverMode --> [standalone] --> globalBarrier --> summary --> applying --> complete
+                       --> [clustered]  --> clusterConfig --> globalBarrier --> ...
 ```
 
-| Step                | Description                                          |
-|---------------------|------------------------------------------------------|
-| `ServerMode`        | Choose embedded (in-process) or remote server        |
-| `StorageBackend`    | Select PebbleDB or memory storage                   |
-| `RaftConfig`        | Configure shard ID, replica ID, peers                |
-| `EncryptionBarrier` | Configure Shamir shares and threshold                |
-| `ConnectionConfig`  | Enter remote server address and TLS settings         |
-| `Summary`           | Review configuration before applying                 |
-| `Initializing`      | Start embedded server (shows progress)               |
-| `Complete`          | Wizard finished, transition to unseal or main        |
+| Step            | Description                                              |
+|-----------------|----------------------------------------------------------|
+| `welcome`       | Introduction                                             |
+| `serverMode`    | Choose `standalone` or `clustered`                       |
+| `clusterConfig` | Clustered only: cluster type (`local` or `distributed`), peer discovery, replica ID and Raft address |
+| `globalBarrier` | Barrier mode: `none`, `passphrase` or `shamir`           |
+| `summary`       | Review configuration before applying                     |
+| `applying`      | Apply the configuration (shows progress)                 |
+| `complete`      | Wizard finished                                          |
 
 ## Views
 
-### User Area
+### Database Workspace
 
-| View           | Description                              | Capability Gate       |
-|----------------|------------------------------------------|-----------------------|
-| KV Explorer    | Browse, search, create, edit key-values  | Always available      |
-| MVCC Explorer  | Revision history, historical reads       | `sm_type == "mvcc"`   |
-| Transactions   | Build and execute CAS transactions       | `sm_type == "mvcc"`   |
-| Batch          | Compose and submit batch operations      | Always available      |
-| Watch          | Real-time key change event stream        | `sm_type == "mvcc"`   |
-| Leases         | Grant, revoke, keep-alive, TTL monitor   | `sm_type == "mvcc"`   |
-| Indexes        | Create, drop, query secondary indexes    | `sm_type == "mvcc"`   |
-| TimeSeries     | Write, query, aggregate time-series data | `capabilities.timeSeries` |
-| Vectors        | Namespace CRUD, search, index management | `capabilities.vector` |
+An open database shows one tab per tool (`DatabaseWorkspace.svelte`). Every
+database exposes every engine, so the tabs are not gated by engine:
+
+| Tab          | Description                              |
+|--------------|------------------------------------------|
+| Data         | Browse, search, create, edit key-values  |
+| Collections  | Collection management                    |
+| Indexes      | Create, drop, query secondary indexes    |
+| Transactions | Build and execute transactions           |
+| Batch        | Compose and submit batch operations      |
+| Watch        | Real-time key change event stream        |
+| Leases       | Grant, revoke, keep-alive, TTL monitor   |
+| Locks        | Row locks                                |
+| Time Series  | Write, query, aggregate time-series data |
+| Vectors      | Namespace CRUD, search, index management |
+| SQL Browser  | Shown only when MySQL or PostgreSQL is enabled for the database |
+| Settings     | Per-database settings, always last       |
 
 ### Admin Area
+
+The admin navigation (`components/sidebar/AdminNav.svelte`):
 
 | View             | Description                                    |
 |------------------|------------------------------------------------|
 | Dashboard        | Cluster health, node status, shard overview    |
-| Cluster          | Peer membership, add/remove members            |
-| Databases        | Create, drop, configure databases and protocols |
+| Cluster          | Peer membership, add/remove members; Raft mode only |
+| Topology         | Shard topology; Raft mode only                 |
+| Rebalance        | Shard rebalancing; Raft mode only              |
 | Seal Manager     | Initialize, seal, unseal, rotate, rekey; for Shamir barriers a Security Officers panel handles CSR enrollment, claim status, and quorum seal votes (single-admin seal is blocked). When no encryption barrier is configured (strategy `none`) it shows an "Encryption Not Configured" panel — no Seal/Unseal controls, since there is nothing to seal — with [migration guidance](../seal/enabling-encryption.md) for enabling encryption |
 | Tenants          | Tenant lifecycle, per-tenant barrier strategy and officer management |
 | Users            | Create, edit, enable/disable user accounts     |
 | Roles            | Create, edit, assign/unassign roles            |
 | Certificates     | Generate, export, revoke client certificates   |
+| Credentials      | Named credential management                    |
+| Databases        | Create, drop, configure databases and protocols |
+| Backups          | Backup and restore                             |
+| Daemon           | Start/stop the local `qrdbd` process; shown only for **external** profiles on desktop builds — embedded ("Local Server") profiles run in-process and hide this panel |
 | Audit Log        | Browse and search audit trail entries          |
 | Settings         | Server configuration and preferences           |
-| Daemon           | Start/stop the local `qrdbd` process; shown only for **external** profiles on desktop builds — embedded ("Local Server") profiles run in-process and hide this panel |
 
 #### Database Protocol Configuration
 
-The Databases admin view includes protocol toggles for each database.
-Protocols can be enabled or disabled per database:
-
-| Protocol   | Toggle                  | Additional Fields                    | Capability Gate        |
-|------------|-------------------------|--------------------------------------|------------------------|
-| MySQL      | Enable/disable switch   | Port                                 | `capabilities.mysql`   |
-| PostgreSQL | Enable/disable switch   | Port                                 | `capabilities.postgresql` |
-| etcd       | Enable/disable switch   | Listen address, advertise URLs       | `capabilities.etcd`    |
-
-Protocol toggles are only visible when the corresponding build-tag
-capability is reported by the server. For example, the etcd toggle
-appears only when the server binary was compiled with
-`WITH_QRDB_ETCD=1`.
+A database's detail view in the Databases admin view, and the workspace's
+Settings tab, toggle the MySQL and PostgreSQL wire protocols for that
+database. The etcd-compatible API is chosen when the database is created
+(`StepDatabaseSQL.svelte` in the database wizard), for Raft databases only.
 
 ## Authentication
 

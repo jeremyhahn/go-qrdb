@@ -1,20 +1,7 @@
 # Cluster Verification — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> Corrected 2026-10-12, when the soak landed: `cas` is the KV guarded
-> compare-and-swap, not a transaction; the harness does not call Health —
-> readiness after a fault is the E4 probe write — and E3 had no replica
-> state source, so it reported unavailable.
->
-> Corrected 2026-10-12, when the replica-state read landed in clustering: E3
-> reads it from every node, so the soak's credential now needs
-> `admin:replica_state`; the section below says how.
->
-> Corrected 2026-10-12, when the seal types were ruled: the harness calls no
-> barrier endpoint; unsealing a restarted node is the operator's command.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -84,8 +71,8 @@ unseals it through the same API.
 ## Replica state comparison
 
 E3 compares the state-machine hash every replica of a shard reports at the
-same applied index. It reads them through the clustering capability built for
-it, [replica states](../clustering/api.md#replica-states), over the run's
+same applied index. It reads them through the clustering capability
+[replica states](../clustering/api.md#replica-states), over the run's
 transport: after the workload, the final read and E4's probe write have
 finished, it asks **every** node for its own replicas, since a node answers
 for no other. A follower still applying the last entries trails the leader,
@@ -110,6 +97,6 @@ is one-sided — it can make agreeing replicas look different, never different
 ones look the same — so it can cost a run its `pass` but cannot forge one.
 Reading only after the workload has stopped is what keeps it from firing.
 
-The etcd-compatible `Hash` and `HashKV` calls are not used and still answer
+The etcd-compatible `Hash` and `HashKV` calls are not used and answer
 `Unimplemented`: they hash etcd's revisioned key space, not a replica's state
 machine.

@@ -138,6 +138,7 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 		{"failed rollback over a lost concurrent update", &user.IndexCompensationError{Op: "update", Cause: &user.ConcurrentUpdateError{}}, DataLoss},
 		{"unrecorded audit decision over a missing key", &audit.GateError{Component: "authorize", Err: &service.KeyNotFoundError{Key: "k"}}, Unavailable},
 		{"sealed tenant inside a user store error", &user.StoreError{Op: "get", Err: tenant.ErrTenantSealed}, Unavailable},
+		{"tenant update lost to concurrent writers", &tenant.ConcurrentUpdateError{TenantID: "acme", Attempts: 8}, Aborted},
 		{"cross-tenant refusal inside a user store error", &user.StoreError{Op: "get", Err: &tenant.CrossTenantDeniedError{}}, PermissionDenied},
 		{"closed store inside a time-series failure", &service.TimeSeriesError{Op: "write", Err: storage.ErrStorageClosed}, Unavailable},
 		// A node re-sealed at runtime: go-quicraft refuses every store read
@@ -355,6 +356,26 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 			for name, e := range map[string]error{"bare": tc.err, "wrapped": wrapped{tc.err}} {
 				if got := Classify(e); got != tc.want {
 					t.Errorf("%s: got %s, want %s", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestClassify_IsolationPolicyChangeIsFailedPrecondition pins the class of a
+// refused isolation-policy change: a loosening of the cluster floor or of a
+// tenant's own policy depends on the policy in force, as a refused status
+// transition does, and is not an internal fault.
+func TestClassify_IsolationPolicyChangeIsFailedPrecondition(t *testing.T) {
+	for name, err := range map[string]error{
+		"floor loosened":  &tenant.IsolationPolicyChangeError{From: "strict", To: "operator-access"},
+		"tenant loosened": &tenant.IsolationPolicyChangeError{From: "strict", To: "inherit"},
+		"lost the race":   &tenant.IsolationPolicyChangeError{From: "", To: "strict"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for shape, e := range map[string]error{"bare": err, "wrapped": wrapped{err}} {
+				if got := Classify(e); got != FailedPrecondition {
+					t.Errorf("%s: got %s, want %s", shape, got, FailedPrecondition)
 				}
 			}
 		})

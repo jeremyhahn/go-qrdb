@@ -207,6 +207,14 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 		return h.emptyResult()
 	}
 
+	// The connection was authenticated once, when it opened; its tenant may
+	// have been suspended since. Re-admit it before anything below reads or
+	// writes the catalog: sequence DDL and DROP TABLE ... CASCADE act before
+	// the statement's command opens (and admits it again).
+	if err := admitConnection(ctx); err != nil {
+		return nil, wireQueryError(trimmed, err)
+	}
+
 	// PostgreSQL's simple query protocol accepts several statements in one
 	// message. Each is executed in order and the LAST one's result is
 	// returned, which matches what a client sees from PostgreSQL itself
@@ -414,12 +422,16 @@ func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, trans
 	// Build the PreparedStatement with a callback that writes
 	// the collected rows to the DataWriter.
 	stmt := wire.NewStatement(
-		func(_ context.Context, writer wire.DataWriter, _ []wire.Parameter) error {
-			// A statement prepared before a seal is executed after it
-			// only if this check lets it: its rows were read while the
-			// barrier was open.
+		func(execCtx context.Context, writer wire.DataWriter, _ []wire.Parameter) error {
+			// A statement prepared before a seal, or before its tenant's
+			// suspension, is executed after it only if these checks let
+			// it: its rows were read while the barrier was open and the
+			// tenant admitted.
 			if err := h.refuseWhileSealed(); err != nil {
 				return err
+			}
+			if err := admitConnection(execCtx); err != nil {
+				return wireQueryError(trimmed, err)
 			}
 			return writeRows(writer, result, trimmed)
 		},
@@ -1120,6 +1132,21 @@ func beginCommand(sqlCtx *sql.Context) (end func(), err error) {
 	return func() { sql.SessionCommandEnd(sqlCtx.Session) }, nil
 }
 
+// admitConnection re-admits the identity of the connection session ctx
+// carries (QRDBSession.Admit) -- the same admission each command's
+// CommandBegin applies -- for the work a statement does outside its command:
+// a side effect HandleParse applies before the command opens, or rows an
+// eager statement read at Parse and serves at a later Execute. A context with
+// no connection session (HandleParse driven directly, without the server's
+// session middleware) has no admitter to ask.
+func admitConnection(ctx context.Context) error {
+	session := connectionSessionFromContext(ctx)
+	if session == nil {
+		return nil
+	}
+	return session.Admit(ctx)
+}
+
 // buildSQLContext creates a go-mysql-server sql.Context from the connection
 // context. If an auth identity is present, it is carried through via a
 // QRDBSession for tenant-scoped operations. opts are applied to the context
@@ -1196,11 +1223,12 @@ type qrdbSessionContextKey struct{}
 // wire.SessionMiddleware, so IdentityFromContext already reflects whatever
 // identity authentication established by the time the session is built --
 // the identity determines the session's tenant scoping for every statement
-// issued on the connection.
-func newConnectionSessionHandler() wire.SessionHandler {
+// issued on the connection. opts configure each session -- the server passes
+// the admitter that re-admits the identity before every statement.
+func newConnectionSessionHandler(opts ...provider.SessionOption) wire.SessionHandler {
 	return func(ctx context.Context) (context.Context, error) {
 		identity := IdentityFromContext(ctx)
-		session := provider.NewSession(sql.NewBaseSession(), identity)
+		session := provider.NewSession(sql.NewBaseSession(), identity, opts...)
 		return context.WithValue(ctx, qrdbSessionContextKey{}, session), nil
 	}
 }

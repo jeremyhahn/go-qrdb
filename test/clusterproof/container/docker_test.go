@@ -116,6 +116,27 @@ func TestStartBridgeNetwork(t *testing.T) {
 	}
 }
 
+// The gate runs with lease reads on, so every node's start pins them, and
+// the check-quorum they require, as flags: a flag overrides the image's
+// configuration file, which could turn either off.
+func TestStartPinsLeaseReads(t *testing.T) {
+	inv := testInventory(t)
+	r := &fakeRunner{}
+	if err := newTestCluster(t, inv, r).Start(context.Background(), identities(inv)); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.runs) != len(inv.Nodes) {
+		t.Fatalf("%d runs, want %d", len(r.runs), len(inv.Nodes))
+	}
+	for i, run := range r.runs {
+		for _, want := range []string{"--lease-read=true", "--check-quorum=true"} {
+			if !slices.Contains(run, want) {
+				t.Errorf("node %d start argv lacks %q:\n%s", i+1, want, strings.Join(run, " "))
+			}
+		}
+	}
+}
+
 func TestStartRefuses(t *testing.T) {
 	inv := testInventory(t)
 	r := &fakeRunner{}

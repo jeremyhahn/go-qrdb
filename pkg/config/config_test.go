@@ -2442,8 +2442,9 @@ func TestValidate_Auth_DisabledSkipsValidation(t *testing.T) {
 func TestDefaultConfig_CORSDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if len(cfg.CORS.AllowedOrigins) != 1 || cfg.CORS.AllowedOrigins[0] != "*" {
-		t.Errorf("CORS.AllowedOrigins: got %v, want [*]", cfg.CORS.AllowedOrigins)
+	// No default origin: CORS is off until the operator lists one.
+	if len(cfg.CORS.AllowedOrigins) != 0 {
+		t.Errorf("CORS.AllowedOrigins: got %v, want none", cfg.CORS.AllowedOrigins)
 	}
 	if len(cfg.CORS.AllowedHeaders) != 2 {
 		t.Errorf("CORS.AllowedHeaders: got %v, want [Authorization Content-Type]", cfg.CORS.AllowedHeaders)

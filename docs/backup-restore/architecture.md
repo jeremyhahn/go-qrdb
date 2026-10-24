@@ -1,6 +1,6 @@
 # Backup and Restore — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -17,10 +17,13 @@ destination, records a SHA-256 checksum with its metadata, and can be listed,
 inspected, verified and restored — whole or shard by shard.
 
 ```
-create   →  capture shard snapshots  →  compress  →  encrypt  →  destination
+create   →  capture shard snapshots  →  encrypt  →  backup sink
 verify   →  recompute SHA-256        →  compare with the stored checksum
-restore  →  (optionally verify)      →  decrypt   →  decompress → apply to shards
+restore  →  (optionally verify)      →  decrypt  →  apply to shards
 ```
+
+The `Compression` option is validated and recorded in the backup's metadata;
+no compression is applied to shard data.
 
 Selective at both ends: back up specific shards, restore specific shards.
 
@@ -53,17 +56,13 @@ Selective at both ends: back up specific shards, restore specific shards.
   carries **per-shard errors** for an OPERATIONAL import failure (the
   underlying store refused a particular shard) once every shard has
   already passed verification, so a partial import at that layer is
-  reported precisely rather than collapsing into one failure. This is
-  narrower than it first reads, and deliberately so: the VERIFICATION
-  phase -- authenticating and decrypting every target shard against the
-  backup's manifest -- is atomic across the whole restore (see
-  [../key-wrapping/architecture.md](../key-wrapping/architecture.md#envelope-format)).
-  A security review of this feature found the earlier design decrypted and
-  imported shard by shard, so a single tampered shard aborted only that
-  shard while every shard already imported before it stayed imported with
-  no top-level error; restore now verifies every target shard BEFORE
-  importing any of them, and a verification failure anywhere is one typed,
-  top-level `*BackupVerificationFailedError` with nothing imported.
+  reported precisely rather than collapsing into one failure. The
+  VERIFICATION phase -- authenticating and decrypting every target shard
+  against the backup's manifest -- is atomic across the whole restore (see
+  [../key-wrapping/architecture.md](../key-wrapping/architecture.md#envelope-format)):
+  restore verifies every target shard BEFORE importing any of them, and a
+  verification failure anywhere is one typed, top-level
+  `*BackupVerificationFailedError` with nothing imported.
 
 ## Component boundaries
 
@@ -71,13 +70,16 @@ Selective at both ends: back up specific shards, restore specific shards.
 |---|---|---|
 | Backup service, manifest, checksums | `pkg/service` (backup) | go-qrdb |
 | Shard snapshot capture | driven through `pkg/cluster` over **go-quicraft** | go-qrdb / go-quicraft |
-| Destination storage (local paths, S3, GCS, Azure, Glacier) | — | **go-objstore** |
-| Compression and encryption | `pkg/crypto`, `pkg/codec` | go-qrdb |
+| Backup repository (`service.BackupSink`) | `pkg/service/backupsink` over any `storage.Storage`, including the go-objstore backend | go-qrdb / **go-objstore** |
+| Encryption (AES-256-GCM, wrapped DEK) | `pkg/service` (backup), `pkg/keywrap` | go-qrdb |
 | SDK surface | `sdk/go` (`transport.BackupClient`) | go-qrdb |
 
-Destinations are URIs, so a backup can land on a local path
-(`/backups/daily`) or an object store (`s3://bucket/prefix`) with the same call.
-Cloud destinations require the corresponding go-objstore build tag.
+`Destination` is a label recorded with the backup and bound into its
+authenticated data; it does not select where the bytes go. The bytes go to the
+node's backup sink: `qrdbd start --backup-dir <dir>` persists them to a
+file-backed store, and an embedding program injects any `service.BackupSink`
+with `server.WithBackupSink`. With no sink, backups are held in process memory
+and die with the process.
 
 ## Run-mode dependency
 
@@ -100,14 +102,11 @@ This holds only for qrdb's built-in `cakey.SoftwareProvider`; a CA key held
 by an injected HSM/TPM/KMS provider lives on that device and is out of scope
 for a qrdb backup by construction — qrdb never held it to begin with.
 
-**Key A and Key B are protected the SAME way now, and a backup inherits it
-either way.** Both are stored as generated or adopted, with no additional
-AEAD wrap of their own layered on top by `pkg/cakey` — an earlier design
-wrapped each with the writing node's own `seal.EncryptionBarrier` first,
-which made the replicated record undecryptable on every OTHER node
-(barriers are per-node, not shared cluster-wide) and is not how either key
-is protected now (the owner's CA-at-rest ruling). What protects both
-instead: this node's own at-rest storage encryption, when the deployment
+**Key A and Key B are protected the same way, and a backup inherits it.** Both
+are stored as generated or adopted, with no AEAD wrap of their own layered on
+top by `pkg/cakey`: barriers are per-node, so a record wrapped by one node's
+`seal.EncryptionBarrier` would be undecryptable on every other node. What
+protects both: this node's own at-rest storage encryption, when the deployment
 configures one (`pkg/seal/encfs`, transparent below the `kvstore.KVStore`
 this package writes through) protects the on-disk copy; cluster mTLS
 protects it while Raft replicates the write; and under seal strategy
@@ -116,10 +115,8 @@ every other record in that mode. **A raw snapshot of the system shard taken
 under `none`, or taken by reading the underlying storage engine directly
 rather than through a sealed `encfs`-protected mount, is Key A AND Key B in
 the clear.** Encrypt such a backup in transit and at rest by the same
-policy as any other sensitive export (see Trust boundaries below); this is
-not a gap specific to either key so much as a reminder that neither is MORE
-protected than the rest of the system shard, the way an earlier per-record
-wrap made it look.
+policy as any other sensitive export (see Trust boundaries below): neither
+key is more protected than the rest of the system shard.
 
 ## Trust boundaries
 
@@ -183,8 +180,9 @@ wrap made it look.
   whole cluster's trust relationship, regardless of any single tenant's own
   encryption posture.
 - **The checksum is integrity, not authenticity.** SHA-256 detects corruption
-  and truncation. Authenticated encryption (AES-256-GCM) is what detects
-  tampering, and it is opt-in.
+  and truncation. Authenticated encryption (AES-256-GCM, the default) is what
+  detects tampering; a backup created with `Encryption: none` has no
+  tamper detection.
 
 ## What this feature deliberately does not do
 

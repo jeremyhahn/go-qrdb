@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -270,7 +271,9 @@ func (e *CertBindingExpiredError) Error() string {
 // It wraps the original failure (Unwrap returns Cause) so callers matching on
 // the underlying error keep working, while a caller that cares about store
 // consistency can detect this type and escalate rather than treating it as an
-// ordinary failed write.
+// ordinary failed write. Its classification dominates the cause's: through As
+// it is a non-retryable ErrDataLoss even when the cause is a retryable
+// conflict, as it is DataLoss on every wire.
 type IndexCompensationError struct {
 	Op       string
 	UserID   uint64
@@ -288,6 +291,20 @@ func (e *IndexCompensationError) Error() string {
 // Unwrap returns the original failure, so errors.Is/As against the underlying
 // cause still match.
 func (e *IndexCompensationError) Unwrap() error { return e.Cause }
+
+// As lets errors.As match a **dberrors.QRDBError, presenting the failed
+// rollback as a non-retryable ErrDataLoss. errors.As consults it before
+// Unwrap, so a retryable cause such as a lost ConcurrentUpdateError does not
+// make errors.IsRetryable or pkg/retry's default classifier retry it: a retry
+// that succeeded would hide the inconsistent index (go-qrdb#938).
+func (e *IndexCompensationError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrDataLoss, Op: "user." + e.Op, Err: e}
+	return true
+}
 
 // ErrStoreNotAtomic is returned when a user store is asked to claim a unique
 // handle (username or email) but its KVStore cannot do so atomically.
@@ -349,14 +366,12 @@ func (e *HandleContendedError) Error() string {
 // It exists because an unconditional write let two concurrent updates of one
 // user both claim distinct handles and both commit — leaving the loser's handle
 // as a live alias resolving to a record whose canonical value is different.
-type ConcurrentUpdateError struct {
-	ID uint64
-}
-
-// Error returns a human-readable description of the lost race.
-func (e *ConcurrentUpdateError) Error() string {
-	return "user: concurrent update to user " + strconv.FormatUint(e.ID, 10) + "; re-read and retry"
-}
+//
+// It IS the SDK's type -- an alias of transport.UserConcurrentUpdateError --
+// so a caller in-process and a caller over any wire match the same type, and
+// both see a retryable ErrConflict (go-qrdb#938), as UserNotFoundError does
+// for a missing user (#343).
+type ConcurrentUpdateError = transport.UserConcurrentUpdateError
 
 // CommitOutcomeUnknownError reports that a conditional commit returned an error,
 // so it is not known whether the write landed.

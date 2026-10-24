@@ -655,6 +655,12 @@ type Node struct {
 	// barrier encryption, sealed-tenant refusal and teardown.
 	DEK service.DEKServicer
 
+	// Policy is the tenant-scoped ABAC policy store. It is non-nil exactly
+	// when StoreResolver is: each policy is a record in its tenant's
+	// resolved store, so it inherits that store's replication, barrier
+	// encryption and sealed-tenant refusal.
+	Policy service.PolicyServicer
+
 	// KeyspaceReclaim reclaims a dropped database's data from the store it
 	// shares with other databases. It is always non-nil and is already wired
 	// into the database manager; it is exposed so a composer that serves
@@ -1277,6 +1283,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 	}
 
+	// ABAC policy documents ride the same StoreResolver.
+	if n.StoreResolver != nil {
+		policySvc, err := buildPolicyService(n.StoreResolver)
+		if err != nil {
+			return nil, err
+		}
+		n.Policy = policySvc
+	}
+
 	// Wire tenant-driven quota and entitlement enforcement into the database
 	// service now that the tenant service exists. The tenant service is both
 	// the quota.QuotaProvider and the quota.EntitlementChecker; CreateForTenant
@@ -1416,6 +1431,16 @@ func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWr
 	svc, err := service.NewDEKService(keyring)
 	if err != nil {
 		return nil, &DEKServiceError{Err: err}
+	}
+	return svc, nil
+}
+
+// buildPolicyService builds the tenant-scoped ABAC policy store over
+// resolver.
+func buildPolicyService(resolver tenant.StoreResolver) (service.PolicyServicer, error) {
+	svc, err := service.NewPolicyService(resolver)
+	if err != nil {
+		return nil, &PolicyServiceError{Err: err}
 	}
 	return svc, nil
 }
@@ -1714,6 +1739,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	// and one that does not is never left without a lockout.
 	svc.SetPINBackend(pin.NewLockoutBackend(infra.PINBackend))
 	svc.SetQuorumLimiter(QuorumLimitWith(infra.HolderActLimiter))
+	svc.SetClock(infra.Clock)
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
 	return svc, nil
@@ -1896,9 +1922,10 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 		// credential services — tenant CRUD is never invoked during the sealed
 		// window. The replicated, cluster-visible tenant service is built
 		// post-host in BuildServices (buildSealServices); per-tenant barrier
-		// restore at boot uses the barrier registry's own persisted
-		// __registry:tenant_root/ records, not TenantInfo, so this seal-backed
-		// instance is never consulted for tenant resolution.
+		// restore at boot (BarrierRegistry.RestoreVolumeTenants) reads the
+		// volume catalog's Assignments and the registry's own
+		// __registry:tenant_posture/ records, not TenantInfo, so this
+		// seal-backed instance is never consulted for tenant resolution.
 		tenantSvcInst, err := tenant.NewTenantService(
 			infra.SealBarrier, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {

@@ -57,6 +57,15 @@ package permission
 // below registers each in the scope registry.
 func selfScopedPermissions() []Permission {
 	return []Permission{
+		// abac_policies. Each tenant manages its own ABAC policies: the
+		// policy service acts on the caller's own tenant and refuses any
+		// other, the system tenant's included.
+		ABACPoliciesCreate,
+		ABACPoliciesDelete,
+		ABACPoliciesList,
+		ABACPoliciesRead,
+		ABACPoliciesUpdate,
+
 		// acme_accounts
 		ACMEAccountsDisable,
 		ACMEAccountsList,
@@ -95,7 +104,9 @@ func selfScopedPermissions() []Permission {
 		// AuditVerifyReplicated IS here, deliberately unlike AuditVerify: it
 		// verifies one tenant's own independent replicated chain, which is
 		// exactly the tenant-filtered slice AuditVerify's comment says it
-		// lacks.
+		// lacks. AuditDelete is here for AuditQuery's reason: it acts on
+		// the tenant-filtered slice of events the caller's tenant owns.
+		AuditDelete,
 		AuditQuery,
 		AuditRead,
 		AuditStream,

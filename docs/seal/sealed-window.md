@@ -1,6 +1,6 @@
 # Sealed-window endpoint allowlist
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 While the storage barrier is sealed, the daemon serves the unseal call, the
@@ -27,29 +27,30 @@ with no store lookup, and grants nothing past the seal.
 
 ## Activation
 
-The sealed-window middleware is installed automatically whenever
-`barrier.enabled: true` in the daemon's YAML config. The probe is
+The sealed-window gate is installed whenever `seal.enabled: true` in the
+daemon's YAML config (`config.SealConfig.Enabled`). The probe is
 `*seal.StorageBarrier`, threaded through the orchestrator via
-`server.WithSealedWindowProbe(barrier)` and into both REST and gRPC
-protocol servers via the per-protocol options
-`rest.WithSealedWindowProbe` and `grpc.WithSealedWindowProbe`.
+`server.WithSealedWindowProbe(barrier)` and into every protocol server via
+its own `WithSealedWindowProbe` option: REST, gRPC, QUIC, MCP, Unix,
+PostgreSQL and MySQL.
 
-When `barrier.enabled: false` the option is not threaded and the
-middleware is not installed; deployments remain plaintext as before.
+When `seal.enabled: false` the option is not threaded, the gate is not
+installed, and data is stored plaintext.
 
 ## Canonical allowlist (all transports)
 
 The allowlist is defined ONCE, transport-neutrally, in
 `pkg/api/sealedwindow` (`Table` keyed by canonical `Verb`). Each protocol
-transport derives its own list from that table, so the four lists cannot
-drift apart:
+transport derives its own list from that table, so the lists cannot drift
+apart:
 
 | Transport | Derived var | Derivation |
 |---|---|---|
 | REST | `pkg/api/rest.SealedWindowAllowlist` | `sealedwindow.RESTAllowlist()` |
-| gRPC | `pkg/api/grpc.SealedWindowAllowlist` | `sealedwindow.GRPCAllowlist()` |
+| gRPC | `pkg/api/grpc.SealedWindowAllowlist` | `sealedwindow.GRPCFullMethodAllowlist(serviceName)` |
 | QUIC | `pkg/api/quic.SealedWindowAllowlist` | `sealedwindow.QUICAllowlist()` |
 | MCP | `pkg/api/mcp.SealedWindowAllowlist` | `sealedwindow.MCPAllowlist()` |
+| Embedded | `sdk/go/transport/embedded` `embeddedAllowlist` | `sealedwindow.EmbeddedAllowlist()` |
 
 **Every verb on this list is anonymous on the boot-time sealed-window
 listener**, which has no authentication middleware (see
@@ -119,8 +120,8 @@ routes (`POST /v1/barrier/officers/{username}/claim/begin` and
 transport-specific prefix with no transport-neutral verb
 (`sealedwindow.RESTExtra`): `/v1/cluster/`, the cluster peer key transport.
 Its receiver authorizes itself with the node certificate and a placement
-check, and the auth middleware also pre-exempts `/v1/cluster/`
-unconditionally. gRPC entries are fully-qualified
+check, and the auth middleware also exempts its two routes,
+`/v1/cluster/keydelivery` and `/v1/cluster/nodekey`. gRPC entries are fully-qualified
 `/qrdb.v1.QRDBService/<Method>` paths, so a method of the same name on
 another service is not admitted.
 
@@ -140,9 +141,7 @@ request admitted while sealed could still be running when another request
 unseals the barrier, and would finish anonymously against an unsealed
 barrier. The verbs that can take the barrier out of the sealed state are
 marked `Transition`: `barrier-initialize`, `barrier-unseal`,
-`shamir-initialize`, `shamir-unseal-share`, `shamir-unseal-shares`,
-`recovery-recover`, `ceremony-initialize` and
-`ceremony-submit-unseal-share`. Every request on the boot-time listener
+`shamir-initialize`, `quorum-submit` and `ceremony-initialize`. Every request on the boot-time listener
 holds the listener's `sealedwindow.Admission` for its whole duration. A
 `Transition` request holds it exclusively and every other request holds it
 shared, on all transports together. So an unsealing request waits for the
@@ -167,8 +166,7 @@ closes as soon as any of these is true:
   state starts over;
 - the barrier is initialized (`seal.StorageBarrier.Initialized`). Shares are
   distributed at initialization, and every later enrollment (rekey, recovery
-  officers) runs on the authenticated listener. This also covers a node whose
-  ceremony completed before the record existed.
+  officers) runs on the authenticated listener.
 
 A listener with no ceremony service reads enrollment from the barrier alone:
 it is open exactly while the barrier is uninitialized. It fails closed: an
@@ -186,10 +184,10 @@ transport exists only once the node has unsealed, so its barrier is
 initialized and enrollment closed: while sealed it refuses the first-boot
 verbs.
 
-The ceremony enforces the same rule itself. `RegisterOfficer` and
-`RegisterRecoveryOfficer` refuse with `ceremony.ErrEnrollmentClosed` when the
-request is marked anonymous (`sealedwindow.Anonymous`) and enrollment is
-closed. They check this under the ceremony's lock, in the same critical
+The ceremony enforces the same rule itself. `RegisterOfficer`, which enrols
+unseal and recovery holders alike, refuses with `ceremony.ErrEnrollmentClosed`
+when the request is marked anonymous (`sealedwindow.Anonymous`) and enrollment is
+closed. It checks this under the ceremony's lock, in the same critical
 section as the registration. The gate samples enrollment before the request
 runs; this check holds even if enrollment closes in between, and covers any
 path that reaches the ceremony anonymously. The error classifies as
@@ -216,9 +214,8 @@ Never allowlisted, on any transport:
   `barrier.OfficerList`, `qrdb_barrier_officer_list`). It is served
   post-unseal to authenticated callers.
 - **recovery-key generate, delete and status**. Each one refuses while the
-  barrier is sealed (`seal.ErrSealed`), so allowlisting them added only an
-  anonymous destructive surface. Nothing is lost by refusing them at the
-  gate.
+  barrier is sealed (`seal.ErrSealed`), so allowlisting them would add only an
+  anonymous destructive surface.
 - **`/v1/bootstrap/`, `/v1/init/` and `shamir-verify`**. None has a route on
   any transport. A prefix allowlisted over an empty subtree would silently
   exempt whatever is registered there next.
@@ -266,7 +263,8 @@ Retry-After: 5
 | Embedded | `*embedded.BarrierSealedError` (unwraps to `seal.ErrSealed`) |
 
 The Go SDK decodes each of these into `*transport.BarrierSealedError`, tested
-with `transport.IsBarrierSealed`; the CLI prints `transport: barrier sealed`.
+with `transport.IsBarrierSealed`; the CLI prints an error that begins
+`transport: barrier sealed`.
 Every SDK transport's `Connect`, and REST's reachability probe, count the
 refusal as reachable: the node is up and sealed. `Healthy` stays false.
 Readiness waits (`qrdbdharness.IsSealedRefusal`) read it the same way.
@@ -349,15 +347,26 @@ is the Vault model: possession of the unseal credential (passphrase, Shamir
 share, or a hardware-bound authentication context) is itself the
 authorization to drive unseal. Every action is recorded in the audit log.
 
+**No authentication does not mean no certificate verification.** On both
+listeners, and on every transport (REST, gRPC, QUIC, MCP, Unix), the peer's
+TLS state and the listener's chain verifier (the client trust pool, set by
+`server.WithPeerChainVerifier`) are bound to every request outermost, before
+the sealed-window gate and independent of authentication: REST
+`peerTLSMiddleware`, gRPC and Unix `middleware.PeerTLSUnaryInterceptor` /
+`PeerTLSStreamInterceptor`, QUIC `withConnectionState`, MCP
+`authHTTPContext`. A share claim in the sealed window therefore binds the
+caller's certificate only when that chain verifies, exactly as after unseal;
+a merely presented or absent certificate is refused with 401 /
+`Unauthenticated` (`service.ClientCertRequiredError`). See
+[Shamir custody](../shamir-custody/engineering.md).
+
 That is why the allowlist is kept to the verbs that are justified as
 anonymous, and why this listener's gate differs from the regular one: **once
 the barrier is unsealed it refuses every request, allowlisted or not.** It
 samples the barrier on every request, so it does not depend on the 250 ms
-poll that stops the listener. Before this, the gate became a pass-through at
-unseal, and until the poll noticed and `Stop` completed, every route
-registered on the listener ran anonymously against an unsealed barrier. That
-included `DELETE /v1/barrier/recovery` and the credential routes. The
-listener does not start the MySQL or PostgreSQL wire protocols, because
+poll (`sealedWindowPollInterval`) that stops the listener: no route
+registered on it, `DELETE /v1/barrier/recovery` and the credential routes
+included, runs anonymously against an unsealed barrier. The listener does not start the MySQL or PostgreSQL wire protocols, because
 they carry no sealed-window verb.
 
 ### Identity-gated claim routes after unseal
@@ -395,14 +404,10 @@ format detected): qrdb/seal: data dir was created with a
 pre-barrier-refactor version; in-place upgrade is not supported
 ```
 
-The directory is part of the message because this refusal is not
-something the daemon can resolve on its own and not something a
-generic "seal barrier initialization failed" tells an operator how to
-act on: there is no in-place upgrade from pre-encfs data dirs, so the
-only remedy is migrating data through application-level export/import,
-and the operator needs to know which directory to migrate. The error
-unwraps to `seal.ErrLegacyDataDir`, so callers matching the sentinel
-with `errors.Is` are unaffected.
+There is no in-place upgrade from a pre-encfs data dir: the only remedy is
+migrating the data in that directory through application-level
+export/import. The error unwraps to `seal.ErrLegacyDataDir`, so callers
+match it with `errors.Is`.
 
 ## Pre-host listener (boot-time sealed window)
 
@@ -493,8 +498,7 @@ restructures the boot sequence as follows:
    sealed to officers during first-boot Shamir initialization
    would be unclaimable after the boot completes.
 
-When `barrier.enabled: false` (no encfs), the boot skips steps 1-4
-entirely and behaves as before.
+When `seal.enabled: false` (no encfs), the boot skips steps 1-4.
 
 ## Mounting the sealed surface in a host
 

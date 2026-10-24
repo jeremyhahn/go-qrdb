@@ -1,7 +1,7 @@
 # Vector Database — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target design" sections are the vector half of the multi-model database
@@ -28,8 +28,8 @@ its dimensionality, distance metric and index type at creation:
 | Property | Values | Default |
 |---|---|---|
 | dimension | uint32 | — (required) |
-| distance metric | `cosine`, `euclidean`, `dot-product` | `cosine` |
-| index type | `hnsw`, `flat`, `ivf-flat` | `hnsw` |
+| distance metric | `cosine`, `euclidean`, `dot_product` | `euclidean` |
+| index type | `hnsw`, `flat`, `ivf_flat` | `hnsw` |
 
 Four search modes, deliberately distinct rather than one overloaded call:
 
@@ -63,8 +63,7 @@ Index maintenance is explicit and asynchronous: `RebuildIndex` and
 
 ## Current state (measured)
 
-Earlier revisions of this folder described per-shard namespaces and
-barrier-encrypted, tenant-safe storage. The code does this instead:
+Production traffic uses the node-local service:
 
 - **One node-local store for everything.** The vector service is built once per
   node, shared by every tenant and every database on the node, over a Pebble
@@ -72,14 +71,12 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
   regardless of the primary engine's own backend type, since
   `sdk/go/driver/node` deliberately roots even a memory-backend node's
   vector store and database catalog in a real directory when it has one --
-  or an entirely in-memory store (`vectorstorage.MemoryVectorStorage`) when
+  or an in-memory store (`MemoryVectorStorage`, `pkg/storage/vector`) when
   there is no directory at all. **With no directory, `lifecycle.Infra.Backend`
   -- not `DataDir`'s emptiness alone -- decides what happens next**: a
-  node whose primary engine is explicitly `database.BackendMemory` gets the
-  in-memory vector store, exactly as before; any OTHER backend with no
-  directory is a configuration mistake, refused with
-  `*lifecycle.EmptyVectorDataDirError` rather than silently handed one
-  anyway.
+  node whose primary engine is `database.BackendMemory` gets the
+  in-memory vector store; any other backend with no directory is a
+  configuration mistake, refused with `*lifecycle.EmptyVectorDataDirError`.
 - **Isolation is a name prefix.** A database's namespaces are distinguished by
   the `<tenant>/<db>/` prefix the request resolver adds to the namespace name,
   plus a tenant scope the service adds itself.
@@ -98,21 +95,17 @@ barrier-encrypted, tenant-safe storage. The code does this instead:
   builds each stored namespace's index through the same path the lazy
   rebuild uses (`ensureHNSWIndex`): it reads the namespace's own configured
   distance metric back from storage and scans every stored vector into the
-  rebuilt index, rather than registering an empty placeholder that would
-  permanently satisfy the lazy path's "already registered" check. Fixed
-  2026-10-06 (go-qrdb lane 1B restart blocker); before the fix, a namespace
-  that existed at process start came up with an empty index hardcoded to L2
-  regardless of its real metric, and `CreateNamespace`'s non-Raft path
-  carried the identical hardcoded-L2 defect independent of restart.
+  rebuilt index. An empty placeholder would permanently satisfy the lazy
+  path's "already registered" check.
 
 ## Target design — vectors as an engine of the database binding
 
-**Status (2026-10-05): phases 1-2 of 5 shipped, dormant.** The apply-batch
+**Status: phases 1-2 of 5 shipped, dormant.** The apply-batch
 engine foundation and the post-commit ANN index/checkpoint layer below both
 exist in `pkg/engine` and `pkg/vector`, but nothing proposes the opcodes yet
 and the node-local store described in "Current state (measured)" above is
 still what production traffic uses. See
-[engineering.md](engineering.md#status-2026-10-05) for the phase-by-phase
+[engineering.md](engineering.md#status) for the phase-by-phase
 detail.
 
 Vector is an engine of the database, like KV and time series. It has no store,

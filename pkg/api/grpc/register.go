@@ -179,6 +179,11 @@ func WithRegisterDEKService(svc service.DEKServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.dekSvc = svc }
 }
 
+// WithRegisterPolicyService attaches the ABAC policy service for the registered gRPC service.
+func WithRegisterPolicyService(svc service.PolicyServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.policySvc = svc }
+}
+
 // WithRegisterCertProvider attaches a certificate provider for the registered gRPC service.
 func WithRegisterCertProvider(svc cert.CertProvider) RegisterOption {
 	return func(s *qrdbServiceServer) { s.certProv = svc }

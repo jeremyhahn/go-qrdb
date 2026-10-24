@@ -92,6 +92,10 @@ type QRDBSession struct {
 	// -- so a locking statement does not grant and revoke a lease of its
 	// own (see rowlock.Session). SessionEnd revokes it.
 	locks *rowlock.Session
+
+	// admitter re-admits identity before each command (see
+	// WithSessionAdmitter). Nil admits every command.
+	admitter SessionAdmitter
 }
 
 // Compile-time interface assertion: QRDBSession implements
@@ -107,12 +111,51 @@ var _ sqle.TransactionSession = (*QRDBSession)(nil)
 // within this session. base must be non-nil; the returned session shares it
 // rather than copying it, so callers must not reuse a base session across
 // connections.
-func NewSession(base *sqle.BaseSession, identity *auth.Identity) *QRDBSession {
-	return &QRDBSession{
+func NewSession(base *sqle.BaseSession, identity *auth.Identity, opts ...SessionOption) *QRDBSession {
+	s := &QRDBSession{
 		BaseSession: base,
 		identity:    identity,
 		locks:       rowlock.NewSession(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// SessionAdmitter re-admits a session's identity before each of its commands
+// (QRDBSession.CommandBegin). A wire front end authenticates its principal
+// once, at connection, so without one a session outlives a change that would
+// refuse that principal's next authentication -- its tenant's suspension.
+// *authmw.AuthMiddleware satisfies it with AdmitIdentity, the same tenant
+// status gate every other transport's authorization applies.
+type SessionAdmitter interface {
+	AdmitIdentity(ctx context.Context, identity *auth.Identity) error
+}
+
+// SessionOption configures a QRDBSession at NewSession.
+type SessionOption func(*QRDBSession)
+
+// WithSessionAdmitter re-admits the session's identity through a before each
+// command. Without one the identity is admitted once, by whoever built the
+// session: a request-scoped session whose request the chain already
+// authorized needs none.
+func WithSessionAdmitter(a SessionAdmitter) SessionOption {
+	return func(s *QRDBSession) { s.admitter = a }
+}
+
+// Admit re-admits the session's identity through its admitter (see
+// WithSessionAdmitter), returning the admitter's refusal once the identity's
+// tenant is no longer active. CommandBegin calls it for every command; a front
+// end calls it as well before any work it does for a statement outside a
+// command -- a catalog side effect applied before the command opens, or a
+// result read earlier and served to a later execution. A session with no
+// admitter admits every call.
+func (s *QRDBSession) Admit(ctx context.Context) error {
+	if s.admitter == nil {
+		return nil
+	}
+	return s.admitter.AdmitIdentity(ctx, s.identity)
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +483,11 @@ var _ sqle.LifecycleAwareSession = (*QRDBSession)(nil)
 // WriteSet.resetStatements), and the command gets a fresh resolution scope
 // (see statementScope).
 func (s *QRDBSession) CommandBegin() error {
+	// Admission runs before anything opens, so a refused command leaves the
+	// session exactly as it was and needs no CommandEnd.
+	if err := s.Admit(context.Background()); err != nil {
+		return err
+	}
 	if !s.commandOpen.CompareAndSwap(false, true) {
 		return &CommandInProgressError{}
 	}

@@ -1,6 +1,6 @@
 # Configuration — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-12
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-configuration`; coverage row: `test/integration/COVERAGE.md` `[configuration](../../docs/configuration/)`.
@@ -68,15 +68,11 @@ better answer than re-reading the file.
 
 ## Keeping secrets out of the file
 
-Reference a credential instead of embedding a value:
-
-```yaml
-some_secret_field: "credential://smtp-password"
-```
-
-Protected fields **must** carry such a reference; they resolve at boot into
-protected in-memory values. If the reference cannot be resolved, the server
-fails to start rather than continuing with nothing. See
+`qrdbd`'s own file has no field that takes a secret reference, and an unknown
+key such as a made-up `some_secret_field` refuses the file. `credential://` and
+`literal://` references are for an application that embeds qrdb: it resolves
+them in its own configuration at boot, and a field it declares protected stops
+the boot when its reference cannot be resolved. See
 [../credentials/user.md](../credentials/user.md).
 
 ## Choosing where the node listens
@@ -95,9 +91,7 @@ server:
 or `QRDB_SERVER_HOST=127.0.0.1`, or `--host 127.0.0.1`. It applies to all of
 them at once, HTTP/3 included: the QUIC listener binds the host the REST
 listener got, and the daemon refuses to start rather than serve the same API on
-a wider surface than you asked for. Earlier releases took only the port for the
-HTTP/3 listener and bound the wildcard, so a REST server bound to loopback still
-accepted QUIC datagrams on every interface.
+a wider surface than you asked for.
 
 Two hosts that are easy to confuse:
 
@@ -154,10 +148,9 @@ starts: at config load when it comes from the file or the environment, and by
 `start` itself when it comes from the flag.
 
 **Not covered by the budget:** a few things lock memory outside it — sealing a
-secret, Shamir shares submitted during a barrier unseal, and the Noise
-enrollment key, which still uses memguard through go-truststrap. See
+secret, and Shamir shares submitted during a barrier unseal. See
 [cli.md](cli.md#locked-memory-outside-the-budget) for the exact scope and how
-tightly each is bounded. `secure_memory_budget_mib` is therefore not yet a hard
+tightly each is bounded. `secure_memory_budget_mib` is therefore not a hard
 ceiling on every page this daemon locks, which is why the derived budget leaves
 headroom under the host limit.
 
@@ -241,15 +234,16 @@ the config. This check is deliberately separate from ordinary validation, so
 your config file stays valid or invalid independent of which binary reads it.
 
 **A setting seems to have no effect.** Check `qrdb admin capabilities`. The
-usual causes: the run mode forbids it (standalone cannot enable MVCC, watch or
-lease), or the build tag is absent. Config can only ever **narrow** what the
+usual causes: the run mode forbids it (standalone refuses `raft.join` and more
+than one `raft.peers` entry), or the build tag is absent. Config can only ever **narrow** what the
 mode and the binary allow — it can never enable something they forbid, and
 asking is an error rather than a silent no-op.
 
 **You set `server.host` and a listener still answers on every interface.**
-The HTTP/3 listener used to bind the wildcard regardless. On an older build,
-check `ss -ltnup` for a `udp UNCONN *:<port>` line beside the loopback TCP line.
-On a current build the daemon refuses to start rather than reach that state.
+Every API listener binds `server.host`, and the REST server's HTTP/3 sibling
+binds the host its TCP listener got; the daemon refuses to start rather than
+let the two land on different hosts. Check `ss -ltnup` for the process
+answering, and whether the `--host` flag overrides the file.
 
 **You set `QRDB_SERVER_HOST` and nothing changed.** The environment layer is
 part of loading the config file. Pass `--config`, or use `--host`.
@@ -259,22 +253,18 @@ not be — only explicitly-set flags override YAML. If you see this, check wheth
 a wrapper script is passing the flag.
 
 **The server refused to start with "unknown key".** You misspelled a key or a
-section name, or carried one over from an old config that no longer exists
+section name, or the key names no field in this schema
 (the message names the exact path, e.g. `storage.cach_size` or
 `databases[2].protocol`, and the line where it appeared). Fix or remove it —
 the loader refuses the file rather than silently running with that setting
-off. This replaced an earlier behaviour where an unrecognized key loaded with
-no effect and the only symptom was the field it was supposed to set coming
-out at its default.
+off.
 
 **A field you omitted came out as zero.** It should not — omission leaves the
 default. If you see a zero, the file loaded (so the key is real), but check
 whether you meant to set it inside a different section than it landed in.
 
 **Your config was refused with `seal.strategy: must be one of: passphrase,
-shamir, none`.** An older config using `strategy: software` names a strategy
-that no longer exists; change it to `passphrase`, the canonical name for the
-same software-protected strategy.
+shamir, none`.** The value names no seal strategy; set one of the three.
 
 **You want to change something without a restart.** Not possible for
 configuration. Some runtime objects are mutable through their own APIs — per

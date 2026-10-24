@@ -1,6 +1,6 @@
 # Key Wrapping — User Guide
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 > Conflicts with this document are defects. Fix them here first.
 
 This is what actually protects an encrypted backup's contents: a
@@ -154,9 +154,7 @@ plaintext override it is missing a record for simply never happened.
 
 ## There is no "pass the key directly" option
 
-An earlier draft of this feature let you pass the key's bytes straight on
-the command line (`--encryption-key`). That option is gone: a key's bytes
-never ride in a flag value, an environment variable, or over the wire to
+No flag takes the key's bytes on the command line. A key's bytes never ride in a flag value, an environment variable, or over the wire to
 the server — only a NAME does, and the server resolves that name against
 its own, server-side key directory. If you are scripting around a
 secrets manager, have it write the key to a file inside
@@ -165,7 +163,7 @@ rather than injecting the bytes as an argument.
 
 ## Hardware-backed keys (TPM, HSM, cloud KMS)
 
-Not something you configure from the CLI today. A deployment that ships
+Not something you configure from the CLI. A deployment that ships
 with hardware or cloud-KMS key custody (go-xkms-based products) registers
 that backend once, at startup, and from then on `--key-provider <name>`
 selects it the same way `--encryption-key-file` selects the built-in
@@ -175,8 +173,7 @@ have, and it is fully supported — not a fallback.
 
 ## The same KEK also protects the tenant DEK keyring
 
-Everything above is written in terms of backup, the first consumer of this
-key-wrap seam, but the tenant DEK keyring
+Everything above is written in terms of backup, but the tenant DEK keyring
 ([tenant-dek/user.md](../tenant-dek/user.md)) uses the identical
 mechanism for its own per-tenant keys: the same `"software"` provider (a
 SEPARATE directory, `--dek-key-dir`, since the keyring's key reference
@@ -194,8 +191,8 @@ qrdbd start --dek-key-dir /etc/qrdb/dek-keys ...
 
 ## Troubleshooting
 
-**"backups are encrypted by default".** You asked for a backup without a
-key, a key file, or `--encryption none`. Supply one of the three.
+**"backups are encrypted by default".** You asked for a backup without
+`--encryption-key-file` or `--encryption none`. Supply one of the two.
 
 **"no key directory configured".** The daemon was started with no
 `--backup-key-dir`, so the built-in `"software"` provider has nowhere to
@@ -225,7 +222,7 @@ that still requires a human (or an automation that has decided to trust
 this specific backup) to say so on every restore, not merely once at
 create time.
 
-**"key must be exactly 32 bytes" / the key reference was refused.** Your
+**"key reference could not be resolved to a usable key".** Your
 key file is the wrong size, or the value you passed was not a bare file
 name (it contained a path separator, or named a directory or a missing
 file). The error deliberately does not say which — the server never

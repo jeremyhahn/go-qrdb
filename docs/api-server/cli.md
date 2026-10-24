@@ -1,6 +1,6 @@
 # Unified API Server — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 **No `qrdb` verb group.** The unified server is hosting infrastructure: it is
 configured on the daemon and observed through `admin`, not driven by a client
@@ -76,9 +76,3 @@ node, err := node.NewStandaloneNode(ctx, cfg, []server.ServerOption{
 ```
 
 See [engineering.md](engineering.md).
-
-## Parity
-
-Nothing in this feature has a `CommandDefinition`, because nothing here has a
-`qrdb` verb. The parity suite itself is the artefact this feature exists to make
-meaningful: it exercises every capability on every transport.

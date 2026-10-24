@@ -1,6 +1,6 @@
 # Ceremony SDK Exposure
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -41,7 +41,7 @@ awaiting_init --> enrolling --> operational
 ```
 
 `CeremonySignCSR` issues a holder certificate (`so` or `custodian`, never a
-login certificate) under the SO PIN. It is `PreOperationalOnly`, full stop:
+login certificate) under the SO PIN. It is pre-operational only (`sealedwindow.PreOperationalOnly`), full stop:
 `SignCSRInit` (`pkg/ceremony/ceremony.go`) refuses every call unless the
 ceremony state is `enrolling`. The BOOT-TIME sealed listener allows it
 WITHOUT session authentication only during `awaiting_init`/`enrolling`,

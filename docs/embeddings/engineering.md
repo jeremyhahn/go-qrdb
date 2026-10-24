@@ -1,6 +1,6 @@
 # Embedding Service — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -58,7 +58,7 @@ type EmbeddingServicer interface {
 	Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, error)
 	BatchEmbed(ctx context.Context, req *BatchEmbedRequest) (*BatchEmbedResponse, error)
 	ListModels(ctx context.Context, req *ListEmbeddingModelsRequest) (*ListEmbeddingModelsResponse, error)
-	RegisterProvider(name string, provider embedding.Provider) error
+	RegisterProvider(name string, provider EmbeddingProvider) error
 	DeregisterProvider(name string) error
 	Close() error
 }
@@ -74,8 +74,8 @@ Wired into every protocol server with `server.WithEmbedding()`.
 - **Empty `Provider` means the configured `default_provider`; empty `Model`
   means that provider's configured model.** The response always names the model
   actually used, so a caller can record it alongside the vector.
-- **Cache keys are the `(provider, model, text)` tuple.** The same text embedded
-  under two models yields two entries; one is never served for the other.
+- **Cache keys are the `(model, text)` pair.** The same text embedded under two
+  models yields two entries; one is never served for the other.
 - **`Cached` is reported on the response** so a caller can tell a cache hit from
   a provider call.
 - **The cache has no TTL** and is cleared on service shutdown. It retains
@@ -92,8 +92,7 @@ Wired into every protocol server with `server.WithEmbedding()`.
   through `RegisterProvider` — so an out-of-tree provider can be the configured
   default. A name with no provider registered under it is reported at first
   use as `*ProviderNotFoundError` naming it, which is also what a typo in a
-  built-in's name gets. `ErrProviderInvalid` is no longer returned and is kept
-  only so existing matches compile.
+  built-in's name gets.
 
 ## Configuration
 
@@ -101,7 +100,7 @@ Section `embedding`:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `default_provider` | string | `""` | provider used when a request names none |
+| `default_provider` | string | `""` | provider used when a request names none; when empty, such a request fails with `*EmbeddingProviderNotFoundError` |
 | `cache_capacity` | int | `0` | max embeddings in the LRU cache; **0 disables caching** |
 | `providers` | list | `[]` | configured provider endpoints |
 
@@ -109,10 +108,10 @@ Each entry of `providers`:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | unique provider identifier |
-| `base_url` | string | required | OpenAI-compatible base URL |
+| `name` | string | `"default"` | unique provider identifier; a duplicate fails startup |
+| `base_url` | string | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `api_key` | string | `""` | bearer token; empty for unauthenticated endpoints |
-| `model` | string | required | default embedding model name |
+| `model` | string | `text-embedding-3-small` | default embedding model name |
 | `timeout` | string | `"30s"` | per-request timeout, Go duration format |
 | `max_retries` | int | `3` | retries for transient failures (5xx, network) |
 
@@ -128,7 +127,7 @@ embedding:
       max_retries: 3
     - name: "openai"
       base_url: "https://api.openai.com/v1"
-      api_key: "${OPENAI_API_KEY}"
+      api_key: "<openai-api-key>"
       model: "text-embedding-3-large"
       timeout: "60s"
       max_retries: 2
@@ -141,9 +140,9 @@ embedding:
 `cache_capacity: 10000` is the recommended production setting; it reduces both
 token usage and latency.
 
-**`api_key` is secret material.** Supply it through the secret-reference
-resolver rather than as a literal where the deployment allows — see
-[../credentials/](../credentials/).
+**`api_key` is secret material.** It is read from the file as a literal: neither
+`${VAR}` expansion nor the secret-reference resolver applies to it, so the
+config file must be protected as a secret.
 
 ## Error semantics
 
@@ -153,7 +152,7 @@ Source: `pkg/service/embedding_errors.go`.
 |---|---|---|
 | `*EmbeddingProviderNotFoundError` | the requested provider is not registered | **yes** — no substitution |
 | `*EmbeddingProviderRegistrationError` | the provider name is already registered | yes |
-| `*EmbeddingServiceError` | generic embedding generation failure | yes |
+| `*EmbeddingServiceClosedError` | a call after `Close` | yes |
 
 | Condition | Behavior |
 |---|---|
@@ -175,7 +174,10 @@ it produces are persisted only if a caller stores them — see
 - **Provider clients** are exercised against a stub OpenAI-compatible HTTP
   server, not a live model — the tests must not need a GPU or a network.
 - **Error tests** per function, happy path plus error path.
-- **Integration**: embedding parity across transports in the standalone stage.
+- **Integration**: `TestEmbedding_CLI_PerProtocol`
+  (`make integration-test-embeddings`) runs every CLI verb on every transport,
+  on the not-configured refusal path only. `test/integration/api/embedding_rag_test.go`
+  (Docker, a real Ollama sidecar) drives a configured provider end to end.
 
 ## Observability
 
@@ -183,4 +185,3 @@ it produces are persisted only if a caller stores them — see
   input to any cost accounting.
 - `Cached` distinguishes a cache hit from a provider call — the primary signal
   for whether `cache_capacity` is doing anything.
-- Embedding calls are audited through [../audit/](../audit/).

@@ -1,35 +1,26 @@
 # Volume Pools — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
-> Conflicts with this document are defects. Fix them here first. Decisions
-> D1-D10 are ruled; the Phase 1 build is in progress.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 >
-> Each verb below gets a `CommandDefinition` and runs on every transport
-> through the root `--transport` flag, documented in
-> [../key-value/cli.md](../key-value/cli.md#global-flags). `tenant move` and
-> `tenant move-status` are **Phase 2** (decision D5); every other verb here
-> is Phase 1.
+> Each verb below runs on every transport through the root `--transport`
+> flag, documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 Command group: `qrdb volume-pool`. This is a qrdb-owned control-plane group,
-like `cluster` and `rebalance`. Decision D7 in
-[architecture.md](architecture.md#decisions-ruled) rules that it
-joins the locked CLI surface; making that addition is a handbook change
-outside this repository and is tracked there, not here. The tenant verbs
-that touch pools, `tenant create --pool` and `tenant move`, are in the
+like `cluster` and `rebalance`. The tenant verbs that touch pools are in the
 `tenant` group.
 
 Every verb here needs a `system`-tenant identity holding the matching
 `volume_pools:*` permission (see [api.md](api.md)).
 
-Output formats: `--output table` (default) and `--output json`, as elsewhere.
+Output formats: `--output table` (default), `json` or `yaml`, as elsewhere.
 
 Exit codes:
 
 | Code | Meaning |
 |---|---|
 | `0` | success |
-| `1` | the server refused the request; the typed error is printed |
-| `2` | usage error |
+| `1` | the server refused the request, or a usage error; the error is printed |
 
 ## `qrdb volume-pool list`
 
@@ -49,9 +40,9 @@ vault  luks2     4.0 TiB   1.0 TiB   310 GiB 2        2/1/0/0
 
 ## `qrdb volume-pool get <pool>`
 
-Inspects one pool, with one row per node: whether the node maps the pool, the
-provider state, size, free space, how long ago the node reported, and the
-provider's detail text. It also prints the first page of assigned tenants.
+Inspects one pool, with one row per node: the provider state (`unmapped` when
+the node does not map the pool), size, free space, when the node reported, and
+the provider's detail text.
 
 | Argument | Required | Meaning |
 |---|---|---|
@@ -108,8 +99,8 @@ qrdb volume-pool delete scratch
 
 ## `qrdb volume-pool tenants <pool>`
 
-Lists the tenants assigned to a pool, with each one's reservation and measured
-use. Paginated.
+Lists the tenants assigned to a pool, with each one's reservation. Per-tenant
+use is not reported: the `USED` column prints `-`. Paginated.
 
 | Flag | Type | Default | Required | Meaning |
 |---|---|---|---|---|
@@ -124,7 +115,7 @@ qrdb volume-pool tenants fast --page-size 50
 
 ### `qrdb tenant create --pool`
 
-Replaces the removed `--data-root`. It applies to `volume` and `raft` tenants.
+It applies to `volume` and `raft` tenants.
 
 | Flag | Type | Default | Required | Meaning |
 |---|---|---|---|---|
@@ -134,11 +125,9 @@ Replaces the removed `--data-root`. It applies to `volume` and `raft` tenants.
 qrdb tenant create --id big-co --name "Big Co" --isolation-type raft --pool fast
 ```
 
-`--data-root` is removed. Passing it is a usage error (exit `2`): unknown flag.
-
 ### `qrdb tenant set-entitlement --allowed-volume-pools`
 
-A new flag on the existing verb ([multi-tenancy](../multi-tenancy/cli.md)).
+A flag on the verb documented in [multi-tenancy](../multi-tenancy/cli.md).
 
 | Flag | Type | Default | Required | Meaning |
 |---|---|---|---|---|
@@ -149,35 +138,12 @@ qrdb tenant set-entitlement acme --isolation-modes prefix,raft \
      --allow-dedicated-raft --allowed-volume-pools fast,bulk
 ```
 
-### `qrdb tenant move <id>` *(Phase 2, decision D5)*
+### `qrdb tenant get`
 
-Moves a tenant to another pool, offline. The tenant is unavailable for the
-duration of the copy on its slowest serving node.
+Prints `Pool:`, and `Refused:` with the refusal code and message when the
+answering node will not serve the tenant.
 
-| Flag | Type | Default | Required | Meaning |
-|---|---|---|---|---|
-| `--to` | string | — | yes | the target pool; the tenant must be entitled to it and its reservation must fit |
-| `--wait` | bool | `false` | no | block until the move is `cleaned` or fails, printing each state |
-
-```bash
-qrdb tenant move acme --to bulk --wait
-```
-
-### `qrdb tenant move-status <id>` *(Phase 2, decision D5)*
-
-Prints the move journal: state, source and target pools, nodes copied, nodes
-pending, and the last error.
-
-```bash
-qrdb tenant move-status acme
-```
-
-### `qrdb tenant get` / `list`
-
-These now print `Pool:` instead of `DataRoot:`, and `Refused:` with the refusal
-code and message when the answering node will not serve the tenant.
-
-## `qrdbd start --allow-degraded-volume-boot` (decision D10)
+## `qrdbd start --allow-degraded-volume-boot`
 
 This is the daemon's own flag, `cmd/qrdbd`, not the `qrdb` client -- it
 controls what happens when this node's `storage.volume_pools` names a pool
@@ -200,14 +166,12 @@ qrdbd start --config qrdbd.yaml
 # such file or directory;
 # (exit 1)
 
-# Opt in to the old degraded-boot behavior: start anyway, serve what this
-# node can.
+# Start anyway and serve what this node can.
 qrdbd start --config qrdbd.yaml --allow-degraded-volume-boot
 ```
 
 Under `--allow-degraded-volume-boot`, the skip is never silent: it is logged
-at ERROR, visible in `qrdb volume-pool get <pool>` (a `qrdb volume-pool get`,
-not `qrdbd`, verb -- see above), and exported as
+at ERROR, visible in `qrdb volume-pool get <pool>`, and exported as
 `qrdb_volume_pool_ready{pool}` = 0. A request for a database on the skipped
 pool is refused with `pool_unavailable` on every transport (see
 [api.md](api.md)), never a not-found error.

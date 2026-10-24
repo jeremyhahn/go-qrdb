@@ -1,6 +1,6 @@
 # Distributed Locks — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -55,8 +55,7 @@ const lockKeyPrefix = "__sys:lock/"
 Per-(tenant, database) resolution, `pkg/service`:
 
 ```go
-// The fourteenth accessor on service.Registry, with the same arity as the
-// thirteen beside it.
+// On service.Registry.
 LockService(tenant, db string) (LockServicer, error)
 ```
 
@@ -70,9 +69,11 @@ configured, which is the registry-less composition.
 - **`FencingToken` is the MVCC `ModRevision` at acquisition.** Revisions are
   globally ordered and monotonically increasing, so **each successful
   acquisition of a given lock has a strictly higher token than the previous
-  one.** This is the only ordering guarantee a downstream resource needs.
-- **Release and extend both validate the token** against the lock's current
-  `ModRevision`. A stale token is refused with `NotLockHolderError` — this is
+  one.** This is the only ordering guarantee a downstream resource needs. A
+  reentrant re-acquisition returns the token of the first acquisition.
+- **Release and extend both validate the token** against the token stored in
+  the lock record at acquisition. A stale token is refused with
+  `NotLockHolderError` — this is
   what stops a resumed zombie holder from releasing a lock somebody else now
   holds.
 - **Reentrancy is per holder and counted.** With `Reentrant: true`, the same
@@ -80,7 +81,7 @@ configured, which is the registry-less composition.
   lease** rather than granting a new one. The lock must be released the same
   number of times to be fully released. `AcquireCount` is always 1 for
   non-reentrant locks.
-- **`Lock` blocks, `TryLock` does not.** Blocking is implemented as a watch on
+- **`lock.Service.Lock` blocks, `TryLock` does not.** Blocking is implemented as a watch on
   the lock key plus a CAS retry on release, not a poll loop.
 - **TTL expiry releases the lock.** A crashed holder's lock is released by lease
   expiry with no operator action.
@@ -100,22 +101,22 @@ configured, which is the registry-less composition.
   the same name in two namespaces routinely hold the same `int64`. That is
   harmless precisely because the keyspace, not the number, keeps them apart.
 - **A scope that cannot serve a lock is refused, not degraded.** The accessor
-  returns `ServiceNotImplementedError{Service: "lock"}` when the resolved
-  bundle lacks any of transaction, lease, watch or MVCC — a database on a
-  dedicated non-raft store. Mode `standalone` serves locks like raft mode
- ; on its file or objstore backend the lease grant underneath is
-  refused with `CapabilityUnsupportedError`.
+  returns `service.CapabilityUnsupportedError` when the resolved bundle lacks
+  any of transaction, lease, watch or MVCC — a database on a dedicated non-raft
+  store. Mode `standalone` serves locks like raft mode; on its file or objstore
+  backend the lease grant underneath is refused with the same error.
 
 ## Error semantics
 
 | Condition | Error | Fails closed? |
 |---|---|---|
-| `TryLock` on a lock held by another holder | not-acquired result (no lock returned) | n/a — this is the answer |
-| `Lock` exceeds its wait timeout | timeout error | **yes** — never returns a lock it did not acquire |
+| `TryLock` on a lock held by another holder | `LockHeldError` | n/a — this is the answer |
+| `Lock`'s context ends while it waits | `ctx.Err()` (`context.DeadlineExceeded` or `context.Canceled`) | **yes** — never returns a lock it did not acquire |
 | Release or extend with a stale/incorrect token | `NotLockHolderError` | **yes** |
-| Release of a lock that is not held | not-found | yes |
+| Release of a lock that is not held | `LockNotFoundError` | yes |
 | Reentrant release with `AcquireCount > 1` | decrements; lock stays held | n/a |
-| `ttl <= 0` | invalid-argument | yes |
+| `ttl <= 0` | `ErrInvalidTTL` | yes |
+| Empty key | `ErrEmptyKey` | yes |
 | Missing `locks:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
 
@@ -130,10 +131,11 @@ underlying lease behaviour is described in
 
 ## Persistence
 
-Lock state is a record under `__sys:lock/<key>` holding the holder, lease ID,
-reentrancy flag and acquire count. The fencing token is not stored separately —
-it *is* the record's `ModRevision`, which is why it cannot drift from the
-store's ordering.
+Lock state is a JSON record under `__sys:lock/<key>` (`lockValue` in
+`pkg/lock/types.go`) holding the holder, reentrancy flag, acquire count,
+acquisition time, lease ID, TTL and fencing token. The stored token is the
+`ModRevision` of the acquiring write; a reentrant update rewrites the record
+and keeps it.
 
 ## Test strategy
 
@@ -144,9 +146,7 @@ store's ordering.
   data plane — an MVCC engine over in-memory storage with a real lessor and
   watch hub — through the registry accessor, under all three isolation types
   (`prefix`, `volume`, `raft`), and asserts each of denial, disclosure (List,
-  Status and `LockHeldError.HolderID`) and fencing-token semantics. `volume`
-  and `raft` were sound before the accessor existed; they are in the matrix so
-  the fix is shown not to have narrowed to the mode that was broken. It also
+  Status and `LockHeldError.HolderID`) and fencing-token semantics. It also
   asserts the inverse — two holders INSIDE one tenant still contend — because
   isolation bought by making the lock stop locking would pass every other
   assertion.
@@ -159,22 +159,18 @@ store's ordering.
 - **No `time.Sleep`.** Blocking acquisition and TTL expiry are driven through
   the watch and clock seams with channels and waitgroups, per the repo rule.
 - **Error tests** for each function, minimum happy path plus error path.
-- **Integration**: lock parity across transports in the standalone stage.
-  Contention across nodes and lock survival through a leader change belong to
-  the cluster stage (`make integration-test-cluster`). CI runs that stage's
-  tests in the `integration-features` job (`.github/workflows/ci.yml`), one leg per feature (`make integration-test-<feature>`), required by
-  `ci-gate`.
-
-## Known documentation drift
-
-`docs/18-distributed-locking.md` documents the REST paths as `/v1/lock/*`. The
-code registers them **unversioned** (`/lock/acquire`, `/lock/trylock`,
-`/lock/release`, `/lock/extend`, `/lock/status`, `/lock/list`). The code is
-correct; [api.md](api.md) records the real paths.
+- **Integration**: `TestLock_CLI_PerProtocol` (`lock_cli_test.go`, below)
+  drives every verb on every network transport against a self-spawned node.
+  The Docker suite `test/integration/api/cli_lock_test.go`
+  (`make integration-test-standalone` / `make integration-test-cluster`) adds
+  lifecycle, contention, fencing-token, reentrant and list tests per protocol.
+  No test covers contention across nodes or a lock surviving a leader change.
 
 ## Observability
 
-- Acquire, release, extend and expiry are audited through [../audit/](../audit/).
+- Each lock verb's authorization decision is audited as an `auth.authorize`
+  event carrying its `locks:*` permission ([../audit/](../audit/)). There is
+  no lock-specific audit event.
 - Lock acquisition and release appear as key events under `__sys:lock/` and are
   therefore not visible on a user watch — use `qrdb lock list` for visibility.
   `qrdb lock list` shows the caller's own `(tenant, database)` scope only.

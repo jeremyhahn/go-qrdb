@@ -76,6 +76,7 @@ func TestSDK_PermissionReexport_IdentityRBACAuditRead(t *testing.T) {
 		{sdk.PermissionAuditRead, permission.AuditRead, "audit:read"},
 		{sdk.PermissionAuditQuery, permission.AuditQuery, "audit:query"},
 		{sdk.PermissionAuditStream, permission.AuditStream, "audit:stream"},
+		{sdk.PermissionAuditDelete, permission.AuditDelete, "audit:delete"},
 	}
 	for _, tc := range cases {
 		if tc.sdkValue != tc.pkgValue || string(tc.sdkValue) != tc.want {

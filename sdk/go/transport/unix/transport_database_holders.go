@@ -84,6 +84,9 @@ func (t *Transport) DatabaseBarrierQuorumSubmit(ctx context.Context, req *transp
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	return t.databaseHolders().QuorumSubmit(ctx, req)
 }
 

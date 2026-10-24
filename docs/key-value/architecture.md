@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -25,7 +25,7 @@ transports that admit requests to it:
         state machine                 pebble | memory | mvcc  (raft.sm_type)
               |                       replicated through Raft when clustered
               v
-        storage backend               pebble | file | memory  (storage.backend)
+        storage backend               pebble | file | memory | objstore  (storage.backend)
 ```
 
 The state machine decides *what history is kept*; the storage backend decides
@@ -39,7 +39,7 @@ backend is the production default.
 - **One monolithic engine with a durability flag.** Rejected: revision history
   and byte placement have genuinely different lifetimes. Compaction policy
   belongs to the state machine; fsync policy belongs to the backend. Fusing
-  them made every new backend re-implement MVCC.
+  them would make every new backend re-implement MVCC.
 - **MVCC always on.** Rejected: revision history costs storage and compaction
   work that the majority of consumers (config keys, service registries, lock
   metadata) never read. `raft.sm_type: pebble` is the default precisely because
@@ -59,11 +59,11 @@ backend is the production default.
 | Request semantics, scope | `pkg/service` | go-qrdb |
 | KV operations | `pkg/kv` | go-qrdb |
 | MVCC engine, revision encoding, compaction | `pkg/mvcc` | go-qrdb |
-| Storage engines (file / memory / pebble / namespace) | `pkg/storage` | go-qrdb |
+| Storage engines (file / memory / pebble / objstore) | `pkg/storage` | go-qrdb |
 | Consistency levels and read routing | `pkg/consistency`, `pkg/routing` | go-qrdb |
 | Write durability modes | `pkg/writemode` | go-qrdb (re-exports go-quicraft's) |
 | Raft replication, log, snapshots | — | **go-quicraft**; qrdb implements its state-machine interface |
-| Object-storage backends and the pool primitive | — | **go-objstore**; reached via `pkg/storage/pool` |
+| Object-storage backends | — | **go-objstore**; reached via `pkg/storage/objstore` |
 | SDK surface | `sdk/go` (`Client.KV()`, `Client.MVCC()`) | go-qrdb |
 
 ## Data flow
@@ -99,10 +99,6 @@ Embedded mode collapses steps 1–2 into a Go call -- the embedded transport
 still runs step 3 against its own operation-to-permission map -- and, in
 single-node configuration, steps 4–5 into a direct apply.
 
-*(Corrected: this document placed permission checks in `service.KVServicer`
-and ran the RBAC check after the servicer lookup. The decision has always been
-made in each transport's authorize step, before the service.)*
-
 ## Trust boundaries
 
 - **Tenant partitioning is keyspace-level and enforced server side.** The
@@ -112,8 +108,9 @@ made in each transport's authorize step, before the service.)*
   writes closed rather than serving ciphertext or plaintext.
 - **The internal namespace is hidden from enumeration and from restore.**
   `service.IsInternalKey` is the single predicate; the reserved prefixes are
-  `__sys:`, `__tbl:`, `__idx:`, the table-sequence prefix, `ts:`,
-  `idx:metric:`, `idx:tag:` and `retention:`. A bulk `List`/`Scan` is filtered
+  `__sys:`, `__tbl:`, `__idx:`, `__seq:`, `__tblgen:`, `__reclaim:job/`,
+  `__reclaim:index/`, `ts:`, `idx:metric:`, `idx:tag:`, `retention:` and
+  `__vec:`. A bulk `List`/`Scan` is filtered
   and a restore that names one is refused outright.
 - **The guard is read-side only, deliberately.** There is no write refusal on
   reserved prefixes, because every internal subsystem — RBAC, tenants,
@@ -146,7 +143,7 @@ assertion. A transport gets the assertion only once its wire contract carries
 the verbs; until then `client.(GuardedKVClient)` correctly reports false and a
 consumer knows to look elsewhere. Answering the assertion without the atomicity
 would be worse than refusing it — the consumer would build a lock on top of
-something that never decided anything. Every transport the SDK ships now
+something that never decided anything. Every transport the SDK ships
 carries them: embedded, gRPC, unix, QUIC, REST and MCP.
 
 ### A database with its own store arbitrates too
@@ -166,8 +163,8 @@ differs is only what the contract has to survive — replica divergence on one
 path, an interleaved local writer on the other.
 
 The one backend that still refuses is the **remote proxy**, whose wire protocol
-does not carry the verbs. It fails with
-`database: backend does not support atomic conditional writes` rather than
+does not carry the verbs. It does not implement `database.AtomicBackend`, so a
+guarded verb fails closed with `kvstore.ErrAtomicWriteUnsupported` rather than
 reading and then writing, for the reason the transport assertion exists: a
 `Get` followed by a `Put` returns the same booleans and arbitrates nothing.
 
@@ -188,8 +185,7 @@ database can ask for it.
 
 The reason is the shared shard. Every prefix-isolated tenant's databases live
 in one MVCC store, whose revision counter is store-global. A compaction that
-discarded every key's history below a revision -- what `Compact` did before
-this rule -- destroyed the time-travel history of every tenant on the store,
+discarded every key's history below a revision would destroy the time-travel history of every tenant on the store,
 whoever asked for it. There is no tenant for whom that is acceptable, the
 platform operator included: no one compacts another tenant's history.
 
@@ -232,8 +228,7 @@ GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
   (`admin:node_compaction`, `ScopeCross`: the system tenant alone) on every
   transport and kept, like a database's, as a replicated record in the shared
   store (engineering.md "Node-keyspace compaction"). That compaction skips
-  every key with a database namespace by construction. *(Corrected: it was a
-  key in each node's configuration file with no API.)*
+  every key with a database namespace by construction.
 - **Nothing compacts unless the owner asked.** Compaction runs on an explicit
   `Compact` request from the owning tenant, or on the database's own
   scheduled-compaction policy, which is off unless that tenant configured one
@@ -247,7 +242,7 @@ GetAtRevision("beta/app/k", 850)  -> served      (no floor for "beta/app/")
   continues the schedule, retention clock included, and nothing about it is
   lost with a node. No node-local copy exists: not the catalog, not a file.
 
-The commands that carry it are new Raft opcodes -- `OpMVCCCompactPrefix`
+The commands that carry it are the Raft opcodes -- `OpMVCCCompactPrefix`
 (14) and `OpCompactionState` (16) -- emitted only once the cluster feature
 gate reports that every replica of the group applies them
 (`featuregate.PrefixCompaction`). A replica that did not would refuse the
@@ -255,7 +250,7 @@ entry while its peers applied it.
 
 ### Alternatives rejected
 
-- **Reserve compaction to the system tenant** (the previous rule). Rejected:
+- **Reserve compaction to the system tenant.** Rejected:
   the system tenant compacting the shared store still destroys every tenant's
   history, which is a cross-tenant act no role may perform.
 - **A revision counter per database.** Rejected: revisions are the shard's

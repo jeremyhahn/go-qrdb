@@ -27,6 +27,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -52,13 +54,24 @@ type Host struct {
 	index uint64
 }
 
-// New opens a real MVCC state machine in a test-scoped directory and returns
-// a Host over it. The machine is closed when the test ends.
+// dir is the directory the machine opens on its in-memory filesystem. Each
+// Host has a filesystem of its own, so every Host can use the same name.
+const dir = "/mvcchost"
+
+// New opens a real MVCC state machine on an in-memory Pebble filesystem of
+// its own and returns a Host over it: nothing is written to the host's disk.
+// The machine is closed when the test ends.
 func New(t testing.TB) *Host {
 	t.Helper()
-	machine := store.NewMVCCStateMachine(nil)
+	return open(t, vfs.NewMem())
+}
+
+// open opens the machine on fs, the seam a test uses to make the open fail.
+func open(t testing.TB, fs vfs.FS) *Host {
+	t.Helper()
+	machine := store.NewMVCCStateMachine(&pebble.Options{FS: fs})
 	ctx := context.Background()
-	if _, err := machine.Open(ctx, t.TempDir(), make(chan struct{})); err != nil {
+	if _, err := machine.Open(ctx, dir, make(chan struct{})); err != nil {
 		t.Fatalf("mvcchost: open MVCC state machine: %v", err)
 	}
 	t.Cleanup(func() { _ = machine.Close(ctx) })

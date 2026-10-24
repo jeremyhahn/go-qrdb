@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -61,5 +62,37 @@ func TestDecodeErrorResponse_conflictWithoutCodeStaysPlain(t *testing.T) {
 	}
 	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != http.StatusConflict {
 		t.Fatalf("err = %T %v, want a RequestError carrying 409", got, got)
+	}
+}
+
+func TestDecodeErrorResponse_userConcurrentUpdateRefusalIsTyped(t *testing.T) {
+	want := &transport.UserConcurrentUpdateError{ID: 42}
+	resp := conflictResponse(t, transport.ErrorResponse{
+		Error: want.Error(), Code: transport.ReasonUserConcurrentUpdate, Metadata: want.Metadata(),
+	})
+	defer func() { _ = resp.Body.Close() }()
+	got := (&Transport{}).decodeErrorResponse("UpdateUser", resp)
+
+	refusal, ok := errors.AsType[*transport.UserConcurrentUpdateError](got)
+	if !ok || *refusal != *want {
+		t.Fatalf("refusal = %+v, want %+v", refusal, want)
+	}
+	if !dberrors.Is(got, dberrors.ErrConflict) || !dberrors.IsRetryable(got) {
+		t.Fatalf("err = %v, want a retryable ErrConflict", got)
+	}
+	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != http.StatusConflict {
+		t.Fatalf("err = %T, want a RequestError carrying 409", got)
+	}
+}
+
+func TestDecodeErrorResponse_conflictWithoutCodeIsNotARetryableConflict(t *testing.T) {
+	resp := conflictResponse(t, transport.ErrorResponse{Error: "aborted"})
+	defer func() { _ = resp.Body.Close() }()
+	got := (&Transport{}).decodeErrorResponse("UpdateUser", resp)
+	if _, ok := errors.AsType[*transport.UserConcurrentUpdateError](got); ok {
+		t.Fatalf("err = %v decoded a refusal the body does not carry", got)
+	}
+	if dberrors.IsRetryable(got) {
+		t.Fatalf("err = %v is retryable without the refusal", got)
 	}
 }

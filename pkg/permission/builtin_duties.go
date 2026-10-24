@@ -138,7 +138,7 @@ func registerGovernanceDuties() {
 		// Tenant administration.
 		TenantsCreate, TenantsRead, TenantsUpdate,
 		TenantsDelete, TenantsList,
-		TenantsSetIsolation, TenantsSetEntitlements,
+		TenantsSetIsolation, TenantsSetEntitlements, TenantsSetStatus,
 		// Key lifecycle — creation, rotation, destruction, inventory, and key
 		// entry/output. Never key use: the crypto verbs of the same family are
 		// declared DutyCryptoUse above. keys:rotate is declared here even
@@ -158,8 +158,8 @@ func registerGovernanceDuties() {
 		// the token, not use of its keys (piv:use is DutyCryptoUse).
 		PINRead, PINWrite,
 		PIVRead, PIVWrite, PIVDelete,
-		// Audit oversight.
-		AuditRead, AuditQuery, AuditVerify, AuditVerifyReplicated,
+		// Audit oversight and retention administration.
+		AuditRead, AuditQuery, AuditDelete, AuditVerify, AuditVerifyReplicated,
 		// Cluster and node control.
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,

@@ -26,6 +26,9 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	auth.ReasonFactorConditionFailed: func(md map[string]string) error {
 		return auth.FactorConditionFailedFromMetadata(md)
 	},
+	ReasonUserConcurrentUpdate: func(md map[string]string) error {
+		return UserConcurrentUpdateFromMetadata(md)
+	},
 }
 
 // RefusalError returns the typed error a structured refusal names, or nil

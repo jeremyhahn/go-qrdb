@@ -1301,8 +1301,11 @@ func TestBuildTLSConfig_PrebuiltConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig: unexpected error: %v", err)
 	}
-	if got != customCfg {
-		t.Fatal("expected the pre-built TLSConfig to be returned unchanged")
+	if got == customCfg {
+		t.Fatal("expected a clone of the pre-built TLSConfig, got the caller's pointer")
+	}
+	if got.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %#x, want %#x", got.MinVersion, tls.VersionTLS12)
 	}
 }
 

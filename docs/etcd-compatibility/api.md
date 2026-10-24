@@ -1,6 +1,6 @@
 # etcd Compatibility — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 This feature is **not** one of the six qrdb transports. It is a separate,
@@ -13,17 +13,18 @@ unchanged.
 | Property | Value |
 |---|---|
 | Protocol | etcd v3 gRPC (`etcdserverpb`) |
-| Scope | **one listener per database** with `etcd: enabled` |
+| Scope | **one listener per database** with `etcd.enabled: true` |
 | Listen address | `databases[].etcd.listen_addr`, required when enabled (no daemon default; `qrdb database create --etcd` defaults it to `localhost:2379`) |
 | Advertised URLs | `databases[].etcd.advertise_client_urls` |
 | Authentication | **mTLS only**, per RPC, through the node's authenticator chain; the caller must belong to the database's owning tenant; the system tenant is no exception (there is no cross-tenant database access) |
 | Build tag | `qrdb_etcd` |
 
-TLS and auth must both be enabled, the node must run in mode `raft`, and the
-database `engine` must be `kv` -- any `backend` serves it -- or the listener
-refuses to start. *(Corrected 2026-10-03: `backend: raft` was documented as
-required here too; see "Requirements" below, which already carried the
-correction.)*
+The listener refuses to start without TLS and the node's authentication
+(`etcd.AuthRequiredError`), without a database catalog and service registry to
+confine it (`etcd.ScopeUnavailableError`), on a standalone node
+(`service.CapabilityUnsupportedError`), or when the shard's state machine keeps
+no MVCC revision history (`etcd.RevisionHistoryRequiredError`; set
+`raft.sm_type: mvcc`). Any database `backend` serves it.
 
 ## RPC coverage
 
@@ -32,7 +33,7 @@ correction.)*
 | `KV` | `Range` | `MVCCKVService.Range` / `GetRevision` | `kv:range` |
 | `KV` | `Put` | `MVCCKVService.PutWithLease` | `kv:put` |
 | `KV` | `DeleteRange` | `MVCCKVService.Delete` | `kv:delete` |
-| `KV` | `Txn` | `TransactionService.Execute` | `transaction:execute` |
+| `KV` | `Txn` | compares through `MVCCKVService.GetRevision`, then the chosen branch's ops as above; `Unimplemented` when the database has no `TransactionService` | `transaction:execute` |
 | `KV` | `Compact` | `MVCCKVService.Compact` (this database only) | `mvcc:compact` |
 | `Watch` | `Watch` | `WatchService.Watch` / `WatchPrefix` | `watch:watch_prefix` |
 | `Lease` | `LeaseGrant` | `LeaseService.Grant` | `lease:grant` |
@@ -43,22 +44,10 @@ correction.)*
 | `Cluster` | `MemberList` | `AdminService.Peers` | `admin:peers` |
 | `Maintenance` | `Status` | current revision | `admin:status` |
 | `Maintenance` | `Alarm` | — | `admin:status`; returns no alarms |
-| `KV` | `RangeStream` | — | **unimplemented**: `codes.Unimplemented` from the embedded `etcdserverpb.UnimplementedKVServer`, not a permission refusal |
-| every other RPC — `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` before any handler runs |
+| every other RPC — `KV.RangeStream`, `Auth.*`, member changes, `Defragment`, `Snapshot`, `Hash`, `HashKV`, `MoveLeader`, `Downgrade` | | — | **refused** with `PERMISSION_DENIED` (`etcd.MethodNotAllowedError`) before any handler runs |
 
-`KV.RangeStream` is a server-streaming RPC the `etcdserverpb.KV` service gained
-in etcd v3.7 (a long-lived range read delivered incrementally rather than in
-one response). `pkg/api/etcd`'s `kvServer` embeds
-`etcdserverpb.UnimplementedKVServer` and does not override it, so a client
-that calls it gets `codes.Unimplemented` — distinct from every RPC in the row
-below, which this listener recognizes and actively refuses. A client wanting
-a long-running range read uses `Range` with its existing pagination
-(`RangeRequest.limit` and the returned `more` flag), as every client does
-against this listener today.
-
-The listener refuses to start without TLS and the node's authentication
-(`etcd.AuthRequiredError`) or without a database catalog and service registry
-to confine it (`etcd.ScopeUnavailableError`).
+A long range read uses `Range` with `RangeRequest.limit` and the returned
+`more` flag.
 
 ## Key namespacing
 
@@ -87,8 +76,7 @@ Each etcd listener serves exactly one database, and a client can neither see nor
 change another database's keys, watches or leases through it. Revisions are
 those of the store serving the database — store-global on the shared shard, and
 per group for a raft-isolated tenant — so they do not start at 1 per database
-on the shared shard. *(Corrected: this section previously claimed a per-database
-counter starting at 1.)*
+on the shared shard.
 
 ## Kubernetes
 
@@ -104,9 +92,9 @@ kube-apiserver \
 
 **Requirements:**
 
-- The database needs only `etcd: enabled`. Any backend serves it: the listener resolves the database through the service registry. *(Corrected twice: `backend: raft` was documented as required and was neither required nor checked; and this requirement previously also read `engine: kv`, refusing any other engine with `database.EtcdEngineUnsupportedError` -- Lane 1C deleted the `engine` concept and that error entirely, OD-12/OD-13, so etcd now serves any database regardless of what it stores.)*
+- The database needs only `etcd.enabled: true`. Any backend serves it: the listener resolves the database through the service registry.
 - The node must run in mode `raft`: the etcd listener is a raft-only surface (`capabilities.Etcd`), and a standalone node's listener refuses to start (`service.CapabilityUnsupportedError`, "requires mode: raft").
-- The `sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions).
+- `raft.sm_type` must be `mvcc` (Kubernetes requires MVCC semantics: revisions, watches, leases, transactions); on any other state machine the listener refuses to start (`etcd.RevisionHistoryRequiredError`).
 - mTLS must be enabled with certificates signed by the same CA as the `kube-apiserver` client certificate.
 - The RBAC role assigned to the Kubernetes client certificate must include `kv:range`, `kv:put`, `kv:delete`, `transaction:execute`, `watch:watch_prefix`, `admin:status` and `lease:*` permissions, and must be issued to a user of the tenant that owns the database. Add `mvcc:compact` if the client compacts (`kube-apiserver` does): it compacts that database's history only.
 
@@ -118,14 +106,13 @@ kube-apiserver \
 - Leader election via `Lease.LeaseGrant` + `KV.Txn` (compare-and-swap)
 - Compaction via `KV.Compact` (triggered by `kube-apiserver` periodically)
 
-
 ## Errors
 
 etcd's own error semantics are preserved: a compacted revision produces etcd's
 compacted-revision error, a failed `Txn` returns `succeeded: false` rather than
 an error, and an authorization failure surfaces on the RPC rather than at
-connection time. Every `Auth` RPC, and every other RPC without a permission mapping, is refused with `PERMISSION_DENIED`.
+connection time.
 
 ## Versioning
 
-etcd v3 only. There is no v2 API and none is planned.
+etcd v3 only. There is no v2 API.

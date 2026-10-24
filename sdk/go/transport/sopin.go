@@ -220,8 +220,12 @@ func ConfiguredHost(address string) string {
 // Every hop is checked, because an http.Client calls RoundTrip again for each
 // redirect it follows: a PIN-bound request whose hop is plaintext is refused
 // with *SOPINRequiresTLSError, and one whose hop names another host with
-// *SOPINForeignHostError, before anything is sent. A request without a bound
-// PIN passes through untouched.
+// *SOPINForeignHostError, before anything is sent. A request whose context
+// GuardBarrierSecret marked, because its body carries a barrier secret, is
+// refused on a plaintext hop the same way, with the error
+// RequireTLSForBarrierSecret returns, and on a redirect to a host other than
+// the one it was first sent to with *BarrierSecretForeignHostError. A request without a bound PIN or a
+// marked secret passes through untouched.
 func SOPINRoundTripper(base http.RoundTripper, transportName, configuredHost string) http.RoundTripper {
 	return &soPINRoundTripper{base: base, transport: transportName, host: configuredHost}
 }
@@ -234,6 +238,11 @@ type soPINRoundTripper struct {
 
 // RoundTrip implements http.RoundTripper.
 func (rt *soPINRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if kind, marked := barrierSecretInContext(req.Context()); marked {
+		if err := barrierSecretHopError(rt.transport, kind, req); err != nil {
+			return nil, err
+		}
+	}
 	pin, ok, err := SOPINFromContext(req.Context())
 	if err != nil {
 		return nil, err

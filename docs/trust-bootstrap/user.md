@@ -6,7 +6,7 @@
 How a client that has never spoken to a server gets a CA bundle it can actually
 trust.
 
-**Read this first:** the `qrdb bootstrap` verbs do not work yet. Every one of
+**Read this first:** the `qrdb bootstrap` verbs do not work. Every one of
 them exits with a "pending backend" error — the implementation lives in
 go-xkms, and qrdb carries the command shape so the surface matches across the
 stack's tools. Everything below about *obtaining* a bundle by hand does work.
@@ -26,7 +26,7 @@ trusted fact to you by a different route:
 | `direct` | the CA bundle itself, copied by an operator |
 | `auto` | whichever of the above is available, strongest first |
 
-## Getting a bundle today
+## Getting a bundle
 
 **Copy it out of band.** The most direct and, done properly, entirely sound
 approach: get `ca.pem` from the server's data directory by a channel you already
@@ -39,7 +39,7 @@ curl -k https://db.example.com/v1/ca/bootstrap -o ca-bootstrap.pem
 sha256sum ca-bootstrap.pem       # compare against a fingerprint you were given
 ```
 
-That endpoint only exists if the deployment configured a bootstrap certificate;
+That endpoint only exists if the server has a bootstrap bundle to serve;
 otherwise you get a 404. And note the `-k`: you are downloading over an
 unverified connection, so the fingerprint comparison **is** the security. Skip
 it and you have trust-on-first-use with no verification.
@@ -68,8 +68,9 @@ has anything.
 command shape exists so it matches the other tools in the stack; the backend
 that implements it is in go-xkms. Obtain the bundle by hand as above.
 
-**`/v1/ca/bootstrap` returns 404.** The deployment has not configured a
-bootstrap certificate, so the route is not registered at all. Get `ca.pem` out
+**`/v1/ca/bootstrap` returns 404.** The server has no bootstrap bundle to
+serve (a node started on explicit TLS files serves none), so the route is not
+registered at all. Get `ca.pem` out
 of band instead.
 
 **You are not sure whether the bundle you downloaded is the right one.** Then

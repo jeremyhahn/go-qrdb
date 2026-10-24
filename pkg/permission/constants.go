@@ -335,6 +335,28 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// ABAC policy management permissions
+//
+// An ABAC policy (pkg/auth/abac) is a tenant-scoped record stored in qrdb.
+// All five are ScopeSelf (self_scope.go), and the policy service acts on the
+// caller's own tenant only, so a grant held in one tenant reads and writes
+// that tenant's policies and no other's, the system tenant's included.
+// ---------------------------------------------------------------------------
+
+const (
+	// ABACPoliciesCreate grants access to create an ABAC policy.
+	ABACPoliciesCreate Permission = "abac_policies:create"
+	// ABACPoliciesRead grants access to read an ABAC policy document.
+	ABACPoliciesRead Permission = "abac_policies:read"
+	// ABACPoliciesList grants access to list ABAC policy documents.
+	ABACPoliciesList Permission = "abac_policies:list"
+	// ABACPoliciesUpdate grants access to replace an ABAC policy document.
+	ABACPoliciesUpdate Permission = "abac_policies:update"
+	// ABACPoliciesDelete grants access to delete an ABAC policy.
+	ABACPoliciesDelete Permission = "abac_policies:delete"
+)
+
+// ---------------------------------------------------------------------------
 // Certificate management permissions
 // ---------------------------------------------------------------------------
 
@@ -668,6 +690,11 @@ const (
 	AuditRead Permission = "audit:read"
 	// AuditQuery grants access to query audit events with filtering.
 	AuditQuery Permission = "audit:query"
+	// AuditDelete grants access to delete audit events under retention
+	// administration. Granted to SO and Admin, never to Auditor: the role
+	// that reviews the trail does not also remove from it (FIPS 140-3
+	// role separation).
+	AuditDelete Permission = "audit:delete"
 	// AuditStream grants access to stream audit events in real time.
 	AuditStream Permission = "audit:stream"
 	// AuditVerify grants access to verify the audit log's tamper-evidence
@@ -742,6 +769,11 @@ const (
 	// quotas (max databases, keys, storage bytes, etc.). This is a privileged
 	// plan-management operation exercisable only by system administrators.
 	TenantsSetQuotas Permission = "tenants:set_quotas"
+
+	// TenantsSetStatus grants access to change a tenant's status (active,
+	// suspended, disabled). A system-admin control-plane operation: a
+	// suspended or disabled tenant cannot reactivate itself.
+	TenantsSetStatus Permission = "tenants:set_status"
 
 	// TenantBarrierInit grants a tenant admin the ability to initialize
 	// their own tenant's barrier with a caller-supplied passphrase. This
@@ -1119,6 +1151,14 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "ABAC Policy Management",
+		Group: "Management Services",
+		Permissions: []Permission{
+			ABACPoliciesCreate, ABACPoliciesRead, ABACPoliciesList,
+			ABACPoliciesUpdate, ABACPoliciesDelete,
+		},
+	},
+	{
 		Name:  "Certificate Management",
 		Group: "Management Services",
 		Permissions: []Permission{
@@ -1207,7 +1247,7 @@ var categories = []Category{
 		Name:  "Audit",
 		Group: "Admin Services",
 		Permissions: []Permission{
-			AuditRead, AuditQuery, AuditStream, AuditVerify, AuditVerifyReplicated,
+			AuditRead, AuditQuery, AuditDelete, AuditStream, AuditVerify, AuditVerifyReplicated,
 		},
 	},
 	{
@@ -1223,7 +1263,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			TenantsCreate, TenantsRead, TenantsUpdate, TenantsDelete, TenantsList,
-			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas,
+			TenantsSetIsolation, TenantsSetEntitlements, TenantsSetQuotas, TenantsSetStatus,
 			TenantsListCross, TenantsCreateCross, TenantsApprove,
 			TenantsReadCross, TenantsDeleteCross, TenantsUpdateCross,
 			TenantsListDeleted, TenantsReconcileDeleted,

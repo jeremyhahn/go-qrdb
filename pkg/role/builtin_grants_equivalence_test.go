@@ -62,14 +62,14 @@ var goldenSOPermissions = []permission.Permission{
 	permission.UsersInvite,
 	permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
 	permission.TenantsDelete, permission.TenantsList,
-	permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
+	permission.TenantsSetIsolation, permission.TenantsSetEntitlements, permission.TenantsSetStatus,
 	permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
 	permission.KeysImport, permission.KeysExport,
 	permission.EscrowCreate, permission.EscrowRecover, permission.EscrowList, permission.EscrowRevoke,
 	permission.BackendsList, permission.BackendsRead,
 	permission.PINRead, permission.PINWrite,
 	permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
-	permission.AuditRead, permission.AuditQuery, permission.AuditVerify, permission.AuditVerifyReplicated,
+	permission.AuditRead, permission.AuditQuery, permission.AuditDelete, permission.AuditVerify, permission.AuditVerifyReplicated,
 	permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
 	permission.AdminAddMember, permission.AdminRemoveMember,
 	permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
@@ -131,7 +131,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// pkg/permission/cluster_join_token_scope.go).
 	permission.ClusterJoinToken,
 	permission.MVCCRestore,
-	permission.AuditRead, permission.AuditQuery,
+	permission.AuditRead, permission.AuditQuery, permission.AuditDelete,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
 	permission.TenantsReadCross, permission.TenantsDeleteCross, permission.TenantsUpdateCross,
 	// Tenant provisioning, ScopeCross: effective only for system-tenant Admin.
@@ -139,6 +139,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// rather than tenants:update, and the platform operator must hold it.
 	permission.TenantsCreate, permission.TenantsSetQuotas,
 	permission.TenantsSetEntitlements, permission.TenantsSetIsolation,
+	permission.TenantsSetStatus,
 	// Retired-tenant listing and reconcile, cross-scope: effective only for
 	// system-tenant Admin.
 	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,
@@ -164,6 +165,8 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.ACMEEABRead, permission.ACMEEABList,
 	permission.ACMEEABCreate, permission.ACMEEABDelete,
 	permission.DevicesOnboard, permission.OTAActivate, permission.OTAConfirm,
+	permission.ABACPoliciesCreate, permission.ABACPoliciesRead, permission.ABACPoliciesList,
+	permission.ABACPoliciesUpdate, permission.ABACPoliciesDelete,
 }
 
 var goldenOperatorPermissions = []permission.Permission{

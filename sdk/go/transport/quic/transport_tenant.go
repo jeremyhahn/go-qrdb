@@ -229,11 +229,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 		return nil, &transport.ClosedError{}
 	}
 
-	payload, err := proto.Marshal(&pb.TenantUpdateRequest{
-		Id:            req.TenantID,
-		Name:          req.Name,
-		IsolationType: string(req.IsolationType),
-	})
+	payload, err := proto.Marshal(tenantconv.UpdateRequest(req))
 	if err != nil {
 		return nil, &transport.RequestError{Method: "UpdateTenant", Err: err}
 	}
@@ -639,6 +635,9 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
 		VolumePool:    resp.GetVolumePool(),
+		Description:   resp.GetDescription(),
+		Metadata:      resp.GetMetadata(),
+		Status:        transport.TenantStatus(resp.GetStatus()),
 	}
 	if r := resp.GetRefusal(); r != nil {
 		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}

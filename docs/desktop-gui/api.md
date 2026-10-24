@@ -1,6 +1,6 @@
 # Desktop GUI — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 **The GUI adds no server API.** That is the design: both of its transports reach
@@ -15,9 +15,7 @@ the same surfaces every other client uses.
 | A GUI-only endpoint | **none exists** | — | — | — | — | n/a |
 
 **There is deliberately no privileged GUI surface.** A GUI user can do exactly
-what a CLI user holding the same certificate can do, and nothing more. If you
-are looking for a GUI-specific route, there isn't one — that is the answer, not
-a gap in this document.
+what a CLI user holding the same certificate can do, and nothing more.
 
 The only server-side accommodation is **CORS** on the REST API, so a browser
 can reach it.
@@ -50,7 +48,8 @@ The identity shown in the GUI header is the client certificate's Subject CN.
 ## Capability gating
 
 Views follow the server's reported capabilities
-(`GET /capabilities` — see [../api-server/api.md](../api-server/api.md)). A
+(`GET /capabilities`, permission `admin:capabilities` — see
+[../api-server/api.md](../api-server/api.md)). A
 capability the server does not have produces no view, rather than a view that
 errors on use.
 

@@ -1,6 +1,6 @@
 # Key Wrapping — API
 
-> **Status: NORMATIVE; lands incrementally.** Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
 > Conflicts with this document are defects. Fix them here first.
 
 Key wrapping adds no new RPC surface of its own. It changes the request and
@@ -26,10 +26,9 @@ the fields this feature adds or changes to that existing schema.
 | `key_provider_id` | string | the registered `keywrap.Provider` ID to wrap this backup's DEK with. Empty defaults to `"software"` when `key_ref` is set. |
 | `key_ref` | string | the key reference the named provider resolves — for `"software"`, the bare NAME of a key file inside the server's configured key directory (`--backup-key-dir`), never a path. |
 
-**`encryption_key` is retired** (owner ruling — see
-[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired)):
-the field, and the raw-bytes-over-the-wire path it carried, no longer exist
-on this message. `key_ref` is required when `encryption` is `"aes256"` (or
+**There is no inline key field** (see
+[architecture.md](architecture.md#no-inline-key)): raw key bytes never
+cross the wire on this message. `key_ref` is required when `encryption` is `"aes256"` (or
 defaulted to it); `key_ref` naming an unregistered `key_provider_id` is
 refused before any shard is captured.
 
@@ -42,7 +41,7 @@ refused before any shard is captured.
   "compression": "zstd", "encryption": "aes256",
   "key_provider_id": "software",
   "metadata": { "schedule": "nightly" },
-  "duration": 184000000000, "error_message": "" }
+  "duration_ms": 184000 }
 ```
 
 `key_provider_id` is empty for a `"none"` backup. Nothing about the wrapped
@@ -62,8 +61,8 @@ DEK, the envelope's nonce, or the format version is surfaced here — see
 |---|---|---|
 | `decryption_key_ref` | string | overrides the key reference stored in the backup's own envelope (e.g. the key file moved, or restore runs on a different node). Left empty, the stored reference is used — restore needs no key material supplied at all in the common case. Mirrors `key_ref` on create. |
 
-**`decryption_key` is retired** alongside `encryption_key` — see
-[architecture.md](architecture.md#owner-ruling-the-inline-key-is-retired).
+There is no inline `decryption_key` field either — see
+[architecture.md](architecture.md#no-inline-key).
 
 The provider actually used to `Unwrap` is whichever `key_provider_id` the
 backup itself was created under — a restore request does not choose a

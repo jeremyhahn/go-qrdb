@@ -97,6 +97,21 @@ var WithTenantDefaultQuotas = tenant.WithDefaultQuotas
 // pkg/tenant.WithDefaultEntitlements.)
 var WithTenantDefaultEntitlements = tenant.WithDefaultEntitlements
 
+// WithTenantStatusChangeAuditor wires the auditor the tenant service reports
+// every status change to before it commits it, so a suspension, disablement
+// or reactivation is audited or refused. (Aliases
+// pkg/tenant.WithStatusChangeAuditor.)
+var WithTenantStatusChangeAuditor = tenant.WithStatusChangeAuditor
+
+// TenantStatusChangeAuditor is the seam a composer implements to audit tenant
+// status changes. (Aliases pkg/tenant.StatusChangeAuditor.)
+type TenantStatusChangeAuditor = tenant.StatusChangeAuditor
+
+// TenantStatusAuditWiring is implemented by a tenant service whose status
+// change auditor a composer sets after construction. (Aliases
+// pkg/tenant.StatusAuditWiring.)
+type TenantStatusAuditWiring = tenant.StatusAuditWiring
+
 // ---------------------------------------------------------------------------
 // Entitlements
 // ---------------------------------------------------------------------------

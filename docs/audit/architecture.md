@@ -1,6 +1,6 @@
 # Audit — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Compliance-grade audit logging: who did what, to which resource, with what
@@ -62,10 +62,9 @@ proceed unrecorded. See *Fail-closed on audit write failure* below.
 **The converse matters just as much: the error describes whether the RECORD IS
 DURABLE, not whether every housekeeping step succeeded.** A rotation failure
 reports nothing through `Emit`, because rotation runs *before* the append —
-when it fails the record still lands and still fsyncs. Reporting it made the
-middleware refuse requests whose audit entry had in fact persisted, and because
-the size bound stayed exceeded it did so on *every* subsequent request. Rotation
-failures ride `qrdb_audit_rotation_failures_total` and an `ERROR` log line
+when it fails the record still lands and still fsyncs. Reporting it would make
+the middleware refuse requests whose audit entry had in fact persisted, on
+*every* request while the size bound stays exceeded. Rotation failures ride `qrdb_audit_rotation_failures_total` and an `ERROR` log line
 instead. See [engineering.md](engineering.md#the-emit-error-contract).
 
 **The fan-out reaches every sink.** `aggregateLogger` attempts all of them even
@@ -76,23 +75,19 @@ suppress the trail in the healthy ones.
 
 - **Per-subsystem logging.** Rejected — one interface, one schema, one query
   surface.
-- **An `Emit` with no error return.** Rejected. It was the original shape, and
-  it decided the compliance question for every caller: the sink logged the
-  failure at `Error` level and returned, the adapter returned `nil`
-  unconditionally, and the middleware branch written to handle a failed audit
-  write was unreachable by construction. A caller that wanted to fail closed
-  could not.
+- **An `Emit` with no error return.** Rejected: it decides the compliance
+  question for every caller. A caller that wants to fail closed cannot.
 - **A parallel `EmitErr` beside `Emit`.** Rejected. Two methods means two
-  behaviours to keep in step across five implementations, and the old one
-  remains the easy one to call. The signature change was made directly.
+  behaviours to keep in step across every implementation, and the unchecked one
+  stays the easy one to call.
 - **Failing fast in the fan-out.** Rejected: stopping at the first failed sink
   would let a broken file destination silently blank the ring buffer and the
   operational log stream that were both perfectly healthy.
-- **Storing audit entries in the KV store at all.** Rejected. The trail is a
-  hash-chained append-only file plus an in-memory ring; it is not in the
-  keyspace, user or internal, so no KV surface can enumerate, rewrite or
-  compact it. A tamper-evident chain wants an append-only medium, and a
-  replicated mutable store is the opposite of one.
+- **Storing audit entries as KV keys.** Rejected. The node-local trail is a
+  hash-chained append-only file plus an in-memory ring, and the opt-in
+  replicated chain is a reserved raw-keyspace table (see *Record layout*
+  below); neither is a key any KV surface can enumerate, rewrite or compact.
+  A tamper-evident chain wants an append-only medium, not a mutable keyspace.
 - **A world-readable audit file.** Rejected: mode 0600.
 
 ## Fail-closed on audit write failure
@@ -104,14 +99,12 @@ There are **two gates**, and they run on **one posture**:
 | Gate | What it asserts | Component |
 |---|---|---|
 | `AuthMiddleware.authorize` | the RBAC/ABAC decision | `authorize` |
-| `SOMiddleware` + `auth.SOAuthenticator.VerifySOPIN` | the security officer's second factor (PIN) | `so-dual-factor`, `so-auth` |
+| `SOGate` (`SOMiddleware` on REST) + `auth.SOAuthenticator.VerifySOPIN` | the security officer's second factor (PIN) | `so-dual-factor`, `so-auth` |
 
-They are **two distinct assertions about the same request**, which is why
-covering only the first was not enough: the sink can fail between them, and an
+They are **two distinct assertions about the same request**, and both are
+gated: the sink can fail between them, and an
 SO operation — rekey, custodian enrolment, CSR signing — is the most privileged
-action the system offers. Before the SO gate was brought onto this posture an SO
-PIN could verify, its record could fail to write, and the gated handler ran
-anyway.
+action the system offers.
 
 When either gate cannot record its event, it **refuses the request** —
 `*audit.GateError` wrapping the sink's `*audit.WriteError`, which the
@@ -119,11 +112,9 @@ transports answer as HTTP 503 / gRPC `Unavailable`. `GateError.Component` says
 which gate refused.
 
 **One type, one posture, one lever.** The posture is `audit.FailurePolicy` and
-it lives in `pkg/audit`, not in `pkg/auth/middleware` where it started.
-`pkg/auth/middleware` imports `pkg/auth`, so a policy owned by the middleware
-could never have been read by the SO factor — that import edge is precisely why
-the SO gate ran on the weaker posture. A second configuration key would have
-reintroduced the split.
+it lives in `pkg/audit`, not in `pkg/auth/middleware`: `pkg/auth/middleware`
+imports `pkg/auth`, so a policy owned by the middleware could not be read by the
+SO factor. A second configuration key would split the posture.
 
 The reasoning: an unrecorded **grant** is precisely the event audit exists to
 prevent. A system that authorizes without recording has lost the property, and
@@ -164,23 +155,15 @@ transport maps the class onto its own wire, so the four cannot drift:
 | QUIC | `wire.StatusUnavailable` | `wire.StatusPermissionDenied` |
 | MCP | `UNAVAILABLE` (−32006) + text: `authorization unavailable, retry: …` | `PERMISSION_DENIED` (−32003) + text: `authorization denied: …` |
 
-**Both named exclusions are gone**, and how each closed is worth recording:
-
-- **MCP used to carry no status code at all** — tool results were text, so it
-  could not agree with the other three mechanically and the distinction lived
-  in the wording alone. It has an error vocabulary now, and the MCP gate
-  renders `ClassifyAuthError`'s answer through it rather than a coarser split
-  of its own, so all four transports map the same class the same way. The
-  wording is unchanged and still matters: it is what an operator reads.
-- **The QUIC wire had no rate-limit status**, so a throttled caller rode
-  `StatusUnavailable` — the right instruction, retry, without the reason. The
-  wire declares `StatusResourceExhausted` now.
+MCP renders `ClassifyAuthError`'s answer through its own error codes rather
+than a coarser split, so all four transports map the same class the same way;
+the text is what an operator reads. A rate-limited caller is
+`StatusResourceExhausted` on QUIC, not `StatusUnavailable`.
 
 This matters most on the **tenant-barrier surface**, which is what an operator
-and the SDK use to *recover* a node. Those handlers previously hard-coded
-"permission denied" on every transport, so a node whose audit disk was full
-reported its unseal endpoint as an authorization failure — terminal in every
-client, and the precise misdiagnosis the 503 mapping exists to prevent.
+and the SDK use to *recover* a node: a node whose audit disk is full must report
+its unseal endpoint as unavailable, not as an authorization failure, which every
+client treats as terminal.
 
 ### The operator's escape
 
@@ -206,12 +189,8 @@ So the event is carried on two planes that do not depend on the audit plane:
 - the counter `qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}`
   for the authorization gate,
 - the counter `qrdb_audit_gate_failures_total{component,outcome}` for every
-  other gate — `component="so-auth"` and `component="so-dual-factor"` today,
+  other gate — `component="so-auth"` and `component="so-dual-factor"`,
 - an `ERROR`-level line on the operational log stream.
-
-The two counters are separate rather than one relabelled counter because the
-predates the second and an operator's alert on it must keep meaning exactly
-what it meant.
 
 **The refusal is written to the sink exactly once.** Neither gate re-emits the
 refusal it just produced: the only sink is the one that said no, and writing
@@ -244,15 +223,11 @@ record written into the new file carries the **same** digest the anchor just
 recorded, so the boundary is stated from both sides and the running digest
 continues uninterrupted.
 
-That is what the writer has always produced. Until the rotation-boundary fix
-the *reader* assumed each file began at zero, so every file opened after a
-rotation was reported broken at index 0 on entirely honest data — the one
-signal this subsystem exists to make trustworthy, firing on healthy archives.
-The same assumption in the restore path (`initPrevDigest`) broke the chain for
-real at the first write after a restart, because the active file it folded from
-zero had begun mid-chain.
+A reader therefore never assumes a file begins at zero: neither verification nor
+the restore path (`initPrevDigest`), which folds the active file from the seed
+its first record declares.
 
-Verification is now two properties, checked in order:
+Verification is two properties, checked in order:
 
 1. **Each file is internally sound.** Every record's `PrevHash` is the fold over
    its predecessor, seeded with the digest the file's own first record declares.
@@ -274,26 +249,19 @@ gives up the cross-file evidence the data already carries: an adversary who can
 edit a line can delete a file, and under per-file chains deleting an entire
 archive leaves a directory in which everything that remains verifies. It would
 also make the anchor decorative, and it would put a second marshal on the write
-path that every authorization decision now traverses.
+path that every authorization decision traverses.
 
 ## Event schema
 
-The target compliance schema (`pkg/audit/types.go`) carries: `Timestamp`
-(UTC), `Actor` (from the mTLS certificate CN), `TenantID`, `Role` at the time of
-the event, `Resource`, `Action`, `Outcome` (`success`, `failure:<reason>`,
-`denied:<reason>`), `Attributes`, `ClientIP`, `RequestID`, and **`PrevHash`** —
-the hash of the previous entry, `sha256:<hex>`, forming a **tamper-detection
-chain**.
+The event (`audit.AuditEvent`, `pkg/audit/audit_event.go`) carries: `Timestamp`
+(UTC), `Actor` (certificate CN, JWT `sub` or API key), `TenantID`, `Role` at the
+time of the event, `Resource`, `Action`, `Outcome` (`success`,
+`failure:<reason>`, `denied:<reason>`), `Attributes`, `ClientIP`, `RequestID`,
+and **`PrevHash`** — the hex SHA-256 digest of the previous event, empty for the
+first, forming a **tamper-detection chain**.
 
 Recording the actor's **role at event time** matters: a role changed afterwards
 must not rewrite what the actor was allowed to do then.
-
-> **Status caveat.** The source describes this as a phased implementation:
-> the target schema is documented, with `Role`, extended `Outcome`,
-> `Attributes`, `ClientIP`, `RequestID`, `PrevHash`, hash-chain computation and
-> verification, and the query API landing in a later phase. Treat the full
-> schema as the contract and verify field-by-field against `pkg/audit/types.go`
-> before depending on any single field.
 
 ## Who may read which events
 
@@ -339,10 +307,6 @@ token. The embedded transport has no middleware, so it reads the identity in
 the call's context, or the tenant bound to it when there is no identity, and an
 unbound context is the system tenant — the in-process host.
 
-**BREAKING:** before this rule the query honoured whatever `tenant_id` the
-request carried, and an empty one read every tenant's events, so a tenant Admin
-holding `audit:query` read the whole node's trail.
-
 ## The trail exists before the sealed window
 
 **The node opens its compliance trail before it builds its barrier**, and
@@ -356,13 +320,13 @@ not later.
 The daemon therefore opens the trail -- the hash-chained file, the ring and
 the operational log -- ahead of the seal subsystem, for the life of the
 process: every boot iteration, an in-process encryption migration's included,
-records on the one trail. Opening it fails start **closed**, exactly as it did
-when the trail was opened after unseal: a trail that cannot be opened stops
-the node before any barrier is built or any sealed window served.
+records on the one trail. Opening it fails start **closed**: a trail that
+cannot be opened stops the node before any barrier is built or any sealed
+window served.
 
-**The process-inspection opt-out is still the trail's first record.** It is
-written the moment the trail exists -- now before the seal subsystem rather
-than after unseal -- and a node that cannot record it does not run.
+**The process-inspection opt-out is the trail's first record.** It is written
+the moment the trail exists, before the seal subsystem, and a node that cannot
+record it does not run.
 
 The SDK node records on the trail its caller supplies (`server.WithAuditLogger`),
 which exists before the node does, so its sealed window is recorded too. The
@@ -421,30 +385,27 @@ The sink described above is node-local: `ChainFileLogger`'s chain lives on one
 node's disk, and the ring buffer is one node's memory. A SECOND, independent
 mechanism -- the cluster-wide replicated trail below -- also exists,
 apply-time-assigned and Raft-replicated rather than written by one process.
-The two are not alternatives to each other and neither is a phased-out
-version of the other: the node-local sink keeps recording exactly as it does,
-unconditionally, and the replicated chain is additional, **opt-in**
-infrastructure layered on top of it (see
-[Status](#status-of-the-replicated-chain) below) -- `lifecycle.BuildServices`
-composes the two into one `audit.AggregateLogger`, so every ordinary `Emit`
+The two are not alternatives: the node-local sink records unconditionally, and
+the replicated chain is additional, **opt-in** infrastructure layered on top of
+it (see [Status](#status-of-the-replicated-chain) below) --
+`lifecycle.BuildServices` composes the two through `audit.NewAggregateLogger`, so every ordinary `Emit`
 call reaches both, and the replicated child is a no-op for a tenant whose
 entitlement is off.
 
-**The sealed window still does not carry records into the replicated chain.**
+**The sealed window does not carry records into the replicated chain.**
 It cannot take them directly -- the store the chain appends through is behind
 the barrier that window is opening, and before `BuildServices` runs there is
 no `Host` to resolve a shard against at all -- so holder/ceremony events made
-during the sealed window remain node-local only. This is a deliberate,
-disclosed limitation of this phase, not an oversight: closing it is a
-buffer-then-append problem for the proposing side to solve once the data
-plane exists, not something `Chain.Append` itself does.
+during the sealed window are node-local only. Carrying them over would be a
+buffer-then-append on the proposing side once the data plane exists, not
+something `Chain.Append` does.
 
 ## Cluster-wide replicated trail
 
 ### Status of the replicated chain
 
-**Phase 1 (this revision): shipped.** The mechanism that lets a Raft group
-agree on one hash-chained audit trail per tenant exists end to end:
+The mechanism that lets a Raft group agree on one hash-chained audit trail per
+tenant:
 
 - `pkg/audit.Chain` — the deterministic, apply-time authority for every
   tenant's chain (`Append`, `Prune`, `Query`, `Restore`), the audit instance
@@ -460,12 +421,12 @@ agree on one hash-chained audit trail per tenant exists end to end:
   `pkg/statemachine.ApplyVerifiableLog`, which refuses what every replica
   refuses alike (a malformed body, a missing or existing log, a mismatched
   checkpoint, a state machine with no registry) and halts on an unknown
-  framing or a fault in this replica's own table. `OpAuditAppend` is
-  unchanged and writes no Merkle node.
+  framing or a fault in this replica's own table. `OpAuditAppend` writes no
+  Merkle node.
 - Both state-machine families (`pkg/store.PebbleStateMachine`,
   `pkg/engine.MVCCEngine`) dispatch the opcode to `Chain`, restore it on open
-  and on snapshot recovery, and resync it after a failed apply, exactly as
-  the lease table already does. The resync and the restore cover the named
+  and on snapshot recovery, and resync it after a failed apply, as the lease
+  table does. The resync and the restore cover the named
   logs too, so a replica opened from disk or from a snapshot taken mid-log
   serves the same heads and proofs as its peers and appends the same nodes.
 - Every `mvcc`/`pebble` state machine this binary composes — the Raft
@@ -484,22 +445,22 @@ agree on one hash-chained audit trail per tenant exists end to end:
   group's events after another's, and opening or recovering either group
   would overwrite the other's heads.
 
-**Phase 2 (this revision): shipped.** Something now proposes
-`OpAuditAppend`, and a caller can read back what it proposed:
+What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
 
 - `quota.Entitlements.AllowReplicatedAudit` — the per-tenant opt-in. False
   (the secure default) for every tenant unless an explicit
   `tenants:set_entitlements` grant or the operator's configured default
   entitlements turn it on; see [Opt-in, not default-on](#opt-in-not-default-on)
-  below for why this is the decided answer, not an open question.
+  below.
 - `tenant.TenantService.ReplicatedAuditEnabled` — resolves that entitlement,
   with the system tenant handled separately (see "Platform events" below).
 - `service.SystemShardAuditResolver` — names the `(Host, shardID)` that
-  serves a tenant's chain. Every prefix/barrier/unregistered tenant resolves
-  to the system shard; a dedicated-isolation tenant (volume/raft) is refused
-  with `*service.DedicatedTenantAuditNotSupportedError` rather than silently
+  serves a tenant's chain. Every tenant that is not dedicated-isolation, and
+  an unregistered tenant id, resolves to the system shard; a
+  dedicated-isolation tenant (volume/raft) is refused with
+  `*service.DedicatedTenantAuditNotSupportedError` rather than silently
   guessing, because that tenant's chain belongs on its own dedicated host,
-  which this resolver does not reach yet.
+  which this resolver does not reach.
 - `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
   and proposes `protocol.OpAuditAppend` from an ordinary `Emit` call (and
   answers `Query`/`VerifyTenantChain` by reading back through
@@ -512,13 +473,13 @@ agree on one hash-chained audit trail per tenant exists end to end:
   "not answerable here" (`Total: -1` / `*service.ReplicatedAuditNotEntitledError`)
   rather than a misleading empty-but-real page or a trivially-true report.
 - `lifecycle.BuildServices` wires `OptInAuditLogger(ReplicatedLogger(...))`
-  into every composition's `audit.AggregateLogger` alongside the node-local
-  sink, and exposes it separately as `Node.ReplicatedAudit` for the read API
+  into every composition's `audit.NewAggregateLogger` fan-out alongside the
+  node-local sink, and exposes it separately as `Node.ReplicatedAudit` for the read API
   below. The isolation and entitlement lookups it binds `SystemShardAuditResolver`
   and `OptInAuditLogger` to are resolved LAZILY against `Node.Tenant`, because
   the resolver is constructed before `Node.Tenant` is populated later in the
   same call -- see `pkg/server/lifecycle/audit_replicated.go`.
-- A read API and CLI surface over `Chain.Query` and the new `Chain.Verify`
+- A read API and CLI surface over `Chain.Query` and the `Chain.Verify`
   hash-continuity check, on every transport -- REST, gRPC, Unix, QUIC, MCP,
   the embedded transport and the Go SDK. See
   [api.md](api.md#the-replicated-chain-read-surface) and
@@ -526,12 +487,9 @@ agree on one hash-chained audit trail per tenant exists end to end:
 
 ### Opt-in, not default-on
 
-The entitlement defaults to **false**, exactly as the parked design decided
-before the phase-1 review paused this feature: `quota.DefaultEntitlements()`
-leaves `AllowReplicatedAudit` at its zero value, and nothing in this phase
-changes that default. This folder's own compliance framing (FedRAMP, PCI DSS,
-HIPAA all require a trail) argues for default-ON; the decision here is
-narrower than that argument, and is recorded rather than re-derived:
+The entitlement defaults to **false**: `quota.DefaultEntitlements()` leaves
+`AllowReplicatedAudit` at its zero value. The compliance framing (FedRAMP, PCI
+DSS, HIPAA all require a trail) does not argue for default-ON, because:
 
 - The node-local trail is unconditional and already satisfies the compliance
   requirement by itself (see "Persistence" in [engineering.md](engineering.md)).
@@ -547,15 +505,12 @@ narrower than that argument, and is recorded rather than re-derived:
   is the intended path to "on by default" for a deployment that wants it,
   without changing the built-in software default for everyone else.
 
-**Known limitation of this phase**, disclosed rather than silently
-sidestepped: `OptInAuditLogger.platformEnabled` (the system tenant's own
+**Known limitation:** `OptInAuditLogger.platformEnabled` (the system tenant's own
 switch, since the system tenant is never provisioned through the per-tenant
-entitlements path) has no operator-facing configuration key yet --
+entitlements path) has no operator-facing configuration key:
 `lifecycle.Infra.ReplicatedAuditPlatformEnabled` defaults to `false` and
-nothing in `cmd/qrdbd` currently sets it from a YAML value. Wiring a
-`audit.platform_replicated_enabled`-shaped setting through is follow-on work;
-until then the system tenant's platform events reach the replicated chain
-only for a composer that sets the `Infra` field directly.
+nothing in `cmd/qrdbd` sets it. The system tenant's platform events reach the
+replicated chain only for a composer that sets the `Infra` field directly.
 
 ### Record layout: a reserved raw-keyspace table, not a `__sys:` key
 
@@ -568,9 +523,8 @@ raw-keyspace key is not a key the KV/MVCC engines expose to `Range`, `List`
 or `watch` AT ALL. A tenant enumerating its own keyspace cannot see the
 table even by accident, and `statemachine.IsReservedKey` refuses it on every
 read and compare path a client could reach (`Lookup`, a transaction compare,
-an `OpGuarded` compare) — closing the same class of extraction-oracle defect
-the vector feature's compare review found, before the replicated audit
-table gave it a second raw-keyspace table to be exploited against.
+an `OpGuarded` compare), so no compare can serve as an extraction oracle over
+the table.
 
 Two record families, one tenant-keyed table, used identically whether the
 apply happens in the shared system shard (many tenants multiplexed by the
@@ -588,17 +542,15 @@ see [Retention and pruning](#retention-and-pruning-replicated-deterministic-and-
 Unlike the last-applied index, which is local to one node, this table is
 replicated state: it travels in every snapshot and is covered by the
 replica hash like any other applied record (`pkg/store`'s
-`isNodeLocalKey`), exactly as the lease table already is.
+`isNodeLocalKey`), as the lease table is.
 
 The same package keeps a second reserved table beside it, under
-`LogTablePrefix = "\x00qrdb.vlog/"`: the named verifiable logs of
-[the verifiable-log design](../decisions/verifiable-log.md), each a
+`LogTablePrefix = "\x00qrdb.vlog/"`: the named verifiable logs, each a
 descriptor, a head, its entries, its Merkle tree nodes and its checkpoints,
 keyed by tenant, database and log name. `vlog.IsTableKey` matches both
 prefixes, so every reserved-key refusal and the replica hash cover the second
 table exactly as they cover this one, and `Chain.Restore` rebuilds both
-together: a malformed record in either fails the restore. The audit table's
-layout above is unchanged.
+together: a malformed record in either fails the restore.
 
 ### The hash chain stays linear under Raft because it is assigned at apply time
 
@@ -627,15 +579,11 @@ for a caller-supplied cutoff — while leaving the head's sequence and digest
 untouched, so the chain keeps extending correctly and a verifier can still
 check the surviving tail against the still-live head.
 
-Determinism here took a review cycle to get right. The first version
-computed `upper` from a storage READ of the committed table, which made the
-result depend on how `go-quicraft` happened to pack a Raft batch:
-`[append, append, append, prune(3)]` applied as one `Update` call answered
-differently than the same four commands applied as four. `Prune` now reads
-NOTHING from storage — both bounds come from the `Chain`'s own in-memory
-head alone, which every `Append` earlier in the SAME `Update` call has
-already advanced — so the result is independent of batch packing. Two
-further bounds, both clamps on `upper`:
+`Prune` reads NOTHING from storage: both bounds come from the `Chain`'s own
+in-memory head alone, which every `Append` earlier in the SAME `Update` call has
+already advanced, so the result does not depend on how `go-quicraft` packs a
+Raft batch (`[append, append, append, prune(3)]` as one `Update` call or as
+four). Two further bounds, both clamps on `upper`:
 
 - **Never the newest event.** `upper` is clamped to the head's own `seq`, so
   a chain always keeps at least one live record — an anchor a verifier can
@@ -646,17 +594,20 @@ further bounds, both clamps on `upper`:
   rather than one command staging an unbounded number of deletes into one
   apply batch.
 
+No component proposes a prune: `protocol.EncodeAuditPrune` has no caller
+outside tests, so the replicated chain keeps every event. `Prune` is the apply
+path only.
+
 ### Tenant confinement inside a shared table
 
 `Chain.Query` trusts its `tenantID` argument completely and never reads
 outside that tenant's key range — the range bounds passed to the iterator
 never leave the tenant's own prefix, so there is no filter to forget. The
-existing file-sink `matchesFilter` (the same `TenantID`/`Untenanted`
-semantics `tenant.ConfineAuditFilter` already relies on for the node-local
-trail) is reused rather than re-derived, so a platform event filed under the
+file sink's `matchesFilter` (the same `TenantID`/`Untenanted` semantics
+`tenant.ConfineAuditFilter` relies on for the node-local trail) is reused, so a platform event filed under the
 system tenant's segment with no `TenantID` of its own matches only an
 `Untenanted` system-tenant query, never an ordinary one. `Append`, `Prune`
-and `Query` alike refuse a tenant ID containing `/` (`*InvalidTenantIDError`)
+and `Query` alike refuse a tenant ID containing `/` (`*vlog.InvalidTenantIDError`)
 — such an id could otherwise carve a second segment inside another tenant's
 range in the raw table's concatenated keys.
 
@@ -699,17 +650,19 @@ the same per-tenant entitlement as `Emit`/`Query`
 `*service.ReplicatedAuditNotEntitledError` when the tenant's entitlement is
 off), reachable from every transport — see
 [api.md](api.md#the-replicated-chain-read-surface) and
-[cli.md](cli.md#qrdb-audit-verify---replicated).
+[cli.md](cli.md#--replicated).
 
 ## Trust boundaries
 
-- **Audit entries are not in the key-value store**, so no KV verb reaches
-  them: the trail is `audit-events.ndjson` plus the in-memory ring.
+- **No KV verb reaches an audit entry.** The node-local trail is
+  `audit-events.ndjson` plus the in-memory ring; the opt-in replicated chain
+  is a reserved raw-keyspace table that `statemachine.IsReservedKey` refuses on
+  every client read and compare path.
 - **The audit file is mode 0600.**
 - **`PrevHash` chains entries** so a deletion or edit is detectable rather than
   silent.
-- **Permission-denied events are themselves audited** (`auth.denied`, result
-  `denied`) — a failed attempt is exactly what a trail exists to record.
+- **Permission-denied events are themselves audited** (action
+  `auth.authorize`, result `denied`) — a failed attempt is exactly what a trail exists to record.
 - **An authorization decision that could not be recorded is refused** by
   default. The audit record is part of the decision, not a side effect of it.
 - **The same is true of the SO second factor.** The two gates share one posture
@@ -718,30 +671,13 @@ off), reachable from every transport — see
   permission, **and reads only the caller's own tenant's events** — see
   [Who may read which events](#who-may-read-which-events).
 
-## Correction notice
-
-Earlier revisions of this folder described a `kvLogger` / `fileLogger` /
-`multiLogger` / `noopLogger` factory selected by an `audit.Config` carrying
-`kv_backend` / `file_backend` keys, writing to `__sys:audit/{tenantID}/
-{timestamp_nano}`. **No such factory, config struct, config block or KV
-backend has ever existed**, and `pkg/audit`'s own package comment repeated the
-claim until it was corrected alongside this folder.
-
-The canonical names are the ones in the table above, composed at the node's
-wiring site rather than selected by a factory. The correction is now applied
-throughout the folder rather than flagged in place, and the one consequence
-worth restating is that the old text was not merely stale but misleading in the
-operator's direction: it said querying required a backend that does not exist,
-when `audit query` in fact works with no configuration at all.
-
 ## Known limits of chain verification
 
-These bound what the *tamper-evidence* claim above is worth today. None is
-introduced by the fail-closed work.
+These bound what the *tamper-evidence* claim above is worth.
 
 - **Verification is on-demand, not continuous.** `qrdb audit verify` and its
   Tier-1 equivalents on every transport run the check when
-  something calls them; there is still no startup check, no periodic scan,
+  something calls them; there is no startup check, no periodic scan,
   and no metric that fires on a break without a human or a scheduled job
   invoking the verb. A tampered trail sits undetected between runs of
   whatever calls it.
@@ -755,8 +691,7 @@ introduced by the fail-closed work.
   shipping the trail off the node — and this feature ships neither.
 - **The last record of the active file is not pinned until another follows
   it.** A chain cannot vouch for its own tip. This is inherent to an
-  append-only chain and is unchanged by the rotation work; every archive's last
-  record *is* pinned, by the anchor that terminates it.
+  append-only chain; every archive's last record *is* pinned, by the anchor that terminates it.
 - **A record that will not parse is skipped, not folded.** A torn line is not a
   record, and the writer's restore path and the verifier agree on that, so a
   crash mid-write leaves a trail that still verifies.
@@ -770,8 +705,7 @@ introduced by the fail-closed work.
   `*VerificationCanceledError`, not a tamper verdict.
 
 Treat a clean `qrdb audit verify` as **evidence as of the moment it ran**, not
-as a standing guarantee between runs — the remaining gap above is what a
-startup check or a scheduled scan would close, and neither exists yet.
+as a standing guarantee between runs.
 
 ## What this feature deliberately does not do
 

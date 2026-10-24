@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestNode_StopRunsEveryCloserLIFOAndReturnsTheFirstFailure: Stop tears down
@@ -61,5 +62,23 @@ func TestBuildDEKService_RefusesANilResolver(t *testing.T) {
 	var invalid *dek.InvalidInputError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("DEKServiceError does not wrap *dek.InvalidInputError: %v", err)
+	}
+}
+
+// TestBuildPolicyService_RefusesANilResolver: without a store resolver there
+// is nowhere to keep a tenant's policies, so the service is refused with a
+// typed error rather than built to fail on first use.
+func TestBuildPolicyService_RefusesANilResolver(t *testing.T) {
+	svc, err := buildPolicyService(nil)
+	if svc != nil {
+		t.Fatalf("buildPolicyService(nil) returned a service: %v", svc)
+	}
+	var target *PolicyServiceError
+	if !errors.As(err, &target) {
+		t.Fatalf("buildPolicyService(nil) error = %T (%v), want *PolicyServiceError", err, err)
+	}
+	var unconfigured *service.SubsystemNotConfiguredError
+	if !errors.As(err, &unconfigured) {
+		t.Fatalf("PolicyServiceError does not wrap *service.SubsystemNotConfiguredError: %v", err)
 	}
 }

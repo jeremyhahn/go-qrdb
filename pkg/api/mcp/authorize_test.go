@@ -25,8 +25,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // authorizeCaller authenticates subject in tenant t1 and targets t1.
@@ -36,7 +38,7 @@ func authorizeCaller(subject string) context.Context {
 
 // callAuthorize runs qrdb_permissions_authorize with args as the caller on
 // ctx, against the auth chain g.
-func callAuthorize(ctx context.Context, t *testing.T, g *authtest.GrantAuthorizer, args map[string]any) (authorizeResult, error) {
+func callAuthorize(ctx context.Context, t *testing.T, g auth.Authorizer, args map[string]any) (authorizeResult, error) {
 	t.Helper()
 	var req mcp.CallToolRequest
 	req.Params.Arguments = args
@@ -109,4 +111,30 @@ func TestPermissionsAuthorizeTool_IsIdentityGated(t *testing.T) {
 		return
 	}
 	t.Fatal("qrdb_permissions_authorize is not among the role tools")
+}
+
+// TestPermissionsAuthorizeTool_DevicesOnboard_TenantScoped answers through the
+// real RBAC authorizer for a holder of acme's custom device-onboarder role:
+// allowed in acme, refused with a reason in globex.
+func TestPermissionsAuthorizeTool_DevicesOnboard_TenantScoped(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
+	dana := &auth.Identity{Subject: "dana", TenantID: "acme", Roles: []string{
+		authtest.CustomRole(t, roles, "acme", "device-onboarder", permission.DevicesOnboard),
+	}}
+	authz := rbac.New(roles)
+	args := map[string]any{
+		"resource": permission.Resource(permission.DevicesOnboard),
+		"action":   permission.Action(permission.DevicesOnboard),
+	}
+	for _, tc := range []struct {
+		requestTenant string
+		want          bool
+	}{{"acme", true}, {"globex", false}} {
+		ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), dana), tc.requestTenant)
+		resp, err := callAuthorize(ctx, t, authz, args)
+		if err != nil || resp.Allowed != tc.want || (!tc.want && resp.Reason == "") {
+			t.Fatalf("dana@acme devices:onboard in %s = %+v, %v; want allowed=%v with a reason on denial",
+				tc.requestTenant, resp, err, tc.want)
+		}
+	}
 }

@@ -16,8 +16,10 @@ package clusterenroll
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
@@ -224,6 +226,49 @@ func TestFetchAnchor_OverBothSuites(t *testing.T) {
 	}
 }
 
+// TestFetchAnchor_DualKeyBootstrapTracksTheRuntime configures both suites'
+// keys and leaves the gating decision to the runtime. Under crypto/fips140 the
+// Noise key never reaches go-truststrap, so its client holds no key it could
+// run X25519 against, and the fetch completes over P-256.
+func TestFetchAnchor_DualKeyBootstrapTracksTheRuntime(t *testing.T) {
+	caCertPEM, _ := anchorTestCA(t)
+
+	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, t.TempDir(), discardLogger())
+	if err != nil {
+		t.Fatalf("StartAnchorAdvertiser: %v", err)
+	}
+	defer adv.Stop()
+
+	noiseKey := make([]byte, 32)
+	if adv.NoiseEnabled() {
+		noiseKey = adv.NoisePublicKey()
+	}
+	opts := &Options{Bootstrap: BootstrapOptions{
+		NoiseKey:  hex.EncodeToString(noiseKey),
+		P256Key:   hex.EncodeToString(adv.P256PublicKey()),
+		NoiseAddr: adv.Addr(),
+	}}
+
+	cfg, err := buildAutoConfig(opts, discardLogger())
+	if err != nil {
+		t.Fatalf("buildAutoConfig: %v", err)
+	}
+	if cfg.Noise == nil || cfg.Noise.ServerP256StaticKey != opts.Bootstrap.P256Key {
+		t.Fatal("the P-256 key must be offered in every runtime")
+	}
+	if offered := cfg.Noise.ServerStaticKey != ""; offered == fips140.Enabled() {
+		t.Fatalf("Noise key offered = %v with crypto/fips140.Enabled() = %v", offered, fips140.Enabled())
+	}
+
+	fetched, err := FetchAnchor(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("FetchAnchor: %v", err)
+	}
+	if string(fetched) != string(caCertPEM) {
+		t.Error("fetched anchor does not match the advertised anchor")
+	}
+}
+
 // TestFetchAnchor_WrongP256KeyFails pins that the key is the trust anchor: a
 // joiner holding a different key than the listener's must not obtain a bundle.
 func TestFetchAnchor_WrongP256KeyFails(t *testing.T) {
@@ -404,6 +449,53 @@ func TestJoinServer_SignsAValidCSR_DualKeyClient(t *testing.T) {
 	if noiseAvailable() {
 		opts.ServerKey = js.PublicKey()
 	}
+	certPEM, err := JoinCSR(context.Background(), opts, joinCSRFor(t), "spiffe://attacker.example/node/anything")
+	if err != nil {
+		t.Fatalf("JoinCSR: %v", err)
+	}
+	assertIssuedLeaf(t, certPEM)
+}
+
+// TestJoinCSR_DualKeyClientSelectsTheRuntimeSuite configures a joiner with
+// both suites' keys and leaves the gating decision to the runtime, as a node
+// started with both bootstrap flags does. Under crypto/fips140 the join must
+// select the P-256 suite although a Noise key is configured, and complete.
+// Under enforcement the runtime refuses X25519 itself, which the test asserts
+// first, so a completed join is proof that X25519 was never reached.
+func TestJoinCSR_DualKeyClientSelectsTheRuntimeSuite(t *testing.T) {
+	js, _, token := startJoinServerForSuite(t)
+
+	noiseKey := js.PublicKey()
+	if !noiseAvailable() {
+		// A FIPS-mode server serves no Noise key, so pin one it could never
+		// answer: selecting Noise would then fail the join as well.
+		noiseKey = make([]byte, 32)
+	}
+	opts := &JoinClientOptions{
+		ServerAddr:    js.Addr(),
+		ServerKey:     noiseKey,
+		ServerP256Key: js.P256PublicKey(),
+		Token:         token,
+	}
+
+	wantSuite := p256proto.SuiteNoiseNK
+	if fips140.Enabled() {
+		wantSuite = p256proto.SuiteP256AESGCM
+	}
+	suite, _, err := selectJoinSuite(opts)
+	if err != nil {
+		t.Fatalf("selectJoinSuite: %v", err)
+	}
+	if suite != wantSuite {
+		t.Fatalf("selectJoinSuite = %#x, want %#x (crypto/fips140.Enabled() = %v)", suite, wantSuite, fips140.Enabled())
+	}
+
+	if fips140.Enforced() {
+		if _, err := ecdh.X25519().GenerateKey(rand.Reader); err == nil {
+			t.Fatal("X25519 key generation succeeded under fips140=only: a completed join would not prove X25519 unreached")
+		}
+	}
+
 	certPEM, err := JoinCSR(context.Background(), opts, joinCSRFor(t), "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("JoinCSR: %v", err)

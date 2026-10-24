@@ -48,6 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/rag"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
@@ -705,6 +706,11 @@ var privilegeRules = []rule{
 var ragRules = []rule{
 	as(&service.RAGDocumentNotFoundError{}, NotFound),
 	as(&service.RAGServiceClosedError{}, Unavailable),
+	// A document over max_document_size is refused before it is chunked.
+	as(&rag.DocumentTooLargeError{}, TooLarge),
+	// Chunking fails only on its input: empty text or a chunk setting the
+	// chunker refuses.
+	as(&rag.ChunkingError{}, InvalidArgument),
 }
 
 // embeddingRules are the embedding-provider conditions.
@@ -993,6 +999,19 @@ var tenantRules = []rule{
 	as(&tenant.TenantScopeError{}, PermissionDenied),
 	// A page size or page token the caller supplied that cannot be honoured.
 	as(&tenant.InvalidPageRequestError{}, InvalidArgument),
+	// A description or metadata map outside its bounds on UpdateTenant.
+	as(&tenant.TenantFieldError{}, InvalidArgument),
+	// A status that is not a status is the caller's error; a known status
+	// the tenant cannot move to from where it is depends on its state.
+	as(&tenant.InvalidStatusError{}, InvalidArgument),
+	as(&tenant.StatusTransitionError{}, FailedPrecondition),
+	// An isolation policy only tightens: a loosening, or a setter that lost
+	// the compare-and-set to one that moved the policy first, leaves the
+	// store unchanged, and the caller re-reads before deciding anything.
+	as(&tenant.IsolationPolicyChangeError{}, FailedPrecondition),
+	// UpdateTenant lost its compare-and-swap on every attempt: other writers
+	// kept committing the record, and the caller may retry the update.
+	as(&tenant.ConcurrentUpdateError{}, Aborted),
 	as(&tenant.DataRootIsolationTypeError{}, InvalidArgument),
 	// Reserving the tenant's named volume pool failed (pool not found,
 	// capacity exceeded, entitlement denied). volumeRules above, placed
@@ -1085,6 +1104,24 @@ var dekRules = []rule{
 	// discipline ErrAuthenticationFailed holds one layer up, and
 	// *service.BackupDecryptionFailedError holds for backup.
 	is(dek.ErrKeyWrapFailed, InvalidArgument),
+}
+
+// policyRules classify the ABAC policy service's errors (pkg/service,
+// policy_errors.go).
+var policyRules = []rule{
+	// Before PolicyInvalidError: a corrupt record wraps the invalid-name
+	// error that found it, and is still persisted state, not a bad request.
+	as(&service.PolicyCorruptError{}, DataLoss),
+	as(&service.PolicyInvalidError{}, InvalidArgument),
+	as(&service.PolicyNotFoundError{}, NotFound),
+	as(&service.PolicyExistsError{}, AlreadyExists),
+	// A lost guarded write: the store is unchanged and a re-read and retry
+	// can succeed.
+	as(&service.PolicyConflictError{}, Aborted),
+	// Another tenant's policies are refused even for a system-tenant caller.
+	as(&service.PolicyCrossTenantError{}, PermissionDenied),
+	// A server-side capability gap, not a value the request could fix.
+	as(&service.PolicyStoreUnsupportedError{}, Unimplemented),
 }
 
 // auditVerifyRules are the conditions that stop an audit chain verification
@@ -1590,7 +1627,9 @@ var authSamples = []error{
 	&authmw.BarrierSealedError{Err: seal.ErrBarrierSealed},
 	&auth.RevocationCheckError{},
 	&auth.TenantLookupError{},
+	&auth.TrustStateUnavailableError{},
 	&authmw.UserDisabledError{},
+	&authmw.TenantNotActiveError{},
 	&authmw.AuthMethodNotPermittedError{},
 	&authmw.CertBindingNotPermittedError{},
 	&authmw.FirstInitCertificateMismatchError{},

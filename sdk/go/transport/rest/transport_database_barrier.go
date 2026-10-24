@@ -46,6 +46,10 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, transport.DatabaseUnsealSecret(secret))
+	if err != nil {
+		return err
+	}
 	path := "/v1/databases/" + url.PathEscape(name) + "/unseal"
 	return t.postJSONNoContent(ctx, "UnsealDatabase", path, map[string]string{"secret": secret})
 }

@@ -16,7 +16,9 @@ package vector
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
+	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 )
 
 // PebbleVectorStorage implements the Storage interface using PebbleDB.
@@ -49,6 +52,9 @@ type PebbleVectorStorage struct {
 	// Semaphores for rate limiting
 	readSem  chan struct{}
 	writeSem chan struct{}
+
+	// syncs times every write committed with pebble.Sync.
+	syncs *syncwatch.Observer
 }
 
 // StorageOption configures a PebbleVectorStorage instance.
@@ -112,6 +118,7 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 		nsCache:      make(map[string]*NamespaceInfo),
 		readSem:      readSem,
 		writeSem:     writeSem,
+		syncs:        syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", config.DataDir))),
 	}
 
 	// Load existing namespaces and initialize ID allocators
@@ -123,6 +130,26 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 	s.logger.Info("PebbleDB vector storage initialized")
 
 	return s, nil
+}
+
+// durably runs write with pebble.Sync when the store syncs writes, timing it
+// through s.syncs, and with pebble.NoSync otherwise.
+func (s *PebbleVectorStorage) durably(write func(*pebble.WriteOptions) error) error {
+	if !s.config.SyncWrites {
+		return write(pebble.NoSync)
+	}
+	start := s.syncs.Now()
+	err := write(pebble.Sync)
+	s.syncs.Since(start)
+	return err
+}
+
+// newBatch is a batch on s whose Commit runs through s.durably, so a store
+// that syncs writes commits its batches with pebble.Sync, timed.
+func (s *PebbleVectorStorage) newBatch() *vectorBatch {
+	b := newVectorBatch(s.db, s.metrics)
+	b.durably = s.durably
+	return b
 }
 
 // loadNamespaces loads existing namespaces and initializes ID allocators.
@@ -271,12 +298,7 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 	_ = batch.Set(statsKey, encodeUint64(vec.ID), pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
 
 	// Commit batch
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := batch.Commit(writeOpts); err != nil {
+	if err := s.durably(batch.Commit); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -449,12 +471,7 @@ func (s *PebbleVectorStorage) DeleteVector(ctx context.Context, namespace string
 	}
 
 	// Commit batch
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := batch.Commit(writeOpts); err != nil {
+	if err := s.durably(batch.Commit); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -492,7 +509,7 @@ func (s *PebbleVectorStorage) BatchUpsertVectors(ctx context.Context, namespace 
 		s.metrics.batchLatency.Observe(time.Since(start).Seconds())
 	}()
 
-	batch := newVectorBatch(s.db, s.metrics)
+	batch := s.newBatch()
 	defer func() { _ = batch.Close() }()
 
 	for _, vec := range vecs {
@@ -540,7 +557,7 @@ func (s *PebbleVectorStorage) BatchDeleteVectors(ctx context.Context, namespace 
 		s.metrics.batchLatency.Observe(time.Since(start).Seconds())
 	}()
 
-	batch := newVectorBatch(s.db, s.metrics)
+	batch := s.newBatch()
 	defer func() { _ = batch.Close() }()
 
 	for _, id := range ids {
@@ -762,12 +779,9 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 	// Write namespace metadata
 	key := schema.EncodeNamespaceMetaKey(info.Name)
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := s.db.Set(key, value, writeOpts); err != nil {
+	if err := s.durably(func(o *pebble.WriteOptions) error {
+		return s.db.Set(key, value, o)
+	}); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -779,7 +793,9 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 	// Initialize ID sequence
 	seqKey := schema.EncodeIDSequenceKey(info.Name)
-	if err := s.db.Set(seqKey, encodeUint64(0), writeOpts); err != nil {
+	if err := s.durably(func(o *pebble.WriteOptions) error {
+		return s.db.Set(seqKey, encodeUint64(0), o)
+	}); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -838,12 +854,7 @@ func (s *PebbleVectorStorage) DeleteNamespace(ctx context.Context, namespace str
 	_ = batch.Delete(seqKey, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
 
 	// Commit batch
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
-	if err := batch.Commit(writeOpts); err != nil {
+	if err := s.durably(batch.Commit); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -1070,14 +1081,9 @@ func (s *PebbleVectorStorage) CleanupTombstones(ctx context.Context, olderThan t
 
 			// Extract timestamp from tombstone key
 			// Format: t\x00{namespace}\x00{id:uint64}\x00{timestamp:uint64}
+			// with both integers big-endian, as schema.EncodeTombstoneKey writes them.
 			if len(key) >= 8 {
-				timestampBytes := key[len(key)-8:]
-				timestamp := uint64(timestampBytes[0]) | uint64(timestampBytes[1])<<8 |
-					uint64(timestampBytes[2])<<16 | uint64(timestampBytes[3])<<24 |
-					uint64(timestampBytes[4])<<32 | uint64(timestampBytes[5])<<40 |
-					uint64(timestampBytes[6])<<48 | uint64(timestampBytes[7])<<56
-
-				if timestamp < cutoffTime {
+				if binary.BigEndian.Uint64(key[len(key)-8:]) < cutoffTime {
 					_ = batch.Delete(key, pebble.NoSync) //nolint:gosec // G104: Error deliberately ignored - batch operation, checked on commit
 					count++
 				}
@@ -1087,12 +1093,7 @@ func (s *PebbleVectorStorage) CleanupTombstones(ctx context.Context, olderThan t
 	}
 
 	if count > 0 {
-		writeOpts := pebble.NoSync
-		if s.config.SyncWrites {
-			writeOpts = pebble.Sync
-		}
-
-		if err := batch.Commit(writeOpts); err != nil {
+		if err := s.durably(batch.Commit); err != nil {
 			s.metrics.errors.Inc()
 			return err
 		}

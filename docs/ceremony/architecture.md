@@ -1,6 +1,6 @@
 # Initialization Ceremony — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-29
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 The ceremony is the barrier's custody bootstrap and the home of the share
@@ -114,8 +114,9 @@ type CeremonyCA interface {
 
 `SignCSROptions` carries the **Subject** and **URIs** the ceremony assigns. An
 implementation must write those — and nothing from the CSR but its public key —
-into the certificate. `ceremony.LocalCA` does; qrdb's `cert.CertProvider` and
-go-xkms's CA satisfy the interface through adapters that must do the same.
+into the certificate. `ceremony.LocalCA` and `ceremony.ProviderCA` do.
+`ProviderCA` signs through a `cakey.Provider`; go-xkms's CA is composed in as a
+`cakey.Adapter` behind it.
 
 `IssueCertificate` certifies a public key the caller already holds
 (`IssueCertRequest.PublicKey`); no CA generates or returns a leaf private key.
@@ -180,11 +181,10 @@ issuance and binding; see
 
 ## Alternatives rejected
 
-- **Splitting the User PIN as the Shamir secret.** An earlier ceremony split
-  the User PIN and handed shares out through a separate officer-share
-  protocol. It made a login credential into key material and gave the store a
-  second share path. The ceremony now enrols holders and lets the barrier split
-  its own unseal key through the one distributor.
+- **Splitting the User PIN as the Shamir secret.** Rejected: it makes a login
+  credential into key material and gives the store a second share path. The
+  ceremony enrols holders and lets the barrier split its own unseal key through
+  the one distributor.
 - **Adopting holder certificates or bare public keys.** Enrolling an existing
   certificate or key let the enroller choose the identity. Holders are enrolled
   from a CSR only and the CA assigns the identity.
@@ -195,8 +195,7 @@ issuance and binding; see
 - **Storing raw PIN bytes in the credential store.** Rejected: PIN material is
   owned by a `pin.PINBackend`, hashed with Argon2id or PBKDF2 depending on FIPS
   mode. Raw receive buffers are wiped (`secure.Wipe`) before the bootstrap call
-  returns. In M-of-N the User PIN *is* the Shamir secret and its bytes are wiped
-  once the shares are produced.
+  returns.
 - **A single monolithic bootstrap.** Rejected: barrier custody and admin
   identity have different trust models and different failure modes. Splitting
   them is what lets an operator run one without the other.

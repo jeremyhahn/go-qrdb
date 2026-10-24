@@ -1,6 +1,6 @@
 # Backup and Restore — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -31,7 +31,7 @@ it is an operation on the cluster, taking a backup as input.
 `POST /v1/backups` — `BackupRequest`:
 
 ```json
-{ "destination": "s3://acme-backups/qrdb",
+{ "destination": "/backups/daily",
   "compression": "zstd",
   "encryption": "aes256",
   "key_provider_id": "software",
@@ -40,7 +40,9 @@ it is an operation on the cluster, taking a backup as input.
   "shard_ids": [1, 2, 3] }
 ```
 
-`destination` is required; a local path or an object-store URI. `shard_ids`
+`destination` is required: a label recorded with the backup and bound into its
+authenticated data; the bytes go to the server's backup sink. `compression` is
+validated and recorded, not applied to shard data. `shard_ids`
 empty means **all shards**. `encryption` left unset (or empty string on the
 wire) defaults to `aes256` -- it is **not** plaintext by omission. In either
 case (unset or explicitly `aes256`) `key_ref` is **required**; a caller that
@@ -54,26 +56,29 @@ feature adds.
 Response — `BackupInfo`:
 
 ```json
-{ "id": "bkp-20260819-0300", "timestamp": "2026-08-19T03:00:00Z",
+{ "id": "3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43", "timestamp": "2026-08-19T03:00:00Z",
   "size": 4823945216, "shard_count": 3, "status": "complete",
-  "checksum": "sha256:…", "destination": "s3://acme-backups/qrdb",
+  "checksum": "9f2c…e41a", "destination": "/backups/daily",
   "compression": "zstd", "encryption": "aes256",
   "key_provider_id": "software",
   "metadata": { "schedule": "nightly" },
-  "duration": 184000000000, "error_message": "" }
+  "duration_ms": 184000 }
 ```
+
+`checksum` is the hex-encoded SHA-256. `error_message` is present only on a
+failed backup.
 
 `status`: `pending` · `running` · `complete` · `failed` (with `error_message`).
 A failed create is **recorded**, not discarded, so it appears in `list`.
 `key_provider_id` is empty for a `"none"` backup.
 
-`GET /v1/backups/list` returns `BackupInfo` entries **sorted by timestamp
-descending**.
+`GET /v1/backups/list` returns `{ "backups": [BackupInfo, …], "total": n }`,
+entries **sorted by timestamp descending**.
 
 `POST /v1/backups/restore` — `RestoreRequest`:
 
 ```json
-{ "backup_id": "bkp-20260819-0300",
+{ "backup_id": "3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43",
   "target_shards": [1, 2],
   "validate_first": true,
   "decryption_key_ref": "backup.key" }
@@ -99,8 +104,8 @@ file moved, or restore runs on a different node) — see
 Response — `RestoreResult`:
 
 ```json
-{ "backup_id": "bkp-20260819-0300", "shards_restored": 2,
-  "duration": 96000000000,
+{ "backup_id": "3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43", "shards_restored": 2,
+  "duration_ms": 96000,
   "errors": [ { "shard_id": 3, "message": "…" } ] }
 ```
 
@@ -116,33 +121,26 @@ into the top-level refusal.
 
 ```json
 { "valid": true, "checksum_match": true,
-  "expected_checksum": "sha256:…", "actual_checksum": "sha256:…",
-  "errors": [] }
+  "expected_checksum": "9f2c…e41a", "actual_checksum": "9f2c…e41a" }
 ```
 
 ## Compression and encryption
 
-| Compression | Meaning |
-|---|---|
-| `none` | default |
-| `zstd` | high ratio, fast decompression |
-| `snappy` | fast compression, moderate ratio |
+`compression` accepts `none` (the default), `zstd` and `snappy`. The value is
+validated and recorded in `BackupInfo`; shard data is stored uncompressed.
 
 | Encryption | Meaning |
 |---|---|
 | `aes256` | AES-256-GCM, authenticated — the default when `encryption` is left unset |
 | `none` | plaintext — only by explicit request; logged at WARN and, where a compliance audit logger is configured, recorded |
 
-**BREAKING:** `aes256` became the default; it was previously `none`. A caller
-that relied on the old plaintext default must now send `key_ref`, or send
-`encryption: "none"` explicitly to keep writing plaintext. A request that
-names neither is refused with `BackupEncryptionRequiredError`
-(`INVALID_ARGUMENT`), distinct from the pre-existing
-`BackupEncryptionKeyRequiredError` that fires when `aes256` is named
-explicitly without a key reference.
+A request that names neither a `key_ref` nor `encryption: "none"` is refused
+with `BackupEncryptionRequiredError` (`INVALID_ARGUMENT`); naming `aes256`
+explicitly without a key reference is refused with
+`BackupEncryptionKeyRequiredError`.
 
 The checksum provides **integrity**; authenticated encryption provides
-**authenticity**. They are different properties, and now both default to on.
+**authenticity**. Both are on by default.
 
 ## Status and error mapping
 

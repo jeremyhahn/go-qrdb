@@ -1,6 +1,6 @@
 # TypeScript SDK — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
@@ -13,7 +13,8 @@ frontend already depends on it through `file:../../../sdk/typescript`.
 ```ts
 import { getClient } from "@qrdb/sdk";
 
-const client = await getClient({ baseUrl: "https://db.example.com:63002" });
+const client = await getClient();
+await client.connection.connect("https://db.example.com:63002");
 await client.kv.put("hello", "world");
 const value = await client.kv.get("hello");
 ```
@@ -25,7 +26,7 @@ import { getClient, isDesktop } from "@qrdb/sdk";
 
 const client = await getClient();
 if (isDesktop()) {
-  await client.embeddedServer.isEmbedded();
+  const embedded = client.embeddedServer.isEmbedded();
 }
 ```
 
@@ -53,6 +54,10 @@ empty in the Go integration harness. Its coverage accounting row is
 app, or avoid the embedded-server and other desktop-only clients from browser
 code.
 
-`NotImplementedError` means the selected client does not expose that operation
-yet. Use the desktop path if the operation is implemented only through Wails
-bindings, or call the Go SDK/CLI until the TypeScript surface grows.
+`NotImplementedError` comes from the desktop client: `admin.mintJoinToken` and
+the `volumePools` operations have no Wails binding. Call them from the browser
+client against the REST API, or use `qrdb admin join-token` and
+`qrdb volume-pool`.
+
+`NotConnectedError` means a browser-client call ran before
+`connection.connect`.

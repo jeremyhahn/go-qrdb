@@ -6,11 +6,10 @@
 Command group: `qrdb bootstrap` — trust bootstrap for a **fresh client**
 establishing CA trust to a remote node.
 
-> **Every subcommand in this group currently fails.** They return a typed
+> **Every subcommand in this group fails.** They return a typed
 > `PendingBootstrapBackendError`. The underlying TOFU implementation lives in
 > go-xkms; qrdb exposes the command shape so the canonical surface is identical
-> across `qrdb`, `xkmsctl`, `quicbaasctl` and `platformctl`. This is stated
-> here rather than left to be discovered at the prompt.
+> across `qrdb`, `xkmsctl`, `quicbaasctl` and `platformctl`.
 
 **Distinct from `qrdb init`**, which is server-side first touch — see
 [../firstboot/cli.md](../firstboot/cli.md).
@@ -35,7 +34,7 @@ qrdb bootstrap spki
 
 Both exit non-zero with the pending-backend error.
 
-## What works today
+## What works
 
 The **server side of `direct`** is implemented: a public endpoint serves the CA
 bootstrap certificate to a client with no credentials.
@@ -45,7 +44,7 @@ curl -k https://db.example.com/v1/ca/bootstrap -o ca-bootstrap.pem
 ```
 
 That route exists **only when the deployment configures a bootstrap
-certificate**; otherwise it is a 404 rather than an empty answer.
+source**; otherwise it is a 404 rather than an empty answer.
 
 Having obtained a CA bundle by whatever out-of-band means your deployment
 supports, use it as `--ca-file` on ordinary commands:
@@ -65,5 +64,6 @@ curl -k https://db.example.com/v1/config/initialized
 ## Parity
 
 The five mode verbs exist to hold the canonical surface across the stack's
-binaries. They have `CommandDefinition`s in the parity suite covering the shape;
-there is no behaviour to exercise until the backend lands.
+binaries. `test/integration/bootstrap_cli_test.go` pins that shape on every
+transport: each verb fails with the pending-backend error, positional
+arguments are accepted, and any flag is rejected as unknown.

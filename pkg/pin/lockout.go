@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 )
 
 // The SO PIN lockout. Several SO-PIN-gated operations are reachable without
@@ -164,12 +165,18 @@ type lockoutConfig struct {
 }
 
 // WithLockoutClock makes the lockout read time from clock instead of
-// time.Now -- its backoffs, its aggregate window and its stale-counter
+// the wall clock -- its backoffs, its aggregate window and its stale-counter
 // eviction all run on it. A composer whose time is not the wall clock (a
 // simulation, a deterministic test of the composition) sets it; nil keeps
-// time.Now.
-func WithLockoutClock(clock func() time.Time) LockoutOption {
-	return func(c *lockoutConfig) { c.clock = clock }
+// the real clock. It is the clock.Clock seam the node's other time gates
+// take (node.WithClock).
+func WithLockoutClock(c clock.Clock) LockoutOption {
+	return func(cfg *lockoutConfig) {
+		cfg.clock = nil
+		if c != nil {
+			cfg.clock = c.Now
+		}
+	}
 }
 
 // lockoutRegistry maps each raw backend NewLockoutBackend has decorated to its
@@ -181,12 +188,12 @@ var lockoutRegistry sync.Map
 
 // newLockoutBackend decorates backend with a lockout on clock (nil means
 // time.Now), as its anonymous view.
-func newLockoutBackend(backend PINBackend, clock func() time.Time) *lockoutBackend {
+func newLockoutBackend(backend PINBackend, now func() time.Time) *lockoutBackend {
 	var opts []auth.SOPINLockoutOption
 	if store, ok := backend.(auth.SOPINKnownGoodStore); ok {
 		opts = append(opts, auth.WithKnownGoodStore(store))
 	}
-	return &lockoutBackend{PINBackend: backend, shared: &lockoutShared{lockout: auth.NewSOPINLockout(clock, opts...)}}
+	return &lockoutBackend{PINBackend: backend, shared: &lockoutShared{lockout: auth.NewSOPINLockout(now, opts...)}}
 }
 
 // ForCaller returns the view of backend whose SO PIN checks count against the

@@ -1,6 +1,6 @@
 # Embedding Service — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Turn text into vectors. The server does not run models — it proxies to an
@@ -88,7 +88,7 @@ is constrained.
 
 ## Troubleshooting
 
-**"provider not found".** The name does not match any entry in the `embedding`
+**"embedding provider not found".** The name does not match any entry in the `embedding`
 config, or the provider was deregistered at runtime. Nothing is substituted —
 returning a vector from a different model would be incomparable with everything
 you have already stored.
@@ -105,7 +105,7 @@ create a namespace at the right dimension.
 **Everything is slow and your token bill is large.** Set `cache_capacity` to a
 non-zero value; `10000` is the recommended production figure. Then check the
 `cached` field on responses to confirm hits are happening. Note the cache keys
-on `(provider, model, text)`, so identical text under a new model is a miss.
+on `(model, text)`, so identical text under a new model is a miss.
 
 **A batch failed halfway.** No partial results are returned; the whole request
 fails. Retry, or lower `--batch-size` if the provider is rejecting large calls.
@@ -117,7 +117,8 @@ in the config; the default is 30 seconds.
 to the configured `base_url`. Point it at something you operate — Ollama or vLLM
 locally — rather than a hosted API.
 
-**The `embedding` commands do not exist / return not-found.** No providers are
-configured on the daemon, so the service was never wired in.
+**Every `embedding` command fails with 404, "unknown method" or "EmbeddingServicer
+must not be nil".** No providers are configured on the daemon, so the
+service was never wired in.
 
 Test reference: `make integration-test-embeddings`; coverage row: `test/integration/COVERAGE.md` `[embeddings](../../docs/embeddings/)`.

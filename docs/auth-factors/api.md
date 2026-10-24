@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Two distinct gRPC services, because there are two distinct factor models:
@@ -23,9 +23,7 @@ The Unix socket transport serves the same gRPC wire over a UDS.
 | Relabel | `PUT /v1/users/factors/{id}/label` | `Relabel` | `userauthfactor.Relabel` | `qrdb_user_authfactor_relabel` | `Client.UserAuthFactors().RelabelAuthFactor` | `user_authfactors:relabel` |
 | Login | `POST /v1/users/factors/login` | `Login` | `userauthfactor.Login` | `qrdb_user_authfactor_login` | `Client.UserAuthFactors().LoginAuthFactor` | `user_authfactors:login` |
 
-*(Corrected 2026-10-06: the list, rotate and relabel REST routes and every permission name in both matrices were written to the wrong values. The rotate route carries the factor in the request body, not the path.)*
-
-*(Corrected 2026-10-14: the Embedded column named methods `UserAuthFactors()` does not have; `transport.UserAuthFactorClient` spells each one with an `AuthFactor` suffix.)*
+The rotate route carries the factor in the request body, not the path.
 
 ### Delete — undoing an add
 
@@ -130,24 +128,19 @@ same class) by the reason, never by the message.
 
 ## Capability matrix — ceremony custodian factors (`Client.AuthFactors()`)
 
-The REST paths below name an identifier as a URL segment (`{id}`) even though
-the server's route pattern spells it `{factor}` for every one of them:
-`handleAuthFactorEnroll` reads the segment as the factor name, and
-`handleAuthFactorChallenge` reads the identical position as the enrollment
-ID. `handleAuthFactorVerify`'s segment is checked for presence only and
-otherwise unused — the challenge it verifies comes from `challenge_id` in the
-request body, not the path. One path shape, three different meanings
-depending on which verb it is under — grep `pkg/api/rest/server.go`'s route
-registration and `handlers_authfactor.go`'s handlers before assuming any of
-them.
+Every REST route below spells its path segment `{factor}`, and the segment
+means something different under each verb: `handleAuthFactorEnroll` reads it
+as the factor name, `handleAuthFactorChallenge` and `handleAuthFactorRevoke`
+as the enrollment ID. `handleAuthFactorVerify` checks it for presence only;
+the challenge it verifies comes from `challenge_id` in the request body.
 
 | Capability | REST | gRPC / Unix (`AuthFactorService/`) | QUIC | MCP tool | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
 | Enroll | `POST /v1/authfactors/{factor}/enroll` | `EnrollFactor` | `authfactor.Enroll` | `qrdb_authfactor_enroll` | `Client.AuthFactors().EnrollFactor` | `authfactor:enroll` |
-| Challenge | `POST /v1/authfactors/{id}/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `Client.AuthFactors().ChallengeFactor` | `authfactor:challenge` |
-| Verify | `POST /v1/authfactors/{id}/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `Client.AuthFactors().VerifyFactor` | `authfactor:verify` |
+| Challenge | `POST /v1/authfactors/{factor}/challenge` | `ChallengeFactor` | `authfactor.Challenge` | `qrdb_authfactor_challenge` | `Client.AuthFactors().ChallengeFactor` | `authfactor:challenge` |
+| Verify | `POST /v1/authfactors/{factor}/verify` | `VerifyFactor` | `authfactor.Verify` | `qrdb_authfactor_verify` | `Client.AuthFactors().VerifyFactor` | `authfactor:verify` |
 | List | `GET /v1/authfactors/list` | `ListFactors` | `authfactor.List` | `qrdb_authfactor_list` | `Client.AuthFactors().ListFactors` | `authfactor:list` |
-| Revoke | `DELETE /v1/authfactors/{id}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `Client.AuthFactors().RevokeFactor` | `authfactor:revoke` |
+| Revoke | `DELETE /v1/authfactors/{factor}` | `RevokeFactor` | `authfactor.Revoke` | `qrdb_authfactor_revoke` | `Client.AuthFactors().RevokeFactor` | `authfactor:revoke` |
 
 ### The challenge id is opaque, and carries its own storage location
 
@@ -338,8 +331,8 @@ The namespace is refused as *input* and always written as *output*:
 - **Every `Add` and `Rotate`, over every transport, records
   `attest_level=none`.** A factor written without a ceremony proved nothing
   about where its key lives, and the server says so positively rather than
-  leaving the key absent — absent is what a record written before the field
-  existed looks like, and login policy must be able to tell the two apart.
+  leaving the key absent, so login policy can tell a stamped record from an
+  unstamped one.
   The response carries the persisted metadata, so a caller sees the stamp.
 - **A verified attestation is recorded through `service.AttestationRecorder`
   (`sdk.AttestationRecorder`), and only there.** It is a service-layer

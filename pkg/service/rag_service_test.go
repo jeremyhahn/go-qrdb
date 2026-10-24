@@ -73,6 +73,7 @@ func (m *ragMockEmbSvc) Close() error                                         { 
 type ragMockVecSvc struct {
 	upsertErr error
 	searchErr error
+	deleteErr error
 	searchFn  func(context.Context, *SearchSimilarRequest) (*SearchSimilarResponse, error)
 }
 
@@ -100,6 +101,9 @@ func (m *ragMockVecSvc) GetVector(_ context.Context, _ *GetVectorRequest) (*GetV
 	return &GetVectorResponse{}, nil
 }
 func (m *ragMockVecSvc) DeleteVector(_ context.Context, _ *DeleteVectorRequest) (*DeleteVectorResponse, error) {
+	if m.deleteErr != nil {
+		return nil, m.deleteErr
+	}
 	return &DeleteVectorResponse{Success: true}, nil
 }
 func (m *ragMockVecSvc) BatchUpsert(_ context.Context, _ *BatchUpsertRequest) (*BatchUpsertResponse, error) {
@@ -152,6 +156,8 @@ func (m *ragMockVecSvc) GetCompactionProgress(_ context.Context, _ *GetCompactio
 type ragMockKVSvc struct {
 	kvStore map[string][]byte
 	scanFn  func(ctx context.Context, prefix string) (map[string][]byte, error)
+	// deleteErr fails every Delete.
+	deleteErr error
 }
 
 var _ KVServicer = (*ragMockKVSvc)(nil)
@@ -197,6 +203,9 @@ func (m *ragMockKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (m *ragMockKVSvc) Delete(_ context.Context, key string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	delete(m.kvStore, key)
 	return nil
 }
@@ -258,6 +267,17 @@ func (m *ragMockKVSvc) ListEntities(_ context.Context, _ *ListEntitiesRequest) (
 
 type ragMockIngestor struct {
 	ingestFn func(ctx context.Context, req *IngestDocumentRequest) (*RAGIngestResult, error)
+	// removeErr fails RemoveChunks; removed records each removal it saw.
+	removeErr error
+	removed   []string
+}
+
+func (m *ragMockIngestor) RemoveChunks(_ context.Context, namespace, documentID string) error {
+	if m.removeErr != nil {
+		return m.removeErr
+	}
+	m.removed = append(m.removed, namespace+"/"+documentID)
+	return nil
 }
 
 var _ RAGIngestor = (*ragMockIngestor)(nil)
@@ -416,6 +436,59 @@ func TestRAGService_DeleteDocument_Success(t *testing.T) {
 	assert.Equal(t, "doc1", resp.DocumentID)
 	assert.Equal(t, 2, resp.ChunksRemoved)
 	assert.NotContains(t, kv.kvStore, "rag:ns:doc1:meta")
+}
+
+// putRAGDocMeta stores a document record for doc1 in ns with two chunks.
+func putRAGDocMeta(t *testing.T, kv *ragMockKVSvc) {
+	t.Helper()
+	raw, err := json.Marshal(ragDocumentMeta{ID: "doc1", Namespace: "ns", ChunkCount: 2})
+	require.NoError(t, err)
+	kv.kvStore["rag:ns:doc1:meta"] = raw
+}
+
+func TestRAGService_DeleteDocument_RemovesChunksBeforeRecord(t *testing.T) {
+	kv := newRAGMockKV()
+	ingestor := &ragMockIngestor{}
+	svc := NewRAGService(ingestor, &ragMockRetriever{}, newBoundRAGStore(kv))
+	putRAGDocMeta(t, kv)
+
+	_, err := svc.DeleteDocument(context.Background(), &DeleteRAGDocumentRequest{DocumentID: "doc1", Namespace: "ns"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ns/doc1"}, ingestor.removed, "every chunk's vector and text is removed")
+	assert.NotContains(t, kv.kvStore, "rag:ns:doc1:meta")
+}
+
+func TestRAGService_DeleteDocument_ChunkRemovalErrorKeepsRecord(t *testing.T) {
+	kv := newRAGMockKV()
+	removeErr := errors.New("vector store down")
+	ingestor := &ragMockIngestor{removeErr: removeErr}
+	svc := NewRAGService(ingestor, &ragMockRetriever{}, newBoundRAGStore(kv))
+	putRAGDocMeta(t, kv)
+
+	req := &DeleteRAGDocumentRequest{DocumentID: "doc1", Namespace: "ns"}
+	_, err := svc.DeleteDocument(context.Background(), req)
+	var delErr *RAGDeleteError
+	require.ErrorAs(t, err, &delErr)
+	assert.ErrorIs(t, err, removeErr)
+	assert.Contains(t, kv.kvStore, "rag:ns:doc1:meta", "the record stays so a retry finds the document")
+
+	ingestor.removeErr = nil
+	resp, err := svc.DeleteDocument(context.Background(), req)
+	require.NoError(t, err, "the retry finds the document and finishes")
+	assert.Equal(t, 2, resp.ChunksRemoved)
+	assert.NotContains(t, kv.kvStore, "rag:ns:doc1:meta")
+}
+
+func TestRAGService_DeleteDocument_RecordRemovalError(t *testing.T) {
+	kv := newRAGMockKV()
+	svc := NewRAGService(&ragMockIngestor{}, &ragMockRetriever{}, newBoundRAGStore(kv))
+	putRAGDocMeta(t, kv)
+	kv.deleteErr = errors.New("kv down")
+
+	_, err := svc.DeleteDocument(context.Background(), &DeleteRAGDocumentRequest{DocumentID: "doc1", Namespace: "ns"})
+	var delErr *RAGDeleteError
+	require.ErrorAs(t, err, &delErr)
+	assert.ErrorIs(t, err, kv.deleteErr)
 }
 
 func TestRAGService_DeleteDocument_NotFound(t *testing.T) {

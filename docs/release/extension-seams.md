@@ -1,6 +1,6 @@
 # Extension seams
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Inventory of the seams a composer replaces; the options named here are the contract.
 
 An upstream composer (go-xkms with hardware-backed cryptography, go-quicbaas
@@ -43,19 +43,19 @@ remaining gap, listed under [Open gaps](#open-gaps).
 
 | Capability | Seam | Option | Reachable | Remaining |
 | --- | --- | --- | --- | --- |
-| Node mTLS identity (raft, QUIC, cluster key plane) | `RaftMTLSConfig.Certificate` (`*tls.Certificate` whose `PrivateKey` is any `crypto.Signer`); `lifecycle.RaftTenantClusterConfig.Identity` | `WithRaftMTLS` | Y | none. The Raft transport, the member identity, the key plane's sender and receiver, and the cluster join all take the node identity from the one `*tls.Certificate`; `RaftTenantClusterConfig{CertPEM, KeyPEM}` is deleted. The `Cert`/`Key` PEM pair remains the software path, and `qrdbd` builds the identity from its TLS bundle. |
+| Node mTLS identity (raft, QUIC, cluster key plane) | `RaftMTLSConfig.Certificate` (`*tls.Certificate` whose `PrivateKey` is any `crypto.Signer`); `lifecycle.RaftTenantClusterConfig.Identity` | `WithRaftMTLS` | Y | none. The Raft transport, the member identity, the key plane's sender and receiver, and the cluster join all take the node identity from the one `*tls.Certificate`. The `Cert`/`Key` PEM pair remains the software path, and `qrdbd` builds the identity from its TLS bundle. |
 | Cluster identity (CA trust, bootstrap bundle) | `cakey.CertOnlyProvider`, bootstrap bundle | `WithBootstrapCABundle`, `WithCABootstrap`, `WithClusterJoin` | Y | none for a composer: it enrolls its node however it chooses (see the next row) and hands the result to `WithRaftMTLS` as a signer-backed `Certificate`. `qrdbd`'s own joiner (`clusterenroll.Join`) generates its key in process; that is the daemon's software default, not a composition surface. |
 | Cluster enrolment, CSR join | `cakey.Provider` on the server; a caller-built CSR on the joiner, so the key can sit behind a `crypto.Signer` | `StartJoinServer`, `MintJoinToken`, `JoinCSR`, `JoinCSRHTTP` in `sdk/go/clusterenroll` | Y | none |
 | Cluster enrolment, convenience join | None. `Resolve`, `ResolveCA` and `Join` generate the node key in process and return PEM | `sdk/go/clusterenroll` | software path only | none: it is the default, and a composer uses the CSR join |
-| Server TLS identity | `crypto.Signer` leaf key; `ceremony.CeremonyCA`, `cert.Provider`, explicit `tls.Config` | `WithServerTLSKey`, `WithCertProvider`, `WithCeremonyCA`, `WithTLS` | Y | none. `ceremony.ServerTLSConfig` takes the leaf key as a `crypto.Signer`, sends only its public half to the CA, and signs handshakes through it. Unset, each transport's leaf gets a fresh in-memory P-256 key. |
-| CA signing | `cakey.Provider` (`crypto.Signer` plus certificate), `cakey.CertOnlyProvider`; in the SDK `sdk.CAKeyProvider`, `sdk.CAKeyAdapter`, `sdk.CAKeyCertOnlyProvider` | `node.WithClusterCAKeyProvider`, `WithCABootstrap`, `Infra.ClusterCAKeyProvider` | Y | none. `ceremony.CeremonyCA.IssueCertificate` certifies a caller-held `IssueCertRequest.PublicKey`; `IssuedCert.KeyPEM` is deleted. No path returns the CA key. |
+| Server TLS identity | `crypto.Signer` leaf key; `ceremony.CeremonyCA`, `cert.CertProvider`, explicit `tls.Config` | `WithServerTLSKey`, `WithCertProvider`, `WithCeremonyCA`, `WithTLS` | Y | none. `ceremony.ServerTLSConfig` takes the leaf key as a `crypto.Signer`, sends only its public half to the CA, and signs handshakes through it. Unset, each transport's leaf gets a fresh in-memory P-256 key. |
+| CA signing | `cakey.Provider` (`crypto.Signer` plus certificate), `cakey.CertOnlyProvider`; in the SDK `sdk.CAKeyProvider`, `sdk.CAKeyAdapter`, `sdk.CAKeyCertOnlyProvider` | `node.WithClusterCAKeyProvider`, `WithCABootstrap`, `Infra.ClusterCAKeyProvider` | Y | none. `ceremony.CeremonyCA.IssueCertificate` certifies a caller-held `IssueCertRequest.PublicKey`. No path returns the CA key. |
 | Per-tenant signing (login CA Key B) | `cakey.ProviderFactory` (`sdk.CAKeyProviderFactory`) | `WithCertKeyProviderFactory` on `pkg/server` and `sdk/go/node`, forwarded in both boot paths | Y | none. Mutually exclusive with `WithCertProvider`, which replaces the login CA the factory keys: a node given both fails to build with `CertProviderConflictError`. |
 | Holder signing (share claims) | `ceremony.SignShareClaim(crypto.Signer, ...)` | caller supplies the signer | Y | none |
 | Holder envelope decryption | `keydelivery.Decrypter` (`hpke.PrivateKey`); `keydelivery.NewDecrypter` over an `ecdh.KeyExchanger` (and a `crypto.Decapsulator` for the hybrid KEM) | caller: `ShareEnvelope.Open(keydelivery.Decrypter)` | Y | none. A device-held key opens through `keydelivery.NewDecrypter`, which sends the key agreement to the device; `OpenWithKey` remains the software path. |
 | Node key delivery (HPKE receiver) | `keydelivery.NewReceiver(keydelivery.Decrypter, nodeID, ...)` | `WithKeyDeliveryDecrypter`; `RaftTenantClusterConfig.Decrypter` | Y | none. The receiver opens through the decrypter, which must be the DHKEM(P-256) key of the node's mTLS certificate; a mismatch turns the key plane off. Unset, the default composition converts the node's software key. |
-| Seal strategy (system barrier) | `seal.SealingStrategy`, resolved through `seal.NewSystemStrategyRegistry` | `WithSealStrategy` (registered under its ID); `server.WithStrategyRegistry` | Y | none. Both boot paths resolve the system barrier's strategies through the registry; `server.WithSealStrategy` is deleted. |
+| Seal strategy (system barrier) | `seal.SealingStrategy`, resolved through `seal.NewSystemStrategyRegistry` | `node.WithSealStrategy` (registered under its ID); `server.WithStrategyRegistry` | Y | none. Both boot paths resolve the system barrier's strategies through the registry. |
 | Seal strategy registry (system, tenant and database barriers) | `seal.StrategyRegistry` | `server.WithStrategyRegistry`, passed as a node server option; `Infra.StrategyRegistry` | Y | none. `sdk/go/node` overlays it on the system barrier's software strategies; `pkg/database` resolves per-database barriers through it, and `pkg/tenant` through the default `BarrierKeyProvider` over it (next row). |
-| Tenant barrier key (per node) | `seal.BarrierKeyProvider`: asked with a `BarrierKeyRequest` (barrier, node, strategy, opaque `KeyRef`, epoch), it returns the `SealingStrategy` plus the `CredentialKind` and `Custody` it declares | `server.WithBarrierKeyProvider`, passed as a node server option; `Infra.BarrierKeyProvider` | Y | none. An injected provider wins; otherwise `seal.NewBarrierKeyProvider` resolves over the `StrategyRegistry`. qrdb never parses a `KeyRef`. The node and database barriers join the seam in later work packages. |
+| Tenant barrier key (per node) | `seal.BarrierKeyProvider`: asked with a `BarrierKeyRequest` (barrier, node, strategy, opaque `KeyRef`, epoch), it returns the `SealingStrategy` plus the `CredentialKind` and `Custody` it declares | `server.WithBarrierKeyProvider`, passed as a node server option; `Infra.BarrierKeyProvider` | Y | none. An injected provider wins; otherwise `seal.NewBarrierKeyProvider` resolves over the `StrategyRegistry`. qrdb never parses a `KeyRef`. |
 | Database barrier | Resolves its mode through the `StrategyRegistry` first, then the built-in passphrase, empty and shamir modes; anything else is `UnsupportedBarrierStrategyError` | `server.WithStrategyRegistry` (forwarded to `database.WithBarrierStrategyRegistry`) | Y | none |
 | Seal store | `storage.Storage`, opened by the node under `<install-dir>/seal` | none, by design | node-local | see [The seal store](#the-seal-store) |
 | Tenant DEK engine | `dek.Provider`; `dek.Keyring` is the software default | `WithDEKProvider` | Y | none |
@@ -64,7 +64,7 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | PIN backend | `pin.PINBackend` | `WithPINBackend` | Y | none |
 | Trust anchors | `trustanchor.Registry` | `WithTrustAnchors` | Y | none |
 | Peer attestation verifier | `auth.PeerAttestationVerifier` through `middleware.PeerAttestationGate` | `WithPeerAttestationGate` | Y | none |
-| Extra authenticators | the auth chain | node extra authenticators | Y | none |
+| Extra authenticators | the auth chain (`auth.Authenticator` at an `auth.ChainPosition`) | `node.WithAuthenticators` | Y | none |
 | Storage backend, standalone data plane | `storage.Storage` | `WithStorageFactory` | Y | Gap E |
 | Storage backend, clustered replicas | `statemachine.StorageFactory` | none | N | Gap E |
 | Backup sink | `service.BackupSink` | `WithBackupSink` | Y | none |
@@ -114,9 +114,17 @@ remaining gap, listed under [Open gaps](#open-gaps).
 
 `clock.Clock` is threaded through the lessor (lease time and its expiry
 sweeper), the key-delivery receiver (freshness and replay window), invitation
-expiry, and the token buckets behind the redeem and holder-act limiters. A nil
-clock keeps the real one. Two time gates still read the wall clock directly and
-are not yet behind the seam: PIN lockout and ceremony challenge expiry.
+expiry, the token buckets behind the redeem and holder-act limiters, the SO PIN
+lockout over the node's seal store (`pin.WithLockoutClock`: its backoffs,
+aggregate window and stale-counter eviction), and a share holder's claim
+challenge, which is issued and expires on it (`CeremonyService.SetClock`,
+carried to every tenant and database holder authority through
+`HolderDeps.Clock`). A nil clock keeps the real one. A PIN backend the composer
+injects is decorated with the lockout where it is handed over, so a composer
+that wants its own clock on that lockout decorates it first with
+`pin.NewLockoutBackend(b, pin.WithLockoutClock(c))`; the first decoration of a
+backend is the one every later wrapper shares. Certificate validity and
+enrolment stamps are records, not gates, and stay on the wall clock.
 
 ### The seal store
 
@@ -127,27 +135,11 @@ architecture allows, so the store is opened by the node under
 **root key** behind a device is the seal strategy, not the store: the store
 holds only what the strategy sealed.
 
-## Verified results
-
-These were open questions in the first inventory. Each was read and, where it
-was a gap, fixed.
-
-| Question | Result |
-| --- | --- |
-| How does a database barrier resolve its seal strategy? | **Gap, fixed.** It accepted only passphrase, empty and shamir and ignored the registry, so a hardware strategy a composer registered could seal a tenant barrier but not a database barrier. It now resolves through the registry first. |
-| Is the replicated audit logger reachable from `sdk/go/node`? | **Gap, fixed.** The node built it and served it on the embedded transport only; REST, gRPC, QUIC, Unix and MCP answered the local chain. The node now forwards it to every network transport, and a caller's own logger still wins. |
-| What attestation verifier do auth factors use? | **No gap.** `auth.PeerAttestationVerifier` is an interface reached through `middleware.PeerAttestationGate` and `WithPeerAttestationGate`; a composer supplies its own. |
-| What does `sdk/go/clusterenroll` do for identity and signing? | **Partial, fixed.** The CSR join server and client sit behind a `crypto.Signer` but were not exported by the SDK; they now are. The convenience join still generates the node key in process, which is the software default. |
-| Do the PIN backend, factor registry and audit logger reach `BuildSealServicesOnly` in the sealed window? | **No gap.** Both boot paths hand the same server options to `buildServices` and `buildSealServices`, and a test pins it. |
-
 ## Open gaps
 
 - **Gap E, clustered replica storage.** `WithStorageFactory` reaches the
   standalone data plane. A clustered replica's storage is chosen by its state
   machine through a registry-level factory that node options do not reach.
-
-The time gates named under [The clock](#the-clock) are the only other places a
-composer-held time source does not yet reach.
 
 ## Scope note: service identity
 

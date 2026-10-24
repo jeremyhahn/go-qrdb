@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -12,8 +12,8 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 |---|---|---|---|---|---|---|
 | Store | `POST /v1/credentials/store` | `CredentialStore` | `credential.Store` | `qrdb_credential_store` | `CredentialStore` | `credentials:store` |
 | Submit (manual) | `POST /v1/credentials/submit` | `CredentialSubmit` | `credential.Submit` | `qrdb_credential_submit` | `CredentialSubmit` | `credentials:submit` |
-| Retrieve current | `GET /v1/credentials/{name}/value` | `CredentialRetrieve` | `credential.Retrieve` | `qrdb_credential_retrieve` | `CredentialRetrieve` | `credentials:retrieve` |
-| Retrieve version | `GET /v1/credentials/{name}/versions/{version}` | `CredentialRetrieveVersion` | `credential.RetrieveVersion` | `qrdb_credential_retrieve_version` | `CredentialRetrieveVersion` | `credentials:retrieve_version` |
+| Retrieve current | `GET /v1/credentials/{name}/value` | `CredentialRetrieve` | `credential.Retrieve` | `qrdb_credential_retrieve` | `CredentialRetrieveBuffer` | `credentials:retrieve` |
+| Retrieve version | `GET /v1/credentials/{name}/versions/{version}` | `CredentialRetrieveVersion` | `credential.RetrieveVersion` | `qrdb_credential_retrieve_version` | `CredentialRetrieveVersionBuffer` | `credentials:retrieve_version` |
 | List versions | `GET /v1/credentials/{name}/versions` | `CredentialListVersions` | `credential.ListVersions` | `qrdb_credential_list_versions` | `CredentialListVersions` | `credentials:list_versions` |
 | Rotate | `POST /v1/credentials/{name}/rotate` | `CredentialRotate` | `credential.Rotate` | `qrdb_credential_rotate` | `CredentialRotate` | `credentials:rotate` |
 | GC expired versions | `POST /v1/credentials/{name}/gc` | `CredentialGCExpired` | `credential.GCExpired` | `qrdb_credential_gc_expired` | `CredentialGCExpired` | `credentials:gc_expired` |
@@ -21,9 +21,8 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List names | `GET /v1/credentials` | `CredentialList` | `credential.List` | `qrdb_credential_list` | `CredentialList` | `credentials:list` |
 | Active strategy | `GET /v1/credentials/strategy` | `CredentialStrategy` | `credential.Strategy` | `qrdb_credential_strategy` | `CredentialStrategy` | `credentials:strategy` |
 
-Ten capabilities on all six transports. *(Corrected 2026-10-06: the store and retrieve REST paths, and the retrieve-version, list-versions and GC permissions, were written to the wrong values.)* **Every transport handler routes
-through the same `service.CredentialServicer`**, so behaviour cannot diverge
-between them.
+**Every transport handler routes through the same
+`service.CredentialServicer`**, so behaviour cannot diverge between them.
 
 ## Schemas
 
@@ -36,16 +35,18 @@ Store / submit:
 Rotate:
 
 ```json
-{ "name": "smtp-password", "value": "<bytes>", "grace_period_seconds": 3600 }
+{ "name": "smtp-password", "new_value": "<bytes>", "grace_period_seconds": 3600 }
 ```
 
 `grace_period_seconds: 0` wipes the previous version immediately. The response
-carries the new version number.
+carries `previous_version`, `new_version` and, with a grace period,
+`grace_until_unix`.
 
 Retrieve version: `version` of **`0` means the current version**.
 
-`CredentialVersion` entries carry the version number, creation time and the
-expiry implied by the rotation grace period.
+`CredentialVersionInfo` entries carry `version`, `is_current`,
+`created_at_unix` and `grace_until_unix`, the expiry implied by the rotation
+grace period.
 
 List returns **names only**, never values.
 
@@ -55,9 +56,11 @@ Strategy returns `manual` or `barrier`.
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Success | 200 | `OK` |
+| Success | 200; 204 for store, submit and delete | `OK` |
 | Credential not found | 404 | `NOT_FOUND` |
 | Version expired or never existed | 404 | `NOT_FOUND` |
+| Submit of a name already submitted under `manual` | 409 | `ALREADY_EXISTS` — `ErrCredentialAlreadySubmitted` |
+| Empty name, empty value or negative grace period | 400 | `INVALID_ARGUMENT` |
 | Retrieve under `manual` with nothing submitted | **blocks** until submitted or the context ends | same |
 | Barrier sealed under the `barrier` strategy | 503 | `UNAVAILABLE` |
 | Enumeration on a strategy that cannot | 501 | `UNIMPLEMENTED` — `ErrEnumerationNotSupported` |
@@ -69,10 +72,11 @@ strategy exists to prevent.
 
 ## Secret resolution SPI
 
-Configuration fields may carry `credential://` or `literal://` references,
-resolved at boot by `ConfigProcessor` into **enclave-backed `SecretValue`
-targets rather than plain strings**. A protected field must reference a secret,
-and resolution **fails closed**.
+An application embedding qrdb runs `ConfigProcessor` over its own configuration
+at boot, resolving `credential://` references into **enclave-backed
+`SecretValue` targets rather than plain strings**; `qrdbd`'s own configuration
+carries no reference. A protected field whose reference does not resolve, or
+that holds an inline `literal://` value, **fails closed**.
 
 This is a **Tier 2, composition-plane** surface: it has an `sdk/go` alias file
 and a documented functional option, and no wire endpoint — configuration is
@@ -87,16 +91,13 @@ paginated. Both are bounded by operator action.
 
 ## Versioning
 
-Credential REST paths are under `/v1/`. **No wire endpoint is deprecated and no
-wire schema changed.**
+Credential REST paths are under `/v1/`. **No wire endpoint is deprecated.**
 
-The Go surface is Buffer-only after the OWNER's 2026-10-07 ruling:
-`CredentialRetrieveBuffer` and `CredentialRetrieveVersionBuffer` return a
-protected-memory `*secure.Buffer` the caller must `Destroy`, and the former
-`[]byte` methods (`CredentialRetrieve`, `CredentialRetrieveVersion`,
-`RetrieveCredential`, `RetrieveCredentialVersion`) are deleted from exported Go
-interfaces and implementations. The Buffer forms ride the same wire operations
-and the same `credentials:retrieve` / `credentials:retrieve_version`
-permissions as the forms they replace. The retrieve responses are the one place
+The Go surface is Buffer-only: `CredentialRetrieveBuffer` and
+`CredentialRetrieveVersionBuffer` return a protected-memory `*secure.Buffer`
+the caller must `Destroy`, and no exported Go interface has a `[]byte`
+retrieve method. The Buffer forms ride the `CredentialRetrieve` and
+`CredentialRetrieveVersion` wire operations under the `credentials:retrieve` /
+`credentials:retrieve_version` permissions. The retrieve responses are the one place
 on the wire where a credential value travels as bytes; see
 [Protected-memory boundary](architecture.md#protected-memory-boundary).

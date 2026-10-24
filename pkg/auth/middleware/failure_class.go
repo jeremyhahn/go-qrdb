@@ -311,6 +311,15 @@ var authFailureRules = []struct {
 		}
 		return AuthFailureUnavailable, true
 	}},
+	// The chain was refused while this node could not read all of the trust
+	// set it verifies against, so the refusal says nothing about the
+	// certificate: retry. Ahead of auth.AuthError for the reason the
+	// attestation rule is ahead of everything: the wrapped refusal is an
+	// injected IssuerVerifier's own error, and errors.As walks the chain.
+	{"auth.TrustStateUnavailableError", func(err error) (AuthFailureClass, bool) {
+		var e *auth.TrustStateUnavailableError
+		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError
 		if !errors.As(err, &authErr) {
@@ -390,6 +399,12 @@ var authFailureRules = []struct {
 	}},
 	{"UserDisabledError", func(err error) (AuthFailureClass, bool) {
 		var e *UserDisabledError
+		return AuthFailureUnauthorized, errors.As(err, &e)
+	}},
+	// The same answer as a refused account: the credential is valid, the
+	// principal's tenant is out of service.
+	{"TenantNotActiveError", func(err error) (AuthFailureClass, bool) {
+		var e *TenantNotActiveError
 		return AuthFailureUnauthorized, errors.As(err, &e)
 	}},
 	// The credential is valid and the account is fine -- this WAY in is not

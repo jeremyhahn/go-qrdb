@@ -1,6 +1,6 @@
 # Full-Text Search — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability matrix
@@ -28,9 +28,9 @@ recorded rather than hidden by omission.
 Closing it would need, at minimum:
 
 - a permission vocabulary (`fts:index`, `fts:search`, `fts:remove` or similar) —
-  none exists today;
+  none exists;
 - a `service` layer entry point that resolves tenant and database scope, since
-  `pkg/fts` currently takes a raw `storage.Storage` from its caller;
+  `pkg/fts` takes a raw `storage.Storage` from its caller;
 - `sdk/go/transport` client interface plus the five transport implementations;
 - a `qrdb fts` CLI verb group with `_PerProtocol` integration tests.
 

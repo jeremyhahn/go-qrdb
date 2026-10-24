@@ -1,6 +1,6 @@
 # Secondary Indexes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-07
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb index` — create, drop, query, scan and list secondary
@@ -18,7 +18,7 @@ Create a new secondary index.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--field` | string | — | field name to index |
+| `--field` | string | — | field name to index; required |
 | `--unique` | bool | false | enforce a uniqueness constraint |
 | `--sparse` | bool | false | allow missing indexed field values |
 | `--numeric` | bool | false | index values as numbers, so scans run in numeric order |

@@ -564,7 +564,7 @@ func TestEnsureShardDirDurable_CachesPerDirectory(t *testing.T) {
 	if err := e.Set([]byte("a"), []byte("1")); err != nil {
 		t.Fatal(err)
 	}
-	dirA, _ := e.recordPaths([]byte("a"))
+	dirA, _ := mustRecordPaths(t, e, []byte("a"))
 	if _, ok := e.durableShardDirs.Load(dirA); !ok {
 		t.Fatal("Set did not record its shard directory as durable")
 	}
@@ -613,7 +613,7 @@ func TestEnsureShardDirDurable_SkipsMkdirAllDurableOnCacheHit(t *testing.T) {
 	if err := e.Set(key, []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := e.recordPaths(key)
+	dir, _ := mustRecordPaths(t, e, key)
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestApplyBufferedOps_SetErrorPropagates(t *testing.T) {
 	defer func() { _ = e.Close() }()
 
 	key := []byte("blocked-in-a-batch")
-	shardDir, _ := e.recordPaths(key)
+	shardDir, _ := mustRecordPaths(t, e, key)
 	obstacle := filepath.Dir(shardDir)
 	if err := os.RemoveAll(obstacle); err != nil {
 		t.Fatal(err)
@@ -664,7 +664,7 @@ func TestApplyBufferedOps_DeleteErrorPropagates(t *testing.T) {
 	defer func() { _ = e.Close() }()
 
 	key := []byte("blocked-delete-in-a-batch")
-	_, recordPath := e.recordPaths(key)
+	_, recordPath := mustRecordPaths(t, e, key)
 	if err := os.MkdirAll(recordPath, 0o700); err != nil {
 		t.Fatal(err)
 	}

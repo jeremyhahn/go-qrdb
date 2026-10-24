@@ -1,13 +1,7 @@
 # Cluster Verification — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
-> Conflicts with this document are defects. Fix them here first. The build is
-> in progress: this folder is the requirement it builds against.
->
-> This folder is the requirements contract for the cluster proof harness. Its
-> design decisions are in [Decisions](#decisions).
-> One question the seal-type decision raised is still open: how a joined
-> node enrolls Shamir share holders ([Seal types](#seal-types)).
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -103,8 +97,8 @@ the gate.
 
 E1 to E4 are **absolute**: a single violation fails the gate, whatever else
 the run shows, and a criterion that cannot be decided makes the run invalid,
-never proven. E5 to E7 have no number yet. The first soak measures them; the
-owner ratifies a bound from that measurement; later runs are held to it. A run
+never proven. E5 to E7 have no number yet. The first soak measures them; a
+bound is ratified from that measurement; later runs are held to it. A run
 before ratification reports the figures and makes no pass or fail claim on
 them.
 
@@ -147,7 +141,7 @@ signs on its first boot, and a node that joined an existing cluster holds no
 key to sign one. The proof accepts `shamir`, and a run against such a cluster
 works the same way as `passphrase`; the in-CI test runs `none` and
 `passphrase` until a joined node can enroll holders. How a joined node does so
-is an owner decision.
+is not decided.
 
 ## Components
 
@@ -284,11 +278,11 @@ later change is a configuration or a single implementation, not a redesign.
 
 | Decision | Decided | Seam |
 |---|---|---|
-| Linearizability checker | **porcupine**, as a test-only dependency of the `test/clusterproof` module and of nothing else | `history.Checker`: the soak runs every checker in `Options.Checkers`, and `cmd/clusterproof` adds the porcupine check through `Env.Configure`. The history format is independent of it |
+| Linearizability checker | **porcupine**, as a test-only dependency of the `test/clusterproof` module and of nothing else | `history.Checker`: the soak runs every checker in `Options.Checkers`, and `soak/cmd/clusterproof` adds the porcupine check through `Env.Configure`. The history format is independent of it |
 | Binary or container on the nodes | **the `qrdbd` container**: each node runs the image built from the repository's release `Dockerfile`, the same image a hosted deployment runs | the inventory names the image and the nodes, and container mode brings them up ([Bring-up: BOOT-01](#bring-up-boot-01)); the targets file's `exec`, `signal` and `restart` templates address the node's container, so every fault is a target operation, not a hard-coded command |
 | Seal types | **every seal type the release candidate ships**: the gate is run once per seal type | `PROOF_SEAL`: a run names the seal type it proves, and the run record and verdict carry it ([Seal types](#seal-types)); the cluster under test is configured outside the harness |
 | Soak length | **24 h** for every gate run, and **one 72 h** soak before the release-candidate tag | `PROOF_DURATION` |
-| Lease reads | `raft.lease_read` **stays the default (`true`)**, and the gate runs with it on. A problem the proof finds in lease reads is fixed, not avoided by turning them off; the rate nemesis (`pause` on any deployment, `clock-rate` through `adjtimex(2)` on a kernel per replica) and the in-CI lease probe are what exercise them, in bound and out of it ([engineering.md](engineering.md#the-rate-nemesis)) | the cluster's configuration; the operator declares the read mode in the targets file and the bundle records it with the node's configuration digest |
+| Lease reads | `raft.lease_read` **stays the default (`true`)**, and the gate runs with it on. A problem the proof finds in lease reads is fixed, not avoided by turning them off; the rate nemesis (`pause` on any deployment, `clock-rate` through `adjtimex(2)` on a kernel per replica) and the in-CI lease probe are what exercise them, in bound and out of it ([engineering.md](engineering.md#the-rate-nemesis)) | the cluster's configuration (container mode pins `--lease-read=true` and the `--check-quorum=true` it requires on every node, so the image's file cannot turn them off); the operator declares the read mode in the targets file and the bundle records it with the node's configuration digest |
 
 ## What this feature does not do
 

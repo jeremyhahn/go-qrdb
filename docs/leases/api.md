@@ -1,6 +1,6 @@
 # Leases — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -15,7 +15,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Keep-alive | `POST /lease/keepalive` | `LeaseKeepAlive` | `lease.KeepAlive` | `qrdb_lease_keepalive` | `Client.Lease().LeaseKeepAlive` | `lease:keepalive` |
 | Time-to-live | `GET /lease/ttl` | `LeaseTimeToLive` | `lease.TimeToLive` | `qrdb_lease_ttl` | `Client.Lease().LeaseTimeToLive` | `lease:ttl` |
 | List | `GET /lease/list` | `LeaseList` | `lease.List` | `qrdb_lease_list` | `Client.Lease().LeaseList` | `lease:list` |
-| Attach a key to a lease | `PUT /kv/{key}` with a lease field | `PutWithLease` | `mvcc.PutWithLease` | `qrdb_mvcc_put_with_lease` | `Client.MVCC().PutWithLease` | `mvcc:put_with_lease` |
+| Attach a key to a lease | `PUT /kv/{key}?lease-id={id}` | `PutWithLease` | `mvcc.PutWithLease` | `qrdb_mvcc_put_with_lease` | `Client.MVCC().PutWithLease` | `mvcc:put_with_lease` |
 
 Attachment is a KV capability rather than a lease one; it is listed here because
 a reader looking for "how do I use a lease" needs it, and cross-referenced from
@@ -38,7 +38,8 @@ way, because the binding is decided in the state machine.
 
 ## Schemas
 
-`LeaseInfo`, returned by grant, keep-alive and time-to-live, and in the list:
+A lease (the gRPC message `Lease`, the SDK type `transport.LeaseInfo`), returned
+by grant, keep-alive and time-to-live, and in the list:
 
 ```json
 {
@@ -51,8 +52,8 @@ way, because the binding is decided in the state machine.
 ```
 
 `granted_ttl` is fixed at grant time; `remaining_ttl` counts down and is reset to
-`granted_ttl` by keep-alive. `keys` is base64 and is present where the store
-tracks attachments.
+`granted_ttl` by keep-alive. `keys` holds the attached keys: strings on REST,
+bytes on gRPC and in the SDK (base64 in JSON).
 
 Two timing facts hold on every transport. A keep-alive is answered by the leader
 from its memory and is not replicated, so another replica's deadline does not
@@ -74,7 +75,8 @@ Envelopes: `LeaseGrantResponse`, `LeaseKeepAliveResponse`,
 `LeaseTimeToLiveResponse` each carry a single `lease`; `LeaseListResponse`
 carries `leases`.
 
-`LeaseRevoke` returns `google.protobuf.Empty` on gRPC and an empty body on REST.
+`LeaseRevoke` returns `google.protobuf.Empty` on gRPC and `{"status":"ok"}` on
+REST.
 
 ## Status and error mapping
 
@@ -83,11 +85,11 @@ carries `leases`.
 | Success | 200 | `OK` |
 | Lease not found (expired, revoked, never existed) | 404 | `NOT_FOUND` |
 | `ttl <= 0` on grant | 400 | `INVALID_ARGUMENT` — `service.CommandRejectedError` |
-| Grant on a state machine built without a lessor — only the legacy `regular` state machine, which `qrdbd` refuses to start on | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError`, message `statemachine: lease not configured` |
+| Grant on a state machine built without a lessor — only the `regular` state machine, which `qrdbd` refuses to start on | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError`, message `statemachine: lease not configured` |
 | Lessor closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |
 | Grant whose lease ID is already held | 409 | `ALREADY_EXISTS` — `service.CommandConflictError` |
 | Any other lessor failure during apply | 500 | `INTERNAL` — `service.ApplyFaultError` |
-| Write attaching to an unknown lease | 404 | `NOT_FOUND` — `service.LeaseNotFoundError`; the write is refused and nothing is written, whether the namespaced view caught it before proposal or the state machine caught it at apply *(corrected: this row said 400 / `INVALID_ARGUMENT`, which no path returned)* |
+| Write attaching to an unknown lease | 404 | `NOT_FOUND` — `service.LeaseNotFoundError`; the write is refused and nothing is written, whether the namespaced view caught it before proposal or the state machine caught it at apply |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |

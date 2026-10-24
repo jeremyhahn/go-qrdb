@@ -378,6 +378,14 @@ func (p *putFaultKV) Put(ctx context.Context, key string, value []byte) error {
 	return p.memKVStore.Put(ctx, key, value)
 }
 
+// CompareAndSwap is a write, so failPut fails it exactly as it fails Put.
+func (p *putFaultKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if p.failPut {
+		return false, errKVFault
+	}
+	return p.memKVStore.CompareAndSwap(ctx, key, expected, next)
+}
+
 // TestKVPutFaultBranches covers the persistence-failure branch of the embedded
 // KV service's mutating quota/entitlement methods.
 func TestKVPutFaultBranches(t *testing.T) {

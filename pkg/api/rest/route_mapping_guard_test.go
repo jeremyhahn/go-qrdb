@@ -118,6 +118,7 @@ func newFullyWiredGuardServer(t *testing.T) *Server {
 		WithCeremonyService(newCoverageCeremonyService()), // gates /v1/ceremony/*
 		WithCeremonyCA(&coverageCeremonyCA{}),
 		WithCredentialService(newCoverageCredentialService()), // gates /v1/credentials*
+		WithPolicyService(stubPolicyService{}),                // gates /v1/abac/policies*
 		WithAuditLogger(&stubAuditLogger{}),                   // gates /v1/audit/events
 		WithReplicatedAuditLogger(service.NewOptInAuditLogger(&stubAuditLogger{}, &guardEntitlementLookup{}, false)), // gates /v1/audit/replicated/verify
 		WithGatherer(prometheus.NewRegistry()), // gates /metrics
@@ -510,6 +511,11 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"POST", "/v1/dek/encrypt", permission.DEKEncrypt},
 		{"POST", "/v1/dek/decrypt", permission.DEKDecrypt},
 		{"POST", "/v1/dek/rewrap", permission.DEKRewrap},
+		{"POST", "/v1/abac/policies", permission.ABACPoliciesCreate},
+		{"GET", "/v1/abac/policies", permission.ABACPoliciesList},
+		{"GET", "/v1/abac/policies/{name}", permission.ABACPoliciesRead},
+		{"PUT", "/v1/abac/policies/{name}", permission.ABACPoliciesUpdate},
+		{"DELETE", "/v1/abac/policies/{name}", permission.ABACPoliciesDelete},
 	}
 
 	for _, tc := range cases {

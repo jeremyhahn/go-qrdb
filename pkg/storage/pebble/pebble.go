@@ -265,11 +265,6 @@ func (s *PebbleStorage) DeleteRange(start, end []byte) error {
 	s.writeSem <- struct{}{}
 	defer func() { <-s.writeSem }()
 
-	writeOpts := pebble.NoSync
-	if s.config.SyncWrites {
-		writeOpts = pebble.Sync
-	}
-
 	if len(end) == 0 {
 		var err error
 		if end, err = unboundedRangeEnd(s.db, start); err != nil {
@@ -279,7 +274,9 @@ func (s *PebbleStorage) DeleteRange(start, end []byte) error {
 			return nil
 		}
 	}
-	if err := s.db.DeleteRange(start, end, writeOpts); err != nil {
+	if err := s.durably(s.config.SyncWrites, func(o *pebble.WriteOptions) error {
+		return s.db.DeleteRange(start, end, o)
+	}); err != nil {
 		return &storage.OpError{Op: "delete_range", Err: err}
 	}
 	return nil

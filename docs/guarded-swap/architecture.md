@@ -1,6 +1,6 @@
 # Guarded Swap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 `sdk.GuardedSwap` is the optimistic compare-and-set loop over the transaction
@@ -9,12 +9,10 @@ record has not moved underneath the decision.
 
 ## Problem
 
-Three consumers hand-rolled the same loop — go-quicbaas's scheduler
-firing-claim, its SDLC lease stores, and go-xkms's CA key store — and the two
-quicbaas sites are the same primitive differing only in the refusal predicate.
-Three independent implementations of one concurrency protocol is three
-opportunities to get it subtly wrong, and the failure mode of getting it wrong
-is a lost update that nothing reports.
+Claims and lease stores in downstream consumers need the same loop, differing
+only in the refusal predicate. Each independent implementation of one
+concurrency protocol is another opportunity to get it subtly wrong, and the
+failure mode of getting it wrong is a lost update that nothing reports.
 
 The naive shape a consumer reaches for is read → decide → write. That is not a
 compare-and-set: two callers read the same value, both decide, and both write,
@@ -52,11 +50,10 @@ overwrite the target key with an empty value. Reads therefore go through
 `GetRevision`, the supported linearizable read, which returns the value and its
 `ModRevision` together and so costs nothing the guard needs.
 
-The first revision of this helper read through the transaction plane and passed
-its entire unit suite, because the in-memory fake had implemented the reads
-production refuses. `sdk/go/guardedswap_service_test.go` now exercises the loop
-against the real `TransactionService` and `MVCCKVService`, and pins the refusal
-directly.
+`sdk/go/guardedswap_service_test.go` exercises the loop against the real
+`TransactionService` and `MVCCKVService`, and pins the refusal directly: an
+in-memory fake that implemented reads production refuses would pass a loop that
+production rejects.
 
 ## Decisions
 
@@ -113,10 +110,10 @@ raw bytes rather than inventing an encoding it would then have to version.
 
 ## Related
 
-- `docs/distributed-locks/` and `docs/18-distributed-locking.md` — the lock
+- [../distributed-locks/](../distributed-locks/) and
+  [../18-distributed-locking.md](../18-distributed-locking.md) — the lock
   primitives built on the same transaction plane.
 - `kvstore.AtomicKVStore.CompareAndSwap` — compare-and-swap on the KV plane.
   It is a different surface, not an alternative to this one: it guards a store
   write to a TENANT-plane record, while this helper guards a transaction on the
-  transport plane. Adding it to the store interface meant implementing it in
-  every backend in the same change; see `docs/secondary-indexes/`.
+  transport plane; see [../secondary-indexes/](../secondary-indexes/).

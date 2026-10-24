@@ -35,9 +35,14 @@ import (
 // exactly the caller CallerPrincipal would otherwise classify as the one
 // shared "" anonymous principal, letting one peer's wrong guesses lock out
 // every other peer's legitimate attempts on this listener.
-func withConnectionState(ctx context.Context, conn *quicgo.Conn) context.Context {
+//
+// The chain verifier v (the auth middleware's, nil without one) is bound
+// with the TLS state, so a handler reading the caller's verified certificate
+// (service.VerifiedClientCertThumbprint) resolves it through the trust pool.
+func withConnectionState(ctx context.Context, conn *quicgo.Conn, v auth.IssuerVerifier) context.Context {
 	tlsState := conn.ConnectionState().TLS
 	ctx = auth.WithTLSState(ctx, &tlsState)
+	ctx = auth.WithPeerChainVerifier(ctx, v)
 	if addr := conn.RemoteAddr(); addr != nil {
 		ctx = auth.WithRemoteAddr(ctx, addr.String())
 	}
@@ -56,7 +61,7 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 
 	authCtx, err := s.authMW.AuthenticateQUIC(ctx)
 	if err != nil {
-		return ctx, &AuthenticationError{Reason: err.Error()}
+		return ctx, &AuthenticationError{Reason: err.Error(), Err: err}
 	}
 
 	return authCtx, nil
@@ -70,7 +75,7 @@ func (s *Server) authenticateOnBehalf(ctx context.Context, conn *quicgo.Conn, me
 	ctx = auth.WithTLSState(ctx, &tlsState)
 	authCtx, err := s.authMW.AuthenticateQUICOnBehalf(ctx, method, payload, env.Assertion, env.Signature)
 	if err != nil {
-		return ctx, &AuthenticationError{Reason: err.Error()}
+		return ctx, &AuthenticationError{Reason: err.Error(), Err: err}
 	}
 	return authCtx, nil
 }
@@ -98,12 +103,20 @@ func (s *Server) authorize(ctx context.Context, method string) error {
 // AuthenticationError is returned when QUIC authentication fails.
 type AuthenticationError struct {
 	Reason string
+
+	// Err is the underlying middleware error, so errors.As reaches the typed
+	// cause and authnStatus can answer the class of the refusal rather than
+	// calling every one unauthenticated. Nil when no credential was presented.
+	Err error
 }
 
 // Error returns a human-readable description.
 func (e *AuthenticationError) Error() string {
 	return "quic: authentication failed: " + e.Reason
 }
+
+// Unwrap returns the underlying middleware error.
+func (e *AuthenticationError) Unwrap() error { return e.Err }
 
 // AuthorizationError is returned when QUIC authorization fails.
 type AuthorizationError struct {
@@ -176,4 +189,19 @@ func authzStatus(err error) uint16 {
 		return ServiceErrorStatus(err)
 	}
 	return wire.StatusPermissionDenied
+}
+
+// authnStatus returns the wire status for a request the auth chain refused.
+//
+// Unauthenticated is the fallback, as it is for REST's 401 and gRPC's
+// codes.Unauthenticated: a refusal the middleware does not classify most likely
+// never established who the caller was. A classified one answers its class --
+// a disabled account or a tenant out of service is a denial of a caller the
+// chain did identify, and a store it could not reach is a fault to retry --
+// so QUIC tells the caller what REST, gRPC and MCP tell it.
+func authnStatus(err error) uint16 {
+	if st, ok := quicStatusByClass[authmw.ClassifyAuthError(err)]; ok {
+		return st
+	}
+	return wire.StatusUnauthenticated
 }

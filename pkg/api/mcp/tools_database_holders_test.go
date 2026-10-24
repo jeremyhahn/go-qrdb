@@ -66,7 +66,10 @@ func (d dbHolderTools) call(ctx context.Context, tool string, req, out any) erro
 
 // dbHolderTLSContext is a context whose session presents h's certificate.
 func dbHolderTLSContext(h *servicetest.Holder) context.Context {
-	return auth.WithTLSState(context.Background(), &tls.ConnectionState{PeerCertificates: []*x509.Certificate{h.Cert}})
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{h.Cert},
+		VerifiedChains:   [][]*x509.Certificate{{h.Cert}},
+	})
 }
 
 // submitMCPDBShare answers h's mtls challenge for op and submits its share.

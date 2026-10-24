@@ -1,6 +1,6 @@
 # Backup and Restore — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -20,9 +20,11 @@ type BackupClient interface {
 type CompressionType string
 const (
 	CompressionNone   CompressionType = "none"    // default
-	CompressionZstd   CompressionType = "zstd"    // high ratio, fast decompression
-	CompressionSnappy CompressionType = "snappy"  // fast compression, moderate ratio
+	CompressionZstd   CompressionType = "zstd"
+	CompressionSnappy CompressionType = "snappy"
 )
+// Compression is validated and recorded in BackupInfo; shard data is stored
+// uncompressed.
 
 type EncryptionType string
 const (
@@ -69,6 +71,7 @@ type RestoreRequest struct {
 	TargetShards     []uint64 `json:"target_shards,omitempty"`     // empty = all
 	ValidateFirst    bool     `json:"validate_first,omitempty"`
 	DecryptionKeyRef string   `json:"decryption_key_ref,omitempty"` // overrides the key reference stored in the backup's own envelope; usually left empty -- see ../key-wrapping/
+	AllowPlaintext   bool     `json:"allow_plaintext,omitempty"`    // explicit opt-in to restore a plaintext-stored backup
 }
 
 type RestoreResult struct {
@@ -112,8 +115,7 @@ type VerifyResult struct {
   inside the server's configured key directory for the built-in
   `"software"` provider, never a path), never raw key bytes — see
   [../key-wrapping/](../key-wrapping/architecture.md) for the full envelope
-  design and the owner ruling that retired the inline-bytes path this
-  document originally shipped with.
+  design.
 - **Restore needs no key material at all, in the common case.** The
   backup's own envelope records the key reference it was wrapped under, so
   `RestoreRequest.DecryptionKeyRef` left empty still resolves and decrypts
@@ -126,10 +128,8 @@ type VerifyResult struct {
   [../key-wrapping/architecture.md](../key-wrapping/architecture.md#envelope-format)),
   or a stored-metadata/artifact mismatch all abort the WHOLE restore with
   one typed `*BackupVerificationFailedError`/`*BackupMetadataMismatchError`
-  and import nothing -- this is what closes the defect a security review of
-  this feature found: decrypting and importing shard by shard meant a
-  single tampered shard aborted only that shard, leaving every shard
-  already imported in place with no top-level error.
+  and import nothing, so one tampered shard can never leave the shards
+  imported before it in place.
 - **Restore reports per-shard errors only for an OPERATIONAL import
   failure.** `RestoreResult.Errors` (`[]ShardError`) is populated only once
   every target shard has already passed verification and the underlying
@@ -158,9 +158,9 @@ Every `backup:*` permission is **cross-scope** (`ScopeCross`, declared in
 tenant may exercise it. A backup is taken of shards by id, not of a tenant --
 the backup service has no tenant model -- so one backup holds every tenant's
 data on those shards, and a restore overwrites every tenant's state. The
-routes name no tenant, so as `ScopeSelf` they admitted any holder in any
-tenant; no built-in role below Owner carries `backup:*`, but a tenant's SO
-holds `roles:create` and `roles:assign` and could grant them to itself.
+routes name no tenant, so under `ScopeSelf` they would admit a holder in any
+tenant, and a tenant's SO, holding `roles:create` and `roles:assign`, could
+grant `backup:*` to itself.
 `TestClusterAdmin_TenantGrantedPermissionsAreDenied` in `pkg/auth/rbac`
 proves the refusal.
 
@@ -188,20 +188,15 @@ absence somebody has to notice.
 
 ## Configuration
 
-No dedicated config section. Destinations are per request:
-
-- Local path: `/backups/daily`
-- Object store URI: `s3://bucket/prefix`
-
-Cloud destinations require the corresponding go-objstore build tag
-(`WITH_AWS_S3`, `WITH_GCP_STORAGE`, `WITH_AZURE_BLOB`,
-`WITH_GLACIER`, `WITH_AZURE_ARCHIVE`).
+No dedicated config section. `Destination` is a per-request label, recorded
+with the backup and bound into the AAD of its manifest and shards; it does not
+select storage.
 
 The durable sink an artifact is persisted to is a composition seam,
-`service.BackupSink`: `qrdbd` defaults to `<data-dir>/backups`, and an
-embedded node has none unless the embedder passes `node.WithBackupSink` (or
-`server.WithBackupSink`), which is forwarded in the standalone and the
-clustered boot paths. Without one, an embedded node's backups live in process
+`service.BackupSink`: `qrdbd start --backup-dir <dir>` roots a file-backed
+`backupsink.Sink`, and an embedded node has none unless the embedder passes
+`node.WithBackupSink` (or `server.WithBackupSink`), which is forwarded in the
+standalone and the clustered boot paths. Without one, backups live in process
 memory only. See [extension-seams](../release/extension-seams.md).
 
 `KeyRef`/`DecryptionKeyRef` name key material by reference (the bare NAME of
@@ -238,11 +233,11 @@ path.
   (default with no key refused, default with a key encrypts and restores,
   explicit `none` writes plaintext and warns/audits) lives in
   `sdk/go/conformance`.
-- **Integration**: `backup_restore_test.go` lives in the **cluster stage**
-  (`make integration-test-cluster`). CI runs it as the `backup-restore` leg
-  of the `integration-features` job (`make integration-test-backup-restore`,
-  `.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier — so backup and restore are exercised end to end
-  on every push to `main`, every dispatch, and every pull request labelled
+- **Integration**: `make integration-test-backup-restore` runs
+  `test/integration/backup_cli_test.go` and `backup_restore_test.go`. CI runs
+  them as the `backup-restore` leg of the `integration-features` job
+  (`.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier: on
+  every push to `main`, every dispatch, and every pull request labelled
   `ci:full`.
 
 ## Observability
@@ -252,4 +247,6 @@ path.
 - `VerifyResult` reports expected and actual checksums, not just validity.
 - `RestoreResult.ShardsRestored` and `Errors` give a precise post-restore
   picture.
-- Create, delete and restore are audited through [../audit/](../audit/).
+- A plaintext create or restore is recorded as a `backup.create` /
+  `backup.restore` audit event where a compliance audit logger is configured
+  (`service.WithAuditLogger`; see [../audit/](../audit/architecture.md)).

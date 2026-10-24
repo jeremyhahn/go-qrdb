@@ -1,7 +1,6 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Running several customers on one deployment, with as much separation as each
@@ -56,15 +55,8 @@ qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
 A `volume` or `raft` tenant takes a directory from the volume pool. Every node
 keeps that tenant in its own pool, at `{pool path}/{tenant}`: the cluster
 records which pool and slot the tenant got, and each node maps that to its own
-disk. `--data-root` is retired and refused -- a path names one node's disk, and
-a dedicated disk is configured as a volume pool on every node instead.
-
-A tenant created by an older release may still have a path in its record. Such
-a tenant is **refused**: `tenant list` still shows it beside every other
-tenant, but no node opens its data, and every other tenant is served as usual.
-Delete it with `qrdb tenant delete` -- the delete removes its records and
-touches no directory -- and create it again. Remove the old directory yourself
-once you no longer need it.
+disk. No flag pins a path: a path names one node's disk, so a dedicated disk
+is configured as a volume pool on every node instead.
 
 For a `prefix` tenant the CSR is signed by the tenant's own CA. For a
 `barrier`, `volume` or `raft` tenant it is signed by the cluster CA, because
@@ -107,6 +99,26 @@ run it. A `prefix` tenant's admin can log in straight away.
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
 
+## Describing a tenant
+
+A tenant can carry a free-text description and a small map of `key=value`
+metadata — an owner, an environment, a billing reference. qrdb stores them and
+returns them; nothing in qrdb reads them, so they grant nothing and restrict
+nothing.
+
+```bash
+qrdb tenant update acme --description "Acme production" \
+     --metadata env=prod --metadata owner=platform-team
+qrdb tenant get acme
+```
+
+`--metadata` sets the **whole** map: name every entry you want to keep.
+Leave a flag out and that field is unchanged; `--description ""` and
+`--clear-metadata` empty them. A description is at most 1024 bytes; metadata is
+at most 64 entries, keys at most 128 bytes and values at most 1024 bytes. A
+value over a limit is refused and nothing changes. A tenant's own Admin can
+set both on its tenant.
+
 ## Granting the plan
 
 Nothing above `prefix` is available until you grant it. Entitlements are the
@@ -133,7 +145,10 @@ Only for `barrier`, `volume` and `raft` tenants. The tenant's first admin runs
 `barrier-init` with the certificate `tenant create` issued and its own key;
 that also creates the admin's account. The CLI proves it holds the key: it
 signs a one-time challenge from the node, tied to this TLS connection, with
-the `--key-file` key. The key never leaves your machine.
+the `--key-file` key. The key never leaves your machine. The passphrase, unseal
+key and shares go only over TLS: on a connection without it, the Unix socket
+included, the call is refused with `BarrierSecretRequiresTLSError` before
+anything is sent.
 
 ```bash
 qrdb --cert-file alice/cert.pem --key-file alice/key.pem \
@@ -243,11 +258,6 @@ node. A deleted tenant's disk that is a mount point is emptied; unmount it
 yourself. If it fails for one tenant it still reclaims the others and then
 reports every failure; run it again once the cause is fixed.
 
-**"overlaps retired tenant ... run `qrdb tenant reconcile-deleted`" on
-create.** The directory you asked for still belongs to a deleted tenant this
-node has not cleaned up yet. Run the reconcile against that node, then create
-again.
-
 **Which tenant names can never be used again?** List them, with when each was
 deleted:
 
@@ -267,14 +277,14 @@ quota, so the quota you set is never even consulted.
 and `raft` tiers allocate storage from `storage.volume_pools`. Configure it on
 the server.
 
-**A hardware seal strategy was refused.** `allowed_barrier_modes` empty means
+**A hardware seal strategy was refused.** An empty `--allowed-barrier-modes` means
 software defaults with hardware **fail-closed**. Grant it explicitly.
 
 **Barrier commands fail on a tenant.** It is probably a `prefix` tenant, which
 has no barrier of its own — it rides the system barrier.
 
 **Storage usage looks wrong for a `volume` tenant.** A background reconciler
-walks each volume tenant's `DataRoot` on an interval (default 5 minutes) to
+walks each volume tenant's directory on an interval (default 5 minutes) to
 correct drift. Give it a cycle.
 
 **One tenant's replicas did not come back after a node restart.** They should:
@@ -293,141 +303,52 @@ tenants it already is. For `raft` tenants the raft log lives in the shared host
 LogDB under the *system* barrier; a dedicated per-tenant WAL is **designed but
 not implemented**.
 
-## Strict isolation — RULED
+## Strict isolation
 
-> **Status: ruled — partially implemented.**
-> Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
-> Correction (2026-10-05): creating a tenant with its first admin, and
-> restricting barrier init to that admin's certificate, already shipped for
-> every tenant on 2026-10-03 — see [Creating tenants](#creating-tenants).
->
-> **Correction (2026-10-06):** the floor and tenant setting described below
-> now exist and tighten-only as described, and nobody — the system tenant
-> included — can reach another tenant's `ScopeSelf` data or IAM records any
-> more, regardless of the setting. What is **not** true yet: no CLI or API
-> surface can read or set either setting (the Go service API is ready for it,
-> nothing is wired above it), a cluster that never touches the floor reads it
-> as `operator-access` rather than the `strict` default described below
-> (nothing performs the "first-boot, recorded once" write that default
-> assumes), and moving a strict tenant's records into a home store of its own
-> — the heart of "what a strict tenant gets" below — has not started.
->
-> **Per-node barrier keys (2026-10-08).** Each node serving an isolated tenant
-> initialises its own key for the tenant's barrier from a signed init
-> statement; no key is carried between nodes.
->
-> - **Shipped for a `raft` tenant whose key auto-unseals.** The platform
->   signs the statement and every node of the tenant's groups initialises its
->   own key, so `qrdb tenant barrier-status` on two nodes shows different key
->   fingerprints. A node added to the tenant's group shows the barrier as
->   sealed and uninitialised until it has initialised its own key.
-> - **Not yet for a tenant whose admin holds the key.** Its key is still
->   delivered to the other serving nodes.
-> - **A single-node cluster run without a cluster certificate** cannot create
->   a `raft` tenant whose key auto-unseals yet: the create is refused because
->   the node has nothing to sign the statement with.
->
-> On a cluster, creating a `barrier`, `volume` or `raft` tenant, or changing a
-> tenant to one of those types, is refused as unavailable until every node
-> runs a release with the `per-node-barrier-keys` feature, and succeeds once a
-> retry finds it active. A standalone node is never refused.
->
-> **Choosing a type for confidentiality.** A `prefix` tenant lives in the
-> shared store, under a barrier the platform manages: **its data is readable
-> by the platform.** A tenant that needs its data kept from the platform
-> operator chooses an isolated type (`barrier`, `volume` or `raft`). Whether
-> an isolated tenant's key auto-unseals is the tenant's own choice, never
-> refused; once per-node keys are complete, its barrier status shows which it
-> chose.
->
-> **Correction (2026-10-07):** the cluster floor can now be set at start with
-> the configuration key `tenant.isolation_policy` (`strict` or
-> `operator-access`; environment `QRDB_TENANT_ISOLATION_POLICY`). It is
-> applied on every start and only ever tightens: a value looser than the
-> stored floor is logged and ignored. Left unset, nothing is applied.
->
-> ```yaml
-> tenant:
->   isolation_policy: strict
-> ```
->
-> **Correction (2026-10-07, revised the same day):** every isolated tenant —
-> `barrier`, `volume` or `raft`, under either policy — now gets a home store
-> of its own. On a cluster it is a group with a replica on every node; on a
-> standalone server it is a store under the tenant's own barrier. Its users,
-> roles, role bindings, data-key keyring, invitations, CA and the certificates
-> its CA issues live there and not in the platform's store, and its admin
-> signs in through any node. The policy decides only what an operator may do,
-> so a tenant may be made strict, or the floor raised to `strict`, at any
-> time. Creating an isolated tenant on a cluster waits for that group to
-> start, so `tenant create` can take up to 25 seconds. A node that has just
-> joined answers a tenant's requests with a retryable "unavailable" until its
-> copy has caught up; clients retry on another node. The tenant's custodians,
-> audit trail and database catalog have not moved yet.
+Design: [architecture.md](architecture.md#strict-tenant-isolation--design).
 
-- The tenant keeps all of its own records in its own store: users, roles,
-  factors, certificates, its CA, its database catalog, its audit trail and its
-  keys.
-- Those records live only on the nodes that serve the tenant. Each of those
-  nodes encrypts them under a key that exists on that node alone.
-- The platform keeps a short registry entry: the tenant's name, tier, plan,
-  where it runs, and whether it is sealed.
-- The platform operator cannot read or change any of the tenant's records.
-- Nobody outside the tenant can reach its data.
+**Choosing a type for confidentiality.** A `prefix` tenant lives in the shared
+store, under a barrier the platform manages: **its data is readable by the
+platform.** A tenant that needs its data kept from the platform operator
+chooses an isolated type (`barrier`, `volume` or `raft`). Whether an isolated
+tenant's key auto-unseals is the tenant's own choice, never refused.
 
-A strict tenant always has storage of its own, so it must be on the `barrier`,
-`volume` or `raft` tier; `prefix` is not available. The server therefore needs
-`storage.volume_pools`.
+**The cluster floor.** Set it at start with the configuration key
+`tenant.isolation_policy` (`strict` or `operator-access`; environment
+`QRDB_TENANT_ISOLATION_POLICY`). It is applied on every start and only ever
+tightens: a value looser than the stored floor is logged and ignored. Left
+unset, nothing is applied. A FIPS 140-3 build raises the floor to `strict`. No
+CLI verb or API endpoint reads or sets a policy.
 
-**What changes on an `operator-access` cluster.** Operators who hold the
-`tenant_identity` permissions can read and administer users, roles and factors
-in any tenant that has not opted into strict. Every such action appears in
-that tenant's own audit trail. Operators still cannot reach any tenant's
-databases.
-
-To see which policy applies:
-- `qrdb cluster isolation-policy` shows the cluster floor;
-- `qrdb tenant get <id>` shows a tenant's effective policy.
-
-A policy only ever tightens.
-
-**Bringing up a new strict tenant.** Creating with a CSR and initializing with
-only the bound certificate already works today, for every tenant — see
-[Creating tenants](#creating-tenants) and
-[The tenant's own barrier](#the-tenants-own-barrier) above. The only new flag
-is `--isolation-policy`:
-
-```bash
-# the tenant's admin, on their own machine — only csr.pem leaves it:
-qrdb ca csr --username alice --out ./alice
-
-# operator (or the self-service flow): create the tenant with that CSR
-qrdb tenant create --id acme --name "Acme" --isolation-type raft \
-     --admin-username alice --admin-csr alice/csr.pem --isolation-policy strict
-
-# tenant: initialize with the certificate tenant create issued, which is the
-# only one the barrier's trust-on-first-init window admits
-qrdb --cert-file alice/admin-cert.pem --key-file alice/key.pem \
-     tenant barrier-init --id acme --strategy passphrase --passphrase "$PP"
+```yaml
+tenant:
+  isolation_policy: strict
 ```
 
-`tenant create` and `barrier-status` both report the SPKI thumbprint of the
-admin bound. Compare it with your own key's thumbprint. If init is refused for
-your key, the tenant was created with a different CSR: treat that tenant as
-compromised and ask for a new one.
+**The tenant's home store.** Every isolated tenant — `barrier`, `volume` or
+`raft`, under either policy — has a home store of its own. On a cluster it is a
+group with a replica on every node; on a standalone server it is a store under
+the tenant's own barrier. Its users, roles, role bindings, data-key keyring,
+invitations, CA and the certificates its CA issues live there and not in the
+platform's store, and its admin signs in through any node. The tenant's
+custodians, audit trail and database catalog stay in the platform's store. The
+policy decides only what an operator may do, so a tenant may be made strict, or
+the floor raised to `strict`, at any time.
 
-**After a restart, unseal every serving node.** `qrdb tenant barrier-unseal`
-does that for you. A node that joined since the last unseal stays sealed until
-the next unseal reaches it.
+Creating an isolated tenant on a cluster waits for its home group to start, so
+`tenant create` takes longer than for a `prefix` tenant. A node that has just
+joined answers a tenant's requests with a retryable "unavailable" until its
+copy has caught up; clients retry on another node.
 
-**Connecting through any node.** The CLI and SDK put your tenant in the TLS
-server name (SNI). If you connect to a node that does not serve your tenant,
-that node passes your still-encrypted connection on to one that does. Your
-session is never opened on the node in between.
+**Per-node barrier keys.** Each node serving an isolated tenant initializes its
+own key for the tenant's barrier from a signed init statement; no key is
+carried between nodes. For a `raft` tenant whose key auto-unseals, the platform
+signs the statement, so `qrdb tenant barrier-status` on two nodes shows
+different key fingerprints. A node added to the tenant's group shows the
+barrier as sealed and uninitialized until it has initialized its own key. A
+passphrase `tenant barrier-init` is sent by the CLI to every serving node.
 
-The Unix socket and the embedded client are the exceptions. With those you
-must be on a serving node; otherwise you get "tenant is not served by this
-node", together with the list of serving nodes.
-
-**Backups.** Back up a strict tenant's databases yourself, with
-`qrdb tenant backup create`. Platform backups do not include them.
+On a cluster, creating a `barrier`, `volume` or `raft` tenant, or changing a
+tenant to one of those types, is refused as unavailable until every node runs a
+release with the `per-node-barrier-keys` feature, and succeeds once a retry
+finds it active. A standalone node is never refused.

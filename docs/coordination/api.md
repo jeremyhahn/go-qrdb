@@ -1,6 +1,6 @@
 # Coordination — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -21,8 +21,8 @@ limitations under the License.
 
 **The coordination surface is an SDK-level composition, not a wire protocol.**
 It adds no endpoint, no RPC, no QUIC method, no MCP tool and no route to any
-transport. Each of its five verbs is one or two calls on verbs the transports
-already carry, so it is available over **all six transports** without any of
+transport. Each of its five verbs is one to three calls on verbs the transports
+carry, so it is available over **all six transports** without any of
 them knowing it exists.
 
 That is why the matrix below shows, per coordination verb, **which existing
@@ -56,6 +56,10 @@ type CoordinationClient interface {
 }
 ```
 
+Both return `*CoordinationUnsupportedError{Capability}` when a sub-client is
+missing: `Coordination()` when the transport does not implement one of the
+four interfaces, `NewCoordinator` when an argument is nil.
+
 `Coordinator` is the only implementation. `CoordinationClient` exists so a
 consumer can substitute a fake in its own tests.
 
@@ -76,7 +80,7 @@ UDS, so its methods match the gRPC column), **REST**, **gRPC**, **QUIC**,
 | `Lease.Renew` | lease keep-alive | `POST /lease/keepalive` | `LeaseKeepAlive` | `lease.KeepAlive` | `qrdb_lease_keepalive` | `Client.Lease().LeaseKeepAlive` | `lease:keepalive` |
 | `Lease.Release` | lease revoke | `POST /lease/revoke` | `LeaseRevoke` | `lease.Revoke` | `qrdb_lease_revoke` | `Client.Lease().LeaseRevoke` | `lease:revoke` |
 | `Lease.Done` — liveness observer | lease time-to-live | `GET /lease/ttl` | `LeaseTimeToLive` | `lease.TimeToLive` | `qrdb_lease_ttl` | `Client.Lease().LeaseTimeToLive` | `lease:ttl` |
-| `Watch` | watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, prefix field) | `watch.WatchPrefix` | `qrdb_watch` | `Client.Watch().WatchPrefix` | `watch:watch_prefix` |
+| `Watch` | watch a prefix | `GET /watch?key=<p>&prefix=true` | `Watch` (server-streaming, prefix field) | `watch.WatchPrefix` | `qrdb_watch` | `Client.Watch().WatchPrefix` | `watch:watch` |
 
 **`CompareAndSwap` uses the transaction plane, not the KV guarded-write
 verbs.** `POST /kv/compare-and-swap` (`kv.CompareAndSwap`) is a different
@@ -91,7 +95,7 @@ credential. A consumer using the whole surface needs, at minimum:
 ```
 kv:get  kv:put  transaction:execute
 lease:grant  lease:keepalive  lease:revoke  lease:ttl
-watch:watch_prefix
+watch:watch
 ```
 
 A consumer that uses only `Get`, `Put` and `CompareAndSwap` needs only
@@ -151,7 +155,7 @@ Transport-level statuses are the underlying capability's, unchanged:
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
-| Lease on a backend that keeps none (standalone file/objstore) | 501 | `UNIMPLEMENTED` |
+| Lease service not composed on the node | 501 | `UNIMPLEMENTED` |
 
 What the coordination layer does with them:
 
@@ -160,7 +164,7 @@ What the coordination layer does with them:
 | Key not found, from `Get` | `(nil, nil)` — **translated, never surfaced** |
 | Precondition not met, from `CompareAndSwap` | `(false, nil)` — an outcome, not an error |
 | Precondition not met, from the acquire bind | `*LeaseHeldError{Key}` (and the grant is revoked) |
-| Lease not found, from the acquire bind, for the lease just granted | `*LeaseExpiredBeforeBindError{Key, TTL}` — the grant expired before the bind; nothing to revoke |
+| Lease not found, from the acquire bind, for the lease just granted | `*LeaseExpiredBeforeBindError{Key, TTL, Err}` — the grant expired before the bind; nothing to revoke |
 | Lease not found / expired, from `Release`'s revoke | `nil` — the binding is already gone, which is what was asked for |
 | Lease not found / expired, from a liveness poll | `Done` closes; loss is proven |
 | Keep-alive accepted after the ownership deadline | `*LeaseLostError{Key}` — **not** `nil` |
@@ -171,13 +175,9 @@ Full semantics, including which paths fail closed, are in
 
 ## Run-mode availability
 
-Every verb is served in both run modes. The storage backend bounds the lease:
-
-| Verb | Standalone, pebble/memory | Standalone, file/objstore | Raft |
-|---|---|---|---|
-| `Get`, `Put`, `CompareAndSwap` | serves | serves | serves |
-| `AcquireLease` | serves | typed refusal | serves |
-| `Watch` | serves | serves | serves |
+Every verb is served in both run modes and on every storage backend: a
+standalone node composes the MVCC engine over memory, file, pebble and objstore
+storage alike.
 
 Discover it before you depend on it, on any transport:
 
@@ -193,12 +193,13 @@ Discover it before you depend on it, on any transport:
 The permission is `admin:capabilities`.
 
 The response carries `mode` (`"standalone"` or `"raft"`) plus per-family
-booleans; `lease`, `watch`, `mvcc` and `kv` are true in both modes. The
-capability report is mode-level: a standalone node on the file or objstore
-backend reports `lease` true and refuses it per call.
+booleans. `kv` is always true; `lease`, `watch` and `mvcc` are true in both
+modes unless the operator sets `lease.enabled`, `watch.enabled` or
+`mvcc.enabled` to false.
 
-The refusal is `*transport.CapabilityUnsupportedError` on every transport,
-the embedded one included.
+A node whose lease service is not composed refuses each lease call with
+`*transport.CapabilityUnsupportedError` on every transport, the embedded one
+included.
 
 ## Pagination
 

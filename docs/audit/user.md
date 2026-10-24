@@ -1,6 +1,6 @@
 # Audit — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Who did what, when, and whether it worked. Auditing is on by default.
@@ -16,14 +16,12 @@ Who did what, when, and whether it worked. Auditing is on by default.
   system-tenant principal holding `audit:verify` (the Security Officer and
   Auditor built-in roles have it) can.
 - A node with an audit sink wired. The daemon always builds one: a hash-chained
-  NDJSON file beside the data directory, an in-memory ring buffer, and a mirror
+  NDJSON file in the data directory, an in-memory ring buffer, and a mirror
   to the operational log stream.
 
-Everything in this guide reads the **node-local** trail above. A separate,
-cluster-wide replicated audit chain exists internally
-([architecture.md](architecture.md#cluster-wide-replicated-trail)) but has no
-user-facing surface yet — nothing proposes writes to it, and there is no
-`qrdb audit` command or API that reads it.
+Everything in this guide reads the **node-local** trail above unless a command
+passes `--replicated`, which reads the cluster-wide replicated audit chain
+([architecture.md](architecture.md#cluster-wide-replicated-trail)).
 
 The only audit-related setting is the failure posture, and it lives under
 `auth:` because that is where it is enforced:
@@ -32,13 +30,6 @@ The only audit-related setting is the failure posture, and it lives under
 auth:
   audit_failure_policy: "fail-closed"   # the default; see "When the audit disk fills"
 ```
-
-> **Correction (now applied throughout).** Earlier revisions of this guide
-> described an `audit:` block with `enabled`, `kv_backend`, `file_backend` and
-> `file_path`, and a KV-backed store queried by the CLI. **No such
-> configuration or KV backend has ever existed.** `audit_failure_policy` above
-> is the only audit-related key. The stale `kv_backend` references further down
-> have been corrected rather than flagged.
 
 ## First run
 
@@ -90,7 +81,7 @@ while :; do
   OUT=$(qrdb audit query --from 2026-08-01T00:00:00Z --limit 1000 \
         ${CURSOR:+--cursor "$CURSOR"} --output json)
   echo "$OUT" | jq -c '.events[]'
-  CURSOR=$(echo "$OUT" | jq -r '.next_cursor // empty')
+  CURSOR=$(echo "$OUT" | jq -r '.next // empty')
   [ -z "$CURSOR" ] && break
 done
 ```
@@ -126,7 +117,8 @@ enrolments, envelope claims, quorum submissions, rekeys and revocations, in
 every scope, including the unseal quorum a sealed node gathers before it
 starts -- and **every permission denial**.
 Each entry names the actor, the actor's **role at that moment**, the tenant, the
-resource, the action, the outcome, the client IP and a request ID.
+resource, the action and the outcome; a Security Officer PIN check also
+records the client's address.
 
 Entries are chained by hash, so an edit or a deletion is detectable.
 
@@ -136,7 +128,7 @@ The file backend writes one JSON object per line at mode 0600. Point your
 collector at it:
 
 ```bash
-tail -F /var/lib/qrdb/audit.log | your-shipper
+tail -F <data-dir>/audit-events.ndjson | your-shipper
 ```
 
 **There is no built-in shipping**, no syslog output and no remote sink.
@@ -149,8 +141,14 @@ A Go program that gates audit access with the SDK's RBAC authorizer
 - `sdk.PermissionAuditRead` (`audit:read`)
 - `sdk.PermissionAuditQuery` (`audit:query`)
 - `sdk.PermissionAuditStream` (`audit:stream`)
+- `sdk.PermissionAuditDelete` (`audit:delete`)
 
 Each one has the same value as the permission the server checks.
+`audit:delete` names deleting audit events under retention administration.
+The SO and Admin built-in roles hold it; the Auditor role does not, so the
+role that reviews the trail cannot remove from it. No qrdb endpoint deletes
+audit events: the verb is for a program that runs its own retention over
+the trail and authorizes it with the SDK.
 
 ## Troubleshooting
 
@@ -172,7 +170,7 @@ include a reason, like `failure:leader unavailable`. Prefix matching handles
 this; check you are not passing the full string.
 
 **You expect more than 1000 results.** That is the server's hard cap per page.
-Follow `next_cursor`.
+Follow `next`.
 
 **The audit log is enormous.** The file sink rotates at its size bound and
 deletes archives older than its retention window (90 days by default) when it
@@ -212,7 +210,7 @@ audit plane itself being down:
 qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}
     an authorization decision could not be recorded
 
-qrdb_audit_write_failures_total{component="user"|"role"|"custodian"|...}
+qrdb_audit_write_failures_total{component="user"|"role"|"share-holder"|...}
     some other subsystem's record could not be written; the label says
     whose trail is now incomplete
 
@@ -228,8 +226,8 @@ qrdb_audit_rotation_failures_total
 By default **qrdb refuses an authorization decision it cannot record.** An
 unrecorded grant is precisely the event audit exists to prevent, so a node
 whose audit sink has failed answers `503 Service Unavailable` (gRPC
-`UNAVAILABLE`) with `audit log failed, refusing request: ...` naming the file
-that failed.
+`UNAVAILABLE`) with `audit: authorize: audit log failed, refusing operation: ...`
+followed by the sink's own error.
 
 **Fix the sink.** That is the intended resolution and usually the fast one:
 
@@ -284,8 +282,9 @@ code first: a `503` whose body says `audit log failed` means the audit sink is
 down and the PIN is fine.
 
 A typo in the value **fails the boot** rather than picking a posture for you.
-`"fail_open"`, `"true"` and `"permissive"` are all rejected; the accepted
-values are `"fail-closed"` (the default) and `"fail-open"`.
+`"fail_open"`, `"true"` and `"permissive"` are all rejected. The accepted
+values, case-insensitive, are `"fail-closed"` (the default; also `"failclosed"`
+or `"closed"`) and `"fail-open"` (also `"failopen"` or `"open"`).
 
 **Nothing at all is being audited and requests still succeed.** The node has no
 audit sink wired. With no sink there is nothing that could fail, so the
@@ -307,9 +306,8 @@ file written after a rotation carries the digest the previous file's
 `chain-anchor` entry recorded, so your tooling verifies the directory as ONE
 sequence: check each file's records against each other, then check that each
 file's first `prev_hash` really is the `prev_hash` its predecessor's anchor
-states. A break at the first record of an archive used to be an artefact of the
-verifier and was documented here as expected — **it is not expected now**, and
-it means the file before it is missing or was rewritten.
+states. A break at the first record of an archive means the file before it is
+missing or was rewritten.
 
 If a verification reports a break, check first whether the node logged
 `audit: fsync failed` or `audit: write failed` near that point, and whether
@@ -327,8 +325,9 @@ newest `prev_hash` you have seen somewhere off the node, or ship the trail.
 **You need to be sure nobody edited the trail.** Entries carry the hash of the
 previous entry, so an edit or a deletion *within one file* is detectable by
 recomputing the chain. Run `qrdb audit verify` — it recomputes the chain
-across the whole rotation set for you and reports which file and record index
-broke, if any.
+across the whole rotation set for you and, on a break, names in `reason` the
+file and record index where the chain broke, or the file that does not link to
+the rest of the set.
 
 **A verification failure is a tamper finding, not a request failure.** A
 response with `"verified": false` (or, from the CLI, a non-zero exit) means

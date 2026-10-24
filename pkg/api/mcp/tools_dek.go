@@ -58,7 +58,7 @@ func handleDEKStatus(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_status", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_status", dekwire.Status(st))
+		return toolJSONResult("qrdb_dek_status", dekwire.Status(st))
 	}
 }
 
@@ -75,7 +75,7 @@ func handleDEKRotate(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_rotate", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_rotate", dekwire.Status(st))
+		return toolJSONResult("qrdb_dek_rotate", dekwire.Status(st))
 	}
 }
 
@@ -93,7 +93,7 @@ func handleDEKRetire(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_retire", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_retire", dekwire.Status(st))
+		return toolJSONResult("qrdb_dek_retire", dekwire.Status(st))
 	}
 }
 
@@ -116,7 +116,7 @@ func handleDEKEncrypt(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_encrypt", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_encrypt", dekwire.Encrypt(sealed))
+		return toolJSONResult("qrdb_dek_encrypt", dekwire.Encrypt(sealed))
 	}
 }
 
@@ -139,7 +139,7 @@ func handleDEKDecrypt(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_decrypt", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_decrypt", dekwire.Decrypt(opened))
+		return toolJSONResult("qrdb_dek_decrypt", dekwire.Decrypt(opened))
 	}
 }
 
@@ -162,7 +162,7 @@ func handleDEKRewrap(svc service.DEKServicer) mcpserver.ToolHandlerFunc {
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_dek_rewrap", Err: err}
 		}
-		return dekJSONResult("qrdb_dek_rewrap", dekwire.Rewrap(rw))
+		return toolJSONResult("qrdb_dek_rewrap", dekwire.Rewrap(rw))
 	}
 }
 
@@ -188,8 +188,8 @@ func dekDataArgs(req mcp.CallToolRequest, field string) (data, aad []byte, failu
 	return data, aad, nil
 }
 
-// dekJSONResult renders a keyring response as the tool's JSON text result.
-func dekJSONResult(tool string, v any) (*mcp.CallToolResult, error) {
+// toolJSONResult renders a response as the tool's JSON text result.
+func toolJSONResult(tool string, v any) (*mcp.CallToolResult, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, &ToolError{Tool: tool, Err: err}

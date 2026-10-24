@@ -36,6 +36,9 @@ type minimalRAGSvc struct {
 	queryErr         error
 	deleteErr        error
 	listDocumentsErr error
+
+	// lastIngest is the request IngestDocument last received.
+	lastIngest *service.IngestDocumentRequest
 }
 
 var _ service.RAGServicer = (*minimalRAGSvc)(nil)
@@ -43,6 +46,7 @@ var _ service.RAGServicer = (*minimalRAGSvc)(nil)
 func newMinimalRAGSvc() *minimalRAGSvc { return &minimalRAGSvc{} }
 
 func (m *minimalRAGSvc) IngestDocument(_ context.Context, req *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
+	m.lastIngest = req
 	if m.ingestErr != nil {
 		return nil, m.ingestErr
 	}
@@ -248,7 +252,8 @@ func TestMCP_RAG_Query_PathExercise(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMCP_RAG_IngestDocument_AllParams(t *testing.T) {
-	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
+	svc := newMinimalRAGSvc()
+	tr, cleanup := connectRAGInProcess(t, svc)
 	defer cleanup()
 
 	resp, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
@@ -260,13 +265,47 @@ func TestMCP_RAG_IngestDocument_AllParams(t *testing.T) {
 		ChunkStrategy: "sentence",
 		ChunkSize:     512,
 		ChunkOverlap:  50,
+		ChunkMinSize:  32,
 		Metadata:      map[string]string{"category": "test", "source": "api"},
 	})
 	if err != nil {
 		t.Fatalf("RAGIngestDocument with all params: %v", err)
 	}
 	if resp.DocumentID != "doc-full" {
-		t.Logf("unexpected DocumentID: %q", resp.DocumentID)
+		t.Errorf("DocumentID = %q, want %q", resp.DocumentID, "doc-full")
+	}
+	got := svc.lastIngest
+	if got == nil || got.ChunkConfig == nil {
+		t.Fatalf("service received no chunk config: %+v", got)
+	}
+	want := service.ChunkConfig{Strategy: "sentence", ChunkSize: 512, Overlap: 50, MinSize: 32}
+	if *got.ChunkConfig != want {
+		t.Errorf("ChunkConfig = %+v, want %+v", *got.ChunkConfig, want)
+	}
+}
+
+// TestMCP_RAG_IngestDocument_ChunkMinSizeAlone proves chunk_min_size
+// reaches the service when it is the only chunk field set.
+func TestMCP_RAG_IngestDocument_ChunkMinSizeAlone(t *testing.T) {
+	svc := newMinimalRAGSvc()
+	tr, cleanup := connectRAGInProcess(t, svc)
+	defer cleanup()
+
+	if _, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
+		DocumentID:   "doc-min",
+		Text:         "hello world",
+		Namespace:    "ns1",
+		ChunkMinSize: 64,
+	}); err != nil {
+		t.Fatalf("RAGIngestDocument: %v", err)
+	}
+	got := svc.lastIngest
+	if got == nil || got.ChunkConfig == nil {
+		t.Fatalf("service received no chunk config: %+v", got)
+	}
+	want := service.ChunkConfig{MinSize: 64}
+	if *got.ChunkConfig != want {
+		t.Errorf("ChunkConfig = %+v, want %+v", *got.ChunkConfig, want)
 	}
 }
 

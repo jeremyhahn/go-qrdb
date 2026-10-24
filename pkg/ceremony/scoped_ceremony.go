@@ -249,7 +249,7 @@ func (t *ScopedCeremonyService) ListOfficers(ctx context.Context) ([]*OfficerSta
 func (t *ScopedCeremonyService) BeginClaimShare(ctx context.Context, username, callerThumbprint string) (*ChallengeResponse, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.holder.beginClaim(ctx, username, callerThumbprint)
+	return t.holder.beginClaim(ctx, &t.deps, username, callerThumbprint)
 }
 
 // CompleteClaimShare delivers the holder's share envelope exactly once.

@@ -1335,6 +1335,19 @@ func TestCLI_RecoveryOfficerFlow_CLI_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] barrier seal: %v\noutput: %s", proto.name, err, out)
 			}
 
+			// The re-sealed node admits a share claim without
+			// authentication, so the claim binds only a client
+			// certificate the listener verifies: a caller presenting none
+			// is refused, and the holder's own certificate completes the
+			// claim.
+			anonArgs := append(append([]string(nil), noAuth...), scope.officer...)
+			anonArgs = append(anonArgs, "claim-begin", "--username", off3.username)
+			anonArgs = append(anonArgs, scope.scopeArgs()...)
+			if out, err := runQRDB(t, node.cli, nil, anonArgs...); err == nil {
+				t.Fatalf("[%s] a sealed-window claim with no client certificate was accepted: %s", proto.name, out)
+			}
+			claimEnvelope(t, node.cli, workDir, ep, scope, off3)
+
 			// Signing with another holder's key cannot answer r1's factor:
 			// mTLS identity stays off1's own cert/key (the claimant), only
 			// the envelope-opening --key differs.

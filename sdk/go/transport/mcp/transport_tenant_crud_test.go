@@ -440,6 +440,15 @@ func TestMcpTenantInfoToTransport_CarriesRefusal(t *testing.T) {
 	}
 }
 
+func TestMcpTenantInfoToTransport_CarriesStatus(t *testing.T) {
+	if got := mcpTenantInfoToTransport(&mcpTenantInfo{ID: "acme", Status: transport.TenantStatusDisabled}).Status; got != transport.TenantStatusDisabled {
+		t.Fatalf("Status = %q; want disabled", got)
+	}
+	if got := mcpTenantInfoToTransport(&mcpTenantInfo{ID: "acme"}).Status; got != "" {
+		t.Fatalf("Status = %q; want empty", got)
+	}
+}
+
 // TestMcpTenantInfoToTransport_Timestamps is a regression test: the
 // conversion previously dropped CreatedAt/UpdatedAt entirely, leaving them
 // at the zero time regardless of what the server reported.

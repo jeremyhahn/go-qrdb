@@ -1,11 +1,7 @@
 # Volume Pools — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
-> Conflicts with this document are defects. Fix them here first. Decisions
-> D1-D10 are ruled; the Phase 1 build is in progress.
->
-> Moving a tenant between pools (`qrdb tenant move`) is **Phase 2** (decision
-> D5) and not available in this build; everything else below is Phase 1.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-volume-pools`; coverage row: `test/integration/COVERAGE.md` `[volume-pools](../../docs/volume-pools/)`.
 
@@ -82,10 +78,7 @@ nothing is created. Raise the pool's capacity or choose another pool.
 - **See which tenants are on a pool:** `qrdb volume-pool tenants fast`.
 - **Grow a pool:** grow the disk on every node, then, if you set a capacity by
   hand, `qrdb volume-pool update fast --capacity 3TiB`.
-- **Move a tenant to another pool** *(Phase 2, not available in this
-  build)*: `qrdb tenant move acme --to bulk --wait`. The tenant is offline
-  while its data is copied, so schedule it.
-- **Retire a pool:** move or delete its tenants, then
+- **Retire a pool:** delete its tenants, then
   `qrdb volume-pool delete fast`. Remove the mapping from each node's
   configuration afterwards.
 
@@ -142,8 +135,6 @@ without the flag to go back to the stricter default.
 | a node `locked` | an encrypted pool's device is locked because that node is sealed, or its unlock failed at the last unseal | unseal (or re-unseal) the node; if it stays locked after that, check the provider's detail text for the underlying device error |
 | a node `no report` | the node is down or partitioned | bring the node back |
 | a tenant listed `Refused: pool_unavailable` | the node you asked cannot open the tenant's pool | look at the pool's per-node health; other nodes may still serve the tenant |
-| a tenant listed `Refused: persisted_path` | the tenant was created by an older release with a fixed path | delete the tenant and re-create it on a pool |
 | `create` refused with "resource exhausted" | the pool's capacity is reserved | raise capacity, use another pool, or lower the tenant's storage quota |
 | `create` refused with "permission denied … volume_pool" | the tenant is not entitled to the pool | add the pool to its entitlements |
-| `volume-pool delete` refused | tenants are still assigned | move or delete them first |
-| `--data-root` is an unknown flag | fixed paths were removed | use `--pool` |
+| `volume-pool delete` refused | tenants are still assigned | delete them first |

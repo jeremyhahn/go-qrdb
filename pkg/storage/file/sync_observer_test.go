@@ -11,6 +11,7 @@ package file
 import (
 	"log/slog"
 	"math"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -40,6 +41,19 @@ func (c *steppingClock) Now() time.Time {
 // log and recording into a fresh process registry it returns.
 func observedEngine(t *testing.T, step time.Duration, log *syncwatchtest.Log) (*Engine, *prometheus.Registry) {
 	t.Helper()
+	obs, reg := testObserver(t, step, log)
+	e, err := New(t.TempDir(), WithSyncObserver(obs))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	return e, reg
+}
+
+// testObserver is a file-backend observer on a fresh registry whose every
+// fsync takes step, with a 100ms slow threshold, warning into log.
+func testObserver(t *testing.T, step time.Duration, log *syncwatchtest.Log) (*syncwatch.Observer, *prometheus.Registry) {
+	t.Helper()
 	reg := syncwatchtest.FreshRegistry(t)
 	obs := syncwatch.ForStorage(syncwatch.BackendFile,
 		syncwatch.WithClock(&steppingClock{Fake: clocktest.New(), step: step}),
@@ -47,12 +61,7 @@ func observedEngine(t *testing.T, step time.Duration, log *syncwatchtest.Log) (*
 		syncwatch.WithThreshold(100*time.Millisecond),
 		syncwatch.WithAttrs(slog.String("database", "orders")),
 	)
-	e, err := New(t.TempDir(), WithSyncObserver(obs))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	t.Cleanup(func() { _ = e.Close() })
-	return e, reg
+	return obs, reg
 }
 
 func syncCount(t *testing.T, reg *prometheus.Registry) uint64 {
@@ -128,6 +137,42 @@ func TestSyncObserver_FastFsyncDoesNotWarn(t *testing.T) {
 
 	if n := len(log.Records()); n != 0 {
 		t.Fatalf("got %d warnings for 5ms fsyncs, want 0", n)
+	}
+}
+
+// TestSyncObserver_OpenDirFsyncsAreObserved: creating the data directory at
+// open fsyncs each new entry's parent, and every one of those fsyncs is
+// timed: an existing root (1), then a and a/b (2).
+func TestSyncObserver_OpenDirFsyncsAreObserved(t *testing.T) {
+	obs, reg := testObserver(t, time.Millisecond, syncwatchtest.NewLog())
+
+	if err := mkdirAllDurable(filepath.Join(t.TempDir(), "a", "b"), obs); err != nil {
+		t.Fatalf("mkdirAllDurable: %v", err)
+	}
+
+	count, sum := syncwatchtest.HistogramSample(t, reg, syncFamily, "backend", syncwatch.BackendFile)
+	if count != 3 || math.Abs(sum-(3*time.Millisecond).Seconds()) > 1e-9 {
+		t.Fatalf("observed %d dir fsyncs summing %vs, want 3 summing 0.003s", count, sum)
+	}
+}
+
+// TestSyncObserver_SlowOpenDirFsyncWarns: a slow directory fsync at open
+// logs the same one warning as a slow write-path fsync.
+func TestSyncObserver_SlowOpenDirFsyncWarns(t *testing.T) {
+	log := syncwatchtest.NewLog()
+	obs, _ := testObserver(t, 250*time.Millisecond, log)
+
+	if err := mkdirAllDurable(t.TempDir(), obs); err != nil {
+		t.Fatalf("mkdirAllDurable: %v", err)
+	}
+
+	recs := log.Records()
+	if len(recs) != 1 {
+		t.Fatalf("got %d warnings for one slow dir fsync, want exactly 1", len(recs))
+	}
+	if r := recs[0]; r.Level != slog.LevelWarn || r.Attrs["took"] != 250*time.Millisecond ||
+		r.Attrs["backend"] != syncwatch.BackendFile {
+		t.Fatalf("warning = %+v", r)
 	}
 }
 

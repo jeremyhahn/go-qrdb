@@ -1,6 +1,6 @@
 # Clustering — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 Covers peer discovery, cluster formation, membership, node administration and
 shard rebalancing. **Raft mode only** — see
@@ -27,10 +27,7 @@ consensus primitives.
 | SDK cluster client (`Cluster()`) | **go-qrdb** SDK |
 | Service discovery / registry  | go-quicbaas (on go-qrdb lease+watch+KV)|
 
-The discovery engine and bootstrap orchestration live in go-qrdb, the layer
-that actually owns the cluster. go-quicraft is reduced to Raft primitives only.
-
-That split is the central decision: go-quicraft is reduced to Raft primitives
+That split is the central decision: go-quicraft provides only Raft primitives
 (`StartShard`, `GetLeaderID`, replica add/remove) and go-qrdb owns the layer
 that actually knows what a cluster is.
 
@@ -74,10 +71,6 @@ The `Manager` chains methods with retry, returning the first non-empty result.
 
 `pkg/cluster` turns discovered peers into a running Raft shard. The reusable
 entry point is transport-neutral and embeddable:
-
-The `Manager` chains methods with retry, returning the first non-empty result.
-
-## Bootstrap orchestration
 
 ```go
 opts := cluster.Options{
@@ -178,7 +171,7 @@ replica on that host is automatic.
 ## Member-side CSR join (Key A, cluster CA)
 
 The cluster CA private key (Key A) is **never** distributed to a joiner, on
-any transport, but a joiner can still get a leaf certificate without it, because Key A is now
+any transport, but a joiner can still get a leaf certificate without it, because Key A is
 reachable (barrier-encrypted, replicated — see
 [../certificate-authority/architecture.md](../certificate-authority/architecture.md#the-ca-key-provider-seam-pkgcakey))
 from **any** admitted, unsealed member, not only the first node.
@@ -189,9 +182,8 @@ from **any** admitted, unsealed member, not only the first node.
    only the token's SHA-256 digest in the replicated store (never the
    plaintext), and returns the plaintext exactly once. See "Join-token
    minting" below for the admin-facing verb.
-2. The joiner fetches the trust anchor (the CA **certificate** only) exactly
-   as today — `clusterenroll.FetchAnchor` over Noise/SPKI/DANE/Direct,
-   unchanged.
+2. The joiner fetches the trust anchor (the CA **certificate** only) with
+   `clusterenroll.FetchAnchor` over Noise/SPKI/DANE/Direct.
 3. The joiner generates its own node key pair (the private key never leaves
    it) and builds a self-signed PKCS#10 CSR for that key.
 4. It submits the CSR, with the minted token, to an admitted member's
@@ -239,13 +231,10 @@ bounds concurrent in-flight Noise\_NK handshakes
 (`joinServerMaxConcurrentConns`), refusing (closing the connection) rather
 than queuing behind a potential flood once at capacity.
 
-This removes `clusterenroll.Join`'s hard `*EnrollmentUnavailableError`
-refusal, for a node configured with a join listener address, public key and
-token (`BootstrapOptions.JoinConfigured`) — the CSR-sign exchange is what
-"member-side CSR issuance" (named but not implemented in earlier releases)
-turns out to be. A node that is not configured with a join listener (e.g.
-one meant to be enrolled via explicit TLS files) still refuses with
-`*EnrollmentUnavailableError`, unchanged.
+`clusterenroll.Join` runs this exchange for a node configured with a join
+transport (`BootstrapOptions.JoinConfigured`). A node that is not configured
+with one (e.g. one meant to be enrolled via explicit TLS files) refuses with
+`*EnrollmentUnavailableError`.
 
 ### Join-token minting
 
@@ -253,8 +242,7 @@ An admin mints a token through `POST /v1/cluster/join-tokens` (REST) or the
 `qrdb admin join-token mint <node-id>` CLI, both reaching
 `service.AdminService.MintJoinToken` — a distinct interface
 (`service.ClusterJoinTokenMinter`), not a method on the broader
-`AdminServicer`, so every existing `AdminServicer` test double in this repo
-continues to compile unchanged; a caller type-asserts for the capability.
+`AdminServicer`; a caller type-asserts for the capability.
 Permission `cluster:join_token` is `ScopeCross`: minting a token admits a
 node to the whole cluster, not to one tenant, so it is granted only to the
 cluster **Admin** built-in role (mirroring
@@ -273,31 +261,26 @@ enforced the same way every other gRPC verb's permission is), QUIC
 implementation Unix already rides), MCP (the `qrdb_mint_join_token` tool),
 and the embedded transport.
 
-**Five of those six enforce the `ScopeCross` denial; the embedded transport
-does not, and this is a property of the transport, not a gap in this
-verb.** `service.AdminService.MintJoinToken` — like every other
-`AdminServicer` verb (`AddMember`, `RemoveMember`, `Drain`, ...) — performs
-no permission check of its own; enforcement lives entirely in the
-transport/handler layer: REST middleware, the gRPC interceptor reading the
-proto method's permission option, QUIC's `handleIf`, MCP's `Perm` field.
-The embedded transport calls the service directly, with no handler in
-between, so it skips all of that by construction. An embedding process is
-its own admission control — the same trust assumption every other admin
-verb already makes for it. **Embedded is a fully trusted, in-process
-surface with no authorization of its own**, but the rule that follows
-from that is about what a response CARRIES, not which verb it names: a
-secret-bearing output -- today, exactly `MintJoinToken`'s minted token,
-good for admitting a new node to the whole cluster -- must never be
-returned through a less-trusted local surface such as a desktop webview,
-even though ordinary admin verbs with no secret in their response
-(`AddMember`, `setNodeCompaction`, ...) may stay wired through it as the
-operator's own local UI. See [../embedding.md](../embedding.md) for the
-full statement of this rule and `sdk/typescript/src/wails.ts`'s
+`service.AdminService.MintJoinToken` — like every other `AdminServicer` verb
+(`AddMember`, `RemoveMember`, `Drain`, ...) — performs no permission check of
+its own; enforcement lives in the transport layer: REST middleware, the gRPC
+interceptor reading the proto method's permission option, QUIC's `handleIf`,
+MCP's `Perm` field, and the embedded transport's `authorize` call. **Embedded
+authorizes through the same `AuthMiddleware` as the network transports** when
+one is installed; with none installed it admits every call, as a network
+transport run with `--auth-enabled=false` does. The rule that follows is about
+what a response CARRIES, not which verb it names: a secret-bearing output --
+exactly `MintJoinToken`'s minted token, good for admitting a new node to the
+whole cluster -- must never be returned through a less-trusted local surface
+such as a desktop webview, even though ordinary admin verbs with no secret in
+their response (`AddMember`, `setNodeCompaction`, ...) may stay wired through
+it as the operator's own local UI. See [../embedding.md](../embedding.md) for
+the full statement of this rule and `sdk/typescript/src/wails.ts`'s
 `admin.mintJoinToken` for the concrete instance: the desktop binding
-deliberately throws `NotImplementedError` rather than wiring this one
-verb through to the embedded transport its webview talks to.
+deliberately throws `NotImplementedError` rather than wiring this one verb
+through to the embedded transport its webview talks to.
 
-**Wire transport (Noise, shipped).** The one-shot `get_ca_bundle`
+**Wire transport (Noise).** The one-shot `get_ca_bundle`
 request/response the Noise bootstrap `Handler` in go-truststrap dispatches
 cannot carry a second method — the handler is a fixed map built once in
 `NewServer`, and the connection closes after one round trip. The CSR
@@ -307,14 +290,13 @@ dedicated port** with its **own persisted static key**
 (`{dataDir}/join-key.hex`, independent of the anchor advertiser's
 `noise-key.hex` so the two listeners have independent lifecycles — a member
 that is not the first node still runs a join listener, but never an anchor
-advertiser). It is framed with `bootstrap.WriteFrame`/`ReadFrame` (already
-exported, used unmodified) over a session built with go-truststrap's
-lower-level `noiseproto.Session` (handshake + `Encrypt`/`Decrypt` of
-arbitrary bytes) — a generic Noise\_NK primitive that is not specific to the
-bundle-fetch protocol. go-truststrap is not modified; this package only
-calls primitives it already exports.
+advertiser). It is framed with `bootstrap.WriteFrame`/`ReadFrame` over a
+session built with go-truststrap's lower-level `noiseproto.Session`
+(handshake + `Encrypt`/`Decrypt` of arbitrary bytes) — a generic Noise\_NK
+primitive that is not specific to the bundle-fetch protocol. This package
+only calls primitives go-truststrap exports.
 
-**Wire transport (SPKI, Direct, shipped).** The same transport-agnostic
+**Wire transport (SPKI, Direct).** The same transport-agnostic
 core (`clusterenroll.HandleJoinRequest`) backs a second binding: a plain
 HTTPS route, `POST /v1/enroll/join` (`clusterenroll.JoinHTTPPath`), on the
 node's existing admin HTTPS listener (`pkg/api/rest`, `WithClusterJoin`),
@@ -363,17 +345,11 @@ P-256 key, or both. With both, it uses Noise where the runtime allows it and
 P-256 under FIPS. With only a Noise key it cannot enroll under FIPS and is
 refused at configuration time.
 
-**The CSR exchange now carries the header.** The anchor fetch always did; the
-CSR exchange did not, and used the Noise handshake with no prologue. It now
-opens with the same `version || suite` frame — and, for the Noise suite, binds
-that header into the handshake as its prologue — so a downgrade of the suite by
+**The CSR exchange carries the header.** It opens with the same
+`version || suite` frame as the anchor fetch and, for the Noise suite, binds
+that header into the handshake as its prologue, so a downgrade of the suite by
 an attacker on the wire fails the handshake rather than succeeding on a weaker
-one. This is a **wire break**: a node from before this change cannot join
-through a member's join listener after it, and a member from before it cannot
-admit a node after it, over **either** suite. A cluster upgrades every member
-before any node joins through a changed listener; members already admitted
-keep serving, because only the bootstrap exchanges changed and no Raft or data
-path did. The HTTPS twin route (`POST /v1/enroll/join`) is unaffected.
+one. The HTTPS twin route (`POST /v1/enroll/join`) carries no such frame.
 
 ## Approval queue (tokenless join)
 
@@ -451,11 +427,10 @@ states (`clusterenroll.identityState`): **absent**, a live **reservation**
   `MarkJoinIdentityAdmitted` read the issued leaf's own `NotAfter` and
   serial back off the certificate and store them alongside the admission
   timestamp. A later admission check compares `NotAfter` against now:
-  still in the future is **active** (blocks a fresh mint or consume,
-  unchanged); already past is **lapsed**. A record written before this
-  field existed (the bare RFC 3339 timestamp earlier releases wrote) has
-  no recorded expiry and is treated as perpetually active — fail closed,
-  never lapsing on its own.
+  still in the future is **active** (blocks a fresh mint or consume);
+  already past is **lapsed**. A record that holds only a bare RFC 3339
+  admission timestamp has no recorded expiry and is treated as perpetually
+  active — fail closed, never lapsing on its own.
 - **Renewing a lapsed admission is not a distinct verb.** A lapsed
   identity is simply **not blocking**: `MintJoinToken`, `ConsumeJoinToken`
   and `ReserveJoinIdentity` all treat it exactly like an absent one, so an
@@ -503,61 +478,48 @@ this design. What crosses the
 wire is a certificate (anchor, step 1) and a CSR/leaf pair (steps 2–4),
 exactly the two artifact types trust-bootstrap already treats as public.
 
-## Enrollment-role, kept
+## Enrollment role
 
-`clusterenroll.RoleFile` (`enrollment-role`) is **not** removed. It was
-never purely a function of CA key custody: `StartAdvertiser` has only ever
-served the CA **certificate** (never the key), so every member already caches `ca.pem`
-locally today regardless of where Key A's private half lives. The role file
-still encodes `RoleSingleNode` (no Raft peers at all, unrelated to key
-location) and still decides whether `clusterenroll.Resolve`/`ResolveCA`
+`clusterenroll.RoleFile` (`enrollment-role`) is not a function of CA key
+custody: `StartAdvertiser` serves the CA **certificate** (never the key), so
+every member caches `ca.pem` locally regardless of where Key A's private half
+lives. The role file encodes `RoleSingleNode` (no Raft peers at all, unrelated
+to key location) and decides whether `clusterenroll.Resolve`/`ResolveCA`
 start the Noise listener **for the node that generated or cached the CA via
-those paths**. What it no longer decides is whether any OTHER member may
-serve: that was the "smaller, separate topology decision" this document
-used to leave open, and the next section makes it.
+those paths**. It does not decide whether any OTHER member may serve; the next
+section covers that.
 
 ## Every admitted, unsealed member serves the anchor
 
-Pinning the anchor-serving role to the one
-node that happened to generate the cluster CA was a single point of
-failure: `cmd/qrdbd` registered `/v1/ca/bootstrap` and ran the Noise
-anchor advertiser only where `clusterenroll.Resolve`'s first-node path (or
-its resume) returned a non-nil `Advertiser` — every joined node, and every
-node that merely loaded cached material on a later boot without being that
-one node, served neither. Once that node was gone for good, `FetchAnchor`
-and `Join` had nowhere left to reach, permanently, no matter how many other
-members were alive and unsealed.
-
-The fix adds no second copy of Key A and no new key transport: every member
-already caches the identical certificate (`ca.pem`, `bundle.CACertPEM`)
-regardless of whether it generated or joined — the paragraph above has
-always been true. `cmd/qrdbd`'s `servesAnchor` (`bootstrap.go`) now gates
-both surfaces on holding that certificate at all, not on which Resolve path
-produced it: an explicit BYO-TLS node (`TLSBundle.ExplicitTLS`) is still
-excluded, since its CA is the operator's own, never qrdb's, but a
-single-real-peer deployment is not — a self-issued-CA cluster can only ever
-FOUND with one real member in the first place (every founder's identity has
-to be known to every other founder before any of them starts, which is only
-possible for an identity a node derives from a keypair it has already
-generated; the generating node's own keypair exists before anyone has
-joined, and nobody else's does), so excluding a literal single-peer
-deployment would make a cluster meant to grow by member-side CSR join
-permanently unable to serve the first node a second member ever needs to
-reach. `startMemberAnchorAdvertiser` starts the identical
+Any admitted, unsealed member serves the trust anchor, so losing the node that
+generated the cluster CA does not leave `FetchAnchor` and `Join` with nowhere
+to reach. This needs no second copy of Key A and no key transport: every
+member caches the identical certificate (`ca.pem`, `bundle.CACertPEM`)
+whether it generated or joined. `cmd/qrdbd`'s `servesAnchor` (`bootstrap.go`)
+gates both `/v1/ca/bootstrap` and the Noise anchor advertiser on holding that
+certificate at all, not on which Resolve path produced it. An explicit BYO-TLS
+node (`TLSBundle.ExplicitTLS`) is excluded, since its CA is the operator's
+own, never qrdb's. A single-real-peer deployment is not excluded: a
+self-issued-CA cluster can only ever FOUND with one real member (every
+founder's identity has to be known to every other founder before any of them
+starts, which is only possible for an identity a node derives from a keypair
+it has already generated; the generating node's own keypair exists before
+anyone has joined, and nobody else's does), so excluding a literal
+single-peer deployment would leave a cluster meant to grow by member-side CSR
+join unable to serve the first node a second member needs to reach.
+`startMemberAnchorAdvertiser` starts the identical
 `clusterenroll.StartAnchorAdvertiser` the first node's own
-`Resolve`/`ResumeAdvertiser` path already calls, from the same certificate,
-for any member that path did not already start one for — so a process
-never runs two anchor listeners, and the enforcement that no private key is
-ever served (`ValidateAnchorBundle`) is the same single check either path
-goes through.
+`Resolve`/`ResumeAdvertiser` path calls, from the same certificate, for any
+member that path did not start one for — so a process never runs two anchor
+listeners, and the enforcement that no private key is ever served
+(`ValidateAnchorBundle`) is the same single check either path goes through.
 
-**No change to verification.** A joiner's `FetchAnchor`/`Join` still
-validate exactly what they always did (`ValidateAnchorBundle`, the pinned
-SPKI hash or Noise static key, the single-use join token); what changes is
-only which members a joiner may point `--bootstrap-addr` /
-`--bootstrap-join-url` / `--bootstrap-noise-addr` at. A deployment that
-loses the node that generated Key A now continues enrolling new members
-through any admitted, unsealed survivor — see
+**Verification is the same at every member.** A joiner's `FetchAnchor`/`Join`
+validate `ValidateAnchorBundle`, the pinned SPKI hash or Noise static key, and
+the single-use join token, whichever member a joiner points
+`--bootstrap-addr` / `--bootstrap-join-url` / `--bootstrap-noise-addr` at. A
+deployment that loses the node that generated Key A continues enrolling new
+members through any admitted, unsealed survivor — see
 [cli.md](cli.md#trust-anchor-fetch) and
 [user.md](user.md#adding-a-node-member-side-csr-join).
 
@@ -565,9 +527,7 @@ through any admitted, unsealed survivor — see
 
 `cluster.MembershipManager` reconciles the Raft group as nodes join and leave,
 realizing the etcd-style **lease + watch** membership pattern on go-qrdb's own
-
-## Dynamic membership — opt-in
-
+lease and watch subsystem:
 
 - Each node registers a member entry (`__sys:cluster/members/{nodeID}`, in the
   system namespace so it is hidden from user KV scans) backed by a
@@ -646,8 +606,8 @@ to tell beforehand which future change will do it. `pkg/cluster/featuregate`
 follows etcd's rule for exactly this reason: a command is sent only once every
 node in the CLUSTER -- not just a given group's current members -- supports
 it, permanently, for good. Guarded writes (`OpGuarded`, the drop fence's atomic
-write) are the first feature it gates; a future opcode is one more entry in
-the same list.
+write, `featuregate.GuardedWrites`) are one feature it gates; each gated
+command is one entry in the same list.
 
 - **Advertisement.** Every node with a transport advertises the features its
   binary implements in a **lease-backed** record,
@@ -662,11 +622,10 @@ the same list.
   too (`cluster.Member.Features`), and the gate follows both.
 - **Whether a write is sent guarded.** `Gate.Enabled(shardID, feature)` is
   exactly `Activated(feature)` -- one atomic load, nothing about shardID at
-  all. There used to also be a per-group early-enablement path here: a group
-  was treated as enabled, ahead of cluster-wide activation, whenever its
-  CURRENT replicas all happened to advertise the feature. That was unsafe for
-  the reason above -- a later membership change can bring in an old binary
-  that the group's log already has the command in -- and it is gone. Before
+  all. There is no per-group early enablement: a group whose CURRENT
+  replicas all advertise the feature is not enabled ahead of cluster-wide
+  activation, because a later membership change can bring in an old binary
+  that the group's log already has the command in. Before
   activation, every group's writes keep the documented unguarded fallback
   (see "Before activation" below), with no exception for a group that looks
   fully upgraded.
@@ -700,7 +659,7 @@ the same list.
   blocking activation on a node this check could have refused instead. The
   same decide call protects every other shard identically, activated or not:
   a dedicated group's current members already agreeing on a feature is
-  exactly what Enabled now deliberately ignores (a later membership change
+  exactly what Enabled deliberately ignores (a later membership change
   could still undo it), and admission on the join path is where that undoing
   is refused, rather than discovered later when an unsupporting replica
   cannot apply an entry already in the group's log.
@@ -738,8 +697,8 @@ the same list.
 
 ## SDK `Cluster()` client
 
-The SDK exposes cluster membership through a thin facade over the already-wired
-control-plane operations — it adds no new wire RPCs:
+The SDK exposes cluster membership through a thin facade over the
+control-plane operations — it adds no wire RPCs of its own:
 
 ```go
 cc := client.Cluster()
@@ -766,7 +725,7 @@ on one that does not. Each server binding authorizes it as
 `admin:remove_member` and, like every membership change, a follower that
 receives it forwards it to the shard's leader, so any node serves it. Server-side it is
 `AdminService.TransferLeadership`, which reuses the leadership move
-`RemoveMember` already makes before removing a leader: it asks the Raft host
+`RemoveMember` makes before removing a leader: it asks the Raft host
 to start the transfer, then polls the shard's leader until the named replica
 holds it, within a five-second bound. Raft only *starts* a transfer when asked
 — the target must catch up and win an election — so a target that is stopped
@@ -908,9 +867,8 @@ already running. A diagnostic must never be what starts a tenant.
   as a non-voting observer in the first place (`service.ObserverMemberAdder`,
   `qrdb admin member add-observer`) reuses the identical permission for the
   identical reason — it is how an operator reaches `member promote`'s
-  success path at all: a plain `member add` always votes, so without
-  `add-observer` there was no way to create the observer `member promote`
-  promotes. Both are served on every transport — see
+  success path at all: a plain `member add` always votes, so `add-observer`
+  is the only way to create the observer `member promote` promotes. Both are served on every transport — see
   [api.md](api.md#capability-matrix--node-administration).
 - **Replica state hashes are cross-scope** (`admin:state_hash`): they cover
   every tenant's shards on the node. A digest and a record count disclose no
@@ -927,13 +885,11 @@ already running. A diagnostic must never be what starts a tenant.
   transport forwards a leader-only refusal -- `*service.NotLeaderError`, or
   ceremony-initialize's `*service.AdminCredentialNotLeaderError` -- through
   that transport's own leader-forwarding path
-  ([../replica-forwarding/](../replica-forwarding/)): REST's existing
+  ([../replica-forwarding/](../replica-forwarding/)): REST's
   system-leader forwarding (`tryForwardWrite`/`forwardToLeader`), and gRPC's,
   QUIC's and MCP's own leader methods on the same
-  `FrameForwarder`/`ReplicaForwarder` each already carries for the
-  per-database `NotAReplicaError` path. Before this, gRPC, QUIC and MCP
-  forwarded only the ceremony's refusal, so a membership change sent to a
-  follower over them answered `not leader`. The Unix socket
+  `FrameForwarder`/`ReplicaForwarder` each carries for the
+  per-database `NotAReplicaError` path. The Unix socket
   forwards as gRPC does -- it serves the gRPC services -- and the embedded
   transport forwards as its QUIC client transport does.
 - **A request holds through a leaderless moment instead of failing.** A

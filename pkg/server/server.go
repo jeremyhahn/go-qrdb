@@ -201,11 +201,14 @@ type serverOptions struct {
 
 	tlsConfig  *tls.Config
 	caCertPool *x509.CertPool
-	gatherer   prometheus.Gatherer
-	resolver   rest.LeaderAdminResolver
-	host       rest.Host
-	kvSvc      service.KVServicer
-	adminSvc   service.AdminServicer
+	// peerChainVerifier verifies a client certificate tlsConfig accepted
+	// without building a chain; every TLS listener binds it to every call.
+	peerChainVerifier auth.IssuerVerifier
+	gatherer          prometheus.Gatherer
+	resolver          rest.LeaderAdminResolver
+	host              rest.Host
+	kvSvc             service.KVServicer
+	adminSvc          service.AdminServicer
 	// modules are capability modules a higher layer (e.g. go-xkms) registers via
 	// WithModule. Each is exposed across every transport by the start* methods.
 	modules []apimodule.ServiceModule
@@ -249,6 +252,7 @@ type serverOptions struct {
 	collectionSvc      service.CollectionServicer
 	barrierRegistry    *seal.BarrierRegistry
 	dekSvc             service.DEKServicer
+	policySvc          service.PolicyServicer
 	tenantSvc          tenant.TenantServicer
 	tenantStoreRes     tenant.StoreResolver
 	backupSvc          service.BackupServicer
@@ -568,6 +572,31 @@ func WithCACertPool(pool *x509.CertPool) ServerOption {
 	return func(o *serverOptions) {
 		o.caCertPool = pool
 	}
+}
+
+// WithPeerChainVerifier sets the verifier that resolves a caller's client
+// certificate the TLS configuration accepted without building a chain: the
+// client trust pool WithTLS's configuration is wired to. REST, gRPC, QUIC and
+// MCP bind it, with the peer's TLS state, to every call before admission and
+// independent of authentication, so a share claim binds only a verified
+// certificate on the authenticated chain, on the boot-time sealed-window
+// listener, which has no authentication, and on a re-sealed node's
+// sealed-window dispatch. Unset, each listener uses WithAuthMiddleware's
+// issuer verifier.
+func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
+	return func(o *serverOptions) {
+		o.peerChainVerifier = v
+	}
+}
+
+// peerChainOptions is a transport's option binding v, its with option
+// applied to v, or no option when v is nil so the transport keeps its
+// AuthMiddleware's issuer verifier.
+func peerChainOptions[O any](v auth.IssuerVerifier, with func(auth.IssuerVerifier) O) []O {
+	if v == nil {
+		return nil
+	}
+	return []O{with(v)}
 }
 
 // WithHost sets the Host interface for REST leader forwarding headers.
@@ -947,6 +976,12 @@ func WithDEKService(svc service.DEKServicer) ServerOption {
 	return func(o *serverOptions) { o.dekSvc = svc }
 }
 
+// WithPolicyService configures the tenant ABAC policy store for the
+// protocol servers that serve the policy API.
+func WithPolicyService(svc service.PolicyServicer) ServerOption {
+	return func(o *serverOptions) { o.policySvc = svc }
+}
+
 // WithTenantService sets the tenant lifecycle service for multi-tenant
 // provisioning. When set, tenants can be created, queried, and deleted
 // via the API layer with barrier registry integration.
@@ -1227,8 +1262,10 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 // server (via ensureAuthFactorService in Start) and the SDK node builders
 // (via wireClientAndServer) construct the unified AuthFactorService from
 // the registry automatically so every transport exposes the
-// enrollment/challenge/verify surface. mTLS login is handled natively by
-// the auth.LoginResolver path and is not an authfactors.Factor.
+// enrollment/challenge/verify surface. mTLS login resolves through
+// auth.LoginResolver; the software mtls factor (pkg/authfactors/mtls) is an
+// authfactors.Factor that a caller may register here, and share-holder
+// ceremonies resolve it even when the registry lacks it.
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
 	return func(o *serverOptions) { o.factorRegistry = reg }
 }
@@ -1421,6 +1458,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireTenantHostShards()
 	s.wireStoreResolver()
 	s.wireTenantDataProbe()
+	s.wireTenantStatusAudit()
 	s.wireReclaimStoreResolver()
 	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
@@ -1474,6 +1512,26 @@ func (s *Server) wireTenantDataProbe() {
 	if reg := s.buildServiceRegistry(); reg != nil {
 		w.SetTenantDataProbe(service.NewTenantDataProbe(reg))
 	}
+}
+
+// wireTenantStatusAudit gives the tenant service the auditor every status
+// change is recorded through (tenant.StatusAuditWiring), over the node's
+// audit logger and failure policy. It is wired here, once, so a change made
+// through any transport -- including the embedded one -- is recorded. An
+// unrecognised policy wires fail-closed: it fails the start when the REST
+// transport parses it, and must not weaken the gate before then.
+func (s *Server) wireTenantStatusAudit() {
+	w, ok := s.opts.tenantSvc.(tenant.StatusAuditWiring)
+	if !ok || s.opts.auditLogger == nil {
+		return
+	}
+	policy := audit.FailClosed
+	if s.config != nil {
+		if p, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy); err == nil {
+			policy = p
+		}
+	}
+	w.SetStatusChangeAuditor(service.NewTenantStatusAudit(s.opts.auditLogger, policy))
 }
 
 // wireCompactionPolicies gives the database service the port it sets and
@@ -1845,10 +1903,25 @@ func (s *Server) wireModuleTenantTargetAuthorizers() {
 	}
 }
 
+// ModuleStartError is returned by Start when a registered ServiceModule fails
+// to start. It names the module and wraps the module's own error.
+type ModuleStartError struct {
+	Module string
+	Err    error
+}
+
+// Error implements the error interface.
+func (e *ModuleStartError) Error() string {
+	return "server: module " + strconv.Quote(e.Module) + " failed to start: " + e.Err.Error()
+}
+
+// Unwrap returns the module's error for errors.Is/As.
+func (e *ModuleStartError) Unwrap() error { return e.Err }
+
 func (s *Server) startModules() error {
 	for _, m := range s.opts.modules {
 		if err := m.Start(context.Background()); err != nil {
-			return fmt.Errorf("server: module %q failed to start: %w", m.Name(), err)
+			return &ModuleStartError{Module: m.Name(), Err: err}
 		}
 	}
 	return nil
@@ -2023,6 +2096,7 @@ func (s *Server) startREST() error {
 	if s.opts.authMW != nil {
 		restOpts = append(restOpts, rest.WithAuthMiddleware(s.opts.authMW))
 	}
+	restOpts = append(restOpts, peerChainOptions(s.opts.peerChainVerifier, rest.WithPeerChainVerifier)...)
 	if s.opts.sealedWindowProbe != nil && !s.opts.sealedWindowListener {
 		// The boot-time listener's gate is installed by
 		// rest.NewSealedWindowServer below.
@@ -2063,7 +2137,7 @@ func (s *Server) startREST() error {
 		restOpts = append(restOpts, rest.WithRAG(s.opts.ragSvc))
 	}
 	if s.opts.watchSvc != nil {
-		restOpts = append(restOpts, rest.WithWatch(s.opts.watchSvc))
+		restOpts = append(restOpts, rest.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(s.opts.databaseSvc))
@@ -2088,6 +2162,9 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.dekSvc != nil {
 		restOpts = append(restOpts, rest.WithDEKService(s.opts.dekSvc))
+	}
+	if s.opts.policySvc != nil {
+		restOpts = append(restOpts, rest.WithPolicyService(s.opts.policySvc))
 	}
 	if s.opts.ceremonyCA != nil {
 		restOpts = append(restOpts, rest.WithCeremonyCA(s.opts.ceremonyCA))
@@ -2170,6 +2247,9 @@ func (s *Server) startREST() error {
 	}
 	if gw := s.grpcWebConfig(); gw.Enabled {
 		restOpts = append(restOpts, rest.WithGRPCWeb(gw, http.HandlerFunc(s.serveGRPCWeb)))
+	}
+	if cors, ok := s.restCORS(); ok {
+		restOpts = append(restOpts, rest.WithCORS(cors))
 	}
 
 	if s.opts.sealedWindowListener {
@@ -2258,7 +2338,29 @@ func (s *Server) restRegistryOptions() []RESTRegistryOption {
 	if s.opts.clusterSeal != nil {
 		regOpts = append(regOpts, withClusterSealRegistry(s.opts.clusterSeal))
 	}
+	if admitter := s.streamAdmitter(); admitter != nil {
+		regOpts = append(regOpts, withStreamAdmitter(admitter))
+	}
 	return regOpts
+}
+
+// streamAdmitter is the admission check every watch this server serves
+// re-runs before each event it forwards, whether the watch comes from the
+// database-service registry or from the singleton WithWatch service. nil
+// when the server runs no auth middleware.
+func (s *Server) streamAdmitter() service.StreamAdmitter {
+	if s.opts.authMW == nil {
+		return nil
+	}
+	return s.opts.authMW
+}
+
+// listenerWatch is the singleton watch service every listener receives: the
+// WithWatch service under the same stream admitter the registry installs, so
+// a watch opened before its tenant was suspended ends on its next event in
+// both configurations.
+func (s *Server) listenerWatch() service.WatchServicer {
+	return service.NewAdmittedWatch(s.opts.watchSvc, s.streamAdmitter())
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -2312,6 +2414,7 @@ func (s *Server) startGRPC() error {
 	if s.opts.authMW != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	grpcOpts = append(grpcOpts, peerChainOptions(s.opts.peerChainVerifier, grpcapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		grpcOpts = append(grpcOpts, grpcapi.WithReplicaForwarding(fwd))
 	}
@@ -2347,6 +2450,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.dekSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithPolicyService(s.opts.policySvc))
+	}
 	if s.opts.auditLogger != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithAuditLogger(s.opts.auditLogger))
 	}
@@ -2366,7 +2472,7 @@ func (s *Server) startGRPC() error {
 		grpcOpts = append(grpcOpts, grpcapi.WithBatch(s.opts.batchSvc))
 	}
 	if s.opts.watchSvc != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithWatch(s.opts.watchSvc))
+		grpcOpts = append(grpcOpts, grpcapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.leaseSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithLease(s.opts.leaseSvc))
@@ -2479,6 +2585,7 @@ func (s *Server) startQUIC() error {
 	if s.opts.authMW != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	quicOpts = append(quicOpts, peerChainOptions(s.opts.peerChainVerifier, quicapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		quicOpts = append(quicOpts, quicapi.WithReplicaForwarding(fwd))
 	}
@@ -2521,7 +2628,7 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithVector(s.opts.vectorSvc))
 	}
 	if s.opts.watchSvc != nil {
-		quicOpts = append(quicOpts, quicapi.WithWatch(s.opts.watchSvc))
+		quicOpts = append(quicOpts, quicapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDatabaseService(s.opts.databaseSvc))
@@ -2582,6 +2689,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.dekSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithPolicyService(s.opts.policySvc))
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
@@ -2638,6 +2748,7 @@ func (s *Server) startUnix() error {
 	if s.opts.authMW != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	unixOpts = append(unixOpts, peerChainOptions(s.opts.peerChainVerifier, unixapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		unixOpts = append(unixOpts, unixapi.WithReplicaForwarding(fwd))
 	}
@@ -2673,6 +2784,9 @@ func (s *Server) startUnix() error {
 	if s.opts.dekSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithPolicyService(s.opts.policySvc))
+	}
 	if s.opts.collectionSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCollectionService(s.opts.collectionSvc))
 	}
@@ -2686,7 +2800,7 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithBatch(s.opts.batchSvc))
 	}
 	if s.opts.watchSvc != nil {
-		unixOpts = append(unixOpts, unixapi.WithWatch(s.opts.watchSvc))
+		unixOpts = append(unixOpts, unixapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.leaseSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithLease(s.opts.leaseSvc))
@@ -2794,6 +2908,7 @@ func (s *Server) startMCP() error {
 		// (default-deny). Parity with REST/gRPC/QUIC.
 		mcpOpts = append(mcpOpts, mcpapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	mcpOpts = append(mcpOpts, peerChainOptions(s.opts.peerChainVerifier, mcpapi.WithPeerChainVerifier)...)
 	if fwd, ok := s.replicaForwarding(); ok {
 		mcpOpts = append(mcpOpts, mcpapi.WithReplicaForwarding(fwd))
 	}
@@ -2847,6 +2962,9 @@ func (s *Server) startMCP() error {
 	if s.opts.dekSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDEKService(s.opts.dekSvc))
 	}
+	if s.opts.policySvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithPolicyService(s.opts.policySvc))
+	}
 	if s.opts.ceremonyCA != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCeremonyCA(s.opts.ceremonyCA))
 	}
@@ -2884,7 +3002,7 @@ func (s *Server) startMCP() error {
 		mcpOpts = append(mcpOpts, mcpapi.WithRAG(s.opts.ragSvc))
 	}
 	if s.opts.watchSvc != nil {
-		mcpOpts = append(mcpOpts, mcpapi.WithWatch(s.opts.watchSvc))
+		mcpOpts = append(mcpOpts, mcpapi.WithWatch(s.listenerWatch()))
 	}
 	if s.opts.databaseSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDatabaseService(s.opts.databaseSvc))

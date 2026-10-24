@@ -488,6 +488,10 @@ type nodeOptions struct {
 	// embedded.WithIdentityHydrator; the Subject stays the user id either way.
 	identityHydrator embedded.IdentityHydrator
 
+	// contextBinder is embedded.WithContextBinder over the composer's binder,
+	// installed on the transport behind Client alone. Nil installs none.
+	contextBinder embedded.Option
+
 	// tenantIsolation enables the IsolationVolume tenant stack. When true,
 	// completeStandaloneBoot calls server.BuildTenantInfra to restore volume
 	// tenants and wire the TenantHostRegistry into the multi-protocol server and
@@ -661,6 +665,20 @@ func WithIdentityHydrator(h embedded.IdentityHydrator) NodeOption {
 			return
 		}
 		o.identityHydrator = h
+	}
+}
+
+// WithContextBinder installs b on the embedded transport behind Client
+// (embedded.WithContextBinder): every call made through Client, unary or
+// streaming, runs b once before the auth middleware, and the context b
+// returns is the one the middleware and the handler see. A composer binds
+// its caller's identity here rather than trusting each call site to put one
+// on the context. The node's own internal clients are not bound. A nil b
+// fails the client's construction with *embedded.NilContextBinderError,
+// wrapped in *ClientCreateError.
+func WithContextBinder(b embedded.ContextBinder) NodeOption {
+	return func(o *nodeOptions) {
+		o.contextBinder = embedded.WithContextBinder(b)
 	}
 }
 
@@ -1184,6 +1202,9 @@ type Node struct {
 	sessionIssuer        embedded.SessionIssuer
 	loginFactorVerifiers []embedded.FactorVerifier
 	identityHydrator     embedded.IdentityHydrator
+
+	// contextBinder carries WithContextBinder to the transport behind Client.
+	contextBinder embedded.Option
 
 	// abacPolicies / abacPolicyDir / abacLiveReload carry the ABAC decorator
 	// configuration from the node constructor to buildEmbeddedOpts, which
@@ -2878,6 +2899,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		identityHydrator:          nOpts.identityHydrator,
+		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
@@ -3103,6 +3125,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		sessionIssuer:             nOpts.sessionIssuer,
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		identityHydrator:          nOpts.identityHydrator,
+		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
@@ -3498,7 +3521,9 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 		seal.WithPerTenantRegistry(perTenantReg),
 	)
 
-	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend)
+	// The SO PIN lockout runs on the composer's clock (WithClock); an
+	// injected backend is decorated where the composer hands it over.
+	pinBackend, pinErr := lifecycle.NewSealStorePINBackend(sealBackend, pin.WithLockoutClock(crypto.Clock))
 	if pinErr != nil {
 		closeOpenedVolumes(ctx, volumePoolRows, log)
 		_ = sealStore.Close()
@@ -3969,6 +3994,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		PeerAttestation:     n.peerAttestation,
 		RateLimitPolicies:   n.rateLimitPolicies,
 		RateLimiter:         n.rateLimiter,
+		// A principal of a suspended or disabled tenant is refused.
+		TenantStatusReader: svcNode.Tenant,
 	})
 	if err != nil {
 		return &AuthMiddlewareWiringError{Err: err}
@@ -4053,6 +4080,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (WithEmbeddedCaller), never as the node.
 	if opt := n.embeddedForwardingOption(standalone, cfg.ReplicaForwarding.On()); opt != nil {
 		embeddedOpts = append(embeddedOpts, opt)
+	}
+	// The composer's binder binds the caller of Client alone; the feature
+	// client above is the node's own and was built without it.
+	if n.contextBinder != nil {
+		embeddedOpts = append(embeddedOpts, n.contextBinder)
 	}
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
@@ -4190,6 +4222,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the auth middleware already give them.
 	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
 		n.trustPool.Wire(tlsCfg)
+		// The pool the configuration now verifies through is the one every
+		// listener binds to every call, independent of authentication, so
+		// a share claim on a re-sealed node binds only a certificate it
+		// verifies.
+		allOpts = append(allOpts, server.WithPeerChainVerifier(n.trustPool))
 	}
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
@@ -4280,6 +4317,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	)
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
+	}
+	if svcNode.Policy != nil {
+		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
 	}
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
@@ -4610,6 +4650,9 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.DEK != nil {
 		opts = append(opts, server.WithDEKService(svcNode.DEK))
+	}
+	if svcNode.Policy != nil {
+		opts = append(opts, server.WithPolicyService(svcNode.Policy))
 	}
 	if svcNode.CertProv != nil {
 		opts = append(opts, server.WithCertProvider(svcNode.CertProv))

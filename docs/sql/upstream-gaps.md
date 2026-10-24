@@ -1,12 +1,12 @@
 # Upstream gaps in go-mysql-server
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Register of go-mysql-server defects QRDB depends on; each is fixed upstream, not compensated here.
 
 QRDB's SQL engine is [go-mysql-server](https://github.com/dolthub/go-mysql-server)
 (GMS) with a vitess-derived parser. A small number of behaviours QRDB depends on
-are defects or omissions in that dependency rather than in QRDB, and the
-decision on record is to fix them **upstream** rather than to fork GMS or to
+are defects or omissions in that dependency rather than in QRDB. They are
+fixed **upstream** rather than to fork GMS or to
 compensate for it inside QRDB — a compensation layer here would be exactly the
 kind of shim [CLAUDE.md](../../CLAUDE.md) forbids, and for two of the three it
 could not be complete anyway.
@@ -14,7 +14,7 @@ could not be complete anyway.
 Each entry below states what was measured, where the defect is, and what the
 fix looks like, so it can be filed and tracked without re-deriving any of it.
 
-Pinned version at the time of measurement:
+Pinned versions (`go.mod`):
 `github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf`
 with `github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7`.
 
@@ -85,8 +85,7 @@ surfaces as an error instead of as data. See
 ## 2. `INSERT … ON DUPLICATE KEY UPDATE … RETURNING` emits a row wider than its schema
 
 **Severity: medium on the PostgreSQL wire, where it is a protocol-level
-failure, not silent; high on the MySQL wire, where it is silent wrong data —
-see "Proof" below for how that second half was measured.**
+failure, not silent; high on the MySQL wire, where it is silent wrong data.**
 
 **Worked around in QRDB, so this one is no longer a live gap here.** The same
 `dmlReturningBuilder` that repairs item 1 (`pkg/sql/engine/dml_returning.go`)
@@ -110,15 +109,12 @@ the declared schema is wrong about the row.
 
 On the PostgreSQL wire this is fatal rather than silent: psql-wire refuses to
 write a row whose width disagrees with the RowDescription it already sent. The
-MySQL wire fails differently, and worse: measured by deliberately reverting
-the repair while writing `dml_returning_wire_test.go`, go-mysql-server's wire
-writer encodes only the first `len(returnSchema)` values of whatever row the
-iterator yields rather than rejecting the mismatch, so a client silently gets
-the **old** tuple's values back — the pre-update row — under a RETURNING
-clause that asked for the new one. That is the same class of defect as item 1
-(silent wrong data), not a clean failure; the "protocol-level failure" framing
-above held only for the PostgreSQL wire, which this repair also serves since
-`pkg/sql/engine` is shared by both.
+MySQL wire fails differently, and worse: go-mysql-server's wire writer encodes
+only the first `len(returnSchema)` values of whatever row the iterator yields
+rather than rejecting the mismatch, so a client silently gets the **old**
+tuple's values back — the pre-update row — under a RETURNING clause that asked
+for the new one. That is the same class of defect as item 1 (silent wrong
+data). The repair is in `pkg/sql/engine`, which both wires share.
 
 **Fix (upstream).** The RETURNING projection has to be applied to the correct
 tuple in the on-duplicate path, so that the emitted row matches `returnSchema`.
@@ -138,7 +134,8 @@ so a regression anywhere in the chain is caught where it happens:
   `TestEmbeddedRelational_OnDuplicateKeyReturning_RowMatchesDeclaredSchema` —
   through `database/sql` itself, the conformance surface a GORM application
   actually uses: an unrepaired row would surface here as the embedded
-  driver's own `*driver.RowWidthError` (`sdk/go/driver/rows_embedded.go`),
+  driver's own `*driver.RowWidthError` (`sdk/go/driver/errors.go`, returned
+  by `embeddedRows.Next` in `sdk/go/driver/rows_embedded.go`),
   since `database/sql` sizes its scan destination from `Columns()`.
 
 Each file also covers the companion shape, `...InsertPathUnaffected`: the
@@ -188,20 +185,19 @@ constraints with a three-way join across `information_schema.table_constraints`,
 GMS's `information_schema` does not serve `constraint_column_usage`, so the
 query fails with `table not found: constraint_column_usage`.
 
-This one is not reachable from QRDB at all: `information_schema` is GMS's own
-built-in database, not something a `DatabaseProvider` contributes to. (QRDB does
-serve PostgreSQL's *other* introspection namespace itself — see
-`pkg/sql/pgcatalog` — because `pg_catalog` is a schema a provider can supply.)
-
 **Fix.** Implement the view in GMS's `sql/information_schema`.
 
 **Worked around in QRDB, so this one is no longer a live gap here.**
 go-mysql-server exposes `NewInformationSchemaTablesToAdd`, documented as the
 hook Doltgres injects PostgreSQL-specific tables and views through, and
 `pkg/sql/infoschema` uses it to serve `constraint_column_usage` built from the
-same catalog traversal go-mysql-server's own `key_column_usage` uses. Upstream
-would still be the better home for a standard view, but nothing here is
-blocked on it.
+same catalog traversal go-mysql-server's own `key_column_usage` uses.
+`pkg/sql/pgcatalog` serves the same view a second way, for the PostgreSQL
+dialect only, by wrapping the `information_schema` database; which of the two
+is canonical is open
+([constraint-column-usage-duplication.md](constraint-column-usage-duplication.md)).
+Upstream would still be the better home for a standard view, but nothing here
+is blocked on it.
 
 ---
 
@@ -225,8 +221,7 @@ connection goroutine, and the connection goroutine answers each
   `SERVER_STATUS_LAST_ROW_SENT` on the same field from the connection
   goroutine. Nothing synchronizes the two; the race detector reports it. **This
   half remains an upstream gap** — QRDB does not fork vitess or go-mysql-server
-  to work around it, and tracks it for filing upstream if it is still present
-  at release-candidate time.
+  to work around it; it is a known limitation of the MySQL wire.
 - **An idle cursor is not bounded by `sql.query_timeout`.** It bounds a cursor
   while it produces rows, not while it waits: a cursor the client stops
   fetching from holds its statement, and what that statement holds, until the

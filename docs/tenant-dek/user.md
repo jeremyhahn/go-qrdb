@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Encrypt your application's data under your tenant's own key without ever
@@ -61,7 +61,7 @@ ciphertexts are, so the procedure is yours:
    ```
 
 The current version cannot be retired. A ciphertext under a retired version
-answers `ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
+answers `dek.ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
 
 ## What to expect
 
@@ -76,7 +76,7 @@ answers `ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
   every version's own key is still wrapped under a KEK, never plaintext.
 - **Every version's key is wrapped under a key-encrypting key (KEK) —
   there is no unwrapped option.** The operator configures the built-in
-  software provider's key directory (`qrdbd --dek-key-dir`) or a
+  software provider's key directory (`qrdbd start --dek-key-dir`) or a
   go-xkms-registered hardware/cloud-KMS provider; without either, encrypt
   and rotate are refused. See
   [key-wrapping/user.md](../key-wrapping/user.md).

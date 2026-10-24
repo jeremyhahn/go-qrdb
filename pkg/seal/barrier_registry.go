@@ -55,6 +55,12 @@ type BarrierRegistry struct {
 	// unsealGate, when set, vetoes a tenant's re-unseal (WithTenantUnsealGate).
 	unsealGate func(tenantID string) bool
 
+	// unsealedMu guards unsealedObservers and orders an observer's
+	// registration against a tenant barrier's storing, so every tenant
+	// barrier the registry holds carries every observer (OnTenantUnsealed).
+	unsealedMu        sync.Mutex
+	unsealedObservers []func(ctx context.Context, tenantID string)
+
 	// poolMu guards perTenantReg/volumeAllocator/volumeResolver, which may be
 	// attached either at construction (Options) or post-hoc via Attach.
 	poolMu       sync.RWMutex
@@ -556,11 +562,45 @@ func (r *BarrierRegistry) SetSystemBarrier(b *StorageBarrier) {
 // stores are re-encrypted. Returns ErrTenantNotFound if the tenant is not
 // registered (a shared-barrier tenant has no dedicated barrier to replace).
 func (r *BarrierRegistry) ReplaceTenantBarrier(tenantID string, tb *TenantBarrier) error {
-	if _, ok := r.tenants.Load(tenantID); !ok {
+	r.unsealedMu.Lock()
+	defer r.unsealedMu.Unlock()
+	old, ok := r.tenants.Load(tenantID)
+	if !ok {
 		return ErrTenantNotFound
 	}
 	r.tenants.Store(tenantID, tb)
+	if old.(*TenantBarrier).Barrier() != tb.Barrier() { //nolint:errcheck // type assertion on a value this container only ever holds
+		watchTenantUnsealed(tenantID, tb, r.unsealedObservers)
+	}
 	return nil
+}
+
+// OnTenantUnsealed registers fn to run, with the tenant's ID, each time a
+// tenant barrier this registry holds is initialized or unsealed. It covers
+// the tenants registered now and every tenant registered or replaced later,
+// so a caller waiting on a tenant's barrier learns the moment it is usable
+// rather than on its next poll. fn runs synchronously on the unsealing
+// goroutine and must not block. A nil fn is ignored.
+func (r *BarrierRegistry) OnTenantUnsealed(fn func(ctx context.Context, tenantID string)) {
+	if fn == nil {
+		return
+	}
+	r.unsealedMu.Lock()
+	defer r.unsealedMu.Unlock()
+	r.unsealedObservers = append(r.unsealedObservers, fn)
+	observer := []func(context.Context, string){fn}
+	r.tenants.Range(func(key, value any) bool {
+		watchTenantUnsealed(key.(string), value.(*TenantBarrier), observer) //nolint:errcheck // type assertions on values this container only ever holds
+		return true
+	})
+}
+
+// watchTenantUnsealed attaches observers to tb's barrier, each called with
+// tenantID. The caller holds the registry's unsealedMu.
+func watchTenantUnsealed(tenantID string, tb *TenantBarrier, observers []func(context.Context, string)) {
+	for _, fn := range observers {
+		tb.Barrier().OnUnsealed(func(ctx context.Context) { fn(ctx, tenantID) })
+	}
 }
 
 // PerTenantPebbleRegistry returns the attached per-tenant Pebble
@@ -622,10 +662,13 @@ func (r *BarrierRegistry) RegisterTenant(
 		return nil, err
 	}
 
+	r.unsealedMu.Lock()
+	defer r.unsealedMu.Unlock()
 	if _, loaded := r.tenants.LoadOrStore(tenantID, tb); loaded {
 		_ = tb.Close()
 		return nil, ErrTenantAlreadyExists
 	}
+	watchTenantUnsealed(tenantID, tb, r.unsealedObservers)
 
 	return tb, nil
 }

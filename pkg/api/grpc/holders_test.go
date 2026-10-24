@@ -127,6 +127,13 @@ func (h *holderBarrierSvc) BarrierOfficerRevoke(_ context.Context, d seal.Quorum
 // the thumbprint the handlers must derive from it.
 func holderPeer(t *testing.T) (context.Context, string) {
 	t.Helper()
+	cert := holderCert(t)
+	return verifiedPeerContext(cert), mtls.Thumbprint(cert.Raw)
+}
+
+// holderCert returns a self-signed client certificate for carol.
+func holderCert(t *testing.T) *x509.Certificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -141,10 +148,33 @@ func holderPeer(t *testing.T) (context.Context, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := grpcpeer.NewContext(context.Background(), &grpcpeer.Peer{
-		AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}},
+	return cert
+}
+
+// verifiedPeerContext is a context whose connection presents cert and whose
+// handshake verified it, bound the way the auth interceptor binds the TLS
+// state.
+func verifiedPeerContext(cert *x509.Certificate) context.Context {
+	return peerContext(&tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
 	})
-	return ctx, mtls.Thumbprint(der)
+}
+
+// unverifiedPeerContext is a context whose connection presents cert but
+// whose handshake built no verified chain, as on a listener whose trust pool
+// verifies afterwards through the verifier the auth interceptor binds.
+func unverifiedPeerContext(cert *x509.Certificate) context.Context {
+	return peerContext(&tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}})
+}
+
+// peerContext binds state as both the gRPC peer's TLS info and the
+// request's TLS state, as the auth interceptor does.
+func peerContext(state *tls.ConnectionState) context.Context {
+	ctx := grpcpeer.NewContext(context.Background(), &grpcpeer.Peer{
+		AuthInfo: credentials.TLSInfo{State: *state},
+	})
+	return auth.WithTLSState(ctx, state)
 }
 
 func requireCode(t *testing.T, err error, want codes.Code) {
@@ -386,6 +416,9 @@ func TestMapHolderError_NonHolderErrorIsInternal(t *testing.T) {
 type holderTenantSvc struct {
 	tenantpkg.TenantServicer
 	err error
+	// peers records the thumbprint each share claim reaching the service
+	// was bound to.
+	peers []string
 }
 
 func (h *holderTenantSvc) TenantBarrierOfficerRegister(_ context.Context, _ string, r *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
@@ -402,14 +435,16 @@ func (h *holderTenantSvc) TenantBarrierOfficerList(context.Context, string) ([]*
 	return []*ceremony.OfficerStatus{{Username: "carol"}}, nil
 }
 
-func (h *holderTenantSvc) TenantBarrierShareClaimBegin(context.Context, string, string, string) (*ceremony.ChallengeResponse, error) {
+func (h *holderTenantSvc) TenantBarrierShareClaimBegin(_ context.Context, _, _, peer string) (*ceremony.ChallengeResponse, error) {
+	h.peers = append(h.peers, peer)
 	if h.err != nil {
 		return nil, h.err
 	}
 	return &ceremony.ChallengeResponse{Nonce: []byte{0xab}, ExpiresAt: time.Unix(10, 0)}, nil
 }
 
-func (h *holderTenantSvc) TenantBarrierShareClaimComplete(context.Context, string, string, string, []byte, string) (*ceremony.ShareClaimResult, error) {
+func (h *holderTenantSvc) TenantBarrierShareClaimComplete(_ context.Context, _, _, _ string, _ []byte, peer string) (*ceremony.ShareClaimResult, error) {
+	h.peers = append(h.peers, peer)
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -521,6 +556,144 @@ func TestGRPCTenantHolders_Refusals(t *testing.T) {
 		t.Run("no-cert/"+name, func(t *testing.T) {
 			requireCode(t, tenantHolderCalls(configured, context.Background(), "acme")[name](), codes.Unauthenticated)
 		})
+	}
+}
+
+// claimVerifier is the listener's trust pool as auth.IssuerVerifier: it
+// answers chain, or refuses with err, and counts its calls.
+type claimVerifier struct {
+	chain []*x509.Certificate
+	err   error
+	calls int
+}
+
+var _ auth.IssuerVerifier = (*claimVerifier)(nil)
+
+func (v *claimVerifier) VerifyPeerChain(context.Context, *x509.Certificate, []*x509.Certificate) ([]*x509.Certificate, error) {
+	v.calls++
+	return v.chain, v.err
+}
+
+func (v *claimVerifier) IsClusterCA(context.Context, *x509.Certificate) bool { return false }
+
+func (v *claimVerifier) VerifyIssuer(context.Context, string, []*x509.Certificate) error { return nil }
+
+// trustStateError is a verifier refusal caused by a failed trust-state
+// read, not by the chain.
+type trustStateError struct{}
+
+func (trustStateError) Error() string               { return "trust state read failed" }
+func (trustStateError) TrustStateUnavailable() bool { return true }
+
+// grpcClaimCalls returns the share-claim RPCs of the system, recovery and
+// tenant domains, over services that record the thumbprint each claim
+// reaching them was bound to, and a reader of those thumbprints.
+func grpcClaimCalls() (map[string]func(context.Context) error, func() []string) {
+	var bound []string
+	barrier := &holderBarrierSvc{
+		claimBegin: func(_ seal.QuorumDomain, _, th string) (*service.BarrierShareClaimChallenge, error) {
+			bound = append(bound, th)
+			return &service.BarrierShareClaimChallenge{NonceHex: "ab"}, nil
+		},
+		claimComplete: func(_ seal.QuorumDomain, _, _ string, _ []byte, th string) (*service.BarrierShareClaimResult, error) {
+			bound = append(bound, th)
+			return &service.BarrierShareClaimResult{}, nil
+		},
+	}
+	tenant := &holderTenantSvc{}
+	s := &qrdbServiceServer{barrierSvc: barrier}
+	ts := &tenantBarrierServer{svc: tenant}
+	begin := &pb.BarrierShareClaimBeginRequest{Username: "carol"}
+	complete := &pb.BarrierShareClaimCompleteRequest{Username: "carol", NonceHex: "ab", Signature: []byte("sig")}
+	calls := map[string]func(context.Context) error{
+		"system-begin": func(ctx context.Context) error {
+			_, err := s.BarrierShareClaimBegin(ctx, begin)
+			return err
+		},
+		"system-complete": func(ctx context.Context) error {
+			_, err := s.BarrierShareClaimComplete(ctx, complete)
+			return err
+		},
+		"recovery-begin": func(ctx context.Context) error {
+			_, err := s.BarrierRecoveryShareClaimBegin(ctx, begin)
+			return err
+		},
+		"recovery-complete": func(ctx context.Context) error {
+			_, err := s.BarrierRecoveryShareClaimComplete(ctx, complete)
+			return err
+		},
+		"tenant-begin": func(ctx context.Context) error {
+			_, err := ts.ShareClaimBegin(ctx, &pb.TenantBarrierShareClaimBeginRequest{TenantId: "acme", Username: "carol"})
+			return err
+		},
+		"tenant-complete": func(ctx context.Context) error {
+			_, err := ts.ShareClaimComplete(ctx, &pb.TenantBarrierShareClaimCompleteRequest{TenantId: "acme", Username: "carol"})
+			return err
+		},
+	}
+	return calls, func() []string { return append(append([]string(nil), bound...), tenant.peers...) }
+}
+
+// A share claim binds the holder's certificate, so a certificate the
+// connection presented but no one verified binds nothing: every claim RPC
+// refuses it as Unauthenticated before the service is called, whether the
+// listener bound no verifier or its verifier refused the chain, and a
+// failed trust-state read is a retryable Unavailable.
+func TestGRPCHolders_ClaimRefusesAnUnverifiedCertificate(t *testing.T) {
+	cert := holderCert(t)
+	refusing := &claimVerifier{err: errors.New("x509: certificate signed by unknown authority")}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want codes.Code
+	}{
+		{"no-verifier", unverifiedPeerContext(cert), codes.Unauthenticated},
+		{"verifier-refuses", auth.WithPeerChainVerifier(unverifiedPeerContext(cert), refusing), codes.Unauthenticated},
+		{"trust-state-unavailable", auth.WithPeerChainVerifier(unverifiedPeerContext(cert), &claimVerifier{err: trustStateError{}}), codes.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, bound := grpcClaimCalls()
+			for name, call := range calls {
+				if got := status.Code(call(tc.ctx)); got != tc.want {
+					t.Errorf("%s: code = %s, want %s", name, got, tc.want)
+				}
+			}
+			if got := bound(); len(got) != 0 {
+				t.Fatalf("claims reached the service bound to %v", got)
+			}
+		})
+	}
+	if refusing.calls != 6 {
+		t.Fatalf("refusing verifier consulted %d times, want 6", refusing.calls)
+	}
+}
+
+// On a listener whose trust pool verifies the client certificate after the
+// handshake, crypto/tls builds no VerifiedChains; every claim RPC binds the
+// leaf of the chain the bound verifier verified.
+func TestGRPCHolders_ClaimBindsThePoolVerifiedLeaf(t *testing.T) {
+	cert := holderCert(t)
+	pool := &claimVerifier{chain: []*x509.Certificate{cert}}
+	ctx := auth.WithPeerChainVerifier(unverifiedPeerContext(cert), pool)
+	calls, bound := grpcClaimCalls()
+	for name, call := range calls {
+		if err := call(ctx); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	want := mtls.Thumbprint(cert.Raw)
+	got := bound()
+	if len(got) != len(calls) {
+		t.Fatalf("bound %d claims, want %d", len(got), len(calls))
+	}
+	for _, th := range got {
+		if th != want {
+			t.Fatalf("claim bound %q, want %q", th, want)
+		}
+	}
+	if pool.calls != len(calls) {
+		t.Fatalf("pool consulted %d times, want %d", pool.calls, len(calls))
 	}
 }
 

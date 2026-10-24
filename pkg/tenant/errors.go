@@ -52,6 +52,16 @@ var (
 	// committed a live record for a permanently retired id.
 	ErrTenantStoreNotAtomic = errors.New("tenant: metadata store cannot commit a create atomically against the tombstone")
 
+	// ErrTenantUpdateNotAtomic is returned by UpdateTenant when the tenant
+	// metadata store cannot commit a record conditioned on it still being the
+	// record that was read (a compare-and-swap). A blind write in its place
+	// would let an update built on a stale read silently undo a status change
+	// committed in between -- a suspension, say.
+	ErrTenantUpdateNotAtomic = errors.New("tenant: metadata store cannot commit an update atomically against the record it read")
+
+	// ErrConcurrentUpdate matches every *ConcurrentUpdateError.
+	ErrConcurrentUpdate = errors.New("tenant: update lost to concurrent writers")
+
 	// ErrUndoNodeUnnamed is returned when a node would acknowledge its
 	// cleanup of an undone create without a node identity (WithNodeID,
 	// SetUndoCleanupRoster). An acknowledgement no roster can name would
@@ -252,6 +262,23 @@ func (e *QuotaExceededError) Error() string {
 	return fmt.Sprintf("tenant: quota exceeded for %s: %s current=%d delta=%d limit=%d",
 		e.TenantID, e.Resource, e.Current, e.Delta, e.Limit)
 }
+
+// ConcurrentUpdateError reports that an UpdateTenant attempt lost its
+// compare-and-swap to another writer of the same tenant record. UpdateTenant
+// re-reads and retries; it returns this error only once every one of its
+// Attempts has lost.
+type ConcurrentUpdateError struct {
+	TenantID string
+	Attempts int
+}
+
+func (e *ConcurrentUpdateError) Error() string {
+	return "tenant: update of " + strconv.Quote(e.TenantID) + " lost to concurrent writers after " +
+		strconv.Itoa(e.Attempts) + " attempts"
+}
+
+// Is matches ErrConcurrentUpdate.
+func (e *ConcurrentUpdateError) Is(target error) bool { return target == ErrConcurrentUpdate }
 
 // StoreError is returned when a storage operation fails within the
 // tenant service.
@@ -674,6 +701,21 @@ type InvalidIsolationPolicyError struct {
 
 func (e *InvalidIsolationPolicyError) Error() string {
 	return "tenant: invalid isolation policy " + strconv.Quote(e.Value)
+}
+
+// TenantFieldError is returned when an UpdateTenant patch carries a
+// description or metadata map outside its bounds (MaxDescriptionBytes,
+// MaxMetadataEntries, MaxMetadataKeyBytes, MaxMetadataValueBytes), an empty
+// metadata key, or text that is not valid UTF-8. Field names the offending
+// field ("description", "metadata", "metadata key" or "metadata value");
+// the value itself is never echoed.
+type TenantFieldError struct {
+	Field  string
+	Reason string
+}
+
+func (e *TenantFieldError) Error() string {
+	return "tenant: invalid " + e.Field + ": " + e.Reason
 }
 
 // FirstAdminProofError is returned when a tenant barrier init is completed

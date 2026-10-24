@@ -207,6 +207,7 @@ func TestTenantOptionsCombined(t *testing.T) {
 
 	dekSvc := newTestDEKService(t)
 	svc := &mockTenantServicer{}
+	policySvc := &stubPolicyServicer{}
 
 	var opts serverOptions
 	WithDEKService(dekSvc)(&opts)
@@ -216,6 +217,13 @@ func TestTenantOptionsCombined(t *testing.T) {
 	if opts.dekSvc == nil {
 		t.Error("dekSvc: got nil after WithDEKService")
 	}
+	if opts.policySvc != nil {
+		t.Error("policySvc: set without WithPolicyService")
+	}
+	WithPolicyService(policySvc)(&opts)
+	if opts.policySvc != policySvc {
+		t.Error("policySvc: not attached by WithPolicyService")
+	}
 	if opts.tenantSvc == nil {
 		t.Error("tenantSvc: got nil after WithTenantService")
 	}
@@ -223,6 +231,9 @@ func TestTenantOptionsCombined(t *testing.T) {
 		t.Error("barrierRegistry: got non-nil after WithBarrierRegistry(nil)")
 	}
 }
+
+// stubPolicyServicer is a policy service that is present but never called.
+type stubPolicyServicer struct{ service.PolicyServicer }
 
 // TestWithDEKService_ServerIntegration verifies that the keyring service
 // option survives server.New, which is what threads it to every protocol

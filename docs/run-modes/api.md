@@ -1,6 +1,6 @@
 # Run Modes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Run mode is not itself an API capability — it is the property that determines
@@ -18,8 +18,8 @@ The response is the **sealed** profile: build tags ∩ run mode ∩ config, plus
 
 A capability reported `false` is three-way ambiguous by design — not compiled,
 mode-gated, or config-disabled — and `mode` plus the build is what
-disambiguates. This is recorded rather than smoothed over, because a caller
-that treats `false` as "not compiled" will misdiagnose a mode gate.
+disambiguates. A caller that treats `false` as "not compiled" misdiagnoses a
+mode gate.
 
 ## Capability families by mode
 
@@ -36,43 +36,27 @@ credentials, audit, REST and gRPC transports.
 rebalance, shard backup/restore, and IsolationRaft tenancy. These are about a
 cluster or a separate product surface, not about one database's data.
 
-*(Corrected: this section listed MVCC, watch, lease and lock as raft-only until
-2026-10-01. A standalone node now composes them over the same engine, lessor
-and watch hub as raft mode's MVCC state machine — see
-[architecture.md](architecture.md#standalone--no-raft).)*
-
-### The storage engine, not the mode, bounds the coordination families
-
-A standalone node's backend selects its engine. Pebble and memory compose the
-MVCC engine and serve every family above. **File and objstore compose the plain
-KV engine**, which publishes changes but keeps no revisions and no leases:
-
-| Family | pebble / memory | file / objstore |
-|---|---|---|
-| Watch (live) | served | served (except over MCP, below) |
-| Watch with a start revision | served | refused: `WatchStartRevisionUnsupportedError` |
-| MVCC revisions, `at-revision` | served | refused: `CapabilityUnsupportedError` |
-| Lease | served | refused: `CapabilityUnsupportedError` |
-| Lock | served | refused: `CapabilityUnsupportedError` (a lock is a lease) |
-| Transactions | served | served on value and version compares; revision compares and lease-carrying ops refused: `CapabilityUnsupportedError` |
+Every standalone backend (memory, file, pebble, objstore) composes the MVCC
+engine, so the families above are served whatever the backend, and the
+capability report says `mvcc`, `watch`, `lease` and `lock` true on every one.
 
 MCP has no stream, so its SDK client watches by polling with a start revision
-to stay gap-free. On a store that keeps no revisions the first poll after an
-event needs replay, and the watch ends with the typed
+to stay gap-free. On a raft `sm_type` that keeps no revision history, the first
+poll after an event needs replay, and the watch ends with the typed
 `WatchStartRevisionUnsupportedError` rather than silently dropping changes
-between polls. This is the same answer a raft `sm_type` without revision history
-gives.
-
-The capability report is a **mode-level** statement, like `transaction`: it
-reports `mvcc`, `watch`, `lease` and `lock` true on a standalone node whatever
-its backend, and the engine boundary is answered per call.
+between polls.
 
 ## Refusal shape, per transport
 
-A capability the node cannot serve — a raft-only family on a standalone node,
-or a family the engine lacks — refuses with
+A capability the node cannot serve — the etcd listener on a standalone node, or
+a family its raft `sm_type` lacks — refuses with
 `*service.CapabilityUnsupportedError`, whose message names the refused service
 and, for a mode refusal, the remedy **`requires mode: raft`**.
+
+A membership or snapshot call on a standalone node fails in `LocalBackend` with
+`backend.ClusterOperationError` (`backend: cluster operation not supported:
+<op>`). No transport's error classifier maps that type, so it does not take the
+shape below.
 
 | Transport | Refusal |
 |---|---|
@@ -102,11 +86,8 @@ ONE suite — lease lifecycle, lease expiry deleting its keys, prefix watch,
 revision resume, cancellation, lock lifecycle — against a standalone memory
 node, a standalone file node, a standalone pebble node and a raft node, on REST,
 gRPC, Unix, QUIC, MCP and the embedded transport, plus a standalone objstore
-node on the embedded transport. Every backend composes the MVCC engine, so
-every backend serves the same families.
+node on the embedded transport.
 
 ## Versioning
 
 `GET /capabilities` is an unversioned path. Nothing here is deprecated.
-`embedded.WithStandaloneMode` was removed: it only selected the refusal this
-document no longer describes.

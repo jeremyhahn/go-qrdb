@@ -15,20 +15,30 @@
 package buildgates
 
 // CI runs in two tiers (#674; handbook sdlc.md §5a, devops.md §1/§5/§8a; the
-// pattern is go-quicraft#294). The PR tier runs on every event; the full tier
-// runs on push to main, on workflow_dispatch and on a pull request labelled
-// `ci:full`. CI Gate stays the one required check, and it passes a skipped job
-// only when the job is tagged `full` and the run did not select that tier.
+// pattern is go-quicraft#294), and a third for the soak. The PR tier runs on
+// every event; the full tier runs on every event but a pull request, and on a
+// pull request labelled `ci:full` (ci-template v1.23's CI_FULL_TIER); the
+// nightly tier runs on schedule and workflow_dispatch only (v1.24), and since
+// ci.yml has no schedule (Company Agent m433) that is dispatch alone. CI Gate
+// stays the one required check, and it passes a skipped job only when the job
+// is tagged `full` or `nightly` and the run did not select that tier. The code
+// tier (DS-3160) runs on every event but a docs-only pull request, and the gate
+// passes its skip only when the changes job said docs-only (DOCS_ONLY true).
 //
 // Every property below is one edit from going false without anything else
 // noticing:
 //
-//   - a job tagged `full` whose `if:` differs from FULL_TIER, so the gate
-//     excuses a skip in a run that should have executed it;
+//   - a job tagged `full` whose `if:` differs from CI_FULL_TIER, or a
+//     FULL_TIER that is not CI_FULL_TIER, so the gate excuses a skip in a run
+//     that should have executed it;
+//   - a job tagged `nightly` whose `if:` differs from NIGHTLY, the same way;
+//   - a job tagged `code` whose `if:` is not exactly codeTierIf, that does not
+//     need changes, or a DOCS_ONLY that is not changes' docs_only output;
 //   - a PR-tier job that gains an `if:`, so it skips on some event and either
 //     fails the gate there or, if retagged, stops gating pull requests;
 //   - a job missing from the gate's needs or check lines (fail-open);
-//   - a PR-tier job that needs a full-tier one, and so skips with it;
+//   - a PR-tier job that needs a code, full-tier or nightly one, or a code
+//     job that needs a full-tier or nightly one, and so skips with it;
 //   - a pull_request trigger with `labeled`, so every label change starts a
 //     run that cancels the PR's run in progress (#853);
 //   - ci.yml without its concurrency block (a main group per event only, so
@@ -59,12 +69,37 @@ import (
 )
 
 const (
-	// fullTierIf is the condition every full-tier job carries, and the
-	// expression ci-gate evaluates into FULL_TIER.
-	fullTierIf = `github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:full')`
+	// fullTierIf is the condition every full-tier job carries (ci-template
+	// v1.23): every event but a pull request, and a pull request labelled
+	// ci:full. ci.yml's env evaluates it into CI_FULL_TIER, which ci-gate
+	// reads into FULL_TIER (fullTierGateEnv); a job-level `if:` cannot read
+	// env, so each full-tier job repeats it.
+	fullTierIf = `github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')`
 
-	tierPR   = "pr"
-	tierFull = "full"
+	// fullTierGateEnv is ci-gate's FULL_TIER: the workflow's CI_FULL_TIER.
+	fullTierGateEnv = "${{ env.CI_FULL_TIER }}"
+
+	// nightlyIf is the `if:` of every nightly job (v1.24) and ci-gate's
+	// NIGHTLY, spelled as ci.yml spells both.
+	nightlyIf = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
+
+	// codeTierIf is the `if:` of every code-tier job (DS-3160), spelled
+	// exactly so: every event but a docs-only pull request. docs_only is
+	// false off pull_request and on ci:full, so a code job runs on main,
+	// dispatch and ci:full.
+	codeTierIf = "needs.changes.outputs.docs_only != 'true'"
+
+	// codeTierGateEnv is ci-gate's DOCS_ONLY: the changes job's output.
+	codeTierGateEnv = "${{ needs.changes.outputs.docs_only }}"
+
+	// changesJob decides whether a pull request is docs-only; every code
+	// job needs it, or its `if:` reads nothing.
+	changesJob = "changes"
+
+	tierPR      = "pr"
+	tierCode    = "code"
+	tierFull    = "full"
+	tierNightly = "nightly"
 
 	// ciGateJob is the one required check.
 	ciGateJob = "ci-gate"
@@ -77,8 +112,8 @@ const (
 	// §9): a PR ref's newer run cancels the older, a run on main never is.
 	cancelOffMain = "${{ github.ref != 'refs/heads/main' }}"
 
-	// ciWorkflowName is the one workflow on ci-template v1.23's concurrency block
-	// (Company Agent m701); every other pull_request workflow keeps the
+	// ciWorkflowName is the one workflow on ci-template v1.25's concurrency block
+	// (Company Agent m701, m857); every other pull_request workflow keeps the
 	// v1.22.1 pair above.
 	ciWorkflowName = "ci.yml"
 
@@ -99,20 +134,33 @@ const (
 	scheduleExempt = "automerge.yml"
 )
 
-// prTierJobs, fullTierJobs and fullTierJob pin the split itself, not just its
-// consistency: moving a job between tiers is a deliberate edit to this file.
-// integration-features (featureJob) is one job with a matrix leg per feature;
-// ci-gate reads its aggregate result.
+// prTierJobs, codeTierJobs, fullTierJobs, nightlyTierJobs and fullTierJob pin
+// the split itself, not just its consistency: moving a job between tiers is a
+// deliberate edit to this file. integration-features (featureJob) is one job
+// with a matrix leg per feature; ci-gate reads its aggregate result. changes
+// (v1.24) is PR tier: it decides whether a pull request is docs-only, and lint
+// and image need it. lint and arch-gates stay PR tier because make lint-gates
+// and make check-public-releasable read docs too; image (#1046) and
+// test-typescript build and test nothing a docs-only pull request changes
+// (DS-3160).
 var (
-	prTierJobs   = []string{"image", "test-typescript", "arch-gates"}
-	fullTierJobs = []string{"integration-standalone", featureJob}
+	prTierJobs      = []string{changesJob, "lint", "arch-gates"}
+	codeTierJobs    = []string{"test-typescript", "image"}
+	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
+	nightlyTierJobs = []string{"soak"}
 )
+
+// fipsJob runs the unit suites under GODEBUG=fips140=only (#20,
+// docs/seal/fips140-mode.md).
+const fipsJob = "fips"
 
 // fullTierJob reports whether a job must be in the full tier. Every
 // integration job is, however the Integration stage is split, and so is trivy
-// (devops.md §8a: `trivy fs` runs in the full tier or nightly, not per PR).
+// (devops.md §8a: `trivy fs` runs in the full tier or nightly, not per PR),
+// and so is fips: it reruns both unit suites under the FIPS module, which no
+// pull request's budget holds.
 func fullTierJob(name string) bool {
-	return strings.HasPrefix(name, "integration") || name == "trivy"
+	return strings.HasPrefix(name, "integration") || name == "trivy" || name == fipsJob
 }
 
 // prTriggerTypes are the pull_request activity types ci.yml must declare.
@@ -168,7 +216,8 @@ type ciWorkflow struct {
 			Env map[string]string `yaml:"env"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
-	On yaml.Node `yaml:"on"`
+	On  yaml.Node         `yaml:"on"`
+	Env map[string]string `yaml:"env"`
 }
 
 func parseWorkflow(t *testing.T, body string) ciWorkflow {
@@ -263,9 +312,21 @@ func ciTierProblems(wf ciWorkflow) []string {
 	if !ok {
 		return append(problems, "ci.yml has no "+ciGateJob+" step defining check(): the tiers have no gate")
 	}
-	if got := env["FULL_TIER"]; got != "${{ "+fullTierIf+" }}" {
-		problems = append(problems, ciGateJob+"'s FULL_TIER is "+strconv.Quote(got)+
-			", not the full-tier condition: the gate would excuse skips the jobs' `if:` does not produce")
+	if got := wf.Env["CI_FULL_TIER"]; got != "${{ "+fullTierIf+" }}" {
+		problems = append(problems, "ci.yml's CI_FULL_TIER is "+strconv.Quote(got)+
+			", not the full-tier condition: the steps it gates and the gate's FULL_TIER would disagree with the jobs' `if:`")
+	}
+	if got := env["FULL_TIER"]; got != fullTierGateEnv {
+		problems = append(problems, ciGateJob+"'s FULL_TIER is "+strconv.Quote(got)+", not "+fullTierGateEnv+
+			": the gate would excuse skips the jobs' `if:` does not produce")
+	}
+	if got := env["NIGHTLY"]; got != nightlyIf {
+		problems = append(problems, ciGateJob+"'s NIGHTLY is "+strconv.Quote(got)+
+			", not the nightly condition: the gate would excuse skips the nightly jobs' `if:` does not produce")
+	}
+	if got := env["DOCS_ONLY"]; got != codeTierGateEnv {
+		problems = append(problems, ciGateJob+"'s DOCS_ONLY is "+strconv.Quote(got)+", not "+codeTierGateEnv+
+			": the gate would excuse skips the code jobs' `if:` does not produce")
 	}
 
 	checks := gateChecks(run)
@@ -315,11 +376,37 @@ func ciTierProblems(wf ciWorkflow) []string {
 			}
 			if fullTierJob(name) {
 				problems = append(problems, "job "+name+" is tagged pr but belongs to the full tier "+
-					"(every integration job and trivy, devops.md §8a)")
+					"(every integration job, trivy and fips, devops.md §8a)")
+			}
+			if slices.Contains(codeTierJobs, name) {
+				problems = append(problems, "job "+name+" is a code-tier job tagged pr: "+ciGateJob+
+					" would fail every docs-only pull request that skips it")
+			}
+		case tierCode:
+			if job.If != codeTierIf {
+				problems = append(problems, "job "+name+" is tagged code in "+ciGateJob+
+					" but its `if:` is "+strconv.Quote(job.If)+", not the code-tier condition "+strconv.Quote(codeTierIf))
+			}
+			if !slices.Contains(needsList(job.Needs), changesJob) {
+				problems = append(problems, "code-tier job "+name+" does not need "+changesJob+
+					": its `if:` would read no docs_only output")
+			}
+			if slices.Contains(prTierJobs, name) || fullTierJob(name) {
+				problems = append(problems, "job "+name+" is a PR-tier or full-tier job tagged code: it would "+
+					"stop gating docs-only pull requests or main")
+			}
+		case tierNightly:
+			if job.If != nightlyIf {
+				problems = append(problems, "job "+name+" is tagged nightly in "+ciGateJob+
+					" but its `if:` is "+strconv.Quote(job.If)+", not the nightly condition")
+			}
+			if slices.Contains(prTierJobs, name) || fullTierJob(name) {
+				problems = append(problems, "job "+name+" is a PR-tier or full-tier job tagged nightly: it would "+
+					"stop gating pull requests or main")
 			}
 		default:
 			problems = append(problems, "job "+name+"'s check line in "+ciGateJob+" has tier "+
-				strconv.Quote(c.tier)+"; want pr or full")
+				strconv.Quote(c.tier)+"; want pr, code, full or nightly")
 		}
 	}
 
@@ -329,15 +416,19 @@ func ciTierProblems(wf ciWorkflow) []string {
 		}
 	}
 
-	// A full-tier job may need a PR-tier one; never the reverse, or the PR
-	// tier skips with it and the gate fails every plain pull request.
+	// A job may need one that runs on every run it does; never one that can
+	// skip where it must run, or it skips with it and the gate fails. A PR-tier
+	// job runs on every run, a code-tier job on every run but a docs-only pull
+	// request, so a PR-tier job needs no code, full or nightly job and a
+	// code-tier job no full or nightly one.
+	narrower := map[string][]string{
+		tierPR:   {tierCode, tierFull, tierNightly},
+		tierCode: {tierFull, tierNightly},
+	}
 	for _, name := range names {
-		if tierOf[name] != tierPR {
-			continue
-		}
 		for _, dep := range needsList(wf.Jobs[name].Needs) {
-			if tierOf[dep] == tierFull {
-				problems = append(problems, "PR-tier job "+name+" needs full-tier job "+dep)
+			if t := tierOf[dep]; slices.Contains(narrower[tierOf[name]], t) {
+				problems = append(problems, tierOf[name]+"-tier job "+name+" needs "+t+"-tier job "+dep)
 			}
 		}
 	}
@@ -370,12 +461,14 @@ func TestCIGateTiersMatchTheJobs(t *testing.T) {
 	for _, c := range checks {
 		tiers[c.tier]++
 	}
-	if tiers[tierPR] < len(prTierJobs) || tiers[tierFull] < len(fullTierJobs) {
-		t.Fatalf("%s tags %d jobs pr and %d full; want at least %d and %d: either the parse "+
-			"found too little to check or a pinned job left its tier", ciGateJob, tiers[tierPR], tiers[tierFull],
-			len(prTierJobs), len(fullTierJobs))
+	if tiers[tierPR] < len(prTierJobs) || tiers[tierCode] < len(codeTierJobs) ||
+		tiers[tierFull] < len(fullTierJobs) || tiers[tierNightly] < len(nightlyTierJobs) {
+		t.Fatalf("%s tags %d jobs pr, %d code, %d full and %d nightly; want at least %d, %d, %d and %d: either "+
+			"the parse found too little to check or a pinned job left its tier", ciGateJob, tiers[tierPR],
+			tiers[tierCode], tiers[tierFull], tiers[tierNightly], len(prTierJobs), len(codeTierJobs),
+			len(fullTierJobs), len(nightlyTierJobs))
 	}
-	for tier, names := range map[string][]string{tierPR: prTierJobs, tierFull: fullTierJobs} {
+	for tier, names := range map[string][]string{tierPR: prTierJobs, tierCode: codeTierJobs, tierFull: fullTierJobs, tierNightly: nightlyTierJobs} {
 		for _, name := range names {
 			if _, found := wf.Jobs[name]; !found {
 				t.Errorf("%s-tier job %s is not in ci.yml", tier, name)
@@ -397,27 +490,57 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+env:
+  CI_FULL_TIER: ${{ ` + fullTierIf + ` }}
 jobs:
   build:
     steps:
       - run: make build
+  changes:
+    steps:
+      - run: echo docs_only=false
+  test-typescript:
+    if: ` + codeTierIf + `
+    needs: [changes]
+    steps:
+      - run: make test-typescript
   integration-x:
     if: ` + fullTierIf + `
     needs: [build]
     steps:
       - run: make integration-test-x
+  fips:
+    if: ` + fullTierIf + `
+    needs: [build]
+    steps:
+      - run: make test
+  soak-x:
+    if: ` + nightlyIf + `
+    needs: [build]
+    steps:
+      - run: make soak-x
   ci-gate:
     if: always()
-    needs: [build, integration-x]
+    needs: [build, fips, changes, test-typescript, integration-x, soak-x]
     steps:
       - env:
           RESULT_BUILD: ${{ needs.build.result }}
+          RESULT_FIPS: ${{ needs.fips.result }}
+          RESULT_CHANGES: ${{ needs.changes.result }}
+          RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}
-          FULL_TIER: ${{ ` + fullTierIf + ` }}
+          RESULT_SOAK_X: ${{ needs.soak-x.result }}
+          FULL_TIER: ` + fullTierGateEnv + `
+          NIGHTLY: ` + nightlyIf + `
+          DOCS_ONLY: ` + codeTierGateEnv + `
         run: |
           check() { :; }
           check build "$RESULT_BUILD" pr
+          check changes "$RESULT_CHANGES" pr
+          check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check integration-x "$RESULT_INTEGRATION_X" full
+          check fips "$RESULT_FIPS" full
+          check soak-x "$RESULT_SOAK_X" nightly
 `
 
 // TestCITierProblems_CanFail proves each check in ciTierProblems reddens on
@@ -437,17 +560,30 @@ func TestCITierProblems_CanFail(t *testing.T) {
 		"pull_request without reopened": replace("synchronize, reopened]", "synchronize]"),
 		"full job with a different if": replace("    if: "+fullTierIf+"\n    needs: [build]",
 			"    if: github.event_name == 'push'\n    needs: [build]"),
-		"full job with no if":       replace("    if: "+fullTierIf+"\n    needs: [build]", "    needs: [build]"),
-		"pr job with an if":         replace("  build:\n    steps:", "  build:\n    if: github.event_name == 'push'\n    steps:"),
-		"full job tagged pr":        replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" pr`),
-		"pr job tagged full":        replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD" full`),
-		"untagged check line":       replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD"`),
-		"FULL_TIER differs":         replace("FULL_TIER: ${{ "+fullTierIf, "FULL_TIER: ${{ github.event_name == 'push'"),
-		"job missing from needs":    replace("needs: [build, integration-x]", "needs: [build]"),
-		"job missing a check line":  replace("          check integration-x \"$RESULT_INTEGRATION_X\" full\n", ""),
-		"check reads the wrong job": replace("RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}", "RESULT_INTEGRATION_X: ${{ needs.build.result }}"),
-		"pr job needs a full job":   replace("  build:\n    steps:", "  build:\n    needs: [integration-x]\n    steps:"),
-		"check names no job":        replace("          check build", "          check ghost \"$RESULT_BUILD\" pr\n          check build"),
+		"full job with no if":  replace("    if: "+fullTierIf+"\n    needs: [build]", "    needs: [build]"),
+		"pr job with an if":    replace("  build:\n    steps:", "  build:\n    if: github.event_name == 'push'\n    steps:"),
+		"full job tagged pr":   replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" pr`),
+		"pr job tagged full":   replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD" full`),
+		"untagged check line":  replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD"`),
+		"FULL_TIER differs":    replace("FULL_TIER: "+fullTierGateEnv, "FULL_TIER: ${{ github.event_name == 'push' }}"),
+		"CI_FULL_TIER differs": replace("CI_FULL_TIER: ${{ "+fullTierIf, "CI_FULL_TIER: ${{ github.event_name == 'push'"),
+		"CI_FULL_TIER missing": replace("env:\n  CI_FULL_TIER: ${{ "+fullTierIf+" }}\n", ""),
+		"NIGHTLY differs":      replace("NIGHTLY: "+nightlyIf, "NIGHTLY: ${{ github.event_name == 'workflow_dispatch' }}"),
+		"NIGHTLY missing":      replace("          NIGHTLY: "+nightlyIf+"\n", ""),
+		"nightly job with a different if": replace("    if: "+nightlyIf+"\n    needs: [build]",
+			"    if: ${{ github.event_name == 'push' }}\n    needs: [build]"),
+		"nightly job with no if":         replace("    if: "+nightlyIf+"\n    needs: [build]", "    needs: [build]"),
+		"nightly job tagged full":        replace(`"$RESULT_SOAK_X" nightly`, `"$RESULT_SOAK_X" full`),
+		"nightly job tagged pr":          replace(`"$RESULT_SOAK_X" nightly`, `"$RESULT_SOAK_X" pr`),
+		"full job tagged nightly":        replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" nightly`),
+		"pr job tagged nightly":          replace(`"$RESULT_BUILD" pr`, `"$RESULT_BUILD" nightly`),
+		"pr job needs a nightly job":     replace("  build:\n    steps:", "  build:\n    needs: [soak-x]\n    steps:"),
+		"nightly job missing from needs": replace("test-typescript, integration-x, soak-x]", "test-typescript, integration-x]"),
+		"job missing from needs":         replace("test-typescript, integration-x, soak-x]", "test-typescript, soak-x]"),
+		"job missing a check line":       replace("          check integration-x \"$RESULT_INTEGRATION_X\" full\n", ""),
+		"check reads the wrong job":      replace("RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}", "RESULT_INTEGRATION_X: ${{ needs.build.result }}"),
+		"pr job needs a full job":        replace("  build:\n    steps:", "  build:\n    needs: [integration-x]\n    steps:"),
+		"check names no job":             replace("          check build", "          check ghost \"$RESULT_BUILD\" pr\n          check build"),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -456,17 +592,70 @@ func TestCITierProblems_CanFail(t *testing.T) {
 			}
 		})
 	}
+
+	// The code tier (DS-3160): each case names the problem its own guard
+	// reports, so a case another guard happens to catch does not stand in for
+	// a guard that has gone missing.
+	codeJob := "  test-typescript:\n    if: " + codeTierIf + "\n    needs: [changes]\n"
+	codeCases := map[string]struct{ body, want string }{
+		"code job with a different if": {replace(codeJob,
+			"  test-typescript:\n    if: github.event_name == 'push'\n    needs: [changes]\n"),
+			"is tagged code in " + ciGateJob + " but its `if:`"},
+		"code job with no if": {replace(codeJob, "  test-typescript:\n    needs: [changes]\n"),
+			"is tagged code in " + ciGateJob + " but its `if:` is \"\""},
+		"code job without changes in needs": {replace(codeJob,
+			"  test-typescript:\n    if: "+codeTierIf+"\n    needs: [build]\n"),
+			"code-tier job test-typescript does not need changes"},
+		"code job with no needs": {replace(codeJob, "  test-typescript:\n    if: "+codeTierIf+"\n"),
+			"code-tier job test-typescript does not need changes"},
+		"DOCS_ONLY missing": {replace("          DOCS_ONLY: "+codeTierGateEnv+"\n", ""),
+			"'s DOCS_ONLY is \"\""},
+		"DOCS_ONLY differs": {replace("DOCS_ONLY: "+codeTierGateEnv, "DOCS_ONLY: ${{ github.event_name == 'pull_request' }}"),
+			"'s DOCS_ONLY is "},
+		"pr job needs a code job": {replace("  build:\n    steps:", "  build:\n    needs: [test-typescript]\n    steps:"),
+			"pr-tier job build needs code-tier job test-typescript"},
+		"code job needs a full job": {replace("    needs: [changes]\n", "    needs: [changes, integration-x]\n"),
+			"code-tier job test-typescript needs full-tier job integration-x"},
+		"code job needs a nightly job": {replace("    needs: [changes]\n", "    needs: [changes, soak-x]\n"),
+			"code-tier job test-typescript needs nightly-tier job soak-x"},
+		"code job tagged pr": {replace(`"$RESULT_TEST_TYPESCRIPT" code`, `"$RESULT_TEST_TYPESCRIPT" pr`),
+			"is a code-tier job tagged pr"},
+		"pr job tagged code": {replace(`"$RESULT_CHANGES" pr`, `"$RESULT_CHANGES" code`),
+			"job changes is a PR-tier or full-tier job tagged code"},
+		"full job tagged code": {replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" code`),
+			"job integration-x is a PR-tier or full-tier job tagged code"},
+		"code job missing from needs": {replace("changes, test-typescript, integration-x", "changes, integration-x"),
+			ciGateJob + " does not list test-typescript in needs"},
+	}
+	for name, tc := range codeCases {
+		t.Run(name, func(t *testing.T) {
+			p := ciTierProblems(parseWorkflow(t, tc.body))
+			if !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, tc.want) }) {
+				t.Fatalf("want a problem containing %q, got %q", tc.want, p)
+			}
+		})
+	}
+
+	// fips (#20) on the PR tier: no `if:` and tagged pr is self-consistent to
+	// every other guard, so only fullTierJob's name rule can catch it.
+	fipsOnPR := strings.Replace(replace("  fips:\n    if: "+fullTierIf+"\n", "  fips:\n"),
+		`"$RESULT_FIPS" full`, `"$RESULT_FIPS" pr`, 1)
+	want := "job " + fipsJob + " is tagged pr but belongs to the full tier"
+	if p := ciTierProblems(parseWorkflow(t, fipsOnPR)); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
+		t.Fatalf("fips job on the PR tier: want a problem containing %q, got %q", want, p)
+	}
 }
 
 // runGate executes ci-gate's script under bash the way a runner does, with
-// every RESULT_ variable set from results (default success) and FULL_TIER.
-func runGate(t *testing.T, run string, env map[string]string, results map[string]string, fullTier string) int {
+// every RESULT_ variable set from results (default success), FULL_TIER,
+// NIGHTLY and DOCS_ONLY.
+func runGate(t *testing.T, run string, env map[string]string, results map[string]string, fullTier, nightly, docsOnly string) int {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Fatalf("bash is required to execute %s's script: %v", ciGateJob, err)
 	}
-	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier}
+	vars := []string{"PATH=" + os.Getenv("PATH"), "FULL_TIER=" + fullTier, "NIGHTLY=" + nightly, "DOCS_ONLY=" + docsOnly}
 	for k, v := range env {
 		m := needsResult.FindStringSubmatch(v)
 		if m == nil {
@@ -494,8 +683,8 @@ func runGate(t *testing.T, run string, env map[string]string, results map[string
 }
 
 // TestCIGateScriptHonoursTheTiers runs ci-gate's real script: a skip passes
-// only for a full-tier job outside a full-tier run; everything else that is
-// not success fails, cancelled included.
+// only for a full-tier job outside a full-tier run or a nightly job outside a
+// nightly run; everything else that is not success fails, cancelled included.
 func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	wf := readCIWorkflow(t)
 	run, env, ok := gateScript(wf)
@@ -503,20 +692,27 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		t.Fatalf("ci.yml has no %s step defining check()", ciGateJob)
 	}
 	checks := gateChecks(run)
-	var full, pr []string
+	var full, pr, code, nightly []string
 	for name, c := range checks {
 		switch c.tier {
 		case tierFull:
 			full = append(full, name)
 		case tierPR:
 			pr = append(pr, name)
+		case tierCode:
+			code = append(code, name)
+		case tierNightly:
+			nightly = append(nightly, name)
 		}
 	}
-	if len(full) == 0 || len(pr) == 0 {
-		t.Fatalf("%s has %d full and %d pr check lines; this test needs both", ciGateJob, len(full), len(pr))
+	if len(full) == 0 || len(pr) == 0 || len(code) == 0 || len(nightly) == 0 {
+		t.Fatalf("%s has %d full, %d pr, %d code and %d nightly check lines; this test needs all four",
+			ciGateJob, len(full), len(pr), len(code), len(nightly))
 	}
 	sort.Strings(full)
 	sort.Strings(pr)
+	sort.Strings(code)
+	sort.Strings(nightly)
 	// The per-feature matrix reaches the gate as one result: the runner
 	// aggregates its legs into needs.<job>.result, which is failure when any
 	// leg fails and cancelled when a leg is cancelled. The cases below that
@@ -524,10 +720,26 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 	if c, found := checks[featureJob]; !found || c.tier != tierFull {
 		t.Fatalf("%s has no full-tier check line for %s; the per-feature legs would not gate", ciGateJob, featureJob)
 	}
-	allFull := func(result string) map[string]string {
+	// fips (#20) is a required full-tier gate: its cases below name it rather
+	// than full[0], which is whichever full job sorts first.
+	if c, found := checks[fipsJob]; !found || c.tier != tierFull {
+		t.Fatalf("%s has no full-tier check line for %s; a FIPS 140-3 failure would not gate", ciGateJob, fipsJob)
+	}
+	all := func(jobs []string, result string) map[string]string {
 		m := map[string]string{}
-		for _, j := range full {
+		for _, j := range jobs {
 			m[j] = result
+		}
+		return m
+	}
+	// A plain PR selects neither tier, a push to main the full tier alone,
+	// and a workflow_dispatch both; schedule never fires here (no cron).
+	allFull := func(result string) map[string]string { return all(full, result) }
+	allNightly := func(result string) map[string]string { return all(nightly, result) }
+	offTier := func(result string) map[string]string {
+		m := allFull(result)
+		for j, r := range allNightly(result) {
+			m[j] = r
 		}
 		return m
 	}
@@ -536,35 +748,94 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		name     string
 		results  map[string]string
 		fullTier string
+		nightly  string
 		wantExit bool
 	}{
-		{"everything succeeded, full tier", nil, "true", false},
-		{"everything succeeded, PR tier", nil, "false", false},
-		{"full tier skipped on a PR-tier run", allFull("skipped"), "false", false},
-		{"full tier skipped on a full-tier run", allFull("skipped"), "true", true},
-		{"one full job skipped on a full-tier run", map[string]string{full[0]: "skipped"}, "true", true},
-		{"full job failed on a PR-tier run", map[string]string{full[0]: "failure"}, "false", true},
-		{"full job cancelled on a PR-tier run", map[string]string{full[0]: "cancelled"}, "false", true},
-		{"full job cancelled on a full-tier run", map[string]string{full[0]: "cancelled"}, "true", true},
-		{"one feature leg failed on a full-tier run", map[string]string{featureJob: "failure"}, "true", true},
-		{"one feature leg cancelled", map[string]string{featureJob: "cancelled"}, "true", true},
-		{"feature legs skipped on a full-tier run", map[string]string{featureJob: "skipped"}, "true", true},
-		{"feature legs skipped on a PR-tier run", map[string]string{featureJob: "skipped"}, "false", false},
-		{"PR job skipped on a PR-tier run", map[string]string{pr[0]: "skipped"}, "false", true},
-		{"PR job cancelled", map[string]string{pr[0]: "cancelled"}, "false", true},
-		{"PR job failed", map[string]string{pr[0]: "failure"}, "true", true},
-		{"PR job result unreadable", map[string]string{pr[0]: ""}, "false", true},
-		{"FULL_TIER unreadable", nil, "", true},
-		{"FULL_TIER not a boolean", allFull("skipped"), "maybe", true},
+		{"everything succeeded, dispatch", nil, "true", "true", false},
+		{"everything succeeded, full tier", nil, "true", "false", false},
+		{"everything succeeded, PR tier", nil, "false", "false", false},
+		{"full and nightly skipped on a PR-tier run", offTier("skipped"), "false", "false", false},
+		{"full tier skipped on a full-tier run", allFull("skipped"), "true", "false", true},
+		{"one full job skipped on a full-tier run", map[string]string{full[0]: "skipped"}, "true", "false", true},
+		{"full job failed on a PR-tier run", map[string]string{full[0]: "failure"}, "false", "false", true},
+		{"full job cancelled on a PR-tier run", map[string]string{full[0]: "cancelled"}, "false", "false", true},
+		{"full job cancelled on a full-tier run", map[string]string{full[0]: "cancelled"}, "true", "false", true},
+		{"one feature leg failed on a full-tier run", map[string]string{featureJob: "failure"}, "true", "false", true},
+		{"one feature leg cancelled", map[string]string{featureJob: "cancelled"}, "true", "false", true},
+		{"feature legs skipped on a full-tier run", map[string]string{featureJob: "skipped"}, "true", "false", true},
+		{"feature legs skipped on a PR-tier run", map[string]string{featureJob: "skipped"}, "false", "false", false},
+		{"fips failed on a full-tier run", map[string]string{fipsJob: "failure"}, "true", "false", true},
+		{"fips cancelled on a full-tier run", map[string]string{fipsJob: "cancelled"}, "true", "false", true},
+		{"fips skipped on a full-tier run", map[string]string{fipsJob: "skipped"}, "true", "false", true},
+		{"fips skipped on a PR-tier run", map[string]string{fipsJob: "skipped"}, "false", "false", false},
+		{"nightly skipped on a main push", allNightly("skipped"), "true", "false", false},
+		{"nightly skipped on a dispatch", allNightly("skipped"), "true", "true", true},
+		{"nightly failed on a dispatch", map[string]string{nightly[0]: "failure"}, "true", "true", true},
+		{"nightly cancelled on a dispatch", map[string]string{nightly[0]: "cancelled"}, "true", "true", true},
+		{"nightly failed off the nightly tier", map[string]string{nightly[0]: "failure"}, "true", "false", true},
+		{"nightly skip is not a full-tier skip", allNightly("skipped"), "false", "true", true},
+		{"full skip is not a nightly skip", allFull("skipped"), "true", "true", true},
+		{"PR job skipped on a PR-tier run", map[string]string{pr[0]: "skipped"}, "false", "false", true},
+		{"PR job cancelled", map[string]string{pr[0]: "cancelled"}, "false", "false", true},
+		{"PR job failed", map[string]string{pr[0]: "failure"}, "true", "false", true},
+		{"PR job result unreadable", map[string]string{pr[0]: ""}, "false", "false", true},
+		{"FULL_TIER unreadable", nil, "", "false", true},
+		{"FULL_TIER not a boolean", allFull("skipped"), "maybe", "false", true},
+		{"NIGHTLY unreadable", nil, "false", "", true},
+		{"NIGHTLY not a boolean", allNightly("skipped"), "false", "maybe", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			code := runGate(t, run, env, tc.results, tc.fullTier)
-			if tc.wantExit && code == 0 {
+			exit := runGate(t, run, env, tc.results, tc.fullTier, tc.nightly, "false")
+			if tc.wantExit && exit == 0 {
 				t.Fatalf("%s passed; want it to fail", ciGateJob)
 			}
-			if !tc.wantExit && code != 0 {
-				t.Fatalf("%s failed with exit %d; want it to pass", ciGateJob, code)
+			if !tc.wantExit && exit != 0 {
+				t.Fatalf("%s failed with exit %d; want it to pass", ciGateJob, exit)
+			}
+		})
+	}
+
+	// The code tier (DS-3160): a docs-only pull request selects neither the
+	// full nor the nightly tier and skips every code job. Only DOCS_ONLY=true
+	// excuses a code skip, and it excuses nothing else.
+	allCode := func(result string) map[string]string { return all(code, result) }
+	docsOnlyRun := func() map[string]string {
+		m := offTier("skipped")
+		for j, r := range allCode("skipped") {
+			m[j] = r
+		}
+		return m
+	}
+	codeCases := []struct {
+		name     string
+		results  map[string]string
+		fullTier string
+		docsOnly string
+		wantExit bool
+	}{
+		{"code jobs skipped on a docs-only PR", allCode("skipped"), "false", "true", false},
+		{"a docs-only PR as the runner sees it", docsOnlyRun(), "false", "true", false},
+		{"everything succeeded on a docs-only PR", nil, "false", "true", false},
+		{"code jobs skipped on a code PR", allCode("skipped"), "false", "false", true},
+		{"one code job skipped on a code PR", map[string]string{code[0]: "skipped"}, "false", "false", true},
+		{"code jobs skipped on a full-tier run", allCode("skipped"), "true", "false", true},
+		{"code job failed on a docs-only PR", map[string]string{code[0]: "failure"}, "false", "true", true},
+		{"code job cancelled on a docs-only PR", map[string]string{code[0]: "cancelled"}, "false", "true", true},
+		{"PR job skipped on a docs-only PR", map[string]string{pr[0]: "skipped"}, "false", "true", true},
+		{"docs-only does not excuse a full-tier skip", allFull("skipped"), "true", "true", true},
+		{"code jobs skipped, DOCS_ONLY unreadable", allCode("skipped"), "false", "", true},
+		{"DOCS_ONLY unreadable", nil, "false", "", true},
+		{"DOCS_ONLY not a boolean", allCode("skipped"), "false", "maybe", true},
+	}
+	for _, tc := range codeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			exit := runGate(t, run, env, tc.results, tc.fullTier, "false", tc.docsOnly)
+			if tc.wantExit && exit == 0 {
+				t.Fatalf("%s passed; want it to fail", ciGateJob)
+			}
+			if !tc.wantExit && exit != 0 {
+				t.Fatalf("%s failed with exit %d; want it to pass", ciGateJob, exit)
 			}
 		})
 	}
@@ -599,7 +870,7 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 			}
 		}
 	}
-	// ci.yml takes ci-template v1.23's pair (Company Agent m701); the other
+	// ci.yml takes ci-template v1.25's pair (Company Agent m701, m857); the other
 	// pull_request workflows keep v1.22.1's: a PR ref's newer run cancels
 	// the older, and a run on main is never cancelled.
 	wantGroup, wantCancel := refKeyedGroup, cancelOffMain

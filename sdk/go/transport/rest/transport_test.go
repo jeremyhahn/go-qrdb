@@ -594,8 +594,11 @@ func TestBuildTLSConfig_CustomTLSConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg != custom {
-		t.Error("expected the custom TLSConfig to be returned unchanged")
+	if cfg == custom {
+		t.Error("expected a clone of the custom TLSConfig, got the caller's pointer")
+	}
+	if cfg.MinVersion != tls.VersionTLS12 {
+		t.Errorf("MinVersion = %#x, want %#x", cfg.MinVersion, tls.VersionTLS12)
 	}
 }
 
@@ -2202,6 +2205,59 @@ func TestConnect_WithTLSConfig(t *testing.T) {
 
 	if !rt.Healthy(context.Background()) {
 		t.Error("expected healthy TLS connection")
+	}
+}
+
+// TestConnect_WithTLSConfigLeavesCallerNextProtos pins #949: the REST
+// transport attempts HTTP/2, and net/http appends "h2" to the NextProtos
+// of the TLS config it is handed. That config must be a copy, so the
+// caller's own config, possibly shared with an HTTP/1.1-only client, still
+// offers only what the caller put in it.
+func TestConnect_WithTLSConfigLeavesCallerNextProtos(t *testing.T) {
+	protos := make(chan int, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			select {
+			case protos <- r.ProtoMajor:
+			default:
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(transport.HealthResponse{Status: "ok"})
+		}
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	callerCfg := &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+
+	rt, err := New(
+		transport.WithAddress(srv.URL),
+		transport.WithTLSConfig(callerCfg),
+	)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	if err := rt.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer rt.Close()
+
+	if !rt.Healthy(context.Background()) {
+		t.Fatal("expected healthy TLS connection")
+	}
+	select {
+	case major := <-protos:
+		if major != 2 {
+			t.Fatalf("request ProtoMajor = %d, want 2 (the transport must attempt HTTP/2)", major)
+		}
+	default:
+		t.Fatal("the server saw no /health request")
+	}
+	if len(callerCfg.NextProtos) != 0 {
+		t.Errorf("caller NextProtos = %v, want empty: the transport mutated the caller's config", callerCfg.NextProtos)
 	}
 }
 

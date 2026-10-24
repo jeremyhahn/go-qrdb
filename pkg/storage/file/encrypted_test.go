@@ -17,11 +17,14 @@ package file_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
@@ -241,8 +244,66 @@ func TestEncrypted_SealedBarrierFailsClosed(t *testing.T) {
 	// nothing in it is readable until then.
 	e = openEncrypted(t, dir, barrier)
 	defer e.Close()
-	if _, err := e.Get([]byte("customer/0001/ssn")); !errors.Is(err, seal.ErrSealed) {
-		t.Errorf("Get on a store reopened while sealed = %v, want seal.ErrSealed", err)
+	reopened := map[string]func() error{
+		"Get": func() error {
+			_, err := e.Get([]byte("customer/0001/ssn"))
+			return err
+		},
+		// A record's name needs the store's record-name key, which is read
+		// through the barrier: neither presence nor removal is answered.
+		"Exists": func() error {
+			_, err := e.Exists([]byte("customer/0001/ssn"))
+			return err
+		},
+		"Delete": func() error {
+			return e.Delete([]byte("customer/0001/ssn"))
+		},
+	}
+	for name, op := range reopened {
+		if err := op(); !errors.Is(err, seal.ErrSealed) {
+			t.Errorf("%s on a store reopened while sealed = %v, want seal.ErrSealed", name, err)
+		}
+	}
+}
+
+// TestEncrypted_RecordNamesRevealNoKey writes the same records into two
+// stores under one barrier and checks that no file anywhere is named by a
+// key's bare SHA-256, which anyone could compute for a guessed key, and
+// that the two stores share no record name: each names its records under
+// its own key, kept behind the barrier.
+func TestEncrypted_RecordNamesRevealNoKey(t *testing.T) {
+	barrier, _ := newUnsealedBarrier(t)
+	unkeyed := make(map[string]string, len(encRecords))
+	for k := range encRecords {
+		sum := sha256.Sum256([]byte(k))
+		unkeyed[hex.EncodeToString(sum[:])] = k
+	}
+	names := make([]map[string]bool, 2)
+	for i := range names {
+		dir := memdir.TempDir(t)
+		e := openEncrypted(t, dir, barrier)
+		writeEncRecords(t, e)
+		if err := e.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		names[i] = map[string]bool{}
+		readEveryFile(t, dir, func(path string, _ []byte) {
+			base := filepath.Base(path)
+			if k, ok := unkeyed[base]; ok {
+				t.Errorf("%s is named by the bare SHA-256 of key %q", path, k)
+			}
+			if len(base) == sha256.Size*2 {
+				names[i][base] = true
+			}
+		})
+		if len(names[i]) < len(encRecords) {
+			t.Fatalf("store %d: found %d record files, want at least %d", i, len(names[i]), len(encRecords))
+		}
+	}
+	for name := range names[0] {
+		if names[1][name] {
+			t.Errorf("record name %s appears in both stores", name)
+		}
 	}
 }
 

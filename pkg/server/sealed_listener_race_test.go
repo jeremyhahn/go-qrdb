@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,19 +32,27 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// pollSignalProbe reports the real barrier's sealed state and signals every
-// call on polled. Before the test sends its first request the only caller is
-// ServeSealedWindow's poll loop, so a receive on polled marks the start of a
-// poll interval.
+// pollSignalProbe reports the real barrier's sealed state. A hold armed on it
+// parks the next IsSealed call, before it reads that state, until the hold is
+// released. With no request in flight the only caller is ServeSealedWindow's
+// poll loop, so a hold armed between requests parks the loop: the listener
+// cannot be torn down while it is held.
 type pollSignalProbe struct {
 	barrier *seal.StorageBarrier
-	polled  chan struct{}
+	hold    atomic.Pointer[pollHold]
+}
+
+// pollHold is one armed hold: parked closes when a call takes it, and the
+// call returns once release closes.
+type pollHold struct {
+	parked  chan struct{}
+	release chan struct{}
 }
 
 func (p *pollSignalProbe) IsSealed() bool {
-	select {
-	case p.polled <- struct{}{}:
-	default:
+	if h := p.hold.Swap(nil); h != nil {
+		close(h.parked)
+		<-h.release
 	}
 	return p.barrier.IsSealed()
 }
@@ -58,7 +68,12 @@ func (p *pollSignalProbe) IsSealed() bool {
 // destroyed the recovery-key metadata.
 //
 // The listener must refuse every request once the barrier is unsealed, on the
-// request itself rather than on the next poll.
+// request itself rather than on the next poll. The test parks the poll loop
+// so that request lands in the window deterministically, then releases it and
+// checks the teardown: the unseal response closes its connection (RFC 9112
+// §9.6), so a request after teardown fails at connect, never on a reused
+// connection the teardown closed under it (main red 61439), and still never
+// reaches the barrier.
 func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -97,34 +112,47 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 
 	cfg := testConfig(t, true, false)
 	tlsCfg := selfSignedTLSConfig(t)
-	probe := &pollSignalProbe{barrier: barrier, polled: make(chan struct{}, 1)}
+	probe := &pollSignalProbe{barrier: barrier}
 
 	serveCtx, stopServe := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
 		done <- ServeSealedWindow(serveCtx, cfg, probe, WithTLS(tlsCfg), WithBarrierService(barrierSvc))
 	}()
+	served := sync.OnceValue(func() error { return <-done })
 	t.Cleanup(func() {
 		stopServe()
-		<-done
+		_ = served()
 	})
 
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: tlsCfg.Clone()}}
 	t.Cleanup(client.CloseIdleConnections)
 	base := "https://127.0.0.1:" + strconv.Itoa(cfg.Server.AdminPort)
-	do := func(method, path string, body []byte) (int, error) {
+	// do reports the status code and whether the response closed its
+	// connection.
+	do := func(method, path string, body []byte) (int, bool, error) {
 		req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode, nil
+		return resp.StatusCode, resp.Close, nil
+	}
+	recoveryKeysSurvive := func(stage string, code int, err error) {
+		t.Helper()
+		has, hasErr := barrierSvc.BarrierHasRecoveryKeys(ctx)
+		if hasErr != nil {
+			t.Fatalf("BarrierHasRecoveryKeys: %v", hasErr)
+		}
+		if !has {
+			t.Fatalf("an anonymous DELETE /v1/barrier/recovery %s reached the unsealed barrier through the sealed-window listener (code %d, err %v): recovery keys destroyed", stage, code, err)
+		}
 	}
 
 	// Wait for the listener: a sealed node answers barrier status with its
@@ -132,7 +160,7 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 	retry := time.NewTicker(20 * time.Millisecond)
 	defer retry.Stop()
 	for {
-		code, err := do(http.MethodGet, "/v1/barrier/status", nil)
+		code, _, err := do(http.MethodGet, "/v1/barrier/status", nil)
 		if err == nil && code == http.StatusOK {
 			break
 		}
@@ -143,15 +171,14 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 		}
 	}
 
-	// Align with the poll loop: drain the signal the status requests left,
-	// then wait for the loop's own next poll. The next one is a full poll
-	// interval away, which is the window the operator's unseal opens.
+	// Park the poll loop: no request is in flight, so its next poll takes
+	// the hold before it reads the sealed state.
+	hold := &pollHold{parked: make(chan struct{}), release: make(chan struct{})}
+	releaseHold := sync.OnceFunc(func() { close(hold.release) })
+	t.Cleanup(releaseHold)
+	probe.hold.Store(hold)
 	select {
-	case <-probe.polled:
-	default:
-	}
-	select {
-	case <-probe.polled:
+	case <-hold.parked:
 	case <-ctx.Done():
 		t.Fatal("the sealed-window poll loop never polled")
 	}
@@ -160,26 +187,39 @@ func TestServeSealedWindow_RefusesAnonymousRequestsAfterUnseal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal unseal request: %v", err)
 	}
-	if code, err := do(http.MethodPost, "/v1/barrier/unseal", unseal); err != nil || code/100 != 2 {
+	code, closed, err := do(http.MethodPost, "/v1/barrier/unseal", unseal)
+	if err != nil || code/100 != 2 {
 		t.Fatalf("anonymous unseal on the sealed-window listener: code %d, err %v", code, err)
 	}
 	if barrier.IsSealed() {
 		t.Fatal("the unseal request did not unseal the barrier")
 	}
+	if !closed {
+		t.Fatal("the unseal response kept its connection open; teardown can close it under the client's next request")
+	}
 
-	code, err := do(http.MethodDelete, "/v1/barrier/recovery", nil)
-	has, hasErr := barrierSvc.BarrierHasRecoveryKeys(ctx)
-	if hasErr != nil {
-		t.Fatalf("BarrierHasRecoveryKeys: %v", hasErr)
-	}
-	if !has {
-		t.Fatalf("an anonymous DELETE /v1/barrier/recovery reached the unsealed barrier through the sealed-window listener (code %d, err %v): recovery keys destroyed", code, err)
-	}
+	// In the window: the barrier is unsealed and the listener is still up.
+	code, closed, err = do(http.MethodDelete, "/v1/barrier/recovery", nil)
+	recoveryKeysSurvive("in the window", code, err)
 	if err != nil {
 		t.Fatalf("DELETE /v1/barrier/recovery: %v; want the listener to answer 503 itself", err)
 	}
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("DELETE /v1/barrier/recovery after unseal: code %d, want %d", code, http.StatusServiceUnavailable)
+	}
+	if !closed {
+		t.Fatal("the refusal after unseal kept its connection open; teardown can close it under the client's next request")
+	}
+
+	// Release the poll loop: it sees the unseal and tears the listener down.
+	releaseHold()
+	if err := served(); err != nil {
+		t.Fatalf("ServeSealedWindow after unseal: %v", err)
+	}
+	code, _, err = do(http.MethodDelete, "/v1/barrier/recovery", nil)
+	recoveryKeysSurvive("after teardown", code, err)
+	if err == nil {
+		t.Fatalf("DELETE /v1/barrier/recovery after teardown: code %d, want no listener to answer", code)
 	}
 }
 

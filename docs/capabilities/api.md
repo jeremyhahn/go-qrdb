@@ -1,6 +1,6 @@
 # Capabilities — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Transport Matrix
@@ -11,8 +11,9 @@
 
 ## Schema
 
-The response is `capabilities.Capabilities`: `mode`, core feature booleans,
-optional feature booleans, and optional `unencryptedAtRest`.
+The response is `capabilities.Capabilities` (`transport.CapabilitiesResponse`
+in the Go SDK): `mode`, core feature booleans, optional feature booleans, and
+optional `unencryptedAtRest`.
 
 `false` is intentionally ambiguous. It may mean not compiled, not valid in the
 current mode, or disabled by configuration.

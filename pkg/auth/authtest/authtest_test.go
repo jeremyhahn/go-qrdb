@@ -119,6 +119,33 @@ func TestBuiltInRoles_UnseededTenantHasNoRoles(t *testing.T) {
 	}
 }
 
+func TestCustomRole_GrantsExactlyItsPermissions(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme")
+	id := &auth.Identity{Subject: "d", TenantID: "acme", Roles: []string{
+		authtest.CustomRole(t, roles, "acme", "device-onboarder", permission.DevicesOnboard),
+	}}
+	authz := rbac.New(roles)
+	if err := authorize(t, authz, id, "acme", permission.DevicesOnboard); err != nil {
+		t.Fatalf("the custom role's own permission: %v", err)
+	}
+	if err := authorize(t, authz, id, "acme", permission.OTAActivate); err == nil {
+		t.Fatal("a permission the custom role does not carry was granted")
+	}
+}
+
+func TestCustomRole_BelongsToItsTenant(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme", "globex")
+	acmeID := authtest.CustomRole(t, roles, "acme", "device-onboarder", permission.DevicesOnboard)
+	globexID := authtest.CustomRole(t, roles, "globex", "device-onboarder", permission.DevicesOnboard)
+	if acmeID == globexID {
+		t.Fatalf("one role name in two tenants yielded one ID %q", acmeID)
+	}
+	got, err := roles.GetRole(context.Background(), globexID)
+	if err != nil || got.TenantID != "globex" {
+		t.Fatalf("GetRole(%q) = %+v, %v; want a globex role", globexID, got, err)
+	}
+}
+
 func TestFixedAuthenticator_ReturnsACopy(t *testing.T) {
 	a := authtest.NewFixedAuthenticator(authtest.AdminIdentity("acme", "a"))
 	got, err := a.Authenticate(context.Background())

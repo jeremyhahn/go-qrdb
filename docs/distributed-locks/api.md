@@ -1,6 +1,6 @@
 # Distributed Locks — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -38,22 +38,20 @@ Two tenants using the same lock name hold two different locks, and so do one
 tenant's two databases. A caller sees, lists and contends for locks in its own
 scope only.
 
-**REST paths are unversioned.** `docs/18-distributed-locking.md` documents them
-as `/v1/lock/*`; that is stale. The code registers `/lock/*` and the code is
-correct.
-
 ## Schemas
 
-`LockAcquireRequest` (acquire and trylock):
+`LockAcquireRequest` (gRPC's `LockTryLockRequest` has the same fields):
 
 ```json
 { "key": "jobs/nightly-report", "holder_id": "worker-7", "ttl": 300, "reentrant": false }
 ```
 
-`holder_id` is optional; when empty the server generates a UUID. It is a
-reentrancy discriminator, **not an authenticated identity**.
+`holder_id` is optional on REST, gRPC and QUIC; when empty the server generates
+a UUID. The MCP tools require it. It is a reentrancy discriminator, **not an
+authenticated identity**.
 
-`LockInfo` (returned by acquire, trylock, extend, status; the elements of list):
+`LockInfo` (returned by acquire, trylock, extend, status; the elements of list;
+gRPC wraps it as the response's `lock` field):
 
 ```json
 {
@@ -76,6 +74,8 @@ stripped.
 
 `LockReleaseRequest` and `LockExtendRequest`: `{ "key": ..., "fencing_token": ... }`.
 
+REST `GET /lock/status` takes the lock as the required `key` query parameter.
+
 `LockListResponse`: `{ "locks": [LockInfo, ...] }`. REST `GET /lock/list` takes
 an optional `prefix` query parameter. The enumeration is confined to the
 caller's own `(tenant, database)` scope; an empty prefix means "every lock I
@@ -86,11 +86,11 @@ hold in this scope", never "every lock on this node".
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Acquired | 200 | `OK` |
-| `trylock` on a held lock | 409 | `FAILED_PRECONDITION` |
-| `acquire` wait timeout exceeded | 408 | `DEADLINE_EXCEEDED` |
-| Stale or wrong fencing token on release/extend | 409 | `FAILED_PRECONDITION` — `NotLockHolderError` |
-| Lock not held / not found | 404 | `NOT_FOUND` |
-| `ttl <= 0` | 400 | `INVALID_ARGUMENT` |
+| `trylock` on a held lock (`LockHeldError`) | 409 | `ABORTED` |
+| The request's deadline passes while `acquire` waits | 504 | `DEADLINE_EXCEEDED` |
+| Stale or wrong fencing token on release/extend (`NotLockHolderError`) | 403 | `PERMISSION_DENIED` |
+| Lock not held / not found (`LockNotFoundError`) | 404 | `NOT_FOUND` |
+| `ttl <= 0` (`lock.ErrInvalidTTL`, unclassified); the MCP tools refuse it before the call | 500 | `INTERNAL` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |

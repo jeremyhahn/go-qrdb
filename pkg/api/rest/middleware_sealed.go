@@ -149,9 +149,10 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			transition := requestInAllowlist(r, sealedWindowTransition)
 			if listener != nil {
 				// Held until the request completes; see sealedwindow.Admission.
-				defer listener.Admit(requestInAllowlist(r, sealedWindowTransition))()
+				defer listener.Admit(transition)()
 			}
 			sealed, unconfirmed := sealedwindow.Sample(barrier)
 			req := sealedwindow.Request{
@@ -166,7 +167,20 @@ func sealedWindowGate(barrier sealedWindowProbe, allowlist []string, listener se
 				req.PreOperationalOnly = true
 				req.EnrollmentOpen = listener != nil && listener.EnrollmentOpen(r.Context())
 			}
-			refusal, refused := sealedWindowRefusals[sealedwindow.Decide(req)]
+			decision := sealedwindow.Decide(req)
+			if req.Listener && r.ProtoMajor == 1 && (transition || decision == sealedwindow.RefuseClosed) {
+				// The listener is torn down once the barrier leaves the sealed
+				// state, and http.Server.Shutdown closes its idle keep-alive
+				// connections: a client's next request written onto one meets
+				// an EOF it cannot tell from a lost response. The close option
+				// (RFC 9112 §9.6) ends the connection with this response, so
+				// that request opens a new one and is either answered here or
+				// refused at connect. HTTP/2 and HTTP/3 forbid the field
+				// (RFC 9113 §8.2.2, RFC 9114 §4.2) and end a connection with
+				// GOAWAY instead.
+				w.Header().Set("Connection", "close")
+			}
+			refusal, refused := sealedWindowRefusals[decision]
 			if !refused {
 				if req.Listener {
 					r = r.WithContext(sealedwindow.WithAnonymous(r.Context()))

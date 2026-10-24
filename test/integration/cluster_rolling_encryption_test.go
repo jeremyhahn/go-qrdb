@@ -254,12 +254,8 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 	waitForAcked(t, writer, time.Now().Add(-time.Hour), 5, 30*time.Second, "before the migration")
 
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
-	body, status := iraftAPIPost(t, client,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", c.leaderPort),
-		map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)},
-	)
-	if status != http.StatusOK && status != http.StatusAccepted {
-		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
+	if out, err := cliEnableEncryption(t, cli, c, leaderIdx, newPassphrase); err != nil {
+		t.Fatalf("%v: %s", err, out)
 	}
 
 	// Each owner in turn: wait for it to come back sealed, hold it there until
@@ -374,20 +370,19 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 	// authorized and not yet recycled, until the test hands it one.
 	const newPassphrase = "cluster-rolling-retry-pass"
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
-	request := func(port int) {
+	request := func(idx int) {
 		t.Helper()
-		var body []byte
-		var status int
+		var out string
+		var err error
 		if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
-			body, status = iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", port),
-				map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)})
-			return status == http.StatusOK || status == http.StatusAccepted
+			out, err = cliEnableEncryption(t, cli, c, idx, newPassphrase)
+			return err == nil
 		}) {
-			t.Fatalf("enable-encryption on admin port %d: status %d, body: %s", port, status, body)
+			t.Fatalf("%v: %s", err, out)
 		}
 	}
 	leaderIdx := adminPortIndex(t, adminPorts, c.leaderPort)
-	request(c.leaderPort)
+	request(leaderIdx)
 
 	inTurn := -1
 	if !pollUntil(120*time.Second, 250*time.Millisecond, func() bool {
@@ -420,7 +415,7 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 		t.Fatalf("qrdb admin member transfer-leadership %d: %v: %s", inTurn+1, err, out)
 	}
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[inTurn]}, 60*time.Second)
-	request(adminPorts[inTurn])
+	request(inTurn)
 
 	// Every node, over every transport: the superseding generation keeps the
 	// owner in turn first and alone recycling.
@@ -461,24 +456,7 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 	// Then the other two, one at a time, each on its own credential.
 	done := map[int]bool{inTurn: true}
 	for turn := 2; turn <= 3; turn++ {
-		idx := -1
-		if !pollUntil(180*time.Second, 250*time.Millisecond, func() bool {
-			var waiting []int
-			for i, l := range c.logs {
-				if !done[i] && awaitingCredentialIn(l.String(), "scope=system") {
-					waiting = append(waiting, i)
-				}
-			}
-			if len(waiting) > 1 {
-				t.Fatalf("turn %d: nodes %v await their credentials at once; owners recycle one at a time", turn, waiting)
-			}
-			if len(waiting) == 1 {
-				idx = waiting[0]
-			}
-			return idx >= 0
-		}) {
-			t.Fatalf("turn %d: no node awaited its credential within 180s", turn)
-		}
+		idx := waitForAwaitingOwner(t, c, done, turn)
 		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[idx], 30*time.Second); got.Sealed || got.Strategy != "none" {
 			t.Fatalf("turn %d: node %d migrated before it had its own credential: barrier %s", turn, idx+1, got)
 		}
@@ -499,6 +477,157 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 			waitForCLIMigrationReaped(t, cli, c, node, proto, 90*time.Second)
 		}
 	}
+}
+
+// TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart stops the
+// coordinating leader in the middle of a rolling system-scope
+// enable-encryption and starts it again. The rollout resumes from the
+// replicated step record where it left off: the same generation, the owner
+// that had served still serving, the owner in turn still alone in turn. The
+// restarted node, leading again, hands that turn on, and no turn is taken
+// twice.
+func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
+	cli := buildCLIBinary(t)
+	c := startNoneSealSystemRF3(t, "rollrs")
+	ca, adminPorts := c.ca, c.adminPorts
+	waitForFeatureActive(t, c.logs, featuregate.RollingMigration, 90*time.Second)
+
+	// No node has a credential file, so each owner holds its turn,
+	// authorized and not yet recycled, until the test hands it one.
+	const newPassphrase = "cluster-rolling-restart-pass"
+	client := mtlsHTTPClient(t, ca, 15*time.Second)
+	coord := adminPortIndex(t, adminPorts, c.leaderPort)
+	if out, err := cliEnableEncryption(t, cli, c, coord, newPassphrase); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+
+	done := map[int]bool{}
+	migrate := func(turn, idx int) {
+		t.Helper()
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[idx], 30*time.Second); got.Sealed || got.Strategy != "none" {
+			t.Fatalf("turn %d: node %d migrated before it had its own credential: barrier %s", turn, idx+1, got)
+		}
+		writeMigrationCredential(t, c.credDirs[idx], "system", newPassphrase)
+		if _, ok := waitForSealed(t, ca, adminPorts[idx], 180*time.Second); !ok {
+			t.Fatalf("turn %d: node %d did not migrate within 180s of getting its credential", turn, idx+1)
+		}
+		t.Logf("node %d migrated (turn %d)", idx+1, turn)
+		unsealRolling(t, client, adminPorts[idx], newPassphrase)
+		done[idx] = true
+	}
+
+	if first := waitForAwaitingOwner(t, c, done, 1); first == coord {
+		t.Fatalf("node %d, the coordinating leader, took the first turn; it goes last", coord+1)
+	} else {
+		migrate(1, first)
+	}
+	second := waitForAwaitingOwner(t, c, done, 2)
+	if second == coord {
+		t.Fatalf("node %d, the coordinating leader, took the second turn; it goes last", coord+1)
+	}
+	before := waitForCLIMigration(t, cli, c, c.nodes[second], multiProtocols[0], 60*time.Second, "at turn 2 (1 serving, 1 recycling, 1 pending)",
+		func(m *transport.ClusterMigration) bool {
+			serving, recycling, pending, _ := rollingStepCounts(m)
+			return len(m.Nodes) == 3 && serving == 1 && recycling == 1 && pending == 1
+		})
+	if before == nil {
+		t.FailNow()
+	}
+	_, _, _, secondID := rollingStepCounts(before)
+
+	// The coordinator stops and starts again while the second turn is held,
+	// then leads again.
+	c.stop(t, coord)
+	restartedAt := len(c.logs[coord].String())
+	c.restart(t, coord)
+	out, err := runQRDB(t, cli, c.nodes[second].cliArgsFor(ca, c.adminCert, c.adminKey, multiProtocols[0]),
+		"admin", "member", "transfer-leadership", strconv.Itoa(coord+1), "--shard-id", "1")
+	if err != nil || !strings.Contains(out, "OK") {
+		t.Fatalf("qrdb admin member transfer-leadership %d: %v: %s", coord+1, err, out)
+	}
+	waitForLeaderViaAdmin(t, ca, []int{adminPorts[coord]}, 60*time.Second)
+
+	// Every node, over every transport: the record is where the restart
+	// found it.
+	for _, node := range c.nodes {
+		for _, proto := range multiProtocols {
+			m := waitForCLIMigration(t, cli, c, node, proto, 60*time.Second, fmt.Sprintf("generation %d after the restart", before.Generation),
+				func(*transport.ClusterMigration) bool { return true })
+			if m == nil {
+				continue
+			}
+			same := m.Generation == before.Generation && len(m.Nodes) == len(before.Nodes)
+			for j := 0; same && j < len(m.Nodes); j++ {
+				same = m.Nodes[j].NodeID == before.Nodes[j].NodeID && m.Nodes[j].Step == before.Nodes[j].Step
+			}
+			if !same {
+				t.Errorf("[%s] admin port %d: after the restart generation %d steps %+v, want generation %d steps %+v",
+					proto.name, node.admin, m.Generation, m.Nodes, before.Generation, before.Nodes)
+			}
+		}
+	}
+
+	// The restarted coordinator hands the second turn on once its owner is
+	// back.
+	migrate(2, second)
+	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
+		return slices.ContainsFunc(handOnsInText(c.logs[coord].String()[restartedAt:]), func(h handOn) bool { return h.node == secondID })
+	}) {
+		t.Errorf("the restarted coordinator, node %d, never handed on %s's turn", coord+1, secondID)
+	}
+
+	// The coordinator's own turn comes last. The restart cost it the
+	// request's credential, so it awaits its own file like any other owner.
+	if last := waitForAwaitingOwner(t, c, done, 3); last != coord {
+		t.Fatalf("node %d took the last turn, want the coordinator, node %d", last+1, coord+1)
+	}
+	migrate(3, coord)
+
+	for i := range 3 {
+		if got := waitForDefinitiveBarrierStatus(t, ca, adminPorts[i], 60*time.Second); got.Sealed || got.Strategy != "passphrase" {
+			t.Errorf("node %d post-migration barrier: %s, want unsealed passphrase", i+1, got)
+		}
+	}
+	for _, node := range c.nodes {
+		for _, proto := range multiProtocols {
+			waitForCLIMigrationReaped(t, cli, c, node, proto, 90*time.Second)
+		}
+	}
+	// One hand-on per owner across every coordinator's log: the restart
+	// repeated no turn.
+	owners := map[string]bool{}
+	for _, h := range waitForHandOns(t, c.logs, 3, 60*time.Second) {
+		owners[h.node] = true
+	}
+	if len(owners) != 3 {
+		t.Errorf("hand-ons named owners %v, want three distinct", owners)
+	}
+}
+
+// waitForAwaitingOwner waits for the one owner not in done whose log says it
+// awaits its own credential for the system-scope migration, and returns its
+// index. Two such owners at once fail the test: owners take turns.
+func waitForAwaitingOwner(t *testing.T, c *noneSealRF3, done map[int]bool, turn int) int {
+	t.Helper()
+	idx := -1
+	if !pollUntil(180*time.Second, 250*time.Millisecond, func() bool {
+		var waiting []int
+		for i, l := range c.logs {
+			if !done[i] && awaitingCredentialIn(l.String(), "scope=system") {
+				waiting = append(waiting, i)
+			}
+		}
+		if len(waiting) > 1 {
+			t.Fatalf("turn %d: nodes %v await their credentials at once; owners recycle one at a time", turn, waiting)
+		}
+		if len(waiting) == 1 {
+			idx = waiting[0]
+		}
+		return idx >= 0
+	}) {
+		t.Fatalf("turn %d: no node awaited its credential within 180s", turn)
+	}
+	return idx
 }
 
 // assertRollingStep checks, while node idx is held sealed at turn k, that
@@ -554,6 +683,23 @@ func rollingStepCounts(m *transport.ClusterMigration) (serving, recycling, pendi
 // cliClusterMigration reads the node barrier's cluster migration through
 // `qrdb --output json barrier status` against node over proto: nil when the
 // status carries none.
+// cliEnableEncryption starts the system barrier's rolling migration to the
+// passphrase strategy with `qrdb barrier enable-encryption` against node idx,
+// and returns an error unless the CLI exits zero reporting the migration
+// started on the system scope.
+func cliEnableEncryption(t *testing.T, cli string, c *noneSealRF3, idx int, passphrase string) (string, error) {
+	t.Helper()
+	out, err := runQRDB(t, cli, c.nodes[idx].cliArgsFor(c.ca, c.adminCert, c.adminKey, multiProtocols[0]),
+		"barrier", "enable-encryption", "--strategy", "passphrase", "--passphrase", passphrase, "-y")
+	if err != nil {
+		return out, fmt.Errorf("qrdb barrier enable-encryption on node %d: %w", idx+1, err)
+	}
+	if !strings.Contains(out, "migration_started (scope: system)") {
+		return out, fmt.Errorf("qrdb barrier enable-encryption on node %d: no system-scope migration_started", idx+1)
+	}
+	return out, nil
+}
+
 func cliClusterMigration(t *testing.T, cli string, c *noneSealRF3, node gatedClusterNode, proto multiProtocol) (*transport.ClusterMigration, error) {
 	t.Helper()
 	out, err := runQRDB(t, cli, node.cliArgsFor(c.ca, c.adminCert, c.adminKey, proto), "--output", "json", "barrier", "status")
@@ -650,19 +796,26 @@ var (
 func handOnsIn(logs []*nodeLog) []handOn {
 	var got []handOn
 	for _, l := range logs {
-		for _, line := range strings.Split(l.String(), "\n") {
-			if !strings.Contains(line, "cluster-migration step handed on") {
-				continue
-			}
-			h := handOn{}
-			if m := handOnNodeRE.FindStringSubmatch(line); m != nil {
-				h.node = m[1]
-			}
-			if m := handOnIndexRE.FindStringSubmatch(line); m != nil {
-				h.catchUpIndex, _ = strconv.ParseUint(m[1], 10, 64)
-			}
-			got = append(got, h)
+		got = append(got, handOnsInText(l.String())...)
+	}
+	return got
+}
+
+// handOnsInText returns every hand-on line in one node's log text, in order.
+func handOnsInText(log string) []handOn {
+	var got []handOn
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, "cluster-migration step handed on") {
+			continue
 		}
+		h := handOn{}
+		if m := handOnNodeRE.FindStringSubmatch(line); m != nil {
+			h.node = m[1]
+		}
+		if m := handOnIndexRE.FindStringSubmatch(line); m != nil {
+			h.catchUpIndex, _ = strconv.ParseUint(m[1], 10, 64)
+		}
+		got = append(got, h)
 	}
 	return got
 }

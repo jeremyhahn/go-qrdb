@@ -30,7 +30,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -65,18 +64,6 @@ func testDEKKeyWrapRegistry() keywrap.Registry {
 		return fakeDEKKeyWrapProvider{}, nil
 	})
 	return r
-}
-
-// dekCLIStores resolves one in-memory store per tenant.
-type dekCLIStores map[string]*kvstore.MemoryKVStore
-
-func (d dekCLIStores) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
-	s, ok := d[tenantID]
-	if !ok {
-		s = kvstore.NewMemoryKVStore()
-		d[tenantID] = s
-	}
-	return s, nil
 }
 
 // newDEKCLIService returns the production keyring service; one instance is

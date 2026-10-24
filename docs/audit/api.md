@@ -1,6 +1,6 @@
 # Audit — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.AuditService` — a dedicated service, separate from
@@ -20,7 +20,7 @@ replicated form.** Writing is not a capability: entries are emitted by the
 subsystems that perform the audited operations, and there is no endpoint to
 create, edit or delete one.
 
-The node-local pair answers from the **node-local** trail only, as always.
+The node-local pair answers from the **node-local** trail only.
 The replicated pair answers from the cluster-wide replicated audit chain
 ([architecture.md](architecture.md#cluster-wide-replicated-trail)):
 Raft-replicated rather than written by one process, readable identically
@@ -105,16 +105,14 @@ See [user.md](user.md) for how to read a verification result and
 `Client.Audit()` returns **nil** when the transport does not implement
 `AuditProvider`. Nil-check it.
 
-The same refusal on QUIC is `StatusPermissionDenied`, on MCP the
-permission-denied tool code, and on the embedded client
-`*tenant.CrossTenantDeniedError`. Every transport returns each event with its
-`tenant_id`, `client_ip`, `request_id` and `prev_hash`.
+Every transport returns each event with its `tenant_id`, `client_ip`,
+`request_id` and `prev_hash`.
 
 ## Query request
 
 | Field | Type | Meaning |
 |---|---|---|
-| `from` / `to` | RFC3339 | time range |
+| `from` / `to` | RFC3339 | time range (gRPC: `from_rfc3339` / `to_rfc3339`) |
 | `actor` | string | actor identity |
 | `action` | string | action |
 | `resource` | string | resource |
@@ -131,7 +129,10 @@ Outcomes carry a reason (`denied:missing permission`), so `outcome` matches
 An omitted `tenant_id` reads the caller's own events, never every tenant's; a
 `tenant_id` naming another tenant is refused before anything is read. A
 system-tenant caller reads the system tenant's events plus the platform events
-that carry no tenant, and is refused every other tenant's. See
+that carry no tenant, and is refused every other tenant's. The refusal is
+403 / `PERMISSION_DENIED` on REST and gRPC/Unix, `StatusPermissionDenied` on
+QUIC, the permission-denied tool code on MCP, and
+`*tenant.CrossTenantDeniedError` on the embedded client. See
 [architecture.md](architecture.md#who-may-read-which-events).
 
 ## Event schema
@@ -146,18 +147,12 @@ that carry no tenant, and is refused every other tenant's. See
 | `action` | initialize, unseal, sign, create, delete, … |
 | `outcome` | `success` · `failure:<reason>` · `denied:<reason>` |
 | `attributes` | JSON-serializable custom attributes |
-| `client_ip` | from `X-Forwarded-For` or the remote address |
+| `client_ip` | the remote address of the caller's connection, where the emitter records one |
 | `request_id` | for tracing across logs |
-| `prev_hash` | `sha256:<hex>` of the previous entry — the tamper-detection chain |
+| `prev_hash` | hex SHA-256 digest of the previous entry, empty for the first — the tamper-detection chain; the replicated chain writes it as `sha256:<hex>` |
 
 **Recording the role at event time** is what stops a later role change
 rewriting history.
-
-> **Phased implementation.** The source describes `role`, the extended
-> `outcome`, `attributes`, `client_ip`, `request_id`, `prev_hash`, the hash-chain
-> computation/verification and the query API as arriving in a later phase than
-> the base entry. Verify individual fields against `pkg/audit/types.go` before
-> depending on them.
 
 ## Sinks
 
@@ -182,19 +177,14 @@ asserts the configured `AuditLogger` against it and returns
 distinct from `Total: 0`, which is a real empty result. An aggregate skips the
 former and returns the first genuine page.
 
-**The node's composition** is `AggregateLogger(ChainFileLogger, RingBuffer,
-SlogSink)`, so `Query` is answered by the file and the ring.
-
-> An earlier version of this page listed a KV backend at
-> `__sys:audit/{tenantID}/{timestamp_nano}` and stated that **`Query` requires
-> the KV backend**, unavailable by default. There has never been a KV backend
-> or an `__sys:audit/` key space, and the conclusion was the opposite of the
-> truth: querying works out of the box.
+**The node's composition** is `audit.OpenTrailIn`, which returns
+`NewAggregateLogger(ChainFileLogger, RingBuffer, SlogSink)`, so `Query` is
+answered by the file and the ring.
 
 ## Pagination
 
 Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
-`next_cursor` until it is empty. A query wider than 1000 events must be paged.
+`next` until it is empty. A query wider than 1000 events must be paged.
 
 ## Status and error mapping
 
@@ -209,7 +199,7 @@ Cursor-based: pass `limit` (default 100, **hard maximum 1000**) and follow
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | `replicated=true`, no replicated audit sink configured | 501 | `UNIMPLEMENTED` |
 | `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (query) | 200, `total: -1`, empty events | `OK`, `total: -1`, empty events |
-| `replicated=true`, tenant's `AllowReplicatedAudit` entitlement off (**verify**) | 403 | `PERMISSION_DENIED` |
+| `/v1/audit/replicated/verify`, tenant's `AllowReplicatedAudit` entitlement off | 403 | `PERMISSION_DENIED` |
 | Replicated chain's cluster feature gate not yet active on the tenant's shard | 503 | `UNAVAILABLE` |
 | Tenant names a dedicated-isolation (volume/raft) tenant not yet routable | 501 | `UNIMPLEMENTED` |
 

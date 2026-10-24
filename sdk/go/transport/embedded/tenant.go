@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"encoding/hex"
+	"maps"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -36,6 +37,9 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 		Name:          info.Name,
 		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
 		VolumePool:    info.VolumePool,
+		Description:   info.Description,
+		Metadata:      maps.Clone(info.Metadata),
+		Status:        transport.TenantStatus(info.Status),
 		CreatedAt:     info.CreatedAt,
 		UpdatedAt:     info.UpdatedAt,
 	}
@@ -97,7 +101,8 @@ func WithTenantService(svc tenant.TenantServicer) Option {
 // Minting a tenant is platform-operator-only (AuthMiddleware.AuthorizeTarget/ScopeCross)
 // exactly as on every network transport, where tenants:create is ScopeCross.
 func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
-	if err := t.gate("CreateTenant"); err != nil {
+	ctx, err := t.admit(ctx, "CreateTenant")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -161,7 +166,8 @@ func anchorsToTransport(anchors []trustanchor.Anchor) *transport.TrustAnchorList
 // caller's own tenant (tenant.Confine) as trust_anchors:add's ScopeSelfStrict
 // confines it on the network transports.
 func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrustAnchorsRequest) (*transport.TrustAnchorList, error) {
-	if err := t.gate("AddTrustAnchors"); err != nil {
+	ctx, err := t.admit(ctx, "AddTrustAnchors")
+	if err != nil {
 		return nil, err
 	}
 	if t.certEnroll == nil {
@@ -184,7 +190,8 @@ func (t *Transport) AddTrustAnchors(ctx context.Context, req *transport.AddTrust
 // ListTrustAnchors lists tenantID's trust anchors, confined to the caller's
 // own tenant.
 func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*transport.TrustAnchorList, error) {
-	if err := t.gate("ListTrustAnchors"); err != nil {
+	ctx, err := t.admit(ctx, "ListTrustAnchors")
+	if err != nil {
 		return nil, err
 	}
 	if t.certEnroll == nil {
@@ -207,7 +214,8 @@ func (t *Transport) ListTrustAnchors(ctx context.Context, tenantID string) (*tra
 // RemoveTrustAnchor withdraws one of tenantID's trust anchors, confined to
 // the caller's own tenant.
 func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
-	if err := t.gate("RemoveTrustAnchor"); err != nil {
+	ctx, err := t.admit(ctx, "RemoveTrustAnchor")
+	if err != nil {
 		return err
 	}
 	if t.certEnroll == nil {
@@ -225,7 +233,8 @@ func (t *Transport) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint
 
 // GetTenant retrieves a tenant by ID by delegating to the TenantServicer.
 func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.GetTenantResponse, error) {
-	if err := t.gate("GetTenant"); err != nil {
+	ctx, err := t.admit(ctx, "GetTenant")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -250,7 +259,8 @@ func (t *Transport) GetTenant(ctx context.Context, tenantID string) (*transport.
 
 // ListTenants lists all tenants by delegating to the TenantServicer.
 func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResponse, error) {
-	if err := t.gate("ListTenants"); err != nil {
+	ctx, err := t.admit(ctx, "ListTenants")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -290,7 +300,8 @@ func (t *Transport) ListTenants(ctx context.Context) (*transport.ListTenantsResp
 // ListDeletedTenants returns one page of retired tenant ids by delegating to
 // the TenantServicer.
 func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListDeletedTenantsRequest) (*transport.ListDeletedTenantsResponse, error) {
-	if err := t.gate("ListDeletedTenants"); err != nil {
+	ctx, err := t.admit(ctx, "ListDeletedTenants")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -329,7 +340,8 @@ func (t *Transport) ListDeletedTenants(ctx context.Context, req *transport.ListD
 // ReconcileDeletedTenants runs the deleted-tenant reconcile on this node by
 // delegating to the TenantServicer.
 func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.ReconcileDeletedTenantsResponse, error) {
-	if err := t.gate("ReconcileDeletedTenants"); err != nil {
+	ctx, err := t.admit(ctx, "ReconcileDeletedTenants")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -368,7 +380,8 @@ func (t *Transport) ReconcileDeletedTenants(ctx context.Context) (*transport.Rec
 // (ScopeCross) on every network transport -- the SAME decision below, and
 // the only one: there is no separate structural check here.
 func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenantRequest) (*transport.UpdateTenantResponse, error) {
-	if err := t.gate("UpdateTenant"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateTenant")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -387,15 +400,6 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	// the request NAMES, deliberately charges neither on a grant (see its
 	// own doc comment): without this entry check first, a successful
 	// embedded UpdateTenant was charged and audited nowhere at all.
-	// The ENTRY check: tenants:update against the caller's OWN (ambient)
-	// tenant, exactly as REST's route-level middleware authorizes it
-	// (s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, ...))
-	// before its handler ever runs -- the step that charges the rate-limit
-	// token and writes the audit record. AuthorizeTenantTarget, which
-	// authorizeTenantUpdate below calls as the RE-check against the tenant
-	// the request NAMES, deliberately charges neither on a grant (see its
-	// own doc comment): without this entry check first, a successful
-	// embedded UpdateTenant was charged and audited nowhere at all.
 	if err := t.authorizeTenantSelf(ctx, permission.TenantsUpdate); err != nil {
 		return nil, err
 	}
@@ -403,10 +407,17 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	patch := tenant.TenantPatch{
 		Name:          req.Name,
 		IsolationType: tenant.IsolationType(req.IsolationType),
+		Description:   req.Description,
+		Metadata:      req.Metadata,
+	}
+	if req.Status != nil {
+		s := tenant.Status(*req.Status)
+		patch.Status = &s
 	}
 	// The RE-check: tenants:update against the named tenant, plus
 	// tenants:set_isolation (platform-operator only) when the patch also
-	// changes the isolation tier -- the same two-permission rule
+	// changes the isolation tier, or tenants:set_status when it changes the
+	// status -- the same two-permission rule
 	// AuthorizeTenantUpdate enforces on every network transport.
 	if err := t.authorizeTenantUpdate(ctx, req.TenantID, patch); err != nil {
 		return nil, err
@@ -427,7 +438,8 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 // tenants:set_quotas is ScopeCross on every network transport: a tenant
 // Admin cannot raise its own limits.
 func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.UpdateTenantQuotasRequest) (*transport.UpdateTenantQuotasResponse, error) {
-	if err := t.gate("UpdateTenantQuotas"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateTenantQuotas")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -475,7 +487,8 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 // exactly as tenants:set_entitlements is ScopeCross on every network
 // transport: a tenant Admin cannot grant itself entitlements.
 func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
-	if err := t.gate("UpdateTenantEntitlements"); err != nil {
+	ctx, err := t.admit(ctx, "UpdateTenantEntitlements")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -510,7 +523,8 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 
 // DeleteTenant deletes a tenant by delegating to the TenantServicer.
 func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
-	if err := t.gate("DeleteTenant"); err != nil {
+	ctx, err := t.admit(ctx, "DeleteTenant")
+	if err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -532,7 +546,8 @@ func (t *Transport) DeleteTenant(ctx context.Context, tenantID string) error {
 // the response carries the generated M-of-N shares; for none/passphrase the
 // share fields are empty.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
-	if err := t.gate("TenantBarrierInit"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierInit")
+	if err != nil {
 		return nil, err
 	}
 	if t.closed.Load() {
@@ -581,7 +596,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to
 // the TenantServicer.
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
-	if err := t.gate("TenantBarrierUnseal"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierUnseal")
+	if err != nil {
 		return err
 	}
 	if t.closed.Load() {
@@ -611,7 +627,8 @@ func (t *Transport) tenantService() (tenant.TenantServicer, error) {
 
 // TenantBarrierOfficerRegister enrols a share holder of a tenant barrier.
 func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *transport.TenantOfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
-	if err := t.gate("TenantBarrierOfficerRegister"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierOfficerRegister")
+	if err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
@@ -631,7 +648,8 @@ func (t *Transport) TenantBarrierOfficerRegister(ctx context.Context, req *trans
 
 // TenantBarrierOfficerList lists a tenant barrier's holders.
 func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID string) ([]*transport.OfficerStatus, error) {
-	if err := t.gate("TenantBarrierOfficerList"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierOfficerList")
+	if err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
@@ -655,7 +673,8 @@ func (t *Transport) TenantBarrierOfficerList(ctx context.Context, tenantID strin
 // BINDING authorization is the certificate or in-process claim claimContext
 // resolves, which requireIdentity does not replace.
 func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *transport.TenantShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
-	if err := t.gate("TenantBarrierShareClaimBegin"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierShareClaimBegin")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -679,7 +698,8 @@ func (t *Transport) TenantBarrierShareClaimBegin(ctx context.Context, req *trans
 // TenantBarrierShareClaimComplete delivers a tenant holder's sealed envelope
 // exactly once.
 func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *transport.TenantShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
-	if err := t.gate("TenantBarrierShareClaimComplete"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierShareClaimComplete")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -709,7 +729,8 @@ func (t *Transport) TenantBarrierShareClaimComplete(ctx context.Context, req *tr
 // the share-CLAIM handshake's certificate-binding fallback, which the
 // quorum handshake never reads, so marking ctx for it was a no-op.
 func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport.TenantQuorumBeginRequest) (*transport.QuorumChallenge, error) {
-	if err := t.gate("TenantBarrierQuorumBegin"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierQuorumBegin")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -729,7 +750,8 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 // TenantBarrierQuorumSubmit submits one authenticated tenant holder's
 // share. IdentityGated -- see TenantBarrierQuorumBegin's doc comment.
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
-	if err := t.gate("TenantBarrierQuorumSubmit"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierQuorumSubmit")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.requireIdentity(ctx); err != nil {
@@ -748,7 +770,8 @@ func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transpor
 
 // TenantBarrierRekeyStart opens a rekey round on a tenant barrier.
 func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.TenantRekeyStartRequest) (*transport.QuorumRound, error) {
-	if err := t.gate("TenantBarrierRekeyStart"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierRekeyStart")
+	if err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()
@@ -768,7 +791,8 @@ func (t *Transport) TenantBarrierRekeyStart(ctx context.Context, req *transport.
 // TenantBarrierOfficerRevoke revokes a tenant holder through a quorum-gated
 // rekey.
 func (t *Transport) TenantBarrierOfficerRevoke(ctx context.Context, req *transport.TenantOfficerRevokeRequest) (*transport.QuorumRound, error) {
-	if err := t.gate("TenantBarrierOfficerRevoke"); err != nil {
+	ctx, err := t.admit(ctx, "TenantBarrierOfficerRevoke")
+	if err != nil {
 		return nil, err
 	}
 	svc, err := t.tenantService()

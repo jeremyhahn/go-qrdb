@@ -25,10 +25,9 @@
 // instead.
 //
 // The seam covers reading the time (Now, Since, Until) and waiting on it (Sleep,
-// After, NewTimer, NewTicker). It does not cover context deadlines:
-// context.WithTimeout runs on the runtime's clock, which a Clock cannot reach.
-// A component that must bound a call by virtual time arms a Timer from its Clock
-// and cancels the call's context when the timer fires.
+// After, NewTimer, NewTicker) and bounding a call by it (WithTimeout):
+// context.WithTimeout runs on the runtime's clock, which a Clock cannot reach,
+// so a component that bounds a call by its Clock uses WithTimeout instead.
 package clock
 
 import "time"

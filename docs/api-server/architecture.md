@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -103,10 +103,7 @@ asserted to be a bijection. Anything narrower would be lossy for every
 projected module permanently, and could not be fixed by adding a clause to a
 handler: there is no qrdb handler in that path to add it to.
 
-That constraint is the reason the question "should the QUIC wire mirror gRPC's
-codes?" has a measured answer rather than a taste-based one. See
-[api.md](api.md#the-quic-status-vocabulary) for the vocabulary and
-[the alternatives below](#alternatives-rejected) for what was rejected.
+See [api.md](api.md#the-quic-status-vocabulary) for the vocabulary.
 
 `BaseModule` supplies no-op defaults for every hook **except `Name`**, so a
 module embeds it and overrides only what applies — and cannot accidentally be
@@ -137,7 +134,7 @@ refuses the caller for its own tenant, and nothing more. A module whose
 operation legitimately acts on a tenant the caller NAMES — a system-scope
 caller managing a tenant it does not belong to, the same shape qrdb's own
 tenant routes support via `AuthMiddleware.AuthorizeTenantTarget` — has no way
-to ask that question with the per-route check alone (#587).
+to ask that question with the per-route check alone.
 
 A module that needs this implements `SetTenantTargetAuthorizer`
 (`apimodule.TenantTargetAuthorizer`, a minimal interface
@@ -191,15 +188,12 @@ neither owns a verb neither registered. See
   bypass wearing a fallback's clothes.
 - **A second server beside the first.** Rejected — that is what the module seam
   exists to avoid.
-- **gRPC-Web through connectrpc's vanguard (`vanguardgrpc`).** Rejected on
-  measurement. At v0.5.0 it no longer fronts a `*grpc.Server`: it re-registers
-  the generated services on a connect server and calls each method handler with
-  a nil gRPC interceptor, and the handler's peer carries an address but no TLS
-  state. The one interceptor chain is skipped and the client certificate is
-  lost, so a probe got `PermissionDenied` over gRPC-Web where native gRPC
-  answered `OK` (admin certificate) and `Unauthenticated` (no credentials). The
-  framing is small and specified, so it is implemented in `pkg/api/grpcweb`
-  over the gRPC server's own handler instead.
+- **gRPC-Web through connectrpc's vanguard (`vanguardgrpc`).** Rejected: it
+  re-registers the generated services on a connect server and calls each
+  method handler with a nil gRPC interceptor, and the handler's peer carries no
+  TLS state, so the one interceptor chain is skipped and the client
+  certificate is lost. The framing is small and specified, so it is
+  implemented in `pkg/api/grpcweb` over the gRPC server's own handler instead.
 - **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
   terminating TLS loses the caller's certificate at the node, the identity every
   authorization decision starts from.
@@ -214,74 +208,55 @@ neither owns a verb neither registered. See
   Rejected — an operation a module needs (QUIC reachability) belongs on the
   interface every module implements, not behind a capability check a module
   can silently fail to satisfy.
-- **A small, purpose-built QUIC status set — one status per condition that has
-  actually been asked for.** Rejected. It is how the six-status vocabulary was
-  arrived at, and four separate pieces of work then escalated to it in turn; a
-  set assembled an issue at a time ends up arbitrary, and every future
-  condition is a protocol change rather than a lookup. Measured against the
-  code rather than against taste: `pkg/api/grpc` classifies roughly eighty
-  conditions across fifteen of gRPC's seventeen codes, so "QUIC is deliberately
-  narrower" described the frame layout and was never true of the conditions the
-  handlers behind it reach.
+- **A small, purpose-built QUIC status set, one status per condition asked
+  for.** Rejected: a set assembled one condition at a time ends up arbitrary,
+  and every new condition becomes a protocol change rather than a lookup. The
+  handlers behind QUIC reach most of gRPC's codes (`pkg/api/grpc`), so the
+  QUIC vocabulary (`pkg/api/quic/wire`) declares one status per gRPC code.
 - **Adopting gRPC's status codes by NUMBER as well as by meaning.** Rejected:
   it would renumber `StatusError`, `StatusUnimplemented`,
   `StatusUnauthenticated`, `StatusPermissionDenied` and `StatusUnavailable`,
-  which breaks every deployed peer simultaneously and buys nothing a lookup
-  table does not already give. Pre-1.0 permission to renumber is not a reason
-  to. The correspondence is therefore by meaning, through one table, and no
+  which breaks every deployed peer at once and buys nothing a lookup table does
+  not give. The correspondence is by meaning, through one table, and no
   arithmetic relates the two numberings.
-- **Declaring only the fifteen codes qrdb's own handlers emit.** Rejected, but
-  narrowly: the two left out (`DEADLINE_EXCEEDED`, `UNKNOWN`) are emitted by
-  nothing in qrdb today, so on a "what does the codebase demonstrably need"
-  test they do not qualify. They are declared anyway because the module
-  projection above makes the table's TOTALITY the property that matters — a
-  missing row degrades a module's answer silently, and silence is what this
-  whole change exists to remove. The cost is two constants that qrdb's own
-  handlers never produce, and it is named in the wire package rather than
-  glossed.
-- **A bespoke error vocabulary for MCP.** Rejected. MCP had no codes at all, so
-  nothing constrained the choice and the temptation was to design a set around
-  what MCP's tools happen to return. It would have handed a consumer a second
-  translation table days after the QUIC vocabulary gave them their first, and
-  made the transport-by-transport conformance matrix a translation exercise
-  rather than a comparison. MCP declares one code per gRPC status code, by
-  meaning, for the same reasons QUIC does — with JSON-RPC numbers, because the
-  envelope is JSON-RPC's and importing a foreign registry's integers into it
-  would be the worst of both.
+- **Declaring only the codes qrdb's own handlers emit.** Rejected: the module
+  projection above makes the table's TOTALITY the property that matters. A
+  missing row silently degrades a module's answer, so every gRPC code has a
+  status, whether or not a qrdb handler produces it.
+- **A bespoke error vocabulary for MCP.** Rejected: it would hand a consumer a
+  second translation table and make the transport-by-transport conformance
+  matrix a translation exercise rather than a comparison. MCP declares one code
+  per gRPC status code, by meaning, as QUIC does, with JSON-RPC numbers,
+  because the envelope is JSON-RPC's and a foreign registry's integers do not
+  belong in it.
 - **Emitting MCP's codes as JSON-RPC `error` objects.** Rejected on the
   specification: a failure inside a tool is a RESULT carrying `isError`, and
   only a dispatch failure is a protocol error. It is also not available — the
   mcp-go server pins every handler-returned error to `INTERNAL_ERROR` with a
   nil `data` field and gives a handler no way to influence either, so the
   spec-correct channel is the only channel.
-- **A third ~80-clause error classifier, in `pkg/api/mcp`.** Rejected. Two such
-  ladders already existed and had to agree with nothing forcing them to; a
-  third would have compounded that. The MCP server renders the gRPC code
-  instead, so it owns no condition clauses and has nothing to drift.
-- **One classifier per transport, kept in agreement by tests.** Rejected, and
-  replaced by a transport-neutral table. REST ran twelve per-family status
-  ladders, gRPC nine, QUIC one of its own, and they had drifted: the same
-  error meant different things on different transports, and QUIC had no
-  clause at all for most families. `pkg/api/errclass` now owns what kind of
-  failure every typed error is, as an ordered table of one-line rows; each
-  transport owns only a total map from that class to its own code. This is the
-  shape the authentication classifier (`middleware.ClassifyAuthError`) had
-  already proved, and that classifier stays the owner of the auth failures:
-  the table delegates to it, because its classes also drive control flow a wire
-  class cannot express.
+- **An error classifier of its own in `pkg/api/mcp`.** Rejected: one more
+  classifier to keep in agreement with the others. The MCP server renders the
+  gRPC code instead, so it owns no condition clauses and has nothing to drift.
+- **One classifier per transport, kept in agreement by tests.** Rejected:
+  per-transport classifiers drift, and the same error comes to mean different
+  things on different transports. `pkg/api/errclass` owns what kind of failure
+  every typed error is, as an ordered table of one-line rows; each transport
+  owns only a total map from that class to its own code. The authentication
+  classifier (`middleware.ClassifyAuthError`) stays the owner of the auth
+  failures: the table delegates to it, because its classes also drive control
+  flow a wire class cannot express.
 - **Classes that are exactly gRPC's seventeen codes.** Rejected: HTTP draws
   distinctions a client acts on that gRPC does not (413 against 429; 410, 412
-  and 422 against 409), and collapsing them would have changed REST answers
-  that were chosen deliberately. A class is a meaning; each transport's
-  projection is a function of the class alone, which is what makes "one error,
-  one meaning" a property of the table.
+  and 422 against 409), and collapsing them would change REST answers clients
+  rely on. A class is a meaning; each transport's projection is a function of
+  the class alone, which is what makes "one error, one meaning" a property of
+  the table.
 - **Stamping a code on every MCP tool error, including the argument refusals.**
-  Rejected for now. Those refusals are built from string literals at some four
-  hundred call sites, and the only way to code them centrally is to infer a
-  classification from prose — the exact thing being deleted. They stay uncoded,
-  a client degrades them as it always did, and a test pins the boundary so it
-  is a stated gap. Coding them means giving those call sites typed errors
-  first, which is mechanical, wide, and its own change.
+  Rejected: those refusals are built from string literals, and the only way to
+  code them centrally is to infer a classification from prose. They stay
+  uncoded, and a test pins the boundary so it is a stated gap. Coding them
+  needs typed errors at those call sites first.
 
 ## Component boundaries
 
@@ -313,9 +288,7 @@ fails with `*rest.ListenerHostMismatchError` instead of serving the same
 handler and the same TLS config on a wider surface than was asked for. The
 QUIC socket's bind failure is likewise a `Start` error rather than a log line
 on a goroutine, so a REST server never reports success with no HTTP/3 listener
-behind it. Previously the host was a literal wildcard, and a REST server bound
-to loopback still accepted QUIC datagrams on every interface — a containment
-decision honoured on one transport and silently discarded on the other.
+behind it.
 
 HTTP/3 starts whenever TLS is configured; making it opt-in or independently
 addressable is an open architecture question, not a decided one.
@@ -407,7 +380,8 @@ threshold. For the Raft WAL the observation point is qrdb's side of go-quicraft'
 `MetricsCollector.ObserveFsyncLatency` — `RaftMetrics` records into
 `quicraft_logdb_fsync_latency_seconds` and then checks the threshold, naming
 the WAL directory — so go-quicraft is unchanged. For storage, the pebble
-backend times each write committed with `pebble.Sync` and the file backend each
+backend and the pebble-backed vector store (`backend="pebble"`, naming its
+directory) time each write committed with `pebble.Sync` and the file backend each
 record, rename and directory fsync, into
 `qrdb_storage_sync_duration_seconds{backend}`; `database.openStorage` and the
 store's pebble wrappers name the database and directory on the observer. The
@@ -435,9 +409,8 @@ observer, so it reaches the Raft WAL and every storage backend however and
 whenever they were built.
 
 Process-wide rather than threaded through each constructor for the same reason
-the collector is: a storage backend opened with its default observer — and
-there are a dozen such sites, the CLI's embedded paths, restore, the partition
-factory among them — has no configuration in reach, and an observer that took
+the collector is: a storage backend opened with its default observer — the
+CLI's embedded paths, restore and the partition factory among them — has no configuration in reach, and an observer that took
 the threshold at construction would miss one set later. The cost is the one
 the collector already pays: several SDK nodes in one process share one
 threshold, the last constructor's.
@@ -527,7 +500,7 @@ kernel-assigned port.
   canonicalises every request to its decoded path before anything else sees
   it. A name containing `/` is not addressable through a single-segment route
   (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
-  the decoded key as it always did.
+  the decoded key.
 - **Public routes are explicit and few** — `GET /health`,
   `GET /v1/config/initialized`, `GET /v1/ca/bootstrap` when configured, the
   two cluster key routes when a receiver is wired (they authorize the peer
@@ -573,6 +546,24 @@ kernel-assigned port.
   principal's grants (see
   [../identity-rbac/](../identity-rbac/architecture.md#tenant-issued-delegations)).
   See [engineering.md](engineering.md#service-principal).
+- **The embedded transport binds its caller before anything dispatches.** A
+  network transport's identity comes from its authenticating listener; the
+  embedded transport has none, so the identity on the caller's context is the
+  caller. `embedded.WithContextBinder` (re-exported as
+  `node.WithContextBinder`, which binds the transport behind `Node.Client`)
+  is the in-process counterpart of that listener. Every unary and streaming
+  entry point opens with one helper, `Transport.admit`: the sealed-window gate,
+  then the binder. The context the binder returns is the one the auth
+  middleware authorizes and the handler runs on; a binder error is returned
+  unchanged and no handler is reached; a nil context is refused with
+  `NilBoundContextError`. The bound context is marked with the binder that
+  bound it, so an entry point that re-enters another (`Request` dispatching to
+  `Put`) or a database-scoped clone, which shares the binder, binds once. The
+  node's internal clients are built without it. A reflection test walks every
+  request method of the transport and its sub-clients under a refusing binder,
+  so an entry point added without `admit` fails it. Calls a non-replica
+  node forwards to a replica leader carry the `WithEmbeddedCaller` identity,
+  as above; the binder runs on the local node, before the forward.
 - **gRPC-Web is decided by the gRPC chain, never by REST's.** A call under
   `/grpc-web/` bypasses the REST middleware and reaches the gRPC server's own
   interceptors with its TLS state intact, so every caller gets the status code
@@ -582,8 +573,7 @@ kernel-assigned port.
 - **A REST route has exactly one owner.** Modules register before the
   built-ins, and a second claim on a route — a module over a built-in, a module
   over another module — **fails construction** with `rest.RouteCollisionError`
-  naming both parties. Nothing yields: a built-in used to give way silently to a
-  module that claimed its path, which let any module a host mounted take over a
+  naming both parties. Nothing yields, so no module a host mounts can take over a
   core endpoint unnoticed. "The same route" is chi's notion, not the string's:
   `/a/{id}` and `/a/{deviceID}` are one route (chi serves whichever registered
   last), `/a/{id:[0-9]+}` and `/a/{id}` are two.

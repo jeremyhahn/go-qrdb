@@ -1,6 +1,6 @@
 # RAG — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -85,14 +85,18 @@ type RAGServicer interface {
 }
 ```
 
-Wired into the protocol servers with `server.WithRAG()`, built over the
+Wired into the protocol servers with `server.WithRAG`, built over the
 embedding service.
 
 ## Invariants
 
 - **`DocumentID` is the caller's identity for the document.** Ingesting the same
-  ID again is how a document is replaced; delete removes every chunk vector it
-  produced and reports `ChunksRemoved`.
+  ID again replaces its whole chunk set: the new chunks overwrite the old ones
+  by index, every chunk past the new count (its vector and its text) is
+  removed, and the document record is written last. Delete removes each chunk's
+  vector, then its text, and the document record last, and reports
+  `ChunksRemoved`; a delete that fails part way leaves the record, so deleting
+  again finishes it.
 - **Chunk text lives in the KV store; the vector carries the reference.**
   Retrieval is search-then-fetch, which is why `RAGQueryResult` can return
   `chunk_text` while the vector index stays dense.
@@ -105,9 +109,12 @@ embedding service.
 - **A query embeds with the same provider/model the caller names**, and the
   caller is responsible for that matching the model the corpus was ingested
   with. Mismatched models produce nonsense scores with no error.
-- **Ingest is not atomic across chunks in the caller-visible sense**: a failure
-  partway leaves the document partially ingested, and re-ingesting the same
-  `DocumentID` is the recovery.
+- **Ingest is not atomic across chunks in the caller-visible sense**: the chunk
+  text and the vectors live in separate stores with no shared transaction, so a
+  failure partway leaves the document partially ingested, and re-ingesting the
+  same `DocumentID` is the recovery. The document record is the last write, and
+  the stale chunks are found by listing the document's chunk keys, so a retry
+  removes whatever a failed re-ingest left.
 - **A query targets exactly one namespace.**
 
 ## Configuration
@@ -116,19 +123,25 @@ Section `rag`:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `default_chunk_strategy` | string | `"fixed"` | `fixed` \| `sentence` \| `paragraph` |
-| `default_chunk_size` | int | `512` | target chunk size in characters |
-| `default_overlap` | int | `50` | overlapping characters or sentences between chunks |
+| `default_chunk_strategy` | string | `fixed` | strategy for a request that sets none |
+| `default_chunk_size` | int | `512` | chunk size for a request that sets none |
+| `default_overlap` | int | `50` | overlap for a request that sets none |
+| `default_top_k` | int | `5` | result bound for a query that sets none |
 | `max_document_size` | int64 | `0` | max document size in bytes; **0 means unlimited** |
-| `default_top_k` | int | `10` | default retrieval result count |
 
-Per-request fields override the defaults. Chunk parameters by strategy:
+A request's chunk field or `top_k` wins over the key; a zero or omitted one is
+unset on every transport and takes the key. A key set to 0 takes the built-in
+value shown. `chunk_min_size` has no key and defaults to 100. The node refuses
+to start (`*RAGChunkDefaultsError`) when the chunker refuses the three chunk
+defaults together, as it does an overlap not below the chunk size for `fixed`.
 
-| Strategy | `chunk_size` | `overlap` | `min_size` |
+Chunk parameters by strategy:
+
+| Strategy | `chunk_size` | `chunk_overlap` | `chunk_min_size` |
 |---|---|---|---|
-| `fixed` | target characters (512) | characters repeated (50) | — |
-| `sentence` | target characters, a guideline (512) | sentences repeated (2) | — |
-| `paragraph` | target characters (512) | — | merge below this (100) |
+| `fixed` | window in characters (512) | characters repeated between windows (50) | a trailing window below this merges into the previous one (100) |
+| `sentence` | cap: sentences are packed up to it; a longer sentence is split into fixed windows | applies only when a sentence is split | applies only when a sentence is split |
+| `paragraph` | cap: a longer paragraph is split into fixed windows | applies only when a paragraph is split | paragraphs below this merge with the next |
 
 **`max_document_size: 0` means unlimited.** A deployment taking untrusted input
 should set it.
@@ -141,13 +154,16 @@ Source: `pkg/service/rag_errors.go`.
 |---|---|---|
 | `*RAGServiceClosedError` | the service has been closed | yes |
 | `*RAGDocumentNotFoundError` | the document does not exist in the namespace | yes |
-| `*RAGNamespaceNotFoundError` | the vector namespace does not exist | **yes** — never auto-created |
-| `*RAGIngestionError` | ingestion failed during chunking or embedding | **yes** |
+| `*RAGIngestError` | ingest failed; wraps the cause: `*rag.DocumentTooLargeError` (a document over `max_document_size`, class TooLarge: 413 / `RESOURCE_EXHAUSTED`), `*rag.ChunkingError` (empty text or a chunk setting the chunker refuses, class InvalidArgument: 400 / `INVALID_ARGUMENT`), `*rag.EmbeddingError` (embedding, namespace creation or a vector write) or `*rag.StoreError` (a KV write), both internal | yes |
+| `*RAGQueryError` | query or list failed; wraps the cause, which for a missing vector namespace is `*NamespaceNotFoundError` | yes |
+| `*RAGDeleteError` | removing a chunk's vector or text, or the document record, failed after the document was found; wraps the cause; the record survives, so the delete is retried | yes |
+| `*RAGTenantRequiredError` (`rag_scope.go`) | an authenticated node received a call carrying no tenant | yes |
 
 | Condition | Behavior |
 |---|---|
 | Unknown embedding provider | the embedding call fails; nothing is stored |
-| Document exceeds `max_document_size` | refused before chunking |
+| Document exceeds `max_document_size` | refused before chunking, as too large (413 / `RESOURCE_EXHAUSTED`) |
+| Chunk setting the chunker refuses | refused before embedding, as an invalid argument (400 / `INVALID_ARGUMENT`) |
 | Missing `rag:*` permission | permission denied |
 | Barrier sealed | refused |
 
@@ -163,9 +179,6 @@ Source: `pkg/service/rag_errors.go`.
   the database reclaims them. Until the binding is set -- and on a node with
   no database registry -- every RAG call is refused with
   `service.CapabilityUnsupportedError`.
-- **Upgrading.** Records written before the scope was added sit at the store
-  root (`rag:...`) and are no longer read. Re-ingest those documents after
-  upgrading.
 - **Chunk embeddings**: vectors in the named vector namespace of the
   request's database, resolved per call through the same binding
   (`service.NewScopedVectorStoreAdapter`); the registry prefixes the namespace
@@ -179,16 +192,22 @@ corpus, not a migration.
 
 ## Test strategy
 
-- **Unit**: each chunking strategy (boundary behaviour, overlap, `min_size`
+- **Unit**: each chunking strategy (boundary behaviour, overlap, `chunk_min_size`
   merging), ingest chunk counting, query ordering by score, metadata filter
   pass-through, delete chunk accounting, list pagination.
 - **The embedding provider is stubbed** — RAG tests must not need a model.
 - **Error tests** per function.
-- **Integration**: RAG parity across transports in the standalone stage.
+- **Integration**: `TestRAG_CLI_PerProtocol` (`make integration-test-rag`)
+  drives every `qrdb rag` verb over REST, gRPC, QUIC, MCP and the Unix socket
+  against a node with no embedding provider: flag validation and the
+  not-configured refusal. Ingest, query, list and delete against a configured
+  provider run in the Docker `test/integration/api` suite
+  (`TestRAGIngestQueryE2E`, `TestRAGListDeleteDocumentE2E`).
 
 ## Observability
 
 - `RAGIngestResponse.ChunkCount` and `RAGDeleteDocumentResponse.ChunksRemoved`
   are the accounting signals; they should agree for a document ingested once.
 - `RAGListDocumentsResponse.Total` is the corpus size.
-- Ingest and delete are audited through [../audit/](../audit/).
+- Every RAG call's authorization decision is audited (`auth.authorize`, success
+  or denied); see [../audit/](../audit/).

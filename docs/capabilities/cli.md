@@ -1,6 +1,6 @@
 # Capabilities — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb admin capabilities`.
@@ -12,7 +12,7 @@ Purpose: print the effective feature profile of the connected node.
 Arguments: none.
 
 Flags: all root transport and authentication flags, plus `--output`
-(`text`, `json`, `yaml`; default `text`).
+(`table`, `json`, `yaml`; default `table`).
 
 Permission: `admin:capabilities`.
 

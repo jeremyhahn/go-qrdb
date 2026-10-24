@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-14
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb auth`, with a `factor` subgroup implementing the N-factor
@@ -62,8 +62,7 @@ have never changed".
 
 A conditional add reports the version it committed: `Factor Set:    version N`
 in table output, `factor_set_version` in JSON (inline beside the factor
-record's own fields). An unconditional add prints the factor record alone, as
-it always has.
+record's own fields). An unconditional add prints the factor record alone.
 
 ```bash
 qrdb auth factor add --user 42 --type mtls --label "laptop" --cert ./alice/cert.pem
@@ -174,7 +173,3 @@ initialization. Any PIN is refused with `--barrier-strategy=none`.
 
 Minimum PIN length is **6 characters**, enforced server side before any backend
 sees it.
-
-## Parity
-
-Every verb here has a `CommandDefinition` in the integration parity suite.

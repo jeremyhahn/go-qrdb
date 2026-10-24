@@ -402,7 +402,8 @@ func TestTenantBarrierInit_AfterClose(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTenantBarrierUnseal_Success(t *testing.T) {
-	rt, srv, _ := newTenantBarrierTestTransport(t)
+	// The unseal key is a barrier secret: it is sent only over TLS (#1043).
+	rt, srv := newTenantBarrierTLSTransport(t)
 
 	want := []byte("super-secret-bytes")
 	err := rt.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{
@@ -714,6 +715,15 @@ func TestRestTenant_ToTenantInfo_CarriesRefusal(t *testing.T) {
 	}
 	if info.Refusal.Code != "pool_unavailable" {
 		t.Fatalf("Refusal.Code = %q, want %q", info.Refusal.Code, "pool_unavailable")
+	}
+}
+
+func TestRestTenant_ToTenantInfo_CarriesStatus(t *testing.T) {
+	if got := (&restTenant{ID: "acme", Status: transport.TenantStatusSuspended}).toTenantInfo().Status; got != transport.TenantStatusSuspended {
+		t.Fatalf("Status = %q; want suspended", got)
+	}
+	if got := (&restTenant{ID: "acme"}).toTenantInfo().Status; got != "" {
+		t.Fatalf("Status = %q; want empty", got)
 	}
 }
 
