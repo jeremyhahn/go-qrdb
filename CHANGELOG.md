@@ -24,6 +24,12 @@ are not reconstructed here — their history is in the git log.
   advisories, which took the image job's Trivy scan red on `main`.
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
 
+- **`sdk/go/transport/mcp` refuses `UpdateDatabaseBarrier` with no barrier
+  configuration**: a request whose `Barrier` was nil was dereferenced and
+  panicked. It is now refused with a `RequestError` before the call, rather
+  than sent without `enabled`, which the `qrdb_database_update_barrier` tool
+  reads as a request to disable the barrier.
+
 ### Changed
 
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
