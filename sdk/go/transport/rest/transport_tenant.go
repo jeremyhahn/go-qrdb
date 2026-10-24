@@ -397,6 +397,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 	data, err := json.Marshal(&req.Entitlements)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &jsonEncodeError{Err: err}}

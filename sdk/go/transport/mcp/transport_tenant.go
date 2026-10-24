@@ -381,6 +381,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 
 	args := map[string]any{
 		"id":                           req.TenantID,

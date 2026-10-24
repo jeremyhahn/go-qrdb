@@ -339,6 +339,27 @@ func TestRESTTenant_DeleteTenant_Success(t *testing.T) {
 	}
 }
 
+// TestRESTTenant_UpdateTenantEntitlements_NilRequest refuses a nil request
+// with a typed error before any HTTP round trip.
+func TestRESTTenant_UpdateTenantEntitlements_NilRequest(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	reached := false
+	rs.handle(pathPrefix(http.MethodPut, "/v1/tenants/"), func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	_, err := rt.UpdateTenantEntitlements(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "UpdateTenantEntitlements" || !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if reached {
+		t.Fatal("a nil request reached the server")
+	}
+}
+
 // ===========================================================================
 // UserAuthFactor success paths
 // ===========================================================================

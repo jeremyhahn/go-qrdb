@@ -429,3 +429,19 @@ func TestUnixRT_UpdateTenantEntitlements_ForwardsEveryField(t *testing.T) {
 	_, err = tr.UpdateTenantEntitlements(ctx, &transport.UpdateTenantEntitlementsRequest{TenantID: "acme", Entitlements: want})
 	requireUnixRequestError(t, err, "UpdateTenantEntitlements")
 }
+
+func TestUnixRT_UpdateTenantEntitlements_NilRequest(t *testing.T) {
+	svc := &holderTenantSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
+	defer cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), nil)
+	requireUnixRequestError(t, err, "UpdateTenantEntitlements")
+	var nre *transport.NilRequestError
+	if !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %v, want NilRequestError", err)
+	}
+	if svc.entitled != nil || svc.tenantID != "" {
+		t.Fatalf("a nil request reached the service: tenant %q", svc.tenantID)
+	}
+}

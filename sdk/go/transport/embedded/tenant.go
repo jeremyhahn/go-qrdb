@@ -497,6 +497,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantsSetEntitlements); err != nil {
 		return nil, err
 	}
