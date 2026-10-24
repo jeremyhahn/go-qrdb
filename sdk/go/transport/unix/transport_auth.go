@@ -203,6 +203,9 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateUser", Err: &transport.NilRequestError{}}
+	}
 
 	pbReq := &pb.UpdateUserProtoRequest{
 		Id:        req.ID,
