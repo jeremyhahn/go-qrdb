@@ -96,6 +96,22 @@ Their accounts live behind the tenant's own barrier, which does not exist yet.
 runs `qrdb tenant barrier-init` — and only the certificate you just issued may
 run it. A `prefix` tenant's admin can log in straight away.
 
+**Name the tenant's Security Officer at create, if it has one.** The Security
+Officer (SO) is the tenant's governance principal, the only one who can make
+someone else an SO. Give `--so-username`, `--so-pin` and the SO's own CSR
+(`--so-csr`) or certificate (`--so-cert`); the SO must be a different person
+from the admin, with a different key:
+
+```bash
+qrdb tenant create --id acme --name "Acme Corp" \
+     --admin-username alice --admin-csr alice/csr.pem \
+     --so-username sam --so-csr sam/csr.pem --so-pin "$SO_PIN" --out ./acme
+```
+
+`--out` writes `so-cert.pem` beside `admin-cert.pem`. On an isolated tenant the
+SO's account is created right after the admin's, when the admin runs
+`barrier-init`.
+
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
 
@@ -202,6 +218,11 @@ of `--admin-csr` or `--admin-cert`.
 CA certificates in `--trust-anchors` (with `--admin-chain` supplying any
 intermediates), its CN must be the admin username, and it must name the new
 tenant. No tenant was created; fix it and retry with the same id.
+
+**`tenant create` refused the Security Officer.** The SO is all or nothing:
+`--so-username`, `--so-pin` and exactly one of `--so-csr` or `--so-cert`. Its
+username and its key must both differ from the admin's. No tenant was created;
+fix it and retry with the same id.
 
 **The admin's `barrier-init` was refused.** On a tenant created with its first
 admin, only the certificate `tenant create` issued or enrolled for that admin

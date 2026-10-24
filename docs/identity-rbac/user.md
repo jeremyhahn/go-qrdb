@@ -217,7 +217,9 @@ unassigns every other role, but `roles assign`, `roles unassign`, and a
 `users create` or `users update` whose role list adds or drops `so` are
 refused for an Admin with permission denied (HTTP 403), and nothing is
 written. The `system` tenant's Security Officer is refused too: your tenant's
-`so` role is granted by your tenant's own.
+`so` role is granted by your tenant's own. Your tenant's first Security
+Officer is named at `tenant create`
+([../multi-tenancy/user.md](../multi-tenancy/user.md)).
 
 Every tenant gets these roles, but the node's own barrier is not any tenant's.
 Initializing, unsealing, sealing, rekeying or recovering the node barrier,

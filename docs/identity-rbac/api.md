@@ -797,7 +797,9 @@ scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
 alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
 before anything is written, and so is the `system` tenant's Security Officer
 or another tenant's. A write that leaves the user's Security Officer standing
-as it was is not affected.
+as it was is not affected. A tenant's first Security Officer is enrolled by
+tenant create's optional `so_*` fields
+([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
 
 The user store judges the rule again against the record version the write
 commits over, not the one the request was first checked against. An Admin's

@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Tenant create takes an optional Security Officer** (#1042): `so_username`,
+  `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
+  `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
+  `qrdb tenant create --so-username --so-csr|--so-cert --so-chain --so-pin`.
+  The SO is enrolled with the tenant's `so` role alone and its PIN set through
+  the SO authenticator; the response carries its credential as `so`, and
+  `--out` writes `so-cert.pem`. A partial set, a CSR with a certificate, or an
+  SO matching the admin by username or key is `InvalidArgument` and creates
+  nothing. An isolated tenant records the SO as `__sys:pending-so` and creates
+  its account right after the admin's. `sdk/go/node` now attaches the server's
+  SO authenticator to tenant onboarding.
+
 ### Fixed
 
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.

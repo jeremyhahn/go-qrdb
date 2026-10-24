@@ -30,7 +30,12 @@ Creates a tenant **together with its first admin**, or not at all.
 | `--admin-cert` | string | — | the first admin's own PEM certificate, leaf first; must chain to `--trust-anchors` |
 | `--admin-chain` | string | — | optional PEM intermediates for `--admin-cert` |
 | `--trust-anchors` | string | — | a PEM bundle of CA certificates to register as the tenant's trust anchors |
-| `--out` | string | — | also write the admin's certificate to this directory as `admin-cert.pem` |
+| `--so-username` | string | — | the tenant's optional security officer (SO), enrolled with the `so` role alone; must differ from `--admin-username` |
+| `--so-csr` | string | — | the SO's PEM certificate signing request, signed as `--admin-csr` is |
+| `--so-cert` | string | — | the SO's own PEM certificate, leaf first; must chain to `--trust-anchors` |
+| `--so-chain` | string | — | optional PEM intermediates for `--so-cert` |
+| `--so-pin` | string | — | the SO's PIN, the second factor the SO gate asks for |
+| `--out` | string | — | also write the admin's certificate to this directory as `admin-cert.pem`, and the SO's as `so-cert.pem` |
 
 Exactly one of `--admin-csr` and `--admin-cert` is required. The admin keeps
 its own key either way: it makes a CSR with `qrdb ca csr`
@@ -50,6 +55,25 @@ qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
      --admin-username ops --admin-cert ops.pem --trust-anchors corp-root.pem
 ```
 
+**The security officer is optional, and given whole or not at all.** Name it
+with `--so-username`, `--so-pin` and exactly one of `--so-csr` and `--so-cert`;
+a partial set, or both a CSR and a certificate, is refused as invalid before
+anything is written. The SO must differ from the admin by username and by key
+(SPKI), so the two are separate principals. The SO is enrolled with the
+tenant's `so` role alone, and its PIN is committed as the create's last step.
+Only the SO -- not the tenant's Admin -- grants or revokes the `so` role
+([../identity-rbac/cli.md](../identity-rbac/cli.md)).
+
+```bash
+# the SO, on the SO's machine:
+qrdb ca csr --username sam --out ./sam
+
+# the platform operator:
+qrdb tenant create --id acme --name "Acme Corp" \
+     --admin-username alice --admin-csr alice/csr.pem \
+     --so-username sam --so-csr sam/csr.pem --so-pin "$SO_PIN" --out ./acme
+```
+
 There is no flag that pins a directory: a tenant's location is a named volume
 pool resolved on each node, never a path.
 
@@ -67,8 +91,9 @@ pool. The replicated record names the pool and the slot within it, never a
 path, and each node resolves that slot to its own directory, `{pool path}/{tenant}`.
 
 The command prints the tenant, the admin's username, the certificate's SPKI
-thumbprint and serial (none for `--admin-cert`), and the certificate. Nothing
-it prints or writes is a private key.
+thumbprint and serial (none for `--admin-cert`), and the certificate, then the
+same for the SO when one was given. Nothing it prints or writes is a private
+key or the PIN.
 
 **Validation comes first.** The CSR's signature and key, the trust anchors, and
 an `--admin-cert`'s chain and identity (its CN must be `--admin-username` and
@@ -82,7 +107,9 @@ created at once, with the tenant's Admin role and the certificate bound. A
 `barrier`, `volume` or `raft` tenant keeps its accounts behind its own barrier,
 which does not exist yet, so the command reports that the admin's account is
 created when the admin runs `qrdb tenant barrier-init` with this certificate —
-and only this certificate may run it.
+and only this certificate may run it. Such a tenant's SO is recorded the same
+way and its account is created right after the admin's; its PIN is committed
+at create.
 
 `--barrier-auto-unseal` trades custody for convenience: the tenant's key is
 wrapped under the *system* barrier so the node can unseal it without the tenant
