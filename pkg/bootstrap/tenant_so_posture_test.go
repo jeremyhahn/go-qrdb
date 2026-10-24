@@ -104,6 +104,48 @@ func TestProvisionTenant_SO_StandardPostureAdminAsPendingSOIsCompletedOnTheAdmin
 	}
 }
 
+// An SO distinct from the admin is enrolled the same way in both postures:
+// at once with the so role alone, or as the __sys:pending-so record a barrier
+// tenant completes, with the SO PIN committed either way.
+func TestProvisionTenant_SO_DistinctSOInBothPostures(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "standard", true: "strict"}[strict], func(t *testing.T) {
+			users := &fakeCertBindingUsers{}
+			pins := &fakeSOPINs{}
+			result, err := provisionWithSO(t, soConfig(t), users, Dependencies{SOPINs: pins, SeparationOfDuties: strict})
+			if err != nil {
+				t.Fatalf("ProvisionTenant: %v", err)
+			}
+			want := []string{role.SystemRoleID("acme", role.RoleNameSO)}
+			if len(users.createCalls) != 2 || !slices.Equal(users.createCalls[1].RoleIDs, want) || result.SOUserID == result.AdminUserID {
+				t.Fatalf("createCalls = %+v, want the admin and an SO holding %v alone", users.createCalls, want)
+			}
+			if len(pins.tenants) != 1 {
+				t.Fatalf("SetSOPIN calls = %v, want the SO PIN committed", pins.tenants)
+			}
+
+			ctx := context.Background()
+			store := kvstore.NewMemoryKVStore()
+			sos := tenantadmin.NewSOKVStore(store)
+			pins = &fakeSOPINs{}
+			result, err = ProvisionTenant(ctx, TenantProvisionConfig{
+				TenantID: "acme", AdminCSRPEM: validAdminCSR(t), SO: soConfig(t),
+			}, Dependencies{
+				Tenants: &fakeTenants{}, Users: &fakeCertBindingUsers{}, Roles: &fakeRoles{},
+				PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, TrustDomain: onboardingTrustDomain,
+				PendingAdmins: tenantadmin.NewKVStore(store), PendingSOs: sos, SOPINs: pins,
+				SeparationOfDuties: strict, Logger: discardLogger(),
+			})
+			if err != nil {
+				t.Fatalf("ProvisionTenant(pending): %v", err)
+			}
+			if so, _ := sos.Get(ctx, "acme"); so == nil || so.Username != "officer" || !result.SOAwaitsBarrierInit || len(pins.tenants) != 1 {
+				t.Fatalf("pending SO = %+v, awaits %v, PINs %d; want officer recorded and the PIN committed", so, result.SOAwaitsBarrierInit, len(pins.tenants))
+			}
+		})
+	}
+}
+
 func TestCompletePendingTenantAdmin_SOAdoptsOnlyTheAdminBoundToItsCredential(t *testing.T) {
 	ctx := context.Background()
 	store := kvstore.NewMemoryKVStore()
