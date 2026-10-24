@@ -18,6 +18,7 @@ package node
 
 import (
 	"context"
+	"crypto/fips140"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // asIdentity binds id as the authenticated caller, in its own tenant, the
@@ -108,4 +110,47 @@ func TestNode_AuthMiddlewareAndAuthorizer_NilWhenAuthDisabled(t *testing.T) {
 
 	require.Nil(t, n.AuthMiddleware(), "AuthMiddleware() must be nil while auth is disabled")
 	require.Nil(t, n.Authorizer(), "Authorizer() must be nil while auth is disabled")
+}
+
+// TestNode_StrictSeparation_ReportsResolvedPosture proves StrictSeparation
+// returns the posture the node resolved at start: the setting on gives true,
+// and the setting off gives what FIPS 140-3 mode forces (false outside it).
+// wiring's TestResolveStrictSeparation proves FIPS forces true through the
+// resolver's explicit FIPS seam.
+func TestNode_StrictSeparation_ReportsResolvedPosture(t *testing.T) {
+	for name, tc := range map[string]struct {
+		configured bool
+		want       bool
+	}{
+		"setting on":  {configured: true, want: true},
+		"setting off": {configured: false, want: fips140.Enabled()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := qrdbconfig.DefaultConfig()
+			cfg.Raft.DataDir = t.TempDir()
+			cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+			cfg.Protocols.REST = false
+			cfg.Protocols.GRPC = false
+			cfg.Protocols.QUIC = false
+			cfg.Protocols.Unix = false
+			cfg.Protocols.MCP = false
+			disabled := false
+			cfg.Auth.Enabled = &disabled
+			cfg.Auth.SeparationOfDuties = tc.configured
+
+			n, err := NewStandaloneNode(context.Background(), cfg, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = n.Close() })
+
+			require.Equal(t, tc.want, n.StrictSeparation())
+			require.Equal(t, sdk.ResolveStrictSeparation(tc.configured), n.StrictSeparation(),
+				"the node must report the posture the sdk resolver gives for its setting")
+		})
+	}
+}
+
+// TestNode_StrictSeparation_FalseBeforeWiring proves a node that has not
+// wired its authorizer reports the standard posture rather than a guess.
+func TestNode_StrictSeparation_FalseBeforeWiring(t *testing.T) {
+	require.False(t, new(Node).StrictSeparation())
 }

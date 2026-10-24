@@ -1130,6 +1130,11 @@ type Node struct {
 	// presented admin certificate exactly as a login will.
 	spiffeTrustDomain atomic.Pointer[string]
 
+	// strictSeparation is the separation-of-duties posture the node resolved
+	// with wiring.ResolveStrictSeparation when it wired its authorizer,
+	// reported by StrictSeparation.
+	strictSeparation atomic.Bool
+
 	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
 	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
 	// can re-decide it AFTER first boot runs (reconcileAwaitingAdminCredential):
@@ -1548,6 +1553,13 @@ func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistr
 // qrdb's own tenant routes enforce, in place of capturing the authorizer
 // indirectly through WithAuthorizerWrapper (go-qrdb#587).
 func (n *Node) AuthMiddleware() *middleware.AuthMiddleware { return n.authMiddleware.Load() }
+
+// StrictSeparation reports the separation-of-duties posture the node resolved
+// at start: true under strict separation, which FIPS 140-3 mode forces on,
+// otherwise the auth.separation_of_duties setting (sdk.ResolveStrictSeparation).
+// It reports false until the node has wired its authorizer, which a sealed node
+// does once Unseal completes the boot.
+func (n *Node) StrictSeparation() bool { return n.strictSeparation.Load() }
 
 // Authorizer returns the node's composed RBAC[+ABAC] auth.Authorizer -- the
 // SAME instance AuthMiddleware() authorizes every transport's requests
@@ -3828,6 +3840,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
 	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
+	n.strictSeparation.Store(strictSoD)
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
