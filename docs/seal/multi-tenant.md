@@ -1,6 +1,6 @@
 # Multi-Tenant Barriers
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -357,10 +357,10 @@ REST and QUIC JSON encodings therefore carry it as base64.
 | Protocol | Server-side | Wire format | Strategy field |
 |----------|-------------|-------------|----------------|
 | **REST** | `POST /v1/tenants/{id}/barrier/{init/begin,init/complete,unseal,seal}`, `GET /v1/tenants/{id}/barrier/status`, holder routes under `/v1/tenants/{id}/barrier/officers`, `/quorum/{begin,submit}`, `/rekey/start` | JSON | `strategy` in body |
-| **gRPC** | `qrdb.v1.TenantBarrierService/{InitBegin,InitComplete,Unseal,Seal,Status,OfficerRegister,OfficerList,ShareClaimBegin,ShareClaimComplete,QuorumBegin,QuorumSubmit,RekeyStart,OfficerRevoke}` | JSON-over-gRPC | `strategy` in JSON payload |
-| **QUIC** | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete`, `tenant.BarrierUnseal`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerRevoke`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierQuorumBegin/QuorumSubmit`, `tenant.BarrierRekeyStart` | JSON | `strategy` in JSON frame |
+| **gRPC** | `qrdb.v1.TenantBarrierService/{InitBegin,InitComplete,Unseal,Seal,Status,OfficerRegister,OfficerList,ShareClaimBegin,ShareClaimComplete,QuorumBegin,QuorumSubmit,RekeyStart,OfficerRevoke}` | protobuf | `strategy` field of `TenantBarrierInitRequest` |
+| **QUIC** | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete`, `tenant.BarrierUnseal`, `tenant.BarrierSeal`, `tenant.BarrierStatus`, `tenant.BarrierOfficerRegister/OfficerList/OfficerRevoke`, `tenant.BarrierShareClaimBegin/ShareClaimComplete`, `tenant.BarrierQuorumBegin/QuorumSubmit`, `tenant.BarrierRekeyStart` | JSON (init, unseal, seal, status); protobuf (holder ops) | `strategy` in JSON frame |
 | **MCP** | `qrdb_tenant_barrier_init_begin`, `..._init_complete`, `..._unseal`, `..._seal`, `..._status`, `..._officer_register/officer_list/officer_revoke`, `..._share_claim_begin/share_claim_complete`, `..._quorum_begin/quorum_submit`, `..._rekey_start` | JSON-RPC 2.0 | `strategy` tool arg |
-| **Unix** | gRPC-over-UDS reuses `qrdb.v1.TenantBarrierService` | JSON-over-gRPC | `strategy` in JSON payload |
+| **Unix** | gRPC-over-UDS reuses `qrdb.v1.TenantBarrierService` | protobuf | `strategy` field of `TenantBarrierInitRequest` |
 | **Embedded** | Direct `tenant.TenantServicer` call | Go function call | `req.Strategy` field |
 
 Server registration: each protocol gates on a non-nil `tenant.TenantServicer`. All transports

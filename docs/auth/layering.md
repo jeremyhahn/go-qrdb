@@ -1,6 +1,6 @@
 # Identity / authorization layering
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -22,7 +22,7 @@ membership from qrdb via the SDK.
 - **Tenants** (`pkg/tenant`) — including the reserved `system` tenant.
 - **Users** (`pkg/user`) — passwordless principals scoped to a tenant.
 - **Roles** (`pkg/role`) — name + permission list, scoped to a tenant.
-- **Role memberships** — `User.RoleIDs` (system-scoped roles) and
+- **Role memberships** — `User.RoleIDs` (roles of the user's own tenant) and
   `User.RoleBindings` (tenant-scoped grants) are the assignment edges.
 - **Permission registry** (`pkg/permission/constants.go`) — comprehensive permission
   set including:
@@ -89,7 +89,8 @@ Authorization for the app's *own* domain stays inside the app.
 ## See also
 
 - `docs/auth/README.md` — pluggable authenticator interfaces.
-- `docs/auth/roles.md` — qrdb's six-role identity model.
+- `docs/auth/roles.md` — qrdb's built-in roles: the five FIPS 140-3 roles and the
+  standard-posture Owner.
 - `pkg/permission/constants.go` — the identity-domain permission registry.
 - xkms's `docs/auth/layering.md` — the same boundary documented from
   xkms's side.

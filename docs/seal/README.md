@@ -1,6 +1,6 @@
 # Seal Package — StorageBarrier
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion to `docs/barrier-seal/`, which is the contract.
 
 <!--
@@ -26,16 +26,16 @@ The first two ship inside qrdb. The third ships in go-xkms and is **registered i
 - [shamir-custody](../shamir-custody/) — share holders (Security Officers and key custodians), the authenticated quorum, rekey, revocation and recovery.
 - [multi-tenant.md](multi-tenant.md) — Per-tenant barrier isolation via `NamespacedBackend`.
 - [compliance.md](compliance.md) — FIPS, FedRAMP, PCI-DSS, HIPAA mapping.
-- [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: transparent decryption, strategy-fixed-at-init, enabling encryption on an existing `none` deployment via backup/restore, and how encrypted backups are recovered.
+- [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: transparent decryption, strategy-fixed-at-init, enabling encryption on an existing `none` deployment in place, and how encrypted backups are recovered.
 - [../auth-factors/architecture.md](../auth-factors/architecture.md) — PIN backend used by the SO/User PIN ceremony.
 
 ## Three-Layer Architecture
 
 ```
-go-quicraft/pkg/seal/          Interfaces + go-enclave + minimal Barrier + Software/None/Shamir primitives
+go-quicraft/pkg/seal/          Interfaces + go-enclave + minimal Barrier + Passphrase/None strategies
         ↑
 go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
-                               share exchange, StrategyRegistry (Software + None pre-registered)
+                               share exchange, StrategyRegistry (Passphrase + None pre-registered)
 go-qrdb/pkg/keydelivery/       Per-node tenant root-key transport over mTLS + HPKE
 go-qrdb/pkg/clusterkeys/       Node-identity and peer-authentication for key delivery
         ↑
@@ -62,7 +62,7 @@ A `StorageBarrier` picks the strategy that seals its root key from `BarrierConfi
 
 ## StrategyRegistry — the canonical lookup table
 
-`StrategyRegistry` decouples the node from concrete strategy implementations. `ResolveSystemStrategies` looks up the configured `seal.strategy` name with `LookupFactory`; the registry returns a `StrategyFactory` that constructs the strategy on demand. (`pkg/seal/strategy_registry.go:39-58`)
+`StrategyRegistry` decouples the node from concrete strategy implementations. `ResolveSystemStrategies` looks up the configured `seal.strategy` name with `LookupFactory`; the registry returns a `StrategyFactory` that constructs the strategy on demand (`pkg/seal/strategy_registry.go`).
 
 ```go
 type StrategyRegistry interface {
@@ -77,7 +77,7 @@ type StrategyFactory func() (SealingStrategy, error)
 
 ### Defaults — `NewDefaultStrategyRegistry`
 
-`NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-98`) returns a registry pre-populated with the two software strategies qrdb owns outright:
+`NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go`) returns a registry pre-populated with the two software strategies qrdb owns outright:
 
 - `StrategyPassphrase` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
 - `StrategyNone` — built via `NewNoneStrategy()`.
@@ -89,7 +89,7 @@ type StrategyFactory func() (SealingStrategy, error)
 Higher layers add hardware strategies on top by handing qrdb's server constructor a registry through `WithStrategyRegistry`:
 
 ```go
-// pkg/server/server.go:1140-1142
+// pkg/server/server.go
 func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
     return func(o *serverOptions) { o.strategyRegistry = reg }
 }
@@ -120,7 +120,7 @@ The system barrier is built from `seal.NewSystemStrategyRegistry(composer, thres
 
 ## StorageBarrier
 
-For field documentation and the complete struct definition, see `pkg/seal/barrier.go:117-201`. The key fields are:
+For field documentation and the complete struct definition, see `StorageBarrier` in `pkg/seal/barrier.go`. The key fields are:
 - `state` (atomic.Int32): 0 = sealed, 1 = unsealed
 - `activeStrategy` (atomic.Value): StrategyID that sealed the root key
 - `persistedStrategyCache` (atomic.Value): cached strategy ID from sealed root key blob
@@ -142,7 +142,7 @@ The barrier transparently encrypts every `Put` and decrypts every `Get` against 
 
 ## StrategyNone — the no-encryption mode
 
-`StrategyNone` (`pkg/seal/strategy.go:366`) selects the no-encryption barrier shape. All `Put` / `Get` operations bypass encryption and store data in plaintext. The barrier still maintains state machinery (sealed/unsealed) so callers and audit logs do not need to special-case it.
+`StrategyNone` (`pkg/seal/strategy.go`) selects the no-encryption barrier shape. All `Put` / `Get` operations bypass encryption and store data in plaintext. The barrier still maintains state machinery (sealed/unsealed) so callers and audit logs do not need to special-case it.
 
 Use cases:
 
@@ -154,7 +154,7 @@ Use cases:
 
 > **Operational note**: `initialize` and `unseal` audit events carry a `strategy` detail, so a `none` barrier records `strategy: none` in the trail.
 
-> **Enabling encryption later**: the sealing strategy is fixed at initialization, so a `none` deployment cannot flip to `passphrase`/`shamir` in place — doing so is a planned backup/restore migration into a freshly-keyed instance. The Seal Manager GUI reflects this: a `none` (or unconfigured) barrier shows an **"Encryption Not Configured"** panel with no Seal/Unseal controls (there is nothing to seal). See [enabling-encryption.md](enabling-encryption.md).
+> **Enabling encryption later**: the sealing strategy is fixed at initialization, so moving a `none` deployment to `passphrase`/`shamir` is a deliberate re-encryption migration, `qrdb barrier enable-encryption`, not a configuration change. The Seal Manager GUI shows a `none` (or unconfigured) barrier as an **"Encryption Not Configured"** panel with no Seal/Unseal controls (there is nothing to seal). See [enabling-encryption.md](enabling-encryption.md).
 
 ## Features
 
@@ -430,7 +430,7 @@ with `OpSeal`.
 
 ## REST API Reference
 
-All endpoints are under the `/v1/barrier/` prefix. Each route's permission is named where it is registered (`pkg/api/rest/server.go:2370-2420`).
+All endpoints are under the `/v1/barrier/` prefix. Each route's permission is named where it is registered (`pkg/api/rest/server.go`).
 
 | Method | Path | Description |
 |--------|------|-------------|

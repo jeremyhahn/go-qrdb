@@ -1,6 +1,6 @@
 # Leases — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lease` — create, revoke, renew, inspect and list
@@ -13,7 +13,7 @@ Create a new lease with a TTL.
 
 | Flag | Type | Default | Required |
 |---|---|---|---|
-| `--ttl` | int | — | yes — time-to-live in seconds |
+| `--ttl` | int64 | — | yes — time-to-live in seconds |
 
 ```bash
 qrdb lease grant --ttl 60

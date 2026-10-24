@@ -321,6 +321,14 @@ under `-race`. The KDF cost is the mode's contract.
   `forceNoiseAvailable` (`pkg/clusterenroll`) simulates both values of the
   gating decision, but it cannot make X25519 key generation work under a real
   `fips140=only` runtime.
+- **A joiner holding both keys is tested against the runtime, not the
+  override.** `TestJoinCSR_DualKeyClientSelectsTheRuntimeSuite` and
+  `TestFetchAnchor_DualKeyBootstrapTracksTheRuntime` (`pkg/clusterenroll`)
+  configure a Noise key and a P-256 key and fold `fips140.Enabled()` into the
+  expected suite. Under `fips140=only` the CSR join selects P-256 and the
+  anchor fetch hands go-truststrap no Noise key. The first test also asserts
+  that the runtime refuses X25519 key generation, so a completed join proves
+  that X25519 was never reached.
 - **A test of a FIPS-dependent selector folds `fips140.Enabled()` into its
   expectation**, as `wantVersion` does for `kdf.DefaultHasher`
   (`pkg/seal/kdf`). `GOFIPS140` selects the module at build time, so

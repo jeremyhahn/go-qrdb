@@ -1,6 +1,6 @@
 # Secondary Indexes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 An index turns "find every user whose email is X" from a full scan into a
@@ -115,7 +115,7 @@ func (m Message) CompoundIndexes() []index.CompoundIndexDef {
 }
 ```
 
-Now `ConversationID = ? AND Timestamp > ?` uses one index instead of one index
+With it, `ConversationID = ? AND Timestamp > ?` uses one index instead of one index
 plus a post-filter.
 
 **Store a secret key in an entity.** Declare the field as `dao.SecretBytes`

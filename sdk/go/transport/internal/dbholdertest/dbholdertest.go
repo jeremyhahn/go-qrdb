@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
@@ -32,6 +33,14 @@ import (
 
 // Database is the name of the suite's 2-of-2 Shamir database.
 const Database = "vault"
+
+// RequestTimeout is the per-request deadline a transport's client gets in
+// this suite. Initializing the database's Shamir barrier syncs the file
+// backend several times, and a CI runner under load takes over a second per
+// sync, so a 5s deadline expired there. This bounds a hung request; it is not
+// a performance assertion, and a request that succeeds or is refused returns
+// as soon as it does.
+const RequestTimeout = 60 * time.Second
 
 // NewFixture returns the real database service the suite expects the
 // transport under test to serve: Database, 2-of-2, holders not yet enrolled.

@@ -1,6 +1,6 @@
 # Custom Authenticators & Authorizers (Embedder Hooks)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--

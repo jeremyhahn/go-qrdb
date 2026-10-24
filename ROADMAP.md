@@ -63,6 +63,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **tenant-dek** — the per-tenant DEK keyring — [docs/tenant-dek/](docs/tenant-dek/) — done
 - **identity-rbac** — users, roles, the RBAC PDP — [docs/identity-rbac/](docs/identity-rbac/) — done
 - **identity-hydrator** — `WithIdentityHydrator`; the login Subject is the immutable user id — [#670](../../issues/670) — done
+- **embedded-explicit-identity** — `Node.ServiceContext` and `Node.DelegatedContext`: an embedded call carries an explicitly presented identity, a tenant delegation verified on every call — [#873](../../issues/873) — done
 - **user-password-self-scope** — the User role holds self-scoped `passwords:write` and `passwords:delete` — [docs/auth/](docs/auth/) — done
 - **role-delete-cascade** — deleting a role removes it from every holder — [#697](../../issues/697) — done
 - **sdk-abac-condition-parser** — sdk/go type and constructor aliases for the ABAC condition parser, so consumers validate conditions with the server's own parser — [docs/auth/](docs/auth/) — done

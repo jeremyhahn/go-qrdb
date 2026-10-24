@@ -1,6 +1,6 @@
 # Enabling, Rotating & Disabling Encryption at Rest
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -80,7 +80,7 @@ plaintext) that is initialized with an empty secret and serves normally until
 migrated. A self-managed tenant barrier reaches the same state via
 `POST /v1/tenants/{id}/barrier/init/complete` with `{"strategy":"none"}` and
 the proof of possession `init/begin` asked for (`qrdb tenant barrier-init
---strategy none` runs both calls).
+--id <id> --strategy none` runs both calls).
 
 ```
 # system barrier (admin)
@@ -154,7 +154,7 @@ data yet).
 
 ## Cluster-wide enable-encryption (multi-node)
 
-A multi-node cluster (`RF > 1`) can migrate a previously-unencrypted barrier
+A multi-node cluster (`RF > 1`) can migrate an unencrypted (`none`) barrier
 cluster-wide with **no shared key, no global coordination beyond the intent
 record, and rolling per-node recycling**. Each node independently recycles its own
 replica while the Raft group stays available; zero data loss is guaranteed by the
@@ -217,7 +217,7 @@ qrdb barrier enable-encryption --tenant acme --strategy passphrase --passphrase 
   KV, so the node discovers it on reboot (or the next reconciler pass). It reads
   the replicated intent, checks that it hasn't acked the current `Generation`,
   reads its credential file, and resumes the recycle. A leader that restarts
-  mid-migration no longer holds the request's passphrase: it, too, reads its
+  mid-migration does not hold the request's passphrase: it, too, reads its
   credential file. The `Generation` guard
   ensures idempotency — a node cannot be re-cycled for the same generation twice.
 

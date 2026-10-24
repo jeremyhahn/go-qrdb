@@ -1,6 +1,6 @@
 # Authentication Factor Framework
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -38,7 +38,7 @@ qrdb ships no hardware factor. See the [composition flow](#composition-flow) bel
 ## Factor Interface
 
 ```go
-// pkg/authfactors/factors.go:30-47
+// pkg/authfactors/factors.go
 type Factor interface {
     Name() string                                                                          // "fido2", "piv", "pkcs11", "mtls", ...
     Enroll(ctx context.Context, params *EnrollParams) (*Enrollment, error)
@@ -83,7 +83,7 @@ type Response struct {
 }
 ```
 
-See `pkg/authfactors/factors.go:71-192` for the canonical wire-type definitions and field-by-field encoding rules per factor.
+See `pkg/authfactors/factors.go` for the canonical wire-type definitions and field-by-field encoding rules per factor.
 
 ## FactorRegistry
 
@@ -118,7 +118,7 @@ sequenceDiagram
     Note over QRDB: resolve factors by name via Reg.Lookup
 ```
 
-Server option: `pkg/server/server.go:1239-1241`
+Server option (`pkg/server/server.go`):
 
 ```go
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption {
