@@ -59,6 +59,7 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | Database barrier | Resolves its mode through the `StrategyRegistry` first, then the built-in passphrase, empty and shamir modes; anything else is `UnsupportedBarrierStrategyError` | `server.WithStrategyRegistry` (forwarded to `database.WithBarrierStrategyRegistry`) | Y | none |
 | Seal store | `storage.Storage`, opened by the node under `<install-dir>/seal` | none, by design | node-local | see [The seal store](#the-seal-store) |
 | Tenant DEK engine | `dek.Provider`; `dek.Keyring` is the software default | `WithDEKProvider` | Y | none |
+| Verifiable-log head signing (create, rotate, sign) | `vlog.HeadSignerProvider` (`sdk.HeadSignerProvider`): `CreateKey` returns the key's reference and public key, which the descriptor records, and `HeadSigner` signs one key version; the software provider (`vlog.NewSoftwareHeadSignerProvider`, the log's sealed `k/<version>` record) is the default | `WithHeadSignerProvider` on `pkg/server` and `sdk/go/node`, forwarded through `CryptoOptions` into `Infra` | Y | none. A provider that keeps its keys outside go-qrdb returns no record and none is written; its heads verify against the descriptor's public key |
 | Key wrap (DEK and backup KEK) | `keywrap.Provider`, `keywrap.Registry` | `WithKeyWrapProvider`, `WithKeyWrapRegistry`, `WithKeyDir` | Y | none |
 | Auth factors | `authfactors.FactorRegistry`, `Factor` | `WithFactorRegistry` | Y | none |
 | PIN backend | `pin.PINBackend` | `WithPINBackend` | Y | none |

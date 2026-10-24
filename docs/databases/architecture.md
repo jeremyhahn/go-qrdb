@@ -1055,8 +1055,8 @@ possibly in a device, and apply must be a pure function of committed bytes.
    a log (on demand — §9, decision 4).
 2. The service reads the head through the group (size *n*, root *r*), builds
    the checkpoint body for (origin, *n*, *r*) as a C2SP checkpoint (§9, decision 2), and asks the sign-head seam (§6) for the owner's signature.
-3. The service verifies the returned signature against the log's registered
-   verifier key, then proposes `OpVerifiableLog`/`Checkpoint` with *n*, *r* and
+3. The service verifies the returned signature against the public key the
+   descriptor records for the current key version, then proposes `OpVerifiableLog`/`Checkpoint` with *n*, *r* and
    the signed bytes.
 4. Apply checks *n* ≤ size and that *r* is the tree's root at *n*, computed from
    the stored perfect nodes covering `[0, n)` read through the current call's
@@ -1071,11 +1071,15 @@ A checkpoint is not a leaf of the tree it describes: a head that entered its own
 tree would describe a tree it had already made stale. The record is beside the
 tree, append-only, in the same table and the same snapshot.
 
-**Key rotation** is a descriptor change through the same opcode: the
-descriptor's verifier keys are an append-only list, and a checkpoint names the
-key that signed it. Which key signs, and when keys rotate, is the owner's
-policy. Rotating the software provider's key, not built yet, appends the
-`k/<version+1>` record and the descriptor's new `KeyRef` in one proposal.
+**Key rotation** is a descriptor change through the same opcode (RotateKey,
+sub-type 5): the descriptor's head keys are an append-only list numbered from
+version 1, the last is current, and a signed head names the key version that
+signed it, so a head signed before a rotation still verifies. Which key signs,
+and when keys rotate, is the owner's policy. Rotation asks the provider for
+the next version's key through the same seam as create (§6) and appends it in
+one proposal; a rotation that names any version but the next is refused as a
+conflict. The software provider's rotation also writes its `k/<version+1>`
+record in that proposal.
 
 #### 6. The sign-head seam
 
@@ -1106,41 +1110,70 @@ type HeadSigner interface {
 	Sign(ctx context.Context, msg []byte) ([]byte, error)
 }
 
-// HeadSignerProvider returns the signer for one log's owner key.
+// HeadSignerProvider owns a log's head-signing keys: it creates each
+// version and returns the signer for one.
 type HeadSignerProvider interface {
+	CreateKey(ctx context.Context, req CreateKeyRequest) (CreatedKey, error)
 	HeadSigner(ctx context.Context, req HeadSignerRequest) (HeadSigner, error)
 }
 
-// HeadSignerRequest names the log and the owner's key for it.
+// CreateKeyRequest names the log, the signature type and the version of
+// the key a provider creates.
+type CreateKeyRequest struct {
+	TenantID, Database, Log string
+	Type                    SignatureType
+	Version                 uint32
+}
+
+// CreatedKey is the provider's answer: its reference to the key, the
+// public key and -- from the software provider only -- the sealed record.
+type CreatedKey struct {
+	Ref    string
+	Public crypto.PublicKey
+	Record *SigningKey
+}
+
+// HeadSignerRequest names the log and one version of its key.
 type HeadSignerRequest struct {
-	TenantID string
-	Database string
-	Log      string
-	// KeyRef is the owner's reference to its key, recorded in the
-	// descriptor at create. The software provider reads it as the decimal
-	// version of the log's k/<version> record; another provider's
-	// reference is its own.
-	KeyRef string
+	TenantID, Database, Log string
+	KeyRef                  string // as CreateKey returned it
+	KeyVersion              uint32 // which the signer reports
 }
 ```
 
+The descriptor records each version as a `HeadKey`: its version, the
+provider's reference and its public key (PKIX DER). `Descriptor.VerifyHead`
+checks a signed head against the key of the version it names, so a head from
+a key go-qrdb never holds verifies the same way as one from the software key.
+The service checks the provider's answer (`CreatedKey.HeadKey`: a supported
+type, the requested version, a reference, a record that is the same key)
+before anything is proposed, and checks every head it signs before recording
+it.
+
 - **Injection:** `WithHeadSignerProvider(p HeadSignerProvider) ServerOption` in
-  `pkg/server/seam_options.go`, beside `WithDEKProvider`, composed through
-  `sdk/go/node` like the other seams. Nil keeps the software provider.
-- **The software provider go-qrdb ships** (`SoftwareHeadSignerProvider`) signs
-  with a key generated at create (`crypto/ed25519` or `crypto/ecdsa` P-256
-  over `crypto/rand`, the standard library's validated module). The key is a
-  PKCS #8 record, `k/<version>` under the log's prefix, written by Create in
-  the same Raft proposal as the descriptor and head, so a create either lands
-  with its key or not at all; the descriptor's `KeyRef` names its version. The
-  record is sealed at rest by the same barrier as the log's other records
-  (§8), travels in the snapshot, and is outside KV `Range` like the rest of
-  the table. Its public key is the descriptor's verifier key. Any node can
-  sign; the key never leaves the server.
-- **What go-xkms implements:** a `HeadSignerProvider` that resolves `KeyRef` to
-  its KMS or hardware key, and for its transparency log returns a signer over
-  the CA's key (the same `crypto.Signer` source `pkg/cakey.Provider` exposes),
-  as an ECDSA P-256 signer. go-quicbaas composes go-xkms's provider; it does not
+  `pkg/server/seam_options.go`, beside `WithDEKProvider`, surfaced by
+  `ResolveCryptoOptions` as `CryptoOptions.HeadSignerProvider`, carried in
+  `lifecycle.Infra.HeadSignerProvider`, and passed by `sdk/go/node`'s
+  `WithHeadSignerProvider`; `sdk/go` re-exports the types (`types_vlog.go`).
+  It follows the `WithDEKProvider` and `WithBarrierKeyProvider` seams. Nil
+  keeps the software provider, which is the default.
+- **The software provider go-qrdb ships** (`SoftwareHeadSignerProvider`)
+  creates a key at create and at each rotation (`crypto/ed25519` or
+  `crypto/ecdsa` P-256 over `crypto/rand`, the standard library's validated
+  module). It returns the key as a PKCS #8 record, `k/<version>` under the
+  log's prefix, which the service writes in the same Raft proposal as the
+  descriptor, so a create or rotation either lands with its key or not at all;
+  its reference is the decimal version. The record is sealed at rest by the
+  same barrier as the log's other records (§8), travels in the snapshot, and
+  is outside KV `Range` like the rest of the table. Any node can sign; the key
+  never leaves the server. The service never generates a key itself.
+- **A provider that keeps its keys outside go-qrdb** returns no record, and no
+  key record is written: the descriptor holds its reference and public key
+  only.
+- **What go-xkms implements:** a `HeadSignerProvider` over its KMS or hardware
+  keys, and for its transparency log one that returns a signer over the CA's
+  key (the same `crypto.Signer` source `pkg/cakey.Provider` exposes), as an
+  ECDSA P-256 signer. go-quicbaas composes go-xkms's provider; it does not
   implement one.
 
 #### 7. The audit trail as one log instance

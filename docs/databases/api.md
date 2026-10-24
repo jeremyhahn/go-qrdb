@@ -348,6 +348,16 @@ Rekey takes `{"threshold", "policy"}` and revocation
 `{"username", "threshold"}`. A client refuses a request that names no database
 with `DatabaseNameRequiredError` before it is sent.
 
+## Verifiable-log head-signing keys
+
+Creating a verifiable log with a signing key type, and rotating its key, ask
+the node's `vlog.HeadSignerProvider` for the key; the software provider is the
+default, and a composer passes a hardware or KMS one with
+`WithHeadSignerProvider` ([engineering.md](engineering.md), "Verifiable-log
+head-signing seam"). The answer names the key version, the provider's
+reference and the public key (PKIX DER) a signed head verifies against; the
+private key is never in an answer. A rotation racing another is a conflict.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
