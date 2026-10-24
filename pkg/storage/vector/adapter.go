@@ -55,6 +55,10 @@ type PebbleVectorStorage struct {
 
 	// syncs times every write committed with pebble.Sync.
 	syncs *syncwatch.Observer
+
+	// seals makes a sealed at-rest barrier under the database a typed
+	// error before a write, ID persist or compaction reaches Pebble.
+	seals *pebblestore.SealWatch
 }
 
 // StorageOption configures a PebbleVectorStorage instance.
@@ -93,14 +97,11 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 		opt(pOpts)
 	}
 
-	// Route Pebble's internal WAL/compaction chatter to slog DEBUG (quiet at the
-	// default INFO level) unless an option already supplied a logger.
-	if pOpts.Logger == nil {
-		pOpts.Logger = pebblestore.NewLogger(nil)
-	}
-
-	// Open the database
-	db, err := pebble.Open(config.DataDir, pOpts)
+	// Open the database under a seal watch, so a sealed at-rest barrier under
+	// an encrypting filesystem refuses a write instead of Pebble panicking on
+	// the WAL file it cannot create. Open routes Pebble's internal
+	// WAL/compaction chatter to slog DEBUG unless an option supplied a logger.
+	db, seals, err := pebblestore.Open(config.DataDir, pOpts, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +112,7 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 
 	s := &PebbleVectorStorage{
 		db:           db,
+		seals:        seals,
 		config:       config,
 		logger:       logger.WithField("component", "vector_storage"),
 		metrics:      newVectorMetrics(),
@@ -135,6 +137,9 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 // durably runs write with pebble.Sync when the store syncs writes, timing it
 // through s.syncs, and with pebble.NoSync otherwise.
 func (s *PebbleVectorStorage) durably(write func(*pebble.WriteOptions) error) error {
+	if err := s.seals.Check(); err != nil {
+		return err
+	}
 	if !s.config.SyncWrites {
 		return write(pebble.NoSync)
 	}
@@ -972,6 +977,11 @@ func (s *PebbleVectorStorage) NextID(namespace string) (uint64, error) {
 	if !exists {
 		return 0, ErrNamespaceNotFound
 	}
+	// Persisting the sequence may rotate the WAL; refuse before an ID is
+	// spent rather than let a sealed barrier panic Pebble.
+	if err := s.seals.Check(); err != nil {
+		return 0, err
+	}
 
 	// Atomically increment and get new ID
 	newID := allocator.Add(1)
@@ -1005,6 +1015,9 @@ func (s *PebbleVectorStorage) BatchAllocateIDs(namespace string, count int) ([]u
 	if !exists {
 		return nil, ErrNamespaceNotFound
 	}
+	if err := s.seals.Check(); err != nil {
+		return nil, err
+	}
 
 	// Atomically allocate batch of IDs
 	startID := allocator.Add(uint64(count))
@@ -1033,6 +1046,11 @@ func (s *PebbleVectorStorage) Compact(ctx context.Context, namespace string) err
 
 	prefix := schema.EncodeNamespacePrefix(namespace)
 	end := schema.PrefixSuccessor(prefix)
+
+	// A compaction flushes an overlapping memtable first, rotating the WAL.
+	if err := s.seals.Check(); err != nil {
+		return err
+	}
 
 	s.logger.Infof("Starting compaction for namespace: %s", namespace)
 
