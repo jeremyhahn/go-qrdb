@@ -322,3 +322,33 @@ func TestSignHead_Refusals(t *testing.T) {
 		t.Fatalf("Sign on a canceled context = %v", err)
 	}
 }
+
+// misreportingSigner signs with its HeadSigner's key and reports another
+// key's public half, as a provider bound to the wrong slot would.
+type misreportingSigner struct {
+	HeadSigner
+	public crypto.PublicKey
+}
+
+func (s misreportingSigner) Public() crypto.PublicKey { return s.public }
+
+// TestSignHead_RefusesASignatureItsSignerDoesNotVerify: SignHead checks the
+// signature against the signer's public key and returns no head it fails.
+func TestSignHead_RefusesASignatureItsSignerDoesNotVerify(t *testing.T) {
+	s, err := NewSoftwareHeadSigner("db.example.com/events", mustKey(t, SignatureEd25519))
+	if err != nil {
+		t.Fatalf("NewSoftwareHeadSigner: %v", err)
+	}
+	other, _, err := mustKey(t, SignatureEd25519).Signer()
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	root := bytes.Repeat([]byte{7}, 32)
+	var hse *HeadSignatureError
+	if _, err := SignHead(context.Background(), misreportingSigner{HeadSigner: s, public: other.Public()}, "db.example.com/events", 1, root); !errors.As(err, &hse) {
+		t.Fatalf("SignHead = %v, want *HeadSignatureError", err)
+	}
+	if _, err := SignHead(context.Background(), s, "db.example.com/events", 1, root); err != nil {
+		t.Fatalf("SignHead with a consistent signer = %v", err)
+	}
+}

@@ -588,6 +588,50 @@ func TestChain_RotateKey_WriteFaults(t *testing.T) {
 	}
 }
 
+// TestChain_RotateKey_RefusesAnUnreadableDescriptor: once BeginUpdate drops
+// what create staged, RotateKey reads the descriptor from storage, and a
+// storage fault refuses the rotation without writing.
+func TestChain_RotateKey_RefusesAnUnreadableDescriptor(t *testing.T) {
+	first := mustKey(t, SignatureEd25519)
+	next, err := GenerateSigningKey(SignatureEd25519, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	stg := memory.NewStorage()
+	c := NewChain()
+	if err := c.CreateWithKey(stg, testLog, keyedDescriptor(t, first), first); err != nil {
+		t.Fatalf("CreateWithKey: %v", err)
+	}
+	c.BeginUpdate()
+	before := dump(t, stg)
+	if err := c.RotateKey(errReader{err: errStorageFault}, stg, testLog, headKeyOf(t, next), &next); !errors.Is(err, errStorageFault) {
+		t.Fatalf("RotateKey = %v, want the storage fault", err)
+	}
+	if dump(t, stg) != before {
+		t.Fatal("a refused rotation wrote records")
+	}
+}
+
+// TestChain_CreateRefusesMoreThanTheFirstKey: a log is created with at most
+// its first key; later keys arrive through RotateKey.
+func TestChain_CreateRefusesMoreThanTheFirstKey(t *testing.T) {
+	first := mustKey(t, SignatureEd25519)
+	next, err := GenerateSigningKey(SignatureEd25519, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	desc := keyedDescriptor(t, first)
+	desc.Keys = append(desc.Keys, headKeyOf(t, next))
+	stg := memory.NewStorage()
+	var ide *InvalidDescriptorError
+	if err := NewChain().CreateWithKey(stg, testLog, desc, first); !errors.As(err, &ide) {
+		t.Fatalf("CreateWithKey = %v, want *InvalidDescriptorError", err)
+	}
+	if dump(t, stg) != dump(t, memory.NewStorage()) {
+		t.Fatal("a refused create wrote records")
+	}
+}
+
 func TestKeyVersionConflictError_NamesBothVersions(t *testing.T) {
 	msg := (&KeyVersionConflictError{ID: testLog, Version: 3, Want: 2}).Error()
 	for _, want := range []string{testLog.String(), "3", "2"} {
