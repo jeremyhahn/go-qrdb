@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"strings"
 
 	"github.com/transparency-dev/merkle/proof"
 
@@ -132,6 +133,37 @@ func ReadDescriptor(r storage.Reader, id LogID) (*Descriptor, error) {
 		return nil, &CorruptTableError{Key: string(dk), Reason: "malformed descriptor"}
 	}
 	return &desc, nil
+}
+
+// List returns the names of the logs in one tenant's database, in key order.
+func List(r storage.Reader, tenantID, database string) ([]LogID, error) {
+	if strings.Contains(tenantID, "/") {
+		return nil, &InvalidLogNameError{Field: "tenant", Name: tenantID}
+	}
+	if database == "" || strings.Contains(database, "/") {
+		return nil, &InvalidLogNameError{Field: "database", Name: database}
+	}
+	scope := []byte(LogTablePrefix + tenantID + "/" + database + "/")
+	it := r.NewIterator(&storage.IteratorOptions{LowerBound: scope, UpperBound: prefixEnd(scope)})
+	var ids []LogID
+	for ok := it.SeekToFirst(); ok && it.Valid(); {
+		key := bytes.Clone(it.Key())
+		id, prefix, parsed := parseLogPrefix(key)
+		if !parsed {
+			_ = it.Close()
+			return nil, &CorruptTableError{Key: string(key), Reason: "key outside any log's prefix"}
+		}
+		ids = append(ids, id)
+		ok = it.Seek(prefixEnd(prefix))
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return nil, &TableReadError{Err: err}
+	}
+	if err := it.Close(); err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	return ids, nil
 }
 
 // Get returns up to limit of id's entries from index from, fewer at the end

@@ -109,6 +109,17 @@ type DescriptorRequest struct {
 	ID LogID
 }
 
+// ListRequest asks for the names of the logs in one tenant's database; the
+// answer is a []LogID.
+type ListRequest struct {
+	TenantID string
+	Database string
+}
+
+func (q ListRequest) read(r storage.Reader) (any, error) {
+	return List(r, q.TenantID, q.Database)
+}
+
 func (q DescriptorRequest) read(r storage.Reader) (any, error) {
 	return ReadDescriptor(r, q.ID)
 }

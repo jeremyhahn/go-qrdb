@@ -132,7 +132,7 @@ github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer 97.61
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer/cmd/secure-analyzer 0.00
 github.com/jeremyhahn/go-qrdb/pkg/server 92.38
 github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle 92.93
-github.com/jeremyhahn/go-qrdb/pkg/service 92.70
+github.com/jeremyhahn/go-qrdb/pkg/service 92.90
 github.com/jeremyhahn/go-qrdb/pkg/service/backupsink 98.59
 github.com/jeremyhahn/go-qrdb/pkg/shard 100.00
 github.com/jeremyhahn/go-qrdb/pkg/sql/catalog 97.29

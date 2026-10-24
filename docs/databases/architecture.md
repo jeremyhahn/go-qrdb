@@ -919,7 +919,8 @@ The engine half of the log and the replicated audit chain share one mechanism
 | The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`) and `featuregate.VerifiableLog` (`"verifiable-log"`). |
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
-| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. Nothing proposes `OpVerifiableLog` yet. |
+| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. |
+| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through the audit resolver, refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Not yet composed by any server. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
 ### Design
@@ -1258,9 +1259,8 @@ Each choice is kept with the alternatives not taken and the reason each lost.
 What [What already exists](#what-already-exists) lists is in the code. Each
 remaining step leaves the tree green:
 
-1. The log service (`pkg/service/vlog_service.go`), composed in
-   `pkg/server/lifecycle/lifecycle.go`; the sign-head seam and its software
-   provider (§6); the transports, SDK and CLI ([Surface](#surface)); the
+1. The log service's composition in `pkg/server/lifecycle/lifecycle.go`; the
+   transports, SDK and CLI ([Surface](#surface)); the
    `vlog:*` permissions ([Authorization](#authorization)).
 2. The audit switch (§7): `ReplicatedLogger.Emit` proposes to the audit
    instance through the log service once `featuregate.VerifiableLog` is enabled
@@ -1278,7 +1278,7 @@ mutations are `vlog.Chain` methods called in apply: `Create`, `AppendEntries`,
 `Checkpoint` (the apply half of sign-head) and `ExpireBodies`. The reads take a
 `storage.Reader`: `ReadHead` (a `vlog.Head`: the current size and root, the
 lowest unexpired index and the latest checkpoint), `Get`, `Inclusion`,
-`Consistency` and `ReadCheckpoint`; the state machines answer them as
+`Consistency`, `ReadCheckpoint` and `List` (the logs in one database); the state machines answer them as
 `vlog.Request` values.
 
 #### Service layer
