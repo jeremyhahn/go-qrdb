@@ -117,7 +117,7 @@ func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 					return
 				}
-				http.Redirect(w, r, "/moved"+r.URL.Path, status)
+				http.Redirect(w, r, "/moved/unseal", status)
 			})
 			srv := httptest.NewTLSServer(mux)
 			t.Cleanup(srv.Close)
