@@ -294,13 +294,13 @@ func (t *Transport) callPB(ctx context.Context, method string, in, out proto.Mes
 	return nil
 }
 
-// registerHolder enrols a holder through method.
 // nilBarrierRequest is the typed error a barrier holder method returns for a
 // nil request, before any round trip.
 func nilBarrierRequest(method string) error {
 	return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
 }
 
+// registerHolder enrols a holder through method.
 func (t *Transport) registerHolder(ctx context.Context, method string, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	in, err := holderconv.RegisterToPB(req)
 	if err != nil {
@@ -415,6 +415,9 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 
 // BarrierRekeyStart opens a rekey round.
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierRekeyStart")
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierRekeyStart", req.SOPin)

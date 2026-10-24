@@ -248,9 +248,15 @@ func TestQUICRoundTrip_BarrierHolders_ServiceErrors(t *testing.T) {
 			_, err := tr.OfficerRegister(ctx, &transport.OfficerRegisterRequest{Username: "alice", Role: string(seal.RoleSecurityOfficer)})
 			return err
 		},
-		"OfficerList":        func() error { _, err := tr.OfficerList(ctx); return err },
-		"ShareClaimBegin":    func() error { _, err := tr.ShareClaimBegin(ctx, &transport.ShareClaimBeginRequest{Username: "alice"}); return err },
-		"ShareClaimComplete": func() error { _, err := tr.ShareClaimComplete(ctx, &transport.ShareClaimCompleteRequest{Username: "alice"}); return err },
+		"OfficerList": func() error { _, err := tr.OfficerList(ctx); return err },
+		"ShareClaimBegin": func() error {
+			_, err := tr.ShareClaimBegin(ctx, &transport.ShareClaimBeginRequest{Username: "alice"})
+			return err
+		},
+		"ShareClaimComplete": func() error {
+			_, err := tr.ShareClaimComplete(ctx, &transport.ShareClaimCompleteRequest{Username: "alice"})
+			return err
+		},
 		"BarrierQuorumBegin": func() error {
 			_, err := tr.BarrierQuorumBegin(ctx, &transport.QuorumBeginRequest{Domain: "unseal", Op: "unseal", Username: "alice"})
 			return err
@@ -288,6 +294,7 @@ func TestQUICRoundTrip_BarrierHolders_NilRequest(t *testing.T) {
 		"BarrierQuorumBegin":         func() error { _, err := tr.BarrierQuorumBegin(ctx, nil); return err },
 		"BarrierQuorumSubmit":        func() error { _, err := tr.BarrierQuorumSubmit(ctx, nil); return err },
 		"BarrierOfficerRevoke":       func() error { _, err := tr.BarrierOfficerRevoke(ctx, nil); return err },
+		"BarrierRekeyStart":          func() error { _, err := tr.BarrierRekeyStart(ctx, nil); return err },
 	}
 	for name, call := range calls {
 		err := call()

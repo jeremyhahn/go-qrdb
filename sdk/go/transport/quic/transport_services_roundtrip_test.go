@@ -402,12 +402,15 @@ func TestQUICRoundTrip_VolumePools_Unconfigured(t *testing.T) {
 	tr := startRoundTripServer(t)
 	ctx := context.Background()
 	calls := map[string]func() error{
-		"ListPools":       func() error { _, err := tr.ListPools(ctx); return err },
-		"GetPool":         func() error { _, err := tr.GetPool(ctx, "fast"); return err },
-		"CreatePool":      func() error { _, err := tr.CreatePool(ctx, &transport.CreateVolumePoolRequest{Name: "x"}); return err },
-		"UpdatePool":      func() error { _, err := tr.UpdatePool(ctx, &transport.UpdateVolumePoolRequest{Name: "x"}); return err },
-		"DeletePool":      func() error { return tr.DeletePool(ctx, "x") },
-		"ListPoolTenants": func() error { _, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "x"}); return err },
+		"ListPools":  func() error { _, err := tr.ListPools(ctx); return err },
+		"GetPool":    func() error { _, err := tr.GetPool(ctx, "fast"); return err },
+		"CreatePool": func() error { _, err := tr.CreatePool(ctx, &transport.CreateVolumePoolRequest{Name: "x"}); return err },
+		"UpdatePool": func() error { _, err := tr.UpdatePool(ctx, &transport.UpdateVolumePoolRequest{Name: "x"}); return err },
+		"DeletePool": func() error { return tr.DeletePool(ctx, "x") },
+		"ListPoolTenants": func() error {
+			_, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "x"})
+			return err
+		},
 	}
 	for name, call := range calls {
 		if err := call(); err == nil {
@@ -438,13 +441,16 @@ func TestQUICRoundTrip_ClosedTransport_Services(t *testing.T) {
 			_, err := tr.ScaleDatabase(ctx, transport.ScaleDatabaseRequest{Name: "db1"})
 			return err
 		},
-		"ImportAbort":     func() error { return tr.ImportAbort(ctx, "1") },
-		"ListPools":       func() error { _, err := tr.ListPools(ctx); return err },
-		"GetPool":         func() error { _, err := tr.GetPool(ctx, "fast"); return err },
-		"CreatePool":      func() error { _, err := tr.CreatePool(ctx, &transport.CreateVolumePoolRequest{Name: "x"}); return err },
-		"UpdatePool":      func() error { _, err := tr.UpdatePool(ctx, &transport.UpdateVolumePoolRequest{Name: "x"}); return err },
-		"DeletePool":      func() error { return tr.DeletePool(ctx, "x") },
-		"ListPoolTenants": func() error { _, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "x"}); return err },
+		"ImportAbort": func() error { return tr.ImportAbort(ctx, "1") },
+		"ListPools":   func() error { _, err := tr.ListPools(ctx); return err },
+		"GetPool":     func() error { _, err := tr.GetPool(ctx, "fast"); return err },
+		"CreatePool":  func() error { _, err := tr.CreatePool(ctx, &transport.CreateVolumePoolRequest{Name: "x"}); return err },
+		"UpdatePool":  func() error { _, err := tr.UpdatePool(ctx, &transport.UpdateVolumePoolRequest{Name: "x"}); return err },
+		"DeletePool":  func() error { return tr.DeletePool(ctx, "x") },
+		"ListPoolTenants": func() error {
+			_, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "x"})
+			return err
+		},
 		"DatabaseBarrierOfficerRegister": func() error {
 			_, err := tr.DatabaseBarrierOfficerRegister(ctx, &transport.DatabaseOfficerRegisterRequest{})
 			return err

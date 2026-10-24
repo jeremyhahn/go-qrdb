@@ -253,3 +253,37 @@ func TestUnixRT_BarrierHolders_Closed(t *testing.T) {
 	_, err = tr.BarrierClusterUnseal(ctx)
 	assertClosed(t, err)
 }
+
+// TestUnixRT_BarrierHolders_NilRequest proves every barrier holder method
+// refuses a nil request with a typed error instead of dereferencing it, and
+// that nothing reaches the barrier service.
+func TestUnixRT_BarrierHolders_NilRequest(t *testing.T) {
+	svc := &holderBarrierSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithBarrierService(svc))
+	defer cleanup()
+	ctx := context.Background()
+
+	calls := map[string]func() error{
+		"OfficerRegister":            func() error { _, err := tr.OfficerRegister(ctx, nil); return err },
+		"RecoveryOfficerRegister":    func() error { _, err := tr.RecoveryOfficerRegister(ctx, nil); return err },
+		"ShareClaimBegin":            func() error { _, err := tr.ShareClaimBegin(ctx, nil); return err },
+		"ShareClaimComplete":         func() error { _, err := tr.ShareClaimComplete(ctx, nil); return err },
+		"RecoveryShareClaimBegin":    func() error { _, err := tr.RecoveryShareClaimBegin(ctx, nil); return err },
+		"RecoveryShareClaimComplete": func() error { _, err := tr.RecoveryShareClaimComplete(ctx, nil); return err },
+		"BarrierQuorumBegin":         func() error { _, err := tr.BarrierQuorumBegin(ctx, nil); return err },
+		"BarrierQuorumSubmit":        func() error { _, err := tr.BarrierQuorumSubmit(ctx, nil); return err },
+		"BarrierRekeyStart":          func() error { _, err := tr.BarrierRekeyStart(ctx, nil); return err },
+		"BarrierOfficerRevoke":       func() error { _, err := tr.BarrierOfficerRevoke(ctx, nil); return err },
+	}
+	for method, call := range calls {
+		err := call()
+		requireUnixRequestError(t, err, method)
+		var nilReq *transport.NilRequestError
+		if !errors.As(err, &nilReq) {
+			t.Errorf("%s: err = %v, want *transport.NilRequestError", method, err)
+		}
+	}
+	if svc.register != nil || svc.begin != nil || svc.username != "" {
+		t.Fatal("a nil request reached the barrier service")
+	}
+}
