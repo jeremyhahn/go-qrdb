@@ -15,11 +15,11 @@
 package statemachine
 
 import (
+	"context"
+	"io"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // NewKVStandardCreateFunc returns an sm.CreateFunc that creates
@@ -49,10 +49,15 @@ func NewKVConcurrentCreateFunc(opts ...KVOption) sm.CreateFunc {
 
 // NewKVFastCreateFunc returns an sm.CreateFunc that creates
 // KVStateMachine instances backed by FastBackend. The storageFactory
-// provides the backing storage.Storage for each shard/replica pair.
-func NewKVFastCreateFunc(storageFactory func(shardID, replicaID uint64) storage.Storage, opts ...KVOption) sm.CreateFunc {
-	return sm.NewCreateFunc(func(shardID, replicaID uint64) sm.StateMachine {
-		store := storageFactory(shardID, replicaID)
+// provides the backing storage.Storage for each shard/replica pair; when
+// it fails, the replica's Open returns that error and the shard does not
+// start.
+func NewKVFastCreateFunc(storageFactory StorageFactory, opts ...KVOption) sm.CreateFunc {
+	return func(shardID, replicaID uint64) interface{} {
+		store, err := storageFactory(shardID, replicaID)
+		if err != nil {
+			return &unopenedReplica{err: err}
+		}
 		// Extract logger from options if provided, otherwise use default.
 		var logger *slog.Logger
 		probe := &KVStateMachine{logger: slog.Default()}
@@ -73,24 +78,82 @@ func NewKVFastCreateFunc(storageFactory func(shardID, replicaID uint64) storage.
 		// other branch, so this replica diverges from the log every other
 		// replica applied once.
 		if err := backend.clearStorage(); err != nil {
-			panic("statemachine: failed to reset fast state machine storage: " + err.Error())
+			_ = store.Close()
+			return &unopenedReplica{err: &ReplicaStorageOpenError{ShardID: shardID, ReplicaID: replicaID, Err: err}}
 		}
 		kvsm := NewKVStateMachine(backend, opts...)
 		kvsm.resetLessor()
 		return &StandardAdapter{KVStateMachine: kvsm}
-	})
+	}
+}
+
+// unopenedReplica stands in for a replica whose storage could not be opened.
+// sm.CreateFunc cannot return an error, so the create function returns this
+// instead: the host's Open of it returns err and the shard fails to start
+// with that error, rather than the replica panicking. Nothing else is called
+// on a replica that did not open; each method returns err all the same.
+type unopenedReplica struct {
+	err error
+}
+
+var _ sm.DiskStateMachine = (*unopenedReplica)(nil)
+
+// Open returns the storage failure.
+func (r *unopenedReplica) Open(context.Context, string, <-chan struct{}) (uint64, error) {
+	return 0, r.err
+}
+
+// Update returns the storage failure.
+func (r *unopenedReplica) Update(context.Context, []sm.Entry, []sm.Result) error {
+	return r.err
+}
+
+// Lookup returns the storage failure.
+func (r *unopenedReplica) Lookup(context.Context, interface{}) (interface{}, error) {
+	return nil, r.err
+}
+
+// Sync returns the storage failure.
+func (r *unopenedReplica) Sync() error {
+	return r.err
+}
+
+// PrepareSnapshot returns the storage failure.
+func (r *unopenedReplica) PrepareSnapshot() (interface{}, error) {
+	return nil, r.err
+}
+
+// SaveSnapshot returns the storage failure.
+func (r *unopenedReplica) SaveSnapshot(context.Context, interface{}, io.Writer, <-chan struct{}) error {
+	return r.err
+}
+
+// RecoverFromSnapshot returns the storage failure.
+func (r *unopenedReplica) RecoverFromSnapshot(context.Context, io.Reader, <-chan struct{}) error {
+	return r.err
+}
+
+// Close has nothing to release: no storage was opened.
+func (r *unopenedReplica) Close(context.Context) error {
+	return nil
 }
 
 // NewKVDiskCreateFunc returns an sm.CreateFunc that creates
 // KVStateMachine instances backed by DiskBackend. The storageFactory
-// provides the backing storage.Storage for each shard/replica pair.
-func NewKVDiskCreateFunc(storageFactory func(shardID, replicaID uint64) storage.Storage, opts ...KVOption) sm.CreateFunc {
+// provides the backing storage.Storage for each shard/replica pair; when
+// it fails, the replica's Open returns that error and the shard does not
+// start.
+func NewKVDiskCreateFunc(storageFactory StorageFactory, opts ...KVOption) sm.CreateFunc {
 	return sm.NewDiskCreateFunc(func(shardID, replicaID uint64) sm.DiskStateMachine {
 		// The shard/replica identity MUST reach the storage factory: every
 		// replica needs its own storage path, and a restarted replica must
 		// reopen the SAME path (DiskAdapter.Open resumes from the persisted
 		// applied index there). The previous hardcoded (0, 0) gave every
 		// shard on a node one shared, unreusable location.
-		return newDiskAdapter(storageFactory(shardID, replicaID), opts...)
+		stg, err := storageFactory(shardID, replicaID)
+		if err != nil {
+			return &unopenedReplica{err: err}
+		}
+		return newDiskAdapter(stg, opts...)
 	})
 }

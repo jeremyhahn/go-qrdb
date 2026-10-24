@@ -65,8 +65,8 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | Trust anchors | `trustanchor.Registry` | `WithTrustAnchors` | Y | none |
 | Peer attestation verifier | `auth.PeerAttestationVerifier` through `middleware.PeerAttestationGate` | `WithPeerAttestationGate` | Y | none |
 | Extra authenticators | the auth chain (`auth.Authenticator` at an `auth.ChainPosition`) | `node.WithAuthenticators` | Y | none |
-| Storage backend, standalone data plane | `storage.Storage` | `WithStorageFactory` | Y | Gap E |
-| Storage backend, clustered replicas | `statemachine.StorageFactory` | none | N | Gap E |
+| Storage backend, standalone data plane | `storage.Storage` | `WithStorageFactory` | Y | none |
+| Storage backend, clustered replicas | `node.ReplicaStorageFactory` | `node.WithReplicaStorageFactory` | Y, `disk` and `fast` | none. The MVCC store and the state machines that carry their own storage refuse the option with `statemachine.ReplicaStorageNotApplicableError`. |
 | Backup sink | `service.BackupSink` | `WithBackupSink` | Y | none |
 | Audit sink | `audit.AuditLogger` | `WithAuditLogger` | Y | none |
 | Replicated audit chain | `service.OptInAuditLogger` | `WithReplicatedAuditLogger`; the node's own is forwarded to every network transport | Y | none |
@@ -105,6 +105,19 @@ remaining gap, listed under [Open gaps](#open-gaps).
   the configured backend. The factory receives the data directory and the
   data-plane file system, so a storage that writes files keeps its I/O under the
   barrier. The node closes what the factory returns.
+- **`ReplicaStorageFactory`** opens the storage of each clustered replica of a
+  `disk` or `fast` state machine in place of `raft.sm_storage`. The factory
+  receives the shard ID, the replica ID, the replica's own directory
+  (`<data-dir>/sm/shard-<S>-replica-<R>`) and the data-plane file system: the
+  barrier's when the seal barrier is enabled, nil otherwise. Each call returns
+  storage owned by that one replica, and the node closes it with the replica.
+  A factory error fails the replica's open with
+  `statemachine.ReplicaStorageOpenError`, so the shard does not start. The
+  clustered MVCC store (`raft.sm_type` empty, `pebble` or `mvcc`) opens its own
+  Pebble database, and it and the state machines that carry their own storage
+  refuse the option with `statemachine.ReplicaStorageNotApplicableError`
+  rather than ignore it. `WithStorageFactory` is unchanged and still reaches
+  only the standalone data plane.
 - **`keydelivery.Decrypter`** is the HPKE receive seam. The receiver and
   `ShareEnvelope.Open` open through it, so a device that performs the key
   agreement never exposes the private key. `WithClock` on the receiver anchors
@@ -137,9 +150,7 @@ holds only what the strategy sealed.
 
 ## Open gaps
 
-- **Gap E, clustered replica storage.** `WithStorageFactory` reaches the
-  standalone data plane. A clustered replica's storage is chosen by its state
-  machine through a registry-level factory that node options do not reach.
+None.
 
 ## Scope note: service identity
 
