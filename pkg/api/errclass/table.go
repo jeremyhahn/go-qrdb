@@ -946,9 +946,10 @@ var volumeRules = []rule{
 }
 
 // onboardingRules are tenant onboarding, certificate enrolment and trust
-// anchors. The wrappers bootstrap uses for a refused credential or an undone
-// provisioning (AdminCredentialRejectedError, ProvisioningUndoneError) carry
-// no row of their own: they classify as the cause they wrap.
+// anchors. The wrappers bootstrap uses for a refused credential, a failed SO
+// enrolment or an undone provisioning (AdminCredentialRejectedError,
+// SOCredentialRejectedError, TenantSOEnrollmentError, ProvisioningUndoneError)
+// carry no row of their own: they classify as the cause they wrap.
 var onboardingRules = []rule{
 	as(&cert.InvalidCSRError{}, InvalidArgument),
 	as(&certenroll.InvalidCertificateError{}, InvalidArgument),
@@ -984,6 +985,11 @@ var onboardingRules = []rule{
 	as(&bootstrap.MissingAdminCredentialError{}, InvalidArgument),
 	as(&bootstrap.ConflictingAdminCredentialError{}, InvalidArgument),
 	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
+	// A tenant SO named in part, with two credentials, or as the admin by
+	// name or by key is the request's fault.
+	as(&bootstrap.IncompleteTenantSOError{}, InvalidArgument),
+	as(&bootstrap.ConflictingSOCredentialError{}, InvalidArgument),
+	as(&bootstrap.SOMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad
 	// credential presented by an unauthenticated caller, whatever the reason.

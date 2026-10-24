@@ -2816,6 +2816,9 @@ func runStart(f *startFlags) (err error) {
 				)
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
+					// Tenant create commits a named SO's PIN through the
+					// same authenticator the SO gate verifies it with.
+					svcNode.AttachSOPINs(authResult.soAuthenticator)
 				}
 				// go-qrdb#548 review item 3: the probe's pointer identity is
 				// always non-nil (go-qrdb#560 review B1 -- ceremony
