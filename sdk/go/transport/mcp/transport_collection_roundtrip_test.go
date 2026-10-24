@@ -73,10 +73,10 @@ func TestMCP_Collection_DocumentRoundTrip(t *testing.T) {
 	tr := connectCollectionServer(t)
 	ctx := context.Background()
 
-	// increment IDs stay below 2^53: the MCP id argument is a JSON number,
-	// so a unix_nano ID does not survive the trip to the server.
+	// The default unix_nano strategy: its IDs exceed 2^53, which the id
+	// argument carries only because it travels as a decimal string.
 	if _, err := tr.CreateCollection(ctx, transport.CreateCollectionRequest{
-		Database: "app", Name: "users", IDStrategy: "increment",
+		Database: "app", Name: "users",
 	}); err != nil {
 		t.Fatalf("CreateCollection: %v", err)
 	}
@@ -86,6 +86,9 @@ func TestMCP_Collection_DocumentRoundTrip(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("InsertDocument: %v", err)
+	}
+	if ins.ID <= 1<<53 {
+		t.Fatalf("unix_nano ID %d is not above 2^53; the test no longer proves the lossless trip", ins.ID)
 	}
 	if _, err := tr.InsertDocument(ctx, transport.InsertDocumentRequest{
 		Database: "app", Collection: "users", Document: map[string]interface{}{"name": "bob"},

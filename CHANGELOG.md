@@ -13,6 +13,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **MCP collection document IDs travel as decimal strings, losslessly**: the
+  `id` argument of `qrdb_collection_get`, `qrdb_collection_update` and
+  `qrdb_collection_delete` was a JSON number, so a default `unix_nano` ID
+  (above 2^53) was rounded on the way to the server and the document reported
+  not found. The argument is now a decimal string on the server tools and in
+  the `sdk/go/transport/mcp` client; the number form is refused.
+
 - **A push to `main` no longer cancels the `main` CI run in progress**:
   `ci.yml`'s concurrency group on `main` carries the commit as well as the
   event, so every merge keeps a completed run; `cancel-in-progress` stays a

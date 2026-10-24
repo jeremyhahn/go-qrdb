@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -257,7 +258,7 @@ func (t *Transport) GetDocument(ctx context.Context, database, collection string
 	text, err := t.callTool(ctx, "qrdb_collection_get", map[string]any{
 		"database":   database,
 		"collection": collection,
-		"id":         id,
+		"id":         strconv.FormatUint(id, 10),
 	})
 	if err != nil {
 		return nil, err
@@ -286,7 +287,7 @@ func (t *Transport) UpdateDocument(ctx context.Context, req transport.UpdateDocu
 	_, err := t.callTool(ctx, "qrdb_collection_update", map[string]any{
 		"database":   req.Database,
 		"collection": req.Collection,
-		"id":         req.ID,
+		"id":         strconv.FormatUint(req.ID, 10),
 		"document":   string(docJSON),
 	})
 	return err
@@ -302,7 +303,7 @@ func (t *Transport) DeleteDocument(ctx context.Context, database, collection str
 	_, err := t.callTool(ctx, "qrdb_collection_delete", map[string]any{
 		"database":   database,
 		"collection": collection,
-		"id":         id,
+		"id":         strconv.FormatUint(id, 10),
 	})
 	return err
 }
