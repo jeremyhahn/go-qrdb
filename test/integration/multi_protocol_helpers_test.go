@@ -79,12 +79,17 @@ type multiProtoNode struct {
 	passphrase   string
 
 	// proc is the node's process when its fixture retains it: a fixture whose
-	// node restarts (startTenantEntitlementNode), which also keeps bin and
-	// startArgs for restart, or startMultiProtocolCluster, for a test that
-	// stops the node.
+	// node restarts (startTenantEntitlementNode, startMultiProtocolNodeWithConfig),
+	// which also keeps bin and startArgs for restart, or
+	// startMultiProtocolCluster, for a test that stops the node.
 	bin       string
 	startArgs []string
 	proc      *exec.Cmd
+
+	// configPath is the daemon's --config file when the fixture wrote one
+	// (startMultiProtocolNodeWithConfig); a test rewrites it before restart
+	// to restart the node under another setting.
+	configPath string
 
 	// strictSeparation marks a node under strict separation of duties, whose
 	// system admin holds no data permission (startStrictSeparationNode).
@@ -313,7 +318,7 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
-	startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
+	proc := startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
 
 	// The barrier subsystem runs a pre-host sealed-window REST listener
 	// (unauthenticated by design -- the secret itself is the
@@ -339,6 +344,10 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 		mcpPort:      mcpPort,
 		quicPort:     quicPort,
 		passphrase:   passphrase,
+		bin:          bin,
+		startArgs:    args,
+		proc:         proc,
+		configPath:   cfgPath,
 
 		strictSeparation: strings.Contains(extraYAML, strictSeparationYAML),
 	}

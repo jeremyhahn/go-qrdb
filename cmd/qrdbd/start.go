@@ -2336,9 +2336,7 @@ func runStart(f *startFlags) (err error) {
 			// Record the resolved separation-of-duties posture in the
 			// replicated system record; a first recording or a change from
 			// the recorded posture leaves one compliance audit event (#1128).
-			// It goes through the codec-free store the user and role records
-			// use.
-			if _, err := wiring.RecordSeparationPosture(sigCtx, runtimeKVAdapter, complianceAudit, f.separationOfDuties); err != nil {
+			if err := recordSeparationPostureAtStart(sigCtx, authKVSvc, complianceAudit, f.separationOfDuties); err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
 					return nil
