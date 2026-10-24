@@ -55,6 +55,7 @@ import (
 type MVCCStateMachine struct {
 	mu      sync.RWMutex
 	db      *pebble.DB
+	seals   *pebbleStorage.SealWatch
 	storage storage.Storage
 	engine  *engine.MVCCEngine
 	dir     string
@@ -185,14 +186,12 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.opts != nil && s.opts.Logger == nil {
-		s.opts.Logger = pebbleStorage.NewLogger(nil)
-	}
-	db, err := pebble.Open(initialDir, s.opts)
+	db, seals, err := openPebble(initialDir, s.opts)
 	if err != nil {
 		return 0, &OpenError{Dir: initialDir, Err: err}
 	}
 	s.db = db
+	s.seals = seals
 	s.dir = initialDir
 
 	// Wrap the pebble.DB in a storage.Storage interface for the MVCC store.
@@ -361,7 +360,7 @@ func (s *MVCCStateMachine) Sync() error {
 		return &NotOpenError{}
 	}
 
-	if err := s.db.Flush(); err != nil {
+	if err := s.seals.Flush(s.db); err != nil {
 		return &WriteError{Err: err}
 	}
 	return nil
