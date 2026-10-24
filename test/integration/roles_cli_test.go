@@ -668,7 +668,7 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 // PermissionDenied), so the Admin cannot make itself the Security Officer.
 func TestRolesTenantAdminSOGrantRefused_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
-	node := startMultiProtocolNode(t)
+	node := startStrictSeparationNode(t)
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {

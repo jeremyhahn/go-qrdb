@@ -37,7 +37,7 @@ import (
 // refused the same grant (the control).
 func TestTenantSO_CLI_CreateWithSO_PerProtocol(t *testing.T) {
 	t.Parallel()
-	node := startMultiProtocolNode(t)
+	node := startStrictSeparationNode(t)
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
@@ -62,6 +62,15 @@ func testTenantSOCreateOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	adminCSR := tenantSOCSR(t, node, proto, tenantID+"-admin")
 	soCSR := tenantSOCSR(t, node, proto, tenantID+"-so")
 	outDir := t.TempDir()
+	// Under strict separation of duties the admin may not be the SO.
+	if out, err := runCLIProto(t, node, proto, "tenant", "create",
+		"--id", tenantID+"-same", "--name", tenantID+"-same", "--isolation-type", "prefix",
+		"--admin-username", tenantID+"-admin", "--admin-csr", filepath.Join(adminCSR, "csr.pem"),
+		"--so-username", tenantID+"-admin", "--so-csr", filepath.Join(adminCSR, "csr.pem"), "--so-pin", "so-pin-1234",
+		"--out", t.TempDir(),
+	); err == nil {
+		t.Fatalf("[%s] strict separation: tenant create accepted the admin as its SO: %s", proto.name, out)
+	}
 	if out, err := runCLIProto(t, node, proto, "tenant", "create",
 		"--id", tenantID, "--name", tenantID, "--isolation-type", "prefix",
 		"--admin-username", tenantID+"-admin", "--admin-csr", filepath.Join(adminCSR, "csr.pem"),
@@ -97,6 +106,48 @@ func testTenantSOCreateOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 	if !strings.Contains(got, soID) {
 		t.Fatalf("[%s] %s lacks the so role after the SO's grant: %s", proto.name, umaID, got)
+	}
+}
+
+// TestTenantSO_CLI_StandardPostureAdminIsTheSO is the standard posture, over
+// the first transport: outside strict separation of duties tenant create
+// accepts the admin as the SO, and the admin grants the so role.
+func TestTenantSO_CLI_StandardPostureAdminIsTheSO(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+	proto := multiProtocols[0]
+	tenantID := fmt.Sprintf("tsos-%s-%d", proto.name, time.Now().UnixNano())
+	adminCSR := tenantSOCSR(t, node, proto, tenantID+"-admin")
+	outDir := t.TempDir()
+	if out, err := runCLIProto(t, node, proto, "tenant", "create",
+		"--id", tenantID, "--name", tenantID, "--isolation-type", "prefix",
+		"--admin-username", tenantID+"-admin", "--admin-csr", filepath.Join(adminCSR, "csr.pem"),
+		"--so-username", tenantID+"-admin", "--so-csr", filepath.Join(adminCSR, "csr.pem"), "--so-pin", "so-pin-1234",
+		"--out", outDir,
+	); err != nil {
+		t.Fatalf("[%s] tenant create with the admin as its SO: %v\noutput: %s", proto.name, err, out)
+	}
+	adminConn := tenantCLIArgsForProto(node, proto, filepath.Join(outDir, "admin-cert.pem"), filepath.Join(adminCSR, "key.pem"))
+
+	out, err := runQRDB(t, node.cli, adminConn, "--output", "json", "users", "create", "--without-email-login-key", "--username", tenantID+"-uma")
+	if err != nil {
+		t.Fatalf("[%s] users create: %v\noutput: %s", proto.name, err, out)
+	}
+	var uma userCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &uma); jerr != nil {
+		t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	umaID := fmt.Sprintf("%d", uma.ID)
+	soID := role.SystemRoleID(tenantID, role.RoleNameSO)
+	if out, err := runQRDB(t, node.cli, adminConn, "roles", "assign", "--user", umaID, "--role", soID); err != nil {
+		t.Fatalf("[%s] the tenant Admin granting the so role in the standard posture: %v\noutput: %s", proto.name, err, out)
+	}
+	got, err := runQRDB(t, node.cli, adminConn, "--output", "json", "users", "get", umaID)
+	if err != nil {
+		t.Fatalf("[%s] users get %s: %v\noutput: %s", proto.name, umaID, err, got)
+	}
+	if !strings.Contains(got, soID) {
+		t.Fatalf("[%s] %s lacks the so role after the Admin's grant: %s", proto.name, umaID, got)
 	}
 }
 

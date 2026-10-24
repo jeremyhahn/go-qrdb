@@ -68,7 +68,7 @@ type onboardingCell struct {
 // account it names. The operator's own key is bound in-process -- the one
 // thing the platform's bootstrap does for its first operator -- and every
 // tenant identity after that is created through the transport under test.
-func bootOnboardingCell(t *testing.T, tk transportKind) *onboardingCell {
+func bootOnboardingCell(t *testing.T, tk transportKind, opts ...func(*qrdbconfig.Config)) *onboardingCell {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -116,6 +116,9 @@ func bootOnboardingCell(t *testing.T, tk transportKind) *onboardingCell {
 		cfg.Unix.SocketPath = unixSocketPath(t)
 	case mcpTransport:
 		cfg.MCP.Port = freeTCPPort(t)
+	}
+	for _, opt := range opts {
+		opt(cfg)
 	}
 
 	// The SO PIN store tenant create commits a named security officer's PIN

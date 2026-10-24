@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -36,7 +37,7 @@ import (
 func TestTenantOnboarding_SOFromTenantCreate(t *testing.T) {
 	for _, tk := range remoteTransports {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootOnboardingCell(t, tk)
+			c := bootOnboardingCell(t, tk, strictSeparation)
 			adminKey, adminCSR, err := certtest.NewCSR("alice")
 			if err != nil {
 				t.Fatalf("admin CSR: %v", err)
@@ -99,7 +100,7 @@ func TestTenantOnboarding_SOFromTenantCreate(t *testing.T) {
 func TestTenantOnboarding_SOMatchingTheAdminIsRefused(t *testing.T) {
 	for _, tk := range remoteTransports {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootOnboardingCell(t, tk)
+			c := bootOnboardingCell(t, tk, strictSeparation)
 			_, csr, err := certtest.NewCSR("alice")
 			if err != nil {
 				t.Fatalf("CSR: %v", err)
@@ -107,9 +108,9 @@ func TestTenantOnboarding_SOMatchingTheAdminIsRefused(t *testing.T) {
 			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
 				ID: "acme", Name: "acme",
 				AdminUsername: "alice", AdminCSRPEM: string(csr),
-				SOUsername: "sam", SOCSRPEM: string(csr), SOPin: "sam-pin-1234",
+				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: "alice-pin-1234",
 			}); err == nil {
-				t.Fatalf("%s: a tenant was created with an SO holding the admin's key", tk)
+				t.Fatalf("%s: under strict separation of duties a tenant was created with the admin as its SO", tk)
 			}
 			if _, err := c.n.Services().Tenant.GetTenant(boundedCtx(t), "acme"); err == nil {
 				t.Fatalf("%s: the refused create left tenant acme behind", tk)
@@ -117,3 +118,54 @@ func TestTenantOnboarding_SOMatchingTheAdminIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// TestTenantOnboarding_StandardPostureTheAdminIsTheSO is the standard
+// posture over every remote transport: tenant create accepts the admin as the
+// SO, and the admin grants the so role.
+func TestTenantOnboarding_StandardPostureTheAdminIsTheSO(t *testing.T) {
+	for _, tk := range remoteTransports {
+		t.Run(string(tk), func(t *testing.T) {
+			c := bootOnboardingCell(t, tk)
+			key, csr, err := certtest.NewCSR("alice")
+			if err != nil {
+				t.Fatalf("CSR: %v", err)
+			}
+			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+				ID: "acme", Name: "acme",
+				AdminUsername: "alice", AdminCSRPEM: string(csr),
+				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: "alice-pin-1234",
+			})
+			if err != nil {
+				t.Fatalf("%s: create tenant with the admin as its SO: %v", tk, err)
+			}
+			if so := resp.SO; so == nil || so.UserID != resp.Admin.UserID || so.Thumbprint != resp.Admin.Thumbprint {
+				t.Fatalf("%s: SO = %+v, want the admin's account %+v", tk, so, resp.Admin)
+			}
+
+			ctx := tenant.WithTenantID(boundedCtx(t), "acme")
+			svc := c.n.Services()
+			userRole, err := svc.Role.GetRoleByName(ctx, "acme", role.RoleNameUser)
+			if err != nil {
+				t.Fatalf("role %s: %v", role.RoleNameUser, err)
+			}
+			uma, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+				WithoutEmailLoginKey: true, Username: "uma", TenantID: "acme", RoleIDs: []string{userRole.ID},
+			})
+			if err != nil {
+				t.Fatalf("create uma: %v", err)
+			}
+			soRole := role.SystemRoleID("acme", role.RoleNameSO)
+			alice := c.mustLogin(t, []byte(resp.Admin.CertPEM), key)
+			if err := alice.Roles().AssignRole(boundedCtx(t), uma.ID, soRole); err != nil {
+				t.Fatalf("%s: the admin granting the so role in the standard posture: %v", tk, err)
+			}
+			got, err := svc.User.GetUser(ctx, uma.ID)
+			if err != nil || !slices.Contains(got.RoleIDs, soRole) {
+				t.Fatalf("%s: uma = %+v, %v; want the so role held", tk, got, err)
+			}
+		})
+	}
+}
+
+// strictSeparation boots a cell under strict separation of duties.
+func strictSeparation(cfg *qrdbconfig.Config) { cfg.Auth.SeparationOfDuties = true }
