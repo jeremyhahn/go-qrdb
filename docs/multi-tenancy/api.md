@@ -275,7 +275,7 @@ them.
 | Field | Patch semantics | Limits |
 |---|---|---|
 | `description` | absent: unchanged · present: replaces · `""`: clears | at most 1024 bytes of UTF-8 |
-| `metadata` | absent: unchanged · present: **replaces the whole map** · empty map: clears | at most 64 entries; keys non-empty, at most 128 bytes; values at most 1024 bytes; all UTF-8 |
+| `metadata` | absent: unchanged · present: **replaces the whole map** · empty map: clears | at most 64 entries; keys 1-63 bytes matching `[a-z0-9]([a-z0-9._-]*[a-z0-9])?`; values at most 256 bytes of UTF-8 |
 
 On each transport:
 
@@ -494,7 +494,7 @@ leaks to a caller with no access to the tier.
 | List deleted: bad `page_size` or `page_token` | 400 | `INVALID_ARGUMENT` — `*InvalidPageRequestError` |
 | Reconcile deleted: a live tenant record is unreadable, or the tombstones cannot be listed | 500 | `INTERNAL` — `*ResidueReconcileError` naming the step; the pass stopped, and re-running resumes |
 | Reconcile deleted: one or more retired ids failed | 200 | `OK` — the report, with `failed` naming each failed tenant, step, path and message; every other id was still reclaimed, a failed id keeps its records, and re-running resumes. The Go SDK returns the response and a `*transport.ReconcileDeletedTenantsError` |
-| Update with a `description` or `metadata` over its limit, an empty metadata key, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
+| Update with a `description` or `metadata` over its limit, a metadata key outside the key grammar, or invalid UTF-8 | 400 | `INVALID_ARGUMENT` — `*TenantFieldError` naming the field; nothing written |
 | Update with a `status` that is not `active`, `suspended` or `disabled` | 400 | `INVALID_ARGUMENT` — `*InvalidStatusError` listing the allowed values; nothing written |
 | Update with a `status` the tenant cannot move to from its current one (`disabled` → `suspended`) | 409 | `FAILED_PRECONDITION` — `*StatusTransitionError`; nothing written |
 | Any request by a principal of a suspended or disabled tenant | 403 | `PERMISSION_DENIED` — `*middleware.TenantNotActiveError`, classed as a disabled account |

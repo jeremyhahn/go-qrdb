@@ -63,6 +63,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **tenant-dek** — the per-tenant DEK keyring — [docs/tenant-dek/](docs/tenant-dek/) — done
 - **identity-rbac** — users, roles, the RBAC PDP — [docs/identity-rbac/](docs/identity-rbac/) — done
 - **identity-hydrator** — `WithIdentityHydrator`; the login Subject is the immutable user id — [#670](../../issues/670) — done
+- **embedded-explicit-identity** — `Node.ServiceContext` and `Node.DelegatedContext`: an embedded call carries an explicitly presented identity, a tenant delegation verified on every call — [#873](../../issues/873) — done
 - **user-password-self-scope** — the User role holds self-scoped `passwords:write` and `passwords:delete` — [docs/auth/](docs/auth/) — done
 - **role-delete-cascade** — deleting a role removes it from every holder — [#697](../../issues/697) — done
 - **sdk-abac-condition-parser** — sdk/go type and constructor aliases for the ABAC condition parser, so consumers validate conditions with the server's own parser — [docs/auth/](docs/auth/) — done
@@ -81,6 +82,11 @@ The cluster engine and database system for every project in the stack: embedded,
 - **abac-condition-value-quoting** — RFC 8259 JSON-string quoting for ABAC condition values: a quoted value is one token, unquoted values unchanged, malformed quotes rejected — [docs/auth/](docs/auth/) — done
 - **range-delete** — engine range delete for dropped databases — [#457](../../issues/457) — done
 - **dead-code-triage** — unreachable symbols triaged, wired or deleted — [#350](../../issues/350) — done
+- **default-roles** — shipped default roles every tenant starts with; they carry the OTA activate and confirm permissions — [#737](../../issues/737) — done
+- **device-onboarding-permission** — device onboarding is a tenant-scoped permission, not a role; each tenant onboards its own devices — [#737](../../issues/737) — done
+- **ota-activate-confirm-permissions** — OTA activate and confirm are tenant-scoped permissions, not roles — [#737](../../issues/737) — done
+- **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — done
+- **embedder-seams** — `sdk/go` exposes the seams embedders need — [#626](../../issues/626), PR [#681](../../pulls/681) — done
 
 ## Now
 
@@ -96,21 +102,16 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Next
 
-- **fips-140-3** — nightly FIPS 140-3 job green and placed; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118) — open
+- **fips-140-3** — the FIPS 140-3 job (ci.yml `fips`) green and measured; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118) — open
 - **documentation** — ROADMAP names every milestone and folder; RC spec scrub; agent spec home — [#657](../../issues/657), [#658](../../issues/658), [#634](../../issues/634) — open
 - **file-backend-encryption** — file backend encrypted at rest under the node barrier — [#630](../../issues/630), PR [#681](../../pulls/681) — open
-- **embedder-seams** — `sdk/go` exposes the seams embedders need — [#626](../../issues/626), PR [#681](../../pulls/681) — open
 - **lease-keepalive-latency** — no heavy keepalive tail — [#275](../../issues/275), PR [#681](../../pulls/681) — open
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729) — open
 
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — open
-- **spiffe-trust-domain-tenant** — the tenant is the SPIFFE trust domain — [docs/auth/](docs/auth/) — open
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
-- **default-roles** — shipped default roles every tenant starts with; they carry the OTA activate and confirm permissions — [#737](../../issues/737) — open
-- **device-onboarding-permission** — device onboarding is a tenant-scoped permission, not a role; each tenant onboards its own devices — [#737](../../issues/737) — open
-- **ota-activate-confirm-permissions** — OTA activate and confirm are tenant-scoped permissions, not roles — [#737](../../issues/737) — open
 - **tenant-metadata-description** — `UpdateTenantRequest` and `TenantInfo` carry `Metadata` and `Description`, persisted in the tenant record, on every transport and the Go SDK; consumer go-quicbaas #1518 — [docs/multi-tenancy/](docs/multi-tenancy/) — open
 
 ## Future

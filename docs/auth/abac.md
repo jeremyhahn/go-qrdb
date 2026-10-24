@@ -1,6 +1,6 @@
 # ABAC Authorization Decorator
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 `pkg/auth/abac` layers attribute-based access control over the RBAC
@@ -20,7 +20,7 @@ ABAC with the wrapped (RBAC) authorizer:
 3. **No rule matched** → delegate to the inner authorizer. RBAC decides.
 
 With zero policies configured (and `WithLiveReload` not supplied), `Decorate`
-returns the inner authorizer unchanged (zero overhead). Deny rules of
+returns the inner authorizer unchanged. Deny rules of
 **all** applicable policies are evaluated before any allow rule
 (deny-overrides combining), so an allow in one policy can never shadow a
 deny in another.
@@ -33,9 +33,10 @@ reserved system tenant's policies** — system-tenant policies are
 platform-wide guardrails. One tenant's policies never affect another
 tenant. When the target *is* the system tenant, the set is evaluated once.
 
-The check subject is built from the `auth.Identity`: `Subject`,
-`TenantID`, `Roles` map directly; `Authenticated` is true only for a
-non-nil identity. A nil identity matches no policy and always falls through
+The check subject is built from the `auth.Identity`: `Subject` becomes
+the subject's `ID` (`subject.id`), `AccountName()` its `Name`
+(`subject.name`), and `TenantID` and `Roles` map directly; `Authenticated`
+is true only for a non-nil identity. A nil identity matches no policy and always falls through
 to the inner authorizer. The target tenant is available in conditions as
 `request.tenant`.
 

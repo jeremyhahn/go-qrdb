@@ -1398,8 +1398,8 @@ func TestDiskAdapter_BytesLookup_Error(t *testing.T) {
 func TestNewKVFastCreateFunc_WithLoggerOpt(t *testing.T) {
 	logger := slog.Default()
 	cf := NewKVFastCreateFunc(
-		func(shardID, replicaID uint64) storage.Storage {
-			return newMemStorage()
+		func(shardID, replicaID uint64) (storage.Storage, error) {
+			return newMemStorage(), nil
 		},
 		WithKVLogger(logger),
 	)

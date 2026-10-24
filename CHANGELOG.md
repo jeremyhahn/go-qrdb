@@ -32,6 +32,15 @@ are not reconstructed here — their history is in the git log.
 - **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
   (#1042): the CSR reads were keyed by path, so the second flag left the
   admin's CSR empty.
+- **A push to `main` no longer cancels the `main` CI run in progress**:
+  `ci.yml`'s concurrency group on `main` carries the commit as well as the
+  event, so every merge keeps a completed run; `cancel-in-progress` stays a
+  literal `true`, so a newer push to a pull request still cancels that pull
+  request's older run.
+
+- **`github.com/labstack/echo/v4` is v4.16.1** (indirect, through the Wails
+  devserver): v4.15.3 carries GHSA-cxf3-9h37-7rr8 (critical) and three high
+  advisories, which took the image job's Trivy scan red on `main`.
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
 
 ### Changed
@@ -47,6 +56,10 @@ are not reconstructed here — their history is in the git log.
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
   Host gets its own in-memory Pebble filesystem, so a test built over it
   writes nothing to disk.
+- **The `sdk/go` index re-exports are `ServiceIndexServicer` and
+  `NewServiceIndexService`** (#928), in the `ServiceBatchServicer` family;
+  `sdk.IndexServicer` and `sdk.NewIndexService` are removed.
+
 ## [0.54.0-alpha] - 2026-10-23
 
 ### Added

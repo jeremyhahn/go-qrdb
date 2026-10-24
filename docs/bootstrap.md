@@ -1,6 +1,6 @@
 # Bootstrap Initialization
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Pointer table to the feature folders that own each startup step.
 
 <!--
@@ -19,10 +19,10 @@ A barrier is protected by exactly one of three core strategies:
 | Protection | Credential | Notes |
 |------------|-----------|-------|
 | `none` | none | Identity passthrough; data stored in cleartext. Dev/test or OS-level FDE. |
-| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 in FIPS 140 mode — see `seal.FIPSEnabled`). Supplied at `Initialize` and every `Unseal`; **never stored in config and never derived from a deployment ID**. Backed by `DeferredSoftwareStrategy`. |
+| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 in FIPS 140 mode — see `seal.FIPSEnabled`). Supplied at `Initialize` and every `Unseal`; **never stored in config and never derived from a deployment ID**. Backed by `seal.SoftwareStrategy`, built by `seal.NewDeferredSoftwareStrategy`. |
 | `shamir` | M-of-N shares | Shares enrolled via the M-of-N ceremony. |
 
-Hardware strategies (`tpm2` / `pkcs11` / cloud KMS / Vault) are xkms-provided extensions of `passphrase`, registered into qrdb's `StrategyRegistry` at composition time — not new core options. See [seal/README.md](seal/README.md).
+Hardware strategies (`tpm2` / `pkcs11` / cloud KMS / Vault) are xkms-provided extensions of `passphrase`, registered into qrdb's `StrategyRegistry` at composition time — not core options. See [seal/README.md](seal/README.md).
 
 ### System vs per-tenant barriers
 

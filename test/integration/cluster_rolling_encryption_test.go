@@ -254,12 +254,8 @@ func TestClusterEnableEncryption_Rolling_RF3(t *testing.T) {
 	waitForAcked(t, writer, time.Now().Add(-time.Hour), 5, 30*time.Second, "before the migration")
 
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
-	body, status := iraftAPIPost(t, client,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", c.leaderPort),
-		map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)},
-	)
-	if status != http.StatusOK && status != http.StatusAccepted {
-		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
+	if out, err := cliEnableEncryption(t, cli, c, leaderIdx, newPassphrase); err != nil {
+		t.Fatalf("%v: %s", err, out)
 	}
 
 	// Each owner in turn: wait for it to come back sealed, hold it there until
@@ -374,20 +370,19 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 	// authorized and not yet recycled, until the test hands it one.
 	const newPassphrase = "cluster-rolling-retry-pass"
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
-	request := func(port int) {
+	request := func(idx int) {
 		t.Helper()
-		var body []byte
-		var status int
+		var out string
+		var err error
 		if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
-			body, status = iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", port),
-				map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)})
-			return status == http.StatusOK || status == http.StatusAccepted
+			out, err = cliEnableEncryption(t, cli, c, idx, newPassphrase)
+			return err == nil
 		}) {
-			t.Fatalf("enable-encryption on admin port %d: status %d, body: %s", port, status, body)
+			t.Fatalf("%v: %s", err, out)
 		}
 	}
 	leaderIdx := adminPortIndex(t, adminPorts, c.leaderPort)
-	request(c.leaderPort)
+	request(leaderIdx)
 
 	inTurn := -1
 	if !pollUntil(120*time.Second, 250*time.Millisecond, func() bool {
@@ -420,7 +415,7 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 		t.Fatalf("qrdb admin member transfer-leadership %d: %v: %s", inTurn+1, err, out)
 	}
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[inTurn]}, 60*time.Second)
-	request(adminPorts[inTurn])
+	request(inTurn)
 
 	// Every node, over every transport: the superseding generation keeps the
 	// owner in turn first and alone recycling.
@@ -502,10 +497,8 @@ func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
 	const newPassphrase = "cluster-rolling-restart-pass"
 	client := mtlsHTTPClient(t, ca, 15*time.Second)
 	coord := adminPortIndex(t, adminPorts, c.leaderPort)
-	body, status := iraftAPIPost(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/enable-encryption", c.leaderPort),
-		map[string]interface{}{"strategy": "passphrase", "passphrase": []byte(newPassphrase)})
-	if status != http.StatusOK && status != http.StatusAccepted {
-		t.Fatalf("enable-encryption: status %d, body: %s", status, body)
+	if out, err := cliEnableEncryption(t, cli, c, coord, newPassphrase); err != nil {
+		t.Fatalf("%v: %s", err, out)
 	}
 
 	done := map[int]bool{}
@@ -690,6 +683,23 @@ func rollingStepCounts(m *transport.ClusterMigration) (serving, recycling, pendi
 // cliClusterMigration reads the node barrier's cluster migration through
 // `qrdb --output json barrier status` against node over proto: nil when the
 // status carries none.
+// cliEnableEncryption starts the system barrier's rolling migration to the
+// passphrase strategy with `qrdb barrier enable-encryption` against node idx,
+// and returns an error unless the CLI exits zero reporting the migration
+// started on the system scope.
+func cliEnableEncryption(t *testing.T, cli string, c *noneSealRF3, idx int, passphrase string) (string, error) {
+	t.Helper()
+	out, err := runQRDB(t, cli, c.nodes[idx].cliArgsFor(c.ca, c.adminCert, c.adminKey, multiProtocols[0]),
+		"barrier", "enable-encryption", "--strategy", "passphrase", "--passphrase", passphrase, "-y")
+	if err != nil {
+		return out, fmt.Errorf("qrdb barrier enable-encryption on node %d: %w", idx+1, err)
+	}
+	if !strings.Contains(out, "migration_started (scope: system)") {
+		return out, fmt.Errorf("qrdb barrier enable-encryption on node %d: no system-scope migration_started", idx+1)
+	}
+	return out, nil
+}
+
 func cliClusterMigration(t *testing.T, cli string, c *noneSealRF3, node gatedClusterNode, proto multiProtocol) (*transport.ClusterMigration, error) {
 	t.Helper()
 	out, err := runQRDB(t, cli, node.cliArgsFor(c.ca, c.adminCert, c.adminKey, proto), "--output", "json", "barrier", "status")

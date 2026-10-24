@@ -64,6 +64,10 @@
 #     per job, not two.
 #   - Integration is two jobs, integration-standalone and the per-feature
 #     integration-features matrix, both full tier.
+#   - On main the concurrency group carries the commit as well as the event
+#     (DS-3465, the go-enclave #247 form), so no main run cancels another;
+#     cancel-in-progress stays v1.25's literal `true` (see the concurrency
+#     block).
 # CUSTOMIZE (go-qrdb) end.
 # v1.22.1 (Company Agent m636 item 2, 2026-10-18, after go-quicbaas main
 # fe167500f was left with no completed run): the concurrency block is
@@ -347,15 +351,15 @@ on:
   # its skip on every other event. test/buildgates/ci_tiers_test.go refuses
   # a `schedule:` here.
 
-# v1.25: on main the group is the workflow and the event, so a push to main
-# cancels the in-progress main push run of an older commit, and a schedule or
-# workflow_dispatch run cancels only an older run of its own event (Company
-# Agent m857, m774 option (i)). Every other ref is one group, so a PR's newer
-# run cancels the older. No expression reaches cancel-in-progress: Gitea
-# 1.27.1 never released go-qrdb main run 57063, the first run after v1.22.1
-# set it to an expression (Company Agent m695).
+# CUSTOMIZE (go-qrdb, DS-3465): on main the group is the workflow, the event
+# and the commit, so main runs never cancel each other: a push to main leaves
+# the in-progress run of the previous main commit to finish, and every merge
+# keeps a completed run. Every other ref is one group, so a PR's newer run
+# cancels the older. No expression reaches cancel-in-progress: Gitea 1.27.1
+# never released go-qrdb main run 57063, the first run after v1.22.1 set it
+# to an expression (Company Agent m695).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}', github.event_name) || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
   cancel-in-progress: true
 
 permissions:

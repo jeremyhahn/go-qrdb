@@ -87,6 +87,9 @@ var exemptSeams = map[string]string{
 	"pkg/statemachine.ConcurrentAdapter.Update": "delegates to the embedded ConcurrentStateMachine, which " +
 		"classifies",
 	"pkg/statemachine.DiskAdapter.Update": "delegates to the embedded state machine, which classifies",
+	"pkg/statemachine.unopenedReplica.Update": "applies nothing: it stands in for a replica whose storage " +
+		"failed to open, its Open returns that failure so the shard never starts, and Update only " +
+		"repeats the same open error",
 }
 
 // minApplySeams is the discovery floor. Every other assertion in this gate is

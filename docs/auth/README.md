@@ -1,6 +1,6 @@
 # Pluggable Authentication
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -174,8 +174,8 @@ Admin bootstrap is owned by [`pkg/firstboot`](../../pkg/firstboot/firstboot.go).
 `firstboot.Initialize` runs four steps:
 
 1. **System tenant**: Create the reserved `system` tenant via an internal-call context that bypasses the public reserved-id rejection.
-2. **Built-in roles**: Register the five built-in roles (SO / Admin / Operator / User / Auditor) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Already-exists errors are tolerated so re-runs are idempotent.
-3. **Admin user**: Create user `admin` in the system tenant with exactly one role grant: `Admin@system`. The system-tenant rule in `pkg/auth/rbac` promotes that single grant to cross-tenant authority.
+2. **Built-in roles**: Register the five built-in roles (SO / Admin / Operator / User / Auditor) returned by `role.BuiltInRoles(tenantID)` under the system tenant. Under the standard posture (`Dependencies.SeparationOfDuties` false) it also registers the `owner` role, `role.OwnerRole(tenantID)`, which holds every permission; under strict separation of duties no such role is stored. Already-exists errors are tolerated so re-runs are idempotent.
+3. **Admin user**: Create user `admin` in the system tenant with the role grant `Admin@system`, plus `Owner@system` under the standard posture; under strict separation of duties `Admin@system` is its only grant. The system-tenant rule in `pkg/auth/rbac` promotes the `Admin@system` grant to cross-tenant authority.
 4. **Admin client certificate**: Issue an mTLS client certificate (the `CertSigner` signs the admin's CSR when `AdminCSRPEM` is supplied; otherwise the `CertProvider` generates the key pair) and bind its SPKI thumbprint to the admin, so the CLI can authenticate immediately after first start.
 
 Every step is idempotent and Raft-replicated; follower nodes observe the leader's writes and skip duplication on their own runs.

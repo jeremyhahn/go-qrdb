@@ -205,9 +205,15 @@ plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
 `func(dataDir string, dataPlaneFS vfs.FS) (storage.Storage, error)`, and the
 node closes what it returns. A factory that writes files must route its I/O
 through the `vfs.FS` it is given so the data stays under the barrier. A
-clustered replica's storage is chosen by its state machine, which node options
-do not reach, and the seal store is node-local by design and not behind the
-factory. See [release/extension-seams.md](../release/extension-seams.md).
+**clustered** node's `disk` and `fast` replicas take a composer's storage
+through `node.WithReplicaStorageFactory`, a
+`func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)`
+called once per replica with that replica's own directory; the node closes
+each storage with its replica, and a factory error fails the replica's open
+with `statemachine.ReplicaStorageOpenError`. The clustered MVCC store and the
+state machines that carry their own storage refuse the option with
+`statemachine.ReplicaStorageNotApplicableError`. The seal store is node-local
+by design and not behind either factory. See [release/extension-seams.md](../release/extension-seams.md).
 
 Raft-mode state machines select their backend separately with
 `raft.sm_storage` (`pebble` default, `file`, `memory`) — see

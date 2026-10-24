@@ -1,9 +1,9 @@
 # Entity-to-SQL Bridge
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
-The entity-to-SQL bridge provides seamless interoperability between the DAO (NoSQL) and SQL query interfaces. A Go struct registered via `dao.New()` is automatically visible as a SQL table — same data, same indexes, zero extra configuration.
+The entity-to-SQL bridge exposes a Go struct stored through the DAO as a SQL table over the same data and the same indexes. `dao.New()` registers the entity type in the process-wide entity registry, and the SQL provider serving the same process builds an `EntityTable` from that registration.
 
 ## Architecture
 
@@ -15,19 +15,21 @@ pkg/dao/      pkg/sql/provider/
 (registers)   (reads registry, creates EntityTable)
 ```
 
-- `pkg/entity/` has **zero external dependencies** (only `reflect`, `sync`, `sort`, `time`).
-- `pkg/dao/` registers entity types during `dao.New()`.
-- `pkg/sql/provider/` reads the registry and creates `EntityTable` instances on demand.
+- `pkg/entity/` imports only the standard library (`reflect`, `sort`, `sync`, `time`).
+- `pkg/dao/` registers the entity type at the end of `dao.New()`, through `entity.Global().Register`. The registration error is discarded: registering the same name with the same struct type is a no-op, and registering it with a different struct type leaves the first registration in place.
+- `pkg/sql/provider/` reads the registry in `Database.GetTableInsensitive` and `Database.GetTableNames` and creates an `EntityTable` on each lookup.
 
-### Layer Separation
+The registry is `entity.Global()`, a variable of the process. An entity becomes a SQL table only for the SQL provider running in the process that called `dao.New()`, such as an embedded node; a DAO built in a client process registers nothing on a remote server. The `qrdbd` daemon registers one entity type itself, `bridge_users` (`cmd/qrdbd/test_entities.go`), for its end-to-end tests.
 
-| Layer | Interface | Overhead |
-|-------|-----------|----------|
-| 0 | `kvSvc.Put/Get` | Direct Raft. No entity layer. |
-| 1 | `dao.Save/Get` | Codec + KVStore. Registers entity. |
-| 2 | `dao.Find().Where()` | Planner + indexes. |
-| 3 | SQL `EntityTable` | Reads same data via KVServicer. Same indexes. |
-| 4 | SQL `kv` / collections | Raw KV and schemaless collections. Unchanged. |
+### Layers
+
+| Layer | Interface | Path |
+|-------|-----------|------|
+| 0 | KV service `Put`/`Get` | Raft-backed KV. No entity layer. |
+| 1 | `dao.Save`/`dao.Get` | Codec + KVStore. |
+| 2 | `dao.Find().Where()` | Query planner + indexes. |
+| 3 | SQL `EntityTable` | Same data through the KV service. Same indexes. |
+| 4 | SQL `kv` / collections | Raw KV and schemaless collections. |
 
 ## Usage
 
@@ -62,7 +64,7 @@ users, _ := userDAO.Find(ctx).Where("Email = ?", "alice@example.com").First()
 
 ### Same data via SQL
 
-After `dao.New()` registers the entity, the `users` table appears automatically in SQL:
+Once `dao.New()` has registered the entity, the `users` table is visible to SQL in the same process:
 
 ```sql
 -- Read data written by DAO
@@ -74,7 +76,7 @@ INSERT INTO users (_id, name, email, age) VALUES (456, 'Bob', 'bob@example.com',
 -- Stored in same format, visible to both DAO and SQL
 ```
 
-## Type Mapping
+## Schema and Type Mapping
 
 | Go Type | SQL Type |
 |---------|----------|
@@ -85,13 +87,13 @@ INSERT INTO users (_id, name, email, age) VALUES (456, 'Bob', 'bob@example.com',
 | `bool` | `BOOLEAN` |
 | `[]byte` | `BLOB` |
 | `time.Time` | `DATETIME` |
-| `map`, `struct` | `JSON` |
+| other slices, `map`, `struct` | `JSON` |
 
-The `_id` column is always `BIGINT UNSIGNED PRIMARY KEY NOT NULL`, mapped to `EntityID()`.
+The `_id` column is always `BIGINT UNSIGNED PRIMARY KEY NOT NULL`, mapped to `EntityID()`. The primary-key field itself is not a separate column; the remaining fields follow `_id` as nullable columns named by their JSON names, in alphabetical order (`buildEntitySchema`). A field that holds a `dao.SecretBytes` is never a column, and the DAO refuses an index on one.
 
 ## Index Sharing
 
-Indexes declared via struct tags (`index:"true"`, `index:"unique"`) are registered by the DAO at the engine level. The SQL query planner uses these same indexes for WHERE clause acceleration:
+Indexes declared via struct tags (`index:"true"`, `index:"unique"`) are registered by the DAO at the engine level. `EntityTable.GetIndexes` reports the same indexes to the SQL planner from the registration's `Indexed` and `Unique` flags:
 
 ```go
 type Product struct {
@@ -111,12 +113,12 @@ SELECT * FROM products WHERE sku = 'ABC-123';
 
 ## Codec Handling
 
-The dual-codec architecture is preserved:
+Two codec layers apply:
 
-- **DAO layer** (`dao.Codec[E]`): Entity-level serialization selected per-DAO via `dao.WithCodec()`.
-- **Service layer** (`codec.Manager`): Storage and wire transcoding, configured per-service.
+- **DAO layer** (`dao.Codec[E]`): entity-level serialization selected per DAO via `dao.WithCodec()`.
+- **Service layer** (`codec.Manager`): storage and wire transcoding, configured per service.
 
-The `EntityTable` uses closure injection to serialize/deserialize entities with the exact same codec the DAO uses — without importing the codec library directly:
+The registration carries `MarshalFunc` and `UnmarshalFunc` closures over the DAO's codec, so `EntityTable` encodes and decodes entities with the codec the DAO uses without importing a codec package:
 
 ```go
 // JSON (default)
@@ -129,31 +131,33 @@ userDAO, _ := dao.New[*User](kvStore, "users", newUser, dao.WithCodec(dao.CodecM
 userDAO, _ := dao.New[*User](kvStore, "users", newUser, dao.WithCodec(dao.CodecCBOR))
 ```
 
-In all cases, `SELECT * FROM users` works identically — the EntityTable calls the same marshal/unmarshal functions the DAO captured at registration time.
+In each case `SELECT * FROM users` decodes rows with the marshal and unmarshal functions the DAO captured at registration.
 
 ### Supported Codecs
 
-All codecs supported by `go-codec` work transparently:
+`dao.NewCodec` accepts a codec only when `go-codec` reports it compiled in, and each `go-codec` codec is behind its own build tag. `make print-build-tags` prints the default set.
 
-| Codec | Build Tag | Format |
-|-------|-----------|--------|
-| JSON | (always available) | Human-readable |
-| YAML | (always available) | Human-readable |
-| TOML | (always available) | Human-readable |
-| MsgPack | (always available) | Binary, compact |
-| BSON | (always available) | Binary, MongoDB-compatible |
-| CBOR | `codec_cbor` | Binary, IoT-friendly |
-| ProtoBuf | `codec_protobuf` | Binary, schema-based |
+| Codec | Build Tag | In default `BUILD_TAGS` | Format |
+|-------|-----------|-------------------------|--------|
+| JSON | `codec_json` | yes | Human-readable |
+| YAML | `codec_yaml` | yes | Human-readable |
+| TOML | `codec_toml` | no | Human-readable |
+| MsgPack | `codec_msgpack` | yes | Binary |
+| BSON | `codec_bson` | yes | Binary, MongoDB-compatible |
+| CBOR | `codec_cbor` | no | Binary |
+| ProtoBuf | `codec_protobuf` | yes | Binary, schema-based |
+
+`dao.New` refuses `dao.CodecProtoBuf` with a `CodecCreationError`: a ProtoBuf codec comes from `dao.NewProtoBufCodec[E]()`, which `dao.New` does not take, so a ProtoBuf entity has no SQL table.
 
 ## Entity Registry
 
-The entity registry (`pkg/entity/`) is a thread-safe global singleton:
+The entity registry (`pkg/entity/`) is a process-wide, thread-safe singleton keyed by entity type name:
 
 ```go
 // Accessed by both DAO and SQL provider
 registry := entity.Global()
 
-// Registration happens automatically in dao.New()
+// dao.New() registers the entity type
 reg, ok := registry.Get("users")
 
 // List all registered entities
@@ -165,10 +169,11 @@ dbEntities := registry.ListForDatabase("myapp")
 
 ### Registration Fields
 
-Each registration contains:
+Each `entity.Registration` contains:
 - `EntityType` — table name (e.g., `"users"`)
 - `StructType` — `reflect.Type` for schema derivation
 - `Fields` — ordered `FieldMeta` with type info, index flags, PK designation
+- `IDFieldJSON` / `IDFieldGo` — JSON and Go names of the primary-key field
 - `MarshalFunc` / `UnmarshalFunc` — closures capturing the DAO codec
 - `NewFunc` — factory for creating zero-value entities
 - `Database` — optional database scope
@@ -176,10 +181,14 @@ Each registration contains:
 
 ## Database Scoping
 
-Entities can be scoped to a specific database:
+A DAO can record a database scope:
 
 ```go
 userDAO, _ := dao.New[*User](kvStore, "users", newUser, dao.WithDatabase("myapp"))
 ```
 
-The entity appears as the `users` table in the `myapp` database. Without `WithDatabase`, entities appear in all databases (legacy mode).
+`dao.WithDatabase` qualifies the DAO's index names (`myapp.users.Email`) and sets the registration's `Database` field. Because the registry is keyed by entity type name alone, one process holds one registration per name whatever its database, and the scope affects listing only:
+
+- `GetTableNames` lists an entity in the database it is scoped to. An entity registered without a database is listed in every database.
+- `GetTableInsensitive` looks the lower-cased table name up in the registry without checking the scope, so a scoped entity resolves as a table from any database, including those that do not list it. A built-in table of the same name wins over the entity, and the entity wins over a relational table of the same name.
+- The lookup lower-cases the name and the registry key is exact, so an entity type registered with upper-case letters is listed but does not resolve.

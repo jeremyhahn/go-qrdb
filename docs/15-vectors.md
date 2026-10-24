@@ -1,6 +1,6 @@
 # Vector Database
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -67,11 +67,10 @@ vectors, and sealing it does not fail its vector operations closed (see
 
 ### Auto-Provisioning for RAG
 
-When a RAG ingest request is processed, a tenant-scoped vector namespace is
-automatically provisioned (if not already present) with sensible defaults
-(dimension from the embedding model, cosine distance metric, HNSW index).
-This avoids requiring explicit namespace pre-creation and ensures RAG
-documents are stored in the requesting tenant's isolated namespace.
+A RAG ingest creates its tenant-scoped vector namespace if it is absent
+(`VectorStoreAdapter.EnsureNamespace`, `pkg/service/rag_adapters.go`): dimension
+from the embedding model, cosine distance unless another metric is given, HNSW
+index. An existing namespace is not an error.
 
 ## Service Interface
 
@@ -290,15 +289,11 @@ Binary encoding for upsert (`EncodeVectorUpsert`):
 | QUIC     | `pkg/api/quic/handlers_vector.go`    |
 | MCP      | `pkg/api/mcp/tools_vector.go`        |
 
-All API handlers delegate to the `VectorService` interface following the
-project's service-layer abstraction pattern.
+All API handlers delegate to the `VectorService` interface.
 
 ## CLI Commands
 
 Source: `cmd/qrdb/vector_enabled.go`
-
-The CLI uses map-based dispatch tables for distance metric, index type,
-and consistency level parsing.
 
 ### Namespace Management
 
@@ -498,9 +493,6 @@ Source: `pkg/service/vector_errors.go`
 | `*VectorJobNotFoundError` | Named rebuild or compaction job does not exist      |
 | `*VectorOperationError`   | Storage or index fault, not the caller's            |
 | `*VectorServiceClosedError` | Service or its storage is closed                  |
-
-All error types are struct types with `Error() string` methods, following
-the project convention of typed errors only (no `fmt.Errorf`).
 
 ```go
 type DimensionMismatchError struct {

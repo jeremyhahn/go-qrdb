@@ -521,7 +521,7 @@ func TestKVLease_DiskRestartRestore(t *testing.T) {
 	root := t.TempDir()
 	factory := newStorageFactory(StorageConfig{Root: root})
 
-	first := newDiskAdapter(factory(1, 1))
+	first := newDiskAdapter(mustOpenStorage(t, factory, 1, 1))
 	if _, err := first.Open(ctx, "", nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestKVLease_DiskRestartRestore(t *testing.T) {
 	}
 
 	lr := lease.NewLessor()
-	second := newDiskAdapter(factory(1, 1), WithKVLessor(lr))
+	second := newDiskAdapter(mustOpenStorage(t, factory, 1, 1), WithKVLessor(lr))
 	t.Cleanup(func() { _ = second.Close(ctx) })
 	idx, err := second.Open(ctx, "", nil)
 	if err != nil || idx != 2 {
@@ -646,7 +646,7 @@ func TestKVLease_DiskRestartJudgesTheCheckpoint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			factory := newStorageFactory(StorageConfig{Root: t.TempDir()})
-			first := newDiskAdapter(factory(1, 1), WithKVLessor(lease.NewLessor()))
+			first := newDiskAdapter(mustOpenStorage(t, factory, 1, 1), WithKVLessor(lease.NewLessor()))
 			if _, err := first.Open(ctx, "", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -658,7 +658,7 @@ func TestKVLease_DiskRestartJudgesTheCheckpoint(t *testing.T) {
 			}
 
 			lr := lease.NewLessor()
-			second := newDiskAdapter(factory(1, 1), WithKVLessor(lr))
+			second := newDiskAdapter(mustOpenStorage(t, factory, 1, 1), WithKVLessor(lr))
 			t.Cleanup(func() { _ = second.Close(ctx) })
 			if _, err := second.Open(ctx, "", nil); err != nil {
 				t.Fatal(err)
@@ -732,7 +732,7 @@ func TestKVLease_NewStateMachineResetsTheLessor(t *testing.T) {
 		"concurrent": func() interface{} { return NewKVConcurrentCreateFunc(WithKVLessor(lr))(1, 1) },
 		"highperf":   func() interface{} { return NewKVHighPerfCreateFunc(nil, WithKVLessor(lr))(1, 1) },
 		"fast": func() interface{} {
-			return NewKVFastCreateFunc(func(_, _ uint64) storage.Storage { return memstore.NewStorage() }, WithKVLessor(lr))(1, 1)
+			return NewKVFastCreateFunc(func(_, _ uint64) (storage.Storage, error) { return memstore.NewStorage(), nil }, WithKVLessor(lr))(1, 1)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

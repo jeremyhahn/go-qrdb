@@ -1,6 +1,6 @@
 # Security Officer dual-factor (SO PIN)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 The SO dual-factor gate adds an in-band Security Officer PIN as a
@@ -258,9 +258,11 @@ forwarding, when configured, sits between it and the router:
 CORS → scope → sealed-window → auth → SO dual-factor → replica forwarding → router
 ```
 
-Interaction with the sealed window: the SO-gated operations that are
-also on the sealed-window allowlist (e.g. `/v1/barrier/shamir/initialize`,
-`/v1/ceremony/initialize`) remain reachable while sealed, and with the
-flag enabled they then require the SO PIN — the sealed-window
-middleware never bypasses the SO gate because it sits further out in
-the chain.
+Interaction with the sealed window: while the node barrier is sealed, every
+request takes the boot-time listener's path over the raw router, with no
+authentication and no SO gate (see
+[sealed-window.md](sealed-window.md#auth-model-during-the-sealed-window)). The
+SO-gated verbs on the sealed-window allowlist (`shamir-initialize`,
+`ceremony-initialize`, `ceremony-sign-csr`) are first-boot verbs, served there
+only while enrollment is open; `CeremonySignCSR` still checks the request's own
+`so_pin`.

@@ -49,7 +49,7 @@ func TestQUICRoundTrip_DatabaseHolders(t *testing.T) {
 	}
 	t.Cleanup(srv.Stop)
 
-	tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(clientCfg), transport.WithTimeout(5*time.Second))
+	tr, err := New(transport.WithAddress(srv.Addr()), transport.WithTLSConfig(clientCfg), transport.WithTimeout(dbholdertest.RequestTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

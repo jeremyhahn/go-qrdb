@@ -1,6 +1,6 @@
 # Full-Text Search — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 **No CLI surface.** Full-text search has no `qrdb` verb group. It is reachable
@@ -12,7 +12,7 @@ The only CLI-visible trace of the feature is capability reporting:
 qrdb admin capabilities
 ```
 
-which lists `fts` when the daemon was built with `WITH_QRDB_FTS=1`.
+whose `fts` row reads `true` when the daemon was built with `WITH_QRDB_FTS=1`.
 
 This is a gap rather than a design decision. Under the repo's export obligation
 a capability with no SDK surface is not shippable, and a CLI surface follows the

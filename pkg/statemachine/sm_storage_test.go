@@ -32,11 +32,11 @@ import (
 func TestNewStorageFactory_SelectsBackend(t *testing.T) {
 	root := t.TempDir()
 
-	if _, ok := newStorageFactory(StorageConfig{Root: root, Kind: "memory"})(1, 1).(*memstore.MemoryStorage); !ok {
+	if _, ok := mustOpenStorage(t, newStorageFactory(StorageConfig{Root: root, Kind: "memory"}), 1, 1).(*memstore.MemoryStorage); !ok {
 		t.Fatal("sm_storage memory must compose the memory backend")
 	}
 
-	stg := newStorageFactory(StorageConfig{Root: root, Kind: "file"})(2, 3)
+	stg := mustOpenStorage(t, newStorageFactory(StorageConfig{Root: root, Kind: "file"}), 2, 3)
 	if _, ok := stg.(*filestore.Engine); !ok {
 		t.Fatalf("sm_storage file must compose the file backend, got %T", stg)
 	}
@@ -121,13 +121,13 @@ func TestDiskAdapter_RestartResumesOverFileStorage(t *testing.T) {
 func TestNewStorageFactory_RestartReusesFilePath(t *testing.T) {
 	sc := StorageConfig{Root: t.TempDir(), Kind: "file"}
 
-	s1 := newStorageFactory(sc)(7, 1)
+	s1 := mustOpenStorage(t, newStorageFactory(sc), 7, 1)
 	if err := s1.Set([]byte("survivor"), []byte("yes")); err != nil {
 		t.Fatal(err)
 	}
 	_ = s1.Close()
 
-	s2 := newStorageFactory(sc)(7, 1)
+	s2 := mustOpenStorage(t, newStorageFactory(sc), 7, 1)
 	defer func() { _ = s2.Close() }()
 	got, err := s2.Get([]byte("survivor"))
 	if err != nil || string(got) != "yes" {

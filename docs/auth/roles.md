@@ -1,6 +1,6 @@
 # FIPS 140-3 Role Model
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -125,7 +125,7 @@ authenticated quorum. See [../shamir-custody/](../shamir-custody/).
 A custodian is **not an RBAC role**, and there is no custodian role to assign.
 The holder role (`custodian` or `so`) is recorded in the holder roster at
 enrolment, by an Admin or a Security Officer (never by the holder), in the
-initialization ceremony or with `barrier officer register --role custodian`.
+initialization ceremony or with `qrdb barrier officer register --role custodian`.
 
 **Authentication:** a CA-issued holder certificate --
 `CN=<username>`, `OU=[<tenant>, <profile>]` with a holder profile
@@ -313,7 +313,7 @@ The go-qrdb role model extends the PKCS#11 two-role model (SO + User) to support
 
 The Auditor role exists at the qrdb application layer, not in PKCS#11; key custodians are share holders, not a role.
 
-## Mapping to Existing qrdb RBAC
+## Mapping to qrdb RBAC
 
 The five roles are built-in roles of qrdb's RBAC system (`pkg/role/`, `pkg/auth/rbac/`), with the grants listed under [Role Details](#role-details). Beyond those lists:
 
@@ -423,16 +423,16 @@ a FIPS build. See
 
 ### Role Bootstrap (Deterministic)
 
-On daemon initialization (`qrdbd start`), the five system roles are created deterministically and idempotently:
+On daemon initialization (`qrdbd start`), the five system roles are created deterministically and idempotently. Under the standard posture the `owner` role (`pkg/role.OwnerRole`) is created beside them; under strict separation of duties it is not stored:
 
 - Each role is assigned a fixed UUIDv8 (RFC 9562 §5.8) derived over SHA-256 from
   the fixed `"go-qrdb:role-namespace/v8/"` prefix plus the tenant ID and role
   name — `pkg/role.SystemRoleID(tenantID, roleName)`. See
   [identity-rbac/engineering.md](../identity-rbac/engineering.md#persistence)
   for the derivation rules.
-- All five roles are marked as **system roles** (undeletable)
+- Every built-in role is marked as a **system role** (undeletable)
 - Roles are persisted in the KV store at `__sys:roles/id/<id>` (Raft-replicated)
-- If roles already exist (restart scenario), the function returns immediately without duplication
+- A role that already exists (restart scenario) is tolerated, not duplicated
 
 See [bootstrap.md](../bootstrap.md) for the full bootstrap sequence.
 
