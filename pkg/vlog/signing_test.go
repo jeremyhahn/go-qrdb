@@ -23,7 +23,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"reflect"
 	"testing"
@@ -218,6 +221,50 @@ func TestCheckpointBody_IsTheC2SPForm(t *testing.T) {
 	got := string(CheckpointBody("db.example.com/log", 12, []byte{0xff, 0x00}))
 	if want := "db.example.com/log\n12\n/wA=\n"; got != want {
 		t.Fatalf("CheckpointBody = %q, want %q", got, want)
+	}
+}
+
+// TestKeyHash_Ed25519IsTheSpecExample checks the Ed25519 key ID against the
+// verifier key and signed note c2sp.org/signed-note gives as its example.
+func TestKeyHash_Ed25519IsTheSpecExample(t *testing.T) {
+	vkey, err := base64.StdEncoding.DecodeString("AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k")
+	if err != nil || len(vkey) != 1+ed25519.PublicKeySize || vkey[0] != 0x01 {
+		t.Fatalf("spec vkey = %x, %v", vkey, err)
+	}
+	pub := ed25519.PublicKey(vkey[1:])
+	got, err := KeyHash("example.com/foo", pub)
+	if err != nil || got != 0x530d903a {
+		t.Fatalf("KeyHash = %08x, %v, want 530d903a", got, err)
+	}
+	sig, err := base64.StdEncoding.DecodeString("Uw2QOkn8srV1yJGh2VYRlL1Tnagv1YEq6TfXppzi2ONncAlTgK7Ztg1ERYNZXsYjOBH3mFXmRKuwHjG1Yu72IneyaQM=")
+	if err != nil || binary.BigEndian.Uint32(sig) != got {
+		t.Fatalf("spec signature key ID = %x, %v, want %08x", sig[:4], err, got)
+	}
+	if !ed25519.Verify(pub, []byte("This is an example message.\n"), sig[4:]) {
+		t.Fatal("the spec example signature does not verify under the spec key")
+	}
+	if other, _ := KeyHash("example.com/bar", pub); other == got {
+		t.Fatal("the Ed25519 key ID does not commit to the key name")
+	}
+}
+
+// TestKeyHash_ECDSAIsTheSPKIHash checks the ECDSA key ID is the truncated
+// SHA-256 of the DER SPKI public key alone, as signature type 0x02 assigns.
+func TestKeyHash_ECDSAIsTheSPKIHash(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(der)
+	want := binary.BigEndian.Uint32(sum[:4])
+	for _, name := range []string{"example.com/foo", "example.com/bar"} {
+		if got, err := KeyHash(name, &key.PublicKey); err != nil || got != want {
+			t.Fatalf("KeyHash(%q) = %08x, %v, want %08x", name, got, err, want)
+		}
 	}
 }
 

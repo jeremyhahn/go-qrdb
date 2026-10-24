@@ -48,11 +48,24 @@ const (
 	SignatureECDSAP256SHA256 SignatureType = "ecdsa-p256-sha256"
 )
 
-// keyHashType is the signature type byte the key hash commits to:
-// c2sp.org/signed-note's 0x01 for Ed25519 and 0x02 for ECDSA.
-var keyHashType = map[SignatureType]byte{
-	SignatureEd25519:         0x01,
-	SignatureECDSAP256SHA256: 0x02,
+// keyHashes computes each signature type's c2sp.org/signed-note key ID, at
+// the revision docs/reference/c2sp-signed-note.md pins: for Ed25519 (type
+// 0x01) the SHA-256 of the key name, a newline, 0x01 and the 32-byte key; for
+// ECDSA (type 0x02) the SHA-256 of the DER SPKI public key alone.
+var keyHashes = map[SignatureType]func(name string, pub crypto.PublicKey) []byte{
+	SignatureEd25519: func(name string, pub crypto.PublicKey) []byte {
+		h := sha256.New()
+		h.Write([]byte(name))
+		h.Write([]byte{'\n', 0x01})
+		h.Write(pub.(ed25519.PublicKey))
+		return h.Sum(nil)
+	},
+	SignatureECDSAP256SHA256: func(_ string, pub crypto.PublicKey) []byte {
+		// A P-256 key always marshals.
+		der, _ := x509.MarshalPKIXPublicKey(pub)
+		sum := sha256.Sum256(der)
+		return sum[:]
+	},
 }
 
 // FirstKeyVersion is the version of the key a log is created with. Rotation
@@ -206,7 +219,7 @@ func DecodeSignedHead(b []byte) (SignedHead, error) {
 	if err := json.Unmarshal(b, &h); err != nil {
 		return SignedHead{}, &HeadSignatureError{Reason: "malformed signed head: " + err.Error()}
 	}
-	if _, ok := keyHashType[h.SignatureType]; !ok {
+	if _, ok := keyHashes[h.SignatureType]; !ok {
 		return SignedHead{}, &UnsupportedKeyTypeError{Type: string(h.SignatureType)}
 	}
 	return h, nil
@@ -277,7 +290,7 @@ type HeadSignerRequest struct {
 // signature with s.Public before returning the head.
 func SignHead(ctx context.Context, s HeadSigner, origin string, size uint64, root []byte) (SignedHead, error) {
 	t := s.SignatureType()
-	if _, ok := keyHashType[t]; !ok {
+	if _, ok := keyHashes[t]; !ok {
 		return SignedHead{}, &UnsupportedKeyTypeError{Type: string(t)}
 	}
 	sig, err := s.Sign(ctx, CheckpointBody(origin, size, root))
@@ -362,24 +375,14 @@ func NewSoftwareHeadSigner(name string, k SigningKey) (HeadSigner, error) {
 	return &softwareSigner{name: name, version: k.Version, typ: t, key: key, hash: hash}, nil
 }
 
-// KeyHash is the c2sp.org/signed-note key hash: the first four bytes of
-// SHA-256 over the key name, a newline, the signature type byte and the
-// public key (raw for Ed25519, PKIX DER for ECDSA).
+// KeyHash is the c2sp.org/signed-note key ID of pub under name: the first
+// four bytes, big-endian, of the hash keyHashes assigns its signature type.
 func KeyHash(name string, pub crypto.PublicKey) (uint32, error) {
 	t, err := publicSignatureType(pub)
 	if err != nil {
 		return 0, err
 	}
-	raw, ok := pub.(ed25519.PublicKey)
-	if !ok {
-		// A P-256 key always marshals.
-		raw, _ = x509.MarshalPKIXPublicKey(pub)
-	}
-	h := sha256.New()
-	h.Write([]byte(name))
-	h.Write([]byte{'\n', keyHashType[t]})
-	h.Write(raw)
-	return binary.BigEndian.Uint32(h.Sum(nil)), nil
+	return binary.BigEndian.Uint32(keyHashes[t](name, pub)), nil
 }
 
 func (s *softwareSigner) Name() string                 { return s.name }

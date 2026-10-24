@@ -1213,7 +1213,8 @@ Each choice is kept with the alternatives not taken and the reason each lost.
    RFC 6962 `SignedTreeHead` structure (binary, not witnessable by the note
    ecosystem, superseded by RFC 9162) and a go-qrdb format (nothing would verify
    it). A non-Ed25519 owner key signs ECDSA P-256 with SHA-256, the other
-   RFC 9162 type ([Open questions](#open-questions), ruled (b)).
+   RFC 9162 type and signed-note type `0x02`
+   ([Open questions](#open-questions), ruled (b)).
 3. **Hashing at apply** (§4): the tree is always current and atomic with the
    entry, with one proposal per append and about two SHA-256 and two record
    writes per entry. Not taken: an integrator proposing tree hashes after commit
@@ -1375,7 +1376,11 @@ kept for its record.
    *Ruled (b), restricted to RFC 9162's types:* a head is signed Ed25519 (the
    default) or ECDSA P-256 with SHA-256, and carries its signature type and
    key version; any other key type is refused (§6). Rotation appends
-   `k/<version+1>` in one proposal (§5).
+   `k/<version+1>` in one proposal (§5). c2sp.org/signed-note, at the
+   revision [docs/reference](../reference/README.md) pins, assigns ECDSA
+   signature type `0x02` and defines its key ID as the first four bytes of the
+   SHA-256 of the DER SPKI public key, without the key name; an Ed25519 key ID
+   is type `0x01`'s hash over the name, a newline, `0x01` and the key.
    *Context:* the checkpoint is a C2SP signed-note (§9, decision 2), and
    `golang.org/x/mod/sumdb/note` defines only the Ed25519 type. Because the seam
    leaves the signature type and its encoding to the signer (§6), go-qrdb's
