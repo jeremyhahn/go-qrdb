@@ -61,6 +61,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **credentials** — named credentials, versioned rotation — [docs/credentials/](docs/credentials/) — done
 - **key-wrapping** — the KEK provider seam, backup envelopes — [docs/key-wrapping/](docs/key-wrapping/) — done
 - **tenant-dek** — the per-tenant DEK keyring — [docs/tenant-dek/](docs/tenant-dek/) — done
+- **hardware-crypto-seams** — every key, signing and encryption need is a composer-supplied seam with a software default — [#912](../../issues/912) — done
 - **identity-rbac** — users, roles, the RBAC PDP — [docs/identity-rbac/](docs/identity-rbac/) — done
 - **identity-hydrator** — `WithIdentityHydrator`; the login Subject is the immutable user id — [#670](../../issues/670) — done
 - **embedded-explicit-identity** — `Node.ServiceContext` and `Node.DelegatedContext`: an embedded call carries an explicitly presented identity, a tenant delegation verified on every call — [#873](../../issues/873) — done
