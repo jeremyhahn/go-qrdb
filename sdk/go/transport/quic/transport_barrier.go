@@ -295,6 +295,12 @@ func (t *Transport) callPB(ctx context.Context, method string, in, out proto.Mes
 }
 
 // registerHolder enrols a holder through method.
+// nilBarrierRequest is the typed error a barrier holder method returns for a
+// nil request, before any round trip.
+func nilBarrierRequest(method string) error {
+	return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
+}
+
 func (t *Transport) registerHolder(ctx context.Context, method string, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	in, err := holderconv.RegisterToPB(req)
 	if err != nil {
@@ -309,11 +315,17 @@ func (t *Transport) registerHolder(ctx context.Context, method string, req *tran
 
 // OfficerRegister enrols a share holder of the unseal key.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("OfficerRegister")
+	}
 	return t.registerHolder(ctx, "barrier.OfficerRegister", req)
 }
 
 // RecoveryOfficerRegister enrols a holder of the recovery key.
 func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryOfficerRegister")
+	}
 	return t.registerHolder(ctx, "barrier.RecoveryOfficerRegister", req)
 }
 
@@ -347,26 +359,41 @@ func (t *Transport) claimComplete(ctx context.Context, method string, req *trans
 
 // ShareClaimBegin issues a claim nonce to an unseal-key holder.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("ShareClaimBegin")
+	}
 	return t.claimBegin(ctx, "barrier.ShareClaimBegin", req)
 }
 
 // ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("ShareClaimComplete")
+	}
 	return t.claimComplete(ctx, "barrier.ShareClaimComplete", req)
 }
 
 // RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryShareClaimBegin")
+	}
 	return t.claimBegin(ctx, "barrier.RecoveryShareClaimBegin", req)
 }
 
 // RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryShareClaimComplete")
+	}
 	return t.claimComplete(ctx, "barrier.RecoveryShareClaimComplete", req)
 }
 
 // BarrierQuorumBegin issues the factor challenge a holder answers.
 func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.QuorumBeginRequest) (*transport.QuorumChallenge, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierQuorumBegin")
+	}
 	var resp pb.BarrierQuorumChallenge
 	if err := t.callPB(ctx, "barrier.QuorumBegin", holderconv.BeginToPB(req), &resp); err != nil {
 		return nil, err
@@ -376,6 +403,9 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 
 // BarrierQuorumSubmit submits one authenticated holder's share.
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierQuorumSubmit")
+	}
 	var resp pb.BarrierQuorumOutcome
 	if err := t.callPB(ctx, "barrier.QuorumSubmit", holderconv.SubmitToPB(req), &resp); err != nil {
 		return nil, err
@@ -402,6 +432,9 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 
 // BarrierOfficerRevoke revokes a holder through a quorum-gated rekey.
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierOfficerRevoke")
+	}
 	// The SO PIN travels in the request's own so_pin field; it comes from the
 	// PIN bound by transport.WithSOPIN when the request carries none.
 	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierOfficerRevoke", req.SOPin)
