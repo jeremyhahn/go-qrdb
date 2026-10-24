@@ -21,6 +21,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
+// vlog.NotCompiledError is an absent capability, not a fault. The assertion is
+// here because pkg/vlog cannot import this package.
+var _ CapabilityError = (*vlog.NotCompiledError)(nil)
+
 // ---------------------------------------------------------------------------
 // Verifiable log op code
 // ---------------------------------------------------------------------------

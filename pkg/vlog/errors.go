@@ -251,3 +251,21 @@ type HeadSignatureError struct {
 func (e *HeadSignatureError) Error() string {
 	return "vlog: signed head: " + e.Reason
 }
+
+// NotCompiledError reports that head signing was not built into this binary:
+// the software HeadSigner a build without qrdb_vlog stubs out refuses with it.
+// Its Capability method makes it a protocol.CapabilityError, an absent
+// capability rather than a fault; pkg/protocol imports this package, so the
+// compile-time assertion is in pkg/protocol/vlog.go.
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables head signing.
+func (e *NotCompiledError) Error() string {
+	return "vlog: head signing not compiled: build with -tags qrdb_vlog"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "vlog"
+}

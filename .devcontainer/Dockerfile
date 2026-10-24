@@ -406,7 +406,7 @@ COPY . .
 # docker_build_tags_test.go (test/buildgates) asserts this ARG's default
 # equals `make -s print-build-tags`'s output, so the two cannot drift apart
 # silently again.
-ARG QRDB_BUILD_TAGS="codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+ARG QRDB_BUILD_TAGS="codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
 
 # Build the binaries the stack runs, at image build time rather than at
 # container start.

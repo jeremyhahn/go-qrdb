@@ -1228,7 +1228,9 @@ Each choice is kept with the alternatives not taken and the reason each lost.
 5. **A build tag on the service and the transports:** `WITH_QRDB_VLOG ?= 1`,
    tag `qrdb_vlog`, like `WITH_QRDB_TS` and `WITH_QRDB_VECTOR`. Off removes the
    named-log service, its transport handlers, the SDK surface and the CLI, and
-   `admin capabilities` omits `vlog`. The engine core, the opcode's apply and the
+   `admin capabilities` omits `vlog`. The software HeadSigner provider
+   (`pkg/vlog/signing_software.go`) is behind the tag too; without it the stub
+   refuses every signer with `vlog.NotCompiledError`, an absent capability. The engine core, the opcode's apply and the
    audit instance are never tagged: the audit trail depends on them, and a
    replica must apply what its group commits whatever its build, so a binary
    built without the tag still advertises the gate.

@@ -15,7 +15,7 @@
 # baseline may RAISE numbers freely. A LOWERED number in review is the one
 # thing to question: it is a package whose coverage fell, being written down as
 # the new normal.
-# build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector raft
+# build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector qrdb_vlog raft
 github.com/jeremyhahn/go-qrdb/cmd/qrdb 91.11
 github.com/jeremyhahn/go-qrdb/cmd/qrdbd 91.19
 github.com/jeremyhahn/go-qrdb/pkg/api 99.88

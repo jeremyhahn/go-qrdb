@@ -374,7 +374,7 @@ env:
   # CUSTOMIZE (go-qrdb): exactly `make -s print-build-tags`, the default feature
   # set the coverage baseline was measured under (its `# build-tags:` line), in
   # the same order; the Makefile adopts it as BUILD_TAGS when it is set.
-  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
   # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
   # (here push to main and workflow_dispatch: no schedule, see `on:`), and a
   # PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
