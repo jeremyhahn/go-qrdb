@@ -41,10 +41,10 @@ package buildgates
 //     project on the runner;
 //   - a leg whose project name another leg or run shares, or that the reap
 //     step's prefix does not cover;
-//   - a leg that names its own integration image (#813): every leg of a run
-//     on one runner must reuse the Makefile's content-addressed one, `make -s
-//     it-image`, or each leg rebuilds it, and that name must sit under the
-//     reap step's prefix, which is what removes it.
+//   - a leg that runs any image but docker-build's it_ref (#813, DS-3516):
+//     every leg of a run pulls that one digest reference and holds it, never
+//     rebuilds it, and its repository must sit under the reap step's prefix,
+//     which is what removes it.
 //
 // That the gate goes red when one leg fails is ci_tiers_test.go's
 // TestCIGateScriptHonoursTheTiers: a matrix is one needs entry, and its
@@ -86,8 +86,8 @@ const (
 
 	// featureStep is the one test command each leg runs: the feature's
 	// features.mk selection, in the integration image, under the leg's
-	// project. It passes no IT_IMAGE: the Makefile's content-addressed name
-	// is the one every leg shares.
+	// project. The image is the job's IT_IMAGE, featureImageRef, which the
+	// Makefile reads from the environment.
 	featureStep = `make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"`
 
 	// featureTeardown is the leg's last step, run under always(): it removes
@@ -100,6 +100,14 @@ const (
 	// featureReapPrefix, so the reap step removes old integration images.
 	featureImageRepo = featureReapPrefix + "it"
 
+	// featureImageRef is every leg's IT_IMAGE (DS-3516): the digest reference
+	// docker-build pushed, one image for every leg of the run.
+	featureImageRef = "${{ needs.docker-build.outputs.it_ref }}"
+
+	// featurePull is the leg's step between the reap and the tests: it pulls
+	// featureImageRef by digest and holds it, and never builds (DS-3516).
+	featurePull = `scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"`
+
 	// featureLegFloor is a discovery floor: 40 features map files today, and
 	// a parse that finds fewer than this has found too little to check.
 	featureLegFloor = 30
@@ -110,6 +118,7 @@ type featureWorkflow struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
 		If             string            `yaml:"if"`
+		Needs          []string          `yaml:"needs"`
 		TimeoutMinutes *int              `yaml:"timeout-minutes"`
 		Env            map[string]string `yaml:"env"`
 		Strategy       struct {
@@ -177,13 +186,13 @@ func featureJobProblems(body []byte, want []string) []string {
 			conds = append(conds, strings.TrimSpace(s.If))
 		}
 	}
-	if !slices.Equal(runs, []string{featureReap, featureStep, featureTeardown}) {
+	if !slices.Equal(runs, []string{featureReap, featurePull, featureStep, featureTeardown}) {
 		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
-			"; want exactly `"+featureReap+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
-	} else if conds[0] != "" || conds[1] != "" || conds[2] != "always()" {
+			"; want exactly `"+featureReap+"`, `"+featurePull+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
+	} else if conds[0] != "" || conds[1] != "" || conds[2] != "" || conds[3] != "always()" {
 		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
-			"; want the reap and the tests unconditional and the teardown under always(), "+
-			"so a failed or cancelled leg still removes its stack")
+			"; want the reap, the pull and the tests unconditional and the teardown under always(), "+
+			"so a failed or cancelled leg still removes its stack and its hold")
 	}
 	// The project the steps pass must be this leg's alone: legs of one run,
 	// and runs sharing a daemon, would otherwise share a stack.
@@ -198,11 +207,15 @@ func featureJobProblems(body []byte, want []string) []string {
 				"; want it to carry "+part+", so no other leg or run shares it")
 		}
 	}
-	// The image is the opposite: one name for every leg of the run (#813).
-	if img, ok := job.Env["IT_IMAGE"]; ok {
+	// The image is the opposite: one image for every leg of the run (#813),
+	// the digest docker-build pushed (DS-3516).
+	if img := job.Env["IT_IMAGE"]; img != featureImageRef {
 		problems = append(problems, featureJob+" sets IT_IMAGE "+strconv.Quote(img)+
-			"; want none: a leg-chosen tag rebuilds the image on every leg, where the "+
-			"Makefile's content-addressed `make -s it-image` lets the legs on one runner build it once")
+			"; want "+strconv.Quote(featureImageRef)+": every leg runs the one image docker-build "+
+			"pushed, by digest, and a leg-chosen name would build or pull another")
+	}
+	if !slices.Contains(job.Needs, "docker-build") {
+		problems = append(problems, featureJob+" does not need docker-build: its IT_IMAGE output would be empty")
 	}
 	return problems
 }
@@ -410,7 +423,10 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 // image any container uses, in any state. buildx builds and tags
 // $STUB_IMAGE, so a build sets both times to now. A
 // $STUB_DIR/vanish file makes the next `create` find the image gone, as a
-// reaper running between docker-build-it's check and its hold would.
+// reaper running between docker-build-it's check and its hold would. A
+// registry-qualified name (<registry>/<owner>/<repo>:<tag> or
+// ...@sha256:<hex>) is a file in subdirectories, listed by `images --digests`
+// as the reaper's registry loop reads it.
 const holdDocker = `#!/bin/sh
 img=$STUB_DIR/images ctr=$STUB_DIR/containers
 mkdir -p "$img" "$ctr"
@@ -431,6 +447,14 @@ case "$1 $2" in
 	done
 	rm -f "$img/$3"; exit 0 ;;
 "images --filter") for i in "$img"/*; do [ -f "$i" ] && basename "$i"; done; exit 0 ;;
+"images --digests")
+	find "$img" -mindepth 2 -type f | while read -r f; do
+		ref=${f#"$img"/}
+		case $ref in
+		*@*) printf '%s <none> %s\n' "${ref%@*}" "${ref#*@}" ;;
+		*) printf '%s %s <none>\n' "${ref%:*}" "${ref##*:}" ;;
+		esac
+	done; exit 0 ;;
 "container inspect")
 	eval name=\${$#}
 	[ -f "$ctr/$name" ] || exit 1
@@ -551,6 +575,56 @@ func TestIntegrationFeatureCoverage_HeldImageSurvivesTheReaper(t *testing.T) {
 	}
 }
 
+// TestIntegrationFeatureCoverage_PulledImagesAreReaped pins the reaper's
+// registry loop (DS-3516): a CI image pulled by digest, or tagged by the
+// push, is reaped by the same age rule as a local one, never while a job's
+// hold uses it, and an image of another repository is not touched.
+func TestIntegrationFeatureCoverage_PulledImagesAreReaped(t *testing.T) {
+	root := repoRoot(t)
+	const reg, old = "db.example.com/jeremyhahn/", "2000-01-01T00:00:00Z"
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	now := time.Now().UTC()
+	held := reg + featureImageRepo + digest
+	images := []struct {
+		ref, tagged string
+		wantKept    bool
+	}{
+		{ref: held, tagged: neverTagged, wantKept: true},
+		{ref: reg + featureReapPrefix + "toolchain" + digest, tagged: neverTagged, wantKept: false},
+		{ref: reg + featureImageRepo + ":0123456789abcdef-pr", tagged: neverTagged, wantKept: false},
+		{ref: reg + featureReapPrefix + "toolchain:fedcba9876543210-main", tagged: strconv.FormatInt(now.Unix(), 10), wantKept: true},
+		{ref: reg + "other-it" + digest, tagged: neverTagged, wantKept: true},
+	}
+	stub := holdStub(t, featureImageRepo+":local", old, neverTagged)
+	for _, im := range images {
+		f := filepath.Join(stub, "images", filepath.FromSlash(im.ref))
+		if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+			t.Fatalf("mkdir stub image: %v", err)
+		}
+		if err := os.WriteFile(f, []byte(old+" "+im.tagged+"\n"), 0o600); err != nil {
+			t.Fatalf("seed stub image: %v", err)
+		}
+	}
+	ctr := filepath.Join(stub, "containers")
+	if err := os.MkdirAll(ctr, 0o700); err != nil {
+		t.Fatalf("mkdir stub containers: %v", err)
+	}
+	hold := filepath.Join(ctr, "qrdb-ci-hold-1-1-key-value")
+	if err := os.WriteFile(hold, []byte(held+"\n"+now.Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stub hold: %v", err)
+	}
+	reaped := runHoldStubAged(t, root, stub, featureImageRepo+":local", "3600", "scripts/reap-stale-ci-stacks.sh", featureReapPrefix)
+	for _, im := range images {
+		_, err := os.Stat(filepath.Join(stub, "images", filepath.FromSlash(im.ref)))
+		if (err == nil) != im.wantKept {
+			t.Fatalf("%s kept: %v; want %v:\n%s", im.ref, err == nil, im.wantKept, reaped)
+		}
+	}
+	if _, err := os.Stat(hold); err != nil {
+		t.Fatalf("the reaper removed a live job's hold:\n%s", reaped)
+	}
+}
+
 // TestIntegrationFeatureCoverage_DeadJobsHoldIsReaped: a job that died before
 // its teardown leaves its hold behind; the reaper removes the stale hold and
 // then, in the same pass, the image, so the disk stays bounded. A live job's
@@ -621,10 +695,11 @@ jobs:
   integration-features:
     name: Integration (${{ matrix.feature }})
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [build]
+    needs: [docker-build, arch-gates]
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}
     strategy:
       fail-fast: false
       matrix:
@@ -635,6 +710,8 @@ jobs:
         run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
+      - name: Pull the integration image
+        run: scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"
       - name: Integration tests (${{ matrix.feature }})
         run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
       - name: Tear down (${{ matrix.feature }})
@@ -687,10 +764,17 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"", new: "run: make docker-down-it"},
 		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
 		{name: "project shared by every leg", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
-		{name: "a per-leg image tag", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}\n"},
+		{name: "a per-leg image tag", old: "      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: "      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}\n"},
+		{name: "the toolchain image", old: "outputs.it_ref }}", new: "outputs.toolchain_ref }}"},
+		{name: "no image", old: "      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: ""},
+		{name: "docker-build not needed", old: "needs: [docker-build, arch-gates]", new: "needs: [arch-gates]"},
+		{name: "no pull", old: "      - name: Pull the integration image\n        run: scripts/ci-registry.sh pull \"$IT_IMAGE\" \"$IT_HOLD\"\n", new: ""},
+		{name: "a rebuild in place of the pull", old: "run: scripts/ci-registry.sh pull \"$IT_IMAGE\" \"$IT_HOLD\"", new: "run: docker image inspect \"$IT_IMAGE\" || make docker-build-it"},
+		{name: "a pull with no hold", old: "pull \"$IT_IMAGE\" \"$IT_HOLD\"", new: "pull \"$IT_IMAGE\""},
+		{name: "pull made conditional", old: "      - name: Pull the integration image\n", new: "      - name: Pull the integration image\n        if: always()\n"},
 		{name: "project shared by every attempt", old: "qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-${{ github.run_id }}-"},
 		{name: "project outside the reaped prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},
-		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
+		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},

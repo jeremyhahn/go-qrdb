@@ -150,6 +150,35 @@ for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Reposit
   if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
 done
 
+# CUSTOMIZE (go-qrdb, DS-3516): the CI images pulled from the Gitea registry
+# are <registry>/<owner>/<prefix>it and <registry>/<owner>/<prefix>toolchain,
+# named by tag on the host that pushed them and by digest alone where a job
+# pulled them. The same age rule applies to each name, and `docker image rm`
+# refuses an image a job's hold (a created, never-started container) uses. A
+# pull by digest records no tag time, so an unheld pulled image ages from its
+# build; a job holds what it pulls, and its pull retries if a reap wins the
+# race between the two.
+while read -r repo tag digest; do
+  case $repo in */"${prefix}it" | */"${prefix}toolchain") ;; *) continue ;; esac
+  refs=()
+  [ "$tag" = '<none>' ] || refs+=("$repo:$tag")
+  [ "$digest" = '<none>' ] || refs+=("$repo@$digest")
+  [ "${#refs[@]}" -gt 0 ] || continue
+  read -r created tagged < <(docker image inspect -f '{{.Created}} {{.Metadata.LastTagTime.Unix}}' "${refs[0]}" 2>/dev/null) || continue
+  t=$(date -d "$created" +%s 2>/dev/null) || continue
+  case $tagged in ''|*[!0-9]*) ;; *) [ "$tagged" -le "$t" ] || t=$tagged ;; esac
+  if [ $((now - t)) -lt "$image_min_age" ]; then
+    echo "keep  image ${refs[0]} (created or tagged within ${image_min_age}s)"
+    continue
+  fi
+  for ref in "${refs[@]}"; do
+    # Removing the tag can remove the image, and its digest name with it.
+    docker image inspect "$ref" >/dev/null 2>&1 || continue
+    echo "reap  image $ref"
+    if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
+  done
+done < <(docker images --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}')
+
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi
 echo "reaper: $reaped compose project(s) and $images image(s) $done_as for prefix '$prefix'"
 exit 0

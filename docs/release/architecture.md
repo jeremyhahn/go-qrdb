@@ -209,15 +209,25 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
-which builds the devcontainer images in about two minutes, and
-`test-typescript` and `arch-gates`. They run beside `lint` and `image`, which
-need `docker-build` too and run, side by side in those images, the lint stages
+which builds the devcontainer images in about two minutes and pushes them to
+the Gitea registry, derived from `github.server_url`, and `test-typescript`
+and `arch-gates`. They run beside `lint` and `image`, which need
+`docker-build` too and run, side by side in those images, the lint stages
 (`lint`) and the build, every unit suite and, in the full tier, the security
 stages (`image`), so the long legs wait for neither. A full-tier run whose
 `lint` or `image` job fails still runs
 the legs, and `ci-gate`, which needs every job, fails on that result; a run
 whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
 legs `skipped`, which `ci-gate` fails as well.
+
+Every job that runs a stage in an image (`lint`, `image`, `fips`, the
+`integration-features` legs and `soak`) pulls the exact digest `docker-build`
+pushed, its `toolchain_ref` or `it_ref` output, and runs its stages on that
+reference (DS-3516). None builds an image or falls back to one: a consumer
+that cannot pull, after 3 attempts with a bounded backoff, fails. A consumer
+runs on any runner, with no affinity to `docker-build`'s host.
+`test/buildgates/ci_image_digest_test.go` holds every consumer to a `@sha256:`
+pull (engineering.md, "The CI image").
 
 The stages are two jobs, not the ci-template's one image job, because together
 they outlast one job's 90-minute limit on a loaded runner: `lint` with
@@ -248,8 +258,9 @@ runs both sweeps again before a tag. The integration legs run without
 A pull request whose every changed file is markdown or under `docs/`
 (`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
 `changes`, `docker-build`, `lint`, `arch-gates` and `ci-gate`.
-`docker-build` builds the toolchain image alone: no job of a docs-only run
-uses the integration image, so it builds none and takes no hold on one.
+`docker-build` builds and pushes the toolchain image alone: no job of a
+docs-only run uses the integration image, so it builds none and outputs an
+empty `it_ref`.
 `lint` runs `make lint` and `make lint-gates`.
 `arch-gates` runs `make check-public-releasable`, which scans the whole
 tracked tree, docs included, and skips its two code-only steps (the
@@ -284,7 +295,8 @@ with `ci.yml`, whose dispatch also runs the soak.
 
 `lint` and `image` run every stage of the handbook CI standard
 (`ci-standard.md`) in the one image built from
-`build/docker/devcontainer/Dockerfile` at the commit under test: `lint` the
+`build/docker/devcontainer/Dockerfile` at the commit under test, once, by
+`docker-build`, and pulled by digest: `lint` the
 lint, the lint gates and, on `main` and a dispatch, the lint sweeps; `image`
 the server and headless CLI build and the linux/arm64 release cross-build,
 `make coverage` with the other unit suites and `test-sdk`, and, in the full
@@ -311,8 +323,9 @@ the job once and reads its aggregate result, which is `failure` when any leg
 fails. `integration-standalone` runs the Docker `test/integration/api`
 suites on the `.devcontainer/` image.
 
-`test/buildgates/ci_tiers_test.go` and
-`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the gate, the
+`test/buildgates/ci_tiers_test.go`,
+`test/buildgates/ci_image_digest_test.go` and
+`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the image pulls, the gate, the
 triggers and the per-feature legs together; see engineering.md.
 
 ## Rejected alternatives

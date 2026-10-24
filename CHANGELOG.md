@@ -32,6 +32,16 @@ are not reconstructed here — their history is in the git log.
 - **The `sdk/go` index re-exports are `ServiceIndexServicer` and
   `NewServiceIndexService`** (#928), in the `ServiceBatchServicer` family;
   `sdk.IndexServicer` and `sdk.NewIndexService` are removed.
+- **CI builds its images once per run and every job pulls them by digest**
+  (DS-3516): `docker-build` pushes the toolchain and integration images to the
+  Gitea registry, derived from `github.server_url`, as `qrdb-ci-toolchain` and
+  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
+  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
+  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
+  rather than rebuild when they cannot. `make integration-test` given a digest
+  `IT_IMAGE` requires the pulled image instead of building it, and the
+  reaper removes stale pulled images. `test/buildgates/ci_image_digest_test.go`
+  holds every consumer to the pull.
 
 ## [0.54.0-alpha] - 2026-10-23
 
