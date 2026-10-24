@@ -18,9 +18,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
@@ -336,5 +339,21 @@ func TestWithAllInjections_Compose(t *testing.T) {
 		t.Fatal("pinBackend clobbered by other options, or stored without the SO PIN lockout")
 	case srv.opts.factorRegistry != factors:
 		t.Fatal("factorRegistry clobbered by other options")
+	}
+}
+
+// TestResolveCryptoOptions_SOAuthenticator proves the WithSOAuthenticator
+// value reaches the node builders, which attach it to tenant create
+// (go-qrdb#1042), and that none is surfaced when none was given.
+func TestResolveCryptoOptions_SOAuthenticator(t *testing.T) {
+	a, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewSOAuthenticator: %v", err)
+	}
+	if got := ResolveCryptoOptions(WithSOAuthenticator(a)).SOAuthenticator; got != a {
+		t.Fatalf("ResolveCryptoOptions(WithSOAuthenticator).SOAuthenticator = %p, want %p", got, a)
+	}
+	if got := ResolveCryptoOptions().SOAuthenticator; got != nil {
+		t.Fatalf("ResolveCryptoOptions().SOAuthenticator = %p, want nil", got)
 	}
 }

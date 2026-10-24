@@ -4666,6 +4666,11 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if svcNode.TenantOnboarding != nil {
 		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
+	// The SO PIN store the SO gate verifies against is the one tenant create
+	// commits a tenant SO's PIN to, as cmd/qrdbd wires it.
+	if pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator; pins != nil {
+		svcNode.AttachSOPINs(pins)
+	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))
 	}

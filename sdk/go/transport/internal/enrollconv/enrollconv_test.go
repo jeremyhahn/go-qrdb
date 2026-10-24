@@ -235,6 +235,38 @@ func TestTenantCreateRequest(t *testing.T) {
 	}
 }
 
+func TestTenantCreateRequest_SOFields(t *testing.T) {
+	got := TenantCreateRequest(&transport.CreateTenantRequest{
+		ID: "t1", AdminUsername: "admin", AdminCSRPEM: "admin-csr",
+		SOUsername: "so", SOCSRPEM: "so-csr", SOCertPEM: "so-cert", SOChainPEM: "so-chain", SOPin: "so-pin",
+	})
+	if got.GetSoUsername() != "so" || got.GetSoCsrPem() != "so-csr" || got.GetSoCertPem() != "so-cert" ||
+		got.GetSoChainPem() != "so-chain" || got.GetSoPin() != "so-pin" {
+		t.Errorf("TenantCreateRequest() SO fields = %+v, want so, so-csr, so-cert, so-chain, so-pin", got)
+	}
+}
+
+func TestTenantCreateRequest_NoSO(t *testing.T) {
+	got := TenantCreateRequest(&transport.CreateTenantRequest{ID: "t1", AdminUsername: "admin"})
+	if got.GetSoUsername() != "" || got.GetSoCsrPem() != "" || got.GetSoCertPem() != "" ||
+		got.GetSoChainPem() != "" || got.GetSoPin() != "" {
+		t.Errorf("TenantCreateRequest() without an SO = %+v, want no SO fields", got)
+	}
+}
+
+func TestSOCredential(t *testing.T) {
+	got := SOCredential(&pb.TenantAdminCredential{UserId: 7, Username: "so", CertPem: "cert", Thumbprint: "tp"})
+	if got == nil || got.UserID != 7 || got.Username != "so" || got.CertPEM != "cert" || got.Thumbprint != "tp" {
+		t.Errorf("SOCredential() = %+v, want so's credential", got)
+	}
+}
+
+func TestSOCredential_Nil(t *testing.T) {
+	if got := SOCredential(nil); got != nil {
+		t.Errorf("SOCredential(nil) = %+v, want nil: a tenant created without an SO answers none", got)
+	}
+}
+
 func TestTenantCreateRequest_EmptyFields(t *testing.T) {
 	got := TenantCreateRequest(&transport.CreateTenantRequest{ID: "t2", Name: "Tenant Two"})
 	if got.GetId() != "t2" || got.GetName() != "Tenant Two" {

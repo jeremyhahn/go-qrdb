@@ -59,6 +59,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	return &transport.CreateTenantResponse{
 		Tenant: quicProtoToTenantInfo(resp.GetTenant()),
 		Admin:  enrollconv.AdminCredential(resp.GetAdmin()),
+		SO:     enrollconv.SOCredential(resp.GetSo()),
 	}, nil
 }
 

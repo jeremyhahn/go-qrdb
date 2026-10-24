@@ -21,12 +21,16 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -114,7 +118,15 @@ func bootOnboardingCell(t *testing.T, tk transportKind) *onboardingCell {
 		cfg.MCP.Port = freeTCPPort(t)
 	}
 
-	n, err := node.NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithTLS(tlsCfg)})
+	// The SO PIN store tenant create commits a named security officer's PIN
+	// to (go-qrdb#1042), as cmd/qrdbd passes it.
+	soPINs, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("SO PIN store: %v", err)
+	}
+	n, err := node.NewStandaloneNode(context.Background(), cfg, []server.ServerOption{
+		server.WithTLS(tlsCfg), server.WithSOAuthenticator(soPINs),
+	})
 	if err != nil {
 		t.Fatalf("boot %s: %v", tk, err)
 	}

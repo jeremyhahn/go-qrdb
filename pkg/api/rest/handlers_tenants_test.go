@@ -523,6 +523,54 @@ func TestHandleCreateTenant_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCreateTenant_SO proves the so_* fields reach OnboardTenant and the
+// SO's credential is answered (go-qrdb#1042); without an SO, none is.
+func TestHandleCreateTenant_SO(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		so         *service.TenantAdminCredential
+	}{
+		{
+			name: "with an SO",
+			body: `{"id":"acme","name":"Acme Corp","so_username":"so","so_cert_pem":"so-cert","so_chain_pem":"so-chain","so_pin":"so-pin"}`,
+			so:   &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Thumbprint: "tp"},
+		},
+		{name: "without an SO", body: `{"id":"acme","name":"Acme Corp"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockTenantService{
+				createTenantFn: func(context.Context, string, string, tenant.IsolationType) (*tenant.TenantInfo, error) {
+					return testTenantInfo(), nil
+				},
+			}
+			onboarding := &fakeTenantOnboarding{tenants: svc, so: tc.so}
+			srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+				WithTenantService(svc), WithTenantOnboarding(onboarding))
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, httptest.NewRequest(http.MethodPost, "/v1/tenants", strings.NewReader(tc.body)))
+			assertStatus(t, rec, http.StatusCreated)
+
+			var resp struct {
+				SO *tenantAdminResponse `json:"so"`
+			}
+			decodeJSON(t, rec, &resp)
+			if tc.so == nil {
+				if resp.SO != nil {
+					t.Fatalf("SO credential = %+v, want none", resp.SO)
+				}
+				return
+			}
+			if resp.SO == nil || resp.SO.UserID != 2 || resp.SO.Username != "so" || resp.SO.CertPEM != "so-cert" || resp.SO.Thumbprint != "tp" {
+				t.Errorf("SO credential = %+v, want so's", resp.SO)
+			}
+			got := onboarding.gotReq
+			if got.SOUsername != "so" || string(got.SOCertPEM) != "so-cert" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" {
+				t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+			}
+		})
+	}
+}
+
 // TestHandleCreateTenant_OnboardingFollowsTheRequestContext: the longer bound
 // does not detach onboarding from its request; a caller that has gone away
 // still cancels it.

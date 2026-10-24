@@ -59,6 +59,11 @@ func (s *Server) handleTenantCreate(ctx context.Context, payload []byte) ([]byte
 		AdminCertPEM:      []byte(req.GetAdminCertPem()),
 		AdminChainPEM:     []byte(req.GetAdminChainPem()),
 		TrustAnchorsPEM:   []byte(req.GetTrustAnchorsPem()),
+		SOUsername:        req.GetSoUsername(),
+		SOCSRPEM:          []byte(req.GetSoCsrPem()),
+		SOCertPEM:         []byte(req.GetSoCertPem()),
+		SOChainPEM:        []byte(req.GetSoChainPem()),
+		SOPIN:             []byte(req.GetSoPin()),
 	})
 	if err != nil {
 		return nil, err
@@ -66,19 +71,29 @@ func (s *Server) handleTenantCreate(ctx context.Context, payload []byte) ([]byte
 
 	resp, err := proto.Marshal(&pb.TenantCreateResponse{
 		Tenant: tenantInfoToProto(result.Tenant),
-		Admin: &pb.TenantAdminCredential{
-			UserId:            result.Admin.UserID,
-			Username:          result.Admin.Username,
-			CertPem:           string(result.Admin.CertPEM),
-			Serial:            result.Admin.Serial,
-			Thumbprint:        result.Admin.Thumbprint,
-			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-		},
+		Admin:  tenantAdminCredentialToProto(&result.Admin),
+		So:     tenantAdminCredentialToProto(result.SO),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
 	return resp, nil
+}
+
+// tenantAdminCredentialToProto renders an account onboarding enrolled; nil
+// for none.
+func tenantAdminCredentialToProto(c *service.TenantAdminCredential) *pb.TenantAdminCredential {
+	if c == nil {
+		return nil
+	}
+	return &pb.TenantAdminCredential{
+		UserId:            c.UserID,
+		Username:          c.Username,
+		CertPem:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
 }
 
 // handleTenantGet retrieves a tenant by ID.
