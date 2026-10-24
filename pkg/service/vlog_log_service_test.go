@@ -19,7 +19,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"errors"
+	"strconv"
 	"testing"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -32,9 +34,15 @@ import (
 
 // staticSignerProvider hands out one signer, or fails.
 type staticSignerProvider struct {
-	signer vlog.HeadSigner
-	err    error
-	asked  []vlog.HeadSignerRequest
+	signer    vlog.HeadSigner
+	err       error
+	asked     []vlog.HeadSignerRequest
+	created   vlog.CreatedKey
+	createErr error
+}
+
+func (p *staticSignerProvider) CreateKey(context.Context, vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
+	return p.created, p.createErr
 }
 
 func (p *staticSignerProvider) HeadSigner(_ context.Context, req vlog.HeadSignerRequest) (vlog.HeadSigner, error) {
@@ -44,6 +52,59 @@ func (p *staticSignerProvider) HeadSigner(_ context.Context, req vlog.HeadSigner
 
 var _ vlog.HeadSignerProvider = (*staticSignerProvider)(nil)
 
+// hsmProvider is a HeadSignerProvider whose keys never leave it -- the shape
+// of a hardware or KMS provider a composer passes in: CreateKey answers its
+// own reference and the public key, never a Record, so go-qrdb stores no key.
+type hsmProvider struct {
+	keys    map[string]vlog.SigningKey
+	created []vlog.CreateKeyRequest
+	asked   []vlog.HeadSignerRequest
+}
+
+var _ vlog.HeadSignerProvider = (*hsmProvider)(nil)
+
+func newHSMProvider() *hsmProvider { return &hsmProvider{keys: map[string]vlog.SigningKey{}} }
+
+func (p *hsmProvider) CreateKey(_ context.Context, req vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
+	p.created = append(p.created, req)
+	k, err := vlog.GenerateSigningKey(req.Type, req.Version)
+	if err != nil {
+		return vlog.CreatedKey{}, err
+	}
+	signer, _, err := k.Signer()
+	if err != nil {
+		return vlog.CreatedKey{}, err
+	}
+	ref := "hsm:" + strconv.FormatUint(uint64(req.Version), 10)
+	p.keys[ref] = k
+	return vlog.CreatedKey{Ref: ref, Public: signer.Public()}, nil
+}
+
+func (p *hsmProvider) HeadSigner(_ context.Context, req vlog.HeadSignerRequest) (vlog.HeadSigner, error) {
+	p.asked = append(p.asked, req)
+	k, ok := p.keys[req.KeyRef]
+	if !ok {
+		return nil, &vlog.KeyNotFoundError{Version: req.KeyVersion}
+	}
+	return vlog.NewSoftwareHeadSigner(vlog.LogID{TenantID: req.TenantID, Database: req.Database, Log: req.Log}.String(), k)
+}
+
+// hsmKey creates a key in p for the test log and answers the descriptor's
+// record of it.
+func hsmKey(t *testing.T, p *hsmProvider, version uint32) vlog.HeadKey {
+	t.Helper()
+	req := vlog.CreateKeyRequest{TenantID: "acme", Database: testLogRef.Database, Log: testLogRef.Log, Type: vlog.SignatureEd25519, Version: version}
+	created, err := p.CreateKey(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+	key, err := created.HeadKey(req)
+	if err != nil {
+		t.Fatalf("HeadKey: %v", err)
+	}
+	return key
+}
+
 var testLogRef = LogRef{Database: "ledger", Log: "events"}
 
 // acmeCtx is a caller in tenant acme.
@@ -52,11 +113,9 @@ func acmeCtx() context.Context {
 }
 
 // newTestLogService composes a LogService over host on shard 1, gated open.
+// A nil signers composes the software default.
 func newTestLogService(t *testing.T, host *mockHost, signers vlog.HeadSignerProvider) LogService {
 	t.Helper()
-	if signers == nil {
-		signers = &staticSignerProvider{}
-	}
 	svc, err := NewLogService(LogServiceConfig{
 		Resolver: &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1},
 		Signers:  signers,
@@ -94,36 +153,49 @@ func TestNewLogService_Composes(t *testing.T) {
 	}
 }
 
-func TestNewLogService_RequiresEveryDependency(t *testing.T) {
-	for name, cfg := range map[string]LogServiceConfig{
-		"vlog shard resolver":       {Signers: &staticSignerProvider{}},
-		"vlog head signer provider": {Resolver: &fixedShardResolver{}},
-	} {
-		_, err := NewLogService(cfg)
-		var notConfigured *SubsystemNotConfiguredError
-		if !errors.As(err, &notConfigured) || notConfigured.Subsystem != name {
-			t.Errorf("missing %s: err = %v, want SubsystemNotConfiguredError", name, err)
-		}
+func TestNewLogService_RequiresTheResolver(t *testing.T) {
+	_, err := NewLogService(LogServiceConfig{Signers: &staticSignerProvider{}})
+	var notConfigured *SubsystemNotConfiguredError
+	if !errors.As(err, &notConfigured) || notConfigured.Subsystem != "vlog shard resolver" {
+		t.Errorf("missing resolver: err = %v, want SubsystemNotConfiguredError", err)
+	}
+}
+
+// TestNewLogService_DefaultsToTheSoftwareProvider pins that a composer which
+// passes no provider gets the software one: the created key is the log's own
+// sealed record, proposed with the descriptor.
+func TestNewLogService_DefaultsToTheSoftwareProvider(t *testing.T) {
+	host, cmds := recordingHost(sm.Result{})
+	svc, err := NewLogService(LogServiceConfig{Resolver: &fixedShardResolver{host: &gatedHost{mockHost: host, enabled: map[uint64]bool{1: true}}, shardID: 1}})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	if _, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, Origin: "o", SigningKeyType: vlog.SignatureECDSAP256SHA256}); err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	_, tenantID, body := decodeLogCommand(t, (*cmds)[0])
+	if _, _, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body); err != nil || key == nil {
+		t.Fatalf("decoded create key = %v, %v; want the software record", key, err)
 	}
 }
 
 func TestLogService_CreateLog_ProposesTheDescriptor(t *testing.T) {
 	host, cmds := recordingHost(sm.Result{})
 	svc := newTestLogService(t, host, nil)
-	resp, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, Origin: "db.example.com/events", KeyRef: "hsm:7"})
+	resp, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, Origin: "db.example.com/events"})
 	if err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
 	want := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "events"}
-	if resp.ID != want || resp.KeyRef != "hsm:7" {
-		t.Fatalf("CreateLog = %+v, want %+v with KeyRef hsm:7", resp, want)
+	if resp.ID != want || resp.Key != nil {
+		t.Fatalf("CreateLog = %+v, want %+v with no key", resp, want)
 	}
 	subtype, tenantID, body := decodeLogCommand(t, (*cmds)[0])
 	if subtype != protocol.VerifiableLogSubtypeCreate {
 		t.Fatalf("subtype = %d, want create", subtype)
 	}
 	id, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
-	if err != nil || id != want || desc.Origin != "db.example.com/events" || desc.Hash != vlog.HashSHA256 || key != nil {
+	if err != nil || id != want || desc.Origin != "db.example.com/events" || desc.Hash != vlog.HashSHA256 || key != nil || len(desc.Keys) != 0 {
 		t.Fatalf("decoded create = %+v, %+v, key %v, %v", id, desc, key, err)
 	}
 }
@@ -135,13 +207,40 @@ func TestLogService_CreateLog_GeneratesTheLogsOwnKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
-	if resp.KeyRef != vlog.KeyRef(vlog.FirstKeyVersion) {
-		t.Fatalf("KeyRef = %q, want the first key version's", resp.KeyRef)
+	if resp.Key == nil || resp.Key.Ref != vlog.KeyRef(vlog.FirstKeyVersion) || resp.Key.Version != vlog.FirstKeyVersion {
+		t.Fatalf("Key = %+v, want the first key version's", resp.Key)
+	}
+	if len(*cmds) != 1 {
+		t.Fatalf("CreateLog proposed %d commands, want the one carrying descriptor and key", len(*cmds))
 	}
 	_, tenantID, body := decodeLogCommand(t, (*cmds)[0])
 	_, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
-	if err != nil || key == nil || key.Version != vlog.FirstKeyVersion || desc.KeyRef != resp.KeyRef {
+	if err != nil || key == nil || key.Version != vlog.FirstKeyVersion || len(desc.Keys) != 1 || desc.Keys[0].Ref != resp.Key.Ref {
 		t.Fatalf("decoded create = %+v, key %v, %v; want the generated key", desc, key, err)
+	}
+}
+
+// TestLogService_CreateLog_HardwareProviderWritesNoRecord pins the seam: an
+// injected provider creates the key, the descriptor records its reference
+// and public key, and the proposal carries no key record.
+func TestLogService_CreateLog_HardwareProviderWritesNoRecord(t *testing.T) {
+	host, cmds := recordingHost(sm.Result{})
+	hsm := newHSMProvider()
+	svc := newTestLogService(t, host, hsm)
+	resp, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, Origin: "o", SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("CreateLog: %v", err)
+	}
+	if len(hsm.created) != 1 || hsm.created[0].Version != vlog.FirstKeyVersion || hsm.created[0].TenantID != "acme" {
+		t.Fatalf("provider asked to create %+v", hsm.created)
+	}
+	if resp.Key == nil || resp.Key.Ref != "hsm:1" {
+		t.Fatalf("Key = %+v, want the provider's reference", resp.Key)
+	}
+	subtype, tenantID, body := decodeLogCommand(t, (*cmds)[0])
+	_, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
+	if subtype != protocol.VerifiableLogSubtypeCreate || err != nil || key != nil || len(desc.Keys) != 1 || desc.Keys[0].Ref != "hsm:1" {
+		t.Fatalf("decoded create = %d, %+v, key %v, %v; want the reference and no record", subtype, desc, key, err)
 	}
 }
 
@@ -163,6 +262,111 @@ func TestLogService_CreateLog_Refusals(t *testing.T) {
 	}
 	if len(*cmds) != 0 {
 		t.Fatalf("a refused create proposed %d commands", len(*cmds))
+	}
+}
+
+// TestLogService_CreateLog_RefusesWhatTheProviderAnswers pins that a
+// provider's failure, and a key it answers that cannot be recorded, refuse
+// the create before anything is proposed.
+func TestLogService_CreateLog_RefusesWhatTheProviderAnswers(t *testing.T) {
+	providerErr := errors.New("hsm offline")
+	for name, p := range map[string]*staticSignerProvider{
+		"provider failure": {createErr: providerErr},
+		"no public key":    {created: vlog.CreatedKey{Ref: "hsm:1"}},
+		"no reference":     {created: vlog.CreatedKey{Public: newHSMProviderKey(t)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host, cmds := recordingHost(sm.Result{})
+			svc := newTestLogService(t, host, p)
+			if _, err := svc.CreateLog(acmeCtx(), &CreateLogRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519}); err == nil {
+				t.Fatal("CreateLog: no error")
+			}
+			if len(*cmds) != 0 {
+				t.Fatalf("a refused create proposed %d commands", len(*cmds))
+			}
+		})
+	}
+}
+
+// newHSMProviderKey answers a fresh Ed25519 public key.
+func newHSMProviderKey(t *testing.T) crypto.PublicKey {
+	t.Helper()
+	k, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	signer, _, err := k.Signer()
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	return signer.Public()
+}
+
+// rotateHost answers the descriptor read with desc and records proposals.
+func rotateHost(desc *vlog.Descriptor) (*mockHost, *[][]byte) {
+	return signHeadHost(desc, nil)
+}
+
+func TestLogService_RotateKey_ThroughTheInjectedProvider(t *testing.T) {
+	hsm := newHSMProvider()
+	desc := &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{hsmKey(t, hsm, vlog.FirstKeyVersion)}}
+	host, cmds := rotateHost(desc)
+	svc := newTestLogService(t, host, hsm)
+	resp, err := svc.RotateKey(acmeCtx(), &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureECDSAP256SHA256})
+	if err != nil {
+		t.Fatalf("RotateKey: %v", err)
+	}
+	if resp.Key.Version != vlog.FirstKeyVersion+1 || resp.Key.Ref != "hsm:2" {
+		t.Fatalf("RotateKey = %+v, want version 2 under the provider's reference", resp.Key)
+	}
+	subtype, tenantID, body := decodeLogCommand(t, (*cmds)[0])
+	if subtype != protocol.VerifiableLogSubtypeRotateKey {
+		t.Fatalf("subtype = %d, want rotate key", subtype)
+	}
+	_, next, record, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+	if err != nil || record != nil || next.Ref != "hsm:2" || next.Version != 2 {
+		t.Fatalf("decoded rotate = %+v, record %v, %v; want the reference and no record", next, record, err)
+	}
+}
+
+func TestLogService_RotateKey_SoftwareDefaultCarriesTheRecord(t *testing.T) {
+	desc := &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{hsmKey(t, newHSMProvider(), vlog.FirstKeyVersion)}}
+	host, cmds := rotateHost(desc)
+	svc := newTestLogService(t, host, nil)
+	resp, err := svc.RotateKey(acmeCtx(), &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519})
+	if err != nil {
+		t.Fatalf("RotateKey: %v", err)
+	}
+	_, tenantID, body := decodeLogCommand(t, (*cmds)[0])
+	_, next, record, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+	if err != nil || record == nil || record.Version != 2 || next.Ref != vlog.KeyRef(2) || resp.Key.Ref != next.Ref {
+		t.Fatalf("decoded rotate = %+v, record %v, %v; want the sealed version-2 record", next, record, err)
+	}
+}
+
+func TestLogService_RotateKey_Refusals(t *testing.T) {
+	ctx := acmeCtx()
+	desc := &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256}
+	host, cmds := rotateHost(desc)
+	providerErr := errors.New("hsm offline")
+	svc := newTestLogService(t, host, &staticSignerProvider{createErr: providerErr})
+	if _, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519}); !errors.Is(err, providerErr) {
+		t.Errorf("provider failure: err = %v", err)
+	}
+	if _, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: "rot13"}); err == nil {
+		t.Error("unknown key type: no error")
+	}
+	var crossTenant *tenant.CrossTenantDeniedError
+	if _, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: LogRef{TenantID: "other", Database: "d", Log: "l"}, SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &crossTenant) {
+		t.Errorf("cross-tenant rotate: err = %v, want CrossTenantDeniedError", err)
+	}
+	host.syncReadFn = func(context.Context, uint64, interface{}) (interface{}, error) { return nil, errors.New("disk") }
+	var readErr *ReadError
+	if _, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519}); !errors.As(err, &readErr) {
+		t.Errorf("descriptor read failure: err = %v, want ReadError", err)
+	}
+	if len(*cmds) != 0 {
+		t.Fatalf("a refused rotate proposed %d commands", len(*cmds))
 	}
 }
 
@@ -385,30 +589,35 @@ func signHeadHost(desc *vlog.Descriptor, head *vlog.Head) (*mockHost, *[][]byte)
 	return host, cmds
 }
 
+// TestLogService_SignHead_RecordsTheCheckpoint signs through an injected
+// provider whose key go-qrdb never holds, across a rotation: the head is
+// signed by the current version and verifies against the public key the
+// descriptor records.
 func TestLogService_SignHead_RecordsTheCheckpoint(t *testing.T) {
-	key, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
-	if err != nil {
-		t.Fatalf("GenerateSigningKey: %v", err)
-	}
-	signer, err := vlog.NewSoftwareHeadSigner("db.example.com/events", key)
-	if err != nil {
-		t.Fatalf("NewSoftwareHeadSigner: %v", err)
-	}
-	desc := &vlog.Descriptor{Origin: "db.example.com/events", Hash: vlog.HashSHA256, KeyRef: vlog.KeyRef(key.Version)}
+	hsm := newHSMProvider()
+	desc := &vlog.Descriptor{Origin: "db.example.com/events", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{
+		hsmKey(t, hsm, vlog.FirstKeyVersion), hsmKey(t, hsm, vlog.FirstKeyVersion+1),
+	}}
 	root := bytes.Repeat([]byte{4}, 32)
 	host, cmds := signHeadHost(desc, &vlog.Head{Size: 3, Root: root})
-	signers := &staticSignerProvider{signer: signer}
-	svc := newTestLogService(t, host, signers)
+	svc := newTestLogService(t, host, hsm)
 
 	resp, err := svc.SignHead(acmeCtx(), &SignHeadRequest{LogRef: testLogRef})
 	if err != nil {
 		t.Fatalf("SignHead: %v", err)
 	}
-	if err := vlog.VerifyHead(signer.Public(), desc.Origin, resp.Head); err != nil {
+	pub, err := desc.Keys[1].Public()
+	if err != nil {
+		t.Fatalf("Public: %v", err)
+	}
+	if err := vlog.VerifyHead(pub, desc.Origin, resp.Head); err != nil {
 		t.Fatalf("signed head does not verify: %v", err)
 	}
-	if signers.asked[0].KeyRef != desc.KeyRef || signers.asked[0].TenantID != "acme" {
-		t.Fatalf("signer asked for %+v", signers.asked[0])
+	if err := desc.VerifyHead(resp.Head); err != nil || resp.Head.KeyVersion != 2 {
+		t.Fatalf("Descriptor.VerifyHead = %v, key version %d; want version 2 accepted", err, resp.Head.KeyVersion)
+	}
+	if hsm.asked[0].KeyRef != "hsm:2" || hsm.asked[0].KeyVersion != 2 || hsm.asked[0].TenantID != "acme" {
+		t.Fatalf("signer asked for %+v", hsm.asked[0])
 	}
 	subtype, tenantID, body := decodeLogCommand(t, (*cmds)[0])
 	if subtype != protocol.VerifiableLogSubtypeCheckpoint {
@@ -422,7 +631,8 @@ func TestLogService_SignHead_RecordsTheCheckpoint(t *testing.T) {
 
 func TestLogService_SignHead_Refusals(t *testing.T) {
 	ctx := acmeCtx()
-	desc := &vlog.Descriptor{Origin: "o", KeyRef: "hsm:1"}
+	hsm := newHSMProvider()
+	desc := &vlog.Descriptor{Origin: "o", Keys: []vlog.HeadKey{hsmKey(t, hsm, vlog.FirstKeyVersion)}}
 	head := &vlog.Head{Size: 1, Root: bytes.Repeat([]byte{1}, 32)}
 
 	providerErr := errors.New("hsm offline")
@@ -455,6 +665,41 @@ func TestLogService_SignHead_Refusals(t *testing.T) {
 	var crossTenant *tenant.CrossTenantDeniedError
 	if _, err := svc.SignHead(ctx, &SignHeadRequest{LogRef: LogRef{TenantID: "other", Database: "d", Log: "l"}}); !errors.As(err, &crossTenant) {
 		t.Errorf("cross-tenant sign: err = %v, want CrossTenantDeniedError", err)
+	}
+
+	// A log with no head-signing key has nothing to sign with.
+	host, _ = signHeadHost(&vlog.Descriptor{Origin: "o"}, head)
+	svc = newTestLogService(t, host, hsm)
+	var notFound *vlog.KeyNotFoundError
+	if _, err := svc.SignHead(ctx, &SignHeadRequest{LogRef: testLogRef}); !errors.As(err, &notFound) {
+		t.Errorf("no key: err = %v, want KeyNotFoundError", err)
+	}
+
+	// A signer over another key, or reporting another version, is refused
+	// before its head is recorded.
+	other := newHSMProvider()
+	hsmKey(t, other, vlog.FirstKeyVersion)
+	stale := newHSMProvider()
+	hsmKey(t, stale, vlog.FirstKeyVersion)
+	staleSigner, err := stale.HeadSigner(ctx, vlog.HeadSignerRequest{TenantID: "acme", Database: testLogRef.Database, Log: testLogRef.Log, KeyRef: "hsm:1"})
+	if err != nil {
+		t.Fatalf("HeadSigner: %v", err)
+	}
+	rotated := &vlog.Descriptor{Origin: "o", Keys: []vlog.HeadKey{desc.Keys[0], hsmKey(t, hsm, vlog.FirstKeyVersion+1)}}
+	for name, c := range map[string]struct {
+		desc    *vlog.Descriptor
+		signers vlog.HeadSignerProvider
+	}{
+		"another key":     {desc, other},
+		"another version": {rotated, &staticSignerProvider{signer: staleSigner}},
+	} {
+		h, recorded := signHeadHost(c.desc, head)
+		if _, err := newTestLogService(t, h, c.signers).SignHead(ctx, &SignHeadRequest{LogRef: testLogRef}); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+		if len(*recorded) != 0 {
+			t.Errorf("%s: proposed %d commands", name, len(*recorded))
+		}
 	}
 	if len(*cmds) != 0 {
 		t.Fatalf("a refused sign proposed %d commands", len(*cmds))
