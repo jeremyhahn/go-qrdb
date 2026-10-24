@@ -273,6 +273,12 @@ type Infra struct {
 	// admin out. An unrecognised value fails BuildServices. Empty means
 	// "enrolled".
 	MTLSBindingPolicy string
+
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it from auth.separation_of_duties
+	// and FIPS 140-3 mode. Tenant onboarding refuses, under it, a tenant SO
+	// that shares the first admin's username or key.
+	SeparationOfDuties bool
 	// PINBackend holds the node's SO and User PINs. Composers wire either
 	// an injected (hardware) backend or NewSealStorePINBackend over the
 	// node-local seal store. When nil every PIN-gated operation fails
@@ -1800,6 +1806,8 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
 		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+
+		SeparationOfDuties: infra.SeparationOfDuties,
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.

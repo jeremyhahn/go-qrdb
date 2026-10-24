@@ -990,6 +990,7 @@ var onboardingRules = []rule{
 	as(&bootstrap.IncompleteTenantSOError{}, InvalidArgument),
 	as(&bootstrap.ConflictingSOCredentialError{}, InvalidArgument),
 	as(&bootstrap.SOMatchesAdminError{}, InvalidArgument),
+	as(&bootstrap.SOPartlyMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad
 	// credential presented by an unauthenticated caller, whatever the reason.

@@ -557,7 +557,7 @@ func newSORoleFixture(t *testing.T) soRoleFixture {
 	t.Helper()
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 	return soRoleFixture{
-		mw:       newTestMiddleware(rbac.New(&grantingRoleServicer{perms: []permission.Permission{permission.RolesAssign, permission.RolesUnassign}}), WithRoleResolver(roles)),
+		mw:       newTestMiddleware(rbac.New(&grantingRoleServicer{perms: []permission.Permission{permission.RolesAssign, permission.RolesUnassign}}), WithRoleResolver(roles), WithStrictSeparation(true)),
 		roles:    roles,
 		admin:    role.SystemRoleID("acme", role.RoleNameAdmin),
 		so:       role.SystemRoleID("acme", role.RoleNameSO),
@@ -580,7 +580,8 @@ func (f soRoleFixture) caller(roleIDs ...string) context.Context {
 func TestAuthorizeSORoleChange(t *testing.T) {
 	f := newSORoleFixture(t)
 	sysSO := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "system-so", TenantID: tenantid.System, Roles: []string{f.sysSO}})
-	unresolvable := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}))
+	unresolvable := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}), WithStrictSeparation(true))
+	standard := newTestMiddleware(rbac.New(&grantingRoleServicer{perms: []permission.Permission{permission.RolesAssign, permission.RolesUnassign}}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}))
 	tests := []struct {
 		name          string
 		mw            *AuthMiddleware
@@ -600,6 +601,10 @@ func TestAuthorizeSORoleChange(t *testing.T) {
 		{name: "unresolvable SO role", mw: unresolvable, ctx: f.caller(f.so), after: []string{f.so}, check: wantErrorAs[*SORoleUnresolvedError]},
 		{name: "unchanged set needs no resolution", mw: unresolvable, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so}, check: wantNoError},
 		{name: "no RBAC", ctx: context.Background(), after: []string{f.so}, check: wantNoError},
+		{name: "standard: admin grants SO", mw: standard, ctx: f.caller(f.admin), after: []string{f.so}, check: wantNoError},
+		{name: "standard: admin revokes SO", mw: standard, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantNoError},
+		{name: "standard: system SO grants the tenant's SO", mw: standard, ctx: sysSO, after: []string{f.so}, check: wantNoError},
+		{name: "standard: no SO role resolution", mw: standard, ctx: context.Background(), after: []string{f.so}, check: wantNoError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

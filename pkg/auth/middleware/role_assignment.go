@@ -238,7 +238,9 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 }
 
 // authorizeSORoleChange keeps the target tenant's Security Officer role in
-// that tenant's SO's hands (separation of duties, go-qrdb#1042): a write
+// that tenant's SO's hands under strict separation of duties
+// (WithStrictSeparation, go-qrdb#1042); under the standard posture it admits
+// every write, which roles:assign and roles:unassign then decide. A write
 // whose before and after role sets differ on whether the account holds the
 // SO role, a grant or a revocation, is admitted only for a caller who is
 // itself target's SO. The tenant Admin holds roles:assign and
@@ -253,7 +255,7 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 // (503), never an admission. A nil m authorizes nothing, as every
 // AuthMiddleware gate does when no RBAC is configured.
 func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target string, before, after []string) error {
-	if m == nil || slices.Equal(before, after) {
+	if m == nil || !m.strictSeparation || slices.Equal(before, after) {
 		return nil
 	}
 	held, err := m.holdsSO(ctx, target, before)

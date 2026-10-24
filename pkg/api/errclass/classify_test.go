@@ -489,6 +489,7 @@ func TestClassify_OnboardingRows(t *testing.T) {
 		{"incomplete tenant SO", &bootstrap.IncompleteTenantSOError{Field: "so_pin"}, InvalidArgument},
 		{"conflicting SO credential", &bootstrap.ConflictingSOCredentialError{}, InvalidArgument},
 		{"SO matches admin", &bootstrap.SOMatchesAdminError{Field: "key"}, InvalidArgument},
+		{"SO partly matches admin", &bootstrap.SOPartlyMatchesAdminError{Field: "username"}, InvalidArgument},
 		{"SO credential rejected classifies as its cause", &bootstrap.SOCredentialRejectedError{Cause: &cert.InvalidCSRError{}}, InvalidArgument},
 		{"SO enrolment classifies as its cause", &bootstrap.TenantSOEnrollmentError{Op: "PIN commit", Cause: &bootstrap.MissingProvisioningSeamError{}}, Unimplemented},
 		{"missing provisioning seam", &bootstrap.MissingProvisioningSeamError{Seam: "cert signer"}, Unimplemented},

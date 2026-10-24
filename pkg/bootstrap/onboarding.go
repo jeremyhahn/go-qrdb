@@ -92,6 +92,12 @@ type userDeleter interface {
 	DeleteUser(ctx context.Context, id uint64) error
 }
 
+// userUpdater is the user-store seam that grants a standard-posture tenant's
+// first admin the so role when the tenant names the admin as its SO.
+type userUpdater interface {
+	UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+}
+
 // adminSigner is the signer for the first admin's CSR: PendingAdminSigner for
 // an admin recorded as pending, Signer otherwise. A pending admin's CSR with
 // no PendingAdminSigner is refused as system first boot refuses a CSR on a
@@ -424,13 +430,23 @@ func completePendingAccount(ctx context.Context, deps Dependencies, tenantID str
 		// does not hold the role is someone else's, and binding the
 		// onboarded key to it would hand the credential an account it was
 		// never issued for -- or hand that account's holder its place.
+		// The one exception is the admin a standard-posture tenant named as
+		// its SO: the account holding the admin role and already bound to
+		// this very credential takes the so role.
 		if !slices.Contains(account.RoleIDs, roleID) {
-			return false, &PendingAdminAccountConflictError{TenantID: tenantID, Username: pending.Username, Role: roleName}
+			if !adminNamedAsSO(tenantID, account, pending, roleName) {
+				return false, &PendingAdminAccountConflictError{TenantID: tenantID, Username: pending.Username, Role: roleName}
+			}
+			if err := grantSORole(ctx, deps, tenantID, account); err != nil {
+				return false, err
+			}
 		}
 	}
-	c := &adminCredential{thumbprint: pending.Thumbprint, notAfter: pending.NotAfter, serial: pending.Serial}
-	if err := bindAdmin(ctx, deps, tenantID, account, c, roleName); err != nil {
-		return false, err
+	if !boundTo(account, pending.Thumbprint) {
+		c := &adminCredential{thumbprint: pending.Thumbprint, notAfter: pending.NotAfter, serial: pending.Serial}
+		if err := bindAdmin(ctx, deps, tenantID, account, c, roleName); err != nil {
+			return false, err
+		}
 	}
 	deleted, err := store.Delete(ctx, tenantID, pending)
 	if err != nil {
@@ -444,6 +460,24 @@ func completePendingAccount(ctx context.Context, deps Dependencies, tenantID str
 	deps.Logger.Info("bootstrap: pending tenant account completed",
 		slog.String("tenant", tenantID), slog.String("role", roleName), slog.String("username", pending.Username))
 	return true, nil
+}
+
+// adminNamedAsSO reports whether account is the tenant's admin that a
+// standard-posture tenant named as its SO: the pending record is the SO's,
+// the account holds the admin role, and it is bound to the pending
+// credential.
+func adminNamedAsSO(tenantID string, account *user.User, pending *tenantadmin.Pending, roleName string) bool {
+	return roleName == role.RoleNameSO &&
+		slices.Contains(account.RoleIDs, role.SystemRoleID(tenantID, role.RoleNameAdmin)) &&
+		boundTo(account, pending.Thumbprint)
+}
+
+// boundTo reports whether account carries a certificate binding for
+// thumbprint.
+func boundTo(account *user.User, thumbprint string) bool {
+	return slices.ContainsFunc(account.CertBindings, func(b user.CertBinding) bool {
+		return b.Thumbprint == thumbprint
+	})
 }
 
 // AdminCompletionBounds bounds CompletePendingTenantAdminWithin. A zero

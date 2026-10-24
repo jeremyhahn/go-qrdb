@@ -80,7 +80,6 @@ package node
 
 import (
 	"context"
-	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -1685,7 +1684,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -2289,7 +2289,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		NoClusterCAKey: n.byoTLS(),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -3024,7 +3025,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		SealEnabled:     cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3266,7 +3268,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3758,7 +3761,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// regardless of config, so embedded and standalone authorize
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
-	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
+	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err

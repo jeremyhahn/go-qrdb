@@ -126,6 +126,7 @@ func TestOnboardTenant_SO_RefusedUntilThePINSeamIsAttached(t *testing.T) {
 func TestOnboardTenant_SO_MatchingTheAdminIsRefused(t *testing.T) {
 	deps := newOnboardingDeps(t)
 	deps.SOPINs = newOnboardingSOAuthenticator(t)
+	deps.SeparationOfDuties = true
 	svc := NewTenantOnboardingService(deps)
 	csr := onboardingCSR(t)
 	var match *bootstrap.SOMatchesAdminError
@@ -137,6 +138,35 @@ func TestOnboardTenant_SO_MatchingTheAdminIsRefused(t *testing.T) {
 	}
 	if _, err := deps.Tenants.GetTenant(context.Background(), "acme"); err == nil {
 		t.Fatal("tenant acme exists after a refused create")
+	}
+}
+
+func TestOnboardTenant_SO_StandardPostureTheAdminMayBeTheSO(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	deps.SOPINs = newOnboardingSOAuthenticator(t)
+	svc := NewTenantOnboardingService(deps)
+	csr := onboardingCSR(t)
+	if _, err := svc.OnboardTenant(context.Background(), &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csr, SOUsername: "admin", SOCSRPEM: csr, SOPIN: []byte("pin"),
+	}); err != nil {
+		t.Fatalf("OnboardTenant(SO = admin, standard posture) = %v, want nil", err)
+	}
+	if _, err := deps.Tenants.GetTenant(context.Background(), "acme"); err != nil {
+		t.Fatalf("GetTenant(acme) = %v, want the tenant created", err)
+	}
+}
+
+func TestOnboardTenant_SO_StandardPostureHalfTheAdminIsRefused(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	deps.SOPINs = newOnboardingSOAuthenticator(t)
+	svc := NewTenantOnboardingService(deps)
+	csr := onboardingCSR(t)
+	var partly *bootstrap.SOPartlyMatchesAdminError
+	_, err := svc.OnboardTenant(context.Background(), &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csr, SOUsername: "officer", SOCSRPEM: csr, SOPIN: []byte("pin"),
+	})
+	if !errors.As(err, &partly) || partly.Field != "key" {
+		t.Fatalf("OnboardTenant(SO key = admin key, another name) = %v, want *bootstrap.SOPartlyMatchesAdminError{key}", err)
 	}
 }
 

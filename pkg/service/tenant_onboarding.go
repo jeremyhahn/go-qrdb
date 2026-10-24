@@ -158,6 +158,8 @@ type TenantOnboardingService struct {
 	clientTrust ClientTrustRefresher
 	pendingSOs  tenantadmin.Store
 	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
+	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
+	strictSoD bool
 }
 
 // DefaultTenantOnboardingTimeout bounds an onboarding from the service's
@@ -246,6 +248,12 @@ type TenantOnboardingDeps struct {
 	// node whose SO authenticator is built after this service attaches it
 	// with AttachSOPINs. Nil refuses a request that names an SO.
 	SOPINs bootstrap.SOPINSetter
+
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it: under it the tenant SO
+	// must differ from the first admin by username and by key, outside it
+	// the SO may be the admin (bootstrap.Dependencies.SeparationOfDuties).
+	SeparationOfDuties bool
 }
 
 // NewTenantOnboardingService returns the production TenantOnboardingServicer.
@@ -271,6 +279,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		pendingSign: deps.PendingAdminSigner,
 		clientTrust: deps.ClientTrust,
 		pendingSOs:  deps.PendingSOs,
+		strictSoD:   deps.SeparationOfDuties,
 	}
 	if deps.SOPINs != nil {
 		s.AttachSOPINs(deps.SOPINs)
@@ -377,6 +386,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		Homes:              s.homes,
 		PendingSOs:         s.pendingSOs,
 		SOPINs:             s.sopins(),
+		SeparationOfDuties: s.strictSoD,
 		Logger:             s.logger,
 	}
 	// The service bounds the provisioning; the caller's sooner deadline still

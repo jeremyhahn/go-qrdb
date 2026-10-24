@@ -209,10 +209,11 @@ func (e *ConflictingSOCredentialError) Error() string {
 	return "bootstrap: supply the tenant SO's CSR or certificate, not both"
 }
 
-// SOMatchesAdminError is returned when the tenant SO is the first admin by
-// another name: the same username, or a credential over the same key (SPKI).
-// Separation of duties needs two principals, so the SO and the admin never
-// share an account or a key. Field is "username" or "key".
+// SOMatchesAdminError is returned under strict separation of duties when the
+// tenant SO is the first admin by another name: the same username, or a
+// credential over the same key (SPKI). Strict separation needs two
+// principals, so the SO and the admin never share an account or a key. Field
+// is "username" or "key".
 type SOMatchesAdminError struct {
 	Field string
 }
@@ -220,6 +221,21 @@ type SOMatchesAdminError struct {
 // Error implements error.
 func (e *SOMatchesAdminError) Error() string {
 	return "bootstrap: the tenant SO must differ from the first admin; they share a " + e.Field
+}
+
+// SOPartlyMatchesAdminError is returned outside strict separation of duties
+// when the tenant SO shares exactly one of the first admin's username and key
+// (SPKI). The SO may be the admin there, named by the admin's username and
+// key together, but one key binds one account, so the SO is either the admin
+// or a principal distinct from it in both. Field is the one they share,
+// "username" or "key".
+type SOPartlyMatchesAdminError struct {
+	Field string
+}
+
+// Error implements error.
+func (e *SOPartlyMatchesAdminError) Error() string {
+	return "bootstrap: the tenant SO shares the first admin's " + e.Field + " but not the other; name the admin by username and key, or a distinct SO"
 }
 
 // SOCredentialRejectedError is returned when the tenant SO's CSR or

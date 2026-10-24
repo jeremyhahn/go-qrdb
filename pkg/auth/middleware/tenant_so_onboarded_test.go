@@ -169,7 +169,7 @@ func TestOnboardedSO_PassesTheSOGate(t *testing.T) {
 // grant its tenant's so role; the onboarded admin is refused the same grant.
 func TestOnboardedSO_GrantsTheSORoleAndTheAdminCannot(t *testing.T) {
 	f := newOnboardedSOFixture(t)
-	m := newTestMiddleware(rbac.New(f.roles), WithUserService(f.users), WithRoleResolver(f.roles))
+	m := newTestMiddleware(rbac.New(f.roles), WithUserService(f.users), WithRoleResolver(f.roles), WithStrictSeparation(true))
 	grant := []string{role.SystemRoleID(onboardedSOTenant, role.RoleNameSO)}
 
 	if err := m.authorizeSORoleChange(f.caller(t, f.result.SOUserID), onboardedSOTenant, nil, grant); err != nil {

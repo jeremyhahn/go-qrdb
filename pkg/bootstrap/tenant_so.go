@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -87,13 +88,19 @@ type soPlan struct {
 	username string
 	pin      []byte
 	plan     *adminPlan
+	// isAdmin marks a standard-posture SO that is the first admin itself:
+	// the admin's account takes the so role and keeps its one credential.
+	isAdmin bool
 }
 
 // planSO judges cfg.SO before the tenant is created, and returns nil when
-// the request has none. The SO is refused when it is given in part, when it
-// is the admin by name or by key, and when its credential would be refused
-// for the reasons the admin's would. admin is the admin's plan, whose trust
-// anchors the SO's certificate is verified against.
+// the request has none. The SO is refused when it is given in part, when its
+// credential would be refused for the reasons the admin's would, under strict
+// separation of duties when it is the admin by name or by key, and outside it
+// when it is the admin by one of name and key but not the other. An SO that
+// is the admin by both outside strict separation is the admin itself. admin
+// is the admin's plan, whose trust anchors the SO's certificate is verified
+// against.
 func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMode, adminUsername string, admin *adminPlan, pending bool) (*soPlan, error) {
 	so := cfg.SO
 	if so == nil {
@@ -109,12 +116,13 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 	case len(so.CSRPEM) > 0 && len(so.CertPEM) > 0:
 		return nil, &ConflictingSOCredentialError{}
 	}
-	// The SO is told apart from the admin by key as well as by name, and a
-	// deferred admin has no key yet to tell it apart from.
+	// The SO is told apart from the admin, or found to be it, by key as well
+	// as by name, and a deferred admin has no key yet to compare.
 	if mode != AdminEnrollCert {
 		return nil, &ConflictingAdminEnrollmentError{}
 	}
-	if strings.EqualFold(so.Username, adminUsername) {
+	sameName := strings.EqualFold(so.Username, adminUsername)
+	if sameName && deps.SeparationOfDuties {
 		return nil, &SOMatchesAdminError{Field: "username"}
 	}
 	if deps.SOPINs == nil {
@@ -140,18 +148,32 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 		}
 		return nil, err
 	}
-	if p.thumbprint == admin.thumbprint {
+	sameKey := p.thumbprint == admin.thumbprint
+	switch {
+	case sameKey && deps.SeparationOfDuties:
 		return nil, &SOMatchesAdminError{Field: "key"}
+	case sameName && !sameKey:
+		return nil, &SOPartlyMatchesAdminError{Field: "username"}
+	case sameKey && !sameName:
+		return nil, &SOPartlyMatchesAdminError{Field: "key"}
+	}
+	if sameName {
+		return &soPlan{username: adminUsername, pin: so.PIN, plan: p, isAdmin: true}, nil
 	}
 	return &soPlan{username: so.Username, pin: so.PIN, plan: p}, nil
 }
 
 // createTenantAccount creates a tenant account holding the tenant system
-// role roleName alone, and pushes its deletion onto undo. On a convergent
+// role roleName and the alsoRoles beside it (the so role, for an admin a
+// standard-posture tenant names as its SO), and pushes its deletion onto undo. On a convergent
 // (non-exclusive) re-run that finds the account already present it returns
 // nil, and nothing is undone for it.
-func createTenantAccount(ctx context.Context, deps Dependencies, cfg TenantProvisionConfig, username, roleName string, disabled bool, undo *undoStack) (*user.User, error) {
+func createTenantAccount(ctx context.Context, deps Dependencies, cfg TenantProvisionConfig, username, roleName string, disabled bool, undo *undoStack, alsoRoles ...string) (*user.User, error) {
 	roleID := role.SystemRoleID(cfg.TenantID, roleName)
+	roleIDs := []string{roleID}
+	for _, also := range alsoRoles {
+		roleIDs = append(roleIDs, role.SystemRoleID(cfg.TenantID, also))
+	}
 	account, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
 		// A bootstrap account authenticates by certificate, not by an
 		// email login key, so the omission is declared rather than
@@ -159,7 +181,7 @@ func createTenantAccount(ctx context.Context, deps Dependencies, cfg TenantProvi
 		WithoutEmailLoginKey: true,
 		Username:             username,
 		TenantID:             cfg.TenantID,
-		RoleIDs:              []string{roleID},
+		RoleIDs:              roleIDs,
 		Pending:              disabled,
 	})
 	if err != nil {
@@ -228,6 +250,9 @@ func recordPendingAccount(ctx context.Context, tenantID string, store tenantadmi
 // key and commits its PIN, onto result. An account a convergent re-run finds
 // present keeps its credential.
 func enrollSO(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, so *soPlan, undo *undoStack, result *TenantProvisionResult) error {
+	if so.isAdmin {
+		return enrollAdminAsSO(ctx, cfg, deps, so, result)
+	}
 	result.SOUsername = so.username
 	account, err := createTenantAccount(ctx, deps, cfg, so.username, role.RoleNameSO, false, undo)
 	if err != nil {
@@ -244,6 +269,48 @@ func enrollSO(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies,
 	return commitSOPIN(ctx, cfg, deps, so.pin)
 }
 
+// enrollAdminAsSO commits the SO PIN for a standard-posture SO that is the
+// first admin itself, whose account was created holding the so role beside
+// the admin role (soRolesBesideAdmin). The SO on result is the admin's account
+// and credential: one key, one account.
+func enrollAdminAsSO(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, so *soPlan, result *TenantProvisionResult) error {
+	result.SOUsername = so.username
+	result.SOUserID = result.AdminUserID
+	result.SOCertPEM = result.AdminCertPEM
+	result.SOCertSerial = result.AdminCertSerial
+	result.SOCertThumbprint = result.AdminCertThumbprint
+	return commitSOPIN(ctx, cfg, deps, so.pin)
+}
+
+// soRolesBesideAdmin is the roles the first admin's account holds beside the
+// admin role: the so role when the tenant names the admin as its SO, none
+// otherwise.
+func soRolesBesideAdmin(so *soPlan) []string {
+	if so != nil && so.isAdmin {
+		return []string{role.RoleNameSO}
+	}
+	return nil
+}
+
+// grantSORole adds the tenant's so role to account, the pending admin a
+// standard-posture tenant named as its SO, when the pending SO is completed.
+// An account that holds it already is left as it is.
+func grantSORole(ctx context.Context, deps Dependencies, tenantID string, account *user.User) error {
+	soID := role.SystemRoleID(tenantID, role.RoleNameSO)
+	if slices.Contains(account.RoleIDs, soID) {
+		return nil
+	}
+	updater, ok := deps.Users.(userUpdater)
+	if !ok {
+		return &MissingProvisioningSeamError{Seam: "Users.UpdateUser to grant the admin the tenant SO role"}
+	}
+	roleIDs := append(slices.Clone(account.RoleIDs), soID)
+	if _, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: account.ID, RoleIDs: roleIDs}); err != nil {
+		return accountKinds[role.RoleNameSO].createErr(err)
+	}
+	return nil
+}
+
 // provisionPendingSO records the tenant SO pending behind the tenant's
 // barrier in Dependencies.PendingSOs (the __sys:pending-so record), the way
 // provisionPendingAdmin records the admin, and commits its PIN. A
@@ -255,11 +322,16 @@ func provisionPendingSO(ctx context.Context, cfg TenantProvisionConfig, deps Dep
 	}
 	result.SOUsername = so.username
 	result.SOAwaitsBarrierInit = true
-	if existing != nil && !cfg.Exclusive {
+	switch {
+	case existing != nil && !cfg.Exclusive:
 		result.SOUsername = existing.Username
 		result.SOCertThumbprint = existing.Thumbprint
 		result.SOCertSerial = existing.Serial
-	} else {
+	case so.isAdmin:
+		if err := recordAdminAsPendingSO(ctx, cfg.TenantID, deps, undo, result); err != nil {
+			return err
+		}
+	default:
 		c, err := recordPendingAccount(ctx, cfg.TenantID, deps.PendingSOs, so.plan, so.username, role.RoleNameSO, undo)
 		if err != nil {
 			return err
@@ -267,6 +339,33 @@ func provisionPendingSO(ctx context.Context, cfg TenantProvisionConfig, deps Dep
 		result.setSOCredential(c)
 	}
 	return commitSOPIN(ctx, cfg, deps, so.pin)
+}
+
+// recordAdminAsPendingSO records the tenant's pending admin as its pending SO
+// too, for a standard-posture SO that is the admin itself: the same account
+// name and the same credential, so completion grants the admin's account the
+// so role rather than creating a second account.
+func recordAdminAsPendingSO(ctx context.Context, tenantID string, deps Dependencies, undo *undoStack, result *TenantProvisionResult) error {
+	admin, err := deps.PendingAdmins.Get(ctx, tenantID)
+	if err != nil {
+		return accountKinds[role.RoleNameAdmin].pendingErr("read", err)
+	}
+	if admin == nil {
+		return &MissingProvisioningSeamError{Seam: "Dependencies.PendingAdmins holding the admin named as the tenant SO"}
+	}
+	recorded := *admin
+	if err := deps.PendingSOs.Create(ctx, tenantID, &recorded); err != nil {
+		return accountKinds[role.RoleNameSO].pendingErr("record", err)
+	}
+	undo.push("delete pending "+role.RoleNameSO, func(ctx context.Context) error {
+		_, err := deps.PendingSOs.Delete(ctx, tenantID, &recorded)
+		return err
+	})
+	result.SOUsername = recorded.Username
+	result.SOCertPEM = result.AdminCertPEM
+	result.SOCertSerial = recorded.Serial
+	result.SOCertThumbprint = recorded.Thumbprint
+	return nil
 }
 
 // commitSOPIN writes the tenant SO's PIN, the last step of the SO's

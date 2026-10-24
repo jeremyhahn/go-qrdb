@@ -2011,6 +2011,7 @@ func runStart(f *startFlags) (err error) {
 				InvitationRequireKeyPin:   f.invitationRequireKeyPin,
 				InvitationRedeemLimit:     f.invitationRedeemLimit,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
+				SeparationOfDuties:        wiring.ResolveStrictSeparation(f.separationOfDuties),
 				PINBackend:                pinBackend,
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
@@ -2256,7 +2257,7 @@ func runStart(f *startFlags) (err error) {
 			// separation of duties; otherwise the config flag selects it. The
 			// value flows into both the first-boot role provisioning and the RBAC
 			// authorizer so seeding and enforcement agree.
-			strictSoD := fips140.Enabled() || f.separationOfDuties
+			strictSoD := wiring.ResolveStrictSeparation(f.separationOfDuties)
 			slog.Info("RBAC posture resolved",
 				slog.Bool("separation_of_duties", strictSoD),
 				slog.Bool("fips140", fips140.Enabled()),

@@ -171,8 +171,11 @@ func TestProvisionTenant_SO_RefusedBeforeTheTenantIsCreated(t *testing.T) {
 		{"no credential", nil, func(s *TenantSOConfig) { s.CSRPEM = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_csr_pem or so_cert_pem")},
 		{"no PIN", nil, func(s *TenantSOConfig) { s.PIN = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_pin")},
 		{"both credentials", nil, func(s *TenantSOConfig) { s.CertPEM = []byte("x") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*ConflictingSOCredentialError]},
-		{"admin's username", nil, func(s *TenantSOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}}, isMatch("username")},
-		{"admin's key", sameKey, func(s *TenantSOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}}, isMatch("key")},
+		{"strict: admin's username", nil, func(s *TenantSOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
+		{"strict: admin's key", sameKey, func(s *TenantSOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("key")},
+		{"strict: the admin itself", sameKey, func(s *TenantSOConfig) { s.Username, s.CSRPEM = "admin", sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
+		{"standard: admin's username, another key", nil, func(s *TenantSOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("username")},
+		{"standard: admin's key, another name", sameKey, func(s *TenantSOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("key")},
 		{"unparsable CSR", nil, func(s *TenantSOConfig) { s.CSRPEM = []byte("not a csr") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
 		{"uncertifiable name", nil, func(s *TenantSOConfig) { s.Username = "bad/name" }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
 		{"no PIN seam", nil, func(*TenantSOConfig) {}, Dependencies{}, errAs[*MissingProvisioningSeamError]},
@@ -214,6 +217,13 @@ func isIncomplete(field string) func(error) bool {
 func isMatch(field string) func(error) bool {
 	return func(err error) bool {
 		var e *SOMatchesAdminError
+		return errors.As(err, &e) && e.Field == field
+	}
+}
+
+func isPartlyMatch(field string) func(error) bool {
+	return func(err error) bool {
+		var e *SOPartlyMatchesAdminError
 		return errors.As(err, &e) && e.Field == field
 	}
 }
@@ -516,7 +526,7 @@ func TestAccountKinds_WrapEachRolesFailuresInItsOwnType(t *testing.T) {
 func TestSOErrors_DescribeAndUnwrap(t *testing.T) {
 	cause := errors.New("cause")
 	for _, err := range []error{
-		&IncompleteTenantSOError{Field: "so_pin"}, &ConflictingSOCredentialError{}, &SOMatchesAdminError{Field: "key"},
+		&IncompleteTenantSOError{Field: "so_pin"}, &ConflictingSOCredentialError{}, &SOMatchesAdminError{Field: "key"}, &SOPartlyMatchesAdminError{Field: "key"},
 		&SOCredentialRejectedError{Cause: cause}, &TenantSOEnrollmentError{Op: "PIN commit", Cause: cause},
 		&PendingAdminAccountConflictError{TenantID: "acme", Username: "officer", Role: role.RoleNameSO},
 	} {

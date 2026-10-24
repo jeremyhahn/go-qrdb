@@ -183,6 +183,12 @@ type Dependencies struct {
 	// request has an SO.
 	SOPINs SOPINSetter
 
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it. Under it a tenant SO must
+	// differ from the first admin by username and by key; outside it the SO
+	// may be the admin, named by the admin's username and key together.
+	SeparationOfDuties bool
+
 	// BarrierAnchors pins a pending first admin's SPKI thumbprint as its
 	// tenant barrier's epoch-1 anchor, the signer every node verifies that
 	// barrier's init statement against (docs/barrier-seal/architecture.md
@@ -821,7 +827,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	// sides of the conflict are load-bearing and neither supersedes the
 	// other: the admin has no email login key AND, under deferred mode,
 	// must be created disabled until it enrolls.
-	adminUser, err := createTenantAccount(ctx, deps, cfg, adminUsername, role.RoleNameAdmin, mode == AdminEnrollDeferred, &undo)
+	adminUser, err := createTenantAccount(ctx, deps, cfg, adminUsername, role.RoleNameAdmin, mode == AdminEnrollDeferred, &undo, soRolesBesideAdmin(so)...)
 	if err != nil {
 		return fail(err)
 	}
