@@ -224,6 +224,21 @@ Officer is named at `tenant create`
 ([../multi-tenancy/user.md](../multi-tenancy/user.md)). Without strict
 separation an Admin assigns and unassigns `so` like any other role.
 
+Turning `auth.separation_of_duties` on or off is audited. When the daemon
+starts under a posture other than the recorded one, or on the first start, it
+first records the new posture and then writes one `posture-change` audit
+event, which names the previous posture, the new one, and whether FIPS
+140-3 mode forced it. Restarting with the setting unchanged writes nothing.
+To see the changes:
+
+```
+qrdb audit query --action posture-change
+```
+
+If the daemon cannot read or write that record, it refuses to start.
+Changing the setting does not change any account's roles: an Admin created
+under strict separation keeps the roles it was given.
+
 Every tenant gets these roles, but the node's own barrier is not any tenant's.
 Initializing, unsealing, sealing, rekeying or recovering the node barrier,
 registering or listing its Security Officers, submitting node unseal shares,

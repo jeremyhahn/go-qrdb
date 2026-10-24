@@ -805,6 +805,30 @@ Security Officer is enrolled by
 tenant create's optional `so_*` fields
 ([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
 
+An embedder reads the posture its node resolved with
+`node.Node.StrictSeparation()` (`true` under strict separation). The
+resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
+FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
+posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
+(`strict` or `standard`). When a start or first boot resolves a posture that
+differs from the record, or no posture is recorded, the record is written
+first. The node whose conditional write wins then emits one audit event,
+which `audit query --action posture-change` returns:
+
+| Field | Value |
+|---|---|
+| `actor` | `system` |
+| `resource` | `auth/separation_of_duties` |
+| `action` | `posture-change` |
+| `outcome` | `success` |
+| `attributes.previous` | `none`, `strict` or `standard` |
+| `attributes.posture` | `strict` or `standard` |
+| `attributes.fips_forced` | `true` when FIPS 140-3 mode forced strict separation |
+
+A record that cannot be read or written refuses the daemon's start, and fails
+`Node.FirstBoot` / `Node.FirstBootWithCeremony`, with
+`*wiring.SeparationPostureError`.
+
 Under strict separation, the user store judges the rule again against the record version the write
 commits over, not the one the request was first checked against. An Admin's
 write that would remove a Security Officer grant committed after its first

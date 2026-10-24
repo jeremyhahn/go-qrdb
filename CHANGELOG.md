@@ -13,6 +13,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **The separation-of-duties posture is readable and its changes are
+  audited** (#1128). Embedders read the posture a node resolved with
+  `node.Node.StrictSeparation()`, and the resolver as
+  `sdk.ResolveStrictSeparation`. At daemon start, and in `Node.FirstBoot` /
+  `Node.FirstBootWithCeremony`, the resolved posture is compared with the
+  cluster record `__sys:cluster/separation_of_duties`. On a first recording or
+  a change, the record is written first; the node whose conditional write
+  wins then emits one `posture-change` audit event (`previous`, `posture`,
+  `fips_forced`). A record that cannot be read or written refuses the start.
+
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
