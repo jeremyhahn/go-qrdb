@@ -1,6 +1,6 @@
 # Reference standards
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-17
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-24
 > Conflicts with this document are defects. Fix them here first. This index
 > is the only document in this directory with a banner: every other file is a
 > standard's text, copied unmodified, so it carries none.
@@ -31,6 +31,7 @@ has no copy in this directory, for the reason given under the table.
 | link only | HTTP Semantics | RFC 9110 | `pkg/api/rest`, `pkg/auth/middleware`, `sdk/go/transport/rest` (Allow, Retry-After) | https://www.rfc-editor.org/rfc/rfc9110.txt |
 | [rfc9113.txt](rfc9113.txt) | HTTP/2 | RFC 9113 | `pkg/api/rest` | https://www.rfc-editor.org/rfc/rfc9113.txt |
 | [rfc9114.txt](rfc9114.txt) | HTTP/3 | RFC 9114 | `pkg/api/rest` (via quic-go) | https://www.rfc-editor.org/rfc/rfc9114.txt |
+| [rfc9162.txt](rfc9162.txt) | Certificate Transparency Version 2.0 | RFC 9162 | `pkg/vlog` (Merkle tree hashing and proofs, section 2.1; signed heads in Ed25519 or ECDSA P-256 with SHA-256, sections 2.2 and 10.2.2) | https://www.rfc-editor.org/rfc/rfc9162.txt |
 | [rfc9180.txt](rfc9180.txt) | Hybrid Public Key Encryption | RFC 9180 | `pkg/keydelivery` | https://www.rfc-editor.org/rfc/rfc9180.txt |
 | [rfc9449.txt](rfc9449.txt) | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | RFC 9449 | `pkg/auth`, `pkg/auth/middleware`, `sdk/go` | https://www.rfc-editor.org/rfc/rfc9449.txt |
 | [rfc9562.txt](rfc9562.txt) | Universally Unique IDentifiers (UUIDs) | RFC 9562 | `pkg/role` (UUIDv8 over SHA-256, section 5.8) | https://www.rfc-editor.org/rfc/rfc9562.txt |

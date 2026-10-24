@@ -31,9 +31,12 @@ type vlogApplyFunc func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenan
 
 var vlogApplyFuncs = map[byte]vlogApplyFunc{
 	protocol.VerifiableLogSubtypeCreate: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
-		id, desc, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
+		id, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
 		if err != nil {
 			return 0, err
+		}
+		if key != nil {
+			return 0, logs.CreateWithKey(w, id, desc, *key)
 		}
 		return 0, logs.Create(w, id, desc)
 	},

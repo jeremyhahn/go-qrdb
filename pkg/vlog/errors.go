@@ -211,3 +211,43 @@ type ExpireNotAllowedError struct {
 func (e *ExpireNotAllowedError) Error() string {
 	return "vlog: log " + e.ID.String() + " does not allow expiring entry bodies"
 }
+
+// UnsupportedKeyTypeError is returned for a head-signing key, or a signed
+// head, of a type other than Ed25519 or ECDSA P-256 with SHA-256.
+type UnsupportedKeyTypeError struct {
+	Type string
+}
+
+func (e *UnsupportedKeyTypeError) Error() string {
+	return "vlog: unsupported head-signing key type " + strconv.Quote(e.Type)
+}
+
+// InvalidSigningKeyError is returned for a head-signing key record or key
+// reference that does not decode.
+type InvalidSigningKeyError struct {
+	Reason string
+}
+
+func (e *InvalidSigningKeyError) Error() string {
+	return "vlog: invalid head-signing key: " + e.Reason
+}
+
+// KeyNotFoundError is returned when a log has no signing key at a version.
+type KeyNotFoundError struct {
+	ID      LogID
+	Version uint32
+}
+
+func (e *KeyNotFoundError) Error() string {
+	return "vlog: log " + e.ID.String() + " has no signing key version " + strconv.FormatUint(uint64(e.Version), 10)
+}
+
+// HeadSignatureError is returned when a signed head does not decode, or its
+// signature does not verify.
+type HeadSignatureError struct {
+	Reason string
+}
+
+func (e *HeadSignatureError) Error() string {
+	return "vlog: signed head: " + e.Reason
+}

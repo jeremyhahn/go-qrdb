@@ -65,12 +65,41 @@ const (
 // EncodeVerifiableLogCreate creates an OpVerifiableLog/Create command
 // registering the log id with desc.
 func EncodeVerifiableLogCreate(id vlog.LogID, desc vlog.Descriptor) ([]byte, error) {
+	return encodeVerifiableLogCreate(id, desc, nil)
+}
+
+// EncodeVerifiableLogCreateWithKey encodes the creation of a log with its
+// head-signing key, so the key and the log are written by one proposal. The
+// body is the length-prefixed descriptor followed by the key's version and its
+// PKCS#8 bytes.
+func EncodeVerifiableLogCreateWithKey(id vlog.LogID, desc vlog.Descriptor, key vlog.SigningKey) ([]byte, error) {
+	if key.Version == 0 || len(key.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log create: empty signing key"}
+	}
+	return encodeVerifiableLogCreate(id, desc, &key)
+}
+
+func encodeVerifiableLogCreate(id vlog.LogID, desc vlog.Descriptor, key *vlog.SigningKey) ([]byte, error) {
 	descJSON, err := json.Marshal(desc)
 	if err != nil {
 		return nil, &InvalidCommandError{Reason: "verifiable log create: descriptor: " + err.Error()}
 	}
-	return encodeVerifiableLog(VerifiableLogSubtypeCreate, id, len(descJSON), func(buf []byte) []byte {
-		return append(buf, descJSON...)
+	keySize := 0
+	if key != nil {
+		keySize = 4 + len(key.PKCS8)
+	}
+	fieldsSize, err := addSizes(4, len(descJSON), keySize)
+	if err != nil {
+		return nil, err
+	}
+	return encodeVerifiableLog(VerifiableLogSubtypeCreate, id, fieldsSize, func(buf []byte) []byte {
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(descJSON)))
+		buf = append(buf, descJSON...)
+		if key != nil {
+			buf = binary.BigEndian.AppendUint32(buf, key.Version)
+			buf = append(buf, key.PKCS8...)
+		}
+		return buf
 	})
 }
 
@@ -170,16 +199,28 @@ func DecodeVerifiableLogCommand(payload []byte) (subtype byte, tenantID string, 
 }
 
 // DecodeVerifiableLogCreate decodes a Create body of tenantID's command.
-func DecodeVerifiableLogCreate(tenantID string, body []byte) (vlog.LogID, vlog.Descriptor, error) {
+func DecodeVerifiableLogCreate(tenantID string, body []byte) (vlog.LogID, vlog.Descriptor, *vlog.SigningKey, error) {
 	id, rest, err := decodeLogName(tenantID, body)
 	if err != nil {
-		return vlog.LogID{}, vlog.Descriptor{}, err
+		return vlog.LogID{}, vlog.Descriptor{}, nil, err
 	}
+	if len(rest) < 4 || uint64(len(rest)-4) < uint64(binary.BigEndian.Uint32(rest)) {
+		return vlog.LogID{}, vlog.Descriptor{}, nil, &InvalidCommandError{Reason: "verifiable log create: descriptor truncated"}
+	}
+	dlen := int(binary.BigEndian.Uint32(rest))
+	descJSON, rest := rest[4:4+dlen], rest[4+dlen:]
 	var desc vlog.Descriptor
-	if err := json.Unmarshal(rest, &desc); err != nil {
-		return vlog.LogID{}, vlog.Descriptor{}, &InvalidCommandError{Reason: "verifiable log create: malformed descriptor: " + err.Error()}
+	if err := json.Unmarshal(descJSON, &desc); err != nil {
+		return vlog.LogID{}, vlog.Descriptor{}, nil, &InvalidCommandError{Reason: "verifiable log create: malformed descriptor: " + err.Error()}
 	}
-	return id, desc, nil
+	if len(rest) == 0 {
+		return id, desc, nil, nil
+	}
+	if len(rest) <= 4 {
+		return vlog.LogID{}, vlog.Descriptor{}, nil, &InvalidCommandError{Reason: "verifiable log create: signing key truncated"}
+	}
+	key := &vlog.SigningKey{Version: binary.BigEndian.Uint32(rest), PKCS8: rest[4:len(rest):len(rest)]}
+	return id, desc, key, nil
 }
 
 // DecodeVerifiableLogAppend decodes an Append body of tenantID's command.

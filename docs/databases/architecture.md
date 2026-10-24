@@ -1073,15 +1073,19 @@ tree, append-only, in the same table and the same snapshot.
 **Key rotation** is a descriptor change through the same opcode: the
 descriptor's verifier keys are an append-only list, and a checkpoint names the
 key that signed it. Which key signs, and when keys rotate, is the owner's
-policy.
+policy. Rotating the software provider's key, not built yet, appends the
+`k/<version+1>` record and the descriptor's new `KeyRef` in one proposal.
 
 #### 6. The sign-head seam
 
-In `pkg/vlog` (§9, decision 7). `HeadSigner` has the shape of
+In `pkg/vlog/signing.go` (§9, decision 7). `HeadSigner` has the shape of
 `golang.org/x/mod/sumdb/note`'s `Signer` (`Name`, `KeyHash`, `Sign`, in that
-module's `sumdb/note/note.go`) with a context added, so a signer of any
-signature type plugs into the note library unchanged: the signer, not go-qrdb,
-owns the signature type and its encoding.
+module's `sumdb/note/note.go`) with a context added, plus the key version, the
+signature type and the public key a signed head is checked against. The
+signature types are the two RFC 9162 registers (section 10.2.2): Ed25519, the
+default, and ECDSA P-256 with SHA-256 (ASN.1 DER). A signed head carries its
+signature type and key version; a key of any other type is refused with
+`UnsupportedKeyTypeError`.
 
 ```go
 // HeadSigner signs a log's checkpoints with the log owner's key.
@@ -1090,6 +1094,12 @@ type HeadSigner interface {
 	Name() string
 	// KeyHash is the key hash the signature line carries.
 	KeyHash() uint32
+	// KeyVersion is the version of the key that signs.
+	KeyVersion() uint32
+	// SignatureType is the RFC 9162 signature type Sign produces.
+	SignatureType() SignatureType
+	// Public is the key a signed head verifies against.
+	Public() crypto.PublicKey
 	// Sign returns the signature over msg, the checkpoint body, in the
 	// signer's signature type.
 	Sign(ctx context.Context, msg []byte) ([]byte, error)
@@ -1105,8 +1115,10 @@ type HeadSignerRequest struct {
 	TenantID string
 	Database string
 	Log      string
-	// KeyRef is the owner's opaque reference to its key, recorded in the
-	// descriptor at create. go-qrdb never interprets it.
+	// KeyRef is the owner's reference to its key, recorded in the
+	// descriptor at create. The software provider reads it as the decimal
+	// version of the log's k/<version> record; another provider's
+	// reference is its own.
 	KeyRef string
 }
 ```
@@ -1114,19 +1126,20 @@ type HeadSignerRequest struct {
 - **Injection:** `WithHeadSignerProvider(p HeadSignerProvider) ServerOption` in
   `pkg/server/seam_options.go`, beside `WithDEKProvider`, composed through
   `sdk/go/node` like the other seams. Nil keeps the software provider.
-- **The software provider go-qrdb ships** generates one Ed25519 key per log at
-  create (`crypto/ed25519` over `crypto/rand`, the standard library's validated
-  module), seals the private key with the tenant's DEK through `dek.Provider`
-  (`pkg/dek/provider.go`), with the additional data binding tenant, database,
-  log and key version, and stores it as a record in the tenant's resolved store:
-  replicated, under the tenant's barrier, and fails closed when the tenant is
-  sealed. Its public key is the descriptor's verifier key. Any node can sign; the
-  key never leaves the server.
+- **The software provider go-qrdb ships** (`SoftwareHeadSignerProvider`) signs
+  with a key generated at create (`crypto/ed25519` or `crypto/ecdsa` P-256
+  over `crypto/rand`, the standard library's validated module). The key is a
+  PKCS #8 record, `k/<version>` under the log's prefix, written by Create in
+  the same Raft proposal as the descriptor and head, so a create either lands
+  with its key or not at all; the descriptor's `KeyRef` names its version. The
+  record is sealed at rest by the same barrier as the log's other records
+  (§8), travels in the snapshot, and is outside KV `Range` like the rest of
+  the table. Its public key is the descriptor's verifier key. Any node can
+  sign; the key never leaves the server.
 - **What go-xkms implements:** a `HeadSignerProvider` that resolves `KeyRef` to
   its KMS or hardware key, and for its transparency log returns a signer over
   the CA's key (the same `crypto.Signer` source `pkg/cakey.Provider` exposes),
-  in the signature type the [open question](#open-questions) settles for a
-  non-Ed25519 key. go-quicbaas composes go-xkms's provider; it does not
+  as an ECDSA P-256 signer. go-quicbaas composes go-xkms's provider; it does not
   implement one.
 
 #### 7. The audit trail as one log instance
@@ -1167,7 +1180,9 @@ the upgrade moves no data.
 - **Barrier.** The tenant's (or the database's) barrier encrypts the records at
   rest, below apply, as it does for every other record. Apply therefore hashes
   the entry as appended.
-- **DEK.** The DEK seals the software signer's key. A caller that wants entries
+- **The signing key.** The software signer's `k/<version>` record is one of
+  the log's records, so the same barrier seals it at rest; there is no second
+  key layer. A caller that wants entries
   the platform cannot read encrypts them with `DEKService` before appending; the
   leaf then commits to the ciphertext, which is the caller's choice and the
   standard shape for a confidential transparency log.
@@ -1197,8 +1212,8 @@ Each choice is kept with the alternatives not taken and the reason each lost.
    its `sumdb/note/note.go`); that is the software provider's type. Not taken: an
    RFC 6962 `SignedTreeHead` structure (binary, not witnessable by the note
    ecosystem, superseded by RFC 9162) and a go-qrdb format (nothing would verify
-   it). **The signature type for a non-Ed25519 owner key is still open**, to
-   agree with go-xkms ([Open questions](#open-questions)).
+   it). A non-Ed25519 owner key signs ECDSA P-256 with SHA-256, the other
+   RFC 9162 type ([Open questions](#open-questions), ruled (b)).
 3. **Hashing at apply** (§4): the tree is always current and atomic with the
    entry, with one proposal per append and about two SHA-256 and two record
    writes per entry. Not taken: an integrator proposing tree hashes after commit
@@ -1352,12 +1367,15 @@ the tenant's data, which is Admin's. A cross-tenant request is refused by
 
 ### Open questions
 
-[§9](#9-design-choices) settles the other choices. One remains, the half of
-the checkpoint choice to agree with go-xkms.
+[§9](#9-design-choices) settles the other choices. The one below is ruled and
+kept for its record.
 
 1. **The signed-note signature type for a non-Ed25519 owner key** — ECDSA
    P-256 at least, the CA key go-xkms's transparency log signs with.
-   *To agree with go-xkms and record in both pages.*
+   *Ruled (b), restricted to RFC 9162's types:* a head is signed Ed25519 (the
+   default) or ECDSA P-256 with SHA-256, and carries its signature type and
+   key version; any other key type is refused (§6). Rotation appends
+   `k/<version+1>` in one proposal (§5).
    *Context:* the checkpoint is a C2SP signed-note (§9, decision 2), and
    `golang.org/x/mod/sumdb/note` defines only the Ed25519 type. Because the seam
    leaves the signature type and its encoding to the signer (§6), go-qrdb's

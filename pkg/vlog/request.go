@@ -19,8 +19,8 @@ import "github.com/jeremyhahn/go-qrdb/pkg/storage"
 // Request is a read of a named log a state machine answers in its Lookup,
 // beside audit.QueryRequest and audit.VerifyRequest. Every request is
 // answered from committed storage alone, so every replica answers it alike.
-// The set is closed: HeadRequest, GetRequest, InclusionRequest and
-// ConsistencyRequest.
+// The set is closed: HeadRequest, GetRequest, InclusionRequest,
+// ConsistencyRequest, DescriptorRequest and KeyRequest.
 type Request interface {
 	read(r storage.Reader) (any, error)
 }
@@ -102,4 +102,25 @@ func (q InclusionRequest) read(r storage.Reader) (any, error) {
 
 func (q ConsistencyRequest) read(r storage.Reader) (any, error) {
 	return Consistency(r, q.ID, q.Size1, q.Size2)
+}
+
+// DescriptorRequest reads a log's descriptor; Read answers a *Descriptor.
+type DescriptorRequest struct {
+	ID LogID
+}
+
+func (q DescriptorRequest) read(r storage.Reader) (any, error) {
+	return ReadDescriptor(r, q.ID)
+}
+
+// KeyRequest reads a log's head-signing key at Version; Read answers a
+// *SigningKey. Only the software HeadSignerProvider asks it: the key never
+// leaves the server.
+type KeyRequest struct {
+	ID      LogID
+	Version uint32
+}
+
+func (q KeyRequest) read(r storage.Reader) (any, error) {
+	return ReadSigningKey(r, q.ID, q.Version)
 }

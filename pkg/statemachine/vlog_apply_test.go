@@ -16,6 +16,9 @@ package statemachine
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"errors"
 	"testing"
 
@@ -191,6 +194,56 @@ func TestApplyVerifiableLog_Refusals(t *testing.T) {
 		}
 		if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorCapability {
 			t.Fatalf("result %+v, want a capability refusal", res)
+		}
+	})
+}
+
+// TestApplyVerifiableLog_CreateWithKey covers a Create carrying the log's
+// head-signing key: the key lands in the same apply as the descriptor, and a
+// key of a type RFC 9162 does not allow is refused with nothing written.
+func TestApplyVerifiableLog_CreateWithKey(t *testing.T) {
+	p := payloadOf(t)
+	key, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	desc := applyDescriptor(false)
+	desc.KeyRef = vlog.KeyRef(key.Version)
+
+	t.Run("applied", func(t *testing.T) {
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogCreateWithKey(applyLog, desc, key)))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog: %v", err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); ok {
+			t.Fatalf("create refused: %+v", res)
+		}
+		got, err := vlog.ReadSigningKey(stg, applyLog, key.Version)
+		if err != nil || !bytes.Equal(got.PKCS8, key.PKCS8) {
+			t.Fatalf("ReadSigningKey = %+v, %v", got, err)
+		}
+	})
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	rsaDER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
+	}
+	t.Run("rsa refused", func(t *testing.T) {
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogCreateWithKey(applyLog, desc, vlog.SigningKey{Version: 1, PKCS8: rsaDER})))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog = %v, want a refusal result", err)
+		}
+		if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorInvalid {
+			t.Fatalf("result %+v, want an invalid refusal", res)
+		}
+		if keys, err := stg.List([]byte(vlog.LogTablePrefix)); err != nil || len(keys) != 0 {
+			t.Fatalf("a refused create left %d records (%v)", len(keys), err)
 		}
 	})
 }

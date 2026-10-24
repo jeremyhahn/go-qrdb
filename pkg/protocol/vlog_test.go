@@ -51,15 +51,56 @@ func TestEncodeVerifiableLogCreate_RoundTrips(t *testing.T) {
 		t.Fatalf("EncodeVerifiableLogCreate: %v", err)
 	}
 	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
-	id, got, err := DecodeVerifiableLogCreate(tenantID, body)
+	id, got, key, err := DecodeVerifiableLogCreate(tenantID, body)
 	if err != nil {
 		t.Fatalf("DecodeVerifiableLogCreate: %v", err)
+	}
+	if key != nil {
+		t.Fatalf("key = %+v, want none", key)
 	}
 	if id != testLogID {
 		t.Fatalf("id = %v, want %v", id, testLogID)
 	}
 	if !reflect.DeepEqual(got, desc) {
 		t.Fatalf("descriptor = %+v, want %+v", got, desc)
+	}
+}
+
+func TestEncodeVerifiableLogCreateWithKey_RoundTrips(t *testing.T) {
+	key, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	desc := vlog.Descriptor{Origin: "db.example.com/ledger", Hash: vlog.HashSHA256, KeyRef: vlog.KeyRef(key.Version)}
+	cmd, err := EncodeVerifiableLogCreateWithKey(testLogID, desc, key)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogCreateWithKey: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
+	id, got, gotKey, err := DecodeVerifiableLogCreate(tenantID, body)
+	if err != nil {
+		t.Fatalf("DecodeVerifiableLogCreate: %v", err)
+	}
+	if id != testLogID || !reflect.DeepEqual(got, desc) {
+		t.Fatalf("decoded %v %+v, want %v %+v", id, got, testLogID, desc)
+	}
+	if gotKey == nil || !reflect.DeepEqual(*gotKey, key) {
+		t.Fatalf("key = %+v, want %+v", gotKey, key)
+	}
+}
+
+func TestEncodeVerifiableLogCreateWithKey_RefusesEmptyKey(t *testing.T) {
+	desc := vlog.Descriptor{Origin: "db.example.com/ledger", Hash: vlog.HashSHA256}
+	for name, key := range map[string]vlog.SigningKey{
+		"version 0": {PKCS8: []byte{1}},
+		"no bytes":  {Version: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ice *InvalidCommandError
+			if _, err := EncodeVerifiableLogCreateWithKey(testLogID, desc, key); !errors.As(err, &ice) {
+				t.Fatalf("err = %v, want *InvalidCommandError", err)
+			}
+		})
 	}
 }
 
@@ -232,8 +273,10 @@ func TestDecodeVerifiableLog_RejectsMalformedBodies(t *testing.T) {
 		{"name: database truncated", decodeCreate, []byte{0, 4, 'd'}},
 		{"name: log length missing", decodeCreate, []byte{0, 1, 'd', 0}},
 		{"name: log truncated", decodeCreate, []byte{0, 1, 'd', 0, 3, 'l'}},
-		{"create: descriptor not JSON", decodeCreate, withName('{')},
-		{"create: descriptor missing", decodeCreate, withName()},
+		{"create: descriptor not JSON", decodeCreate, withName(append(u32(1), '{')...)},
+		{"create: descriptor length missing", decodeCreate, withName(0, 0)},
+		{"create: descriptor truncated", decodeCreate, withName(append(u32(3), '{', '}')...)},
+		{"create: signing key truncated", decodeCreate, withName(append(u32(2), '{', '}', 0, 0, 0, 1)...)},
 		{"append: count missing", decodeAppend, withName(0, 0)},
 		{"append: count beyond body", decodeAppend, withName(append(u32(1<<31), 0, 0, 0, 0)...)},
 		{"append: entry length missing", decodeAppend, withName(append(u32(2), append(u32(4), 'a', 'b', 'c', 'd')...)...)},
@@ -255,7 +298,7 @@ func TestDecodeVerifiableLog_RejectsMalformedBodies(t *testing.T) {
 }
 
 func decodeCreate(body []byte) error {
-	_, _, err := DecodeVerifiableLogCreate("t", body)
+	_, _, _, err := DecodeVerifiableLogCreate("t", body)
 	return err
 }
 

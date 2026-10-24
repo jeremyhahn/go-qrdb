@@ -91,6 +91,8 @@ var refusalRules = []refusalRule{
 	{isType[vlog.CheckpointRootMismatchError], protocol.AppErrorInvalid},
 	{isType[vlog.EmptyCheckpointError], protocol.AppErrorInvalid},
 	{isType[vlog.ExpireNotAllowedError], protocol.AppErrorInvalid},
+	{isType[vlog.UnsupportedKeyTypeError], protocol.AppErrorInvalid},
+	{isType[vlog.InvalidSigningKeyError], protocol.AppErrorInvalid},
 	{isType[vlog.LogExistsError], protocol.AppErrorConflict},
 	{isType[vlog.CheckpointExistsError], protocol.AppErrorConflict},
 }

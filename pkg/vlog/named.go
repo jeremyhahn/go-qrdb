@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -89,6 +90,12 @@ type Descriptor struct {
 
 	// AllowExpireBodies permits ExpireBodies on the log.
 	AllowExpireBodies bool `json:"allow_expire_bodies,omitempty"`
+
+	// KeyRef is the owner's reference to the key that signs the log's heads,
+	// passed to the HeadSignerProvider. For a log created with its own key
+	// (CreateWithKey) it is that key's version, KeyRef(version); otherwise
+	// it is opaque to go-qrdb.
+	KeyRef string `json:"key_ref,omitempty"`
 }
 
 // validate refuses a descriptor Create cannot store.
@@ -270,6 +277,26 @@ func (c *Chain) stagedGet(r storage.Reader) getFunc {
 // Create stages a new log's descriptor and empty head into w. It refuses an
 // invalid name or descriptor and a log that already exists.
 func (c *Chain) Create(w Writer, id LogID, desc Descriptor) error {
+	return c.create(w, id, desc, nil)
+}
+
+// CreateWithKey stages a new log as Create does, and its head-signing key as
+// the k/<version> record beside the descriptor, in the same writes: the key
+// and the log exist together or not at all. desc.KeyRef must name the key's
+// version, and the key must be Ed25519 or ECDSA P-256.
+func (c *Chain) CreateWithKey(w Writer, id LogID, desc Descriptor, key SigningKey) error {
+	if _, _, err := key.Signer(); err != nil {
+		return err
+	}
+	if desc.KeyRef != KeyRef(key.Version) {
+		return &InvalidDescriptorError{Reason: "key reference " + strconv.Quote(desc.KeyRef) + " does not name key version " + KeyRef(key.Version)}
+	}
+	return c.create(w, id, desc, &key)
+}
+
+// create stages the descriptor, the empty head and, when key is not nil, the
+// signing key.
+func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) error {
 	if err := id.Validate(); err != nil {
 		return err
 	}
@@ -291,6 +318,11 @@ func (c *Chain) Create(w Writer, id LogID, desc Descriptor) error {
 	}
 	if err := w.Set(logHeadKey(id), encodeLogHead(0, 0, nil)); err != nil {
 		return &TableWriteError{Err: err}
+	}
+	if key != nil {
+		if err := w.Set(keyKey(id, key.Version), key.PKCS8); err != nil {
+			return &TableWriteError{Err: err}
+		}
 	}
 	c.logs[id] = logState{allowExpire: desc.AllowExpireBodies}
 	return nil

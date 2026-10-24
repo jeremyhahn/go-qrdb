@@ -17,6 +17,7 @@ package vlog
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 
 	"github.com/transparency-dev/merkle/proof"
 
@@ -111,6 +112,26 @@ func ReadCheckpoint(r storage.Reader, id LogID, size uint64) ([]byte, error) {
 		return nil, &TableReadError{Err: err}
 	}
 	return v, nil
+}
+
+// ReadDescriptor reads the descriptor the log was created with.
+func ReadDescriptor(r storage.Reader, id LogID) (*Descriptor, error) {
+	if err := id.Validate(); err != nil {
+		return nil, err
+	}
+	dk := descriptorKey(id)
+	raw, err := r.Get(dk)
+	if err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	if raw == nil {
+		return nil, &LogNotFoundError{ID: id}
+	}
+	var desc Descriptor
+	if err := json.Unmarshal(raw, &desc); err != nil {
+		return nil, &CorruptTableError{Key: string(dk), Reason: "malformed descriptor"}
+	}
+	return &desc, nil
 }
 
 // Get returns up to limit of id's entries from index from, fewer at the end

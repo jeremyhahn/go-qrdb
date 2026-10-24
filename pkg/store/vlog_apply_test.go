@@ -300,6 +300,48 @@ func TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer(t *testing.T) {
 	}
 }
 
+// TestStoreVerifiableLog_SigningKeySurvivesSnapshot covers the head-signing
+// key a keyed Create writes: it is part of the log's table, so a snapshot
+// carries it to a follower, which reads the same key back.
+func TestStoreVerifiableLog_SigningKeySurvivesSnapshot(t *testing.T) {
+	for _, kind := range auditSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			ctx := context.Background()
+			p := enc(t)
+			key, err := vlog.GenerateSigningKey(vlog.SignatureECDSAP256SHA256, vlog.FirstKeyVersion)
+			if err != nil {
+				t.Fatalf("GenerateSigningKey: %v", err)
+			}
+			desc := storeLogDescriptor()
+			desc.KeyRef = vlog.KeyRef(key.Version)
+			leader := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+			requireNoRefusal(t, leader.apply(t, p(protocol.EncodeVerifiableLogCreateWithKey(storeLog, desc, key))))
+
+			var buf bytes.Buffer
+			snap, err := leader.sm.PrepareSnapshot()
+			if err != nil {
+				t.Fatalf("PrepareSnapshot: %v", err)
+			}
+			if err := leader.sm.SaveSnapshot(ctx, snap, &buf, make(chan struct{})); err != nil {
+				t.Fatalf("SaveSnapshot: %v", err)
+			}
+			follower := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+			if err := follower.sm.RecoverFromSnapshot(ctx, &buf, make(chan struct{})); err != nil {
+				t.Fatalf("RecoverFromSnapshot: %v", err)
+			}
+
+			got, err := vlog.ReadSigningKey(follower.reader(), storeLog, key.Version)
+			if err != nil || !reflect.DeepEqual(*got, key) {
+				t.Fatalf("follower ReadSigningKey = %+v, %v; want the leader's key", got, err)
+			}
+			d, err := vlog.ReadDescriptor(follower.reader(), storeLog)
+			if err != nil || d.KeyRef != desc.KeyRef {
+				t.Fatalf("follower ReadDescriptor = %+v, %v; want KeyRef %q", d, err, desc.KeyRef)
+			}
+		})
+	}
+}
+
 // TestStoreVerifiableLog_ReopenMatchesAPeer pins that a replica reopened from
 // its own directory, with a fresh registry, serves what a peer that never
 // restarted serves, and that its next append writes the same records.
