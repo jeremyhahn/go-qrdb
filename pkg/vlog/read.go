@@ -120,8 +120,13 @@ func ReadDescriptor(r storage.Reader, id LogID) (*Descriptor, error) {
 	if err := id.Validate(); err != nil {
 		return nil, err
 	}
+	return readDescriptor(r.Get, id)
+}
+
+// readDescriptor reads and decodes id's descriptor through get.
+func readDescriptor(get getFunc, id LogID) (*Descriptor, error) {
 	dk := descriptorKey(id)
-	raw, err := r.Get(dk)
+	raw, err := get(dk)
 	if err != nil {
 		return nil, &TableReadError{Err: err}
 	}

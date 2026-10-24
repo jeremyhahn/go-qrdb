@@ -68,6 +68,15 @@ var keyHashes = map[SignatureType]func(name string, pub crypto.PublicKey) []byte
 	},
 }
 
+// Check refuses a signature type other than the two a head may be signed
+// with, before a key is asked for.
+func (t SignatureType) Check() error {
+	if _, ok := keyHashes[t]; !ok {
+		return &UnsupportedKeyTypeError{Type: string(t)}
+	}
+	return nil
+}
+
 // FirstKeyVersion is the version of the key a log is created with. Rotation
 // appends k/<version+1> in one proposal.
 const FirstKeyVersion uint32 = 1
@@ -145,9 +154,17 @@ func signatureTypeOf(key crypto.Signer) (SignatureType, error) {
 // publicSignatureType maps a public key to the signature type it verifies.
 func publicSignatureType(pub crypto.PublicKey) (SignatureType, error) {
 	switch p := pub.(type) {
+	case nil:
+		return "", &InvalidSigningKeyError{Reason: "no public key"}
 	case ed25519.PublicKey:
+		if len(p) != ed25519.PublicKeySize {
+			return "", &InvalidSigningKeyError{Reason: "ed25519 public key of " + strconv.Itoa(len(p)) + " bytes"}
+		}
 		return SignatureEd25519, nil
 	case *ecdsa.PublicKey:
+		if p == nil || p.Curve == nil || p.X == nil || p.Y == nil {
+			return "", &InvalidSigningKeyError{Reason: "no ecdsa public key"}
+		}
 		if p.Curve == elliptic.P256() {
 			return SignatureECDSAP256SHA256, nil
 		}
@@ -252,6 +269,20 @@ func VerifyHead(pub crypto.PublicKey, origin string, h SignedHead) error {
 	return nil
 }
 
+// VerifyHead checks h against the key the descriptor records at h's key
+// version, whichever provider holds that key's private half.
+func (d Descriptor) VerifyHead(h SignedHead) error {
+	key, ok := d.Key(h.KeyVersion)
+	if !ok {
+		return &HeadSignatureError{Reason: "the log records no key version " + KeyRef(h.KeyVersion)}
+	}
+	pub, err := key.Public()
+	if err != nil {
+		return err
+	}
+	return VerifyHead(pub, d.Origin, h)
+}
+
 // HeadSigner signs a log's checkpoints with the log owner's key. Name, KeyHash
 // and Sign have the shape of golang.org/x/mod/sumdb/note's Signer with a
 // context added; KeyVersion, SignatureType and Public let the service record
@@ -271,9 +302,137 @@ type HeadSigner interface {
 	Sign(ctx context.Context, msg []byte) ([]byte, error)
 }
 
-// HeadSignerProvider returns the signer for one log's owner key.
+// HeadSignerProvider is the seam through which a log's head-signing key is
+// created and used: go-qrdb ships the software provider, which keeps the key
+// in the log's own sealed k/<version> record, and a composer passes a
+// hardware or KMS provider in with server.WithHeadSignerProvider, as it
+// passes a seal.BarrierKeyProvider or a dek.Provider. The service never makes
+// a key itself: create and rotation ask CreateKey, signing asks HeadSigner.
 type HeadSignerProvider interface {
+	// CreateKey makes a new key of req.Type for the log at req.Version.
+	CreateKey(ctx context.Context, req CreateKeyRequest) (CreatedKey, error)
+	// HeadSigner returns the signer over the key req names.
 	HeadSigner(ctx context.Context, req HeadSignerRequest) (HeadSigner, error)
+}
+
+// CreateKeyRequest names the log a key is created for, the key's type and
+// its version: FirstKeyVersion at create, one more than the log's current
+// key at rotation.
+type CreateKeyRequest struct {
+	TenantID string
+	Database string
+	Log      string
+	Type     SignatureType
+	Version  uint32
+}
+
+// CreatedKey is a key a HeadSignerProvider created.
+type CreatedKey struct {
+	// Ref is the provider's reference to the key, recorded in the log's
+	// descriptor and passed back in HeadSignerRequest.KeyRef.
+	Ref string
+
+	// Public is the key's public half.
+	Public crypto.PublicKey
+
+	// Record is the k/<version> record the log stores in the same proposal
+	// that records the key. Only the software provider sets it; a provider
+	// that keeps its key outside go-qrdb leaves it nil, and no key record is
+	// written.
+	Record *SigningKey
+}
+
+// HeadKey checks k against the request that created it and returns the
+// descriptor's record of it: the public key must be of the requested type,
+// and a key record must be at the requested version and hold the same key.
+func (k CreatedKey) HeadKey(req CreateKeyRequest) (HeadKey, error) {
+	hk, err := NewHeadKey(req.Version, k.Ref, k.Public)
+	if err != nil {
+		return HeadKey{}, err
+	}
+	if t, _ := publicSignatureType(k.Public); t != req.Type {
+		return HeadKey{}, &InvalidSigningKeyError{Reason: "provider made a " + string(t) + " key, want " + string(req.Type)}
+	}
+	if k.Record != nil {
+		if err := hk.matches(*k.Record); err != nil {
+			return HeadKey{}, err
+		}
+	}
+	return hk, nil
+}
+
+// HeadKey is one version of the key that signs a log's heads, as the log's
+// descriptor records it: the provider's reference to the key and its public
+// half, so a head verifies against the key the log recorded, whichever
+// provider holds the private half.
+type HeadKey struct {
+	// Version is the key's version: FirstKeyVersion for the key a log is
+	// created with, one more at each rotation. A signed head carries it.
+	Version uint32 `json:"version"`
+
+	// Ref is the provider's opaque reference to the key; for the software
+	// provider, KeyRef(Version).
+	Ref string `json:"ref"`
+
+	// PublicKey is the key's public half, PKIX DER.
+	PublicKey []byte `json:"public_key"`
+}
+
+// NewHeadKey records pub, referenced by ref, as the key at version.
+func NewHeadKey(version uint32, ref string, pub crypto.PublicKey) (HeadKey, error) {
+	if version == 0 {
+		return HeadKey{}, &InvalidSigningKeyError{Reason: "key version 0"}
+	}
+	if ref == "" {
+		return HeadKey{}, &InvalidSigningKeyError{Reason: "empty key reference"}
+	}
+	if _, err := publicSignatureType(pub); err != nil {
+		return HeadKey{}, err
+	}
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return HeadKey{}, &InvalidSigningKeyError{Reason: "public key: " + err.Error()}
+	}
+	return HeadKey{Version: version, Ref: ref, PublicKey: der}, nil
+}
+
+// Public parses the key's public half, refusing one that is neither Ed25519
+// nor ECDSA P-256.
+func (k HeadKey) Public() (crypto.PublicKey, error) {
+	pub, err := x509.ParsePKIXPublicKey(k.PublicKey)
+	if err != nil {
+		return nil, &InvalidSigningKeyError{Reason: "public key: " + err.Error()}
+	}
+	if _, err := publicSignatureType(pub); err != nil {
+		return nil, err
+	}
+	return pub, nil
+}
+
+// validate refuses a key record a descriptor cannot hold.
+func (k HeadKey) validate() error {
+	if k.Version == 0 || k.Ref == "" {
+		return &InvalidSigningKeyError{Reason: "key version " + strconv.FormatUint(uint64(k.Version), 10) + " with reference " + strconv.Quote(k.Ref)}
+	}
+	_, err := k.Public()
+	return err
+}
+
+// matches refuses a k/<version> record that is not this key.
+func (k HeadKey) matches(record SigningKey) error {
+	signer, _, err := record.Signer()
+	if err != nil {
+		return err
+	}
+	if record.Version != k.Version {
+		return &InvalidSigningKeyError{Reason: "key record version " + KeyRef(record.Version) + " for key version " + KeyRef(k.Version)}
+	}
+	// A key Signer decoded is Ed25519 or P-256, which always marshals.
+	der, _ := x509.MarshalPKIXPublicKey(signer.Public())
+	if !bytes.Equal(der, k.PublicKey) {
+		return &InvalidSigningKeyError{Reason: "key record does not hold the recorded public key"}
+	}
+	return nil
 }
 
 // HeadSignerRequest names the log and the owner's key for it.
@@ -281,9 +440,11 @@ type HeadSignerRequest struct {
 	TenantID string
 	Database string
 	Log      string
-	// KeyRef is the owner's opaque reference to its key, recorded in the
-	// descriptor at create; for the software provider, the key version.
+	// KeyRef is the provider's reference to the key, as CreateKey returned
+	// it and the descriptor records it.
 	KeyRef string
+	// KeyVersion is the version of the key, which the signer reports.
+	KeyVersion uint32
 }
 
 // SignHead signs the tree of size entries with root, and verifies the

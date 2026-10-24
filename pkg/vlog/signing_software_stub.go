@@ -29,6 +29,11 @@ func NewSoftwareHeadSignerProvider(keys SigningKeyReader) *SoftwareHeadSignerPro
 	return &SoftwareHeadSignerProvider{}
 }
 
+// CreateKey refuses: head signing is not compiled in.
+func (p *SoftwareHeadSignerProvider) CreateKey(ctx context.Context, req CreateKeyRequest) (CreatedKey, error) {
+	return CreatedKey{}, &NotCompiledError{}
+}
+
 // HeadSigner refuses: head signing is not compiled in.
 func (p *SoftwareHeadSignerProvider) HeadSigner(ctx context.Context, req HeadSignerRequest) (HeadSigner, error) {
 	return nil, &NotCompiledError{}

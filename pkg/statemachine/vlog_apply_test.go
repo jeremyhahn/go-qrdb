@@ -33,6 +33,21 @@ func applyDescriptor(expire bool) vlog.Descriptor {
 	return vlog.Descriptor{Origin: "db.example.com/acme/certs", Hash: vlog.HashSHA256, VerifierKeys: []string{"key-1"}, AllowExpireBodies: expire}
 }
 
+// applyHeadKey returns the descriptor's record of key: its version, its
+// software reference and its public key.
+func applyHeadKey(t *testing.T, key vlog.SigningKey) vlog.HeadKey {
+	t.Helper()
+	signer, _, err := key.Signer()
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	hk, err := vlog.NewHeadKey(key.Version, vlog.KeyRef(key.Version), signer.Public())
+	if err != nil {
+		t.Fatalf("NewHeadKey: %v", err)
+	}
+	return hk
+}
+
 // payloadOf returns a function that takes an encoder's two results and
 // answers the command's payload -- what a state machine's dispatch hands its
 // handler -- failing t on an encode error, so a call reads
@@ -208,7 +223,7 @@ func TestApplyVerifiableLog_CreateWithKey(t *testing.T) {
 		t.Fatalf("GenerateSigningKey: %v", err)
 	}
 	desc := applyDescriptor(false)
-	desc.KeyRef = vlog.KeyRef(key.Version)
+	desc.Keys = []vlog.HeadKey{applyHeadKey(t, key)}
 
 	t.Run("applied", func(t *testing.T) {
 		logs, stg := vlog.NewChain(), memory.NewStorage()
@@ -244,6 +259,104 @@ func TestApplyVerifiableLog_CreateWithKey(t *testing.T) {
 		}
 		if keys, err := stg.List([]byte(vlog.LogTablePrefix)); err != nil || len(keys) != 0 {
 			t.Fatalf("a refused create left %d records (%v)", len(keys), err)
+		}
+	})
+}
+
+// TestApplyVerifiableLog_RotateKey covers a RotateKey: the next key is
+// appended to the descriptor, the software record lands in the same apply,
+// a key held outside go-qrdb lands with no record, and a version other than
+// the next one is refused as a conflict with nothing written.
+func TestApplyVerifiableLog_RotateKey(t *testing.T) {
+	p := payloadOf(t)
+	first, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	second, err := vlog.GenerateSigningKey(vlog.SignatureECDSAP256SHA256, vlog.FirstKeyVersion+1)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	created := func(t *testing.T) (*vlog.Chain, *memory.MemoryStorage) {
+		t.Helper()
+		desc := applyDescriptor(false)
+		desc.Keys = []vlog.HeadKey{applyHeadKey(t, first)}
+		logs, stg := vlog.NewChain(), memory.NewStorage()
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogCreateWithKey(applyLog, desc, first)))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog: %v", err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); ok {
+			t.Fatalf("create refused: %+v", res)
+		}
+		return logs, stg
+	}
+	next := applyHeadKey(t, second)
+
+	t.Run("software record", func(t *testing.T) {
+		logs, stg := created(t)
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogRotateKey(applyLog, next, &second)))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog: %v", err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); ok || res.Value != uint64(second.Version) {
+			t.Fatalf("result = %+v, want the new version %d", res, second.Version)
+		}
+		desc, err := vlog.ReadDescriptor(stg, applyLog)
+		if err != nil {
+			t.Fatalf("Descriptor: %v", err)
+		}
+		if cur, ok := desc.CurrentKey(); !ok || cur.Version != second.Version || len(desc.Keys) != 2 {
+			t.Fatalf("descriptor keys = %+v, want two with version %d current", desc.Keys, second.Version)
+		}
+		got, err := vlog.ReadSigningKey(stg, applyLog, second.Version)
+		if err != nil || !bytes.Equal(got.PKCS8, second.PKCS8) {
+			t.Fatalf("ReadSigningKey = %+v, %v", got, err)
+		}
+	})
+
+	t.Run("external key", func(t *testing.T) {
+		logs, stg := created(t)
+		external := next
+		external.Ref = "hsm:slot-2"
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogRotateKey(applyLog, external, nil)))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog: %v", err)
+		}
+		if _, ok := protocol.DecodeAppError(res.Data); ok {
+			t.Fatalf("rotate refused: %+v", res)
+		}
+		var notFound *vlog.KeyNotFoundError
+		if _, err := vlog.ReadSigningKey(stg, applyLog, second.Version); !errors.As(err, &notFound) {
+			t.Fatalf("ReadSigningKey = %v, want KeyNotFoundError: an external key writes no record", err)
+		}
+	})
+
+	t.Run("version conflict", func(t *testing.T) {
+		logs, stg := created(t)
+		stale := applyHeadKey(t, first)
+		res, err := ApplyVerifiableLog(logs, stg, stg, p(protocol.EncodeVerifiableLogRotateKey(applyLog, stale, nil)))
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog = %v, want a refusal result", err)
+		}
+		if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorConflict {
+			t.Fatalf("result %+v, want a conflict refusal", res)
+		}
+		desc, err := vlog.ReadDescriptor(stg, applyLog)
+		if err != nil || len(desc.Keys) != 1 {
+			t.Fatalf("descriptor keys = %+v (%v), want the one key left alone", desc.Keys, err)
+		}
+	})
+
+	t.Run("malformed body", func(t *testing.T) {
+		logs, stg := created(t)
+		payload := p(protocol.EncodeVerifiableLogRotateKey(applyLog, next, nil))
+		res, err := ApplyVerifiableLog(logs, stg, stg, payload[:len(payload)-1])
+		if err != nil {
+			t.Fatalf("ApplyVerifiableLog = %v, want a refusal result", err)
+		}
+		if _, kind, ok := protocol.DecodeAppErrorKind(res.Data); !ok || kind != protocol.AppErrorInvalid {
+			t.Fatalf("result %+v, want an invalid refusal", res)
 		}
 	})
 }

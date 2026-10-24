@@ -31,6 +31,24 @@ func TestStubSoftwareHeadSignerProvider_RefusesNotCompiled(t *testing.T) {
 	}
 }
 
+func TestStubSoftwareHeadSignerProvider_CreateKeyRefusesNotCompiled(t *testing.T) {
+	var nce *NotCompiledError
+	k, err := NewSoftwareHeadSignerProvider(nil).CreateKey(context.Background(),
+		CreateKeyRequest{TenantID: testLog.TenantID, Database: testLog.Database, Log: testLog.Log, Type: SignatureEd25519, Version: FirstKeyVersion})
+	if k.Record != nil || k.Public != nil || !errors.As(err, &nce) {
+		t.Fatalf("CreateKey = %+v, %v; want *NotCompiledError", k, err)
+	}
+}
+
+func TestStubSoftwareHeadSignerProvider_CreateKeyRefusesEveryType(t *testing.T) {
+	for _, st := range signatureTypes {
+		var nce *NotCompiledError
+		if _, err := NewSoftwareHeadSignerProvider(nil).CreateKey(context.Background(), CreateKeyRequest{Type: st, Version: 2}); !errors.As(err, &nce) {
+			t.Fatalf("CreateKey(%s) = %v; want *NotCompiledError", st, err)
+		}
+	}
+}
+
 func TestStubNewSoftwareHeadSigner_RefusesNotCompiled(t *testing.T) {
 	var nce *NotCompiledError
 	s, err := NewSoftwareHeadSigner("n", mustKey(t, SignatureEd25519))

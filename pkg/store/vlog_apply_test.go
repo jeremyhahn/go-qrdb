@@ -313,7 +313,15 @@ func TestStoreVerifiableLog_SigningKeySurvivesSnapshot(t *testing.T) {
 				t.Fatalf("GenerateSigningKey: %v", err)
 			}
 			desc := storeLogDescriptor()
-			desc.KeyRef = vlog.KeyRef(key.Version)
+			signer, _, err := key.Signer()
+			if err != nil {
+				t.Fatalf("Signer: %v", err)
+			}
+			hk, err := vlog.NewHeadKey(key.Version, vlog.KeyRef(key.Version), signer.Public())
+			if err != nil {
+				t.Fatalf("NewHeadKey: %v", err)
+			}
+			desc.Keys = []vlog.HeadKey{hk}
 			leader := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
 			requireNoRefusal(t, leader.apply(t, p(protocol.EncodeVerifiableLogCreateWithKey(storeLog, desc, key))))
 
@@ -335,8 +343,8 @@ func TestStoreVerifiableLog_SigningKeySurvivesSnapshot(t *testing.T) {
 				t.Fatalf("follower ReadSigningKey = %+v, %v; want the leader's key", got, err)
 			}
 			d, err := vlog.ReadDescriptor(follower.reader(), storeLog)
-			if err != nil || d.KeyRef != desc.KeyRef {
-				t.Fatalf("follower ReadDescriptor = %+v, %v; want KeyRef %q", d, err, desc.KeyRef)
+			if err != nil || !reflect.DeepEqual(d.Keys, desc.Keys) {
+				t.Fatalf("follower ReadDescriptor = %+v, %v; want keys %+v", d, err, desc.Keys)
 			}
 		})
 	}

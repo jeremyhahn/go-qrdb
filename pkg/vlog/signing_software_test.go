@@ -173,7 +173,7 @@ func TestChain_CreateWithKey_StagesTheKeyBesideTheLog(t *testing.T) {
 			stg := memory.NewStorage()
 			key := mustKey(t, st)
 			c := NewChain()
-			if err := c.CreateWithKey(stg, testLog, keyedDescriptor(), key); err != nil {
+			if err := c.CreateWithKey(stg, testLog, keyedDescriptor(t, key), key); err != nil {
 				t.Fatalf("CreateWithKey: %v", err)
 			}
 			got, err := ReadSigningKey(stg, testLog, key.Version)
@@ -181,8 +181,8 @@ func TestChain_CreateWithKey_StagesTheKeyBesideTheLog(t *testing.T) {
 				t.Fatalf("ReadSigningKey = %+v, %v; want %+v", got, err, key)
 			}
 			desc, err := ReadDescriptor(stg, testLog)
-			if err != nil || desc.KeyRef != KeyRef(key.Version) {
-				t.Fatalf("ReadDescriptor = %+v, %v; want KeyRef %q", desc, err, KeyRef(key.Version))
+			if want := []HeadKey{headKeyOf(t, key)}; err != nil || !reflect.DeepEqual(desc.Keys, want) {
+				t.Fatalf("ReadDescriptor = %+v, %v; want Keys %+v", desc, err, want)
 			}
 			// The key record is in the log's table: the internal namespace
 			// KV Range never returns, and the snapshot keeps.
@@ -196,11 +196,11 @@ func TestChain_CreateWithKey_StagesTheKeyBesideTheLog(t *testing.T) {
 				t.Fatalf("Restore: %v", err)
 			}
 			var lee *LogExistsError
-			if err := restarted.CreateWithKey(stg, testLog, keyedDescriptor(), key); !errors.As(err, &lee) {
+			if err := restarted.CreateWithKey(stg, testLog, keyedDescriptor(t, key), key); !errors.As(err, &lee) {
 				t.Fatalf("second CreateWithKey = %v, want *LogExistsError", err)
 			}
 			signer, err := NewSoftwareHeadSignerProvider(keyReader{stg}).HeadSigner(context.Background(),
-				HeadSignerRequest{TenantID: testLog.TenantID, Database: testLog.Database, Log: testLog.Log, KeyRef: desc.KeyRef})
+				HeadSignerRequest{TenantID: testLog.TenantID, Database: testLog.Database, Log: testLog.Log, KeyRef: desc.Keys[0].Ref, KeyVersion: desc.Keys[0].Version})
 			if err != nil {
 				t.Fatalf("HeadSigner: %v", err)
 			}
@@ -218,10 +218,84 @@ func TestSoftwareHeadSignerProvider_Refusals(t *testing.T) {
 	if _, err := p.HeadSigner(context.Background(), req); !errors.As(err, &ske) {
 		t.Fatalf("no KeyRef: %v, want *InvalidSigningKeyError", err)
 	}
+	req.KeyRef = "2"
+	req.KeyVersion = 1
+	if _, err := p.HeadSigner(context.Background(), req); !errors.As(err, &ske) {
+		t.Fatalf("KeyRef for another version: %v, want *InvalidSigningKeyError", err)
+	}
 	req.KeyRef = "1"
 	var lnf *LogNotFoundError
 	if _, err := p.HeadSigner(context.Background(), req); !errors.As(err, &lnf) {
 		t.Fatalf("no log: %v, want *LogNotFoundError", err)
+	}
+}
+
+// TestSoftwareHeadSignerProvider_CreateKeyIsTheSealedRecord checks the
+// default provider's key is a k/<version> record the log stores atomically
+// with its descriptor, and the heads it signs verify against the descriptor.
+func TestSoftwareHeadSignerProvider_CreateKeyIsTheSealedRecord(t *testing.T) {
+	for _, st := range signatureTypes {
+		t.Run(string(st), func(t *testing.T) {
+			stg := memory.NewStorage()
+			p := NewSoftwareHeadSignerProvider(keyReader{stg})
+			req := CreateKeyRequest{TenantID: testLog.TenantID, Database: testLog.Database, Log: testLog.Log, Type: st, Version: FirstKeyVersion}
+			created, err := p.CreateKey(context.Background(), req)
+			if err != nil {
+				t.Fatalf("CreateKey: %v", err)
+			}
+			if created.Record == nil || created.Record.Version != FirstKeyVersion || created.Ref != KeyRef(FirstKeyVersion) {
+				t.Fatalf("CreateKey = %+v, want a version-1 record referenced %q", created, KeyRef(FirstKeyVersion))
+			}
+			hk, err := created.HeadKey(req)
+			if err != nil {
+				t.Fatalf("HeadKey: %v", err)
+			}
+			desc := testDescriptor(false)
+			desc.Keys = []HeadKey{hk}
+			b := &batch{}
+			if err := NewChain().CreateWithKey(b, testLog, desc, *created.Record); err != nil {
+				t.Fatalf("CreateWithKey: %v", err)
+			}
+			// The descriptor and the key record are in one batch.
+			var sawDescriptor, sawKey bool
+			for _, op := range b.ops {
+				sawDescriptor = sawDescriptor || bytes.Equal(op.key, descriptorKey(testLog))
+				sawKey = sawKey || bytes.Equal(op.key, keyKey(testLog, FirstKeyVersion))
+			}
+			if !sawDescriptor || !sawKey {
+				t.Fatalf("create batch: descriptor %v, key record %v; want both", sawDescriptor, sawKey)
+			}
+			b.commit(t, stg)
+			signer, err := p.HeadSigner(context.Background(), HeadSignerRequest{
+				TenantID: testLog.TenantID, Database: testLog.Database, Log: testLog.Log, KeyRef: hk.Ref, KeyVersion: hk.Version})
+			if err != nil {
+				t.Fatalf("HeadSigner: %v", err)
+			}
+			h, err := SignHead(context.Background(), signer, desc.Origin, 1, make([]byte, 32))
+			if err != nil {
+				t.Fatalf("SignHead: %v", err)
+			}
+			if err := desc.VerifyHead(h); err != nil {
+				t.Fatalf("Descriptor.VerifyHead: %v", err)
+			}
+		})
+	}
+}
+
+func TestSoftwareHeadSignerProvider_CreateKeyRefusals(t *testing.T) {
+	p := NewSoftwareHeadSignerProvider(keyReader{memory.NewStorage()})
+	var uke *UnsupportedKeyTypeError
+	if _, err := p.CreateKey(context.Background(), CreateKeyRequest{Type: "rsa-pss", Version: 1}); !errors.As(err, &uke) {
+		t.Fatalf("rsa: CreateKey = %v, want *UnsupportedKeyTypeError", err)
+	}
+	var ske *InvalidSigningKeyError
+	if _, err := p.CreateKey(context.Background(), CreateKeyRequest{Type: SignatureEd25519}); !errors.As(err, &ske) {
+		t.Fatalf("version 0: CreateKey = %v, want *InvalidSigningKeyError", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.CreateKey(ctx, CreateKeyRequest{Type: SignatureEd25519, Version: 1}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled: CreateKey = %v, want context.Canceled", err)
 	}
 }
 

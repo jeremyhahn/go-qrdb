@@ -37,16 +37,31 @@ type logService struct {
 
 var _ LogService = (*logService)(nil)
 
-// NewLogService returns the LogService cfg composes; both of its fields are
-// required.
+// NewLogService returns the LogService cfg composes. The resolver is
+// required; a nil Signers is the software HeadSignerProvider, reading each
+// log's k/<version> record through the log's group.
 func NewLogService(cfg LogServiceConfig) (LogService, error) {
 	if cfg.Resolver == nil {
 		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog shard resolver"}
 	}
-	if cfg.Signers == nil {
-		return nil, &SubsystemNotConfiguredError{Subsystem: "vlog head signer provider"}
+	signers := cfg.Signers
+	if signers == nil {
+		signers = vlog.NewSoftwareHeadSignerProvider(&logKeyReader{resolver: cfg.Resolver})
 	}
-	return &logService{resolver: cfg.Resolver, signers: cfg.Signers}, nil
+	return &logService{resolver: cfg.Resolver, signers: signers}, nil
+}
+
+// logKeyReader is the vlog.SigningKeyReader the software provider reads a
+// log's key through: a linearizable read of the group that holds the log.
+type logKeyReader struct {
+	resolver AuditShardResolver
+}
+
+var _ vlog.SigningKeyReader = (*logKeyReader)(nil)
+
+// ReadSigningKey reads id's k/<version> record.
+func (r *logKeyReader) ReadSigningKey(ctx context.Context, id vlog.LogID, version uint32) (*vlog.SigningKey, error) {
+	return logRead[*vlog.SigningKey](ctx, r.resolver, id.TenantID, vlog.KeyRequest{ID: id, Version: version})
 }
 
 // logID confines ref to the caller's tenant and validates the name.
@@ -88,9 +103,9 @@ func (s *logService) propose(ctx context.Context, tenantID string, encode func()
 }
 
 // read answers one vlog.Request from the tenant's group.
-func logRead[T any](ctx context.Context, s *logService, tenantID string, req vlog.Request) (T, error) {
+func logRead[T any](ctx context.Context, resolver AuditShardResolver, tenantID string, req vlog.Request) (T, error) {
 	var zero T
-	host, shardID, err := s.resolver.ResolveAuditShard(ctx, tenantID)
+	host, shardID, err := resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
 		return zero, err
 	}
@@ -109,8 +124,10 @@ func logRead[T any](ctx context.Context, s *logService, tenantID string, req vlo
 	return v, nil
 }
 
-// CreateLog creates a log, with its own software key when the request names
-// a key type.
+// CreateLog creates a log and, when the request names a key type, its first
+// head-signing key, which the HeadSignerProvider creates. The descriptor
+// records the provider's reference and the public key; a key record the
+// provider returns is written by the same proposal as the log.
 func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*CreateLogResponse, error) {
 	id, err := logID(ctx, req.LogRef, "create a verifiable log")
 	if err != nil {
@@ -121,21 +138,67 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 		Hash:              vlog.HashSHA256,
 		VerifierKeys:      req.VerifierKeys,
 		AllowExpireBodies: req.AllowExpireBodies,
-		KeyRef:            req.KeyRef,
 	}
+	resp := &CreateLogResponse{ID: id}
 	encode := func() ([]byte, error) { return protocol.EncodeVerifiableLogCreate(id, desc) }
 	if req.SigningKeyType != "" {
-		key, err := vlog.GenerateSigningKey(req.SigningKeyType, vlog.FirstKeyVersion)
+		key, record, err := s.createKey(ctx, id, req.SigningKeyType, vlog.FirstKeyVersion)
 		if err != nil {
 			return nil, err
 		}
-		desc.KeyRef = vlog.KeyRef(key.Version)
-		encode = func() ([]byte, error) { return protocol.EncodeVerifiableLogCreateWithKey(id, desc, key) }
+		desc.Keys = []vlog.HeadKey{key}
+		resp.Key = &key
+		if record != nil {
+			encode = func() ([]byte, error) { return protocol.EncodeVerifiableLogCreateWithKey(id, desc, *record) }
+		}
 	}
 	if _, err := s.propose(ctx, id.TenantID, encode); err != nil {
 		return nil, err
 	}
-	return &CreateLogResponse{ID: id, KeyRef: desc.KeyRef}, nil
+	return resp, nil
+}
+
+// RotateKey has the HeadSignerProvider create the log's next key and makes
+// it the key that signs new heads. Earlier keys stay recorded, so every head
+// already signed still verifies; of two rotations racing from the same key,
+// the second to apply is refused as a conflict.
+func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*RotateKeyResponse, error) {
+	id, err := logID(ctx, req.LogRef, "rotate a verifiable log's key")
+	if err != nil {
+		return nil, err
+	}
+	desc, err := logRead[*vlog.Descriptor](ctx, s.resolver, id.TenantID, vlog.DescriptorRequest{ID: id})
+	if err != nil {
+		return nil, err
+	}
+	key, record, err := s.createKey(ctx, id, req.SigningKeyType, vlog.FirstKeyVersion+uint32(len(desc.Keys)))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.propose(ctx, id.TenantID, func() ([]byte, error) {
+		return protocol.EncodeVerifiableLogRotateKey(id, key, record)
+	}); err != nil {
+		return nil, err
+	}
+	return &RotateKeyResponse{Key: key}, nil
+}
+
+// createKey asks the provider for id's key of type t at version and checks
+// what it returns before anything is proposed.
+func (s *logService) createKey(ctx context.Context, id vlog.LogID, t vlog.SignatureType, version uint32) (vlog.HeadKey, *vlog.SigningKey, error) {
+	if err := t.Check(); err != nil {
+		return vlog.HeadKey{}, nil, err
+	}
+	req := vlog.CreateKeyRequest{TenantID: id.TenantID, Database: id.Database, Log: id.Log, Type: t, Version: version}
+	created, err := s.signers.CreateKey(ctx, req)
+	if err != nil {
+		return vlog.HeadKey{}, nil, err
+	}
+	key, err := created.HeadKey(req)
+	if err != nil {
+		return vlog.HeadKey{}, nil, err
+	}
+	return key, created.Record, nil
 }
 
 // ListLogs lists the logs in one of the caller's databases.
@@ -145,7 +208,7 @@ func (s *logService) ListLogs(ctx context.Context, req *ListLogsRequest) (*ListL
 		return nil, err
 	}
 	target := routingTenant(own)
-	logs, err := logRead[[]vlog.LogID](ctx, s, target, vlog.ListRequest{TenantID: target, Database: req.Database})
+	logs, err := logRead[[]vlog.LogID](ctx, s.resolver, target, vlog.ListRequest{TenantID: target, Database: req.Database})
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +236,7 @@ func (s *logService) GetEntries(ctx context.Context, req *GetEntriesRequest) (*G
 	if err != nil {
 		return nil, err
 	}
-	entries, err := logRead[[]vlog.Entry](ctx, s, id.TenantID, vlog.GetRequest{ID: id, From: req.From, Limit: req.Limit})
+	entries, err := logRead[[]vlog.Entry](ctx, s.resolver, id.TenantID, vlog.GetRequest{ID: id, From: req.From, Limit: req.Limit})
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +249,7 @@ func (s *logService) ProveInclusion(ctx context.Context, req *InclusionRequest) 
 	if err != nil {
 		return nil, err
 	}
-	hashes, err := logRead[[][]byte](ctx, s, id.TenantID, vlog.InclusionRequest{ID: id, Index: req.Index, Size: req.Size})
+	hashes, err := logRead[[][]byte](ctx, s.resolver, id.TenantID, vlog.InclusionRequest{ID: id, Index: req.Index, Size: req.Size})
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +262,7 @@ func (s *logService) ProveConsistency(ctx context.Context, req *ConsistencyReque
 	if err != nil {
 		return nil, err
 	}
-	hashes, err := logRead[[][]byte](ctx, s, id.TenantID, vlog.ConsistencyRequest{ID: id, Size1: req.Size1, Size2: req.Size2})
+	hashes, err := logRead[[][]byte](ctx, s.resolver, id.TenantID, vlog.ConsistencyRequest{ID: id, Size1: req.Size1, Size2: req.Size2})
 	if err != nil {
 		return nil, err
 	}
@@ -212,38 +275,50 @@ func (s *logService) Head(ctx context.Context, req *HeadRequest) (*HeadResponse,
 	if err != nil {
 		return nil, err
 	}
-	head, err := logRead[*vlog.Head](ctx, s, id.TenantID, vlog.HeadRequest{ID: id})
+	head, err := logRead[*vlog.Head](ctx, s.resolver, id.TenantID, vlog.HeadRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
 	return &HeadResponse{Head: *head}, nil
 }
 
-// SignHead signs the log's current head with the signer its KeyRef names and
-// records the checkpoint. Apply checks the signed root against the tree at
-// that size, so a head signed while appends land is still recorded for the
-// size it names, and refuses a second checkpoint for the same size.
+// SignHead signs the log's current head with the provider's signer for the
+// log's current key, checks the signature against the public key the
+// descriptor records, and records the checkpoint. Apply checks the signed
+// root against the tree at that size, so a head signed while appends land is
+// still recorded for the size it names, and refuses a second checkpoint for
+// the same size.
 func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignHeadResponse, error) {
 	id, err := logID(ctx, req.LogRef, "sign a verifiable log's head")
 	if err != nil {
 		return nil, err
 	}
-	desc, err := logRead[*vlog.Descriptor](ctx, s, id.TenantID, vlog.DescriptorRequest{ID: id})
+	desc, err := logRead[*vlog.Descriptor](ctx, s.resolver, id.TenantID, vlog.DescriptorRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
-	head, err := logRead[*vlog.Head](ctx, s, id.TenantID, vlog.HeadRequest{ID: id})
+	key, ok := desc.CurrentKey()
+	if !ok {
+		return nil, &vlog.KeyNotFoundError{ID: id, Version: vlog.FirstKeyVersion}
+	}
+	head, err := logRead[*vlog.Head](ctx, s.resolver, id.TenantID, vlog.HeadRequest{ID: id})
 	if err != nil {
 		return nil, err
 	}
 	signer, err := s.signers.HeadSigner(ctx, vlog.HeadSignerRequest{
-		TenantID: id.TenantID, Database: id.Database, Log: id.Log, KeyRef: desc.KeyRef,
+		TenantID: id.TenantID, Database: id.Database, Log: id.Log, KeyRef: key.Ref, KeyVersion: key.Version,
 	})
 	if err != nil {
 		return nil, err
 	}
 	signed, err := vlog.SignHead(ctx, signer, desc.Origin, head.Size, head.Root)
 	if err != nil {
+		return nil, err
+	}
+	if signed.KeyVersion != key.Version {
+		return nil, &vlog.HeadSignatureError{Reason: "signer reports key version " + vlog.KeyRef(signed.KeyVersion) + ", want " + vlog.KeyRef(key.Version)}
+	}
+	if err := desc.VerifyHead(signed); err != nil {
 		return nil, err
 	}
 	note := signed.Encode()

@@ -242,6 +242,24 @@ func (e *KeyNotFoundError) Error() string {
 	return "vlog: log " + e.ID.String() + " has no signing key version " + strconv.FormatUint(uint64(e.Version), 10)
 }
 
+// KeyVersionConflictError is returned when a key rotation names a version
+// other than the one after the log's current key: another rotation applied
+// first.
+type KeyVersionConflictError struct {
+	ID LogID
+
+	// Version is the version the rotation named.
+	Version uint32
+
+	// Want is the version the next key must have.
+	Want uint32
+}
+
+func (e *KeyVersionConflictError) Error() string {
+	return "vlog: log " + e.ID.String() + " key rotation to version " + strconv.FormatUint(uint64(e.Version), 10) +
+		", want version " + strconv.FormatUint(uint64(e.Want), 10)
+}
+
 // HeadSignatureError is returned when a signed head does not decode, or its
 // signature does not verify.
 type HeadSignatureError struct {

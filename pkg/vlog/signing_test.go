@@ -44,9 +44,25 @@ func mustKey(t *testing.T, st SignatureType) SigningKey {
 	return k
 }
 
-func keyedDescriptor() Descriptor {
+// headKeyOf returns the descriptor's record of the software key k.
+func headKeyOf(t *testing.T, k SigningKey) HeadKey {
+	t.Helper()
+	signer, _, err := k.Signer()
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	hk, err := NewHeadKey(k.Version, KeyRef(k.Version), signer.Public())
+	if err != nil {
+		t.Fatalf("NewHeadKey: %v", err)
+	}
+	return hk
+}
+
+// keyedDescriptor returns a valid descriptor recording the software key k.
+func keyedDescriptor(t *testing.T, k SigningKey) Descriptor {
+	t.Helper()
 	d := testDescriptor(false)
-	d.KeyRef = KeyRef(FirstKeyVersion)
+	d.Keys = []HeadKey{headKeyOf(t, k)}
 	return d
 }
 
@@ -187,17 +203,23 @@ func TestChain_CreateWithKey_Refusals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
 	}
-	wrongRef := keyedDescriptor()
-	wrongRef.KeyRef = "2"
+	keyed := keyedDescriptor(t, key)
+	twoKeys := keyed
+	twoKeys.Keys = []HeadKey{keyed.Keys[0], keyed.Keys[0]}
+	laterVersion := key
+	laterVersion.Version = 2
 	cases := map[string]struct {
 		desc Descriptor
 		key  SigningKey
 		want any
 	}{
-		"rsa key":            {keyedDescriptor(), SigningKey{Version: 1, PKCS8: rsaDER}, new(*UnsupportedKeyTypeError)},
-		"malformed key":      {keyedDescriptor(), SigningKey{Version: 1, PKCS8: []byte("x")}, new(*InvalidSigningKeyError)},
-		"ref names no key":   {wrongRef, key, new(*InvalidDescriptorError)},
-		"invalid descriptor": {Descriptor{KeyRef: "1"}, key, new(*InvalidDescriptorError)},
+		"rsa key":                 {keyed, SigningKey{Version: 1, PKCS8: rsaDER}, new(*UnsupportedKeyTypeError)},
+		"malformed key":           {keyed, SigningKey{Version: 1, PKCS8: []byte("x")}, new(*InvalidSigningKeyError)},
+		"record is another key":   {keyedDescriptor(t, mustKey(t, SignatureEd25519)), key, new(*InvalidSigningKeyError)},
+		"record at other version": {keyed, laterVersion, new(*InvalidSigningKeyError)},
+		"no recorded key":         {testDescriptor(false), key, new(*InvalidDescriptorError)},
+		"two recorded keys":       {twoKeys, key, new(*InvalidDescriptorError)},
+		"invalid descriptor":      {Descriptor{Keys: keyed.Keys}, key, new(*InvalidDescriptorError)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -220,7 +242,8 @@ func TestChain_CreateWithKey_KeyWriteFaultLeavesNeither(t *testing.T) {
 	b := &batch{}
 	w := failingWriter{Writer: b, failSet: keyKey(testLog, FirstKeyVersion)}
 	var twe *TableWriteError
-	if err := c.CreateWithKey(w, testLog, keyedDescriptor(), mustKey(t, SignatureEd25519)); !errors.As(err, &twe) {
+	key := mustKey(t, SignatureEd25519)
+	if err := c.CreateWithKey(w, testLog, keyedDescriptor(t, key), key); !errors.As(err, &twe) {
 		t.Fatalf("CreateWithKey = %v, want *TableWriteError", err)
 	}
 	if _, err := c.AppendEntries(memory.NewStorage(), testLog, entries(0, 1)); err == nil {
@@ -269,7 +292,7 @@ func TestReadSigningKey_Refusals(t *testing.T) {
 func TestRead_AnswersDescriptorAndKeyRequests(t *testing.T) {
 	stg := memory.NewStorage()
 	key := mustKey(t, SignatureECDSAP256SHA256)
-	if err := NewChain().CreateWithKey(stg, testLog, keyedDescriptor(), key); err != nil {
+	if err := NewChain().CreateWithKey(stg, testLog, keyedDescriptor(t, key), key); err != nil {
 		t.Fatalf("CreateWithKey: %v", err)
 	}
 	got, err := ReadSnapshot(stg, KeyRequest{ID: testLog, Version: key.Version})
@@ -277,7 +300,7 @@ func TestRead_AnswersDescriptorAndKeyRequests(t *testing.T) {
 		t.Fatalf("KeyRequest = %v, %v", got, err)
 	}
 	d, err := ReadSnapshot(stg, DescriptorRequest{ID: testLog})
-	if err != nil || d.(*Descriptor).Origin != keyedDescriptor().Origin {
+	if err != nil || d.(*Descriptor).Origin != testDescriptor(false).Origin {
 		t.Fatalf("DescriptorRequest = %v, %v", d, err)
 	}
 }

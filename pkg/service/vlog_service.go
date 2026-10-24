@@ -37,6 +37,7 @@ type LogService interface {
 	ProveConsistency(ctx context.Context, req *ConsistencyRequest) (*ConsistencyResponse, error)
 	Head(ctx context.Context, req *HeadRequest) (*HeadResponse, error)
 	SignHead(ctx context.Context, req *SignHeadRequest) (*SignHeadResponse, error)
+	RotateKey(ctx context.Context, req *RotateKeyRequest) (*RotateKeyResponse, error)
 	ExpireBodies(ctx context.Context, req *ExpireBodiesRequest) (*ExpireBodiesResponse, error)
 }
 
@@ -46,8 +47,10 @@ type LogServiceConfig struct {
 	// service shares the audit resolver.
 	Resolver AuditShardResolver
 
-	// Signers yields the signer for a log's KeyRef: the software provider
-	// over the log's own key, or an owner's hardware or KMS provider.
+	// Signers creates each log's head-signing key and signs with it: a
+	// composer's hardware or KMS provider (server.WithHeadSignerProvider),
+	// or, when nil, the software provider over the log's own sealed
+	// k/<version> record.
 	Signers vlog.HeadSignerProvider
 }
 
@@ -59,23 +62,35 @@ type LogRef struct {
 	Log      string
 }
 
-// CreateLogRequest creates a log. A non-empty SigningKeyType has the service
-// generate the log's own software key of that type, stored with the log, and
-// record it as the descriptor's KeyRef; otherwise KeyRef is the owner's
-// opaque reference, passed to the HeadSignerProvider.
+// CreateLogRequest creates a log. A non-empty SigningKeyType has the
+// HeadSignerProvider create the log's first head-signing key of that type;
+// without one the log has no key, and SignHead refuses it until RotateKey
+// gives it one.
 type CreateLogRequest struct {
 	LogRef
 	Origin            string
 	VerifierKeys      []string
 	AllowExpireBodies bool
-	KeyRef            string
 	SigningKeyType    vlog.SignatureType
 }
 
-// CreateLogResponse names the created log and the KeyRef it records.
+// CreateLogResponse names the created log and, when it has one, the key the
+// descriptor records for it.
 type CreateLogResponse struct {
-	ID     vlog.LogID
-	KeyRef string
+	ID  vlog.LogID
+	Key *vlog.HeadKey
+}
+
+// RotateKeyRequest has the HeadSignerProvider create the log's next key, of
+// SigningKeyType.
+type RotateKeyRequest struct {
+	LogRef
+	SigningKeyType vlog.SignatureType
+}
+
+// RotateKeyResponse holds the key that now signs the log's heads.
+type RotateKeyResponse struct {
+	Key vlog.HeadKey
 }
 
 // ListLogsRequest lists the logs in one database.

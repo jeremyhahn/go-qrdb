@@ -69,6 +69,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // SQLProtocolServer is the interface implemented by MySQL and PostgreSQL
@@ -1361,6 +1362,7 @@ type CryptoOptions struct {
 	Clock                   clock.Clock
 	StorageFactory          StorageFactory
 	DEKProvider             dek.Provider
+	HeadSignerProvider      vlog.HeadSignerProvider
 	InvitationRedeemLimiter ratelimit.Limiter
 	HolderActLimiter        ratelimit.Limiter
 }
@@ -1399,6 +1401,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		Clock:                   o.clock,
 		StorageFactory:          o.storageFactory,
 		DEKProvider:             o.dekProvider,
+		HeadSignerProvider:      o.headSignerProvider,
 		InvitationRedeemLimiter: o.invitationRedeemLimiter,
 		HolderActLimiter:        o.holderActLimiter,
 	}

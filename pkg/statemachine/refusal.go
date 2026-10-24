@@ -95,6 +95,7 @@ var refusalRules = []refusalRule{
 	{isType[vlog.InvalidSigningKeyError], protocol.AppErrorInvalid},
 	{isType[vlog.LogExistsError], protocol.AppErrorConflict},
 	{isType[vlog.CheckpointExistsError], protocol.AppErrorConflict},
+	{isType[vlog.KeyVersionConflictError], protocol.AppErrorConflict},
 }
 
 // RefusalKind reports what kind of refusal err is, for a subsystem error a

@@ -144,6 +144,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -264,6 +265,14 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithHeadSignerProvider replaces the software head-signing key of every
+// verifiable log with a composer's vlog.HeadSignerProvider, typically one
+// that keeps the key on a device or in a KMS and never exports it.
+// Equivalent to server.WithHeadSignerProvider; forwarded in both boot paths.
+func WithHeadSignerProvider(p vlog.HeadSignerProvider) NodeOption {
+	return func(o *nodeOptions) { o.headSignerProvider = p }
+}
+
 // WithInvitationRedeemLimiter replaces the built-in token bucket that
 // throttles invitation redemption. Equivalent to
 // server.WithInvitationRedeemLimiter; the caller closes it.
@@ -288,6 +297,7 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 		server.WithClock(n.clock),
 		server.WithStorageFactory(n.storageFactory),
 		server.WithDEKProvider(n.dekProvider),
+		server.WithHeadSignerProvider(n.headSignerProvider),
 		server.WithInvitationRedeemLimiter(n.invitationRedeemLimiter),
 		server.WithHolderActLimiter(n.holderActLimiter),
 		server.WithCertKeyProviderFactory(n.certKeyProviderFactory),
@@ -391,14 +401,16 @@ type nodeOptions struct {
 	// before calling NewStandaloneNode / NewClusteredNode.
 	sealStrategy seal.SealingStrategy
 
-	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter,
-	// holderActLimiter, certKeyProviderFactory and certProvider are
+	// backupSink, storageFactory, dekProvider, headSignerProvider,
+	// invitationRedeemLimiter, holderActLimiter, certKeyProviderFactory and
+	// certProvider are
 	// composition seams; clock is another. Each is nil unless a composer set
 	// it, and nil keeps the software default. mergeSeamOptions folds them
 	// into the server options.
 	backupSink              service.BackupSink
 	storageFactory          server.StorageFactory
 	dekProvider             dek.Provider
+	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
 	certKeyProviderFactory  cakey.ProviderFactory
@@ -892,6 +904,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.StrategyRegistry = crypto.StrategyRegistry
 	infra.BarrierKeyProvider = crypto.BarrierKeyProvider
 	infra.DEKProvider = crypto.DEKProvider
+	infra.HeadSignerProvider = crypto.HeadSignerProvider
 	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
 	infra.HolderActLimiter = crypto.HolderActLimiter
 	// The login CA is built inside BuildServices, so its seams are forwarded

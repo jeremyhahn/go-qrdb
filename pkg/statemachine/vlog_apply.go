@@ -62,6 +62,13 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		expired, err := logs.ExpireBodies(w, id, cutoff)
 		return uint64(expired), err
 	},
+	protocol.VerifiableLogSubtypeRotateKey: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, next, record, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(next.Version), logs.RotateKey(r, w, id, next, record)
+	},
 }
 
 // ApplyVerifiableLog applies one committed OpVerifiableLog payload to logs,

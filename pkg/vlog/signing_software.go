@@ -36,11 +36,30 @@ func NewSoftwareHeadSignerProvider(keys SigningKeyReader) *SoftwareHeadSignerPro
 	return &SoftwareHeadSignerProvider{keys: keys}
 }
 
+// CreateKey generates a key of req.Type at req.Version from crypto/rand and
+// returns it with its k/<version> record, which the log stores in the same
+// proposal that records the key. The key is never written anywhere else.
+func (p *SoftwareHeadSignerProvider) CreateKey(ctx context.Context, req CreateKeyRequest) (CreatedKey, error) {
+	if err := ctx.Err(); err != nil {
+		return CreatedKey{}, err
+	}
+	k, err := GenerateSigningKey(req.Type, req.Version)
+	if err != nil {
+		return CreatedKey{}, err
+	}
+	// GenerateSigningKey encodes only a key Signer decodes.
+	signer, _, _ := k.Signer()
+	return CreatedKey{Ref: KeyRef(k.Version), Public: signer.Public(), Record: &k}, nil
+}
+
 // HeadSigner reads the key req.KeyRef names and returns a signer over it.
 func (p *SoftwareHeadSignerProvider) HeadSigner(ctx context.Context, req HeadSignerRequest) (HeadSigner, error) {
 	version, err := ParseKeyRef(req.KeyRef)
 	if err != nil {
 		return nil, err
+	}
+	if version != req.KeyVersion {
+		return nil, &InvalidSigningKeyError{Reason: "key reference " + req.KeyRef + " for key version " + KeyRef(req.KeyVersion)}
 	}
 	id := LogID{TenantID: req.TenantID, Database: req.Database, Log: req.Log}
 	k, err := p.keys.ReadSigningKey(ctx, id, version)
