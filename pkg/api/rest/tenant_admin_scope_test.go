@@ -34,16 +34,17 @@ import (
 )
 
 // bindingServer serves the full HTTP chain over the binding fixture as caller.
-func bindingServer(t *testing.T, caller *auth.Identity) (*Server, *authtest.BindingUsers) {
+func bindingServer(t *testing.T, caller *auth.Identity, opts ...authmw.Option) (*Server, *authtest.BindingUsers) {
 	t.Helper()
 	users := authtest.NewBindingUsers()
 	roles := authtest.BindingRoles(t)
+	opts = append([]authmw.Option{authmw.WithRoleResolver(roles),
+		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
+		authmw.WithUserService(users)}, opts...)
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
 		WithUserService(users),
 		WithRoleService(roles),
-		WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
-			authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
-			authmw.WithUserService(users))),
+		WithAuthMiddleware(authmw.New(rbac.New(roles), opts...)),
 	)
 	return srv, users
 }
@@ -253,7 +254,7 @@ func TestSORole_OnlyTheTenantSOGrantsOrRevokesIt(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, users := soRoleServer(t, tt.callerIsSO, tt.aliceIsSO)
+			srv, users := soRoleServer(t, tt.callerIsSO, tt.aliceIsSO, authmw.WithStrictSeparation(true))
 			writes := len(users.Updated())
 			rec := serve(srv, tt.method, tt.path, tt.body)
 			if rec.Code != tt.status {
@@ -286,7 +287,7 @@ func TestSORole_OnlyTheTenantSOCreatesAnSO(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, users := soRoleServer(t, tt.callerIsSO, false)
+			srv, users := soRoleServer(t, tt.callerIsSO, false, authmw.WithStrictSeparation(true))
 			rec := serve(srv, http.MethodPost, "/users", body)
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.status, rec.Body.String())
@@ -298,11 +299,35 @@ func TestSORole_OnlyTheTenantSOCreatesAnSO(t *testing.T) {
 	}
 }
 
+// Outside strict separation of duties the tenant Admin grants, revokes and
+// creates the so role like any other role.
+func TestSORole_StandardPostureTheAdminGrantsIt(t *testing.T) {
+	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
+	alice := strconv.FormatUint(authtest.UserInBindingTenant, 10)
+	srv, users := soRoleServer(t, false, false)
+	if rec := serve(srv, http.MethodPost, "/roles/assign", `{"user_id":"`+alice+`","role_id":"`+so+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("assign status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !holdsSO(users.User(authtest.UserInBindingTenant), so) {
+		t.Fatal("alice holds SO = false after the admin's assign, want true")
+	}
+	if rec := serve(srv, http.MethodPost, "/roles/unassign", `{"user_id":"`+alice+`","role_id":"`+so+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("unassign status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if holdsSO(users.User(authtest.UserInBindingTenant), so) {
+		t.Fatal("alice holds SO = true after the admin's unassign, want false")
+	}
+	body := `{"username":"sam","without_email_login_key":true,"tenant_id":"` + authtest.BindingTenant + `","role_ids":["` + so + `"]}`
+	if rec := serve(srv, http.MethodPost, "/users", body); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // soRoleServer is bindingServer as the acme admin, holding acme's SO role
 // beside Admin when callerIsSO, with alice holding it when aliceIsSO.
-func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool) (*Server, *authtest.BindingUsers) {
+func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool, opts ...authmw.Option) (*Server, *authtest.BindingUsers) {
 	t.Helper()
-	srv, users := bindingServer(t, authtest.BindingTenantAdmin())
+	srv, users := bindingServer(t, authtest.BindingTenantAdmin(), opts...)
 	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
 	seed := func(id uint64, roleIDs ...string) {
 		ctx := tenant.WithTenantID(context.Background(), tenantid.System)

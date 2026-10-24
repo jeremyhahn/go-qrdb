@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -212,6 +213,84 @@ func TestGrantSORole(t *testing.T) {
 	if err != nil || !slices.Equal(got.RoleIDs, []string{adminID, soID}) {
 		t.Fatalf("RoleIDs after grant = %v (%v), want %v", got.RoleIDs, err, []string{adminID, soID})
 	}
+}
+
+// updateFailingUsers is a user store whose UpdateUser fails.
+type updateFailingUsers struct {
+	fakeUsers
+	err error
+}
+
+func (u *updateFailingUsers) UpdateUser(context.Context, *user.UpdateUserRequest) (*user.User, error) {
+	return nil, u.err
+}
+
+var _ userUpdater = (*updateFailingUsers)(nil)
+
+func TestGrantSORole_UpdateFailureIsTyped(t *testing.T) {
+	updateErr := errors.New("update failed")
+	account := &user.User{ID: 7, RoleIDs: []string{role.SystemRoleID("acme", role.RoleNameAdmin)}}
+	err := grantSORole(context.Background(), Dependencies{Users: &updateFailingUsers{err: updateErr}}, "acme", account)
+	if !errAs[*TenantSOEnrollmentError](err) || !errors.Is(err, updateErr) {
+		t.Fatalf("grantSORole = %v, want *TenantSOEnrollmentError wrapping the update failure", err)
+	}
+}
+
+func TestRecordAdminAsPendingSO(t *testing.T) {
+	ctx := context.Background()
+	storeErr := errors.New("store failed")
+	pending := &tenantadmin.Pending{Username: "admin", Thumbprint: adminThumbprint(), Serial: "1"}
+	withAdmin := func(t *testing.T) (tenantadmin.Store, tenantadmin.Store) {
+		t.Helper()
+		store := kvstore.NewMemoryKVStore()
+		admins := tenantadmin.NewKVStore(store)
+		if err := admins.Create(ctx, "acme", pending); err != nil {
+			t.Fatalf("record pending admin: %v", err)
+		}
+		return admins, tenantadmin.NewSOKVStore(store)
+	}
+
+	t.Run("records the pending admin as the SO and undoes it", func(t *testing.T) {
+		admins, sos := withAdmin(t)
+		undo := &undoStack{}
+		result := &TenantProvisionResult{AdminCertPEM: []byte("cert")}
+		if err := recordAdminAsPendingSO(ctx, "acme", Dependencies{PendingAdmins: admins, PendingSOs: sos}, undo, result); err != nil {
+			t.Fatalf("recordAdminAsPendingSO: %v", err)
+		}
+		if so, _ := sos.Get(ctx, "acme"); so == nil || so.Username != pending.Username || so.Thumbprint != pending.Thumbprint || so.Serial != pending.Serial {
+			t.Fatalf("pending SO = %+v, want %+v", so, pending)
+		}
+		if result.SOUsername != "admin" || string(result.SOCertPEM) != "cert" || result.SOCertThumbprint != pending.Thumbprint || result.SOCertSerial != "1" {
+			t.Fatalf("result SO = %+v, want the pending admin's credential", result)
+		}
+		if errs := undo.run(ctx, discardLogger(), "acme"); len(errs) != 0 {
+			t.Fatalf("undo: %v", errs)
+		}
+		if so, _ := sos.Get(ctx, "acme"); so != nil {
+			t.Fatalf("pending SO after undo = %+v, want it deleted", so)
+		}
+	})
+	t.Run("pending admin read failure", func(t *testing.T) {
+		admins, sos := withAdmin(t)
+		deps := Dependencies{PendingAdmins: &pendingAdminsFaulting{inner: admins, getErr: storeErr}, PendingSOs: sos}
+		if err := recordAdminAsPendingSO(ctx, "acme", deps, &undoStack{}, &TenantProvisionResult{}); !errors.Is(err, storeErr) {
+			t.Fatalf("recordAdminAsPendingSO = %v, want the read failure", err)
+		}
+	})
+	t.Run("no pending admin", func(t *testing.T) {
+		store := kvstore.NewMemoryKVStore()
+		deps := Dependencies{PendingAdmins: tenantadmin.NewKVStore(store), PendingSOs: tenantadmin.NewSOKVStore(store)}
+		if err := recordAdminAsPendingSO(ctx, "acme", deps, &undoStack{}, &TenantProvisionResult{}); !errAs[*MissingProvisioningSeamError](err) {
+			t.Fatalf("recordAdminAsPendingSO = %v, want *MissingProvisioningSeamError", err)
+		}
+	})
+	t.Run("pending SO record failure", func(t *testing.T) {
+		admins, sos := withAdmin(t)
+		deps := Dependencies{PendingAdmins: admins, PendingSOs: &pendingAdminsFaulting{inner: sos, putErr: storeErr}}
+		if err := recordAdminAsPendingSO(ctx, "acme", deps, &undoStack{}, &TenantProvisionResult{}); !errAs[*TenantSOEnrollmentError](err) || !errors.Is(err, storeErr) {
+			t.Fatalf("recordAdminAsPendingSO = %v, want *TenantSOEnrollmentError wrapping the record failure", err)
+		}
+	})
 }
 
 func TestAdminNamedAsSO(t *testing.T) {
