@@ -73,7 +73,8 @@ type PebbleStorage struct {
 	// syncs times every write committed with pebble.Sync.
 	syncs *syncwatch.Observer
 	// seals makes a sealed at-rest barrier under the store a typed error;
-	// nil for a store over a database opened elsewhere (NewFromDB).
+	// nil for a store over a database opened elsewhere (NewFromDB) unless
+	// WithSealWatch passes the database's watch.
 	seals *SealWatch
 }
 
@@ -89,6 +90,18 @@ func WithSyncObserver(o *syncwatch.Observer) Option {
 		if o != nil {
 			s.syncs = o
 		}
+	}
+}
+
+// WithSealWatch sets the watch of the database a NewFromDB store is built
+// over, the one Open returned for it, so the store refuses a flush, durable
+// write or compaction with a *SealedError while the at-rest barrier under the
+// database is sealed, as a store from New does. A nil w leaves the store
+// unwatched, which is right only for a database on a filesystem with no
+// barrier.
+func WithSealWatch(w *SealWatch) Option {
+	return func(s *PebbleStorage) {
+		s.seals = w
 	}
 }
 

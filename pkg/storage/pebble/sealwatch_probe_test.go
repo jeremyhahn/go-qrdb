@@ -171,3 +171,60 @@ func TestPebbleStorage_SealedBarrierRefusesWrites(t *testing.T) {
 		t.Fatalf("Set after unseal: %v", err)
 	}
 }
+
+// TestNewFromDB_WithSealWatchRefusesWrites pins that a store built over a
+// database Open watches refuses as a store from New does once it is given the
+// database's watch.
+func TestNewFromDB_WithSealWatchRefusesWrites(t *testing.T) {
+	fs := &probedFS{FS: vfs.NewMem()}
+	db, seals, err := Open("db", &pebble.Options{FS: fs}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s := NewFromDB(db, true, WithSealWatch(seals))
+	defer func() { _ = s.Close() }()
+	if s.seals != seals {
+		t.Fatal("WithSealWatch did not set the store's watch")
+	}
+	fs.sealed.Store(true)
+	if err := s.Set([]byte("k"), []byte("v")); !errors.Is(err, ErrBarrierSealed) {
+		t.Fatalf("Set under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	b := s.Batch()
+	if err := b.Set([]byte("k2"), []byte("v")); err != nil {
+		t.Fatalf("Batch.Set: %v", err)
+	}
+	if err := b.Commit(); !errors.Is(err, ErrBarrierSealed) {
+		t.Fatalf("Batch.Commit under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	if err := s.Flush(); !errors.Is(err, ErrBarrierSealed) {
+		t.Fatalf("Flush under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	if err := s.Compact(nil, nil); !errors.Is(err, ErrBarrierSealed) {
+		t.Fatalf("Compact under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	fs.sealed.Store(false)
+	if err := s.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set after unseal: %v", err)
+	}
+}
+
+// TestNewFromDB_WithNilSealWatchLeavesTheStoreUnwatched pins the documented
+// nil case: no watch, so writes reach Pebble.
+func TestNewFromDB_WithNilSealWatchLeavesTheStoreUnwatched(t *testing.T) {
+	db, err := pebble.Open("db", &pebble.Options{FS: vfs.NewMem()})
+	if err != nil {
+		t.Fatalf("pebble.Open: %v", err)
+	}
+	s := NewFromDB(db, false, WithSealWatch(nil))
+	defer func() { _ = s.Close() }()
+	if s.seals != nil {
+		t.Fatal("WithSealWatch(nil) set a watch")
+	}
+	if err := s.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}

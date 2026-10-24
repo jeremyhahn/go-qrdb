@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
@@ -129,5 +130,44 @@ func TestPebbleStorage_SealedBarrierRefusesInsteadOfPanicking(t *testing.T) {
 	got, err := store.Get([]byte("k2"))
 	if err != nil || string(got) != "v2" {
 		t.Fatalf("Get after unseal = %q, %v; want v2", got, err)
+	}
+}
+
+// TestNewFromDB_SealedBarrierRefusesInsteadOfPanicking drives a store built
+// with NewFromDB over a database pebble.Open opened on encfs, the shape
+// pkg/store's MVCC and time-series stores use, across a seal.
+func TestNewFromDB_SealedBarrierRefusesInsteadOfPanicking(t *testing.T) {
+	kek := &sealableKEK{}
+	db, seals, err := pebblestore.Open("db", &pebble.Options{FS: encfs.New(vfs.NewMem(), kek)}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store := pebblestore.NewFromDB(db, true, pebblestore.WithSealWatch(seals))
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	if err := store.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	kek.sealedState.Store(true)
+	if err := store.Flush(); !errors.Is(err, pebblestore.ErrBarrierSealed) {
+		t.Fatalf("Flush under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	if err := store.Set([]byte("k2"), []byte("v")); !errors.Is(err, pebblestore.ErrBarrierSealed) {
+		t.Fatalf("Set under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+	if err := store.Compact(nil, nil); !errors.Is(err, pebblestore.ErrBarrierSealed) {
+		t.Fatalf("Compact under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+
+	kek.sealedState.Store(false)
+	if err := store.Set([]byte("k2"), []byte("v2")); err != nil {
+		t.Fatalf("Set after unseal: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush after unseal: %v", err)
 	}
 }

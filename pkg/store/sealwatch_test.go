@@ -17,6 +17,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,7 +26,9 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -113,6 +116,70 @@ func TestStateMachineSync_UnsealedBarrierFlushes(t *testing.T) {
 	}
 	if err := s.seals.Err(); err != nil {
 		t.Fatalf("seal watch Err() = %v; want nil", err)
+	}
+}
+
+// newSealableEncryptedOptions returns Pebble options over an in-memory
+// encfs whose KEK is a real, unsealed StorageBarrier, and the barrier.
+func newSealableEncryptedOptions(t *testing.T) (*pebble.Options, *seal.StorageBarrier) {
+	t.Helper()
+	b, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "root-key", DeploymentID: 1}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	opts := &pebble.Options{FS: vfs.NewMem()}
+	atrest.New(b).Apply(opts)
+	return opts, b
+}
+
+// TestStoresOverTheStateMachineDB_SealedBarrierRefusesWrites pins that the
+// stores pkg/store builds with NewFromDB over its watched database, the MVCC
+// engine's storage and the time-series auto-commit batch, refuse a write
+// under a sealed barrier with ErrBarrierSealed rather than reaching Pebble,
+// which panics when the barrier refuses the next WAL file.
+func TestStoresOverTheStateMachineDB_SealedBarrierRefusesWrites(t *testing.T) {
+	cases := []struct {
+		name  string
+		write func(t *testing.T, opts *pebble.Options) (func() error, func())
+	}{
+		{"mvcc storage", func(t *testing.T, opts *pebble.Options) (func() error, func()) {
+			s := NewMVCCStateMachine(opts)
+			if _, err := s.Open(context.Background(), "sm", nil); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			return func() error { return s.storage.Set([]byte("k"), []byte("v")) },
+				func() { _ = s.Close(context.Background()) }
+		}},
+		{"time-series auto-commit", func(t *testing.T, opts *pebble.Options) (func() error, func()) {
+			s := NewPebbleStateMachine(opts)
+			if _, err := s.Open(context.Background(), "sm", nil); err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			return func() error {
+					return s.tsAutoCommit(func(b storage.Batch) error { return b.Set([]byte("k"), []byte("v")) })
+				},
+				func() { _ = s.Close(context.Background()) }
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, barrier := newSealableEncryptedOptions(t)
+			write, closeSM := tc.write(t, opts)
+			defer closeSM()
+			if err := write(); err != nil {
+				t.Fatalf("write under an unsealed barrier: %v", err)
+			}
+			if err := barrier.Seal(); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+			if err := write(); !errors.Is(err, pebbleStorage.ErrBarrierSealed) {
+				t.Fatalf("write under a sealed barrier = %v; want ErrBarrierSealed", err)
+			}
+		})
 	}
 }
 
