@@ -13,6 +13,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`github.com/labstack/echo/v4` is v4.16.1** (indirect, through the Wails
+  devserver): v4.15.3 carries GHSA-cxf3-9h37-7rr8 (critical) and three high
+  advisories, which took the image job's Trivy scan red on `main`.
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
 
 ### Changed
