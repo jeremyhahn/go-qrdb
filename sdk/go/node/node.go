@@ -1134,6 +1134,9 @@ type Node struct {
 	// with wiring.ResolveStrictSeparation when it wired its authorizer,
 	// reported by StrictSeparation.
 	strictSeparation atomic.Bool
+	// separationConfigured is the Auth.SeparationOfDuties setting that
+	// posture was resolved from; first boot records the posture from it.
+	separationConfigured atomic.Bool
 
 	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
 	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
@@ -3841,6 +3844,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
 	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
 	n.strictSeparation.Store(strictSoD)
+	n.separationConfigured.Store(cfg.Auth.SeparationOfDuties)
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
