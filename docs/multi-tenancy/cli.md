@@ -179,8 +179,10 @@ system-tenant permission.
 A flag that is not given leaves its field unchanged. `--metadata` splits each
 entry at the first `=`, so a value may contain `=`; an entry with no `=` or an
 empty key is refused before anything is sent. The server's limits: a
-description of at most 1024 bytes; at most 64 metadata entries, keys at most
-128 bytes, values at most 1024 bytes, all UTF-8. Over a limit, the update is
+description of at most 1024 bytes of UTF-8; at most 64 metadata entries; keys
+1 to 63 bytes of lowercase letters, digits, `.`, `_` and `-` that begin and end
+with a letter or digit (`env`, `cost-center`); values at most 256 bytes of
+UTF-8. Over a limit, the update is
 refused and nothing changes (`invalid description: exceeds 1024 bytes`).
 
 ```

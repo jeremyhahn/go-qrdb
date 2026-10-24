@@ -23,6 +23,10 @@ are not reconstructed here — their history is in the git log.
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
   Host gets its own in-memory Pebble filesystem, so a test built over it
   writes nothing to disk.
+- **The `sdk/go` index re-exports are `ServiceIndexServicer` and
+  `NewServiceIndexService`** (#928), in the `ServiceBatchServicer` family;
+  `sdk.IndexServicer` and `sdk.NewIndexService` are removed.
+
 ## [0.54.0-alpha] - 2026-10-23
 
 ### Added

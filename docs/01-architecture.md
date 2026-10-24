@@ -1,6 +1,6 @@
 # QRDB Architecture Overview
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -530,8 +530,7 @@ encryption via `node.WithTenantIsolation()` and `(*Node).EnableEncryption`.
   API handler (`kvMethodHandlers`, a `map[string]kvMethodHandler` in
   `pkg/api/rest/handlers.go`) and the MVCC engine (`map[byte]mvccHandler`
   in `pkg/engine/mvcc_engine.go`) use dispatch tables instead of `switch`
-  statements. This follows the project convention of
-  preferring map-based dispatch for extensibility and readability.
+  statements.
 
   Source: `pkg/api/rest/handlers.go` -- `kvMethodHandlers`
 

@@ -25,8 +25,9 @@ The Embedded column needs an `IndexServicer` on the transport. A node's own
 `Node.Client()` has one already. An embedder that builds its own transport with
 `embedded.New` supplies it from the SDK alone, over the same host and shard it
 gives `sdk.NewKVService`:
-`embedded.WithIndexService(sdk.NewIndexService(host, shardID))`
-(`sdk.IndexServicer` is the interface type). Without it, every embedded index
+`embedded.WithIndexService(sdk.NewServiceIndexService(host, shardID))`
+(`sdk.NewServiceIndexService` re-exports `service.NewIndexService`, and
+`sdk.ServiceIndexServicer` is the interface type, `service.IndexServicer`). Without it, every embedded index
 call returns `embedded.NilServiceError` naming `IndexServicer`.
 
 ## Schemas

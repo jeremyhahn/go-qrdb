@@ -1,6 +1,6 @@
 # Distributed Locking
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -28,9 +28,9 @@ The distributed lock service in QRDB provides safe coordination of access to sha
 - **Mutual exclusion**: Protecting code sections from simultaneous execution
 - **Distributed consensus**: Coordinating state changes across processes
 
-The lock service is built on top of QRDB's existing infrastructure -- leases, compare-and-swap transactions, watches, and MVCC versioning. No new consensus opcodes are required; all operations reuse the existing transaction, lease, watch, and KV services.
+The lock service (`pkg/lock`) is composed from QRDB's lease, transaction (compare-and-swap), watch and MVCC KV services; it has no consensus opcodes of its own.
 
-Unlike semaphores, QRDB locks include **fencing tokens** (MVCC revision-based, monotonically increasing) to detect stale holders and prevent split-brain scenarios where a paused process resumes after its lease has expired.
+Each lock carries a **fencing token** (an MVCC revision, monotonically increasing within the store that holds the lock), so a downstream service can detect a stale holder: a paused process that resumes after its lease has expired.
 
 ## Lock Model
 
@@ -94,11 +94,11 @@ type LockOptions struct {
 
 ### System Namespace
 
-Lock keys are stored under the `__sys:lock/` internal prefix and are not visible in ordinary KV list operations. The prefix guarantees that application keys never conflict with lock storage.
+Lock keys are stored under the `__sys:lock/` internal prefix. A KV list or scan whose prefix does not name the `__sys:` namespace filters them out, and an application key outside that namespace never collides with a lock record.
 
 ## Fencing Tokens
 
-A fencing token is the MVCC `ModRevision` assigned to the lock at acquisition time. Because MVCC revisions are globally ordered and monotonically increasing, each new acquisition of a lock gets a higher fencing token than the previous one.
+A fencing token is the MVCC revision of the transaction that created the lock record. `TryLock` writes it into the record so that it stays fixed while a reentrant holder re-acquires; a record without a stored token is checked against its current `ModRevision`. Because MVCC revisions increase monotonically, each new acquisition of a lock gets a higher fencing token than the previous one.
 
 ### Why Fencing Tokens Matter
 
@@ -113,21 +113,18 @@ Without fencing tokens, Process A would release B's lock using stale knowledge. 
 
 ### Validation in Downstream Services
 
-Downstream services should reject operations with stale fencing tokens:
+A downstream service the lock protects keeps the highest fencing token it has accepted and rejects any request carrying a lower one. The lock service cannot do this check for it: a holder that paused past its TTL still holds its old token, and only the service receiving the write sees it arrive late.
 
 ```go
-// Pseudocode for a critical operation
-func criticalOperation(key string, token int64) error {
-    // Validate token matches current lock state
-    lock, err := lockService.Status(ctx, key)
-    if err != nil {
-        return err
+// Pseudocode for a downstream service guarding a resource.
+func (s *Store) Write(token int64, data []byte) error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    if token < s.highestToken {
+        return &StaleTokenError{Token: token, Highest: s.highestToken}
     }
-    if lock.FencingToken != token {
-        return fmt.Errorf("stale fencing token: expected %d, got %d", lock.FencingToken, token)
-    }
-    // Proceed with critical operation
-    return performWork()
+    s.highestToken = token
+    return s.apply(data)
 }
 ```
 
@@ -137,14 +134,14 @@ func criticalOperation(key string, token int64) error {
 
 `TryLock` attempts to acquire the lock immediately without blocking:
 
-1. Grant a lease with the specified TTL
-2. Compare-and-Swap: Assert version == 0 (key does not exist) → Put the lock
-3. On success: Return the acquired `Lock`
+1. Grant a lease with the specified TTL, in whole seconds (a positive TTL under one second becomes one second)
+2. Compare-and-Swap: Assert version == 0 (key does not exist) → Put the lock bound to the lease
+3. On success: Store the transaction's revision in the record as the fencing token and return the acquired `Lock`
 4. On failure: Read the current holder
    - If the holder ID matches and both the request and the held lock are reentrant: Increment `AcquireCount`, revoke the new lease, update the existing lock
    - Otherwise: Revoke the new lease and return `LockHeldError` immediately
 
-The compare-and-swap makes acquisition atomic. When the transaction returns an error but the key is now bound to the lease this attempt granted, the write committed: `TryLock` returns the lock rather than revoking the lease.
+The compare-and-swap makes acquisition atomic. When the transaction returns an error but a re-read finds the key bound to the lease this attempt granted, the write committed: `TryLock` returns the lock rather than revoking the lease.
 
 ### Lock (Blocking)
 
@@ -152,14 +149,14 @@ The compare-and-swap makes acquisition atomic. When the transaction returns an e
 
 1. Call `TryLock` → if successful, return immediately
 2. On `LockHeldError`:
-   - Watch the lock key for delete/modification events
-   - Wait for `EventDelete` (indicates the lock was released)
-   - On event, retry `TryLock`
+   - Watch the lock key
+   - Wait for an `EventDelete` (the lock was released or its lease expired); other events are ignored
+   - On a delete event, retry `TryLock`; on another `LockHeldError`, keep waiting
    - Loop until acquired or context canceled
    - If the watch closes, retry `TryLock` once and return its result
 3. On any other error: Return immediately
 
-The watch-based approach is event-driven with no polling overhead. Concurrent waiters are woken by a single delete event and race for the lock, with only one succeeding.
+Waiting is driven by watch events, not polling. Every waiter on the key sees the same delete event and retries; the compare-and-swap lets one succeed, and the rest return to waiting.
 
 ### Reentrant Locks
 
@@ -200,28 +197,32 @@ locker.Unlock(ctx, "resource", lock1.FencingToken)  // AcquireCount = 0, lock re
 `Unlock` releases the lock identified by a key and fencing token:
 
 1. Read the lock and validate the fencing token against the one stored at acquisition
-   - Return `LockNotFoundError` if no lock is held on the key
-   - Return `NotLockHolderError` if token is stale
+   - Return `LockNotFoundError` if no lock is held on the key; `Unlock` reports a failed read of a lock record the same way
+   - Return `NotLockHolderError` if the token does not match
 2. For reentrant locks with `AcquireCount > 1`:
    - Decrement `AcquireCount`
    - Update the lock, maintain the lease
 3. For final release (`AcquireCount == 1` or non-reentrant):
    - Compare-and-Swap delete: Assert `ModRevision` still matches → Delete the lock
-   - Revoke the lease to clean up attached resources
+   - Revoke the lease
 
-The compare-and-swap delete catches races where another process modified the lock between the read and delete.
+The compare-and-swap delete catches a modification of the lock between the read and the delete, and returns `NotLockHolderError` for it.
 
 ## Extend
 
 `Extend` refreshes the TTL of an existing lock without releasing it:
 
 1. Read the current lock value and validate the fencing token
-   - Return `LockNotFoundError` if no lock is held on the key
-   - Return `NotLockHolderError` if token is stale
+   - Return `LockNotFoundError` if the read fails, which includes no lock being held on the key
+   - Return `NotLockHolderError` if the token does not match
 2. Issue a lease keepalive on the underlying lease ID
-3. Return the updated `Lock` with refreshed TTL
+3. Return the `Lock` with the TTL the keepalive reports
 
-This is useful for long-running operations that may exceed the original TTL.
+An operation that may outlast the TTL extends the lock periodically.
+
+## Status and List
+
+`Status` returns the lock held on a key, or `nil` with no error when there is none; a failed read also returns `nil`. `List` returns every lock whose key starts with a prefix; an empty prefix lists all locks in the caller's scope.
 
 ## Standalone vs Clustered
 
@@ -233,7 +234,7 @@ A lock survives a restart in both modes, because its lease is durable: a lock he
 
 Every verb is served on REST, gRPC, the Unix socket, QUIC, MCP and the embedded SDK. [distributed-locks/api.md](distributed-locks/api.md) is the contract for each transport: paths and method names, request and response schemas, the `(tenant, database)` scope, and the status and error mapping.
 
-REST paths are unversioned (`/lock/...`) and served on the REST port, 63002 by default. `ttl` is in seconds and `holder_id` is optional:
+REST paths are unversioned (`/lock/...`) and served on the REST port (`server.admin_port`, 63002 by default; gRPC is `server.grpc_port`, 63003). `ttl` is in seconds and `holder_id` is optional:
 
 ```bash
 CURL="curl -s --cert client.pem --key client-key.pem --cacert ca.pem"
@@ -468,9 +469,9 @@ Choose a TTL that balances false expiry and stale lock detection:
 
 - **Too short** (e.g., 1s): False expiry when network/process latency exceeds TTL
 - **Too long** (e.g., 3600s): Slow stale lock detection (full hour to recover)
-- **Good range** (10-60s): Reasonable recovery time with low false positivity
+- **Middle range** (10-60s): Recovery within a minute, with room for ordinary latency
 
-For long-running operations, use `LockExtend` to refresh the TTL periodically rather than acquiring with a very long TTL.
+The TTL is whole seconds on every transport. For a long-running operation, call `LockExtend` periodically rather than acquiring with a very long TTL.
 
 ### Fencing Token Validation
 

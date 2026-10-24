@@ -236,8 +236,8 @@ type TenantPatch struct {
 const (
 	MaxDescriptionBytes   = 1024
 	MaxMetadataEntries    = 64
-	MaxMetadataKeyBytes   = 128
-	MaxMetadataValueBytes = 1024
+	MaxMetadataKeyBytes   = 63
+	MaxMetadataValueBytes = 256
 )
 
 type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
@@ -247,9 +247,13 @@ type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
 
 - **Validated before anything is written.** Both `UpdateTenant`
   implementations (`kvTenantService`, from `NewKVTenantService`, and the
-  seal-enabled `TenantService`)
-  call `validateDescriptive` first. It checks the byte limits, refuses an empty
-  key and refuses text that is not valid UTF-8. A refused patch changes none of
+  seal-enabled `TenantService`) call `validateDescriptive` first. It checks
+  the byte limits, holds every key to the Kubernetes label-name grammar
+  without a prefix, `[a-z0-9]([a-z0-9._-]*[a-z0-9])?` (`checkMetadataKey`, a
+  byte loop, no regular expression), and refuses a description or value that
+  is not valid UTF-8. A record stored before a limit tightened still decodes
+  and reads unchanged; only a patch that sets the field is checked. A refused
+  patch changes none of
   the tenant's fields, including `Name`.
 - **Metadata replaces, never merges.** There is no per-key patch; a client
   that wants to add one entry sends the whole map. An empty map is stored as
