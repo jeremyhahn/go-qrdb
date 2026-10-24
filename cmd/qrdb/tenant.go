@@ -126,12 +126,13 @@ certificate is printed, or written to --out as admin-cert.pem.
 
 A tenant may be created with its security officer as well: --so-username,
 --so-pin and exactly one of --so-csr and --so-cert, given together or not at
-all. The SO is enrolled with the tenant's so role alone, must differ from the
-admin by username and by key, and its certificate is printed beside the
-admin's, or written to --out as so-cert.pem.`,
+all. The SO is enrolled with the tenant's so role, and its certificate is
+printed beside the admin's, or written to --out as so-cert.pem. Under strict
+separation of duties (auth.separation_of_duties, forced on by FIPS 140-3) the
+SO must differ from the admin by username and by key; otherwise the admin may
+be named the SO, by its username and key together.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			files := map[string]*string{}
 			req := &transport.CreateTenantRequest{
 				ID:                id,
 				Name:              name,
@@ -142,14 +143,22 @@ admin's, or written to --out as so-cert.pem.`,
 				SOUsername:        soUsername,
 				SOPin:             soPin,
 			}
-			files[adminCSRFile] = &req.AdminCSRPEM
-			files[adminCertFile] = &req.AdminCertPEM
-			files[adminChainFile] = &req.AdminChainPEM
-			files[trustAnchorsFile] = &req.TrustAnchorsPEM
-			files[soCSRFile] = &req.SOCSRPEM
-			files[soCertFile] = &req.SOCertPEM
-			files[soChainFile] = &req.SOChainPEM
-			for path, dest := range files {
+			// A list, not a map keyed by path: one file may serve two
+			// flags, as when the admin is named the SO with its own CSR.
+			files := []struct {
+				path string
+				dest *string
+			}{
+				{adminCSRFile, &req.AdminCSRPEM},
+				{adminCertFile, &req.AdminCertPEM},
+				{adminChainFile, &req.AdminChainPEM},
+				{trustAnchorsFile, &req.TrustAnchorsPEM},
+				{soCSRFile, &req.SOCSRPEM},
+				{soCertFile, &req.SOCertPEM},
+				{soChainFile, &req.SOChainPEM},
+			}
+			for _, f := range files {
+				path, dest := f.path, f.dest
 				if path == "" {
 					continue
 				}
