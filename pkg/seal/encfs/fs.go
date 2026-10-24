@@ -277,3 +277,13 @@ func (fs *FS) GetDiskUsage(path string) (vfs.DiskUsage, error) {
 // vfs.Root walk; returning the base would let callers bypass
 // encryption.
 func (fs *FS) Unwrap() vfs.FS { return nil }
+
+// BarrierSealed reports whether the barrier keying this file system is
+// sealed now, when the barrier can say (both go-qrdb's StorageBarrier and
+// go-quicraft's EpochBarrier can). A sealed barrier refuses every Create,
+// and Pebble panics when it cannot create its next WAL, so a store asks
+// before any call that rotates one.
+func (fs *FS) BarrierSealed() bool {
+	b, ok := fs.barrier.(interface{ IsSealed() bool })
+	return ok && b.IsSealed()
+}
