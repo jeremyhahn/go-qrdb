@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.55.0-alpha] - 2026-10-24
+
 ### Fixed
 
 - **A push to `main` no longer cancels the `main` CI run in progress**:
