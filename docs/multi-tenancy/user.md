@@ -99,8 +99,10 @@ run it. A `prefix` tenant's admin can log in straight away.
 **Name the tenant's Security Officer at create, if it has one.** The Security
 Officer (SO) is the tenant's governance principal, the only one who can make
 someone else an SO. Give `--so-username`, `--so-pin` and the SO's own CSR
-(`--so-csr`) or certificate (`--so-cert`); the SO must be a different person
-from the admin, with a different key:
+(`--so-csr`) or certificate (`--so-cert`). Under strict separation of duties
+(`auth.separation_of_duties: true`, always on in FIPS 140-3 mode) the SO must
+be a different person from the admin, with a different key; otherwise you may
+name the admin as the SO, with the admin's username and CSR:
 
 ```bash
 qrdb tenant create --id acme --name "Acme Corp" \
@@ -220,8 +222,9 @@ intermediates), its CN must be the admin username, and it must name the new
 tenant. No tenant was created; fix it and retry with the same id.
 
 **`tenant create` refused the Security Officer.** The SO is all or nothing:
-`--so-username`, `--so-pin` and exactly one of `--so-csr` or `--so-cert`. Its
-username and its key must both differ from the admin's. No tenant was created;
+`--so-username`, `--so-pin` and exactly one of `--so-csr` or `--so-cert`.
+Under strict separation of duties its username and its key must both differ
+from the admin's; otherwise they must both match the admin's or both differ. No tenant was created;
 fix it and retry with the same id.
 
 **The admin's `barrier-init` was refused.** On a tenant created with its first

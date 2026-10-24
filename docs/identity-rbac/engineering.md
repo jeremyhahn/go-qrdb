@@ -990,9 +990,12 @@ exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
 (`roles:unassign` in the user's tenant; removing a grant names no role to
 validate).
 
-Every one of those gates also refuses, with `SORoleRequiredError`, a write
-that changes whether the target holds its tenant's `so` role unless the caller
-is a Security Officer of that same tenant. Both sides are read by
+Under strict separation of duties (`middleware.WithStrictSeparation`, set from
+`wiring.ResolveStrictSeparation`, the one resolver, which FIPS 140-3 mode
+forces on), every one of those gates also refuses, with `SORoleRequiredError`,
+a write that changes whether the target holds its tenant's `so` role unless the
+caller is a Security Officer of that same tenant; outside it the `so` role is
+assigned like any other. Both sides are read by
 `heldRoleIDs`: the target's `RoleIDs` and `RoleBindings`, and the caller's
 `Roles` and `RoleBindings` (`callerRoleIDs`), counting a binding only where it
 is scoped to the target tenant. The gate reads the record before the write;

@@ -30,7 +30,7 @@ Creates a tenant **together with its first admin**, or not at all.
 | `--admin-cert` | string | — | the first admin's own PEM certificate, leaf first; must chain to `--trust-anchors` |
 | `--admin-chain` | string | — | optional PEM intermediates for `--admin-cert` |
 | `--trust-anchors` | string | — | a PEM bundle of CA certificates to register as the tenant's trust anchors |
-| `--so-username` | string | — | the tenant's optional security officer (SO), enrolled with the `so` role alone; must differ from `--admin-username` |
+| `--so-username` | string | — | the tenant's optional security officer (SO), enrolled with the `so` role alone; under strict separation of duties, must differ from `--admin-username` |
 | `--so-csr` | string | — | the SO's PEM certificate signing request, signed as `--admin-csr` is |
 | `--so-cert` | string | — | the SO's own PEM certificate, leaf first; must chain to `--trust-anchors` |
 | `--so-chain` | string | — | optional PEM intermediates for `--so-cert` |
@@ -58,11 +58,16 @@ qrdb tenant create --id big-co --name "Big Co" --isolation-type raft \
 **The security officer is optional, and given whole or not at all.** Name it
 with `--so-username`, `--so-pin` and exactly one of `--so-csr` and `--so-cert`;
 a partial set, or both a CSR and a certificate, is refused as invalid before
-anything is written. The SO must differ from the admin by username and by key
-(SPKI), so the two are separate principals. The SO is enrolled with the
-tenant's `so` role alone, and its PIN is committed as the create's last step.
-Only the SO -- not the tenant's Admin -- grants or revokes the `so` role
-([../identity-rbac/cli.md](../identity-rbac/cli.md)).
+anything is written. Under strict separation of duties
+(`auth.separation_of_duties`, forced on in FIPS 140-3 mode) the SO must differ
+from the admin by username and by key (SPKI), so the two are separate
+principals, and only the SO -- not the tenant's Admin -- grants or revokes the
+`so` role ([../identity-rbac/cli.md](../identity-rbac/cli.md)). Outside it the
+admin may be named the SO, by the admin's username and the same CSR or
+certificate, and its account is granted `so` beside `admin`; the Admin grants
+and revokes `so` like any other role. A distinct SO is enrolled with the
+tenant's `so` role alone, and its PIN is committed as the create's last step
+in both postures.
 
 ```bash
 # the SO, on the SO's machine:

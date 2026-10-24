@@ -211,15 +211,18 @@ holder roster and authenticates with its holder certificate and factors. See
 The Security Officer's inability to use keys is the separation-of-duties
 control, not an oversight.
 
-The other half of that control: only your tenant's Security Officer can make
-someone a Security Officer, or stop them being one. An Admin assigns and
+The other half of that control, under strict separation of duties
+(`auth.separation_of_duties: true`, always on in FIPS 140-3 mode): only your
+tenant's Security Officer can make someone a Security Officer, or stop them
+being one. An Admin assigns and
 unassigns every other role, but `roles assign`, `roles unassign`, and a
 `users create` or `users update` whose role list adds or drops `so` are
 refused for an Admin with permission denied (HTTP 403), and nothing is
 written. The `system` tenant's Security Officer is refused too: your tenant's
 `so` role is granted by your tenant's own. Your tenant's first Security
 Officer is named at `tenant create`
-([../multi-tenancy/user.md](../multi-tenancy/user.md)).
+([../multi-tenancy/user.md](../multi-tenancy/user.md)). Without strict
+separation an Admin assigns and unassigns `so` like any other role.
 
 Every tenant gets these roles, but the node's own barrier is not any tenant's.
 Initializing, unsealing, sealing, rekeying or recovering the node barrier,

@@ -19,18 +19,31 @@ are not reconstructed here — their history is in the git log.
   `qrdb tenant create --so-username --so-csr|--so-cert --so-chain --so-pin`.
   The SO is enrolled with the tenant's `so` role alone and its PIN set through
   the SO authenticator; the response carries its credential as `so`, and
-  `--out` writes `so-cert.pem`. A partial set, a CSR with a certificate, or an
-  SO matching the admin by username or key is `InvalidArgument` and creates
-  nothing. An isolated tenant records the SO as `__sys:pending-so` and creates
-  its account right after the admin's. `sdk/go/node` now attaches the server's
+  `--out` writes `so-cert.pem`. A partial set or a CSR with a certificate is
+  `InvalidArgument` and creates nothing; so, under strict separation of
+  duties, is an SO matching the admin by username or key, while outside it an
+  SO matching the admin by both is the admin, granted `so` beside `admin`, and
+  a half match is refused. An isolated tenant records the SO as
+  `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
   SO authenticator to tenant onboarding.
 
 ### Fixed
 
+- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
+  (#1042): the CSR reads were keyed by path, so the second flag left the
+  admin's CSR empty.
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
 
 ### Changed
 
+- **The Security Officer separation checks hold only under strict separation
+  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
+  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
+  now gates the SO-exclusive grant and revoke of the `so` role
+  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
+  the first admin, as it already gated the Owner role's voiding. In the
+  standard posture the tenant Admin grants and revokes `so` like any other
+  role, and may be named the tenant's SO.
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
   Host gets its own in-memory Pebble filesystem, so a test built over it
   writes nothing to disk.

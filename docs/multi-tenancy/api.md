@@ -179,17 +179,20 @@ The optional security officer (SO), given whole or not at all:
 
 | Field | Meaning |
 |---|---|
-| `so_username` | the SO's account name; must differ from `admin_username` |
+| `so_username` | the SO's account name; under strict separation of duties, must differ from `admin_username` |
 | `so_csr_pem` | the SO's certificate signing request, signed as `admin_csr_pem` is |
 | `so_cert_pem` | the SO's own certificate, leaf first; must chain to `trust_anchors_pem` |
 | `so_chain_pem` | optional intermediates for `so_cert_pem` |
 | `so_pin` | the SO's PIN, the second factor the SO gate asks for |
 
 With an SO, `so_username`, `so_pin` and exactly one of `so_csr_pem` and
-`so_cert_pem` are required; a partial set, both a CSR and a certificate, or an
-SO matching the admin by username or by key (SPKI) is `400` (`InvalidArgument`
-on gRPC), and nothing is written. The SO is enrolled with the tenant's `so`
-role alone; its PIN is committed as the create's last step, and is never
+`so_cert_pem` are required; a partial set or both a CSR and a certificate is
+`400` (`InvalidArgument` on gRPC), and nothing is written. Under strict
+separation of duties (`auth.separation_of_duties`, forced on in FIPS 140-3
+mode) an SO matching the admin by username or by key (SPKI) is `400` too.
+Outside it an SO matching the admin by both is the admin, whose account is
+granted `so` beside `admin`; one matching by only one of the two is `400`. A
+distinct SO is enrolled with the tenant's `so` role alone; its PIN is committed as the create's last step, and is never
 answered.
 
 Response `201` — the tenant's fields, plus the admin. **There is never a

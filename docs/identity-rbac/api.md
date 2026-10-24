@@ -787,21 +787,25 @@ is written. The role check runs whether or not RBAC is enabled; only the
 `roles:assign` check depends on it. See
 [engineering.md](engineering.md#authorization-model) for the full mechanism.
 
-A write that changes whether a user holds the tenant's Security Officer role
-(`so`) — `AssignRole` or `UnassignRole` of it, or a `CreateUser`/`UpdateUser`
-whose `roleIDs` or `roleBindings` add or drop it — additionally requires the
-caller to be a Security Officer **of that same tenant**, judged by the
+Under strict separation of duties (`auth.separation_of_duties`, forced on in
+FIPS 140-3 mode), a write that changes whether a user holds the tenant's
+Security Officer role (`so`) — `AssignRole` or `UnassignRole` of it, or a
+`CreateUser`/`UpdateUser` whose `roleIDs` or `roleBindings` add or drop it —
+additionally requires the caller to be a Security Officer **of that same tenant**, judged by the
 caller's own roles together with its role bindings scoped to that tenant: a
 caller bound to the tenant's `so` role may grant and revoke it, and a binding
 scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
 alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
 before anything is written, and so is the `system` tenant's Security Officer
 or another tenant's. A write that leaves the user's Security Officer standing
-as it was is not affected. A tenant's first Security Officer is enrolled by
+as it was is not affected. Outside strict separation of duties the `so` role
+is granted and revoked like any other, by a caller holding
+`roles:assign`/`roles:unassign`, the tenant Admin included. A tenant's first
+Security Officer is enrolled by
 tenant create's optional `so_*` fields
 ([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
 
-The user store judges the rule again against the record version the write
+Under strict separation, the user store judges the rule again against the record version the write
 commits over, not the one the request was first checked against. An Admin's
 write that would remove a Security Officer grant committed after its first
 check is refused with `SORoleRequiredError`; a grant that commits after that
