@@ -104,17 +104,18 @@ func (e *ReencryptVerifyMismatchError) Error() string {
 func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) (int64, error) {
 	srcOpts := &pebble.Options{ReadOnly: true}
 	srcEnc.Apply(srcOpts)
-	srcOpts.Logger = pebblestore.NewLogger(nil)
-	src, err := pebble.Open(srcDir, srcOpts)
+	src, _, err := pebblestore.Open(srcDir, srcOpts, nil)
 	if err != nil {
 		return 0, &ReencryptOpenError{Dir: srcDir, Err: err}
 	}
 	defer func() { _ = src.Close() }()
 
+	// The destination is written under the seal watch: a sealed barrier under
+	// dstEnc refuses each commit and the final flush with a *SealedError
+	// instead of Pebble panicking on a WAL file it cannot create.
 	dstOpts := &pebble.Options{}
 	dstEnc.Apply(dstOpts)
-	dstOpts.Logger = pebblestore.NewLogger(nil)
-	dst, err := pebble.Open(dstDir, dstOpts)
+	dst, seals, err := pebblestore.Open(dstDir, dstOpts, nil)
 	if err != nil {
 		return 0, &ReencryptOpenError{Dir: dstDir, Err: err}
 	}
@@ -145,7 +146,7 @@ func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Enc
 		}
 		count++
 		if batch.Len() >= reencryptBatchBytes {
-			if err := batch.Commit(pebble.Sync); err != nil {
+			if err := commitWatched(seals, batch); err != nil {
 				return count, &ReencryptCopyError{Err: err}
 			}
 			_ = batch.Close()
@@ -156,14 +157,24 @@ func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Enc
 		return count, &ReencryptCopyError{Err: err}
 	}
 	if batch.Len() > 0 {
-		if err := batch.Commit(pebble.Sync); err != nil {
+		if err := commitWatched(seals, batch); err != nil {
 			return count, &ReencryptCopyError{Err: err}
 		}
 	}
-	if err := dst.Flush(); err != nil {
+	if err := seals.Flush(dst); err != nil {
 		return count, &ReencryptCopyError{Err: err}
 	}
 	return count, nil
+}
+
+// commitWatched commits batch synced once seals reports the destination's
+// barrier unsealed: a commit that fills the memtable rotates the WAL, and
+// Pebble panics when a sealed barrier refuses the new file.
+func commitWatched(seals *pebblestore.SealWatch, batch *pebble.Batch) error {
+	if err := seals.Check(); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 // ReencryptStoreFiles re-encrypts a Pebble store by copying every file in
@@ -579,8 +590,7 @@ const (
 func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) error {
 	srcOpts := &pebble.Options{ReadOnly: true}
 	srcEnc.Apply(srcOpts)
-	srcOpts.Logger = pebblestore.NewLogger(nil)
-	src, err := pebble.Open(srcDir, srcOpts)
+	src, _, err := pebblestore.Open(srcDir, srcOpts, nil)
 	if err != nil {
 		return &ReencryptOpenError{Dir: srcDir, Err: err}
 	}
@@ -588,8 +598,7 @@ func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.E
 
 	dstOpts := &pebble.Options{ReadOnly: true}
 	dstEnc.Apply(dstOpts)
-	dstOpts.Logger = pebblestore.NewLogger(nil)
-	dst, err := pebble.Open(dstDir, dstOpts)
+	dst, _, err := pebblestore.Open(dstDir, dstOpts, nil)
 	if err != nil {
 		return &ReencryptOpenError{Dir: dstDir, Err: err}
 	}
