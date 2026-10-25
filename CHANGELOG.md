@@ -35,6 +35,13 @@ are not reconstructed here — their history is in the git log.
   certificate or admit a principal.
 ### Added
 
+- **A conformance test holds Get-after-Delete to typed not-found on every
+  engine and transport** (#1163). `TestDeleteThenGetIsTypedNotFound` in
+  `sdk/go/conformance` runs Put, Delete, then Get and Exists for 50 rounds on
+  every cell of the guarded-verb matrix plus a standalone objstore cell per
+  transport, with short keys, keys objstore stores under a hashed name, and one
+  reused key. go-qrdb's read plane already answered not-found in every cell;
+  the read failure #1163 reported is not raised by go-qrdb or go-objstore.
 - **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
   through the new `WithRegisterTenantBarrierService` option, gated by the
   middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);
