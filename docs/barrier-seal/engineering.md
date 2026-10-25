@@ -946,7 +946,11 @@ above the previous turn's.
 coordinating leader while the second owner holds its turn, and starts it
 again. Every node, over every transport, then reports the same generation and
 the same steps as before the stop. The restarted node, leading again, hands
-that turn on. Its own turn comes last and waits for its credential file,
+that turn on. Raft does not keep a leader in place: a leader that loses its
+quorum steps down, and the node elected then hands the turn on from the
+record instead. So the test looks for the hand-on in every node's log since
+the restart, and accepts another node's only when the restarted node's log
+shows it stepped down (`leader lost` on shard 1). Its own turn comes last and waits for its credential file,
 because the restart discarded the request credential. The rollout ends with
 one hand-on per owner. A stale coordinator's conditional write, which
 loses and is decided again on the record it re-reads, and a shard with no
