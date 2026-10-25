@@ -1,0 +1,53 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package store
+
+import (
+	"errors"
+
+	"github.com/cockroachdb/pebble/v2"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+)
+
+// barrierSealed reports whether err is an at-rest barrier refusing to encrypt
+// because it is sealed: qrdb's StorageBarrier, or the go-quicraft
+// EpochBarrier under it, which a closing quicraft Host seals on its own.
+func barrierSealed(err error) bool {
+	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed)
+}
+
+// openPebble opens the state machine database in dir with a SealWatch
+// attached, so that a barrier sealed under its encrypting filesystem ends the
+// state machine's flushes with a typed error rather than a wait that never
+// returns, and Pebble's retries log once rather than once per attempt. opts is
+// cloned, so a state machine reopened over the same options carries one watch.
+func openPebble(dir string, opts *pebble.Options) (*pebble.DB, *pebbleStorage.SealWatch, error) {
+	o := &pebble.Options{}
+	if opts != nil {
+		o = opts.Clone()
+	}
+	if o.Logger == nil {
+		o.Logger = pebbleStorage.NewLogger(nil)
+	}
+	seals := pebbleStorage.NewSealWatch(o.Logger, barrierSealed)
+	seals.Attach(o)
+	db, err := pebble.Open(dir, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, seals, nil
+}
