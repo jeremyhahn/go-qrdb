@@ -459,6 +459,22 @@ configured metric. `TestVectorService_RestartPreservesConfiguredMetric` and
 PebbleDB-backed store, with a query vector chosen so that L2 and cosine
 ranking disagree.
 
+**Close and in-flight operations.** `PebbleVectorStorage` admits every
+operation through the close gate `pkg/storage/pebble`'s store uses: an
+operation holds a shared lock from its closed check to its last DB call, and
+`Close` takes it exclusively. Close therefore waits for every in-flight read
+and write to finish, then marks the store closed and closes the DB; an
+operation arriving meanwhile queues behind it and gets `ErrStorageClosed`.
+Close is idempotent and safe to call concurrently: exactly one call closes the
+DB, the others return nil. No iterator, batch or snapshot is handed to a
+caller -- each method closes what it opens before it leaves the gate -- so
+there is no caller-held Pebble handle for Close to wait on. A method that
+reuses another's body calls its unexported, ungated form (`scanNamespace`,
+`scanByMetadata`, `getStats`), because a second shared acquisition would
+deadlock behind a waiting Close. `pkg/storage/vector/close_gate_test.go` holds
+a write (through the sync observer's clock) and a read (through the read
+semaphore) inside the gate while Close runs.
+
 ## Target: the vector engine
 
 ### Status

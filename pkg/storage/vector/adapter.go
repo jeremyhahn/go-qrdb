@@ -47,6 +47,11 @@ type PebbleVectorStorage struct {
 	nsCache map[string]*NamespaceInfo
 	nsMu    sync.RWMutex
 
+	// gate admits operations against Close: every method that touches db
+	// holds it shared from its closed check to its last DB call (enter,
+	// leave), and Close holds it exclusively. Lock order is gate, then idMu
+	// or nsMu.
+	gate   sync.RWMutex
 	closed atomic.Bool
 
 	// Semaphores for rate limiting
@@ -152,6 +157,25 @@ func (s *PebbleVectorStorage) newBatch() *vectorBatch {
 	return b
 }
 
+// enter admits one operation through the close gate. It reports false,
+// holding nothing, once the storage is closed; on true the caller must call
+// leave when it has made its last DB call. An admitted method never calls
+// another exported method: a nested shared acquisition deadlocks against a
+// Close waiting for the gate, so shared bodies live in unexported helpers.
+func (s *PebbleVectorStorage) enter() bool {
+	s.gate.RLock()
+	if s.closed.Load() {
+		s.gate.RUnlock()
+		return false
+	}
+	return true
+}
+
+// leave releases the close gate taken by a successful enter.
+func (s *PebbleVectorStorage) leave() {
+	s.gate.RUnlock()
+}
+
 // loadNamespaces loads existing namespaces and initializes ID allocators.
 func (s *PebbleVectorStorage) loadNamespaces() error {
 	prefix := schema.EncodeNamespacesPrefix()
@@ -210,9 +234,10 @@ func (s *PebbleVectorStorage) loadNamespaces() error {
 
 // UpsertVector inserts or updates a vector.
 func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string, vec *VectorValue) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	// Check context before proceeding
 	if err := ctx.Err(); err != nil {
@@ -311,9 +336,10 @@ func (s *PebbleVectorStorage) UpsertVector(ctx context.Context, namespace string
 
 // GetVector retrieves a vector by ID.
 func (s *PebbleVectorStorage) GetVector(ctx context.Context, namespace string, id uint64) (*VectorValue, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
 
 	// Check context before proceeding
 	if err := ctx.Err(); err != nil {
@@ -371,9 +397,10 @@ func (s *PebbleVectorStorage) GetVector(ctx context.Context, namespace string, i
 
 // DeleteVector deletes a vector by ID.
 func (s *PebbleVectorStorage) DeleteVector(ctx context.Context, namespace string, id uint64) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	// Check context before proceeding
 	if err := ctx.Err(); err != nil {
@@ -483,9 +510,10 @@ func (s *PebbleVectorStorage) DeleteVector(ctx context.Context, namespace string
 
 // BatchUpsertVectors inserts or updates multiple vectors atomically.
 func (s *PebbleVectorStorage) BatchUpsertVectors(ctx context.Context, namespace string, vecs []*VectorValue) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	// Check context before proceeding
 	if err := ctx.Err(); err != nil {
@@ -531,9 +559,10 @@ func (s *PebbleVectorStorage) BatchUpsertVectors(ctx context.Context, namespace 
 
 // BatchDeleteVectors deletes multiple vectors atomically.
 func (s *PebbleVectorStorage) BatchDeleteVectors(ctx context.Context, namespace string, ids []uint64) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	// Check context before proceeding
 	if err := ctx.Err(); err != nil {
@@ -579,10 +608,16 @@ func (s *PebbleVectorStorage) BatchDeleteVectors(ctx context.Context, namespace 
 
 // ScanByMetadata scans vectors by a single metadata field.
 func (s *PebbleVectorStorage) ScanByMetadata(ctx context.Context, namespace, field, value string, opts *ScanOptions) ([]*VectorValue, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
+	return s.scanByMetadata(namespace, field, value, opts)
+}
 
+// scanByMetadata is ScanByMetadata's body, for a caller already inside the
+// close gate.
+func (s *PebbleVectorStorage) scanByMetadata(namespace, field, value string, opts *ScanOptions) ([]*VectorValue, error) {
 	start := time.Now()
 	defer func() {
 		s.metrics.scanLatency.Observe(time.Since(start).Seconds())
@@ -633,18 +668,19 @@ func (s *PebbleVectorStorage) ScanByMetadata(ctx context.Context, namespace, fie
 
 // ScanByMultipleFilters scans vectors by multiple metadata filters.
 func (s *PebbleVectorStorage) ScanByMultipleFilters(ctx context.Context, namespace string, filters []MetadataFilter, opts *ScanOptions) ([]*VectorValue, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
 
 	if len(filters) == 0 {
-		return s.ScanNamespace(ctx, namespace, opts)
+		return s.scanNamespace(namespace, opts)
 	}
 
 	// For simplicity, scan by first filter and then filter in memory
 	// A production implementation would use a more sophisticated approach
 	firstFilter := filters[0]
-	candidates, err := s.ScanByMetadata(ctx, namespace, firstFilter.Field, firstFilter.Value, nil)
+	candidates, err := s.scanByMetadata(namespace, firstFilter.Field, firstFilter.Value, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -693,10 +729,16 @@ func (s *PebbleVectorStorage) ScanByMultipleFilters(ctx context.Context, namespa
 
 // ScanNamespace scans all vectors in a namespace.
 func (s *PebbleVectorStorage) ScanNamespace(ctx context.Context, namespace string, opts *ScanOptions) ([]*VectorValue, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
+	return s.scanNamespace(namespace, opts)
+}
 
+// scanNamespace is ScanNamespace's body, for a caller already inside the
+// close gate.
+func (s *PebbleVectorStorage) scanNamespace(namespace string, opts *ScanOptions) ([]*VectorValue, error) {
 	start := time.Now()
 	defer func() {
 		s.metrics.scanLatency.Observe(time.Since(start).Seconds())
@@ -755,9 +797,10 @@ func (s *PebbleVectorStorage) ScanNamespace(ctx context.Context, namespace strin
 
 // CreateNamespace creates a new namespace.
 func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *NamespaceInfo) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	if info == nil || info.Name == "" {
 		return ErrInvalidNamespace
@@ -812,9 +855,10 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 // DeleteNamespace deletes a namespace and all its vectors.
 func (s *PebbleVectorStorage) DeleteNamespace(ctx context.Context, namespace string) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	s.nsMu.Lock()
 	defer s.nsMu.Unlock()
@@ -872,9 +916,10 @@ func (s *PebbleVectorStorage) DeleteNamespace(ctx context.Context, namespace str
 
 // ListNamespaces lists all namespaces.
 func (s *PebbleVectorStorage) ListNamespaces(ctx context.Context) ([]NamespaceInfo, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
 
 	s.nsMu.RLock()
 	defer s.nsMu.RUnlock()
@@ -889,9 +934,10 @@ func (s *PebbleVectorStorage) ListNamespaces(ctx context.Context) ([]NamespaceIn
 
 // GetNamespaceInfo gets namespace metadata.
 func (s *PebbleVectorStorage) GetNamespaceInfo(ctx context.Context, namespace string) (*NamespaceInfo, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
 
 	s.nsMu.RLock()
 	info, exists := s.nsCache[namespace]
@@ -902,7 +948,7 @@ func (s *PebbleVectorStorage) GetNamespaceInfo(ctx context.Context, namespace st
 	}
 
 	// Get accurate vector count from storage
-	stats, err := s.GetStats(ctx, namespace)
+	stats, err := s.getStats(namespace)
 	if err == nil && stats != nil {
 		// Create a copy to avoid modifying the cached info
 		infoCopy := &NamespaceInfo{
@@ -928,10 +974,15 @@ func (s *PebbleVectorStorage) GetNamespaceInfo(ctx context.Context, namespace st
 
 // GetStats returns statistics for a namespace.
 func (s *PebbleVectorStorage) GetStats(ctx context.Context, namespace string) (*NamespaceStats, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
+	return s.getStats(namespace)
+}
 
+// getStats is GetStats's body, for a caller already inside the close gate.
+func (s *PebbleVectorStorage) getStats(namespace string) (*NamespaceStats, error) {
 	// Count vectors in namespace
 	prefix := schema.EncodeNamespacePrefix(namespace)
 	iter, err := s.db.NewIter(&pebble.IterOptions{
@@ -961,9 +1012,10 @@ func (s *PebbleVectorStorage) GetStats(ctx context.Context, namespace string) (*
 
 // NextID allocates a new unique ID for the namespace.
 func (s *PebbleVectorStorage) NextID(namespace string) (uint64, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return 0, ErrStorageClosed
 	}
+	defer s.leave()
 
 	s.idMu.RLock()
 	allocator, exists := s.idAllocators[namespace]
@@ -990,9 +1042,10 @@ func (s *PebbleVectorStorage) NextID(namespace string) (uint64, error) {
 
 // BatchAllocateIDs allocates multiple IDs atomically.
 func (s *PebbleVectorStorage) BatchAllocateIDs(namespace string, count int) ([]uint64, error) {
-	if s.closed.Load() {
+	if !s.enter() {
 		return nil, ErrStorageClosed
 	}
+	defer s.leave()
 
 	if count <= 0 {
 		return nil, ErrInvalidID
@@ -1027,9 +1080,10 @@ func (s *PebbleVectorStorage) BatchAllocateIDs(namespace string, count int) ([]u
 
 // Compact manually triggers compaction for a namespace.
 func (s *PebbleVectorStorage) Compact(ctx context.Context, namespace string) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	prefix := schema.EncodeNamespacePrefix(namespace)
 	end := schema.PrefixSuccessor(prefix)
@@ -1048,9 +1102,10 @@ func (s *PebbleVectorStorage) Compact(ctx context.Context, namespace string) err
 
 // CleanupTombstones removes tombstones older than the specified duration.
 func (s *PebbleVectorStorage) CleanupTombstones(ctx context.Context, olderThan time.Duration) error {
-	if s.closed.Load() {
+	if !s.enter() {
 		return ErrStorageClosed
 	}
+	defer s.leave()
 
 	cutoffTime := uint64(time.Now().Add(-olderThan).Unix()) //nolint:gosec // G115: Safe conversion - Unix timestamp always positive
 
@@ -1104,9 +1159,31 @@ func (s *PebbleVectorStorage) CleanupTombstones(ctx context.Context, olderThan t
 	return nil
 }
 
-// Close closes the storage and releases all resources.
+// Close closes the storage and releases all resources. Subsequent operations
+// return ErrStorageClosed. Calling Close again, concurrently or after it has
+// returned, is a no-op that returns nil: exactly one call closes the DB.
+//
+// It takes the close gate exclusively, so it waits for every in-flight
+// operation to leave before it marks the storage closed and releases the DB;
+// an operation that has passed its closed check always completes against a
+// live DB. Operations that arrive while Close waits queue behind it and then
+// see ErrStorageClosed. This is the gate pkg/storage/pebble's PebbleStorage
+// uses, for the reason it documents: pebble.DB panics with ErrClosed on use
+// after Close, and a bare closed check followed by the DB call is two steps
+// a concurrent Close can land between.
+//
+// No iterator, batch or snapshot outlives the call that opened it: every
+// method closes what it opens before it leaves the gate, so Close never has
+// a caller-held pebble handle to wait for.
+//
+// The closed flag is set BEFORE db.Close and is never rolled back if
+// db.Close reports an error: PebbleDB closes the database regardless and
+// returns the leaked-handle report as a value.
 func (s *PebbleVectorStorage) Close() error {
-	if s.closed.Load() {
+	s.gate.Lock()
+	defer s.gate.Unlock()
+
+	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 
@@ -1116,7 +1193,6 @@ func (s *PebbleVectorStorage) Close() error {
 		return err
 	}
 
-	s.closed.Store(true)
 	s.logger.Info("Vector storage closed successfully")
 
 	return nil
