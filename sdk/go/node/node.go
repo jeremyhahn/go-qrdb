@@ -962,7 +962,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 		// exercised by the certificates this node issues (go-qrdb#519) --
 		// in the sealed window's graph too, where the first-boot ceremony
 		// issues the holder and admin certificates.
-		infra.SPIFFETrustDomain = cfg.Auth.EffectiveSPIFFETrustDomain()
+		infra.ClusterTrustDomain = cfg.Auth.EffectiveClusterTrustDomain()
 	}
 	return infra, nil
 }
@@ -3915,7 +3915,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 	n.bindingPolicy.Store(int32(bindingPolicy))
-	trustDomain := cfg.Auth.EffectiveSPIFFETrustDomain()
+	trustDomain := cfg.Auth.EffectiveClusterTrustDomain()
 	n.spiffeTrustDomain.Store(&trustDomain)
 	if bindingPolicy == auth.MTLSBindingRequired && cfg.Auth.IsEnabled() {
 		// First decision: at this point no embedder has called FirstBoot or
@@ -4036,7 +4036,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		RoleService:         svcNode.Role,
 		UserService:         svcNode.User,
 		StrictSeparation:    strictSoD,
-		SPIFFETrustDomain:   cfg.Auth.EffectiveSPIFFETrustDomain(),
+		ClusterTrustDomain:  cfg.Auth.EffectiveClusterTrustDomain(),
 		Tenants:             svcNode.Tenant,
 		AuditLogger:         decisionAudit,
 		AuditFailurePolicy:  auditFailure,

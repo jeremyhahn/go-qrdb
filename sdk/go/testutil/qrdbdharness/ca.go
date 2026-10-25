@@ -376,8 +376,8 @@ func WithURISAN(uri string) CertOption {
 }
 
 // WithClusterTrustDomain sets the cluster trust domain the derived tenant
-// SPIFFE ID SAN is checked against: the daemon's auth.spiffe_trust_domain,
-// which defaults to its cluster trust domain, and which no tenant may be.
+// SPIFFE ID SAN is checked against: the daemon's auth.cluster_trust_domain,
+// which no tenant may be.
 // Unset, it is config.DefaultClusterTrustDomain, the domain of a daemon that
 // configures neither. WithSPIFFEID replaces the derived SAN outright, which is
 // how a test presents a certificate whose SAN and OU disagree.

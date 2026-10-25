@@ -360,6 +360,62 @@ func testTenantIsolationTypeGatingOverProtocol(t *testing.T, node *multiProtoNod
 	}
 }
 
+// TestTenant_CLI_TrustDomainRefusal_PerProtocol drives `tenant create` over
+// every CLI transport with an ID that is not a SPIFFE trust domain (SPIFFE-ID
+// §2.1 admits no uppercase) and with the cluster's own trust domain. A tenant
+// ID is the trust domain of every SPIFFE ID minted into it, so each is refused
+// as invalid input on every transport alike, and neither tenant exists after.
+func TestTenant_CLI_TrustDomainRefusal_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testTenantTrustDomainRefusalOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testTenantTrustDomainRefusalOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	cases := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{"not a trust domain", fmt.Sprintf("TD-%s-%d", proto.name, time.Now().UnixNano()), "cannot be a spiffe trust domain"},
+		// startMultiProtocolNode runs with the default --cluster-trust-domain.
+		{"the cluster trust domain", "qrdb.cluster", "names the cluster trust domain"},
+	}
+	for _, tc := range cases {
+		adminArgs := adminCSRArgsForTenant(t, node, proto, "td-admin")
+		out, err := runCLIProto(t, node, proto, append([]string{"tenant", "create",
+			"--id", tc.id, "--name", "Trust Domain Tenant"}, adminArgs...)...)
+		if err == nil {
+			t.Fatalf("[%s] tenant create %q (%s) should be refused, got: %s", proto.name, tc.id, tc.name, out)
+		}
+		if !strings.Contains(strings.ToLower(out), tc.want) {
+			t.Fatalf("[%s] tenant create %q (%s) error should say %q, got: %s", proto.name, tc.id, tc.name, tc.want, out)
+		}
+	}
+
+	out, err := runCLIProto(t, node, proto, "--output", "json", "tenant", "list")
+	if err != nil {
+		t.Fatalf("[%s] tenant list: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed tenantListCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode tenant list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	for _, tc := range cases {
+		if tenantListContainsID(listed.Tenants, tc.id) {
+			t.Fatalf("[%s] refused tenant %q is listed: %+v", proto.name, tc.id, listed.Tenants)
+		}
+	}
+}
+
 // writeTenantEntitlementConfig writes a daemon YAML config with the seal
 // barrier enabled (passphrase strategy), a single-path volume pool, and
 // permissive tenant.default_entitlements so every isolation type

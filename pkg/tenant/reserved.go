@@ -18,6 +18,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -138,6 +139,24 @@ func ValidateTenantIDShape(id string) error {
 			TenantID: id,
 			Reason:   "id must not be a relative path segment",
 		}
+	}
+	return nil
+}
+
+// ValidateTenantIDTrustDomain refuses a tenant ID that cannot be a SPIFFE
+// trust domain. A tenant principal is spiffe://<tenantID>/<kind>/<name>, so
+// the tenant ID is the trust domain verbatim (SPIFFE-ID §2.1: lowercase
+// letters, digits, '.', '-' and '_'). An ID that does not round-trip through
+// a SPIFFE ID, an uppercase letter for instance, or one equal to
+// clusterTrustDomain, which names no tenant, would be a tenant the CA can
+// never issue a client certificate for and the mTLS authenticator can never
+// admit. Returns a *TenantTrustDomainError.
+func ValidateTenantIDTrustDomain(id, clusterTrustDomain string) error {
+	if err := spiffe.ValidateTrustDomain(id); err != nil {
+		return &TenantTrustDomainError{TenantID: id, Err: err}
+	}
+	if id == clusterTrustDomain {
+		return &TenantTrustDomainError{TenantID: id, Err: ErrTenantIDIsClusterTrustDomain}
 	}
 	return nil
 }
