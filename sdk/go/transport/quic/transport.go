@@ -920,6 +920,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
+	}
 
 	payload, err := proto.Marshal(&pb.MintJoinTokenRequest{
 		NodeId:     req.NodeID,

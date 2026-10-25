@@ -243,6 +243,18 @@ func TestUnixRT_Join_Closed(t *testing.T) {
 	assertClosed(t, tr.RejectJoinRequest(ctx, "r", "x"))
 }
 
+func TestUnixRT_Join_MintJoinTokenNilRequest(t *testing.T) {
+	tr, cleanup := startJoinServer(t, &joinAdminSvc{mockAdminService: newMockAdminService()})
+	defer cleanup()
+
+	_, err := tr.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+}
+
 // TestUnixRT_WithDatabase_ScopesAndSharesTheConnection: a named scope dials
 // its own connection that serves requests; the default scope shares the
 // parent's; an unconnected parent yields an unconnected clone; and a closed

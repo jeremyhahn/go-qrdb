@@ -811,6 +811,19 @@ func TestGRPC_UnaryServerError_IsARequestErrorNamingTheMethod(t *testing.T) {
 	}
 }
 
+// TestGRPC_MintJoinToken_NilRequest refuses a nil request with a typed error
+// rather than dereferencing it.
+func TestGRPC_MintJoinToken_NilRequest(t *testing.T) {
+	tr := connectWireServer(t, nil)
+
+	_, err := tr.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+}
+
 // TestGRPC_UnaryEmptyResponse_Decodes pins that every unary verb but
 // GetDocument and MintJoinToken accepts the zero response message: a server that sets no optional field is answered
 // with zero values, not a nil dereference.

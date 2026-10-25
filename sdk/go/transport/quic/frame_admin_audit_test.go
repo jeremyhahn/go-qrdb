@@ -136,6 +136,21 @@ func TestFrameTransport_MintJoinTokenDecodesTheToken(t *testing.T) {
 	}
 }
 
+func TestFrameTransport_MintJoinTokenRefusesANilRequest(t *testing.T) {
+	frames := newRecordingFrames()
+	tr := NewFrameTransport("", frames.send)
+
+	_, err := tr.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if _, sent := frames.sent["admin.MintJoinToken"]; sent {
+		t.Fatal("a nil request reached the wire")
+	}
+}
+
 // TestFrameTransport_MintJoinTokenRefusesABadAnswer proves an undecodable
 // answer or expiry is a RequestError naming MintJoinToken.
 func TestFrameTransport_MintJoinTokenRefusesABadAnswer(t *testing.T) {

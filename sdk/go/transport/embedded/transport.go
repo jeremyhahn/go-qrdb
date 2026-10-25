@@ -1024,6 +1024,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	if !ok {
 		return nil, translateError(&service.ClusterJoinTokenNotConfiguredError{})
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
+	}
 	token, expiresAt, err := minter.MintJoinToken(ctx, req.NodeID, time.Duration(req.TTLSeconds)*time.Second)
 	if err != nil {
 		return nil, translateError(err)
