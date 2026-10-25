@@ -352,6 +352,58 @@ All persistent data is encrypted transparently at rest via the `StorageBarrier`:
 
 See [multi-tenant.md](../seal/multi-tenant.md) for the full tenant-barrier lifecycle and key-management modes.
 
+## Sealing quiesces the encrypted stores
+
+A Pebble store on an encrypting file system (`pkg/seal/encfs`) cannot finish a
+flush, a WAL rotation or a compaction once its barrier's key is gone, and
+Pebble panics when it cannot create the WAL file a flush needs. The seal watch
+(`pkg/storage/pebble.SealWatch`) already refuses new work under a **sealed**
+barrier; the work that matters is the work **already in flight** when the
+seal arrives. `StorageBarrier.Seal` therefore drains it before the key leaves
+memory:
+
+1. The sealing observers run (`OnSealing`). A volume store an observer closes
+   still flushes through the barrier, so the observers come first.
+2. The barrier's quiesce gate closes (`pkg/seal/quiesce.Gate`). From here every
+   flush, durable write and compaction a seal watch admits refuses with the
+   same typed `*pebble.SealedError` (`ErrBarrierSealed`) a sealed barrier
+   gives.
+3. The seal waits, up to `seal.BarrierConfig.SealDrainTimeout` (default 10 s),
+   for every store's outstanding operations to end.
+4. The barrier seals: its key is wiped and `IsSealed` reports true.
+
+Each encrypted store registers one **lease** on its barrier's gate when it
+opens (`pkg/storage/pebble.Open`, named by its directory) and unregisters it
+when it closes. Every operation the watch admits holds the lease for its whole
+duration (`SealWatch.Admit` ... `SealWatch.Done`): `SealWatch.Flush`, which the
+Raft state machines in `pkg/store` call from `Sync`, and every write and
+batch commit and `Compact` of a `pkg/storage/pebble.PebbleStorage`. A lease is an atomic
+counter; taking it is one atomic add and one atomic load, so the write path
+takes no lock. Acquire increments, then reads the gate; the seal closes the
+gate, then reads the counters, so either the operation sees the gate closed
+and refuses, or the drain sees the operation and waits for it.
+
+**A drain that runs out still seals.** The seal is the operator's control: a
+store wedged on a slow disk cannot be allowed to keep a key in memory that its
+owner asked to remove. `Seal` seals, then returns a
+`*quiesce.DrainTimeoutError` naming the stores still in flight (joined with any
+observer error), logs it at `Error` and records an audit event with phase
+`drain`. As with an observer error, an error from `Seal` never means the
+barrier is unsealed. An operation the drain did not wait for meets the sealed
+barrier and fails as it did before this design; the seal watch turns that into
+a typed error, not a panic, wherever the file system can report its barrier
+state.
+
+**Unseal reopens the gate**, on every unseal path (passphrase, Shamir quorum,
+recovery keys), after the barrier reports unsealed.
+
+**Not covered.** Pebble's own background flushes and compactions run on its
+goroutines and are not admitted by the watch, so the drain does not wait for
+them; a sealed barrier fails them and the watch bounds the logging, as before.
+A go-quicraft `Host` that seals its `EpochBarrier` directly does not go through
+`StorageBarrier.Seal` and so does not drain. Pebble is used as released, never
+forked, and go-quicraft is unchanged.
+
 
 ## No cluster auto-unseal
 

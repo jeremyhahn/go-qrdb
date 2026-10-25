@@ -105,7 +105,8 @@ func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
 //
 // A write refused by a sealed barrier fails with a *SealedError before it
 // reaches Pebble, which would panic were the barrier to refuse the WAL file a
-// full memtable rotates to.
+// full memtable rotates to. An admitted write holds the store's quiesce lease
+// until it returns, so a Seal waits for it before the key leaves memory.
 func (s *PebbleStorage) durably(synced bool, write func(*pebble.WriteOptions) error) error {
 	if s.seals != nil {
 		if err := s.seals.Admit(); err != nil {

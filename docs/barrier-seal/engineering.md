@@ -251,6 +251,15 @@ services and to the server, which wraps the node's sealed-window probe with
 
 ## Invariants
 
+- **No encrypted-store work the seal admitted is in flight when the key leaves
+  memory, unless the seal reports it.** Every flush, durable write and
+  compaction a `PebbleStorage` or `SealWatch` admits holds its store's lease
+  on the barrier's `quiesce.Gate`; `Seal` closes the gate before it drains and
+  drains before `EpochBarrier.Seal`. A drain that outlives
+  `seal.drain_timeout` returns `*quiesce.DrainTimeoutError` naming the stores
+  (see [architecture.md](architecture.md), "Sealing quiesces the encrypted
+  stores").
+
 - **A barrier credential is a wipeable byte slice up to the service boundary,
   and protected memory from there on.** The transport request field, the
   protobuf field and the service-layer parameter are all `[]byte`, never
@@ -1318,6 +1327,8 @@ key.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Barrier sealed | `ErrBarrierSealed` on every data-path read and write | **yes** |
+| Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns | **yes** |
+| In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error | **yes** |
 | Several strategies registered, none named | `ErrNoStrategySpecified` | **yes** |
 | Unknown strategy name | registry lookup error | **yes** |
 | `--so-pin` without `--user-pin` (or vice versa) | refused — dual control | **yes** |
@@ -1425,7 +1436,12 @@ tenant could act on any tenant's database.
 seal:
   enabled: true          # false (the default) runs with no barrier at all
   strategy: passphrase   # passphrase | none | shamir
+  drain_timeout: 10s     # how long a seal waits for in-flight store work to drain
 ```
+
+`drain_timeout` must be a positive duration; a seal that waits it out still
+seals and reports the stores that had not drained (`QRDB_SEAL_DRAIN_TIMEOUT`
+overrides it, as every key has an env override).
 
 Cluster sealing and cluster enable-encryption add:
 
@@ -1698,6 +1714,15 @@ distinguishes them.
   hardware, so integration tests need no hardware coupling. That is the point of
   the seam.
 - **No `time.Sleep`** anywhere in the coordinator or its tests.
+- **Seal quiesce, unit**: `pkg/seal/quiesce` proves the gate's ordering with
+  writers racing a seal; `pkg/seal` (`barrier_quiesce_test.go`) proves a held
+  lease blocks `Seal`, a new one is refused while sealing, the bound runs out
+  with a `DrainTimeoutError` and the barrier still seals, and unseal reopens
+  the gate; `pkg/storage/pebble` proves every write, flush and compaction
+  takes the lease. `pkg/seal/encfs` (`quiesce_test.go`) runs it over a real
+  Pebble store on encfs on a real barrier, holding a WAL sync in flight
+  through a gated file system rather than a sleep. The benchmark in
+  `pkg/seal/encfs/quiesce_bench_test.go` measures the write path with and without the lease.
 - **Cluster seal, unit**: `pkg/clusterseal` drives the monitor with an
   injected clock and an in-memory guarded KV: guarded writes and their races,
   epoch-keyed idempotent enforcement, the acknowledgement wait and its timeout,
@@ -1761,8 +1786,9 @@ keyed by the tenant that owns the barrier -- the system tenant for the system
 barrier, the tenant for a tenant barrier, the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
-details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`, `from`,
-`to`, `rolled_back`, `submitted`, `required`, and the holder record
+details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`,
+`from`, `to`, `rolled_back`, `submitted`, `required`, a drain's `phase` and
+`stores`, and the holder record
 conflict's `scope`, `username`, `cached_cert`); no key material is among
 them, and any other detail is dropped. The records are post-hoc: a trail
 that refuses one is counted on
@@ -1773,7 +1799,7 @@ operation's outcome stands.
 |--------|---------------|
 | `initialize` | the barrier is initialized, or the initialization refused |
 | `unseal` | the barrier is unsealed, by a credential or a completed quorum, or the unseal refused |
-| `seal` | the barrier is sealed |
+| `seal` | the barrier is sealed; a `deny` with `phase=drain` and the `stores` still in flight when `seal.drain_timeout` ran out (the seal still completes) |
 | `quorum-complete` | a holder quorum's round completes and its operation runs, or the reconstructed key is refused |
 | `distribute` | a domain's key is split to its holders |
 | `change_password` | a passphrase barrier's passphrase is changed |

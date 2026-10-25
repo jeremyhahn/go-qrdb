@@ -879,7 +879,7 @@ func (b *StorageBarrier) quiesceStores() error {
 	var timeout *quiesce.DrainTimeoutError
 	if errors.As(err, &timeout) {
 		emitAudit(b.config.AuditLogger, "seal", "barrier", b.config.RootKeyPath,
-			"deny", map[string]string{"error": err.Error(), "phase": "drain"})
+			"deny", map[string]string{"phase": "drain", "stores": strings.Join(timeout.Stores, ",")})
 		b.logger.Error("barrier sealing with stores still in flight",
 			slog.Any("stores", timeout.Stores),
 			slog.Duration("timeout", timeout.Timeout))

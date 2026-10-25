@@ -1785,6 +1785,12 @@ type SealConfig struct {
 	// default "5s".
 	ClusterAckTimeout string `yaml:"cluster_ack_timeout"`
 
+	// DrainTimeout bounds how long a seal waits for the flushes, writes and
+	// compactions already in flight on the barrier's encrypted stores to end
+	// before it wipes the key; a seal that runs out still seals and names the
+	// stores that did not drain. Go duration; default "10s".
+	DrainTimeout string `yaml:"drain_timeout"`
+
 	// MigrationCredentialsDir holds this node's own credentials for a
 	// cluster enable-encryption migration it did not accept the request for:
 	// "system" for the node barrier and "tenant-<id>" for a tenant barrier.
@@ -1803,6 +1809,17 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 		s = DefaultShareTTLString
 	}
 	return parseDuration(s)
+}
+
+// DefaultDrainTimeoutString is the default seal.drain_timeout when unset; it
+// matches seal.DefaultSealDrainTimeout.
+const DefaultDrainTimeoutString = "10s"
+
+// DrainTimeoutDuration returns the parsed DrainTimeout, or the default 10s
+// when unset. A value that does not parse, or is not positive, is a
+// *ValidationError.
+func (c SealConfig) DrainTimeoutDuration() (time.Duration, error) {
+	return positiveDuration("seal.drain_timeout", c.DrainTimeout, DefaultDrainTimeoutString)
 }
 
 // validSealStrategies contains the accepted seal strategy strings.
@@ -1953,6 +1970,7 @@ func DefaultConfig() *Config {
 			Strategy:           "none",
 			RootKeyPath:        "__sys:seal/root_key",
 			ShareTTL:           DefaultShareTTLString,
+			DrainTimeout:       DefaultDrainTimeoutString,
 			CredentialStrategy: "barrier",
 		},
 		Bootstrap: BootstrapConfig{
@@ -2602,6 +2620,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		if _, err := c.Seal.ClusterSealTiming(); err != nil {
+			return err
+		}
+		if _, err := c.Seal.DrainTimeoutDuration(); err != nil {
 			return err
 		}
 	} else if c.Auth.IsEnabled() {

@@ -249,3 +249,90 @@ func TestStorageBarrier_QuiesceStoresReportsAHeldStore(t *testing.T) {
 		t.Fatalf("quiesceStores = %v; want a DrainTimeoutError naming held", err)
 	}
 }
+
+func TestStorageBarrier_QuiesceStoresAuditsTheHeldStores(t *testing.T) {
+	audit := &mockAuditLogger{}
+	b := newQuiesceBarrier(t, BarrierConfig{SealDrainTimeout: -1, AuditLogger: audit})
+	for _, name := range []string{"b", "a"} {
+		lease := b.Quiesce().Register(name)
+		if err := lease.Acquire(); err != nil {
+			t.Fatal(err)
+		}
+		defer lease.Release()
+	}
+	_ = b.quiesceStores()
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	last := audit.events[len(audit.events)-1]
+	if last.Action != "seal" || last.Outcome != "deny" || last.Details["phase"] != "drain" || last.Details["stores"] != "a,b" {
+		t.Fatalf("drain audit = %+v", last)
+	}
+	for k := range last.Details {
+		if !barrierAuditAttributes[k] {
+			t.Fatalf("drain audit detail %q is not allow-listed and would be dropped", k)
+		}
+	}
+}
+
+func TestStorageBarrier_QuiesceStoresAuditsNothingWhenDrained(t *testing.T) {
+	audit := &mockAuditLogger{}
+	b := newQuiesceBarrier(t, BarrierConfig{AuditLogger: audit})
+	audit.mu.Lock()
+	before := len(audit.events)
+	audit.mu.Unlock()
+	if err := b.quiesceStores(); err != nil {
+		t.Fatal(err)
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	if len(audit.events) != before {
+		t.Fatalf("a drained seal audited %d events", len(audit.events)-before)
+	}
+}
+
+// newNoneBarrierDraining is a none-strategy barrier, the source of an
+// enable-encryption migration, with drain as its SealDrainTimeout.
+func newNoneBarrierDraining(t *testing.T, drain time.Duration) *StorageBarrier {
+	t.Helper()
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{RootKeyPath: "root-key", SealDrainTimeout: drain}, NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	return b
+}
+
+func TestStorageBarrier_MintKeyedSiblingKeepsTheDrainTimeout(t *testing.T) {
+	ctx := context.Background()
+	src := newNoneBarrierDraining(t, 3*time.Second)
+	sib, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), MustCredentials(ctx, []byte("pw")))
+	if err != nil {
+		t.Fatalf("MintKeyedSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+	if got := sib.config.sealDrainTimeout(); got != 3*time.Second {
+		t.Fatalf("sibling SealDrainTimeout = %s; want 3s", got)
+	}
+}
+
+func TestStorageBarrier_ReopenKeyedKeepsTheDrainTimeout(t *testing.T) {
+	ctx := context.Background()
+	src := newNoneBarrierDraining(t, -1)
+	sib, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), MustCredentials(ctx, []byte("pw")))
+	if err != nil {
+		t.Fatalf("MintKeyedSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+	if err := src.AdoptMigratedRootKey(ctx, sib); err != nil {
+		t.Fatalf("AdoptMigratedRootKey: %v", err)
+	}
+	keyed, err := src.ReopenKeyed(ctx, NewDeferredSoftwareStrategy(), MustCredentials(ctx, []byte("pw")))
+	if err != nil {
+		t.Fatalf("ReopenKeyed: %v", err)
+	}
+	if got := keyed.config.sealDrainTimeout(); got != -1 {
+		t.Fatalf("reopened SealDrainTimeout = %s; want no wait", got)
+	}
+}
