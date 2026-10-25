@@ -100,6 +100,16 @@ are not reconstructed here — their history is in the git log.
   reaper removes stale pulled images, never a name of an image any container
   uses. `test/buildgates/ci_image_digest_test.go`
   holds every consumer to the pull.
+- **A push to `main` publishes the CI images from the release runner**
+  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
+  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
+  on every other event; github.com keeps `ubuntu-latest`. The push logs in
+  with `CI_REGISTRY_USER` and `CI_REGISTRY_TOKEN` from the release runner's
+  env file, not a repository secret, and the step sets neither so it cannot
+  mask them. `scripts/ci-registry.sh` names the credential a refused or empty
+  login used, never its value. `test/buildgates/ci_image_digest_test.go`
+  fails when `docker-build` runs anywhere but `release` on a push to `main`,
+  on `release` on any other event, or when any other job can run there.
 
 ## [0.54.0-alpha] - 2026-10-23
 

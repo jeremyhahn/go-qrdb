@@ -46,7 +46,7 @@ exit 99
 // runRegistryPush runs scripts/ci-registry.sh push against registryDocker on
 // the forge serverURL and returns the script's output, the host it logged in
 // to and its error.
-func runRegistryPush(t *testing.T, serverURL string, refuse bool) (out, login string, err error) {
+func runRegistryPush(t *testing.T, serverURL string, refuse bool, env ...string) (out, login string, err error) {
 	t.Helper()
 	root := repoRoot(t)
 	stub := t.TempDir()
@@ -63,6 +63,7 @@ func runRegistryPush(t *testing.T, serverURL string, refuse bool) (out, login st
 	cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"STUB_DIR="+stub, "GITHUB_SERVER_URL="+serverURL, "GITHUB_REPOSITORY_OWNER=JeremyHahn",
 		"CI_REGISTRY_USER=ci", "CI_REGISTRY_TOKEN=stub-token")
+	cmd.Env = append(cmd.Env, env...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -109,7 +110,7 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 		name, serverURL, want string
 	}{
 		{name: "GitHub", serverURL: "https://github.com", want: "GHCR refused the login: the run's token cannot use jeremyhahn's container packages"},
-		{name: "Gitea", serverURL: "http://forge.example:3001", want: "the Gitea registry refused the login: the run's token cannot use jeremyhahn's container packages"},
+		{name: "Gitea", serverURL: "http://forge.example:3001", want: "the Gitea registry refused the login: the release runner's credential cannot use jeremyhahn's container packages"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, _, err := runRegistryPush(t, tc.serverURL, true)
@@ -118,6 +119,39 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.want) {
 				t.Fatalf("push output lacks %q:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "stub-token") {
+				t.Fatalf("push output prints the credential:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestCIRegistry_MissingCredentialNamesItsSource holds ruling 169: a push to
+// the Gitea registry with no credential in the environment names the release
+// runner's credential as missing, a push to GHCR the run's token, and
+// neither logs in.
+func TestCIRegistry_MissingCredentialNamesItsSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, serverURL, unset, want string
+	}{
+		{name: "Gitea token", serverURL: "http://forge.example:3001", unset: "CI_REGISTRY_TOKEN",
+			want: "CI_REGISTRY_TOKEN is empty: the release runner's credential is not in the job's environment"},
+		{name: "Gitea user", serverURL: "http://forge.example:3001", unset: "CI_REGISTRY_USER",
+			want: "CI_REGISTRY_USER is empty: the release runner's credential is not in the job's environment"},
+		{name: "GitHub token", serverURL: "https://github.com", unset: "CI_REGISTRY_TOKEN",
+			want: "CI_REGISTRY_TOKEN is empty: the run's token is not in the job's environment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, login, err := runRegistryPush(t, tc.serverURL, false, tc.unset+"=")
+			if err == nil {
+				t.Fatalf("push succeeded with %s empty:\n%s", tc.unset, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("push output lacks %q:\n%s", tc.want, out)
+			}
+			if login != "" {
+				t.Fatalf("push logged in to %q with %s empty", login, tc.unset)
 			}
 		})
 	}

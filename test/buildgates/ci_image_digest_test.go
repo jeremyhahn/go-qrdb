@@ -83,7 +83,23 @@ const (
 	ciLocalIf     = "${{ env.CI_PUBLISH != 'true' }}"
 	ciPublishTerm = "env.CI_PUBLISH == 'true'"
 	ciLocalTerm   = "env.CI_PUBLISH != 'true'"
+
+	// producerRunsOn is the one runs-on the producer may have (ruling 169):
+	// on the forge, a push to main (ciPublishExpr's condition, restated
+	// because runs-on cannot read env) runs on the release runner, the one
+	// runner holding the registry credential, and every other event on
+	// bigdisk; github.com keeps ubuntu-latest.
+	producerRunsOn = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || " +
+		"(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}"
 )
+
+// releaseLabel matches a runs-on that can place a job on the release
+// runner: the bare label, or the label quoted in an expression.
+var releaseLabel = regexp.MustCompile(`(^|')release('|$)`)
+
+// runnerCredential lists the names the release runner's env file supplies
+// (scripts/ci-registry.sh): a step env entry under either masks it.
+var runnerCredential = []string{"CI_REGISTRY_USER", "CI_REGISTRY_TOKEN"}
 
 // digestOutputs maps the outputs a consumer may read, the digest
 // references, to the image family scripts/ci-registry.sh local builds for
@@ -161,6 +177,9 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 		if name == digestProducer {
 			continue
 		}
+		if releaseLabel.MatchString(strings.TrimSpace(job.RunsOn)) {
+			problems = append(problems, name+" runs on the release runner: only "+digestProducer+" does, and on a push to main alone")
+		}
 		read := map[string]bool{}
 		for _, v := range job.Env {
 			markOutputs(read, v)
@@ -200,10 +219,20 @@ func producerProblems(job digestJob) []string {
 			problems = append(problems, digestProducer+" has no "+out+" output from a step: a consumer would pull nothing")
 		}
 	}
+	if v := strings.TrimSpace(job.RunsOn); v != producerRunsOn {
+		problems = append(problems, digestProducer+" runs on "+strconv.Quote(v)+"; want "+strconv.Quote(producerRunsOn)+
+			": a push to main publishes from the release runner alone, and no other event runs there")
+	}
 	var pushed, validated bool
 	for _, s := range job.Steps {
 		if strings.Contains(s.Run, "scripts/ci-registry.sh push ") {
 			pushed = true
+			for _, name := range runnerCredential {
+				if _, ok := s.Env[name]; ok {
+					problems = append(problems, digestProducer+"'s step "+strconv.Quote(s.Name)+" sets "+name+
+						": it masks the release runner's credential")
+				}
+			}
 		}
 		if strings.Contains(s.Run, digestRefPattern) {
 			validated = true
@@ -410,7 +439,7 @@ const digestFixture = `env:
   CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 jobs:
   docker-build:
-    runs-on: bigdisk
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
     permissions:
       contents: read
       packages: write
@@ -424,7 +453,7 @@ jobs:
         id: push
         if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}
         run: scripts/ci-registry.sh push "$TOOLCHAIN_IMAGE" qrdb-ci-toolchain "$TRUST"
       - name: Validate
         if: ${{ env.CI_PUBLISH == 'true' }}
@@ -519,6 +548,15 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "no validation", old: `re='^[^@ ]+@sha256:[0-9a-f]{64}$'`, new: `echo done`},
 		{name: "an output not from a step", old: "it_ref: ${{ steps.push.outputs.it_ref }}", new: "it_ref: qrdb-ci-it:latest"},
 		{name: "no producer", old: "  docker-build:\n", new: "  docker-build-old:\n"},
+		{name: "a publish off the release runner", old: "'refs/heads/main') && 'release' || 'bigdisk' }}", new: "'refs/heads/main') && 'bigdisk' || 'bigdisk' }}"},
+		{name: "a publish on bigdisk", old: "  docker-build:\n    runs-on: ${{", new: "  docker-build:\n    runs-on: bigdisk\n    x: ${{"},
+		{name: "the release runner on every event", old: "(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk'", new: "'release'"},
+		{name: "the release runner on a pull request", old: "(github.event_name == 'push' && github.ref", new: "(github.event_name == 'pull_request' && github.ref"},
+		{name: "the release runner on github.com", old: "&& 'ubuntu-latest' ||", new: "&& 'release' ||"},
+		{name: "the run's token masks the runner's", old: "          RUN_REGISTRY_TOKEN:", new: "          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "the run's user masks the runner's", old: "          RUN_REGISTRY_TOKEN:", new: "          CI_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},
+		{name: "a consumer on the release runner by expression", old: "  legs:\n    runs-on: bigdisk", new: "  legs:\n    runs-on: ${{ github.ref == 'refs/heads/main' && 'release' || 'bigdisk' }}"},
 		{name: "CI_PUBLISH widened to every branch", old: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "${{ github.ref == 'refs/heads/main' }}"},
 		{name: "CI_PUBLISH widened to pull requests", old: "github.event_name == 'push' && ", new: "github.event_name != 'schedule' && "},
 		{name: "no CI_PUBLISH", old: "env:\n  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}\n", new: ""},

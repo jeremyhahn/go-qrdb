@@ -24,7 +24,10 @@
 # ghcr.io on GitHub, the forge's own host[:port] on Gitea (handbook devops.md
 # §2); no internal address is written here or in ci.yml. The owner is GITHUB_REPOSITORY_OWNER.
 # push and pull log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the latter
-# read from the environment and fed to docker on stdin only. The login lives in
+# read from the environment and fed to docker on stdin only; neither value is
+# ever printed. A push to the Gitea registry runs on the release runner alone,
+# whose runner env file supplies both names (ruling 169); a pull, and a push
+# to GHCR, gets them from the workflow step as the run's own token. The login lives in
 # a private DOCKER_CONFIG that is deleted on exit, so the credential outlives
 # neither this process nor reaches another job on the same Docker host. local
 # never logs in, pushes or pulls, whatever the environment holds.
@@ -91,15 +94,29 @@ check_ref() {
 	[[ $1 =~ $ref_re ]] || die "'$1' is not a digest reference (<registry>/<owner>/<name>@sha256:<64 hex>)"
 }
 
+# credential_source names, in a message, the credential a login with
+# operation $2 at host $1 uses (ruling 169): a push to the Gitea registry
+# uses the release runner's own, which its runner env file puts in the job's
+# environment; a pull, and any login to GHCR, uses the run's token. It
+# names the credential, never its value.
+credential_source() {
+	case $1:$2 in
+	ghcr.io:* | *:pull) printf "the run's token\n" ;;
+	*) printf "the release runner's credential\n" ;;
+	esac
+}
+
+# login logs in to host $1 for operation $2, push or pull.
 login() {
-	local host=$1
-	[ -n "${CI_REGISTRY_USER:-}" ] || die "CI_REGISTRY_USER is empty"
-	[ -n "${CI_REGISTRY_TOKEN:-}" ] || die "CI_REGISTRY_TOKEN is empty: the job needs secrets.GITHUB_TOKEN with the packages permission"
+	local host=$1 src
+	src=$(credential_source "$1" "$2")
+	[ -n "${CI_REGISTRY_USER:-}" ] || die "CI_REGISTRY_USER is empty: $src is not in the job's environment"
+	[ -n "${CI_REGISTRY_TOKEN:-}" ] || die "CI_REGISTRY_TOKEN is empty: $src is not in the job's environment"
 	DOCKER_CONFIG=$(mktemp -d)
 	export DOCKER_CONFIG
 	trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 	if ! printf '%s' "$CI_REGISTRY_TOKEN" | docker login "$host" -u "$CI_REGISTRY_USER" --password-stdin >/dev/null; then
-		die "$(registry_name "$host") refused the login: the run's token cannot use $(registry_owner)'s container packages"
+		die "$(registry_name "$host") refused the login: $src cannot use $(registry_owner)'s container packages"
 	fi
 }
 
@@ -115,7 +132,7 @@ push() {
 	owner=$(registry_owner)
 	local repo=$host/$owner/$name
 	local target=$repo:$hash-$trust
-	login "$host"
+	login "$host" push
 	docker tag "$image" "$target" || die "cannot tag $image as $target"
 	docker push "$target" >&2 || die "$(registry_name "$host") refused the push of $target"
 	local digest="" d
@@ -134,7 +151,7 @@ pull() {
 	local host
 	host=$(registry_host)
 	[ "${ref%%/*}" = "$host" ] || die "'$ref' is not in this run's registry"
-	login "$host"
+	login "$host" pull
 	local backoff=${CI_REGISTRY_BACKOFF:-10} n
 	for ((n = 1; n <= attempts; n++)); do
 		if docker pull --quiet "$ref" >/dev/null; then

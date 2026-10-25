@@ -175,8 +175,8 @@ under `if: env.CI_PUBLISH != 'true'`.
 
 | Event | `docker-build` | Consumers take the image | Hold |
 |---|---|---|---|
-| push to `main` | builds both stages, logs in, pushes, outputs the digests | `scripts/ci-registry.sh pull <digest> <hold>` (logs in) | a container of the digest |
-| pull request, `workflow_dispatch` | builds both stages; no login, no push, empty outputs | `scripts/ci-registry.sh local toolchain\|it <hold>` on the job's own runner (no login) | toolchain: a container of the image ID; integration: `make docker-build-it`'s `IT_HOLD`, a container of the tag |
+| push to `main` | on the `release` runner: builds both stages, logs in, pushes, outputs the digests | `scripts/ci-registry.sh pull <digest> <hold>` (logs in) | a container of the digest |
+| pull request, `workflow_dispatch` | on `bigdisk`: builds both stages; no login, no push, empty outputs | `scripts/ci-registry.sh local toolchain\|it <hold>` on the job's own runner (no login) | toolchain: a container of the image ID; integration: `make docker-build-it`'s `IT_HOLD`, a container of the tag |
 
 **On a push to `main` the images are built once per run and pulled by
 digest** (DS-3516). The `docker-build` job builds both stages
@@ -192,14 +192,31 @@ validates each against `^[^@ ]+@sha256:[0-9a-f]{64}$` and passes them on as
 the outputs `toolchain_ref` and `it_ref`. There is one tag per content hash and
 trust class, so a rebuilt tree pushes a new version under the same tag; the
 registry's cleanup rule for the owner's container packages removes the
-superseded versions, and no job deletes from the registry. The login is the
-run's `secrets.GITHUB_TOKEN` (the runner masks it), set only on the steps that
-log in, with the job's `permissions:` granting `packages: write` to
+superseded versions, and no job deletes from the registry.
+
+**The push runs on the release runner, which alone holds the registry
+credential** (ruling 169). On the forge a push to `main` places `docker-build`
+on the runner labelled `release`; every other event places it on `bigdisk`,
+and github.com keeps `ubuntu-latest`. `runs-on` cannot read `env`, so the job
+restates `CI_PUBLISH`'s condition from the `github` context, and it stays one
+job definition. The release runner's env file puts `CI_REGISTRY_USER` and
+`CI_REGISTRY_TOKEN` in its jobs' environment; it is not a repository secret,
+and no new identity or token exists for it. The push step therefore sets
+neither name, since a step `env:` entry would mask the runner's; on github.com
+it hands the run's own `secrets.GITHUB_TOKEN` on under `RUN_REGISTRY_*`, empty
+on the forge. Every consumer's pull logs in with the run's
+`secrets.GITHUB_TOKEN` (the runner masks it), set only on the steps that log
+in, and stays on `bigdisk`. The job's `permissions:` grant `packages: write` to
 `docker-build` and `packages: read` to every consumer.
-`scripts/ci-registry.sh` feeds it to `docker login --password-stdin` in a
+`test/buildgates/ci_image_digest_test.go` fails when `docker-build`'s
+`runs-on` is anything but that one expression, when its push step sets either
+credential name, or when any other job can run on `release`.
+`scripts/ci-registry.sh` feeds the credential to `docker login --password-stdin` in a
 private `DOCKER_CONFIG` that it deletes on exit, so the credential reaches no
 other job on the same Docker host. A refused login, push or pull fails the job
-with a typed `::error::` line: there is no local rebuild to fall back to.
+with a typed `::error::` line that names the credential it used (the release
+runner's, or the run's token) and never its value: there is no local rebuild
+to fall back to.
 
 **On every other event nothing is published** (handbook `ci-standard.md` §9).
 `docker-build` still builds both stages, so a broken Dockerfile fails the

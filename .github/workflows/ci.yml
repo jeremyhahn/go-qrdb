@@ -66,8 +66,9 @@
 #     soak runs on workflow_dispatch alone (see `on:` below).
 #   - No revert-red-main.yml beside this file: not adopted here.
 #   - docker-build builds both images once per run. On a push to main alone
-#     (env.CI_PUBLISH) it pushes them to the forge's registry, derived from
-#     github.server_url, as <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it
+#     (env.CI_PUBLISH) it runs on the release runner, which holds the
+#     registry credential (ruling 169), and pushes them to the forge's
+#     registry, derived from github.server_url, as <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it
 #     tagged <content-hash>-main; its outputs toolchain_ref and it_ref are
 #     digest references, and every consumer pulls exactly that digest with
 #     scripts/ci-registry.sh and never rebuilds (DS-3516). No job is placed on
@@ -489,12 +490,19 @@ jobs:
   # pull, never a wrong image. Each consumer holds what it pulls.
   docker-build:
     name: Devcontainer images
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    # CUSTOMIZE (go-qrdb, ruling 169): on the forge, a push to main (the
+    # CI_PUBLISH condition, restated: runs-on cannot read env) runs this job
+    # on the release runner, the one runner that holds the registry
+    # credential; every other event builds on bigdisk and pushes nothing.
+    # github.com keeps ubuntu-latest and the run's own token
+    # (test/buildgates/ci_image_digest_test.go).
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
     needs: [changes]
     timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
-    # CUSTOMIZE (go-qrdb): on a push to main the run's own token pushes the
-    # images to the forge's registry, so this job alone may write packages
-    # (DS-3516).
+    # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
+    # to the forge's registry, so it alone may write packages: on github.com
+    # with the run's own token, on the forge with the release runner's
+    # credential (DS-3516, ruling 169).
     permissions:
       contents: read
       packages: write
@@ -555,22 +563,30 @@ jobs:
 
       # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
       # run, tagged <content-hash>-main, and hand on its digest (DS-3516). The
-      # registry is the run's own forge, derived from github.server_url; the
-      # login is the run's own token, fed to docker on stdin by
-      # scripts/ci-registry.sh. A refused login or push fails the job: no
-      # consumer on main has an image to fall back to, by design. Every other
-      # event skips this step and the next (claude-agents#329): the images stay
-      # on this runner, and the consumers build or reuse their own.
+      # registry is the run's own forge, derived from github.server_url, and
+      # scripts/ci-registry.sh feeds the login to docker on stdin. On the forge
+      # the login is the release runner's own CI_REGISTRY_USER and
+      # CI_REGISTRY_TOKEN, which its runner env file puts in every job's
+      # environment (ruling 169), so this step sets neither name: a step env
+      # entry would mask the runner's. On github.com it is the run's own
+      # token, handed on under RUN_REGISTRY_* and empty on the forge. A
+      # refused login or push fails the job: no consumer on main has an image
+      # to fall back to, by design. Every other event skips this step and the
+      # next (claude-agents#329): the images stay on this runner, and the
+      # consumers build or reuse their own.
       - name: Push the devcontainer images
         id: push
         if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          CI_REGISTRY_USER: ${{ github.actor }}
-          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_REGISTRY_USER: ${{ github.server_url == 'https://github.com' && github.actor || '' }}
+          RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}
           TRUST: main
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
+          if [ -n "$RUN_REGISTRY_TOKEN" ]; then
+            export CI_REGISTRY_USER=$RUN_REGISTRY_USER CI_REGISTRY_TOKEN=$RUN_REGISTRY_TOKEN
+          fi
           toolchain_ref=$(scripts/ci-registry.sh push "$TOOLCHAIN_IMAGE" qrdb-ci-toolchain "$TRUST")
           it_ref=
           if [ -n "$IT_IMAGE" ]; then
