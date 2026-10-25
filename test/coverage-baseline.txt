@@ -189,7 +189,7 @@ github.com/jeremyhahn/go-qrdb/sdk/go/authfactor 95.00
 github.com/jeremyhahn/go-qrdb/sdk/go/driver 93.06
 github.com/jeremyhahn/go-qrdb/sdk/go/driver/node 96.34
 github.com/jeremyhahn/go-qrdb/sdk/go/gorm 100.00
-github.com/jeremyhahn/go-qrdb/sdk/go/node 90.62
+github.com/jeremyhahn/go-qrdb/sdk/go/node 91.06
 github.com/jeremyhahn/go-qrdb/sdk/go/secure 94.70
 github.com/jeremyhahn/go-qrdb/sdk/go/standalone 86.20
 github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost 97.36
