@@ -13,6 +13,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **A seal quiesces the encrypted stores before the key leaves memory**
+  (seal-quiesce). `StorageBarrier.Seal` now refuses new Pebble writes,
+  flushes and compactions on the barrier's encrypted stores with the typed
+  sealed error (`*pebble.SealedError` wrapping `ErrBarrierSealed`), waits up
+  to the new `seal.drain_timeout` (default `10s`, env
+  `QRDB_SEAL_DRAIN_TIMEOUT`) for the ones in flight, then seals. Work
+  outlasting the bound no longer races the key wipe into a Pebble panic: the
+  barrier still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError`
+  naming the stores, logged and audited (`seal`, phase `drain`). A store holds
+  one lock-free lease per operation; the write-path benchmark puts it within
+  noise. Pebble is used as released.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

@@ -167,6 +167,15 @@ seal` behave the same way for their barriers. See
 A Shamir barrier refuses a single-caller seal: M holders seal it with
 `qrdb barrier quorum submit --op seal`.
 
+**The seal waits for in-flight store work first.** Before the key leaves
+memory, the node refuses new writes, flushes and compactions on its encrypted
+stores and waits up to `seal.drain_timeout` (default `10s`) for the ones
+already running. If they outlast it the barrier **still seals**, and the
+command exits non-zero with
+`qrdb/seal/quiesce: in-flight work did not drain before the barrier sealed:
+after <timeout>, stores still in flight: <dir>, ...`. That error never means
+the barrier is unsealed: `qrdb barrier status` shows it sealed.
+
 Prompts for confirmation on a TTY; pass `-y` from scripts.
 
 ```bash
