@@ -319,6 +319,11 @@ type qrdbServiceServer struct {
 	// RegisterUserAuthFactorService). No QRDBService RPC dispatches to it.
 	userAuthFactorSvc service.UserAuthFactorServicer
 
+	// tenantBarrierSvc is a registration carrier only: RegisterService
+	// registers it as the separate qrdb.v1.TenantBarrierService (see
+	// RegisterTenantBarrierService). No QRDBService RPC dispatches to it.
+	tenantBarrierSvc tenant.TenantServicer
+
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. When nil the singleton service fields above are used (embedded /
 	// single-database deployments).

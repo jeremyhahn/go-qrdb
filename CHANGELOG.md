@@ -11,9 +11,26 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
+  through the new `WithRegisterTenantBarrierService` option, gated by the
+  middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);
+  `sdk/go` re-exports both options. A composer that builds its own
+  `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
+  Unix socket server registers the service through the same option instead of
+  a separate call.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
+
+- **MCP collection document IDs travel as decimal strings, losslessly**: the
+  `id` argument of `qrdb_collection_get`, `qrdb_collection_update` and
+  `qrdb_collection_delete` was a JSON number, so a default `unix_nano` ID
+  (above 2^53) was rounded on the way to the server and the document reported
+  not found. The argument is now a decimal string on the server tools and in
+  the `sdk/go/transport/mcp` client; the number form is refused.
 
 - **A push to `main` no longer cancels the `main` CI run in progress**:
   `ci.yml`'s concurrency group on `main` carries the commit as well as the
@@ -25,6 +42,17 @@ are not reconstructed here — their history is in the git log.
   devserver): v4.15.3 carries GHSA-cxf3-9h37-7rr8 (critical) and three high
   advisories, which took the image job's Trivy scan red on `main`.
 - **`make check-mod-tidy` reports a module it could not check as UNKNOWN, not untidy**: when `go mod tidy -diff` fails without a diff (a download timeout), the gate prints the tool's error and says tidiness is unknown, instead of telling the reader to tidy a tidy module.
+
+- **`sdk/go/transport/mcp` refuses `UpdateDatabaseBarrier` with no barrier
+  configuration**: a request whose `Barrier` was nil was dereferenced and
+  panicked. It is now refused with a `RequestError` before the call, rather
+  than sent without `enabled`, which the `qrdb_database_update_barrier` tool
+  reads as a request to disable the barrier.
+
+- **`sdk/go/transport/grpc` `VerifyFactor` and `RevokeFactor` return nil on
+  success**: both passed the RPC's error to `mapGRPCError` unconditionally,
+  which turns a nil error into a `RequestError`, so every successful factor
+  verification and revocation over gRPC was reported as a failure.
 
 ### Changed
 
