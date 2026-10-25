@@ -78,6 +78,29 @@ are not reconstructed here — their history is in the git log.
   `InvalidArgument`). Such a tenant could never be issued a client
   certificate or admit a principal.
 
+### Fixed
+
+- **The Pebble vector store no longer reaches a closed DB when Close races an
+  operation**: `PebbleVectorStorage` checked its closed flag and then used the
+  DB, and `Close` closed the DB before setting the flag, so an operation that
+  passed the check while Close ran used a closed `pebble.DB` (a `pebble:
+  closed` panic or an error from inside Pebble), and two concurrent Closes both
+  called `db.Close`. Every operation now holds the close gate
+  `pkg/storage/pebble` uses from its closed check to its last DB call; Close
+  waits for in-flight operations, marks the store closed and closes the DB
+  exactly once, and a later or concurrent Close returns nil. Calls after Close
+  return `ErrStorageClosed`.
+
+### Added
+
+- **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
+  through the new `WithRegisterTenantBarrierService` option, gated by the
+  middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);
+  `sdk/go` re-exports both options. A composer that builds its own
+  `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
+  Unix socket server registers the service through the same option instead of
+  a separate call.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
