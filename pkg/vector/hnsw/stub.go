@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // Stub errors for when vector support is not compiled in.
@@ -189,8 +190,20 @@ func (idx *HNSWIndex) GetStats() *Stats {
 	return &Stats{}
 }
 
+// SaveOption configures Save.
+type SaveOption func(*saveConfig)
+
+type saveConfig struct {
+	seals *pebblestore.SealWatch
+}
+
+// WithSealWatch sets the watch of the database Save writes to.
+func WithSealWatch(w *pebblestore.SealWatch) SaveOption {
+	return func(c *saveConfig) { c.seals = w }
+}
+
 // Save persists the index to PebbleDB.
-func (idx *HNSWIndex) Save(db *pebble.DB) error {
+func (idx *HNSWIndex) Save(db *pebble.DB, opts ...SaveOption) error {
 	return ErrNotCompiled
 }
 

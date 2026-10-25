@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 const (
@@ -46,8 +47,29 @@ type SerializedNode struct {
 	Connections map[int][]uint64
 }
 
-// Save persists the index to PebbleDB.
-func (idx *HNSWIndex) Save(db *pebble.DB) error {
+// SaveOption configures Save.
+type SaveOption func(*saveConfig)
+
+type saveConfig struct {
+	seals *pebblestore.SealWatch
+}
+
+// WithSealWatch sets the watch of the database Save writes to, as
+// pebble.Open returns it. Save then refuses with its *pebble.SealedError
+// while the at-rest barrier is sealed, before it commits: a commit that
+// rotates the memtable panics on the WAL file a sealed barrier refuses.
+func WithSealWatch(w *pebblestore.SealWatch) SaveOption {
+	return func(c *saveConfig) { c.seals = w }
+}
+
+// Save persists the index to PebbleDB. A node that fails to serialize fails
+// the save, and nothing is committed.
+func (idx *HNSWIndex) Save(db *pebble.DB, opts ...SaveOption) error {
+	var cfg saveConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	batch := db.NewBatch()
 	defer func() { _ = batch.Close() }()
 
@@ -57,17 +79,24 @@ func (idx *HNSWIndex) Save(db *pebble.DB) error {
 	}
 
 	// Save all nodes
+	var nodeErr error
 	idx.nodes.Range(func(key, value interface{}) bool {
 		node, ok := value.(*HNSWNode)
 		if !ok {
 			return true
 		}
-		if err := idx.saveNode(batch, node); err != nil {
-			// Store error and stop iteration
-			return false
-		}
-		return true
+		nodeErr = idx.saveNode(batch, node)
+		return nodeErr == nil
 	})
+	if nodeErr != nil {
+		return api.NewHNSWPersistenceError("hnsw.Save", "save node", nodeErr)
+	}
+
+	if cfg.seals != nil {
+		if err := cfg.seals.Check(); err != nil {
+			return err
+		}
+	}
 
 	// Commit batch
 	if err := batch.Commit(pebble.Sync); err != nil {
