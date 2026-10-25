@@ -75,3 +75,33 @@ func TestBuildServices_HeadSignerProviderAbsentKeepsTheSoftwareProvider(t *testi
 		t.Fatal("Log is nil with no provider injected; want the software default")
 	}
 }
+
+// barrierTenants answers every tenant as barrier-isolated; the node's
+// isolation lookup calls nothing else.
+type barrierTenants struct {
+	tenant.TenantServicer
+}
+
+func (barrierTenants) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	return &tenant.TenantInfo{ID: id, IsolationType: tenant.IsolationBarrier}, nil
+}
+
+// TestBuildServices_LogServiceRefusesBarrierTenants: a barrier tenant's log
+// and signing key would be applied under the system barrier, so the composed
+// log service refuses the tenant before any key is created.
+func TestBuildServices_LogServiceRefusesBarrierTenants(t *testing.T) {
+	device := &recordingHeadSigners{}
+	node := buildSeamNode(t, lifecycle.Infra{HeadSignerProvider: device})
+	node.Tenant = barrierTenants{}
+	ctx := tenant.WithTenantID(context.Background(), "vault")
+	_, err := node.Log.CreateLog(ctx, &service.CreateLogRequest{
+		LogRef: service.LogRef{Database: "ledger", Log: "events"}, Origin: "db.example.com/events", SigningKeyType: vlog.SignatureEd25519,
+	})
+	var refused *service.BarrierTenantLogNotSupportedError
+	if !errors.As(err, &refused) || refused.TenantID != "vault" {
+		t.Fatalf("CreateLog = %v, want *service.BarrierTenantLogNotSupportedError for vault", err)
+	}
+	if len(device.created) != 0 {
+		t.Fatalf("device asked to create %+v for a refused tenant", device.created)
+	}
+}

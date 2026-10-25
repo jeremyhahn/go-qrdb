@@ -806,9 +806,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
 	}
 
-	// The verifiable-log service shares the audit resolver. A build without
-	// the qrdb_vlog tag has no log service, which is not a boot failure.
-	logSvc, err := buildLogService(auditResolver, infra.HeadSignerProvider)
+	// The verifiable-log service routes as the audit chain does, but also
+	// refuses a barrier tenant: its log registry and sealed signing keys sit
+	// under the system barrier, not the tenant's. A build without the
+	// qrdb_vlog tag has no log service, which is not a boot failure.
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	logSvc, err := buildLogService(logResolver, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
 	}

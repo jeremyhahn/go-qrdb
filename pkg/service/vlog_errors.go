@@ -25,6 +25,21 @@ import (
 // create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
 // every replica of the tenant's group: a replica that cannot apply a command
 // must never be sent it.
+// BarrierTenantLogNotSupportedError is returned by every LogService call for
+// a tenant whose isolation is barrier. The log registry is applied on the
+// system shard under the system barrier, so the log's entries and its sealed
+// head-signing key would stay readable while the tenant's own barrier is
+// sealed. The tenant is refused until its logs route through storage its
+// barrier protects.
+type BarrierTenantLogNotSupportedError struct {
+	TenantID string
+}
+
+func (e *BarrierTenantLogNotSupportedError) Error() string {
+	return "service: verifiable logs are not available to barrier-isolated tenant " + strconv.Quote(e.TenantID) +
+		": the log registry is not protected by the tenant's barrier"
+}
+
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64

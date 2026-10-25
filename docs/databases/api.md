@@ -358,6 +358,13 @@ head-signing seam"). The answer names the key version, the provider's
 reference and the public key (PKIX DER) a signed head verifies against; the
 private key is never in an answer. A rotation racing another is a conflict.
 
+Both are refused, before the provider is asked, while the
+`verifiable-log-keys` feature is not yet active on every replica of the
+tenant's group (`LogFeatureNotActiveError`), and every log call is refused for
+a barrier-isolated tenant (`BarrierTenantLogNotSupportedError`): its logs and
+keys would be stored under the system barrier rather than its own
+([architecture.md](architecture.md), "Isolation").
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |

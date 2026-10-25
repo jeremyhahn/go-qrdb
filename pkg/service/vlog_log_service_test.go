@@ -404,8 +404,10 @@ func TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive(t *testing.T) {
 	ctx := acmeCtx()
 	desc := &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{hsmKey(t, newHSMProvider(), vlog.FirstKeyVersion)}}
 	inner, cmds := rotateHost(desc)
+	device := newHSMProvider()
 	svc, err := NewLogService(LogServiceConfig{
 		Resolver: &fixedShardResolver{host: &featureHost{mockHost: inner, active: map[featuregate.Feature]bool{featuregate.VerifiableLog: true}}, shardID: 4},
+		Signers:  device,
 	})
 	if err != nil {
 		t.Fatalf("NewLogService: %v", err)
@@ -431,6 +433,9 @@ func TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive(t *testing.T) {
 	}
 	if len(*cmds) != 0 {
 		t.Fatalf("a write the replicas cannot all apply proposed %d commands", len(*cmds))
+	}
+	if len(device.created) != 0 {
+		t.Fatalf("a refused write minted %d keys", len(device.created))
 	}
 	if _, err := svc.Append(ctx, &AppendRequest{LogRef: testLogRef, Entries: [][]byte{[]byte("e")}}); err != nil {
 		t.Fatalf("Append under verifiable-log alone: %v", err)

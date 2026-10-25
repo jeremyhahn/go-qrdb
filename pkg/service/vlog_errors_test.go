@@ -39,6 +39,15 @@ func TestLogFeatureNotActiveError_NamesKeyFeature(t *testing.T) {
 	}
 }
 
+func TestBarrierTenantLogNotSupportedError_NamesTenantAndBarrier(t *testing.T) {
+	msg := (&BarrierTenantLogNotSupportedError{TenantID: "vault"}).Error()
+	for _, want := range []string{`"vault"`, "barrier-isolated", "tenant's barrier"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() = %q, missing %q", msg, want)
+		}
+	}
+}
+
 func TestLogFeatureNotActiveError_SystemTenant(t *testing.T) {
 	msg := (&LogFeatureNotActiveError{}).Error()
 	if !strings.Contains(msg, `""`) || !strings.Contains(msg, "shard 0") {

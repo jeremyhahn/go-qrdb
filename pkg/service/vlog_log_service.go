@@ -89,22 +89,45 @@ var (
 // refused while any of features is not active there, and returns the apply's
 // value.
 func (s *logService) propose(ctx context.Context, tenantID string, features []featuregate.Feature, encode func() ([]byte, error)) (uint64, error) {
-	host, shardID, err := s.resolver.ResolveAuditShard(ctx, tenantID)
+	g, err := s.admit(ctx, tenantID, features)
 	if err != nil {
 		return 0, err
+	}
+	return g.propose(ctx, encode)
+}
+
+// logGroup is the Raft group a log write has been admitted to.
+type logGroup struct {
+	host    Host
+	shardID uint64
+}
+
+// admit resolves the tenant's group and refuses the write while any of
+// features is not active there. A write that mints a key admits first, so a
+// refused tenant never has a key created for it.
+func (s *logService) admit(ctx context.Context, tenantID string, features []featuregate.Feature) (logGroup, error) {
+	host, shardID, err := s.resolver.ResolveAuditShard(ctx, tenantID)
+	if err != nil {
+		return logGroup{}, err
 	}
 	if gated, ok := host.(FeatureGatedHost); ok {
 		for _, f := range features {
 			if !gated.FeatureEnabled(shardID, f) {
-				return 0, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
+				return logGroup{}, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
 			}
 		}
 	}
+	return logGroup{host: host, shardID: shardID}, nil
+}
+
+// propose sends one encoded OpVerifiableLog command to g and returns the
+// apply's value.
+func (g logGroup) propose(ctx context.Context, encode func() ([]byte, error)) (uint64, error) {
 	cmd, err := encode()
 	if err != nil {
 		return 0, &EncodeRequestError{Err: err}
 	}
-	result, err := propose(ctx, host, shardID, cmd)
+	result, err := propose(ctx, g.host, g.shardID, cmd)
 	if err != nil {
 		return 0, translateProposeError(err)
 	}
@@ -151,6 +174,10 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 		VerifierKeys:      req.VerifierKeys,
 		AllowExpireBodies: req.AllowExpireBodies,
 	}
+	g, err := s.admit(ctx, id.TenantID, logKeyFeatures)
+	if err != nil {
+		return nil, err
+	}
 	resp := &CreateLogResponse{ID: id}
 	encode := func() ([]byte, error) { return protocol.EncodeVerifiableLogCreate(id, desc) }
 	if req.SigningKeyType != "" {
@@ -164,7 +191,7 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 			encode = func() ([]byte, error) { return protocol.EncodeVerifiableLogCreateWithKey(id, desc, *record) }
 		}
 	}
-	if _, err := s.propose(ctx, id.TenantID, logKeyFeatures, encode); err != nil {
+	if _, err := g.propose(ctx, encode); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -183,11 +210,15 @@ func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*Rot
 	if err != nil {
 		return nil, err
 	}
+	g, err := s.admit(ctx, id.TenantID, logKeyFeatures)
+	if err != nil {
+		return nil, err
+	}
 	key, record, err := s.createKey(ctx, id, req.SigningKeyType, vlog.FirstKeyVersion+uint32(len(desc.Keys)))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.propose(ctx, id.TenantID, logKeyFeatures, func() ([]byte, error) {
+	if _, err := g.propose(ctx, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogRotateKey(id, key, record)
 	}); err != nil {
 		return nil, err
