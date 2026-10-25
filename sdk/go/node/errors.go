@@ -269,6 +269,10 @@ func (e *ABACWiringError) Unwrap() error { return e.Err }
 // with no authorization decision at all.
 var ErrNilWrappedAuthorizer = errors.New("node: authorizer wrapper returned nil")
 
+// ErrTrustPoolNotWired is returned by Node.IssuerVerifier before boot has
+// built the node's dynamic client-auth trust pool (pkg/clienttrust).
+var ErrTrustPoolNotWired = errors.New("node: client-auth trust pool is not wired")
+
 // AuthMiddlewareWiringError indicates that the multi-protocol server's
 // production auth-enforcement middleware (pkg/auth/wiring.BuildAuthMiddleware
 // — the RBAC[+ABAC] authorizer, mTLS authenticator, and user-store

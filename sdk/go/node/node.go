@@ -1313,7 +1313,8 @@ type Node struct {
 	// (go-qrdb#560 review, B2-2): two independently-constructed pools here
 	// is exactly the drift that let Key B be trusted at the TLS layer
 	// without the binding being enforceable at the authentication layer.
-	trustPool *clienttrust.Pool
+	// Atomic because IssuerVerifier reads it from any goroutine.
+	trustPool atomic.Pointer[clienttrust.Pool]
 
 	// rateLimitPolicies and rateLimiter carry WithRateLimitPolicies and
 	// WithRateLimiter from the node constructor to wireClientAndServer.
@@ -1559,6 +1560,24 @@ func (n *Node) Authorizer() auth.Authorizer {
 		return nil
 	}
 	return mw.Authorizer()
+}
+
+// IssuerVerifier returns the node's dynamic client-auth trust pool
+// (pkg/clienttrust) as an auth.IssuerVerifier -- the SAME pool the mTLS
+// authenticator verifies against and the node's own *tls.Config is wired
+// onto -- or ErrTrustPoolNotWired before boot has built it.
+//
+// The pool's Wire turns a verifying ClientAuth mode into a non-verifying one,
+// so a connection it admitted carries no tls.ConnectionState.VerifiedChains.
+// A composer handler on a node listener resolves the caller's verified chain
+// with sdk.ResolveVerifiedChains(ctx, state, verifier), never from
+// PeerCertificates[0] and never through a verifier of its own (go-qrdb#1181).
+func (n *Node) IssuerVerifier() (auth.IssuerVerifier, error) {
+	pool := n.trustPool.Load()
+	if pool == nil {
+		return nil, ErrTrustPoolNotWired
+	}
+	return pool, nil
 }
 
 // IsSealed reports whether the node is in the sealed state, meaning the data
@@ -3981,10 +4000,10 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// established) and a nil CertProvider are both the documented "leave
 	// this check unenforced" cases (clienttrust.Pool.SetClusterCA/
 	// SetKeyBProvider), not errors.
-	n.trustPool = clienttrust.New()
+	pool := clienttrust.New()
 	// A certificate's lifetime is read on the node's security clock, the one
 	// every other time gate runs on (WithClock).
-	n.trustPool.SetClock(n.clock)
+	pool.SetClock(n.clock)
 	// The cluster CA is what qrdbd resolves it to, through the same code:
 	// the node's own Key A when it holds one, else -- on operator-supplied
 	// TLS (byoTLS) -- the operator's peer CA, the anchor its cluster
@@ -3997,16 +4016,17 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if clusterCA, caErr := lifecycle.TrustPoolClusterCA(svcNode.ClusterCAProv, n.byoTLS(), identityCA); caErr != nil {
 		n.logger.Warn("node: trust pool cluster CA unresolved; no cluster CA is wired", slog.Any("error", caErr))
 	} else if clusterCA != nil {
-		n.trustPool.SetClusterCA(clusterCA)
+		pool.SetClusterCA(clusterCA)
 	}
-	n.trustPool.SetKeyBProvider(svcNode.CertProv)
+	pool.SetKeyBProvider(svcNode.CertProv)
 	// Every tenant's registered trust anchors join the same pool -- trusted
 	// at the TLS layer and bound to their own tenant at the auth layer.
-	svcNode.WireTrustAnchors(n.trustPool)
+	svcNode.WireTrustAnchors(pool)
 	// The handshake hook only loads the snapshot Run builds; it never reads
 	// storage itself. The refresh loop does, so a wiring pass that fails
 	// below stops it before its caller closes that storage.
-	n.startTrustPoolRefresh(n.trustPool)
+	n.startTrustPoolRefresh(pool)
+	n.trustPool.Store(pool)
 	wired := false
 	defer func() {
 		if !wired {
@@ -4014,7 +4034,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		}
 	}()
 
-	// n.trustPool is ALWAYS handed to the auth layer as the enforcement
+	// pool is ALWAYS handed to the auth layer as the enforcement
 	// source, regardless of whether a cluster CA was resolved above: that
 	// is the composer-wiring obligation SetKeyBProvider's doc comment
 	// states (go-qrdb#560 review, B2-2) -- the pool and the binding must be
@@ -4025,7 +4045,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// every Key B certificate normally -- see pkg/clienttrust.Pool's own
 	// doc comments for exactly which of a resolver's two failure shapes
 	// still widens Key B and which does not.
-	var issuerVerifier auth.IssuerVerifier = n.trustPool
+	var issuerVerifier auth.IssuerVerifier = pool
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -4044,7 +4064,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// certificate keep authenticating until it expires.
 		CertProvider: svcNode.CertProv,
 		// issuerVerifier -- nil unless a cluster CA was resolved above -- is
-		// n.trustPool, the SAME object wired onto this node's own
+		// pool, the SAME object wired onto this node's own
 		// *tls.Config further down, so Key B is never trusted at the TLS
 		// layer without this binding also being enforced here and on the
 		// on-behalf forwarding path (go-qrdb#560 review, B2-1/B2-2).
@@ -4273,7 +4293,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		server.WithTenantAdmission(n.admitTenantMigration))
 	n.encMigrator.Store(&encMigrator)
 
-	// Wire n.trustPool -- built above, and already populated by
+	// Wire pool -- built above, and already populated by
 	// SetClusterCA/SetKeyBProvider -- onto the embedder's own *tls.Config,
 	// the same implementation cmd/qrdbd/tls.go uses, so a Key B leaf
 	// authenticates on this node's client-facing listeners too
@@ -4287,12 +4307,12 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// listeners keep whatever trust posture ceremony.ServerTLSConfig and
 	// the auth middleware already give them.
 	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
-		n.trustPool.Wire(tlsCfg)
+		pool.Wire(tlsCfg)
 		// The pool the configuration now verifies through is the one every
 		// listener binds to every call, independent of authentication, so
 		// a share claim on a re-sealed node binds only a certificate it
 		// verifies.
-		allOpts = append(allOpts, server.WithPeerChainVerifier(n.trustPool))
+		allOpts = append(allOpts, server.WithPeerChainVerifier(pool))
 	}
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
