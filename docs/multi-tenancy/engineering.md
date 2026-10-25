@@ -21,7 +21,13 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 
 Server option: `server.WithTenantService(svc tenant.TenantServicer)`. gRPC
 registers `TenantBarrierService` when a tenant servicer is set; the Unix
-socket server takes it through `unix.WithTenantBarrierService`.
+socket server takes it through `unix.WithTenantBarrierService`. A composer
+that builds its own `*grpc.Server` registers it through the SDK's
+`RegisterGRPCService` with `WithRegisterTenantBarrierService(svc)`, which
+registers `qrdb.v1.TenantBarrierService` beside `QRDBService`; its
+tenant-scoped gate is the middleware passed with `WithRegisterAuthMiddleware`,
+and without one the service runs in the no-auth posture. The Unix socket server
+registers it the same way, through that one option.
 
 Tenant creation delegates, on every transport, to one service
 (`pkg/service/tenant_onboarding.go`), wired with

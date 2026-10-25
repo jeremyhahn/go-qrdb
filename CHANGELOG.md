@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
+  through the new `WithRegisterTenantBarrierService` option, gated by the
+  middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);
+  `sdk/go` re-exports both options. A composer that builds its own
+  `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
+  Unix socket server registers the service through the same option instead of
+  a separate call.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
