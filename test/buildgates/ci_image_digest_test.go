@@ -97,9 +97,11 @@ const (
 // runner: the bare label, or the label quoted in an expression.
 var releaseLabel = regexp.MustCompile(`(^|')release('|$)`)
 
-// runnerCredential lists the names the release runner's env file supplies
-// (scripts/ci-registry.sh): a step env entry under either masks it.
-var runnerCredential = []string{"CI_REGISTRY_USER", "CI_REGISTRY_TOKEN"}
+// runnerCredential lists the names the release runner's env file exports, its
+// credential contract (ruling 173, claude-agents#329), which the forge push in
+// scripts/ci-registry.sh reads: an env entry under any of them, in the
+// workflow, a job or a step, would mask the runner's.
+var runnerCredential = []string{"RELEASE_REGISTRY", "RELEASE_REGISTRY_USER", "RELEASE_REGISTRY_TOKEN"}
 
 // digestOutputs maps the outputs a consumer may read, the digest
 // references, to the image family scripts/ci-registry.sh local builds for
@@ -160,6 +162,7 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	if holdsRegistryToken(wf.Env) {
 		problems = append(problems, "ci.yml's workflow env holds the registry token: every step of every event would have it")
 	}
+	problems = append(problems, runnerCredentialProblems(wf)...)
 	producer, ok := wf.Jobs[digestProducer]
 	if !ok {
 		return append(problems, "ci.yml has no "+digestProducer+" job: nothing builds the CI images"), nil
@@ -227,12 +230,6 @@ func producerProblems(job digestJob) []string {
 	for _, s := range job.Steps {
 		if strings.Contains(s.Run, "scripts/ci-registry.sh push ") {
 			pushed = true
-			for _, name := range runnerCredential {
-				if _, ok := s.Env[name]; ok {
-					problems = append(problems, digestProducer+"'s step "+strconv.Quote(s.Name)+" sets "+name+
-						": it masks the release runner's credential")
-				}
-			}
 		}
 		if strings.Contains(s.Run, digestRefPattern) {
 			validated = true
@@ -247,6 +244,34 @@ func producerProblems(job digestJob) []string {
 	}
 	if !validated {
 		problems = append(problems, digestProducer+" does not validate its outputs against "+strconv.Quote(digestRefPattern))
+	}
+	return problems
+}
+
+// runnerCredentialProblems holds ruling 173: no env entry in ci.yml, at the
+// workflow, a job or a step, sets a name of the release runner's credential
+// contract, because it would mask the value the runner's env file exports.
+func runnerCredentialProblems(wf digestWorkflow) []string {
+	var problems []string
+	check := func(where string, env map[string]string) {
+		for _, name := range runnerCredential {
+			if _, ok := env[name]; ok {
+				problems = append(problems, where+" sets "+name+": it masks the release runner's credential (ruling 173)")
+			}
+		}
+	}
+	check("ci.yml's workflow env", wf.Env)
+	names := make([]string, 0, len(wf.Jobs))
+	for name := range wf.Jobs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		job := wf.Jobs[name]
+		check(name+"'s job env", job.Env)
+		for _, s := range job.Steps {
+			check(name+"'s step "+strconv.Quote(s.Name), s.Env)
+		}
 	}
 	return problems
 }
@@ -553,8 +578,13 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "the release runner on every event", old: "(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk'", new: "'release'"},
 		{name: "the release runner on a pull request", old: "(github.event_name == 'push' && github.ref", new: "(github.event_name == 'pull_request' && github.ref"},
 		{name: "the release runner on github.com", old: "&& 'ubuntu-latest' ||", new: "&& 'release' ||"},
-		{name: "the run's token masks the runner's", old: "          RUN_REGISTRY_TOKEN:", new: "          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          RUN_REGISTRY_TOKEN:"},
-		{name: "the run's user masks the runner's", old: "          RUN_REGISTRY_TOKEN:", new: "          CI_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "the push step masks the runner's registry", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY: ${{ github.server_url }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "the push step masks the runner's user", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "the push step masks the runner's token", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "a consumer step sets the runner's token", old: toolchainLocal,
+			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          RELEASE_REGISTRY_TOKEN: x\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
+		{name: "a job env sets the runner's registry", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
+		{name: "the workflow env sets the runner's user", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY_USER: x\n  CI_PUBLISH"},
 		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},
 		{name: "a consumer on the release runner by expression", old: "  legs:\n    runs-on: bigdisk", new: "  legs:\n    runs-on: ${{ github.ref == 'refs/heads/main' && 'release' || 'bigdisk' }}"},
 		{name: "CI_PUBLISH widened to every branch", old: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "${{ github.ref == 'refs/heads/main' }}"},

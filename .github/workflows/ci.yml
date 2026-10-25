@@ -562,14 +562,16 @@ jobs:
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 
       # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
-      # run, tagged <content-hash>-main, and hand on its digest (DS-3516). The
-      # registry is the run's own forge, derived from github.server_url, and
+      # run, tagged <content-hash>-main, and hand on its digest (DS-3516).
       # scripts/ci-registry.sh feeds the login to docker on stdin. On the forge
-      # the login is the release runner's own CI_REGISTRY_USER and
-      # CI_REGISTRY_TOKEN, which its runner env file puts in every job's
-      # environment (ruling 169), so this step sets neither name: a step env
-      # entry would mask the runner's. On github.com it is the run's own
-      # token, handed on under RUN_REGISTRY_* and empty on the forge. A
+      # the push runs on the release runner (ruling 169) and reads its
+      # credential contract alone, the three names its runner env file
+      # exports (ruling 173, claude-agents#329): RELEASE_REGISTRY, the host
+      # the push goes to and the digest reference names, RELEASE_REGISTRY_USER
+      # and RELEASE_REGISTRY_TOKEN. No step sets any of them: a step env entry
+      # would mask the runner's. On github.com the registry is GHCR and the
+      # login the run's own token, handed on under RUN_REGISTRY_* as
+      # CI_REGISTRY_* and empty on the forge. A
       # refused login or push fails the job: no consumer on main has an image
       # to fall back to, by design. Every other event skips this step and the
       # next (claude-agents#329): the images stay on this runner, and the

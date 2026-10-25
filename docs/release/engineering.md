@@ -182,9 +182,8 @@ under `if: env.CI_PUBLISH != 'true'`.
 digest** (DS-3516). The `docker-build` job builds both stages
 (`make docker-build`; `make -s toolchain-image` prints the toolchain tag) and
 pushes each to the forge's registry (handbook `devops.md` §2): the Gitea
-registry, which shares the web UI's host and port and so is derived from
-`github.server_url` and never written in a tracked file, or `ghcr.io` when the
-run is on GitHub, under the repository owner, as `qrdb-ci-toolchain` and
+registry, which the release runner's `RELEASE_REGISTRY` names (below) and so
+is never written in a tracked file, or `ghcr.io` when the run is on GitHub, under the repository owner, as `qrdb-ci-toolchain` and
 `qrdb-ci-it`. `scripts/ci-registry.sh push` tags each
 `<content-hash>-<trust>`, the 16-hex hash the Makefile built it under and the
 trust class (`main`), and prints the digest the registry reported. The job
@@ -199,18 +198,30 @@ credential** (ruling 169). On the forge a push to `main` places `docker-build`
 on the runner labelled `release`; every other event places it on `bigdisk`,
 and github.com keeps `ubuntu-latest`. `runs-on` cannot read `env`, so the job
 restates `CI_PUBLISH`'s condition from the `github` context, and it stays one
-job definition. The release runner's env file puts `CI_REGISTRY_USER` and
-`CI_REGISTRY_TOKEN` in its jobs' environment; it is not a repository secret,
-and no new identity or token exists for it. The push step therefore sets
-neither name, since a step `env:` entry would mask the runner's; on github.com
-it hands the run's own `secrets.GITHUB_TOKEN` on under `RUN_REGISTRY_*`, empty
-on the forge. Every consumer's pull logs in with the run's
+job definition.
+
+**The release runner's credential contract is the three names its runner env
+file exports** (ruling 173): `RELEASE_REGISTRY`, the
+registry's host[:port], which the push goes to and the digest reference names;
+`RELEASE_REGISTRY_USER`; and `RELEASE_REGISTRY_TOKEN`. The forge push in
+`scripts/ci-registry.sh` reads those names and no others; it is not a
+repository secret, and no new identity or token exists for it. An empty name,
+or a `RELEASE_REGISTRY` that is no host[:port], fails the push with a typed
+`::error::` naming the variable and the release runner's credential.
+`RELEASE_REGISTRY` is the same registry the consumers derive from
+`github.server_url`: a pull refuses a reference in any other registry. No step,
+job or workflow `env:` in ci.yml sets any of the three, since an entry would
+mask the runner's. A name change to the contract is an Infrastructure PR to
+claude-agents, announced before it lands on the claude-agents issue that
+records the runner's contract, and this repo follows it. On github.com the push step hands the run's own
+`secrets.GITHUB_TOKEN` on under `RUN_REGISTRY_*` as `CI_REGISTRY_*`, empty on
+the forge. Every consumer's pull logs in with the run's
 `secrets.GITHUB_TOKEN` (the runner masks it), set only on the steps that log
 in, and stays on `bigdisk`. The job's `permissions:` grant `packages: write` to
 `docker-build` and `packages: read` to every consumer.
 `test/buildgates/ci_image_digest_test.go` fails when `docker-build`'s
-`runs-on` is anything but that one expression, when its push step sets either
-credential name, or when any other job can run on `release`.
+`runs-on` is anything but that one expression, when any `env:` in ci.yml sets
+a `RELEASE_REGISTRY*` name, or when any other job can run on `release`.
 `scripts/ci-registry.sh` feeds the credential to `docker login --password-stdin` in a
 private `DOCKER_CONFIG` that it deletes on exit, so the credential reaches no
 other job on the same Docker host. A refused login, push or pull fails the job

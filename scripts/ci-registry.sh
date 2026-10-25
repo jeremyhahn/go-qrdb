@@ -23,14 +23,24 @@
 # The registry is the forge the run belongs to, derived from GITHUB_SERVER_URL:
 # ghcr.io on GitHub, the forge's own host[:port] on Gitea (handbook devops.md
 # §2); no internal address is written here or in ci.yml. The owner is GITHUB_REPOSITORY_OWNER.
-# push and pull log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the latter
-# read from the environment and fed to docker on stdin only; neither value is
-# ever printed. A push to the Gitea registry runs on the release runner alone,
-# whose runner env file supplies both names (ruling 169); a pull, and a push
-# to GHCR, gets them from the workflow step as the run's own token. The login lives in
-# a private DOCKER_CONFIG that is deleted on exit, so the credential outlives
-# neither this process nor reaches another job on the same Docker host. local
-# never logs in, pushes or pulls, whatever the environment holds.
+#
+# A push to the Gitea registry runs on the release runner alone (ruling 169)
+# and reads that runner's credential contract and nothing else (ruling 173,
+# claude-agents#329): the three names its runner env file exports,
+#
+#   RELEASE_REGISTRY         the registry's host[:port]; the push goes there and
+#                            the digest reference it prints names it
+#   RELEASE_REGISTRY_USER    the login's user
+#   RELEASE_REGISTRY_TOKEN   the login's password, fed to docker on stdin
+#
+# A name change to the contract is an Infrastructure PR to claude-agents,
+# announced on claude-agents#329 before it lands. A pull, and a push to GHCR,
+# log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the run's own token that
+# the workflow step supplies. No credential value is ever printed: an empty
+# name fails naming the variable, never a value. The login lives in a private
+# DOCKER_CONFIG that is deleted on exit, so the credential outlives neither
+# this process nor reaches another job on the same Docker host. local never
+# logs in, pushes or pulls, whatever the environment holds.
 #
 # A pushed image is tagged <content-hash>-<trust>: the content hash is the tag
 # the Makefile built it under, and trust is main (a push to main) or pr. One
@@ -54,6 +64,7 @@ set -euo pipefail
 
 readonly attempts=3
 readonly ref_re='^[^@ ]+@sha256:[0-9a-f]{64}$'
+readonly host_re='^[A-Za-z0-9.-]+(:[0-9]+)?$'
 
 die() {
 	echo "::error::ci-registry: $*" >&2
@@ -69,10 +80,26 @@ registry_host() {
 	[ -n "$url" ] || die "GITHUB_SERVER_URL is empty: the registry is derived from it, never written down"
 	local host=${url#*://}
 	host=${host%%/*}
-	[[ $host =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || die "GITHUB_SERVER_URL does not name a registry host"
+	[[ $host =~ $host_re ]] || die "GITHUB_SERVER_URL does not name a registry host"
 	host=${host,,}
 	case $host in github.com) host=ghcr.io ;; esac
 	printf '%s\n' "$host"
+}
+
+# push_host prints the registry a push goes to: GHCR on GitHub; on the forge,
+# RELEASE_REGISTRY, the release runner's own (ruling 173), validated as a
+# host[:port] the way registry_host validates the forge's.
+push_host() {
+	local host
+	host=$(registry_host)
+	if [ "$host" = ghcr.io ]; then
+		printf '%s\n' "$host"
+		return 0
+	fi
+	host=${RELEASE_REGISTRY:-}
+	[ -n "$host" ] || die "RELEASE_REGISTRY is empty: the release runner's credential is not in the job's environment"
+	[[ $host =~ $host_re ]] || die "RELEASE_REGISTRY does not name a registry host"
+	printf '%s\n' "${host,,}"
 }
 
 # registry_name names the registry at host $1 in an error message.
@@ -95,10 +122,10 @@ check_ref() {
 }
 
 # credential_source names, in a message, the credential a login with
-# operation $2 at host $1 uses (ruling 169): a push to the Gitea registry
-# uses the release runner's own, which its runner env file puts in the job's
-# environment; a pull, and any login to GHCR, uses the run's token. It
-# names the credential, never its value.
+# operation $2 at host $1 uses: a push to the Gitea registry uses the release
+# runner's own, which its runner env file puts in the job's environment
+# (rulings 169 and 173); a pull, and any login to GHCR, uses the run's token.
+# It names the credential, never its value.
 credential_source() {
 	case $1:$2 in
 	ghcr.io:* | *:pull) printf "the run's token\n" ;;
@@ -106,16 +133,26 @@ credential_source() {
 	esac
 }
 
+# credential_names prints the user and token variable names that hold the
+# credential source $1 names.
+credential_names() {
+	case $1 in
+	"the run's token") printf 'CI_REGISTRY_USER CI_REGISTRY_TOKEN\n' ;;
+	*) printf 'RELEASE_REGISTRY_USER RELEASE_REGISTRY_TOKEN\n' ;;
+	esac
+}
+
 # login logs in to host $1 for operation $2, push or pull.
 login() {
-	local host=$1 src
+	local host=$1 src user token
 	src=$(credential_source "$1" "$2")
-	[ -n "${CI_REGISTRY_USER:-}" ] || die "CI_REGISTRY_USER is empty: $src is not in the job's environment"
-	[ -n "${CI_REGISTRY_TOKEN:-}" ] || die "CI_REGISTRY_TOKEN is empty: $src is not in the job's environment"
+	read -r user token < <(credential_names "$src")
+	[ -n "${!user:-}" ] || die "$user is empty: $src is not in the job's environment"
+	[ -n "${!token:-}" ] || die "$token is empty: $src is not in the job's environment"
 	DOCKER_CONFIG=$(mktemp -d)
 	export DOCKER_CONFIG
 	trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-	if ! printf '%s' "$CI_REGISTRY_TOKEN" | docker login "$host" -u "$CI_REGISTRY_USER" --password-stdin >/dev/null; then
+	if ! printf '%s' "${!token}" | docker login "$host" -u "${!user}" --password-stdin >/dev/null; then
 		die "$(registry_name "$host") refused the login: $src cannot use $(registry_owner)'s container packages"
 	fi
 }
@@ -128,7 +165,7 @@ push() {
 	local hash=${image##*:}
 	[ "$hash" != "$image" ] && [[ $hash =~ ^[A-Za-z0-9_.-]+$ ]] || die "'$image' carries no content-hash tag"
 	local host owner
-	host=$(registry_host)
+	host=$(push_host)
 	owner=$(registry_owner)
 	local repo=$host/$owner/$name
 	local target=$repo:$hash-$trust

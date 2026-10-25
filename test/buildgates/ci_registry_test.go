@@ -24,13 +24,15 @@ import (
 )
 
 // registryDocker is a docker stand-in for scripts/ci-registry.sh push: it
-// records the host it was asked to log in to and reports one digest for the
-// pushed repository. A file named "refuse" in STUB_DIR refuses the login.
+// records the host it was asked to log in to, the user and the password it
+// read from stdin, and reports one digest for the pushed repository. A file
+// named "refuse" in STUB_DIR refuses the login.
 const registryDocker = `#!/bin/sh
 case $1 in
 login)
-	cat > /dev/null
+	cat > "$STUB_DIR/login-token"
 	echo "$2" > "$STUB_DIR/login"
+	echo "$4" > "$STUB_DIR/login-user"
 	[ -f "$STUB_DIR/refuse" ] && exit 1
 	exit 0 ;;
 tag | push) exit 0 ;;
@@ -43,10 +45,22 @@ echo "stub docker: unexpected $*" >&2
 exit 99
 `
 
+// releaseRegistry is the registry the release runner's RELEASE_REGISTRY names
+// in these tests; it differs from every forge URL here, so a reference that
+// carries it came from RELEASE_REGISTRY and not from GITHUB_SERVER_URL.
+const releaseRegistry = "registry.forge.example:5000"
+
+// registryPush is what one run of scripts/ci-registry.sh push did: its
+// output, and the host, user and password its login handed docker.
+type registryPush struct {
+	out, host, user, token string
+}
+
 // runRegistryPush runs scripts/ci-registry.sh push against registryDocker on
-// the forge serverURL and returns the script's output, the host it logged in
-// to and its error.
-func runRegistryPush(t *testing.T, serverURL string, refuse bool, env ...string) (out, login string, err error) {
+// the forge serverURL, with both the run's token (CI_REGISTRY_*) and the
+// release runner's credential (RELEASE_REGISTRY*) in its environment, each
+// overridable by env, and returns what it did and its error.
+func runRegistryPush(t *testing.T, serverURL string, refuse bool, env ...string) (registryPush, error) {
 	t.Helper()
 	root := repoRoot(t)
 	stub := t.TempDir()
@@ -62,41 +76,57 @@ func runRegistryPush(t *testing.T, serverURL string, refuse bool, env ...string)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"STUB_DIR="+stub, "GITHUB_SERVER_URL="+serverURL, "GITHUB_REPOSITORY_OWNER=JeremyHahn",
-		"CI_REGISTRY_USER=ci", "CI_REGISTRY_TOKEN=stub-token")
+		"CI_REGISTRY_USER=run-ci", "CI_REGISTRY_TOKEN=run-stub-token",
+		"RELEASE_REGISTRY="+releaseRegistry, "RELEASE_REGISTRY_USER=release-ci", "RELEASE_REGISTRY_TOKEN=release-stub-token")
 	cmd.Env = append(cmd.Env, env...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
-	err = cmd.Run()
-	host, _ := os.ReadFile(filepath.Join(stub, "login")) // #nosec G304 -- the test's own temp dir
-	return buf.String(), strings.TrimSpace(string(host)), err
+	err := cmd.Run()
+	read := func(name string) string {
+		b, _ := os.ReadFile(filepath.Join(stub, name)) // #nosec G304 -- the test's own temp dir
+		return strings.TrimSpace(string(b))
+	}
+	return registryPush{out: buf.String(), host: read("login"), user: read("login-user"), token: read("login-token")}, err
 }
 
-// TestCIRegistry_RegistryOfTheForge is handbook devops.md §2: on GitHub the
-// images go to GHCR, ghcr.io, not to the forge's own host, which serves no
-// registry; on Gitea the registry shares the web UI's host and port and is
-// derived from GITHUB_SERVER_URL. A host that merely contains github.com is
-// not GitHub.
+// TestCIRegistry_RegistryOfTheForge is handbook devops.md §2 and ruling 173:
+// on GitHub the images go to GHCR, ghcr.io, not to the forge's own host, which
+// serves no registry, under the run's token; on Gitea the push runs on the
+// release runner and goes to RELEASE_REGISTRY under RELEASE_REGISTRY_USER and
+// RELEASE_REGISTRY_TOKEN, whatever GITHUB_SERVER_URL and CI_REGISTRY_* say. A
+// host that merely contains github.com is not GitHub.
 func TestCIRegistry_RegistryOfTheForge(t *testing.T) {
 	for _, tc := range []struct {
-		name, serverURL, wantHost string
+		name, serverURL, release, wantHost, wantUser, wantToken string
 	}{
-		{name: "GitHub", serverURL: "https://github.com", wantHost: "ghcr.io"},
-		{name: "GitHub, mixed case with a path", serverURL: "https://GitHub.com/", wantHost: "ghcr.io"},
-		{name: "Gitea with a port", serverURL: "http://forge.example:3001", wantHost: "forge.example:3001"},
-		{name: "Gitea under a github.com-like name", serverURL: "https://github.com.forge.example", wantHost: "github.com.forge.example"},
+		{name: "GitHub", serverURL: "https://github.com", release: releaseRegistry,
+			wantHost: "ghcr.io", wantUser: "run-ci", wantToken: "run-stub-token"},
+		{name: "GitHub, mixed case with a path", serverURL: "https://GitHub.com/", release: releaseRegistry,
+			wantHost: "ghcr.io", wantUser: "run-ci", wantToken: "run-stub-token"},
+		{name: "GitHub with no release registry", serverURL: "https://github.com", release: "",
+			wantHost: "ghcr.io", wantUser: "run-ci", wantToken: "run-stub-token"},
+		{name: "Gitea", serverURL: "http://forge.example:3001", release: releaseRegistry,
+			wantHost: releaseRegistry, wantUser: "release-ci", wantToken: "release-stub-token"},
+		{name: "Gitea, release registry in mixed case without a port", serverURL: "http://forge.example:3001", release: "Forge.Example",
+			wantHost: "forge.example", wantUser: "release-ci", wantToken: "release-stub-token"},
+		{name: "Gitea under a github.com-like name", serverURL: "https://github.com.forge.example", release: releaseRegistry,
+			wantHost: releaseRegistry, wantUser: "release-ci", wantToken: "release-stub-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, login, err := runRegistryPush(t, tc.serverURL, false)
+			got, err := runRegistryPush(t, tc.serverURL, false, "RELEASE_REGISTRY="+tc.release)
 			if err != nil {
-				t.Fatalf("push: %v\n%s", err, out)
+				t.Fatalf("push: %v\n%s", err, got.out)
 			}
-			if login != tc.wantHost {
-				t.Fatalf("logged in to %q; want %q\n%s", login, tc.wantHost, out)
+			if got.host != tc.wantHost {
+				t.Fatalf("logged in to %q; want %q\n%s", got.host, tc.wantHost, got.out)
+			}
+			if got.user != tc.wantUser || got.token != tc.wantToken {
+				t.Fatalf("logged in as %q with password %q; want %q with %q", got.user, got.token, tc.wantUser, tc.wantToken)
 			}
 			want := tc.wantHost + "/jeremyhahn/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
-			if got := strings.TrimSpace(out); got != want {
-				t.Fatalf("push printed %q; want %q", got, want)
+			if out := strings.TrimSpace(got.out); out != want {
+				t.Fatalf("push printed %q; want %q", out, want)
 			}
 		})
 	}
@@ -113,47 +143,76 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 		{name: "Gitea", serverURL: "http://forge.example:3001", want: "the Gitea registry refused the login: the release runner's credential cannot use jeremyhahn's container packages"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, _, err := runRegistryPush(t, tc.serverURL, true)
+			got, err := runRegistryPush(t, tc.serverURL, true)
 			if err == nil {
-				t.Fatalf("push succeeded on a refused login:\n%s", out)
+				t.Fatalf("push succeeded on a refused login:\n%s", got.out)
 			}
-			if !strings.Contains(out, tc.want) {
-				t.Fatalf("push output lacks %q:\n%s", tc.want, out)
+			if !strings.Contains(got.out, tc.want) {
+				t.Fatalf("push output lacks %q:\n%s", tc.want, got.out)
 			}
-			if strings.Contains(out, "stub-token") {
-				t.Fatalf("push output prints the credential:\n%s", out)
+			if strings.Contains(got.out, "stub-token") {
+				t.Fatalf("push output prints the credential:\n%s", got.out)
 			}
 		})
 	}
 }
 
-// TestCIRegistry_MissingCredentialNamesItsSource holds ruling 169: a push to
-// the Gitea registry with no credential in the environment names the release
-// runner's credential as missing, a push to GHCR the run's token, and
-// neither logs in.
+// TestCIRegistry_MissingCredentialNamesItsSource holds rulings 169 and 173: a
+// push to the Gitea registry with any of the release runner's three names
+// empty, or a RELEASE_REGISTRY that is no host[:port], names the variable and
+// the release runner's credential, a push to GHCR with the run's token empty
+// names the run's token, and none logs in or prints a credential.
 func TestCIRegistry_MissingCredentialNamesItsSource(t *testing.T) {
+	const gitea = "http://forge.example:3001"
 	for _, tc := range []struct {
-		name, serverURL, unset, want string
+		name, serverURL, set, want string
 	}{
-		{name: "Gitea token", serverURL: "http://forge.example:3001", unset: "CI_REGISTRY_TOKEN",
-			want: "CI_REGISTRY_TOKEN is empty: the release runner's credential is not in the job's environment"},
-		{name: "Gitea user", serverURL: "http://forge.example:3001", unset: "CI_REGISTRY_USER",
-			want: "CI_REGISTRY_USER is empty: the release runner's credential is not in the job's environment"},
-		{name: "GitHub token", serverURL: "https://github.com", unset: "CI_REGISTRY_TOKEN",
+		{name: "Gitea registry", serverURL: gitea, set: "RELEASE_REGISTRY=",
+			want: "RELEASE_REGISTRY is empty: the release runner's credential is not in the job's environment"},
+		{name: "Gitea token", serverURL: gitea, set: "RELEASE_REGISTRY_TOKEN=",
+			want: "RELEASE_REGISTRY_TOKEN is empty: the release runner's credential is not in the job's environment"},
+		{name: "Gitea user", serverURL: gitea, set: "RELEASE_REGISTRY_USER=",
+			want: "RELEASE_REGISTRY_USER is empty: the release runner's credential is not in the job's environment"},
+		{name: "Gitea registry with a scheme", serverURL: gitea, set: "RELEASE_REGISTRY=https://forge.example",
+			want: "RELEASE_REGISTRY does not name a registry host"},
+		{name: "Gitea registry with a path", serverURL: gitea, set: "RELEASE_REGISTRY=forge.example/owner",
+			want: "RELEASE_REGISTRY does not name a registry host"},
+		{name: "Gitea registry with a bad port", serverURL: gitea, set: "RELEASE_REGISTRY=forge.example:port",
+			want: "RELEASE_REGISTRY does not name a registry host"},
+		{name: "GitHub token", serverURL: "https://github.com", set: "CI_REGISTRY_TOKEN=",
 			want: "CI_REGISTRY_TOKEN is empty: the run's token is not in the job's environment"},
+		{name: "GitHub user", serverURL: "https://github.com", set: "CI_REGISTRY_USER=",
+			want: "CI_REGISTRY_USER is empty: the run's token is not in the job's environment"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, login, err := runRegistryPush(t, tc.serverURL, false, tc.unset+"=")
+			got, err := runRegistryPush(t, tc.serverURL, false, tc.set)
 			if err == nil {
-				t.Fatalf("push succeeded with %s empty:\n%s", tc.unset, out)
+				t.Fatalf("push succeeded with %s:\n%s", tc.set, got.out)
 			}
-			if !strings.Contains(out, tc.want) {
-				t.Fatalf("push output lacks %q:\n%s", tc.want, out)
+			if !strings.Contains(got.out, "::error::ci-registry: "+tc.want) {
+				t.Fatalf("push output lacks the error %q:\n%s", tc.want, got.out)
 			}
-			if login != "" {
-				t.Fatalf("push logged in to %q with %s empty", login, tc.unset)
+			if got.host != "" {
+				t.Fatalf("push logged in to %q with %s", got.host, tc.set)
+			}
+			if strings.Contains(got.out, "stub-token") {
+				t.Fatalf("push output prints the credential:\n%s", got.out)
 			}
 		})
+	}
+}
+
+// TestCIRegistry_ForgePushIgnoresTheRunsToken holds ruling 173: the forge push
+// reads the release runner's three names and no others, so the run's token in
+// the environment neither stands in for an empty RELEASE_REGISTRY_TOKEN nor
+// reaches the login.
+func TestCIRegistry_ForgePushIgnoresTheRunsToken(t *testing.T) {
+	got, err := runRegistryPush(t, "http://forge.example:3001", false, "RELEASE_REGISTRY_USER=", "RELEASE_REGISTRY_TOKEN=")
+	if err == nil {
+		t.Fatalf("push succeeded on the run's token alone:\n%s", got.out)
+	}
+	if got.host != "" || got.user != "" || got.token != "" {
+		t.Fatalf("push logged in to %q as %q with the run's token", got.host, got.user)
 	}
 }
 
