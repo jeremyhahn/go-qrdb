@@ -48,15 +48,24 @@ type SealWatch struct {
 	isSealed func(error) bool
 
 	mu         sync.Mutex
-	sealedC    chan struct{} // closed when an episode begins
-	cause      error         // the episode's first sealed error; nil outside one
-	suppressed uint64        // sealed errors not logged in the episode
+	episode    *sealEpisode // the current episode, or the next one to begin
+	suppressed uint64       // sealed errors not logged in the episode
 }
+
+// sealEpisode is one sealed episode. cause is written once, before c closes,
+// and never again, so a waiter that receives from c reads it without the lock:
+// resume replaces the watch's episode and leaves this one as it was.
+type sealEpisode struct {
+	c     chan struct{} // closed when the episode begins
+	cause error         // the episode's first sealed error; nil before it begins
+}
+
+func newSealEpisode() *sealEpisode { return &sealEpisode{c: make(chan struct{})} }
 
 // NewSealWatch returns a watch that classifies a background error as sealed
 // with isSealed and logs to logger.
 func NewSealWatch(logger pebble.Logger, isSealed func(error) bool) *SealWatch {
-	return &SealWatch{logger: logger, isSealed: isSealed, sealedC: make(chan struct{})}
+	return &SealWatch{logger: logger, isSealed: isSealed, episode: newSealEpisode()}
 }
 
 // Attach installs the watch on opts. Every listener already in opts still
@@ -93,14 +102,17 @@ func (w *SealWatch) Attach(opts *pebble.Options) {
 func (w *SealWatch) Err() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.errLocked()
+	return w.episode.err()
 }
 
 // Flush flushes db's memtable and waits for it, like DB.Flush, but returns a
-// *SealedError rather than waiting while the barrier is sealed.
+// *SealedError rather than waiting while the barrier is sealed. It returns nil
+// only when its flush completed: a flush whose wait an episode ended reports
+// that episode's error even if the episode is over by the time it returns.
 func (w *SealWatch) Flush(db *pebble.DB) error {
 	w.mu.Lock()
-	err, sealedC := w.errLocked(), w.sealedC
+	ep := w.episode
+	err := ep.err()
 	w.mu.Unlock()
 	if err != nil {
 		return err
@@ -113,11 +125,24 @@ func (w *SealWatch) Flush(db *pebble.DB) error {
 		}
 		return err
 	}
+	return ep.await(done)
+}
+
+// await waits for done or for the episode to begin. A flush that completed
+// succeeds even if the episode began too; otherwise the episode's cause is
+// the result, read from the episode itself and not from the watch, which a
+// resume may have moved on since.
+func (ep *sealEpisode) await(done <-chan struct{}) error {
 	select {
 	case <-done:
 		return nil
-	case <-sealedC:
-		return w.Err()
+	case <-ep.c:
+		select {
+		case <-done:
+			return nil
+		default:
+			return ep.err()
+		}
 	}
 }
 
@@ -129,12 +154,12 @@ func (w *SealWatch) observe(err error) bool {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.cause != nil {
+	if w.episode.cause != nil {
 		w.suppressed++
 		return true
 	}
-	w.cause = err
-	close(w.sealedC)
+	w.episode.cause = err
+	close(w.episode.c)
 	w.logger.Errorf("background error: %s; flushes and compactions stop until the barrier is unsealed", err)
 	return true
 }
@@ -143,17 +168,18 @@ func (w *SealWatch) observe(err error) bool {
 func (w *SealWatch) resume() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.cause == nil {
+	if w.episode.cause == nil {
 		return
 	}
 	w.logger.Infof("barrier unsealed: flushes and compactions resumed after %d further sealed errors", w.suppressed)
-	w.cause, w.suppressed = nil, 0
-	w.sealedC = make(chan struct{})
+	w.episode, w.suppressed = newSealEpisode(), 0
 }
 
-func (w *SealWatch) errLocked() error {
-	if w.cause == nil {
+// err returns the episode's *SealedError once it has begun, and nil before.
+// The caller holds the watch's lock or has received from ep.c.
+func (ep *sealEpisode) err() error {
+	if ep.cause == nil {
 		return nil
 	}
-	return &SealedError{Err: w.cause}
+	return &SealedError{Err: ep.cause}
 }
