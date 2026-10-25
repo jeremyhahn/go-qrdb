@@ -196,13 +196,13 @@ func WithAuditLogger(logger audit.AuditLogger) ProviderOption {
 // tenant (auth.TenantPrincipalURIs).
 //
 // It must be the same value the node's mTLS authenticator pins
-// (auth.spiffe_trust_domain), which refuses a certificate whose tenant is that
+// (auth.cluster_trust_domain), which refuses a certificate whose tenant is that
 // trust domain.
 //
 // It is required to issue a client certificate: without it there is no SAN,
 // a certificate without one names no tenant (auth.TenantFromClientCert), and
 // IssueClientCert refuses with *SPIFFEIdentityError rather than mint one. A
-// node passes auth.EffectiveSPIFFETrustDomain, which is never empty.
+// node passes auth.EffectiveClusterTrustDomain, which is never empty.
 func WithTrustDomain(trustDomain string) ProviderOption {
 	return func(o *providerOptions) {
 		o.trustDomain = trustDomain

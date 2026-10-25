@@ -467,8 +467,7 @@ A tenant is a SPIFFE trust domain. The mTLS authenticator requires two names
 and requires them to agree: the first Subject OU, and the trust domain of the
 workload SPIFFE URI SAN (`spiffe://<tenant>/<kind>/<name>`, kind `user` or
 `svc`). There is no fallback in either direction. The node's own trust domain,
-`auth.spiffe_trust_domain` (which defaults to `auth.cluster_trust_domain`,
-itself `qrdb.cluster` when unset), is the cluster's: a certificate that names
+`auth.cluster_trust_domain` (`qrdb.cluster` when unset), is the cluster's: a certificate that names
 no tenant is under it, and no tenant may be it. A certificate with the SAN but
 no OU under any other trust domain, with an OU but no SAN, whose OU names the
 cluster trust domain, or whose OU and trust domain name different tenants
@@ -538,7 +537,7 @@ forwarded unsigned — an unsigned forward is authorized as the forwarding node
 
 **The trust domain is validated when configuration loads.** A value that does
 not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,
-whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`
+whitespace) fails the load with a validation error on `auth.cluster_trust_domain`
 rather than making the CA refuse every certificate at issue time.
 
 **Rotation keeps the binding.** A user's binding is over the
@@ -548,8 +547,7 @@ authenticate: it must be re-issued, and the re-issued certificate
 binds the same key.
 
 **The provider and the authenticator must read the same value.** Both come from
-`auth.spiffe_trust_domain`, through the same default to
-`auth.cluster_trust_domain`; a node whose CA minted under one domain while its
+`auth.cluster_trust_domain`, the one trust-domain setting; a node whose CA minted under one domain while its
 authenticator pinned another would refuse every certificate it issued.
 
 The OU line is why issuance acts only on the caller's own tenant: minting a

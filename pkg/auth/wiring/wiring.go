@@ -173,11 +173,11 @@ type AuthMiddlewareConfig struct {
 	// AuthorizerConfig.StrictSeparation.
 	StrictSeparation bool
 
-	// SPIFFETrustDomain, when non-empty, pins the mTLS authenticator to a
+	// ClusterTrustDomain, when non-empty, pins the mTLS authenticator to a
 	// SPIFFE trust domain (auth.NewMTLSAuthenticatorWithTrustDomain), the
 	// cluster's own, which names no tenant; empty pins none and skips the
 	// cluster checks of auth.TenantFromClientCert.
-	SPIFFETrustDomain string
+	ClusterTrustDomain string
 
 	// Tenants is the tenant store the mTLS authenticator holds a
 	// certificate's tenant to (auth.WithTenantDirectory): a certificate
@@ -472,8 +472,8 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		mtlsOpts = append(mtlsOpts, auth.WithDelegatedPrincipal(cfg.DelegatedPrincipal))
 	}
 	mtlsAuthenticator := auth.NewMTLSAuthenticator(mtlsOpts...)
-	if cfg.SPIFFETrustDomain != "" {
-		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain, mtlsOpts...)
+	if cfg.ClusterTrustDomain != "" {
+		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.ClusterTrustDomain, mtlsOpts...)
 	}
 	// The embedder's authenticators take the positions they asked for around
 	// mTLS -- or its place -- in the one chain every transport shares.

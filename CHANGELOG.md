@@ -11,6 +11,28 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Removed
+
+- **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
+  trust-domain setting** (#1150). It pins the mTLS authenticator, names the
+  built-in CA's trust domain and is the trust domain no tenant may be. A
+  configuration file that still carries `spiffe_trust_domain` fails the load as
+  an unknown key. `config.AuthConfig.SPIFFETrustDomain` and
+  `EffectiveSPIFFETrustDomain` are deleted; `lifecycle.Infra.SPIFFETrustDomain`
+  and `wiring.AuthMiddlewareConfig.SPIFFETrustDomain` are now
+  `ClusterTrustDomain`.
+
+### Changed
+
+- **Tenant creation refuses an ID that cannot be a SPIFFE trust domain**
+  (#1150). A tenant ID is the trust domain of its principals'
+  `spiffe://<tenant>/<kind>/<name>` IDs, so `OnboardTenant`, on every transport
+  and in `qrdb tenant create`, refuses before anything is written an ID that
+  does not round-trip through a SPIFFE ID (an uppercase letter, for instance)
+  and an ID equal to `auth.cluster_trust_domain`, with
+  `*tenant.TenantTrustDomainError`, classified as invalid input (400 /
+  `InvalidArgument`). Such a tenant could never be issued a client
+  certificate or admit a principal.
 ### Added
 
 - **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)

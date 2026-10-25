@@ -280,9 +280,8 @@ type AuthMiddlewareConfig struct {
 - **Every client certificate carries the tenant's SPIFFE ID SAN**,
   `spiffe://<tenant>/user/<CN>` (a delegation, `spiffe://<tenant>/svc/<principal>`):
   the tenant is the trust domain. `cert.WithTrustDomain` names the cluster
-  trust domain (fed from the effective `auth.spiffe_trust_domain`, which
-  defaults to `auth.cluster_trust_domain`, through
-  `lifecycle.Infra.SPIFFETrustDomain`), and no tenant may be it
+  trust domain (fed from the effective `auth.cluster_trust_domain` through
+  `lifecycle.Infra.ClusterTrustDomain`), and no tenant may be it
   (`auth.TenantPrincipalURIs`). A provider with no valid cluster trust domain
   refuses to issue (`*SPIFFEIdentityError`) before the CA key is touched.
 - **No server-side client key generation.** `IssueClientCert` certifies the
@@ -323,7 +322,7 @@ type AuthMiddlewareConfig struct {
   SANs or public key differ from what was asked (`*ceremony.CertSubjectError`
   naming the field). `auth.HolderProfile` marks officer and custodian
   certificates; `finalizeIdentity` never resolves one against the user store.
-- **`auth.spiffe_trust_domain` is validated at load** with
+- **`auth.cluster_trust_domain` is validated at load** with
   `spiffe.ValidateTrustDomain`, the same round trip. A refusal is a
   `*spiffe.TrustDomainError` carrying the rejected value and unwrapping to
   `ErrTrustDomainEmpty` or `ErrTrustDomainInvalid`.

@@ -222,15 +222,15 @@ type Infra struct {
 	// it. When nil a fresh ceremony service is constructed.
 	CeremonyCoreSvc *ceremony.CeremonyService
 
-	// SPIFFETrustDomain is the node's effective SPIFFE trust domain
-	// (auth.spiffe_trust_domain, defaulting to cluster_trust_domain). The
+	// ClusterTrustDomain is the node's effective SPIFFE trust domain
+	// (auth.cluster_trust_domain, or its default when unset). The
 	// certificate provider (cert.WithTrustDomain), certificate enrollment,
 	// the bootstrap admin and the ceremony (SetTrustDomain) mint every
 	// tenant-principal certificate with the SPIFFE ID SAN under it that
 	// agrees with its OU, so the mTLS authenticator's pinned derivation
 	// resolves the certificates this node issues. It must be the value the
 	// authenticator pins. Empty mints none: every issuer refuses instead.
-	SPIFFETrustDomain string
+	ClusterTrustDomain string
 
 	// CertKeyProviderFactory, when non-nil, replaces Key B's built-in
 	// per-tenant cakey.SoftwareProvider entirely (the CA key provider seam,
@@ -1535,7 +1535,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			n.CertProv = infra.CertProvider
 		} else {
 			certOpts := []cert.ProviderOption{
-				cert.WithTrustDomain(infra.SPIFFETrustDomain),
+				cert.WithTrustDomain(infra.ClusterTrustDomain),
 				cert.WithNewCAHook(n.ClientTrustChanges.Notify),
 				// certs:revoke has no single caller every transport funnels
 				// through the way certs:issue/certs:enroll go through
@@ -1731,7 +1731,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetCA(infra.CeremonyCA)
 	// Every certificate the ceremony issues names its tenant SPIFFE ID under
 	// this domain, agreeing with its OU (auth.TenantFromClientCert).
-	svc.SetTrustDomain(infra.SPIFFETrustDomain)
+	svc.SetTrustDomain(infra.ClusterTrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
 	// The SO PIN lockout is installed where the composer chose the backend
 	// (NewSealStorePINBackend, server.WithPINBackend); NewLockoutBackend is
@@ -1776,7 +1776,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
 	n.CertTargets = service.NewCertTargetGuard()
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
-		service.WithEnrollmentTrustDomain(infra.SPIFFETrustDomain),
+		service.WithEnrollmentTrustDomain(infra.ClusterTrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
 	onboardingDeps := service.TenantOnboardingDeps{
@@ -1786,7 +1786,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Certs:       n.CertProv,
 		Anchors:     n.TrustAnchors,
 		Pending:     n.PendingAdmins,
-		TrustDomain: infra.SPIFFETrustDomain,
+		TrustDomain: infra.ClusterTrustDomain,
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
@@ -1813,7 +1813,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	// self-managed one's CSR as system first boot refuses one, so that admin
 	// brings their own certificate.
 	if n.ClusterCAProv != nil {
-		signer, err := clusterCAAdminSigner(n.ClusterCAProv, infra.SPIFFETrustDomain)
+		signer, err := clusterCAAdminSigner(n.ClusterCAProv, infra.ClusterTrustDomain)
 		if err != nil {
 			log.Warn("lifecycle: tenant first-admin CSRs for self-managed isolated tenants will be refused",
 				slog.String("error", err.Error()))
@@ -1860,7 +1860,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 				Anchors:         n.TrustAnchors,
 				Tenants:         n.Tenant,
 				TTL:             ttl,
-				TrustDomain:     infra.SPIFFETrustDomain,
+				TrustDomain:     infra.ClusterTrustDomain,
 				AuditLogger:     infra.AuditLogger,
 				AuditPolicy:     infra.AuditFailurePolicy,
 				RequireKeyPin:   infra.InvitationRequireKeyPin,

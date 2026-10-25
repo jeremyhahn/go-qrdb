@@ -42,13 +42,13 @@ func issueThroughBuiltProvider(t *testing.T, trustDomain string) (*certtest.Bund
 
 	barrier, registry, credSvc := newTestBarrier(t)
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:              host,
-		WatchHub:          hub,
-		DataDir:           t.TempDir(),
-		SealBarrier:       barrier,
-		BarrierRegistry:   registry,
-		CredentialCoreSvc: credSvc,
-		SPIFFETrustDomain: trustDomain,
+		Host:               host,
+		WatchHub:           hub,
+		DataDir:            t.TempDir(),
+		SealBarrier:        barrier,
+		BarrierRegistry:    registry,
+		CredentialCoreSvc:  credSvc,
+		ClusterTrustDomain: trustDomain,
 	})
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
@@ -81,7 +81,7 @@ func issuedCertURIs(t *testing.T, trustDomain string) []string {
 	return out
 }
 
-func TestBuildServices_SPIFFETrustDomain_ReachesCertProvider(t *testing.T) {
+func TestBuildServices_ClusterTrustDomain_ReachesCertProvider(t *testing.T) {
 	got := issuedCertURIs(t, "db.example.com")
 	want := "spiffe://acme/user/alice"
 	if len(got) != 1 || got[0] != want {
@@ -89,7 +89,7 @@ func TestBuildServices_SPIFFETrustDomain_ReachesCertProvider(t *testing.T) {
 	}
 }
 
-func TestBuildServices_SPIFFETrustDomain_IsNoTenant(t *testing.T) {
+func TestBuildServices_ClusterTrustDomain_IsNoTenant(t *testing.T) {
 	// The tenant's SAN is under the tenant's own trust domain, so what shows
 	// the configured one reached the provider is that it names no tenant.
 	bundle, err := issueThroughBuiltProvider(t, "acme")
@@ -98,7 +98,7 @@ func TestBuildServices_SPIFFETrustDomain_IsNoTenant(t *testing.T) {
 	}
 }
 
-func TestBuildServices_NoSPIFFETrustDomain_CertProviderRefusesToIssue(t *testing.T) {
+func TestBuildServices_NoClusterTrustDomain_CertProviderRefusesToIssue(t *testing.T) {
 	bundle, err := issueThroughBuiltProvider(t, "")
 	var se *cert.SPIFFEIdentityError
 	if !errors.As(err, &se) {

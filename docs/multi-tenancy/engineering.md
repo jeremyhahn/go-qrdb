@@ -69,6 +69,18 @@ type TenantAdminCredential struct {
 }
 ```
 
+Before any write, `OnboardTenant` calls
+`tenant.ValidateTenantIDTrustDomain(req.ID, clusterTrustDomain)`, which
+returns a `*tenant.TenantTrustDomainError` for an ID that
+`spiffe.ValidateTrustDomain` refuses (`Err` is the `*spiffe.TrustDomainError`)
+or that equals the cluster trust domain (`Err` is
+`tenant.ErrTenantIDIsClusterTrustDomain`). `pkg/api/errclass` classifies it as
+invalid input: 400 on REST, `InvalidArgument` on gRPC, and the same class on
+every other transport. The check lives in the service, not a transport, so every
+transport and the CLI refuse the same IDs;
+`TestTenant_CLI_TrustDomainRefusal_PerProtocol` drives the refusal through the
+CLI on each.
+
 `OnboardTenant` calls `bootstrap.ProvisionTenant` with
 `AdminEnrollment: AdminEnrollCert`, `Exclusive: true` and
 `Signer: &bootstrap.KeyBSigner{Certs: certProvider}`. The tenant's own Key B

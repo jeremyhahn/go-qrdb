@@ -51,8 +51,7 @@ type HolderDeps struct {
 	CA CeremonyCA
 
 	// TrustDomain is the cluster's SPIFFE trust domain
-	// (auth.spiffe_trust_domain, which defaults to the cluster trust
-	// domain): every certificate CA issues names its tenant as the trust
+	// (auth.cluster_trust_domain): every certificate CA issues names its tenant as the trust
 	// domain of its SPIFFE ID SAN, and no tenant may name this one. Empty
 	// refuses every certificate, before CA is asked, with a
 	// *CertSubjectError.
