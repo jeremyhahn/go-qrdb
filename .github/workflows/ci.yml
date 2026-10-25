@@ -581,7 +581,7 @@ jobs:
     name: Devcontainer image [lint, lint-gates, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
-    timeout-minutes: 75       # CUSTOMIZE (#1046): ~56 lint minutes loaded with lint-sweeps (~12 warm without), with headroom
+    timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # v1.22: the cache volumes' trust class. Only a push to main writes the

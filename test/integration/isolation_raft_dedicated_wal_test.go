@@ -295,18 +295,37 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	// Assertion (a): the dedicated WAL directory exists on EVERY node under the
 	// tenant DataRoot for wal1, and NO such directory exists for shared1.
+	//
+	// A replica opens its dedicated WAL when it starts the wal1 shard, which a
+	// follower does on its own schedule after the create is applied; the
+	// shard_count wait above does not name wal1's shard, and readBackAll asked
+	// only the leader. So each node
+	// is polled until its wal1 WAL directory exists and holds a WAL, and the
+	// shared1 negative check runs only once wal1 is present on that node, so
+	// a replica that is merely behind cannot pass it.
 	// ---------------------------------------------------------------------------
 	for i := range 3 {
-		walDir := findDirEndingIn(t, volumePoolDirs[i],
-			filepath.Join("databases", "wal1", "wal"))
+		var (
+			walDir   string
+			empty    bool
+			emptyErr error
+		)
+		pollUntil(60*time.Second, 200*time.Millisecond, func() bool {
+			walDir = findDirEndingIn(t, volumePoolDirs[i],
+				filepath.Join("databases", "wal1", "wal"))
+			if walDir == "" {
+				return false
+			}
+			empty, emptyErr = dirIsEmpty(walDir)
+			return emptyErr == nil && !empty
+		})
 		if walDir == "" {
 			t.Fatalf("assertion (a): node %d: dedicated WAL dir for wal1 not found under %s",
 				i+1, volumePoolDirs[i])
 		}
-		empty, err := dirIsEmpty(walDir)
-		if err != nil {
+		if emptyErr != nil {
 			t.Fatalf("assertion (a): node %d: dirIsEmpty(%q): %v -- the directory read failed, so this never established that a WAL was written",
-				i+1, walDir, err)
+				i+1, walDir, emptyErr)
 		}
 		if empty {
 			t.Fatalf("assertion (a): node %d: dedicated WAL dir %q is empty (no WAL written)", i+1, walDir)

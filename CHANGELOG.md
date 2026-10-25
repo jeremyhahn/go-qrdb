@@ -37,6 +37,8 @@ are not reconstructed here — their history is in the git log.
   `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
   SO authenticator to tenant onboarding.
 
+## [0.55.0-alpha] - 2026-10-24
+
 ### Fixed
 
 - **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
