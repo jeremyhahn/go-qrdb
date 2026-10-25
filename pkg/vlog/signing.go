@@ -54,10 +54,12 @@ const (
 // ECDSA (type 0x02) the SHA-256 of the DER SPKI public key alone.
 var keyHashes = map[SignatureType]func(name string, pub crypto.PublicKey) []byte{
 	SignatureEd25519: func(name string, pub crypto.PublicKey) []byte {
+		// KeyHash has typed pub as an ed25519 key before it dispatches here.
+		p, _ := pub.(ed25519.PublicKey)
 		h := sha256.New()
 		h.Write([]byte(name))
 		h.Write([]byte{'\n', 0x01})
-		h.Write(pub.(ed25519.PublicKey))
+		h.Write(p)
 		return h.Sum(nil)
 	},
 	SignatureECDSAP256SHA256: func(_ string, pub crypto.PublicKey) []byte {
@@ -162,13 +164,18 @@ func publicSignatureType(pub crypto.PublicKey) (SignatureType, error) {
 		}
 		return SignatureEd25519, nil
 	case *ecdsa.PublicKey:
-		if p == nil || p.Curve == nil || p.X == nil || p.Y == nil {
+		// PublicKey.Bytes, the validation the deprecation of X and Y points
+		// at, panics on an absent coordinate, so only their presence is read.
+		if p == nil || p.Curve == nil || p.X == nil || p.Y == nil { //nolint:staticcheck // SA1019: a nil check guards Bytes, which panics on absent coordinates.
 			return "", &InvalidSigningKeyError{Reason: "no ecdsa public key"}
 		}
-		if p.Curve == elliptic.P256() {
-			return SignatureECDSAP256SHA256, nil
+		if p.Curve != elliptic.P256() {
+			return "", &UnsupportedKeyTypeError{Type: "ecdsa " + p.Curve.Params().Name}
 		}
-		return "", &UnsupportedKeyTypeError{Type: "ecdsa " + p.Curve.Params().Name}
+		if _, err := p.Bytes(); err != nil {
+			return "", &InvalidSigningKeyError{Reason: "ecdsa public key: " + err.Error()}
+		}
+		return SignatureECDSAP256SHA256, nil
 	default:
 		return "", &UnsupportedKeyTypeError{Type: reflect.TypeOf(pub).String()}
 	}
@@ -245,11 +252,13 @@ func DecodeSignedHead(b []byte) (SignedHead, error) {
 // verifyFuncs verifies a signature of each type over msg.
 var verifyFuncs = map[SignatureType]func(pub crypto.PublicKey, msg, sig []byte) bool{
 	SignatureEd25519: func(pub crypto.PublicKey, msg, sig []byte) bool {
-		return ed25519.Verify(pub.(ed25519.PublicKey), msg, sig)
+		p, ok := pub.(ed25519.PublicKey)
+		return ok && ed25519.Verify(p, msg, sig)
 	},
 	SignatureECDSAP256SHA256: func(pub crypto.PublicKey, msg, sig []byte) bool {
+		p, ok := pub.(*ecdsa.PublicKey)
 		digest := sha256.Sum256(msg)
-		return ecdsa.VerifyASN1(pub.(*ecdsa.PublicKey), digest[:], sig)
+		return ok && ecdsa.VerifyASN1(p, digest[:], sig)
 	},
 }
 
