@@ -79,10 +79,11 @@ type pebbleNotification struct {
 // may be called concurrently with Update as required by the DiskStateMachine
 // contract.
 type PebbleStateMachine struct {
-	mu   sync.RWMutex
-	db   *pebble.DB
-	dir  string
-	opts *pebble.Options
+	mu    sync.RWMutex
+	db    *pebble.DB
+	seals *pebbleStorage.SealWatch
+	dir   string
+	opts  *pebble.Options
 
 	// hub delivers watch notifications after committed batches.
 	hub *watch.Hub
@@ -374,14 +375,12 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.opts != nil && s.opts.Logger == nil {
-		s.opts.Logger = pebbleStorage.NewLogger(nil)
-	}
-	db, err := pebble.Open(initialDir, s.opts)
+	db, seals, err := openPebble(initialDir, s.opts)
 	if err != nil {
 		return 0, &OpenError{Dir: initialDir, Err: err}
 	}
 	s.db = db
+	s.seals = seals
 	s.dir = initialDir
 
 	// Create time-series storage if enabled. Uses the same PebbleDB
@@ -948,7 +947,7 @@ func (s *PebbleStateMachine) Sync() error {
 		return &NotOpenError{}
 	}
 
-	if err := s.db.Flush(); err != nil {
+	if err := s.seals.Flush(s.db); err != nil {
 		return &WriteError{Err: err}
 	}
 	return nil
