@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/index/internal/indexkey"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // entityKeyLenSize is the byte length of the uint32 big-endian length suffix
@@ -59,7 +60,22 @@ type Index struct {
 	// than not folding at all: a lookup would answer empty with a nil error
 	// over an index holding the match.
 	caseInsensitive bool
-	closed          atomic.Bool
+	// seals is the watch of the database db was opened with, or nil when it
+	// was opened unwatched. Every write checks it first.
+	seals  *pebblestore.SealWatch
+	closed atomic.Bool
+}
+
+// Option configures an Index.
+type Option func(*Index)
+
+// WithSealWatch sets the watch of the database the index writes to, as
+// pebble.Open returns it. Put, Delete and Clear then refuse with its
+// *pebble.SealedError while the at-rest barrier is sealed, before they write:
+// a write that rotates the memtable panics on the WAL file a sealed barrier
+// refuses.
+func WithSealWatch(w *pebblestore.SealWatch) Option {
+	return func(p *Index) { p.seals = w }
 }
 
 // New creates a new PebbleDB-backed index with the given name. The caller
@@ -70,13 +86,13 @@ type Index struct {
 // order-preserving numeric terms (index.EncodeNumericValue) at
 // index.NumericEncodingVersion: the caller is creating the index now, not
 // restoring a recorded definition.
-func New(db *pebble.DB, name string, unique bool, valueType index.IndexValueType) (*Index, error) {
+func New(db *pebble.DB, name string, unique bool, valueType index.IndexValueType, opts ...Option) (*Index, error) {
 	return NewWithConfig(db, name, index.IndexConfig{
 		Unique:          unique,
 		ValueType:       valueType,
 		EncodingVersion: index.NumericEncodingVersion,
 		CaseSensitive:   true,
-	})
+	}, opts...)
 }
 
 // NewWithConfig creates a new PebbleDB-backed index configured by config.
@@ -89,7 +105,7 @@ func New(db *pebble.DB, name string, unique bool, valueType index.IndexValueType
 // CaseSensitive is ignored for a numeric index: its values are parsed as
 // numbers and encoded to numeric terms in which case has no meaning. A numeric
 // config must state EncodingVersion; a stale one is an index.StaleEncodingError.
-func NewWithConfig(db *pebble.DB, name string, config index.IndexConfig) (*Index, error) {
+func NewWithConfig(db *pebble.DB, name string, config index.IndexConfig, opts ...Option) (*Index, error) {
 	if db == nil {
 		return nil, &index.NilDBError{}
 	}
@@ -99,13 +115,26 @@ func NewWithConfig(db *pebble.DB, name string, config index.IndexConfig) (*Index
 	if err := config.CheckEncoding(); err != nil {
 		return nil, err
 	}
-	return &Index{
+	p := &Index{
 		db:              db,
 		name:            name,
 		unique:          config.Unique,
 		valueType:       config.ValueType,
 		caseInsensitive: !config.CaseSensitive && config.ValueType != index.IndexValueTypeNumeric,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
+}
+
+// checkSealed returns the seal watch's *pebble.SealedError while the barrier
+// is sealed, and nil otherwise or when the index has no watch.
+func (p *Index) checkSealed() error {
+	if p.seals == nil {
+		return nil
+	}
+	return p.seals.Check()
 }
 
 // encodeValue encodes a raw field value according to the index value type.
@@ -215,6 +244,9 @@ func (p *Index) Put(entityKey []byte, fieldValue []byte) error {
 		}
 	}
 
+	if err := p.checkSealed(); err != nil {
+		return err
+	}
 	key := p.buildKey(encoded, entityKey)
 	return p.db.Set(key, nil, pebble.Sync)
 }
@@ -260,6 +292,9 @@ func (p *Index) Delete(entityKey []byte, fieldValue []byte) error {
 		return nil // non-numeric value; nothing to delete
 	}
 
+	if err := p.checkSealed(); err != nil {
+		return err
+	}
 	key := p.buildKey(encoded, entityKey)
 	return p.db.Delete(key, pebble.Sync)
 }
@@ -402,6 +437,9 @@ func (p *Index) Clear() error {
 		return err
 	}
 
+	if err := p.checkSealed(); err != nil {
+		return err
+	}
 	return batch.Commit(pebble.Sync)
 }
 

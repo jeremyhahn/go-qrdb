@@ -2299,7 +2299,7 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 		EncodingVersion: index.NumericEncodingVersion,
 		CaseSensitive:   !opts.CaseInsensitive,
 		Owner:           opts.Owner,
-	})
+	}, pebbleindex.WithSealWatch(s.seals))
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
 	}
