@@ -100,13 +100,21 @@ const (
 	// featureReapPrefix, so the reap step removes old integration images.
 	featureImageRepo = featureReapPrefix + "it"
 
-	// featureImageRef is every leg's IT_IMAGE (DS-3516): the digest reference
-	// docker-build pushed, one image for every leg of the run.
+	// featureImageRef is the pull step's IT_REF on a push to main (DS-3516):
+	// the digest reference docker-build pushed, one image for every leg of
+	// the run.
 	featureImageRef = "${{ needs.docker-build.outputs.it_ref }}"
 
-	// featurePull is the leg's step between the reap and the tests: it pulls
-	// featureImageRef by digest and holds it, and never builds (DS-3516).
-	featurePull = `scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"`
+	// featurePull is the leg's step after the reap on a push to main alone
+	// (ciPublishIf): it pulls featureImageRef by digest, holds it, hands it
+	// to the tests as IT_IMAGE and never builds (DS-3516).
+	featurePull = "scripts/ci-registry.sh pull \"$IT_REF\" \"$IT_HOLD\"\necho \"IT_IMAGE=$IT_REF\" >> \"$GITHUB_ENV\""
+
+	// featureLocal is featurePull's counterpart on every other event
+	// (ciLocalIf, claude-agents#329): it takes the integration image from
+	// the runner's own daemon by content-hash tag, building it when missing,
+	// holds it and hands the tag on. It never logs in.
+	featureLocal = "image=$(scripts/ci-registry.sh local it \"$IT_HOLD\")\necho \"IT_IMAGE=$image\" >> \"$GITHUB_ENV\""
 
 	// featureLegFloor is a discovery floor: 40 features map files today, and
 	// a parse that finds fewer than this has found too little to check.
@@ -126,10 +134,11 @@ type featureWorkflow struct {
 			Matrix   yaml.Node `yaml:"matrix"`
 		} `yaml:"strategy"`
 		Steps []struct {
-			Name string `yaml:"name"`
-			If   string `yaml:"if"`
-			Uses string `yaml:"uses"`
-			Run  string `yaml:"run"`
+			Name string            `yaml:"name"`
+			If   string            `yaml:"if"`
+			Uses string            `yaml:"uses"`
+			Run  string            `yaml:"run"`
+			Env  map[string]string `yaml:"env"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 }
@@ -186,13 +195,22 @@ func featureJobProblems(body []byte, want []string) []string {
 			conds = append(conds, strings.TrimSpace(s.If))
 		}
 	}
-	if !slices.Equal(runs, []string{featureReap, featurePull, featureStep, featureTeardown}) {
+	if !slices.Equal(runs, []string{featureReap, featurePull, featureLocal, featureStep, featureTeardown}) {
 		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
-			"; want exactly `"+featureReap+"`, `"+featurePull+"`, `"+featureStep+"`, then `"+featureTeardown+"`")
-	} else if conds[0] != "" || conds[1] != "" || conds[2] != "" || conds[3] != "always()" {
+			"; want exactly `"+featureReap+"`, `"+featurePull+"`, `"+featureLocal+"`, `"+featureStep+
+			"`, then `"+featureTeardown+"`")
+	} else if !slices.Equal(conds, []string{"", ciPublishIf, ciLocalIf, "", "always()"}) {
 		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
-			"; want the reap, the pull and the tests unconditional and the teardown under always(), "+
-			"so a failed or cancelled leg still removes its stack and its hold")
+			"; want the reap and the tests unconditional, the pull under "+ciPublishIf+
+			", the local build under "+ciLocalIf+" and the teardown under always(), "+
+			"so exactly one of the two takes the image and a failed or cancelled leg still removes its stack and its hold")
+	}
+	for _, s := range job.Steps {
+		if strings.TrimSpace(s.Run) == featurePull && s.Env["IT_REF"] != featureImageRef {
+			problems = append(problems, featureJob+"'s pull step sets IT_REF "+strconv.Quote(s.Env["IT_REF"])+
+				"; want "+strconv.Quote(featureImageRef)+": every leg runs the one image docker-build "+
+				"pushed, by digest, and a leg-chosen name would pull another")
+		}
 	}
 	// The project the steps pass must be this leg's alone: legs of one run,
 	// and runs sharing a daemon, would otherwise share a stack.
@@ -207,12 +225,14 @@ func featureJobProblems(body []byte, want []string) []string {
 				"; want it to carry "+part+", so no other leg or run shares it")
 		}
 	}
-	// The image is the opposite: one image for every leg of the run (#813),
-	// the digest docker-build pushed (DS-3516).
-	if img := job.Env["IT_IMAGE"]; img != featureImageRef {
+	// The image is the opposite: one image for every leg of the run (#813).
+	// The pull or the local build sets IT_IMAGE through GITHUB_ENV; a job-level
+	// value would be empty off main and, being defined, would override the
+	// Makefile's content-hash default.
+	if img, set := job.Env["IT_IMAGE"]; set {
 		problems = append(problems, featureJob+" sets IT_IMAGE "+strconv.Quote(img)+
-			"; want "+strconv.Quote(featureImageRef)+": every leg runs the one image docker-build "+
-			"pushed, by digest, and a leg-chosen name would build or pull another")
+			" at job level; want it set by the pull or the local build step alone, "+
+			"which know the image this leg holds")
 	}
 	if !slices.Contains(job.Needs, "docker-build") {
 		problems = append(problems, featureJob+" does not need docker-build: its IT_IMAGE output would be empty")
@@ -773,7 +793,6 @@ jobs:
     timeout-minutes: 45
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}
     strategy:
       fail-fast: false
       matrix:
@@ -785,7 +804,17 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
       - name: Pull the integration image
-        run: scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"
+        if: ${{ env.CI_PUBLISH == 'true' }}
+        env:
+          IT_REF: ${{ needs.docker-build.outputs.it_ref }}
+        run: |
+          scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"
+          echo "IT_IMAGE=$IT_REF" >> "$GITHUB_ENV"
+      - name: Build or reuse the integration image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+          echo "IT_IMAGE=$image" >> "$GITHUB_ENV"
       - name: Integration tests (${{ matrix.feature }})
         run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
       - name: Tear down (${{ matrix.feature }})
@@ -838,17 +867,28 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"", new: "run: make docker-down-it"},
 		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
 		{name: "project shared by every leg", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
-		{name: "a per-leg image tag", old: "      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: "      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}\n"},
+		{name: "a per-leg image tag", old: "IT_REF: ${{ needs.docker-build.outputs.it_ref }}", new: "IT_REF: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}"},
 		{name: "the toolchain image", old: "outputs.it_ref }}", new: "outputs.toolchain_ref }}"},
-		{name: "no image", old: "      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: ""},
+		{name: "no image", old: "        env:\n          IT_REF: ${{ needs.docker-build.outputs.it_ref }}\n", new: ""},
+		{name: "a job-level IT_IMAGE", old: "matrix.feature }}\n    strategy:", new: "matrix.feature }}\n      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n    strategy:"},
 		{name: "docker-build not needed", old: "needs: [docker-build, arch-gates]", new: "needs: [arch-gates]"},
-		{name: "no pull", old: "      - name: Pull the integration image\n        run: scripts/ci-registry.sh pull \"$IT_IMAGE\" \"$IT_HOLD\"\n", new: ""},
-		{name: "a rebuild in place of the pull", old: "run: scripts/ci-registry.sh pull \"$IT_IMAGE\" \"$IT_HOLD\"", new: "run: docker image inspect \"$IT_IMAGE\" || make docker-build-it"},
-		{name: "a pull with no hold", old: "pull \"$IT_IMAGE\" \"$IT_HOLD\"", new: "pull \"$IT_IMAGE\""},
-		{name: "pull made conditional", old: "      - name: Pull the integration image\n", new: "      - name: Pull the integration image\n        if: always()\n"},
+		{name: "no pull", old: "      - name: Pull the integration image\n        if: ${{ env.CI_PUBLISH == 'true' }}\n        env:\n          IT_REF: ${{ needs.docker-build.outputs.it_ref }}\n        run: |\n          scripts/ci-registry.sh pull \"$IT_REF\" \"$IT_HOLD\"\n          echo \"IT_IMAGE=$IT_REF\" >> \"$GITHUB_ENV\"\n", new: ""},
+		{name: "a rebuild in place of the pull", old: "scripts/ci-registry.sh pull \"$IT_REF\" \"$IT_HOLD\"", new: "docker image inspect \"$IT_REF\" || make docker-build-it"},
+		{name: "a pull with no hold", old: "pull \"$IT_REF\" \"$IT_HOLD\"", new: "pull \"$IT_REF\""},
+		{name: "pull on every event", old: "        if: ${{ env.CI_PUBLISH == 'true' }}\n", new: ""},
+		{name: "pull made unconditional", old: "if: ${{ env.CI_PUBLISH == 'true' }}", new: "if: always()"},
+		{name: "pull widened past main", old: "if: ${{ env.CI_PUBLISH == 'true' }}", new: "if: ${{ env.CI_PUBLISH == 'true' || github.event_name == 'pull_request' }}"},
+		{name: "pulled image not handed on", old: "          echo \"IT_IMAGE=$IT_REF\" >> \"$GITHUB_ENV\"\n", new: ""},
+		{name: "no local build", old: "      - name: Build or reuse the integration image on this runner\n        if: ${{ env.CI_PUBLISH != 'true' }}\n        run: |\n          image=$(scripts/ci-registry.sh local it \"$IT_HOLD\")\n          echo \"IT_IMAGE=$image\" >> \"$GITHUB_ENV\"\n", new: ""},
+		{name: "local build on main too", old: "        if: ${{ env.CI_PUBLISH != 'true' }}\n", new: ""},
+		{name: "local build under publish", old: "if: ${{ env.CI_PUBLISH != 'true' }}", new: "if: ${{ env.CI_PUBLISH == 'true' }}"},
+		{name: "local build of the toolchain", old: "local it \"$IT_HOLD\"", new: "local toolchain \"$IT_HOLD\""},
+		{name: "local build with no hold", old: "local it \"$IT_HOLD\"", new: "local it"},
+		{name: "local image not handed on", old: "          echo \"IT_IMAGE=$image\" >> \"$GITHUB_ENV\"\n", new: ""},
+		{name: "local image read through a masked substitution", old: "          image=$(scripts/ci-registry.sh local it \"$IT_HOLD\")\n          echo \"IT_IMAGE=$image\" >> \"$GITHUB_ENV\"\n", new: "          echo \"IT_IMAGE=$(scripts/ci-registry.sh local it \"$IT_HOLD\")\" >> \"$GITHUB_ENV\"\n"},
 		{name: "project shared by every attempt", old: "qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-${{ github.run_id }}-"},
 		{name: "project outside the reaped prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},
-		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n", new: ""},
+		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},

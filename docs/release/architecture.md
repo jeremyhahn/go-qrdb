@@ -209,9 +209,9 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
-which builds the devcontainer images in about two minutes and pushes them to
-the forge's registry (the Gitea registry, derived from `github.server_url`,
-or `ghcr.io` on GitHub), and `test-typescript` and `arch-gates`. They run
+which builds the devcontainer images in about two minutes and, on a push to
+`main`, pushes them to the forge's registry (the Gitea registry, derived from
+`github.server_url`, or `ghcr.io` on GitHub), and `test-typescript` and `arch-gates`. They run
 beside `lint`, `lint-gates` and `image`, which need `docker-build` too and
 run, side by side in those images, the lint stages (`lint`), the repository
 gates (`lint-gates`) and the build, every unit suite and, in the full tier, the security
@@ -222,13 +222,23 @@ whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
 legs `skipped`, which `ci-gate` fails as well.
 
 Every job that runs a stage in an image (`lint`, `lint-gates`, `image`, `fips`, the
-`integration-features` legs and `soak`) pulls the exact digest `docker-build`
-pushed, its `toolchain_ref` or `it_ref` output, and runs its stages on that
-reference (DS-3516). None builds an image or falls back to one: a consumer
-that cannot pull, after 3 attempts with a bounded backoff, fails. A consumer
-runs on any runner, with no affinity to `docker-build`'s host.
-`test/buildgates/ci_image_digest_test.go` holds every consumer to a `@sha256:`
-pull (engineering.md, "The CI image").
+`integration-features` legs and `soak`) takes it by one of two paths, chosen
+by the workflow env `CI_PUBLISH`, which is true on a push to `main` alone
+(DS-3516):
+
+| Event | `docker-build` | Consumers | Hold |
+|---|---|---|---|
+| push to `main` | builds, logs in, pushes, outputs `toolchain_ref` and `it_ref` (`@sha256:` digests) | `scripts/ci-registry.sh pull` of the digest, 3 attempts with a bounded backoff, then fail | a stopped container on the digest |
+| pull request, `workflow_dispatch` | builds, never logs in or pushes | `scripts/ci-registry.sh local`: build the content-hash tag, or reuse the daemon's | a stopped container on the image ID (toolchain) or the tag (integration) |
+
+On the publish path a consumer runs on any runner, with no affinity to
+`docker-build`'s host, and runs its stages on the pulled reference. On the
+local path no step reaches the registry or sees its token: the consumer builds
+on its own runner, or reuses an image whose tag is the hash of the files that
+built it, and runs its stages on the image ID it holds. Neither path falls
+back to the other. `soak` runs on a dispatch alone, so it is always local.
+`test/buildgates/ci_image_digest_test.go` holds every consumer to both paths
+and every registry step to a push to `main` (engineering.md, "The CI image").
 
 The stages are two jobs, not the ci-template's one image job, because together
 they outlast one job's 90-minute limit on a loaded runner: `lint` with
@@ -262,7 +272,7 @@ runs both sweeps again before a tag. The integration legs run without
 A pull request whose every changed file is markdown or under `docs/`
 (`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
 `changes`, `docker-build`, `lint`, `lint-gates`, `arch-gates` and `ci-gate`.
-`docker-build` builds and pushes the toolchain image alone: no job of a
+`docker-build` builds the toolchain image alone: no job of a
 docs-only run uses the integration image, so it builds none and outputs an
 empty `it_ref`.
 `lint` runs `make lint`, and `lint-gates` runs `make lint-gates`.
@@ -300,7 +310,8 @@ with `ci.yml`, whose dispatch also runs the soak.
 `lint` and `image` run every stage of the handbook CI standard
 (`ci-standard.md`) in the one image built from
 `build/docker/devcontainer/Dockerfile` at the commit under test, once, by
-`docker-build`, and pulled by digest: `lint` the
+`docker-build`, and pulled by digest on a push to `main` or built on the
+consumer's runner otherwise: `lint` the
 lint, the lint gates and, on `main` and a dispatch, the lint sweeps; `image`
 the server and headless CLI build and the linux/arm64 release cross-build,
 `make coverage` with the other unit suites and `test-sdk`, and, in the full
@@ -329,7 +340,7 @@ suites on the `.devcontainer/` image.
 
 `test/buildgates/ci_tiers_test.go`,
 `test/buildgates/ci_image_digest_test.go` and
-`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the image pulls, the gate, the
+`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the two image paths, the gate, the
 triggers and the per-feature legs together; see engineering.md.
 
 ## Rejected alternatives

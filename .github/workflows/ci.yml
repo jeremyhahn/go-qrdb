@@ -65,16 +65,22 @@
 #     runs on push to main, workflow_dispatch and a ci:full PR; the nightly
 #     soak runs on workflow_dispatch alone (see `on:` below).
 #   - No revert-red-main.yml beside this file: not adopted here.
-#   - docker-build builds both images once per run and pushes them to the
-#     Gitea registry, derived from github.server_url, as
-#     <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it tagged
-#     <content-hash>-<main|pr>; its outputs toolchain_ref and it_ref are
+#   - docker-build builds both images once per run. On a push to main alone
+#     (env.CI_PUBLISH) it pushes them to the forge's registry, derived from
+#     github.server_url, as <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it
+#     tagged <content-hash>-main; its outputs toolchain_ref and it_ref are
 #     digest references, and every consumer pulls exactly that digest with
 #     scripts/ci-registry.sh and never rebuilds (DS-3516). No job is placed on
-#     docker-build's host. test/buildgates/ci_image_digest_test.go holds this.
-#   - Each consumer holds the image it pulled with a created, never-started
+#     docker-build's host. On every other event nothing logs in or pushes
+#     (claude-agents#329: the run's token cannot log in to the registry
+#     there): the outputs are empty, and each consumer takes the image from
+#     its own runner's daemon by content-hash tag, building it when missing
+#     (`scripts/ci-registry.sh local`, ci-standard.md §9).
+#     test/buildgates/ci_image_digest_test.go holds both paths.
+#   - Each consumer holds the image it runs with a created, never-started
 #     qrdb-ci-hold- container (#813, run 57540, DS-3516), not the template's
-#     `<prefix>lease-` steps, released at its teardown.
+#     `<prefix>lease-` steps, released at its teardown: the pulled digest on a
+#     push to main, the local image on every other event.
 #   - Integration is two jobs, integration-standalone and the per-feature
 #     integration-features matrix, both full tier.
 #   - On main the concurrency group carries the commit as well as the event
@@ -398,6 +404,12 @@ env:
   # cannot read env, so each full-tier job repeats this expression. Keep them
   # equal (test/buildgates/ci_tiers_test.go).
   CI_FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  # CUSTOMIZE (go-qrdb, claude-agents#329): the one event that logs in to the
+  # registry and pushes the CI images, a push to main. Every step that logs
+  # in, pushes or pulls carries `if: env.CI_PUBLISH == 'true'`; its
+  # counterpart, which builds on the runner's own daemon, carries
+  # `if: env.CI_PUBLISH != 'true'` (test/buildgates/ci_image_digest_test.go).
+  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
   # v1.24 (CA m749, m751 (a)): the files a docs-only PR may touch. CUSTOMIZE: narrow it
   # in a repo that embeds or generates from docs/ (go:embed, OpenAPI, protos).
   # CUSTOMIZE (go-qrdb): kept as the template's. Nothing embeds or generates
@@ -480,14 +492,17 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes]
     timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
-    # CUSTOMIZE (go-qrdb): the run's own token pushes the images to the Gitea
-    # registry, so this job alone may write packages (DS-3516).
+    # CUSTOMIZE (go-qrdb): on a push to main the run's own token pushes the
+    # images to the forge's registry, so this job alone may write packages
+    # (DS-3516).
     permissions:
       contents: read
       packages: write
-    # CUSTOMIZE (go-qrdb): the outputs are digest references,
-    # <registry>/<owner>/<name>@sha256:<hex>, which every consumer pulls; a tag
-    # or a local image name is never handed on (DS-3516).
+    # CUSTOMIZE (go-qrdb): on a push to main the outputs are digest
+    # references, <registry>/<owner>/<name>@sha256:<hex>, which every consumer
+    # pulls; a tag or a local image name is never handed on (DS-3516). On
+    # every other event they are empty: nothing was pushed, and each consumer
+    # takes the image from its own runner (claude-agents#329).
     outputs:
       toolchain_ref: ${{ steps.push.outputs.toolchain_ref }}
       it_ref: ${{ steps.push.outputs.it_ref }}
@@ -538,18 +553,21 @@ jobs:
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 
-      # CUSTOMIZE (go-qrdb): push each image once per run, tagged
-      # <content-hash>-<trust>, and hand on its digest (DS-3516). The registry
-      # is the run's own forge, derived from github.server_url; the login is
-      # the run's own token, fed to docker on stdin by scripts/ci-registry.sh.
-      # A refused login or push fails the job: no consumer has an image to
-      # fall back to, by design.
+      # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
+      # run, tagged <content-hash>-main, and hand on its digest (DS-3516). The
+      # registry is the run's own forge, derived from github.server_url; the
+      # login is the run's own token, fed to docker on stdin by
+      # scripts/ci-registry.sh. A refused login or push fails the job: no
+      # consumer on main has an image to fall back to, by design. Every other
+      # event skips this step and the next (claude-agents#329): the images stay
+      # on this runner, and the consumers build or reuse their own.
       - name: Push the devcontainer images
         id: push
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
           CI_REGISTRY_USER: ${{ github.actor }}
           CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TRUST: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+          TRUST: main
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
@@ -566,6 +584,7 @@ jobs:
       # (DS-3516). A docs-only run builds no integration image, so it_ref is
       # empty there and only there.
       - name: Validate the image references
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
           TOOLCHAIN_REF: ${{ steps.push.outputs.toolchain_ref }}
           IT_REF: ${{ steps.push.outputs.it_ref }}
@@ -578,7 +597,7 @@ jobs:
           fi
 
       # CUSTOMIZE (go-qrdb): the hold is released on every outcome; the
-      # consumers pull and hold their own copy (DS-3516).
+      # consumers hold their own copy, pulled or local (DS-3516).
       - name: Tear down
         if: always()
         run: |
@@ -680,11 +699,13 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE (go-qrdb): pull the toolchain image docker-build pushed, by
-      # digest, and hold it until the teardown so a concurrent reap or trim on
-      # this host cannot remove it under the stages. A pull that fails three
-      # times fails the job; nothing here rebuilds the image (DS-3516).
+      # CUSTOMIZE (go-qrdb): on a push to main, pull the toolchain image
+      # docker-build pushed, by digest, and hold it until the teardown so a
+      # concurrent reap or trim on this host cannot remove it under the
+      # stages. A pull that fails three times fails the job; nothing on this
+      # path rebuilds the image (DS-3516).
       - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
           TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
           CI_REGISTRY_USER: ${{ github.actor }}
@@ -692,6 +713,16 @@ jobs:
         run: |
           scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
           echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      # CUSTOMIZE (go-qrdb, claude-agents#329): on every other event nothing
+      # was pushed. Take the toolchain image from this runner's daemon by its
+      # content-hash tag, building it when missing, hold it by image ID and
+      # run the stages on that ID; this step never logs in.
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes on the host before the stages
       # add to them (ci-standard.md §6). It never fails the job, and it keeps
@@ -782,11 +813,11 @@ jobs:
         if: ${{ steps.probe.outputs.has_target == 'true' }}
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE (go-qrdb): as in the lint job, pull the toolchain image
-      # docker-build pushed, by digest, and hold it until the teardown;
-      # nothing here rebuilds the image (DS-3516).
+      # CUSTOMIZE (go-qrdb): as in the lint job, on a push to main pull the
+      # toolchain image docker-build pushed, by digest, and hold it until the
+      # teardown; nothing on this path rebuilds the image (DS-3516).
       - name: Pull the toolchain image
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH == 'true' }}
         env:
           TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
           CI_REGISTRY_USER: ${{ github.actor }}
@@ -794,6 +825,14 @@ jobs:
         run: |
           scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
           echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      # CUSTOMIZE (go-qrdb, claude-agents#329): on every other event, as in
+      # the lint job, the runner's own image, held by image ID; no login.
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes (as in the lint job). It never
       # fails the job and keeps every volume a container mounts.
@@ -862,13 +901,14 @@ jobs:
       # sudo sysctl -w net.core.rmem_max=7340032 net.core.wmem_max=7340032)
       # goes here; the container shares the runner's kernel.
 
-      # CUSTOMIZE (go-qrdb): pull both images docker-build pushed, by digest,
-      # and hold each until the teardown, so a concurrent reap or trim on this
-      # host cannot remove one before the trivy step saves it. A pull that
-      # fails three times fails the job; nothing here rebuilds an image. This
-      # job skips a docs-only PR, the one run with no integration image, so
-      # both references are required (DS-3516).
+      # CUSTOMIZE (go-qrdb): on a push to main, pull both images docker-build
+      # pushed, by digest, and hold each until the teardown, so a concurrent
+      # reap or trim on this host cannot remove one before the trivy step
+      # saves it. A pull that fails three times fails the job; nothing on this
+      # path rebuilds an image. This job skips a docs-only PR, the one run with
+      # no integration image, so both references are required (DS-3516).
       - name: Pull the devcontainer images
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
           TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
           IT_REF: ${{ needs.docker-build.outputs.it_ref }}
@@ -879,6 +919,23 @@ jobs:
           scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"
           echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
           echo "IT_IMAGE=$IT_REF" >> "$GITHUB_ENV"
+
+      # CUSTOMIZE (go-qrdb, claude-agents#329): on every other event nothing
+      # was pushed. Take each image from this runner's daemon by content-hash
+      # tag, building it when missing, and hold it to the teardown: the
+      # toolchain image by image ID, which the stages run, the integration
+      # image through docker-build-it's hold. Only the full tier's trivy step
+      # reads the integration image, so a plain PR does not build it here.
+      # This step never logs in.
+      - name: Build or reuse the devcontainer images on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
+          if [ "$CI_FULL_TIER" = true ]; then
+            image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+            echo "IT_IMAGE=$image" >> "$GITHUB_ENV"
+          fi
 
       # v1.22: bound this repo's cache volumes on the host before the stages
       # add to them (ci-standard.md §6), as the lint job does.
@@ -964,9 +1021,10 @@ jobs:
       # this image's module cache (/gomodcache, not the template's
       # /opt/go/mod), and certifies the database's age before it scans with
       # --skip-db-update, so a stale database fails rather than passes.
-      # The scan is full tier (v1.23). CUSTOMIZE (go-qrdb): it saves the
-      # image this job pulled by digest, the one every integration leg runs
-      # (DS-3516); a PR's push goes to the pr trust class only.
+      # The scan is full tier (v1.23). CUSTOMIZE (go-qrdb): on a push to main
+      # it saves the image this job pulled by digest, the one every
+      # integration leg runs (DS-3516); on every other event the image this
+      # runner holds under the tree's content-hash tag (claude-agents#329).
       - name: trivy image (integration image)
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         env:
@@ -976,9 +1034,9 @@ jobs:
           scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
             make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
 
-      # CUSTOMIZE (go-qrdb): the pulled images stay on this daemon, named by
-      # digest, for the next job here, and the reap step removes them once no
-      # job holds them (#813). This releases this job's holds (DS-3516).
+      # CUSTOMIZE (go-qrdb): the images stay on this daemon, pulled or built,
+      # for the next job here, and the reap step removes them once no job
+      # holds them (#813). This releases this job's holds (DS-3516).
       - name: Tear down
         if: always()
         run: |
@@ -1018,18 +1076,21 @@ jobs:
   #
   # The project names are under qrdb-ci- (the gate pins the prefix) and carry
   # the run, the attempt and the feature, so legs sharing a daemon never share
-  # a stack. CUSTOMIZE (go-qrdb, DS-3516): the image is the one docker-build
-  # pushed, IT_IMAGE = needs.docker-build.outputs.it_ref, a digest reference:
-  # every leg pulls exactly it (scripts/ci-registry.sh, at most three tries)
-  # and holds it (IT_HOLD) to its teardown, legs on one daemon share the
-  # pulled copy, and the reap step, not the teardown, removes it once no job
-  # holds it. `make integration-test` runs a digest reference only if it is
-  # on the daemon and never builds one, so a leg runs that image or fails.
+  # a stack. CUSTOMIZE (go-qrdb, DS-3516): on a push to main the image is the
+  # one docker-build pushed, needs.docker-build.outputs.it_ref, a digest
+  # reference: every leg pulls exactly it (scripts/ci-registry.sh, at most
+  # three tries). `make integration-test` runs a digest reference only if it
+  # is on the daemon and never builds one, so a leg runs that image or fails.
+  # On every other event nothing was pushed (claude-agents#329): the leg takes
+  # the image from its runner's daemon by content-hash tag, building it when
+  # missing (scripts/ci-registry.sh local it). Either way the leg holds it
+  # (IT_HOLD) to its teardown, legs on one daemon share the copy, and the reap
+  # step, not the teardown, removes it once no job holds it.
   # The teardown is `make docker-down-it`, not a bare `docker compose down`:
   # test/buildgates/integration_image_tag_test.go keeps every compose call
   # behind a make target. GOMAXPROCS reaches the spawned processes through
   # the compose service (#682). The gate holds a leg to exactly the reap, the
-  # pull, the run and the teardown.
+  # pull or the local build, the run and the teardown.
   integration-features:
     name: Integration (${{ matrix.feature }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
@@ -1044,10 +1105,12 @@ jobs:
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      # CUSTOMIZE (go-qrdb): every leg runs the one image docker-build pushed,
-      # by digest; make integration-test refuses to build a digest reference
-      # (DS-3516).
-      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}
+      # CUSTOMIZE (go-qrdb): IT_IMAGE is not set here. The image step below
+      # writes it to GITHUB_ENV: the digest docker-build pushed on a push to
+      # main, which make integration-test refuses to build (DS-3516), or this
+      # runner's content-hash tag on every other event (claude-agents#329).
+      # An empty IT_IMAGE in the job environment would reach make as a
+      # defined, empty variable and override its own default.
     strategy:
       fail-fast: false
       matrix:
@@ -1072,14 +1135,28 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE (go-qrdb): pull the integration image by digest and hold it
-      # (IT_HOLD) until the teardown; a pull that fails three times fails the
-      # leg, which never rebuilds the image (DS-3516).
+      # CUSTOMIZE (go-qrdb): on a push to main, pull the integration image by
+      # digest and hold it (IT_HOLD) until the teardown; a pull that fails
+      # three times fails the leg, which never rebuilds the image (DS-3516).
       - name: Pull the integration image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
+          IT_REF: ${{ needs.docker-build.outputs.it_ref }}
           CI_REGISTRY_USER: ${{ github.actor }}
           CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"
+        run: |
+          scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"
+          echo "IT_IMAGE=$IT_REF" >> "$GITHUB_ENV"
+
+      # CUSTOMIZE (go-qrdb, claude-agents#329): on every other event nothing
+      # was pushed. Take the integration image from this runner's daemon by
+      # its content-hash tag, building it when missing, and hold it (IT_HOLD)
+      # until the teardown; this step never logs in.
+      - name: Build or reuse the integration image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+          echo "IT_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Integration tests (${{ matrix.feature }})
         run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
@@ -1172,8 +1249,8 @@ jobs:
     # The race-enabled suite under fips140=only is what takes the time; 90
     # minutes holds both modules with each under its 60m package budget.
     timeout-minutes: 90
-    # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
-    # the Gitea registry (DS-3516).
+    # CUSTOMIZE (go-qrdb): on a push to main the run's own token pulls the
+    # toolchain image from the forge's registry (DS-3516).
     permissions:
       contents: read
       packages: read
@@ -1201,10 +1278,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
-      # CUSTOMIZE (go-qrdb): pull the toolchain image docker-build pushed, by
-      # digest, and hold it until the teardown, as the lint job does; nothing
-      # here rebuilds it (DS-3516).
+      # CUSTOMIZE (go-qrdb): on a push to main, pull the toolchain image
+      # docker-build pushed, by digest, and hold it until the teardown, as the
+      # lint job does; nothing on this path rebuilds it (DS-3516).
       - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
           TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
           CI_REGISTRY_USER: ${{ github.actor }}
@@ -1212,6 +1290,14 @@ jobs:
         run: |
           scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
           echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      # CUSTOMIZE (go-qrdb, claude-agents#329): on every other event, as in
+      # the lint job, the runner's own image, held by image ID; no login.
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
       # against the module first keeps a genuine build break from being
@@ -1375,19 +1461,19 @@ jobs:
     name: Soak [integration image]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    # CUSTOMIZE (go-qrdb): the soak loops the integration image docker-build
-    # pushed, pulled by digest, rather than building its own (DS-3516).
+    # CUSTOMIZE (go-qrdb, claude-agents#329): the soak runs on a
+    # workflow_dispatch alone, which never publishes (CI_PUBLISH), so it takes
+    # the integration image from this runner's daemon by content-hash tag,
+    # building it when missing, and holds it; it never logs in to a registry.
     needs: [docker-build]
     timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
     permissions:
       contents: read
-      packages: read
     env:
       SOAK_MINUTES: 30        # CUSTOMIZE
       SOAK_FEATURE: clustering   # CUSTOMIZE (go-qrdb): the suite each iteration runs
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-soak
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-soak
-      IT_IMAGE: ${{ needs.docker-build.outputs.it_ref }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -1404,13 +1490,13 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE (go-qrdb): pull and hold the integration image, as an
-      # integration leg does (DS-3516).
-      - name: Pull the integration image
-        env:
-          CI_REGISTRY_USER: ${{ github.actor }}
-          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"
+      # CUSTOMIZE (go-qrdb, claude-agents#329): build or reuse and hold the
+      # integration image, as an integration leg does off main.
+      - name: Build or reuse the integration image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+          echo "IT_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Soak (integration suite, looped)
         run: |

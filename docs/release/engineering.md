@@ -107,8 +107,9 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg needs `docker-build` and runs exactly five steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"`, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and an `IT_IMAGE` that is `docker-build`'s `it_ref` output (DS-3516); `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that untags one of several names freely and refuses to remove the last name of an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; the reaper removes a stale image pulled from the registry, by tag and by digest, and keeps one a hold uses (every name of it: the local tag, the registry tag and the digest), one that is fresh, and another repository's; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
-| `test/buildgates/ci_image_digest_test.go` (run by `make test` and `make check-action-pins` with the rest of `test/buildgates`) | `docker-build` sets `packages: write`, pushes with `scripts/ci-registry.sh push`, validates its outputs against `^[^@ ]+@sha256:[0-9a-f]{64}$` and outputs `toolchain_ref` and `it_ref` from a step; every other job that reads one of those outputs needs `docker-build`, sets `packages: read`, has no `runs-on` that follows `docker-build`, reads no other output, pulls each output it reads with `scripts/ci-registry.sh pull` bound to that output before its first stage, and never probes for or builds an image (`docker image inspect`, `docker build`, `make docker-build-*`); a job that runs `scripts/in-toolchain-image.sh` or `make integration-test` must be such a consumer; at least five consumers (DS-3516). A copy of ci.yml with `lint` reverted to `docker image inspect \|\| make docker-build-toolchain` must fail it, and each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg needs `docker-build` and runs exactly six steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"` under `env.CI_PUBLISH == 'true'` with an `IT_REF` that is `docker-build`'s `it_ref` output (DS-3516), `scripts/ci-registry.sh local it "$IT_HOLD"` under `env.CI_PUBLISH != 'true'`, each handing its image on as `IT_IMAGE`, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and no job-level `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that untags one of several names freely and refuses to remove the last name of an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; the reaper removes a stale image pulled from the registry, by tag and by digest, and keeps one a hold uses (every name of it: the local tag, the registry tag and the digest), one that is fresh, and another repository's; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_image_digest_test.go` (run by `make test` and `make check-action-pins` with the rest of `test/buildgates`) | the workflow env `CI_PUBLISH` is exactly a push to `main`; no workflow or job env holds the registry token, and every step of every job that logs in, pushes or pulls (`scripts/ci-registry.sh push\|pull`, `docker login\|push\|pull`) or carries the token runs under `env.CI_PUBLISH == 'true'`, with nothing ORed or negated around it, so no pull request touches the registry; `docker-build` sets `packages: write`, pushes with `scripts/ci-registry.sh push`, validates its outputs against `^[^@ ]+@sha256:[0-9a-f]{64}$` under the same condition and outputs `toolchain_ref` and `it_ref` from a step; every other job that reads one of those outputs needs `docker-build`, sets `packages: read`, has no `runs-on` that follows `docker-build`, reads no other output and pulls each output it reads with `scripts/ci-registry.sh pull` bound to that output before its first stage of that image; every job that runs a stage (`scripts/in-toolchain-image.sh`, `make integration-test`) or reads an output has a `scripts/ci-registry.sh local toolchain\|it` step under `env.CI_PUBLISH != 'true'` before that stage, pulls on a push to `main` unless it is dispatch-only, and never probes for or builds an image itself (`docker image inspect`, `docker build`, `make docker-build-*`); at least six consumers. A copy of ci.yml with `lint` reverted to `docker image inspect \|\| make docker-build-toolchain` must fail it, and each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_registry_test.go` (with the rest of `test/buildgates`) | `scripts/ci-registry.sh push` logs in to the registry of the forge the run is on and names it when the login is refused; `scripts/ci-registry.sh local`, against a stub `docker` that fails on and records any login, push, pull or tag, with the registry token and a job's image overrides in its environment, builds the toolchain image only when the daemon lacks its tag, holds it by image ID and prints the ID, builds the integration image through `make docker-build-it IT_HOLD=<hold>` and prints its tag, hands the build a module-auth file without the token and removes it, and refuses a family or hold name it does not know |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag-ollama`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -138,8 +139,9 @@ values to the Dockerfile as build arguments, the Makefile includes it, and
 `make check-tool-versions` holds `.devcontainer/`'s ARG defaults to it and
 fails on a tool pin in ci.yml or an assignment in the Makefile, either of
 which would be a second pin. Module credentials reach the build only as the
-`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build` job, the one job that builds an image, writes the
-four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, passes
+`gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build` job, and off a push to `main`
+`scripts/ci-registry.sh local` in a consumer, writes `GOPRIVATE` and the
+`GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, passes
 it as `MODULE_ENV_FILE` (handbook `devcontainer.md` §7) and removes it after
 the build; outside CI the recipe reads them from the environment. No layer, no
 command line and no log line holds them: the recipe is silent, printing only
@@ -165,50 +167,83 @@ golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
 (`-oneline`) name a finding without quoting the line it is in, so a log never
 repeats the value a scanner exists to keep out of the tree.
 
-**The images are built once per run and pulled by digest** (DS-3516). The
-`docker-build` job, in the PR tier, builds both stages (`make docker-build`;
-`make -s toolchain-image` prints the toolchain tag) and pushes each to the
-forge's registry (handbook `devops.md` §2): the Gitea registry, which shares
-the web UI's host and port and so is derived from `github.server_url` and
-never written in a tracked file, or `ghcr.io` when the run is on GitHub,
-under the repository owner, as `qrdb-ci-toolchain` and
+**The images take one of two paths, and only a push to `main` publishes.**
+The workflow env `CI_PUBLISH` is true on a push to `main` alone; every step
+that logs in, pushes or pulls runs under `if: env.CI_PUBLISH == 'true'`, and
+its counterpart on every other event, a pull request or a `workflow_dispatch`,
+under `if: env.CI_PUBLISH != 'true'`.
+
+| Event | `docker-build` | Consumers take the image | Hold |
+|---|---|---|---|
+| push to `main` | builds both stages, logs in, pushes, outputs the digests | `scripts/ci-registry.sh pull <digest> <hold>` (logs in) | a container of the digest |
+| pull request, `workflow_dispatch` | builds both stages; no login, no push, empty outputs | `scripts/ci-registry.sh local toolchain\|it <hold>` on the job's own runner (no login) | toolchain: a container of the image ID; integration: `make docker-build-it`'s `IT_HOLD`, a container of the tag |
+
+**On a push to `main` the images are built once per run and pulled by
+digest** (DS-3516). The `docker-build` job builds both stages
+(`make docker-build`; `make -s toolchain-image` prints the toolchain tag) and
+pushes each to the forge's registry (handbook `devops.md` §2): the Gitea
+registry, which shares the web UI's host and port and so is derived from
+`github.server_url` and never written in a tracked file, or `ghcr.io` when the
+run is on GitHub, under the repository owner, as `qrdb-ci-toolchain` and
 `qrdb-ci-it`. `scripts/ci-registry.sh push` tags each
 `<content-hash>-<trust>`, the 16-hex hash the Makefile built it under and the
-trust class (`main` for a push to `main`, `pr` otherwise), and prints the
-digest the registry reported. The job validates each against
-`^[^@ ]+@sha256:[0-9a-f]{64}$` and passes them on as the outputs
-`toolchain_ref` and `it_ref`. There is one tag per content hash and trust
-class, so a rebuilt tree pushes a new version under the same tag; the
+trust class (`main`), and prints the digest the registry reported. The job
+validates each against `^[^@ ]+@sha256:[0-9a-f]{64}$` and passes them on as
+the outputs `toolchain_ref` and `it_ref`. There is one tag per content hash and
+trust class, so a rebuilt tree pushes a new version under the same tag; the
 registry's cleanup rule for the owner's container packages removes the
 superseded versions, and no job deletes from the registry. The login is the
-run's `secrets.GITHUB_TOKEN` (the runner masks it), with the job's
-`permissions:` granting `packages: write` to `docker-build` and
-`packages: read` to every consumer. `scripts/ci-registry.sh` feeds it to
-`docker login --password-stdin` in a private `DOCKER_CONFIG` that it deletes
-on exit, so the credential reaches no other job on the same Docker host. A
-refused login, push or pull fails the job with a typed `::error::` line: there
-is no local rebuild to fall back to.
+run's `secrets.GITHUB_TOKEN` (the runner masks it), set only on the steps that
+log in, with the job's `permissions:` granting `packages: write` to
+`docker-build` and `packages: read` to every consumer.
+`scripts/ci-registry.sh` feeds it to `docker login --password-stdin` in a
+private `DOCKER_CONFIG` that it deletes on exit, so the credential reaches no
+other job on the same Docker host. A refused login, push or pull fails the job
+with a typed `::error::` line: there is no local rebuild to fall back to.
 
-Six jobs consume the images, and each pulls exactly the digest it was handed
-with `scripts/ci-registry.sh pull` (at most 3 attempts, 10 s and 20 s apart)
-before its first stage: `lint`, in the PR tier (`make lint` and, on a push to
-`main` and a dispatch, `make lint-sweeps`), `lint-gates`, in the PR tier
-(`make lint-gates`, its own job from ci-template v1.27.0), and `fips`, which
-pull the toolchain image; `image`, in
-the code tier (the build-tag assertion, the builds, `make coverage` and the
-other unit suites and, in the full tier, security, deps-check and the trivy
-image scan), which pulls both; and the `integration-features` legs and the
-soak, which pull the integration image. The ci-template runs `lint`'s and
-`image`'s stages in one image job; this repository splits it because together
-the stages outlast one job's 90-minute limit on a loaded runner, and each job
-has a limit sized to its own stages (architecture.md, "CI tiers"). A consumer
-runs on any runner: nothing places it beside `docker-build`, and none of them
-builds, probes for or rebuilds an image. The Makefile's defaults, the
-content-hashed local tags, are unchanged for a developer host; a digest
-reference makes `make integration-test` require the pulled image rather than
-build it, and `make docker-build-it` refuses one.
-`test/buildgates/ci_image_digest_test.go` holds every consumer to the pull.
-Each job then runs each stage in a toolchain container through
+**On every other event nothing is published** (handbook `ci-standard.md` §9).
+`docker-build` still builds both stages, so a broken Dockerfile fails the
+pull request in the PR tier, but it neither logs in nor pushes, and its outputs
+are empty. Each consumer instead runs `scripts/ci-registry.sh local`, which
+asks the Makefile for the family's content-hash tag (`make -s toolchain-image`,
+`make -s it-image`), builds the image only when the job's own runner's daemon
+does not hold that tag, holds it, and prints the reference the stages run. The
+toolchain image is held and run by its image ID, which stands in for the digest
+a push would have minted: a tag can move under a concurrent build, an ID
+cannot. The integration image is run by its tag, because compose's `image:`
+resolves a name and an ID is not one; `make docker-build-it IT_HOLD=<hold>`
+creates the hold from that tag, the container the reaper and
+`make integration-test` look for. The tag is a hash of the build inputs, so
+every job of a run, on any runner, runs an image of the same tree. The module
+credentials reach such a build as they do `docker-build`'s, in a
+`MODULE_ENV_FILE` under `$RUNNER_TEMP` that the script removes on exit; the
+registry token is on none of these steps.
+
+Six jobs consume the images, each before its first stage: `lint`, in the PR
+tier (`make lint` and, on a push to `main` and a dispatch,
+`make lint-sweeps`), `lint-gates`, in the PR tier (`make lint-gates`, its own
+job from ci-template v1.27.0), and `fips`, which take the toolchain image;
+`image`, in the code tier (the build-tag assertion, the builds,
+`make coverage` and the other unit suites and, in the full tier, security,
+deps-check and the trivy image scan), which takes the toolchain image and, in
+the full tier, the integration image; the `integration-features` legs, which
+take the integration image; and the soak, which runs on a `workflow_dispatch`
+alone and so always takes the local path. On a push to `main` a consumer pulls
+exactly the digest it was handed with `scripts/ci-registry.sh pull` (at most 3
+attempts, 10 s and 20 s apart). The ci-template runs `lint`'s and `image`'s
+stages in one image job; this repository splits it because together the stages
+outlast one job's 90-minute limit on a loaded runner, and each job has a limit
+sized to its own stages (architecture.md, "CI tiers"). A consumer runs on any
+runner: nothing places it beside `docker-build`, and none of them builds or
+probes for an image except through `scripts/ci-registry.sh local`. The
+Makefile's defaults, the content-hashed local tags, are unchanged for a
+developer host; a digest reference makes `make integration-test` require the
+pulled image rather than build it, and `make docker-build-it` refuses one.
+`test/buildgates/ci_image_digest_test.go` holds every consumer to both paths,
+and every step of every job that logs in, pushes, pulls or carries the
+registry token to `CI_PUBLISH`; `test/buildgates/ci_registry_test.go` runs
+`scripts/ci-registry.sh local` against a stub `docker` that fails on any
+registry verb.
 Each job then runs each stage in a toolchain container through
 `scripts/in-toolchain-image.sh`. That container
 holds the job's CPU bound: the job container's cgroup
@@ -217,9 +252,9 @@ becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
 number. The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
 or under `docs/`), `lint` runs lint and `lint-gates` the lint gates, both succeed, and
-`image` is skipped with `test-typescript`, the code tier. On such a run
-`docker-build` builds and pushes the toolchain image alone and outputs an
-empty `it_ref`, which no job reads (architecture.md, "CI tiers").
+`image` is skipped with `test-typescript`, the code tier. On such a run, a
+pull request and so the local path, `docker-build` builds the toolchain image
+alone and pushes nothing (architecture.md, "CI tiers").
 `changes` is never docs-only off a pull request or under
 `ci:full`. A runner reaches
 its Docker daemon through a socket, so the script copies the checkout into the
@@ -261,13 +296,13 @@ than after it.
 volumes, never these. `CI_CACHE=off` mounts none; a bridge stage then takes a
 writable copy of the image's module cache instead.
 
-Last, in the full tier only (a pull request builds no image for a registry),
+Last, in the full tier only,
 `make trivy-image TRIVY_IMAGE_INPUT=it-image.tar` scans the
-integration image the job pulled, saved by its digest reference to
-`it-image.tar`, so the scan reads the bytes every leg runs, and fails on a
-fixable HIGH or CRITICAL finding; the job removes the tarball and releases its
-holds on both pulled images (`scripts/ci-registry.sh release`) under
-`always()`.
+integration image the job holds, saved to `it-image.tar` by its digest
+reference on a push to `main` or by its content-hash tag otherwise, so the
+scan reads the bytes the legs run, and fails on a fixable HIGH or CRITICAL
+finding; the job removes the tarball and releases its holds on both images
+(`scripts/ci-registry.sh release`) under `always()`.
 It takes the two image-only flags of handbook `devops.md` §8:
 `--ignore-unfixed`, because a base image carries advisories with no fixed
 package, and `--skip-dirs` over the image's Go module cache, `/gomodcache`
@@ -320,7 +355,9 @@ Docker) as `integration-features` in
 `.github/workflows/ci.yml`: one matrix leg per feature, each running
 `make integration-test IT_FEATURE=<feature>` on the integration image
 (`build/docker/devcontainer/Dockerfile`, stage `integration`: base plus the
-source) that `docker-build` pushed and the leg pulled by digest. That target
+source) that, on a push to `main`, `docker-build` pushed and the leg pulled by
+digest, and on any other event the leg took from its own runner by
+content-hash tag ("The CI image", above). That target
 runs the feature's selection, the
 same one `make integration-test-<feature>` runs on a host, inside the hardened
 `integration` service of `build/docker/devcontainer/compose.yaml`: read-only
@@ -342,20 +379,22 @@ independent shares one daemon across every transport. The legs run in parallel, 
 Each leg names its own compose project, `IT_PROJECT`, from the run, the attempt
 and the feature, under the `qrdb-ci-` prefix, so legs running at once on one
 runner never share a stack. The image is the opposite: every leg of a run
-runs the one image `docker-build` built and pushed, its `IT_IMAGE` being
-`docker-build`'s `it_ref` output, a digest reference into the Gitea registry
-(DS-3516; "The CI image", above). On a developer host the Makefile's
-content-addressed default stands, `qrdb-ci-it:<hash>` (`make -s it-image`), a
-hash of the build arguments that change the image and of the build context
+runs an image of the one tree. On a push to `main` the leg's `IT_IMAGE` is
+`docker-build`'s `it_ref` output, a digest reference into the forge's
+registry (DS-3516); on any other event it is the Makefile's
+content-addressed default, `qrdb-ci-it:<hash>` (`make -s it-image`), as on a
+developer host ("The CI image", above). The pull or the local build step sets
+it for the steps after it; the job sets none. The hash covers
+the build arguments that change the image and of the build context
 (the commit's tree, plus, on a dirty checkout, the diff and the untracked files
 `.gitignore` does not exclude), which `make docker-build-it` builds when
 `docker image inspect` misses it. Given a digest reference instead,
 `make integration-test` builds nothing: it requires the image on the daemon
 and fails, naming `scripts/ci-registry.sh pull`, when it is not there. So a
 leg runs on whichever runner takes it, never on a tree another runner built,
-and never rebuilds.
+and never rebuilds an image another runner pushed.
 
-Each leg runs five steps. The first after the checkout is "Mask the forge
+Each leg runs six steps. The first after the checkout is "Mask the forge
 credentials", which registers every `GIT_CONFIG_*` value, and the token inside
 any URL among them, with `::add-mask::` before any step can print one. It then
 runs `scripts/reap-stale-ci-stacks.sh qrdb-ci-`, which removes `qrdb-ci-`
@@ -365,26 +404,33 @@ ago (`REAP_IMAGE_MIN_AGE`, 7200 s; the later of the two, because a rebuild
 from a full cache keeps the old `.Created` but re-tags the image): the local
 `qrdb-ci-it` tags, and the `qrdb-ci-it` and `qrdb-ci-toolchain` images pulled
 from the registry, by registry tag or, when only a digest names one, by
-digest. Then
-`scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"` pulls the digest, and
+digest. Then, on a push to `main`,
+`scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"` pulls the digest, `IT_REF`
+being `it_ref`, and on any other event
+`scripts/ci-registry.sh local it "$IT_HOLD"` builds or reuses the image on
+the leg's runner; each holds the image and sets `IT_IMAGE`, and
 `make integration-test` runs on it. It ends with a teardown step under
 `if: always()`, `make docker-down-it`, which removes that leg's project and
 its hold, and never the image, on a pass, a failure or a cancellation.
 Removing names nobody created is not an error. No workflow runs `docker
 compose` itself (`integration_image_tag_test.go`); `feature_jobs_gate_test.go`
-requires the five steps, the mask first, the project name, the `IT_IMAGE`
-bound to `it_ref`, and the `always()`. The image job reaps under `qrdb-ci-`
+requires the six steps, the mask first, the pull under `CI_PUBLISH` with its
+`IT_REF` bound to `it_ref`, the local build under its negation, no job-level
+`IT_IMAGE`, the project name, and the `always()`. The image job reaps under `qrdb-ci-`
 too, so a runner that only runs the PR tier still drops old images.
 
 The image's age does not protect a live job's image: a pull by digest records
 no tag time, and an unchanged tree pushes nothing new, so the image a job has
 just pulled can carry any age, and another job's reaper or cache trim on the
 same Docker host could remove it between the pull and the job's last stage.
-What protects it is a hold: every job that pulls an image names one per image,
+What protects it is a hold: every job that takes an image names one per image,
 `qrdb-ci-hold-<run>-<attempt>-<job or feature>` (`IT_HOLD`, and in the
 toolchain consumers `TOOLCHAIN_HOLD`), and `scripts/ci-registry.sh pull`
 creates a container of that name from the pulled image, never started, before
-it returns. The job's `always()` teardown removes it
+it returns. `scripts/ci-registry.sh local` holds the same way: the toolchain
+image from its image ID, the integration image through
+`make docker-build-it IT_HOLD=<hold>`, from its tag; an image built or found
+on the local path is protected exactly as a pulled one is. The job's `always()` teardown removes it
 (`scripts/ci-registry.sh release`, or `make docker-down-it` in a leg and the
 soak). The reaper asks `docker ps -a --filter ancestor=<name>` before it
 removes any name of an aged image and keeps every name of one a container
@@ -392,10 +438,10 @@ uses, so it cannot remove a held image or any reference to it. `docker image
 rm` alone would not be enough: it refuses only an image's last name and untags
 any other, so the producer's local tag plus the registry references would let
 it drop the digest a holding job's next `docker create` runs. If the reaper removes the image between
-the pull and the hold, `docker create --pull never` fails and the next attempt
-pulls it again. `docker-build` holds what it built only from the build to the
+the pull or the local build and the hold, `docker create --pull never` fails
+and the next attempt pulls or builds it again. `docker-build` holds what it built only from the build to the
 push and releases that hold under `always()`; nothing hands a hold from one job
-to another, since each consumer pulls on its own runner. A job that dies
+to another, since each consumer takes its image on its own runner. A job that dies
 before its teardown leaves a `qrdb-ci-` container in the created state, which
 the reaper removes once it is stale, and the image in the same pass.
 `feature_jobs_gate_test.go` runs the build recipe and the reaper against a stub

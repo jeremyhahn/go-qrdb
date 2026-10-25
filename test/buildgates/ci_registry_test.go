@@ -122,3 +122,176 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 		})
 	}
 }
+
+// localDocker stands in for docker on the local path (claude-agents#329): it
+// knows only what `ci-registry.sh local` may run, and any registry verb
+// exits 99 and is recorded, so a test sees a login, push or pull it made.
+const localDocker = `#!/bin/sh
+case $1 in
+login | push | pull | tag)
+	echo "$*" >> "$STUB_DIR/registry"
+	exit 99 ;;
+image)
+	[ -f "$STUB_DIR/held" ] || exit 1
+	[ "$3" = -f ] && echo "sha256:` + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" + `"
+	exit 0 ;;
+rm) exit 0 ;;
+create)
+	echo "$*" > "$STUB_DIR/create"
+	exit 0 ;;
+esac
+echo "stub docker: unexpected $*" >&2
+exit 99
+`
+
+// localMake stands in for make: it prints each family's content-hash tag,
+// records each build with the module-auth file it was handed, and refuses a
+// build that would inherit an image override from the job.
+const localMake = `#!/bin/sh
+target=
+for a in "$@"; do
+	case $a in
+	toolchain-image) echo qrdb-toolchain:0123456789abcdef; exit 0 ;;
+	it-image) echo qrdb-ci-it:0123456789abcdef; exit 0 ;;
+	docker-build-toolchain) target=$a; [ -z "${TOOLCHAIN_IMAGE+x}" ] || exit 98 ;;
+	docker-build-it) target=$a; [ -z "${IT_IMAGE+x}" ] || exit 98 ;;
+	MODULE_ENV_FILE=*)
+		f=${a#MODULE_ENV_FILE=}
+		echo "$f" > "$STUB_DIR/modauth-path"
+		cp "$f" "$STUB_DIR/modauth-copy" ;;
+	esac
+done
+[ -n "$target" ] || { echo "stub make: unexpected $*" >&2; exit 99; }
+echo "$*" >> "$STUB_DIR/builds"
+: > "$STUB_DIR/held"
+`
+
+// runRegistryLocal runs `scripts/ci-registry.sh local args...` against the
+// stubs, with the registry credential and a job's image overrides in its
+// environment, as a pull request's step would have them if a step leaked
+// them. held says whether the daemon already holds the image.
+func runRegistryLocal(t *testing.T, held bool, args ...string) (stdout, stderr, stub string, err error) {
+	t.Helper()
+	stub = t.TempDir()
+	for name, body := range map[string]string{"docker": localDocker, "make": localMake} {
+		if err := os.WriteFile(filepath.Join(stub, name), []byte(body), 0o700); err != nil { // #nosec G306 -- the stub must be executable
+			t.Fatalf("write stub %s: %v", name, err)
+		}
+	}
+	if held {
+		if err := os.WriteFile(filepath.Join(stub, "held"), nil, 0o600); err != nil {
+			t.Fatalf("write held: %v", err)
+		}
+	}
+	env := []string{"PATH=" + stub + string(os.PathListSeparator) + os.Getenv("PATH"), "STUB_DIR=" + stub,
+		"RUNNER_TEMP=" + stub, "CI_REGISTRY_USER=ci", "CI_REGISTRY_TOKEN=stub-token",
+		"TOOLCHAIN_IMAGE=leaked", "IT_IMAGE=leaked", "GOPRIVATE=example.com/*", "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=url.https://example.com/.insteadOf", "GIT_CONFIG_VALUE_0=https://example.com/"}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); k == "HOME" || k == "TMPDIR" {
+			env = append(env, kv)
+		}
+	}
+	cmd := exec.Command("scripts/ci-registry.sh", append([]string{"local"}, args...)...) // #nosec G204 -- this repository's own script
+	cmd.Dir = repoRoot(t)
+	cmd.Env = env
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err = cmd.Run()
+	return strings.TrimSpace(out.String()), errb.String(), stub, err
+}
+
+// assertNoRegistry fails when the local path reached the registry or left
+// the module-auth file behind.
+func assertNoRegistry(t *testing.T, stub string) {
+	t.Helper()
+	if b, err := os.ReadFile(filepath.Join(stub, "registry")); err == nil { // #nosec G304 -- the test's own temp dir
+		t.Fatalf("the local path ran a registry verb: %s", b)
+	}
+	if p, err := os.ReadFile(filepath.Join(stub, "modauth-path")); err == nil { // #nosec G304 -- the test's own temp dir
+		if _, err := os.Stat(strings.TrimSpace(string(p))); !os.IsNotExist(err) {
+			t.Fatalf("the module-auth file %s outlived the script (stat: %v)", p, err)
+		}
+	}
+}
+
+func TestCIRegistry_LocalToolchainBuildsAndHoldsByID(t *testing.T) {
+	const id = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	out, stderr, stub, err := runRegistryLocal(t, false, "toolchain", "qrdb-ci-hold-1-1-lint-toolchain")
+	if err != nil {
+		t.Fatalf("local toolchain: %v\n%s", err, stderr)
+	}
+	if out != id {
+		t.Fatalf("local toolchain printed %q; want the image ID %q", out, id)
+	}
+	builds, _ := os.ReadFile(filepath.Join(stub, "builds")) // #nosec G304 -- the test's own temp dir
+	if got := strings.Count(string(builds), "docker-build-toolchain"); got != 1 {
+		t.Fatalf("built the toolchain image %d times; want once: %q", got, builds)
+	}
+	create, _ := os.ReadFile(filepath.Join(stub, "create")) // #nosec G304 -- the test's own temp dir
+	if want := "create --pull never --name qrdb-ci-hold-1-1-lint-toolchain " + id + " true"; strings.TrimSpace(string(create)) != want {
+		t.Fatalf("the hold was %q; want %q: it must hold the image ID, never pull", create, want)
+	}
+	auth, _ := os.ReadFile(filepath.Join(stub, "modauth-copy")) // #nosec G304 -- the test's own temp dir
+	if !strings.Contains(string(auth), "GOPRIVATE=example.com/*") || strings.Contains(string(auth), "stub-token") {
+		t.Fatalf("the build's module-auth file is %q; want the module settings and never the registry token", auth)
+	}
+	assertNoRegistry(t, stub)
+}
+
+func TestCIRegistry_LocalToolchainReusesTheDaemonsImage(t *testing.T) {
+	out, stderr, stub, err := runRegistryLocal(t, true, "toolchain", "qrdb-ci-hold-1-1-fips-toolchain")
+	if err != nil {
+		t.Fatalf("local toolchain: %v\n%s", err, stderr)
+	}
+	if !strings.HasPrefix(out, "sha256:") {
+		t.Fatalf("local toolchain printed %q; want an image ID", out)
+	}
+	if _, err := os.Stat(filepath.Join(stub, "builds")); !os.IsNotExist(err) {
+		t.Fatal("rebuilt an image the daemon already held")
+	}
+	if !strings.Contains(stderr, "already built") {
+		t.Fatalf("stderr %q does not say the image was reused", stderr)
+	}
+	assertNoRegistry(t, stub)
+}
+
+func TestCIRegistry_LocalITBuildsThroughTheMakefileHold(t *testing.T) {
+	out, stderr, stub, err := runRegistryLocal(t, false, "it", "qrdb-ci-hold-1-1-audit")
+	if err != nil {
+		t.Fatalf("local it: %v\n%s", err, stderr)
+	}
+	if out != "qrdb-ci-it:0123456789abcdef" {
+		t.Fatalf("local it printed %q; want the content-hash tag compose runs", out)
+	}
+	builds, _ := os.ReadFile(filepath.Join(stub, "builds")) // #nosec G304 -- the test's own temp dir
+	if !strings.Contains(string(builds), "docker-build-it IT_HOLD=qrdb-ci-hold-1-1-audit MODULE_ENV_FILE=") {
+		t.Fatalf("builds = %q; want docker-build-it holding the image as the job's hold", builds)
+	}
+	if _, err := os.Stat(filepath.Join(stub, "create")); !os.IsNotExist(err) {
+		t.Fatal("local it made its own hold; docker-build-it's IT_HOLD is the one")
+	}
+	assertNoRegistry(t, stub)
+}
+
+func TestCIRegistry_LocalRefusesBadArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"web", "qrdb-ci-hold-1"},
+		{"toolchain", "-bad"},
+		{"toolchain", "a b"},
+		{"toolchain"},
+		{"it", "qrdb-ci-hold-1", "extra"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, _, stub, err := runRegistryLocal(t, false, args...)
+			if err == nil {
+				t.Fatalf("local %q succeeded; want it refused", args)
+			}
+			if _, err := os.Stat(filepath.Join(stub, "builds")); !os.IsNotExist(err) {
+				t.Fatal("built an image for arguments it refused")
+			}
+			assertNoRegistry(t, stub)
+		})
+	}
+}

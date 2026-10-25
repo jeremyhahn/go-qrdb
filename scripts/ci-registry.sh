@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# ci-registry.sh moves the CI images between this job and the forge's
-# container registry, the Gitea registry or GHCR on the public mirror
-# (DS-3516). docker-build builds each image once per run and pushes it; every
-# other job pulls that exact image by digest. Nothing here builds an image: a
-# consumer that cannot pull fails, loudly, rather than run its stages on an
-# image docker-build did not push.
+# ci-registry.sh hands the CI images from docker-build to every other job
+# (DS-3516), on one of two paths chosen by the event (claude-agents#329):
+#
+#   - A push to main: docker-build pushes each image to the forge's container
+#     registry, the Gitea registry or GHCR on the public mirror, and every
+#     other job pulls that exact image by digest. A consumer that cannot pull
+#     fails, loudly, rather than run its stages on an image docker-build did
+#     not push.
+#   - Every other event (a pull request, a dispatch): nothing logs in and
+#     nothing is pushed, because the run's token cannot log in to the registry
+#     there. Each job takes the image from its own runner's daemon under the
+#     content-hash family tag (handbook ci-standard.md §9), building it when
+#     the daemon does not hold it yet, and holds it by its local image ID: no
+#     digest exists without a push.
 #
 #   ci-registry.sh push <local-image> <name> <trust>   prints <registry>/<owner>/<name>@sha256:<hex>
 #   ci-registry.sh pull <ref> [hold]                   pulls <ref>; with [hold], holds it
+#   ci-registry.sh local toolchain|it <hold>           builds if missing, holds, prints the reference to run
 #   ci-registry.sh release <hold>...                   removes the holds
 #   ci-registry.sh check-ref <ref>...                  validates digest references
 #
@@ -17,7 +26,8 @@
 # push and pull log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the latter
 # read from the environment and fed to docker on stdin only. The login lives in
 # a private DOCKER_CONFIG that is deleted on exit, so the credential outlives
-# neither this process nor reaches another job on the same Docker host.
+# neither this process nor reaches another job on the same Docker host. local
+# never logs in, pushes or pulls, whatever the environment holds.
 #
 # A pushed image is tagged <content-hash>-<trust>: the content hash is the tag
 # the Makefile built it under, and trust is main (a push to main) or pr. One
@@ -25,9 +35,15 @@
 # superseded versions (docs/release/engineering.md, "The CI image").
 #
 # A hold is a container created from the image and never started: `docker
-# image rm` refuses an image a container uses, so the reaper and the cache trim
-# of a concurrent job on the same host cannot remove the image between this
-# pull and the job's last stage. The job's teardown releases it.
+# image rm` refuses an image a container uses, and the reaper keeps any tag
+# whose image a container uses, so neither it nor the cache trim of a
+# concurrent job on the same host can remove the image between this step and
+# the job's last stage. The job's teardown releases it. On the local path the
+# toolchain hold is created from the image ID and the stages run that ID; the
+# integration hold is the Makefile's own (docker-build-it with IT_HOLD) and the
+# stages run the content-hash tag, because compose resolves `image:` as a
+# reference name and an image ID is not one. Its hold uses the tag's image ID
+# all the same, so the reaper keeps the tag until the teardown.
 #
 # CI_REGISTRY_BACKOFF is the seconds between pull attempts, times the attempt
 # number (default 10, so at most 10 s + 20 s of waiting across 3 attempts).
@@ -138,6 +154,71 @@ pull() {
 	die "cannot pull $ref after $attempts attempts; a consumer never rebuilds the image docker-build pushed"
 }
 
+# stage_modauth writes the module credentials the image build reads as its
+# gomodauth BuildKit secret to the private file $1 (the form docker-build's
+# build step writes). Nothing prints it.
+stage_modauth() {
+	(
+		umask 077
+		: >"$1"
+		local v
+		for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+			[ -z "${!v:-}" ] || printf '%s=%s\n' "$v" "${!v}" >>"$1"
+		done
+	)
+}
+
+# local_image is the path off a push to main: it takes family $1's image from
+# this runner's daemon under its content-hash tag, building it when the daemon
+# does not hold it, holds it as $2 and prints the reference the stages run.
+# It never logs in, pushes or pulls.
+local_image() {
+	[ $# -eq 2 ] || die "usage: local toolchain|it <hold>"
+	local family=$1 hold=$2 tag_re
+	case $family in
+	toolchain) tag_re='^qrdb-toolchain:[0-9a-f]{16}$' ;;
+	it) tag_re='^qrdb-ci-it:[0-9a-f]{16}$' ;;
+	*) die "family '$family' is neither toolchain nor it" ;;
+	esac
+	[[ $hold =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "'$hold' is not a hold name"
+	local tag
+	tag=$(env -u TOOLCHAIN_IMAGE -u IT_IMAGE make -s --no-print-directory "$family-image")
+	[[ $tag =~ $tag_re ]] || die "'$tag' is not a content-hash tag of the $family family"
+	# Global, not local: the EXIT trap runs after this function has returned.
+	modauth=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gomodauth.XXXXXX")
+	trap 'rm -f "$modauth"' EXIT
+	stage_modauth "$modauth"
+	if [ "$family" = it ]; then
+		# docker-build-it builds only when the daemon lacks the tag, survives a
+		# concurrent build of the same tag and holds the image as IT_HOLD.
+		env -u IT_IMAGE make --no-print-directory docker-build-it IT_HOLD="$hold" MODULE_ENV_FILE="$modauth" >&2 ||
+			die "cannot build or hold $tag on this runner"
+		printf '%s\n' "$tag"
+		return 0
+	fi
+	local n id
+	for ((n = 1; n <= 2; n++)); do
+		if docker image inspect "$tag" >/dev/null 2>&1; then
+			echo "==> $tag is already built on this daemon" >&2
+		else
+			env -u TOOLCHAIN_IMAGE make --no-print-directory docker-build-toolchain MODULE_ENV_FILE="$modauth" >&2 ||
+				die "cannot build $tag on this runner"
+		fi
+		# The image ID stands in for the digest a push would have minted; a
+		# concurrent reap or trim can still drop the tag before the hold, and
+		# the next attempt builds it again.
+		id=$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null) || continue
+		[[ $id =~ ^sha256:[0-9a-f]{64}$ ]] || die "$tag has no image ID ('$id')"
+		docker rm -f "$hold" >/dev/null 2>&1 || true
+		if docker create --pull never --name "$hold" "$id" true >/dev/null; then
+			echo "==> $hold holds $tag ($id) until the job's teardown" >&2
+			printf '%s\n' "$id"
+			return 0
+		fi
+	done
+	die "$tag was removed before $hold could hold it"
+}
+
 release() {
 	local hold
 	for hold in "$@"; do
@@ -146,12 +227,13 @@ release() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-registry.sh push|pull|release|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-registry.sh push|pull|local|release|check-ref ..."
 	local cmd=$1
 	shift
 	case $cmd in
 	push) push "$@" ;;
 	pull) pull "$@" ;;
+	local) local_image "$@" ;;
 	release) release "$@" ;;
 	check-ref)
 		local r
