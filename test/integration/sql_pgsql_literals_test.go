@@ -236,6 +236,49 @@ func TestSQL_PgSQL_CachedPlanResultTypeChange(t *testing.T) {
 	}
 }
 
+// TestSQL_PgSQL_CachedSelectSeesLaterRows pins that a parameterless SELECT
+// cached by pgx's default exec mode -- Parse once, Bind/Execute per query --
+// runs at each Execute and so sees a row inserted after its first run.
+func TestSQL_PgSQL_CachedSelectSeesLaterRows(t *testing.T) {
+	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
+
+	certPath, keyPath := ca.boundAdminCert(t, t.TempDir())
+	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
+	ctx := context.Background()
+
+	mustExec := func(sql string) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, sql); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+	const query = `SELECT id FROM cached_select_probe ORDER BY id`
+	ids := func() []int64 {
+		t.Helper()
+		rows, err := conn.Query(ctx, query)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		got, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			t.Fatalf("query rows: %v", err)
+		}
+		return got
+	}
+
+	mustExec(`DROP TABLE IF EXISTS cached_select_probe`)
+	mustExec(`CREATE TABLE cached_select_probe (id bigint PRIMARY KEY)`)
+	mustExec(`INSERT INTO cached_select_probe (id) VALUES (1)`)
+
+	if got := ids(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("first run: got %v, want [1]", got)
+	}
+	mustExec(`INSERT INTO cached_select_probe (id) VALUES (2)`)
+	if got := ids(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("run after an insert: got %v, want [1 2]", got)
+	}
+}
+
 // TestSQL_PgSQL_BooleanAndTinyintAreDistinct pins the wire contract for the
 // one-byte types, which MySQL and PostgreSQL disagree about.
 //

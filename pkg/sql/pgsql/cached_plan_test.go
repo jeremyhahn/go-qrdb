@@ -151,7 +151,7 @@ func TestExecuteDeferredCallbackRefusesAStaleDescription(t *testing.T) {
 	stale := declared[:1]
 
 	writer := &mockDataWriter{}
-	err := h.executeDeferredCallback(context.Background(), writer, nil, query, query, nil, nil, stale)
+	err := h.executeDeferredCallback(context.Background(), writer, nil, query, query, nil, nil, stale, statementScope{})
 
 	require.Error(t, err)
 	var cachedPlanErr *CachedPlanResultTypeError
@@ -180,7 +180,7 @@ func TestExecuteDeferredCallbackAcceptsItsOwnDescription(t *testing.T) {
 			require.NotEmpty(t, declared)
 
 			writer := &mockDataWriter{}
-			err := h.executeDeferredCallback(context.Background(), writer, nil, query, query, nil, nil, declared)
+			err := h.executeDeferredCallback(context.Background(), writer, nil, query, query, nil, nil, declared, statementScope{})
 			require.NoError(t, err)
 		})
 	}

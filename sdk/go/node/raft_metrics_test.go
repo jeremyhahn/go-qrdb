@@ -13,6 +13,7 @@ package node
 import (
 	"context"
 	"testing"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -85,7 +86,19 @@ func TestClusteredNode_ProposalsAndReadIndexReachMetricsGatherer(t *testing.T) {
 	if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
-	if after, _ := syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", ""); after <= readsBefore {
-		t.Fatalf("%s sample count %d -> %d across a linearizable read", readIndexFamily, readsBefore, after)
+	// go-quicraft wakes the reader before it observes the read's latency
+	// (the observation runs once pendingReadsMu is released), so the sample
+	// can land just after Result returns: wait for it, within a read's
+	// budget.
+	landed, cancelLanded := context.WithTimeout(context.Background(), firstReadBudget)
+	defer cancelLanded()
+	after, _ := syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", "")
+	for after <= readsBefore {
+		select {
+		case <-landed.Done():
+			t.Fatalf("%s sample count %d -> %d across a linearizable read: %v", readIndexFamily, readsBefore, after, landed.Err())
+		case <-time.After(clusterPollInterval):
+		}
+		after, _ = syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", "")
 	}
 }

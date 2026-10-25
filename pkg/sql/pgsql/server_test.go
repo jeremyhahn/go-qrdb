@@ -820,7 +820,7 @@ func TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityResetsSeq
 		"TRUNCATE TABLE widgets RESTART IDENTITY",
 		"INSERT INTO widgets (name) VALUES ('c')",
 	} {
-		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q})
+		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, "query %q", q)
 	}
 
@@ -867,7 +867,7 @@ func TestServer_StartStop_WithServiceRegistry_NoManager_ContinueIdentityKeepsSeq
 		"TRUNCATE TABLE widgets CONTINUE IDENTITY",
 		"INSERT INTO widgets (name) VALUES ('c')",
 	} {
-		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q})
+		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, "query %q", q)
 	}
 
@@ -917,7 +917,7 @@ func TestServer_StartStop_WithServiceRegistry_NoManager_RestartIdentityClearsAft
 		"TRUNCATE TABLE widgets",
 		"INSERT INTO widgets (name) VALUES ('d')",
 	} {
-		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q})
+		_, err := parseHandler.HandleParse(connCtx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, "query %q", q)
 	}
 

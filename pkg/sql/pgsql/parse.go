@@ -208,9 +208,9 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 	}
 
 	// The connection was authenticated once, when it opened; its tenant may
-	// have been suspended since. Re-admit it before anything below reads or
-	// writes the catalog: sequence DDL and DROP TABLE ... CASCADE act before
-	// the statement's command opens (and admits it again).
+	// have been suspended since. Re-admit it before anything below reads the
+	// catalog: the catalog-aware rewrites read it before the statement's
+	// command opens (and admits it again).
 	if err := admitConnection(ctx); err != nil {
 		return nil, wireQueryError(trimmed, err)
 	}
@@ -219,12 +219,15 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 	// message. Each is executed in order and the LAST one's result is
 	// returned, which matches what a client sees from PostgreSQL itself
 	// (earlier results are superseded on the wire). The extended protocol
-	// forbids the form entirely when parameters are involved, and so does
-	// this path: the split only fires for parameterless text. A placeholder
-	// spelling inside a string literal or comment ('costs $1') is not a
-	// parameter, so it does not stop the split.
-	if statements := engine.SplitTopLevelStatements(trimmed); len(statements) > 1 &&
-		!engine.MatchesOutsideLiterals(trimmed, wire.QueryParameters) {
+	// forbids the form entirely, as PostgreSQL does: a Parse prepares one
+	// statement. The simple-query split only fires for parameterless text;
+	// a placeholder spelling inside a string literal or comment
+	// ('costs $1') is not a parameter, so it does not stop the split.
+	statements := engine.SplitTopLevelStatements(trimmed)
+	if len(statements) > 1 && !query.SimpleQuery {
+		return nil, psqlerr.WithCode(&MultipleCommandsError{}, codes.Syntax)
+	}
+	if len(statements) > 1 && !engine.MatchesOutsideLiterals(trimmed, wire.QueryParameters) {
 		for _, statement := range statements[:len(statements)-1] {
 			if _, err := h.HandleParse(ctx, wire.Query{Query: statement, SimpleQuery: query.SimpleQuery}); err != nil {
 				return nil, err
@@ -264,20 +267,18 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 	rewriteCtx := h.buildSQLContext(ctx)
 	rewriteDB := rewriteCtx.GetCurrentDatabase()
 
-	// Sequence DDL is served directly from the sequence catalog -- the
-	// engine's grammar has no CREATE/ALTER/DROP SEQUENCE at all.
-	if handled, err := h.handleSequenceDDL(rewriteCtx, rewriteDB, trimmed); handled {
-		if err != nil {
-			return nil, wireQueryError(trimmed, err)
-		}
-		return h.emptyResult()
+	// Sequence DDL is served from the sequence catalog -- the engine's
+	// grammar has no CREATE/ALTER/DROP SEQUENCE at all -- so it has no engine
+	// statement, only an effect, which runs when the statement executes.
+	if effect, ok := h.sequenceDDL(trimmed); ok {
+		return h.execute(ctx, query.SimpleQuery, trimmed, "", nil, statementScope{effect: effect})
 	}
 
-	// DROP TABLE ... CASCADE acts by side effect: PostgreSQL's CASCADE drops
-	// the foreign keys other tables aim at the dropped table, which the
-	// engine's referenced-by validation would otherwise refuse. The statement
-	// text itself passes through unchanged.
-	applyDropTableCascade(rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, trimmed)
+	// DROP TABLE ... CASCADE acts by side effect at each execution:
+	// PostgreSQL's CASCADE drops the foreign keys other tables aim at the
+	// dropped table, which the engine's referenced-by validation would
+	// otherwise refuse. The statement text itself passes through unchanged.
+	scope := statementScope{effect: dropTableCascadeEffect(h.sqlEngine.Analyzer.Catalog, trimmed)}
 
 	// An UPDATE or DELETE carrying a RETURNING clause is split here: the
 	// embedded grammar cannot parse the clause on those statements, but
@@ -292,17 +293,14 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 
 	// PostgreSQL's TRUNCATE accepts a RESTART IDENTITY / CONTINUE IDENTITY
 	// clause the embedded grammar does not parse; strip it here and record
-	// which one the client asked for on the session so
-	// RelationalTable.Truncate can apply the same epoch-fenced sequence
-	// reset the MySQL wire always applies. The flag is cleared again once
-	// the statement finishes so a later plain TRUNCATE on the same
-	// connection does not inherit it.
+	// which one the client asked for in the statement's scope, which sets
+	// it on the session for each execution so RelationalTable.Truncate can
+	// apply the same epoch-fenced sequence reset the MySQL wire always
+	// applies. The flag is cleared again once the execution finishes so a
+	// later plain TRUNCATE on the same connection does not inherit it.
 	if stripped, restart, ok := stripTruncateIdentityClause(toTranslate); ok {
 		toTranslate = stripped
-		if session := connectionSessionFromContext(ctx); session != nil {
-			session.SetStatementRestartIdentity(restart)
-			defer session.SetStatementRestartIdentity(false)
-		}
+		scope.restartIdentity = restart
 	}
 
 	// A few PostgreSQL-only DDL forms must be rewritten BEFORE the
@@ -342,46 +340,50 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query wire.Query) (wire.
 	// A standalone CREATE INDEX carries PostgreSQL's index-vs-constraint
 	// distinction only in its statement text -- the plan node it produces
 	// is identical to ALTER TABLE ADD CONSTRAINT UNIQUE's -- so it is
-	// recorded on the session here for the provider to persist into the
-	// catalog (see QRDBSession.SetStatementIndexOrigin) and cleared again
-	// when the statement finishes.
-	if createIndexStatementRe.MatchString(trimmed) {
-		if session := connectionSessionFromContext(ctx); session != nil {
-			session.SetStatementIndexOrigin(true)
-			defer session.SetStatementIndexOrigin(false)
-		}
-	}
+	// recorded on the session for each execution of the statement, for the
+	// provider to persist into the catalog (see
+	// QRDBSession.SetStatementIndexOrigin), and cleared again when that
+	// execution finishes (see statementScope).
+	scope.indexOrigin = createIndexStatementRe.MatchString(trimmed)
 
-	// Parameterized queries must defer execution until BIND/EXECUTE
-	// when the wire protocol delivers parameter values. Non-parameterized
-	// queries execute eagerly for lower latency.
+	return h.execute(ctx, query.SimpleQuery, trimmed, translated, preparsed, scope)
+}
+
+// execute runs a statement HandleParse has prepared. A simple query is
+// parsed and executed in one step, so a parameterless one runs here. A
+// statement reached through the extended protocol's Parse only prepares: it
+// runs at each Execute of a portal bound from it, and each run sees the data
+// as of that run. An empty translated means the statement has no engine
+// statement, only scope's effect.
+func (h *ParseHandler) execute(ctx context.Context, simpleQuery bool, trimmed, translated string, preparsed sqlparser.Statement, scope statementScope) (wire.PreparedStatements, error) {
 	paramOIDs := wire.ParseParameters(trimmed)
-	if len(paramOIDs) > 0 {
-		return h.executeDeferred(ctx, trimmed, translated, paramOIDs, preparsed)
+	if simpleQuery && len(paramOIDs) == 0 {
+		return h.executeEager(ctx, trimmed, translated, preparsed, scope)
 	}
-
-	return h.executeEager(ctx, trimmed, translated, preparsed)
+	return h.executeDeferred(ctx, trimmed, translated, paramOIDs, preparsed, scope)
 }
 
 // createIndexStatementRe matches a standalone CREATE [UNIQUE] INDEX
 // statement head.
 var createIndexStatementRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b`)
 
-// executeEager runs the translated query immediately during the PARSE phase,
-// bounded by the query timeout. This path is used for non-parameterized
-// queries where all values are available in the SQL text itself -- every
-// simple-protocol statement and every extended-protocol one without
-// parameters; their rows are collected here, so the timeout bounds the whole
-// execution and the portal's Execute only writes them.
-func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
+// executeEager runs the translated query immediately, bounded by the query
+// timeout and inside the statement's scope. This path serves the simple query
+// protocol alone, which parses and executes a statement in one step: its
+// rows are collected here, so the timeout bounds the whole execution and the
+// statement's one execution only writes them. A statement reached through
+// the extended protocol's Parse runs at each Execute instead (see
+// executeDeferred).
+func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement, scope statementScope) (wire.PreparedStatements, error) {
 	ctx, cancel := h.statementContext(ctx)
 	defer cancel()
-	stmts, err := h.executeEagerUnbounded(ctx, trimmed, translated, preparsed)
+	defer scope.enter(ctx)()
+	stmts, err := h.executeEagerUnbounded(ctx, trimmed, translated, preparsed, scope)
 	return stmts, h.statementTimeoutError(ctx, err)
 }
 
 // executeEagerUnbounded is executeEager without the query timeout.
-func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
+func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement, scope statementScope) (wire.PreparedStatements, error) {
 	// Build a GMS sql.Context with the QRDB session carrying identity, and
 	// the statement text the engine runs: the SQL layer reads a
 	// statement's row-lock intent from it (see docs/row-locking/).
@@ -391,6 +393,13 @@ func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, trans
 		return nil, wireQueryError(trimmed, err)
 	}
 	defer end()
+
+	if err := scope.apply(sqlCtx); err != nil {
+		return nil, wireQueryError(trimmed, err)
+	}
+	if translated == "" {
+		return h.emptyResult()
+	}
 
 	warningBaseline := len(sqlCtx.Warnings())
 
@@ -442,18 +451,20 @@ func (h *ParseHandler) executeEagerUnbounded(ctx context.Context, trimmed, trans
 }
 
 // executeDeferred creates a PreparedStatement whose callback defers query
-// execution until the BIND/EXECUTE phase. This is required for parameterized
-// queries because the PostgreSQL wire protocol sends parameter values in
-// the BIND message, after PARSE has already completed.
+// execution until the BIND/EXECUTE phase, as the extended query protocol
+// requires: Parse only prepares a statement, and the statement runs once per
+// Execute of a portal bound from it -- with or without parameters, whose
+// values the BIND message carries after PARSE has already completed. Each
+// execution therefore sees the data as of that execution.
 //
 // paramOIDs holds the parameter OID for each $N position, as returned by
-// wire.ParseParameters — every entry starts unspecified (0). translated is
-// parsed once here (rather than deferred to BIND/EXECUTE) so that its AST
+// wire.ParseParameters — every entry starts unspecified (0). A parameterized
+// translated is parsed once here (rather than deferred to BIND/EXECUTE) so that its AST
 // can be reused for two things: resolving real, non-zero OIDs for
 // parameters that target a known column (see inferParamOIDs), and passing
 // the already-parsed statement straight into QueryWithBindings at EXECUTE
 // time instead of asking go-mysql-server to parse the same text again.
-func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
+func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32, preparsed sqlparser.Statement, scope statementScope) (wire.PreparedStatements, error) {
 	// Describing the statement -- resolving its parameter types and result
 	// columns -- is a command of its own, carrying the statement's text, so
 	// it resolves each table once (see beginCommand).
@@ -464,16 +475,21 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 	}
 	defer end()
 
+	// Only a statement with parameters is parsed here: a parameterless one
+	// has no parameter types to resolve, and executes from preparsed or its
+	// text exactly as a simple query does.
 	parsedStmt := preparsed
-	var parseErr error
-	if parsedStmt == nil {
-		parsedStmt, parseErr = sqlparser.Parse(translated)
-	}
-	if parseErr == nil {
-		resolved := inferParamOIDs(sqlCtx, h.sqlEngine.Analyzer.Catalog, sqlCtx.GetCurrentDatabase(), parsedStmt)
-		for ordinal, oid := range resolved {
-			if ordinal >= 1 && ordinal <= len(paramOIDs) {
-				paramOIDs[ordinal-1] = oid
+	if len(paramOIDs) > 0 {
+		var parseErr error
+		if parsedStmt == nil {
+			parsedStmt, parseErr = sqlparser.Parse(translated)
+		}
+		if parseErr == nil {
+			resolved := inferParamOIDs(sqlCtx, h.sqlEngine.Analyzer.Catalog, sqlCtx.GetCurrentDatabase(), parsedStmt)
+			for ordinal, oid := range resolved {
+				if ordinal >= 1 && ordinal <= len(paramOIDs) {
+					paramOIDs[ordinal-1] = oid
+				}
 			}
 		}
 	}
@@ -490,11 +506,17 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 	// plain vitess grammar rather than the engine's parser -- so passing it
 	// would silently bypass every parser-level repair the engine installs
 	// (the HAVING-subquery aliasing among them).
-	declared := h.resultColumns(sqlCtx, translated, preparsed)
+	// A statement without an engine statement (sequence DDL) returns no
+	// rows.
+	var declared wire.Columns
+	if translated != "" {
+		declared = h.resultColumns(sqlCtx, translated, preparsed)
+	}
 
 	stmt := wire.NewStatement(
 		func(execCtx context.Context, writer wire.DataWriter, parameters []wire.Parameter) error {
-			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared)
+			defer scope.enter(execCtx)()
+			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared, scope)
 		},
 		wire.WithColumns(declared),
 		wire.WithParameters(paramOIDs),
@@ -516,8 +538,9 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 // produce a row is therefore not a conservative default but a hard failure at
 // EXECUTE time.
 //
-// Two statement shapes produce rows. A SELECT is the obvious one. The other
-// is INSERT … RETURNING, which is how gorm.io/driver/postgres reads back
+// Two statement shapes produce rows (see statementReturnsRows). A query --
+// SELECT, WITH, VALUES, a set operation, EXPLAIN -- is the obvious one. The
+// other is INSERT … RETURNING, which is how gorm.io/driver/postgres reads back
 // every generated primary key it issues — the single most common statement a
 // PostgreSQL ORM sends. Both are resolved the same way, by asking
 // go-mysql-server to analyze (not execute) the statement and taking the
@@ -541,9 +564,7 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 // belongs to the execution path, which reports it against the caller's real
 // parameters.
 func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string, preparsed sqlparser.Statement) wire.Columns {
-	upper := strings.ToUpper(strings.TrimSpace(translated))
-	if !strings.HasPrefix(upper, "SELECT") && !engine.HasReturning(translated) &&
-		!statementCarriesReturning(preparsed) {
+	if !statementReturnsRows(translated, preparsed) {
 		return nil
 	}
 
@@ -562,6 +583,75 @@ func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string, pre
 		return nil
 	}
 	return schemaToColumns(sqlCtx, schema)
+}
+
+// statementReturnsRows reports whether translated produces rows: a query
+// (SELECT, WITH ... SELECT, VALUES, a set operation), an EXPLAIN, or a
+// statement carrying RETURNING. The plain grammar only classifies the text
+// here; its AST is not kept. Text it cannot parse is classified by its
+// leading keyword, and execution reports the real error.
+func statementReturnsRows(translated string, preparsed sqlparser.Statement) bool {
+	if statementCarriesReturning(preparsed) || engine.HasReturning(translated) {
+		return true
+	}
+	stmt, err := sqlparser.Parse(translated)
+	if err != nil {
+		return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(translated)), "SELECT")
+	}
+	switch stmt.(type) {
+	case sqlparser.SelectStatement, *sqlparser.Explain:
+		return true
+	}
+	return false
+}
+
+// statementScope is the session state a statement's text carries for the
+// length of each of its executions: TRUNCATE's RESTART IDENTITY clause and
+// a standalone CREATE INDEX's index origin. HandleParse records it once; the
+// statement sets it on the connection's session when an execution starts
+// and clears it when that execution finishes, so neither leaks into a later
+// statement on the same connection. It also carries the statement's effect,
+// if it has one, which each execution applies (see apply).
+type statementScope struct {
+	restartIdentity bool
+	indexOrigin     bool
+	effect          statementEffect
+}
+
+// statementEffect is the part of a statement qrdb applies to the catalog
+// itself rather than through the engine: DROP SEQUENCE's reset of the
+// sequence and DROP TABLE ... CASCADE's drop of the foreign keys aimed at
+// the table. A statement whose only part it is -- sequence DDL -- has no
+// engine statement at all.
+type statementEffect func(sqlCtx *sql.Context) error
+
+// apply runs the statement's effect, if it has one, in the execution's
+// command: the command's opening re-admitted the connection, so the effect
+// touches the catalog only for an admitted tenant, once per execution.
+func (s statementScope) apply(sqlCtx *sql.Context) error {
+	if s.effect == nil {
+		return nil
+	}
+	return s.effect(sqlCtx)
+}
+
+// enter sets s on the session ctx carries and returns the function that
+// clears it again. Without a session there is nothing to set.
+func (s statementScope) enter(ctx context.Context) (exit func()) {
+	session := connectionSessionFromContext(ctx)
+	if session == nil {
+		return func() {}
+	}
+	if s.restartIdentity {
+		session.SetStatementRestartIdentity(true)
+	}
+	if s.indexOrigin {
+		session.SetStatementIndexOrigin(true)
+	}
+	return func() {
+		session.SetStatementRestartIdentity(false)
+		session.SetStatementIndexOrigin(false)
+	}
 }
 
 // executeDeferredCallback is the body of the deferred PreparedStatementFn
@@ -584,12 +674,13 @@ func (h *ParseHandler) executeDeferredCallback(
 	parsedStmt sqlparser.Statement,
 	paramOIDs []uint32,
 	declared wire.Columns,
+	scope statementScope,
 ) error {
 	// The query timeout bounds each Bind/Execute -- each portal's execution
-	// -- of a parameterized statement.
+	// -- of a statement, with or without parameters.
 	ctx, cancel := h.statementContext(ctx)
 	defer cancel()
-	return h.statementTimeoutError(ctx, h.executeDeferredCallbackUnbounded(ctx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared))
+	return h.statementTimeoutError(ctx, h.executeDeferredCallbackUnbounded(ctx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs, declared, scope))
 }
 
 // executeDeferredCallbackUnbounded is executeDeferredCallback without the
@@ -602,6 +693,7 @@ func (h *ParseHandler) executeDeferredCallbackUnbounded(
 	parsedStmt sqlparser.Statement,
 	paramOIDs []uint32,
 	declared wire.Columns,
+	scope statementScope,
 ) error {
 	// Parse is gated, but this runs on every Bind/Execute of a statement
 	// that may have been parsed before the barrier was sealed.
@@ -622,6 +714,13 @@ func (h *ParseHandler) executeDeferredCallbackUnbounded(
 		return wireQueryError(trimmed, err)
 	}
 	defer end()
+
+	if err := scope.apply(sqlCtx); err != nil {
+		return wireQueryError(trimmed, err)
+	}
+	if translated == "" {
+		return emptyResultFn(ctx, writer, parameters)
+	}
 
 	warningBaseline := len(sqlCtx.Warnings())
 

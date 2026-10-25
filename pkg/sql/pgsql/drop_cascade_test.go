@@ -36,11 +36,67 @@ func declaredForeignKeys(t *testing.T, ctx *sqle.Context, catalog sqle.Catalog, 
 	return fks
 }
 
-// TestApplyDropTableCascade covers the CASCADE half of PostgreSQL's DROP
+// runDropTableCascade runs the effect dropTableCascadeEffect returns for raw,
+// as an Execute would; a statement with no effect runs nothing.
+func runDropTableCascade(t *testing.T, ctx *sqle.Context, catalog sqle.Catalog, raw string) {
+	t.Helper()
+	if effect := dropTableCascadeEffect(catalog, raw); effect != nil {
+		require.NoError(t, effect(ctx))
+	}
+}
+
+// TestDropTableCascadeEffectIsBuiltNotRun pins the split the extended
+// protocol relies on: building the effect, which Parse does, touches no
+// foreign key, and only a statement with CASCADE has an effect at all.
+func TestDropTableCascadeEffectIsBuiltNotRun(t *testing.T) {
+	h, ctx := newResultColumnsHandler(t)
+	catalog := h.sqlEngine.Analyzer.Catalog
+	_, iter, _, err := h.sqlEngine.Query(ctx,
+		"CREATE TABLE pets (id BIGINT PRIMARY KEY, owner_id BIGINT, "+
+			"CONSTRAINT fk_pets_owner FOREIGN KEY (owner_id) REFERENCES people (id))")
+	require.NoError(t, err)
+	require.NoError(t, iter.Close(ctx))
+
+	assert.Nil(t, dropTableCascadeEffect(catalog, `DROP TABLE IF EXISTS "people"`),
+		"a DROP without CASCADE has no side effect")
+	assert.Nil(t, dropTableCascadeEffect(catalog, `SELECT 1`))
+
+	effect := dropTableCascadeEffect(catalog, `DROP TABLE IF EXISTS "people" CASCADE`)
+	require.NotNil(t, effect)
+	assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1,
+		"building the effect drops nothing")
+
+	require.NoError(t, effect(ctx))
+	assert.Empty(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"))
+	require.NoError(t, effect(ctx), "a second run finds nothing left to drop")
+}
+
+// TestDropForeignKeysToAnUnknownDatabase covers the database lookup: a
+// session whose current database is gone drops nothing and does not fail,
+// leaving the DROP itself to report the missing table.
+func TestDropForeignKeysToAnUnknownDatabase(t *testing.T) {
+	h, ctx := newResultColumnsHandler(t)
+	catalog := h.sqlEngine.Analyzer.Catalog
+	_, iter, _, err := h.sqlEngine.Query(ctx,
+		"CREATE TABLE pets (id BIGINT PRIMARY KEY, owner_id BIGINT, "+
+			"CONSTRAINT fk_pets_owner FOREIGN KEY (owner_id) REFERENCES people (id))")
+	require.NoError(t, err)
+	require.NoError(t, iter.Close(ctx))
+
+	dropForeignKeysTo(ctx, catalog, "no_such_db", map[string]bool{"people": true})
+	assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1,
+		"another database's DROP leaves this one's keys")
+
+	dropForeignKeysTo(ctx, catalog, "resultcolumnstest", map[string]bool{"no_such_table": true})
+	assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1,
+		"a key to a table not being dropped is kept")
+}
+
+// TestDropTableCascadeEffect covers the CASCADE half of PostgreSQL's DROP
 // TABLE: incoming foreign keys are dropped so the DROP itself can pass the
 // engine's referenced-by validation. GORM's migrator drops every table with
 // DROP TABLE IF EXISTS ... CASCADE, so without this no schema teardown works.
-func TestApplyDropTableCascade(t *testing.T) {
+func TestDropTableCascadeEffect(t *testing.T) {
 	newHarness := func(t *testing.T) (*ParseHandler, *sqle.Context, sqle.Catalog) {
 		h, ctx := newResultColumnsHandler(t)
 		catalog := h.sqlEngine.Analyzer.Catalog
@@ -58,16 +114,14 @@ func TestApplyDropTableCascade(t *testing.T) {
 
 	t.Run("CASCADE drops incoming foreign keys", func(t *testing.T) {
 		h, ctx, catalog := newHarness(t)
-		applyDropTableCascade(ctx, catalog, "resultcolumnstest",
-			`DROP TABLE IF EXISTS "people" CASCADE`)
+		runDropTableCascade(t, ctx, catalog, `DROP TABLE IF EXISTS "people" CASCADE`)
 		assert.Empty(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"))
 		_ = h
 	})
 
 	t.Run("plain DROP TABLE is untouched", func(t *testing.T) {
 		_, ctx, catalog := newHarness(t)
-		applyDropTableCascade(ctx, catalog, "resultcolumnstest",
-			`DROP TABLE IF EXISTS "people"`)
+		runDropTableCascade(t, ctx, catalog, `DROP TABLE IF EXISTS "people"`)
 		assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1)
 	})
 
@@ -75,15 +129,13 @@ func TestApplyDropTableCascade(t *testing.T) {
 		// Both ends of the FK die with the statement; nothing needs dropping
 		// up front, and the helper must not touch a table that is going away.
 		_, ctx, catalog := newHarness(t)
-		applyDropTableCascade(ctx, catalog, "resultcolumnstest",
-			`DROP TABLE IF EXISTS "people", "pets" CASCADE`)
+		runDropTableCascade(t, ctx, catalog, `DROP TABLE IF EXISTS "people", "pets" CASCADE`)
 		assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1)
 	})
 
 	t.Run("unrelated CASCADE drop leaves other tables' keys", func(t *testing.T) {
 		_, ctx, catalog := newHarness(t)
-		applyDropTableCascade(ctx, catalog, "resultcolumnstest",
-			`DROP TABLE IF EXISTS "pets" CASCADE`)
+		runDropTableCascade(t, ctx, catalog, `DROP TABLE IF EXISTS "pets" CASCADE`)
 		assert.Len(t, declaredForeignKeys(t, ctx, catalog, "resultcolumnstest", "pets"), 1)
 	})
 }
@@ -107,8 +159,7 @@ func TestDropTableCascadeExecutesEndToEnd(t *testing.T) {
 		t.Fatal("engine no longer validates referenced tables; CASCADE helper may be dead code")
 	}
 
-	applyDropTableCascade(ctx, catalog, "resultcolumnstest",
-		`DROP TABLE IF EXISTS "people" CASCADE`)
+	runDropTableCascade(t, ctx, catalog, `DROP TABLE IF EXISTS "people" CASCADE`)
 	_, iter, _, err = h.sqlEngine.Query(ctx, "DROP TABLE IF EXISTS people CASCADE")
 	require.NoError(t, err)
 	require.NoError(t, iter.Close(ctx))
