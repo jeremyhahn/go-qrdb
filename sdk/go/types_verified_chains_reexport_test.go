@@ -27,12 +27,12 @@ import (
 // errStubRefused is what stubIssuerVerifier refuses a chain with.
 var errStubRefused = errors.New("stub: chain refused")
 
-// stubTrustStateUnavailable is a refusal made while the verifier could not
+// stubTrustStateUnavailableError is a refusal made while the verifier could not
 // read its trust state.
-type stubTrustStateUnavailable struct{}
+type stubTrustStateUnavailableError struct{}
 
-func (stubTrustStateUnavailable) Error() string               { return "stub: trust state unread" }
-func (stubTrustStateUnavailable) TrustStateUnavailable() bool { return true }
+func (stubTrustStateUnavailableError) Error() string               { return "stub: trust state unread" }
+func (stubTrustStateUnavailableError) TrustStateUnavailable() bool { return true }
 
 // stubIssuerVerifier verifies a leaf to the chain {leaf, issuer} when the
 // leaf is trusted, and refuses it with err otherwise.
@@ -104,7 +104,7 @@ func TestResolveVerifiedChains_TypedRefusals(t *testing.T) {
 		}
 	}
 
-	_, err := sdk.ResolveVerifiedChains(ctx, untrusted, &stubIssuerVerifier{err: stubTrustStateUnavailable{}})
+	_, err := sdk.ResolveVerifiedChains(ctx, untrusted, &stubIssuerVerifier{err: stubTrustStateUnavailableError{}})
 	var unavailable *sdk.TrustStateUnavailableError
 	if !errors.As(err, &unavailable) {
 		t.Fatalf("ResolveVerifiedChains(trust state unread) = %v; want *TrustStateUnavailableError", err)
