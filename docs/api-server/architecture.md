@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-25
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -192,7 +192,8 @@ neither owns a verb neither registered. See
   re-registers the generated services on a connect server and calls each
   method handler with a nil gRPC interceptor, and the handler's peer carries no
   TLS state, so the one interceptor chain is skipped and the client
-  certificate is lost. The framing is small and specified, so it is
+  certificate is lost (vanguard v0.5.0, whose registrar takes no options:
+  interceptors belong to the connect server, a second chain). The framing is small and specified, so it is
   implemented in `pkg/api/grpcweb` over the gRPC server's own handler instead.
 - **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
   terminating TLS loses the caller's certificate at the node, the identity every

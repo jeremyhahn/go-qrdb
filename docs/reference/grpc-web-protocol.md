@@ -1,5 +1,8 @@
 # gRPC Web
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-24
+> grpc/grpc `doc/PROTOCOL-WEB.md` at commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2`, copied unmodified below this banner; indexed in [README.md](README.md).
+
 gRPC-Web provides a JS client library that supports the same API
 as gRPC-Node to access a gRPC service. Due to browser limitation,
 the Web client library implements a different protocol than the
