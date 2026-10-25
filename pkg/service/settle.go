@@ -79,6 +79,12 @@ func (p SettlePolicy) orDefault() SettlePolicy {
 // last attempt's transient error then stands, with the zero T. A zero field
 // of policy reads as DefaultSettlePolicy's.
 func SettleLeadership[T any](ctx context.Context, policy SettlePolicy, attempt func(context.Context) (T, error)) (T, error) {
+	return settleLeadership(ctx, policy, attempt, time.After)
+}
+
+// settleLeadership is SettleLeadership with its poll timer injected: after
+// returns the channel each retry waits on for the given pace.
+func settleLeadership[T any](ctx context.Context, policy SettlePolicy, attempt func(context.Context) (T, error), after func(time.Duration) <-chan time.Time) (T, error) {
 	var zero T
 	policy = policy.orDefault()
 	deadline := time.Now().Add(policy.Budget)
@@ -88,17 +94,17 @@ func SettleLeadership[T any](ctx context.Context, policy SettlePolicy, attempt f
 		attemptCtx, cancelAttempt := context.WithTimeout(budgetCtx, policy.Attempt)
 		v, err := attempt(attemptCtx)
 		cancelAttempt()
-		if err == nil || !LeadershipTransient(err) || ctx.Err() != nil {
+		if err == nil || !LeadershipTransient(err) {
 			return v, err
 		}
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
+		if remaining <= 0 || ctx.Err() != nil {
 			return zero, err
 		}
 		select {
 		case <-ctx.Done():
 			return zero, err
-		case <-time.After(min(policy.Poll, remaining)):
+		case <-after(min(policy.Poll, remaining)):
 		}
 	}
 }
