@@ -212,7 +212,7 @@ github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/rebalanceconv 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/replicaconv 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/retryinfo 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealconv 100.00
-github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealedinfo 88.88
+github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sealedinfo 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/statehashconv 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantconv 93.47
 github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/tenantinit 100.00
