@@ -1728,7 +1728,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -1743,14 +1743,20 @@ COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,git
 # figure taken by hand is comparable only under `make print-build-tags`.
 COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)" -tags "$(strip $(BUILD_TAGS))"
 
-# COVERAGE_MERGE_SUBPROCESS builds the combined profile from two DISJOINT
+# COVERAGE_MERGE_SUBPROCESS builds the combined profile from three DISJOINT
 # package sets: the bulk `-coverprofile` run below, over every package EXCEPT
-# the ones scripts/coverage-merge-subprocess.sh --list discovers, and that
-# script's own run of exactly those packages. The two are concatenated
-# (keeping one "mode:" header) rather than merged, which is correct BECAUSE
-# they are disjoint -- see the script's header for why a subprocess test
-# needs this treatment at all and why concatenation, not `covdata merge`, is
-# the right operation here.
+# the ones scripts/coverage-merge-subprocess.sh --list discovers, that
+# script's own run of exactly those packages, and the sdk/go module's run.
+# The three are concatenated (keeping one "mode:" header) rather than merged,
+# which is correct BECAUSE they are disjoint -- see the script's header for
+# why a subprocess test needs this treatment at all and why concatenation,
+# not `covdata merge`, is the right operation here.
+#
+# sdk/go is its own module, so `./pkg/...` from the root never reaches it and
+# its packages were held to no floor. Its run is in the SDK module's
+# directory, under the same tags; its generated /proto/ code is left out as
+# the bulk run's is, and so are its examples, which are programs, not
+# library code. Its two test-helper packages are in COVER_EXCLUDE_PKGS.
 #
 # The two runs are concurrent (#1046): the script compiles and runs its eight
 # packages one at a time, 171s on a warm cache, and run after the bulk run it
@@ -1800,11 +1806,14 @@ define COVERAGE_MERGE_SUBPROCESS
 	BULK_PKGS=$$($(GO) list $(TAG_FLAG) ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
 	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out > $(COVER_DIR)/subprocess.log 2>&1 & SUBPROCESS_PID=$$!; \
 	BULK_RC=0; $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS || BULK_RC=$$?; \
+	SDK_PKGS=$$(cd $(SDK_DIR) && $(GO) list $(TAG_FLAG) ./... | grep -v '/proto/' | grep -v '/sdk/go/examples/'); \
+	SDK_RC=0; (cd $(SDK_DIR) && $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(CURDIR)/$(COVER_DIR)/sdk.out $$SDK_PKGS) || SDK_RC=$$?; \
 	SUBPROCESS_RC=0; wait $$SUBPROCESS_PID || SUBPROCESS_RC=$$?; \
 	cat $(COVER_DIR)/subprocess.log; \
-	if [ $$BULK_RC -ne 0 ] || [ $$SUBPROCESS_RC -ne 0 ]; then echo "coverage: bulk run exit $$BULK_RC, subprocess run exit $$SUBPROCESS_RC" >&2; exit 1; fi; \
+	if [ $$BULK_RC -ne 0 ] || [ $$SDK_RC -ne 0 ] || [ $$SUBPROCESS_RC -ne 0 ]; then echo "coverage: bulk run exit $$BULK_RC, sdk run exit $$SDK_RC, subprocess run exit $$SUBPROCESS_RC" >&2; exit 1; fi; \
 	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
+	tail -n +2 $(COVER_DIR)/sdk.out >> $(COVER_DIR)/total.out; \
 	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
 endef
 
