@@ -1,5 +1,8 @@
 # gRPC over HTTP2
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-24
+> grpc/grpc `doc/PROTOCOL-HTTP2.md` at commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2`, copied unmodified below this banner; indexed in [README.md](README.md).
+
 ## Introduction
 This document serves as a detailed description for an implementation of gRPC carried over <a href="https://tools.ietf.org/html/rfc7540">HTTP2 framing</a>. It assumes familiarity with the HTTP2 specification.
 

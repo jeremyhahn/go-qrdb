@@ -44,7 +44,7 @@ func TestPGWire_SetQrdbIsolation_TakesEffect(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 	run := func(q string) error {
-		_, err := h.HandleParse(ctx, wire.Query{Query: q})
+		_, err := h.HandleParse(ctx, wire.Query{Query: q, SimpleQuery: true})
 		return err
 	}
 
