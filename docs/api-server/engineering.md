@@ -1,6 +1,6 @@
 # Unified API Server — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-24
 
 ## Exported surface
 
@@ -444,7 +444,8 @@ first, so a call before that, or after the gRPC server stops, is answered
 The handler is framing only (`docs/reference/grpc-web-protocol.md`, over
 `docs/reference/grpc-http2-protocol.md`): it relabels the media type, sets the
 request to HTTP/2 for `(*grpc.Server).ServeHTTP`, decodes and encodes the
-base64 text form, moves the gRPC trailers into the body's final trailer frame
+base64 text form (a request body may be a run of separately padded chunks; a
+response is encoded a whole message per chunk), moves the gRPC trailers into the body's final trailer frame
 (flag `0x80`, lowercase `name: value` lines ending CRLF, sorted), and answers
 CORS. It is not a vanguard or connect translation; see
 [architecture.md](architecture.md#alternatives-rejected) for why.
@@ -595,6 +596,30 @@ replaces it for an embedded node. See [gRPC-Web](#grpc-web) above.
   a tenant writer, no credentials, a bearer the node never issued, another
   tenant's certificate and an unprivileged bound user. `pkg/api/grpcweb` unit
   tests cover the framing, the text encoding and CORS.
+- **gRPC-Web conformance.** `pkg/api/grpcweb/conformance_test.go` holds the
+  handler to every server-side requirement of the pinned protocol,
+  [grpc-web-protocol.md](../reference/grpc-web-protocol.md), against a real
+  `grpc.Server`. Each test is named after its section:
+
+  | Section of `grpc-web-protocol.md` | Requirement | Test (`TestConformance_…`) |
+  |---|---|---|
+  | Content-Type 1 | `application/grpc-web`, `+proto`; a missing format is `+proto` | `ContentType_GRPCWebDefaultsToProto`, `ContentType_SubtypeReachesServer` |
+  | Content-Type 2 | `application/grpc-web-text`, `-text+proto`, answered in kind | `ContentType_GRPCWebText` |
+  | Content-Type | any other media type is refused (415), the gRPC server never called | `ContentType_UnsupportedIsRefused` |
+  | HTTP wire protocols 1, 3 | any HTTP version; the end of the body closes the stream | `WireProtocol_AnyHTTPVersion` |
+  | HTTP wire protocols 2 | request header names in any case over HTTP/1.1; trailer names lower-case | `WireProtocol_MixedCaseHeaderNames`, `WireProtocol_TrailerNamesLowerCase` |
+  | Message framing 1, 2 | the status in the body, as a `0x80` uncompressed trailer frame holding an HTTP/1 header block without the terminating empty line; no HTTP trailers, HTTP 200 | `MessageFraming_StatusInBody` |
+  | Message framing 2, 3 | data frames `0x00`; one trailer frame, last | `MessageFraming_TrailersLast` |
+  | Message framing 4 | trailers-only: the trailers in the headers, no body | `MessageFraming_TrailersOnly` |
+  | Message framing (errors) | a truncated frame, a request frame flagged as a trailer, or a corrupt or truncated base64 body ends in a trailer frame with a non-OK status under HTTP 200: `13`, and `14` for corrupt base64, grpc-go's code for a body read error | `MessageFraming_MalformedRequest` |
+  | User Agent | `X-User-Agent` reaches the gRPC server as metadata | `UserAgent_XUserAgentReachesServer` |
+  | Text-encoded streams 1 | `Accept: application/grpc-web-text` selects a text response | `TextStreams_AcceptSelectsText` |
+  | Text-encoded streams 2 | base64, no `Content-Transfer-Encoding`; each message encoded atomically, so every padded chunk ends on a message boundary | `TextStreams_MessagesEncodedAtomically` |
+  | Text-encoded streams 2 | a body of separately padded chunks reads as one stream | `TextStreams_ChunkedRequestBody` |
+
+  Design goals, HTTP/2 related behavior (no stream-id, no go-away), Retries,
+  Keep-alive, Bidi-streaming, Versioning and Browser-specific features state
+  nothing a server does, and have no test.
 
 ## Observability
 

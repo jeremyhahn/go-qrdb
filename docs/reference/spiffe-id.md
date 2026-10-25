@@ -1,5 +1,8 @@
 # The SPIFFE Identity and Verifiable Identity Document
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-24
+> spiffe/spiffe `standards/SPIFFE-ID.md` at commit `665a28f3253ecdce59f26f3ef29c0d6408b37c3d`, copied unmodified below this banner; indexed in [README.md](README.md).
+
 > **Stability: Stable** - see [STABILITY.md](STABILITY.md).
 
 ## Status of this Memo

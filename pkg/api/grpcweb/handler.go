@@ -95,7 +95,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req.RequestURI = ""
 	req.Header.Set("Content-Type", grpcContentType+"+"+subtype)
 	if textRequest {
-		req.Body = io.NopCloser(base64.NewDecoder(base64.StdEncoding, r.Body))
+		req.Body = io.NopCloser(newTextDecoder(r.Body))
 		req.ContentLength = -1
 		req.Header.Del("Content-Length")
 	}
@@ -208,6 +208,7 @@ type responseWriter struct {
 	wroteHeader bool
 	grpc        bool
 	trailers    []string
+	pending     []byte
 }
 
 var _ http.Flusher = (*responseWriter)(nil)
@@ -245,19 +246,35 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.w.WriteHeader(code)
 }
 
-// Write sends one or more gRPC data frames, unchanged in the binary encoding
-// and base64-encoded, padding included, in the text encoding.
+// Write sends gRPC data frames, unchanged in the binary encoding. The text
+// encoding holds bytes back until they complete a length-prefixed message and
+// base64-encodes whole messages, padding included, so that every padded chunk
+// ends on a message boundary: the server encodes messages atomically
+// (grpc-web-protocol.md, "Text-encoded (response) streams", 2), even when the
+// backend writes a message's header and payload in separate calls.
 func (rw *responseWriter) Write(p []byte) (int, error) {
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
-	if rw.text {
-		if _, err := io.WriteString(rw.w, base64.StdEncoding.EncodeToString(p)); err != nil {
-			return 0, err
-		}
-		return len(p), nil
+	if !rw.text {
+		return rw.w.Write(p)
 	}
-	return rw.w.Write(p)
+	rw.pending = append(rw.pending, p...)
+	if err := rw.encode(completeFrames(rw.pending)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// encode sends the first n held-back bytes of a text response as one base64
+// chunk.
+func (rw *responseWriter) encode(n int) error {
+	if n == 0 {
+		return nil
+	}
+	_, err := io.WriteString(rw.w, base64.StdEncoding.EncodeToString(rw.pending[:n]))
+	rw.pending = append(rw.pending[:0], rw.pending[n:]...)
+	return err
 }
 
 // Flush flushes the client connection. A writer that cannot flush buffers
@@ -271,9 +288,13 @@ func (rw *responseWriter) Flush() {
 
 // finish sends the trailers the backend set after its headers as the
 // response's final, trailer frame: lowercase "name: value" lines, each
-// ending CRLF, in sorted order.
+// ending CRLF, in sorted order. Bytes a text response still holds back, which
+// complete no message, go first as a chunk of their own.
 func (rw *responseWriter) finish() {
 	if !rw.grpc {
+		return
+	}
+	if err := rw.encode(len(rw.pending)); err != nil {
 		return
 	}
 	fields := make(map[string][]string)
@@ -304,7 +325,7 @@ func (rw *responseWriter) finish() {
 			block.WriteString("\r\n")
 		}
 	}
-	frame := make([]byte, 5, 5+block.Len())
+	frame := make([]byte, frameHeaderLen, frameHeaderLen+block.Len())
 	frame[0] = trailerFlag
 	binary.BigEndian.PutUint32(frame[1:], uint32(block.Len()))
 	frame = append(frame, block.String()...)
