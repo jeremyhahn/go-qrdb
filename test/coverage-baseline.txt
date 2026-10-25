@@ -191,7 +191,7 @@ github.com/jeremyhahn/go-qrdb/sdk/go/driver/node 96.34
 github.com/jeremyhahn/go-qrdb/sdk/go/gorm 100.00
 github.com/jeremyhahn/go-qrdb/sdk/go/node 90.62
 github.com/jeremyhahn/go-qrdb/sdk/go/secure 94.70
-github.com/jeremyhahn/go-qrdb/sdk/go/standalone 80.35
+github.com/jeremyhahn/go-qrdb/sdk/go/standalone 86.20
 github.com/jeremyhahn/go-qrdb/sdk/go/testutil/mvcchost 97.36
 github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness 94.04
 github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness 83.63
