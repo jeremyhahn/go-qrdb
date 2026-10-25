@@ -50,7 +50,7 @@ are not reconstructed here — their history is in the git log.
   `ErrNoPeerCertificate` and `TrustStateUnavailableError`, and
   `node.Node.IssuerVerifier()` returns the node's own pool, the one its mTLS
   authenticator verifies against (`node.ErrTrustPoolNotWired` before boot
-  builds it). A handler mounted on a node listener calls
+  builds it and after `Close`). A handler mounted on a node listener calls
   `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
   `PeerCertificates[0]` or building a verifier of its own.
 

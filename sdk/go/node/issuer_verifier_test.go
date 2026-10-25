@@ -223,4 +223,11 @@ func TestNode_IssuerVerifierIsTheWiredPool(t *testing.T) {
 	if verifier != sdk.IssuerVerifier(n.trustPool.Load()) {
 		t.Fatal("IssuerVerifier is not the pool the node wired onto its authenticator")
 	}
+
+	if err := n.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if verifier, err := n.IssuerVerifier(); verifier != nil || !errors.Is(err, ErrTrustPoolNotWired) {
+		t.Fatalf("IssuerVerifier after Close = %v, %v; want nil, ErrTrustPoolNotWired", verifier, err)
+	}
 }

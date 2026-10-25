@@ -1565,7 +1565,7 @@ func (n *Node) Authorizer() auth.Authorizer {
 // IssuerVerifier returns the node's dynamic client-auth trust pool
 // (pkg/clienttrust) as an auth.IssuerVerifier -- the SAME pool the mTLS
 // authenticator verifies against and the node's own *tls.Config is wired
-// onto -- or ErrTrustPoolNotWired before boot has built it.
+// onto -- or ErrTrustPoolNotWired before boot has built it and after Close.
 //
 // The pool's Wire turns a verifying ClientAuth mode into a non-verifying one,
 // so a connection it admitted carries no tls.ConnectionState.VerifiedChains.
@@ -2153,9 +2153,11 @@ func (n *Node) startTrustPoolRefresh(pool *clienttrust.Pool) {
 
 // stopTrustPool stops the trust pool's refresh loop and waits for it to exit,
 // so no refresh is left reading through a data plane about to close. The
-// pool's last snapshot stays loaded for the handshakes that still use it. It
-// is a no-op when no refresh loop runs.
+// pool's last snapshot stays loaded for the handshakes that still use it,
+// but IssuerVerifier stops handing it out: a verifier onto a stopped node is
+// a stale handle. The refresh stop is a no-op when no refresh loop runs.
 func (n *Node) stopTrustPool() {
+	n.trustPool.Store(nil)
 	if n.stopTrustPoolRefresh != nil {
 		n.stopTrustPoolRefresh()
 		n.stopTrustPoolRefresh = nil

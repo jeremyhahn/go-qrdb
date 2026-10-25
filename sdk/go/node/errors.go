@@ -270,7 +270,8 @@ func (e *ABACWiringError) Unwrap() error { return e.Err }
 var ErrNilWrappedAuthorizer = errors.New("node: authorizer wrapper returned nil")
 
 // ErrTrustPoolNotWired is returned by Node.IssuerVerifier before boot has
-// built the node's dynamic client-auth trust pool (pkg/clienttrust).
+// built the node's dynamic client-auth trust pool (pkg/clienttrust), and
+// after Close has retracted it.
 var ErrTrustPoolNotWired = errors.New("node: client-auth trust pool is not wired")
 
 // AuthMiddlewareWiringError indicates that the multi-protocol server's

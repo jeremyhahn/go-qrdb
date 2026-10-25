@@ -365,7 +365,7 @@ needs the caller's verified certificate resolves it against the node's own
 pool, the one its mTLS authenticator verifies against:
 
 ```go
-verifier, err := n.IssuerVerifier() // node.ErrTrustPoolNotWired before boot
+verifier, err := n.IssuerVerifier() // node.ErrTrustPoolNotWired before boot, after Close
 if err != nil {
 	return err
 }
