@@ -313,3 +313,54 @@ func TestNode_RefreshClientTrust_NothingWiredIsNil(t *testing.T) {
 		t.Fatalf("refreshClientTrust after a no-op wiring: %v, want nil", err)
 	}
 }
+
+// TestNode_SettleClientTrust_RebuildsAnAnnouncedChange pins the seam
+// CertEnrollment answers through: a change announced on ClientTrustChanges,
+// as a login CA coming into use with its first certificate is, is in the
+// pool's next handshake once settleClientTrust returns -- with no Run loop to
+// rebuild it.
+func TestNode_SettleClientTrust_RebuildsAnAnnouncedChange(t *testing.T) {
+	ctx := context.Background()
+	reg := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+	n := &Node{
+		TrustAnchors:       reg,
+		ClientTrustChanges: &trustanchor.Changes{},
+		Tenant:             listTenantsStub{infos: []tenant.TenantInfo{{ID: "tenant-a"}}},
+	}
+	pool := clienttrust.New()
+	pool.Wire(&tls.Config{ClientCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS13})
+	pool.SetKeyBProvider(emptyKeyBProvider{})
+	n.WireTrustAnchors(pool)
+	if err := n.settleClientTrust(ctx); err != nil {
+		t.Fatalf("first settleClientTrust: %v", err)
+	}
+
+	anchorPEM, anchorCert := genSelfSignedCA(t)
+	if _, err := reg.Add(ctx, "tenant-a", anchorPEM); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	n.ClientTrustChanges.Notify()
+	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err == nil {
+		t.Fatal("anchor trusted before any rebuild; the test cannot tell a settle from none")
+	}
+	if err := n.settleClientTrust(ctx); err != nil {
+		t.Fatalf("settleClientTrust: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err != nil {
+		t.Fatalf("anchor announced before settleClientTrust not trusted after it returned: %v", err)
+	}
+}
+
+// TestNode_SettleClientTrust_NothingWiredIsNil pins that a node with no
+// wired pool has no client trust to settle, and says so with nil.
+func TestNode_SettleClientTrust_NothingWiredIsNil(t *testing.T) {
+	ctx := context.Background()
+	if err := (&Node{}).settleClientTrust(ctx); err != nil {
+		t.Fatalf("settleClientTrust with no pool: %v, want nil", err)
+	}
+	n := &Node{} // TrustAnchors deliberately nil
+	n.WireTrustAnchors(clienttrust.New())
+	if err := n.settleClientTrust(ctx); err != nil {
+		t.Fatalf("settleClientTrust after a no-op wiring: %v, want nil", err)
+	}
+}

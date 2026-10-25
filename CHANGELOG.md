@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A certificate a node issues or enrolls is admitted on its next
+  handshake** (#1128). A tenant's first certificate brings its login CA into
+  use. Until now the TLS client trust learned of that CA only through an
+  asynchronous rebuild, so a login that dialed the moment the certificate came
+  back could be refused. `SignCertificate` and `EnrollCertificate` now bring
+  the node's client trust up to date before answering
+  (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
+
 ### Added
 
 - **The separation-of-duties posture is readable and its changes are

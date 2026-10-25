@@ -1792,7 +1792,8 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
 		service.WithEnrollmentTrustDomain(infra.SPIFFETrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
-		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
+		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy),
+		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)))
 	onboardingDeps := service.TenantOnboardingDeps{
 		Tenants:     n.Tenant,
 		Users:       n.User,
