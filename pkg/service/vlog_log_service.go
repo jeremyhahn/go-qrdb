@@ -77,16 +77,28 @@ func logID(ctx context.Context, ref LogRef, op string) (vlog.LogID, error) {
 	return id, nil
 }
 
+// logFeatures gates the sub-types every replica that implements verifiable
+// logs applies; logKeyFeatures adds the head-signing-key wire a create and a
+// key rotation carry, which an older replica refuses.
+var (
+	logFeatures    = []featuregate.Feature{featuregate.VerifiableLog}
+	logKeyFeatures = []featuregate.Feature{featuregate.VerifiableLog, featuregate.VerifiableLogKeys}
+)
+
 // propose sends one encoded OpVerifiableLog command to the tenant's group,
-// refused while the feature gate is not active there, and returns the
-// apply's value.
-func (s *logService) propose(ctx context.Context, tenantID string, encode func() ([]byte, error)) (uint64, error) {
+// refused while any of features is not active there, and returns the apply's
+// value.
+func (s *logService) propose(ctx context.Context, tenantID string, features []featuregate.Feature, encode func() ([]byte, error)) (uint64, error) {
 	host, shardID, err := s.resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
 		return 0, err
 	}
-	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.VerifiableLog) {
-		return 0, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID}
+	if gated, ok := host.(FeatureGatedHost); ok {
+		for _, f := range features {
+			if !gated.FeatureEnabled(shardID, f) {
+				return 0, &LogFeatureNotActiveError{TenantID: tenantID, ShardID: shardID, Feature: f}
+			}
+		}
 	}
 	cmd, err := encode()
 	if err != nil {
@@ -152,7 +164,7 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 			encode = func() ([]byte, error) { return protocol.EncodeVerifiableLogCreateWithKey(id, desc, *record) }
 		}
 	}
-	if _, err := s.propose(ctx, id.TenantID, encode); err != nil {
+	if _, err := s.propose(ctx, id.TenantID, logKeyFeatures, encode); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -175,7 +187,7 @@ func (s *logService) RotateKey(ctx context.Context, req *RotateKeyRequest) (*Rot
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.propose(ctx, id.TenantID, func() ([]byte, error) {
+	if _, err := s.propose(ctx, id.TenantID, logKeyFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogRotateKey(id, key, record)
 	}); err != nil {
 		return nil, err
@@ -221,7 +233,7 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 	if err != nil {
 		return nil, err
 	}
-	first, err := s.propose(ctx, id.TenantID, func() ([]byte, error) {
+	first, err := s.propose(ctx, id.TenantID, logFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogAppend(id, req.Entries)
 	})
 	if err != nil {
@@ -322,7 +334,7 @@ func (s *logService) SignHead(ctx context.Context, req *SignHeadRequest) (*SignH
 		return nil, err
 	}
 	note := signed.Encode()
-	if _, err := s.propose(ctx, id.TenantID, func() ([]byte, error) {
+	if _, err := s.propose(ctx, id.TenantID, logFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogCheckpoint(id, head.Size, head.Root, note)
 	}); err != nil {
 		return nil, err
@@ -336,7 +348,7 @@ func (s *logService) ExpireBodies(ctx context.Context, req *ExpireBodiesRequest)
 	if err != nil {
 		return nil, err
 	}
-	expired, err := s.propose(ctx, id.TenantID, func() ([]byte, error) {
+	expired, err := s.propose(ctx, id.TenantID, logFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogExpireBodies(id, req.Cutoff)
 	})
 	if err != nil {

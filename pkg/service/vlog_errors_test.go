@@ -17,11 +17,22 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 )
 
 func TestLogFeatureNotActiveError_NamesTenantAndShard(t *testing.T) {
-	msg := (&LogFeatureNotActiveError{TenantID: "acme", ShardID: 7}).Error()
-	for _, want := range []string{`"acme"`, "shard 7", "verifiable-log"} {
+	msg := (&LogFeatureNotActiveError{TenantID: "acme", ShardID: 7, Feature: featuregate.VerifiableLog}).Error()
+	for _, want := range []string{`"acme"`, "shard 7", "verifiable-log on"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() = %q, missing %q", msg, want)
+		}
+	}
+}
+
+func TestLogFeatureNotActiveError_NamesKeyFeature(t *testing.T) {
+	msg := (&LogFeatureNotActiveError{TenantID: "acme", ShardID: 7, Feature: featuregate.VerifiableLogKeys}).Error()
+	for _, want := range []string{`"acme"`, "shard 7", "verifiable-log-keys on"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("Error() = %q, missing %q", msg, want)
 		}

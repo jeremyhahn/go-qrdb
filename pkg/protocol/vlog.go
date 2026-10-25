@@ -17,6 +17,7 @@ package protocol
 import (
 	"encoding/binary"
 	"encoding/json"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -41,13 +42,17 @@ var _ CapabilityError = (*vlog.NotCompiledError)(nil)
 // [databaseLen:2 BE][database][logLen:2 BE][log], followed by the
 // sub-type's fields:
 //
-//	Create:       [descLen:4 BE][descriptor JSON], then optionally
-//	              [keyVersion:4 BE][PKCS#8 key record] to the end of the body
+//	Create:       [descLen:4 BE][descriptor JSON][key record]
 //	Append:       [count:4 BE] then count x [entryLen:4 BE][entry]
 //	Checkpoint:   [size:8 BE][rootLen:2 BE][root][signed checkpoint bytes]
 //	ExpireBodies: [cutoff:8 BE]
-//	RotateKey:    [keyLen:4 BE][vlog.HeadKey JSON], then optionally
-//	              [keyVersion:4 BE][PKCS#8 key record] to the end of the body
+//	RotateKey:    [keyLen:4 BE][vlog.HeadKey JSON][key record]
+//
+// A key record is one presence byte: keyRecordAbsent ends the body, and
+// keyRecordPresent is followed by [keyVersion:4 BE][PKCS#8 key record] to the
+// end of the body. A body of any other shape is refused. Create and RotateKey
+// are behind featuregate.VerifiableLogKeys as well; this is the only Create
+// encoding, and no release proposes another.
 
 const (
 	// OpVerifiableLog is the single opcode behind which every named
@@ -71,6 +76,12 @@ const (
 	// VerifiableLogSubtypeRotateKey makes a new key the log's current
 	// head-signing key.
 	VerifiableLogSubtypeRotateKey byte = 5
+)
+
+// The presence byte of a Create or RotateKey body's key record.
+const (
+	keyRecordAbsent  byte = 0
+	keyRecordPresent byte = 1
 )
 
 // EncodeVerifiableLogCreate creates an OpVerifiableLog/Create command
@@ -117,18 +128,19 @@ func encodeVerifiableLogKeyed(subtype byte, what string, id vlog.LogID, v any, k
 	if key != nil {
 		keySize = 4 + len(key.PKCS8)
 	}
-	fieldsSize, err := addSizes(4, len(value), keySize)
+	fieldsSize, err := addSizes(4, len(value), 1, keySize)
 	if err != nil {
 		return nil, err
 	}
 	return encodeVerifiableLog(subtype, id, fieldsSize, func(buf []byte) []byte {
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(value)))
 		buf = append(buf, value...)
-		if key != nil {
-			buf = binary.BigEndian.AppendUint32(buf, key.Version)
-			buf = append(buf, key.PKCS8...)
+		if key == nil {
+			return append(buf, keyRecordAbsent)
 		}
-		return buf
+		buf = append(buf, keyRecordPresent)
+		buf = binary.BigEndian.AppendUint32(buf, key.Version)
+		return append(buf, key.PKCS8...)
 	})
 }
 
@@ -264,9 +276,17 @@ func decodeVerifiableLogKeyed(tenantID string, body []byte, what string, v any) 
 		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + " malformed: " + err.Error()}
 	}
 	if len(rest) == 0 {
-		return id, nil, nil
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": key record truncated"}
 	}
-	if len(rest) <= 4 {
+	presence, rest := rest[0], rest[1:]
+	switch {
+	case presence == keyRecordAbsent && len(rest) == 0:
+		return id, nil, nil
+	case presence == keyRecordAbsent:
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": trailing bytes"}
+	case presence != keyRecordPresent:
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": key record presence " + strconv.Itoa(int(presence))}
+	case len(rest) <= 4:
 		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": signing key truncated"}
 	}
 	return id, &vlog.SigningKey{Version: binary.BigEndian.Uint32(rest), PKCS8: rest[4:len(rest):len(rest)]}, nil

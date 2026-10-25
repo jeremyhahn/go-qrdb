@@ -14,18 +14,25 @@
 
 package service
 
-import "strconv"
+import (
+	"strconv"
 
-// LogFeatureNotActiveError is returned by a LogService write while the
-// verifiable-log cluster feature is not yet active on every replica of the
-// tenant's group: a replica that cannot apply the opcode must never be sent it.
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+)
+
+// LogFeatureNotActiveError is returned by a LogService write while a cluster
+// feature the write's command needs (featuregate.VerifiableLog, and for a
+// create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
+// every replica of the tenant's group: a replica that cannot apply a command
+// must never be sent it.
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64
+	Feature  featuregate.Feature
 }
 
 func (e *LogFeatureNotActiveError) Error() string {
-	return "service: verifiable logs are not yet active for tenant " + strconv.Quote(e.TenantID) +
+	return "service: verifiable log write not yet active for tenant " + strconv.Quote(e.TenantID) +
 		" (shard " + strconv.FormatUint(e.ShardID, 10) + "): the cluster feature gate has not activated " +
-		"verifiable-log on every replica of this shard"
+		string(e.Feature) + " on every replica of this shard"
 }

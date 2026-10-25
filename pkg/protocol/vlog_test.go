@@ -17,6 +17,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -63,6 +64,36 @@ func TestEncodeVerifiableLogCreate_RoundTrips(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, desc) {
 		t.Fatalf("descriptor = %+v, want %+v", got, desc)
+	}
+}
+
+func TestEncodeVerifiableLogCreate_FramesTheKeyRecordExplicitly(t *testing.T) {
+	desc := vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256}
+	value, err := json.Marshal(desc)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	name := logNameBody(testLogID.Database, testLogID.Log)
+	for _, tc := range []struct {
+		name string
+		key  *vlog.SigningKey
+		want []byte
+	}{
+		{"absent", nil, []byte{keyRecordAbsent}},
+		{"present", &vlog.SigningKey{Version: 1, PKCS8: []byte("pk")}, []byte{keyRecordPresent, 0, 0, 0, 1, 'p', 'k'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := encodeVerifiableLogCreate(testLogID, desc, tc.key)
+			if err != nil {
+				t.Fatalf("encodeVerifiableLogCreate: %v", err)
+			}
+			_, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
+			want := binary.BigEndian.AppendUint32(append([]byte(nil), name...), uint32(len(value)))
+			want = append(append(want, value...), tc.want...)
+			if !bytes.Equal(body, want) {
+				t.Fatalf("body = %x, want %x", body, want)
+			}
+		})
 	}
 }
 
@@ -346,11 +377,17 @@ func TestDecodeVerifiableLog_RejectsMalformedBodies(t *testing.T) {
 		{"create: descriptor not JSON", decodeCreate, withName(append(u32(1), '{')...)},
 		{"create: descriptor length missing", decodeCreate, withName(0, 0)},
 		{"create: descriptor truncated", decodeCreate, withName(append(u32(3), '{', '}')...)},
-		{"create: signing key truncated", decodeCreate, withName(append(u32(2), '{', '}', 0, 0, 0, 1)...)},
+		{"create: signing key truncated", decodeCreate, withName(append(u32(2), '{', '}', 1, 0, 0, 0, 1)...)},
+		{"create: key record missing", decodeCreate, withName(append(u32(2), '{', '}')...)},
+		{"create: trailing bytes after an absent key", decodeCreate, withName(append(u32(2), '{', '}', 0, 'x')...)},
+		{"create: unknown key record presence", decodeCreate, withName(append(u32(2), '{', '}', 2, 0, 0, 0, 1, 'k')...)},
+		{"create: the descriptor without its length", decodeCreate, withName([]byte(`{"origin":"o","hash":"sha256"}`)...)},
 		{"rotate: key not JSON", decodeRotateKey, withName(append(u32(1), '[')...)},
 		{"rotate: key length missing", decodeRotateKey, withName(0, 0)},
 		{"rotate: key truncated", decodeRotateKey, withName(append(u32(3), '{', '}')...)},
-		{"rotate: signing key truncated", decodeRotateKey, withName(append(u32(2), '{', '}', 0, 0, 0, 2)...)},
+		{"rotate: signing key truncated", decodeRotateKey, withName(append(u32(2), '{', '}', 1, 0, 0, 0, 2)...)},
+		{"rotate: key record missing", decodeRotateKey, withName(append(u32(2), '{', '}')...)},
+		{"rotate: unknown key record presence", decodeRotateKey, withName(append(u32(2), '{', '}', 7, 0, 0, 0, 2, 'k')...)},
 		{"append: count missing", decodeAppend, withName(0, 0)},
 		{"append: count beyond body", decodeAppend, withName(append(u32(1<<31), 0, 0, 0, 0)...)},
 		{"append: entry length missing", decodeAppend, withName(append(u32(2), append(u32(4), 'a', 'b', 'c', 'd')...)...)},

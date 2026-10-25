@@ -27,6 +27,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -386,6 +387,56 @@ func TestLogService_Writes_RefusedBeforeGateActive(t *testing.T) {
 	}
 	if len(*cmds) != 0 {
 		t.Fatalf("a gated write proposed %d commands", len(*cmds))
+	}
+}
+
+// featureHost is a host on which exactly the features in active are active.
+type featureHost struct {
+	*mockHost
+	active map[featuregate.Feature]bool
+}
+
+var _ FeatureGatedHost = (*featureHost)(nil)
+
+func (h *featureHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool { return h.active[f] }
+
+func TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive(t *testing.T) {
+	ctx := acmeCtx()
+	desc := &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{hsmKey(t, newHSMProvider(), vlog.FirstKeyVersion)}}
+	inner, cmds := rotateHost(desc)
+	svc, err := NewLogService(LogServiceConfig{
+		Resolver: &fixedShardResolver{host: &featureHost{mockHost: inner, active: map[featuregate.Feature]bool{featuregate.VerifiableLog: true}}, shardID: 4},
+	})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	for name, write := range map[string]func() error{
+		"create": func() error {
+			_, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "o"})
+			return err
+		},
+		"create with key": func() error {
+			_, err := svc.CreateLog(ctx, &CreateLogRequest{LogRef: testLogRef, Origin: "o", SigningKeyType: vlog.SignatureEd25519})
+			return err
+		},
+		"rotate key": func() error {
+			_, err := svc.RotateKey(ctx, &RotateKeyRequest{LogRef: testLogRef, SigningKeyType: vlog.SignatureEd25519})
+			return err
+		},
+	} {
+		var inactive *LogFeatureNotActiveError
+		if err := write(); !errors.As(err, &inactive) || inactive.Feature != featuregate.VerifiableLogKeys || inactive.ShardID != 4 {
+			t.Fatalf("%s: err = %v, want LogFeatureNotActiveError for verifiable-log-keys on shard 4", name, err)
+		}
+	}
+	if len(*cmds) != 0 {
+		t.Fatalf("a write the replicas cannot all apply proposed %d commands", len(*cmds))
+	}
+	if _, err := svc.Append(ctx, &AppendRequest{LogRef: testLogRef, Entries: [][]byte{[]byte("e")}}); err != nil {
+		t.Fatalf("Append under verifiable-log alone: %v", err)
+	}
+	if len(*cmds) != 1 {
+		t.Fatalf("Append proposed %d commands, want 1", len(*cmds))
 	}
 }
 
