@@ -967,9 +967,9 @@ func TestStartEmbedded_FailedBarrierInit_DoesNotLogSealDisabled(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSPIFFETrustDomain_IsTheClusterDefault(t *testing.T) {
-	if got := embeddedSPIFFETrustDomain(); got != qrdbconfig.DefaultClusterTrustDomain {
-		t.Fatalf("embeddedSPIFFETrustDomain = %q, want the cluster default %q", got, qrdbconfig.DefaultClusterTrustDomain)
+func TestEmbeddedClusterTrustDomain_IsTheClusterDefault(t *testing.T) {
+	if got := embeddedClusterTrustDomain(); got != qrdbconfig.DefaultClusterTrustDomain {
+		t.Fatalf("embeddedClusterTrustDomain = %q, want the cluster default %q", got, qrdbconfig.DefaultClusterTrustDomain)
 	}
 }
 

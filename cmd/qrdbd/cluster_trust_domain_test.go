@@ -34,34 +34,38 @@ auth:
 `+authBody)
 }
 
-func TestResolveStartFlags_SPIFFETrustDomainDefaultsToTheClusterDefault(t *testing.T) {
+func TestResolveStartFlags_ClusterTrustDomainDefaultsToTheClusterDefault(t *testing.T) {
 	f := resolveWithArgs(t)
-	assert.Equal(t, qrdbconfig.DefaultClusterTrustDomain, f.spiffeTrustDomain)
+	assert.Equal(t, qrdbconfig.DefaultClusterTrustDomain, f.clusterTrustDomain)
 }
 
-func TestResolveStartFlags_SPIFFETrustDomainFollowsTheClusterFlag(t *testing.T) {
+func TestResolveStartFlags_ClusterTrustDomainFollowsTheFlag(t *testing.T) {
 	f := resolveWithArgs(t, "--cluster-trust-domain", "flag.example.com")
-	assert.Equal(t, "flag.example.com", f.spiffeTrustDomain)
+	assert.Equal(t, "flag.example.com", f.clusterTrustDomain)
 }
 
-func TestResolveStartFlags_SPIFFETrustDomainFollowsTheConfiguredClusterDomain(t *testing.T) {
+func TestResolveStartFlags_ClusterTrustDomainFollowsTheConfig(t *testing.T) {
 	cfgPath := writeTrustDomainConfig(t, `  cluster_trust_domain: "cluster.example.com"`)
 	f := resolveWithArgs(t, "--config", cfgPath)
-	assert.Equal(t, "cluster.example.com", f.spiffeTrustDomain)
+	assert.Equal(t, "cluster.example.com", f.clusterTrustDomain)
 }
 
-func TestResolveStartFlags_ClusterFlagOverridingTheConfigAlsoMovesTheSPIFFEDefault(t *testing.T) {
+func TestResolveStartFlags_ClusterFlagOverridesTheConfig(t *testing.T) {
 	cfgPath := writeTrustDomainConfig(t, `  cluster_trust_domain: "cluster.example.com"`)
 	f := resolveWithArgs(t, "--config", cfgPath, "--cluster-trust-domain", "flag.example.com")
-	assert.Equal(t, "flag.example.com", f.spiffeTrustDomain)
+	assert.Equal(t, "flag.example.com", f.clusterTrustDomain)
 }
 
-func TestResolveStartFlags_ExplicitSPIFFETrustDomainIsKept(t *testing.T) {
-	cfgPath := writeTrustDomainConfig(t, `  cluster_trust_domain: "cluster.example.com"
-  spiffe_trust_domain: "tenants.example.com"`)
-	f := resolveWithArgs(t, "--config", cfgPath, "--cluster-trust-domain", "flag.example.com")
-	assert.Equal(t, "tenants.example.com", f.spiffeTrustDomain)
-	assert.Equal(t, "flag.example.com", f.clusterTrustDomain)
+// auth.spiffe_trust_domain was folded into auth.cluster_trust_domain and
+// deleted: a config still carrying it fails the way any unknown key does.
+func TestResolveStartFlags_SPIFFETrustDomainKeyIsRefused(t *testing.T) {
+	cfgPath := writeTrustDomainConfig(t, `  spiffe_trust_domain: "tenants.example.com"`)
+	cmd, f := newStartCmdWithFlags()
+	require.NoError(t, cmd.ParseFlags([]string{"--config", cfgPath}))
+	err := resolveStartFlags(cmd, f)
+	var ue *qrdbconfig.UnknownFieldError
+	require.True(t, errors.As(err, &ue), "resolveStartFlags = %v, want an UnknownFieldError", err)
+	assert.Equal(t, "auth.spiffe_trust_domain", ue.Path)
 }
 
 func TestResolveStartFlags_UnusableClusterFlagIsRefused(t *testing.T) {

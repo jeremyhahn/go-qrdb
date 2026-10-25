@@ -107,13 +107,13 @@ func TestBootstrapUserRoleStores_OversizedReplicaID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: bootstrapAuthEnforcement — spiffeTrustDomain non-empty branch
+// start.go: bootstrapAuthEnforcement — clusterTrustDomain non-empty branch
 // ---------------------------------------------------------------------------
 
-// TestBootstrapAuthEnforcement_WithSPIFFETrustDomain verifies that passing a
-// non-empty spiffeTrustDomain causes NewMTLSAuthenticatorWithTrustDomain to be
+// TestBootstrapAuthEnforcement_WithClusterTrustDomain verifies that passing a
+// non-empty clusterTrustDomain causes NewMTLSAuthenticatorWithTrustDomain to be
 // called instead of NewMTLSAuthenticator, covering line 1907-1909.
-func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
+func TestBootstrapAuthEnforcement_WithClusterTrustDomain(t *testing.T) {
 	store := make(map[string][]byte)
 	mock := newMockKVStore(store)
 	tx := newMockTransactionServicer(store)

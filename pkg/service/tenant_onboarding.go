@@ -264,6 +264,11 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 	if req.AdminUsername == "" {
 		return nil, &TenantOnboardingFieldError{Field: "admin_username"}
 	}
+	// The tenant ID is its principals' SPIFFE trust domain: refuse one no
+	// certificate could ever name before anything is written.
+	if err := tenant.ValidateTenantIDTrustDomain(req.ID, s.trustDomain); err != nil {
+		return nil, err
+	}
 	isolation := req.IsolationType
 	if isolation == "" {
 		// Unspecified isolation is a prefix tenant, as tenant creation has

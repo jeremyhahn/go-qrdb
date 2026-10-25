@@ -280,7 +280,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		AuditLogger:            trail,
 		CertKeyProviderFactory: b.certKeyProviderFactory,
 		TrustAnchors:           b.trustAnchors,
-		SPIFFETrustDomain:      embeddedSPIFFETrustDomain(),
+		ClusterTrustDomain:     embeddedClusterTrustDomain(),
 		Logger:                 slog.Default(),
 	})
 	if svcErr != nil {
@@ -405,15 +405,15 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	return nil
 }
 
-// embeddedSPIFFETrustDomain is the trust domain the embedded node issues
+// embeddedClusterTrustDomain is the trust domain the embedded node issues
 // tenant principals under and its mTLS authenticator pins. The embedded
 // composer carries no auth configuration, so it takes the default an unset
 // one takes in the daemon: the cluster's own trust domain
-// (config.AuthConfig.EffectiveSPIFFETrustDomain). Without it every issuer
+// (config.AuthConfig.EffectiveClusterTrustDomain). Without it every issuer
 // would refuse, since a tenant certificate needs a SPIFFE ID SAN agreeing
 // with its OU.
-func embeddedSPIFFETrustDomain() string {
-	return qrdbconfig.AuthConfig{}.EffectiveSPIFFETrustDomain()
+func embeddedClusterTrustDomain() string {
+	return qrdbconfig.AuthConfig{}.EffectiveClusterTrustDomain()
 }
 
 // openEmbeddedAudit opens the compliance trail cfg.Audit enables, under the
