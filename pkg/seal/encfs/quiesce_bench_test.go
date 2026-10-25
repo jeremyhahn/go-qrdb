@@ -23,14 +23,41 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
+// gatedKEK is a sealable KEK whose barrier has a quiesce gate, as a
+// StorageBarrier does, so every admitted write takes and releases a lease.
+type gatedKEK struct {
+	sealableKEK
+	gate quiesce.Gate
+}
+
+func (k *gatedKEK) Quiesce() *quiesce.Gate { return &k.gate }
+
+// benchFS builds the encfs file system each benchmark case writes through.
+var benchFS = map[string]func() vfs.FS{
+	"lease": func() vfs.FS {
+		return pebblestore.WrapVFS(vfs.NewMem(), func(base filesys.FS) filesys.FS { return encfs.New(base, &gatedKEK{}) })
+	},
+	"noLease": func() vfs.FS {
+		return pebblestore.WrapVFS(vfs.NewMem(), func(base filesys.FS) filesys.FS { return encfs.New(base, &sealableKEK{}) })
+	},
+}
+
 // BenchmarkPebbleStorage_SetUnderEncfs measures the durable write path of a
-// PebbleStorage over an encfs file system, the path the seal watch admits.
+// PebbleStorage over an encfs file system, the path the seal watch admits,
+// with and without a quiesce lease on it.
 func BenchmarkPebbleStorage_SetUnderEncfs(b *testing.B) {
+	for _, name := range []string{"lease", "noLease"} {
+		b.Run(name, func(b *testing.B) { benchSetUnderEncfs(b, benchFS[name]()) })
+	}
+}
+
+func benchSetUnderEncfs(b *testing.B, fs vfs.FS) {
 	cfg := pebblestore.TestConfig("db")
-	cfg.FS = pebblestore.WrapVFS(vfs.NewMem(), func(base filesys.FS) filesys.FS { return encfs.New(base, &sealableKEK{}) })
+	cfg.FS = fs
 	store, err := pebblestore.New(cfg)
 	if err != nil {
 		b.Fatalf("New: %v", err)
