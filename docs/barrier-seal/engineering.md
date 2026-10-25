@@ -569,6 +569,18 @@ services and to the server, which wraps the node's sealed-window probe with
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
   close it.
+- **Every Pebble database over the barrier's encrypting file system opens
+  under a seal watch.** Pebble panics when the barrier refuses the WAL file a
+  flush or memtable rotation creates, so `pkg/storage/pebble.Open` attaches a
+  `SealWatch` that each write, flush and compaction checks first; a sealed
+  barrier refuses with `*SealedError`, which unwraps to `ErrBarrierSealed`.
+  The watch applies to `PebbleStorage` from `New`, the `pkg/store` state
+  machines, the stores those machines build over their own database with
+  `NewFromDB` and `WithSealWatch` (the MVCC store and the time-series
+  auto-commit), the vector store (whose ID allocation refuses before it spends
+  an ID), and the destination of `database.ReencryptPebbleStore`. Read-only
+  opens and read-only `NewFromDB` views carry no watch. The check and the write
+  are not atomic, so a seal landing between them can still reach the WAL.
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
