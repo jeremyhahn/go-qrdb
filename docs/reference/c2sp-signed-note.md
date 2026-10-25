@@ -8,6 +8,9 @@ description: Cleartext signed messages
 
 # Note
 
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-25
+> C2SP/C2SP `signed-note.md` at commit `fea9004f73fbec8cf7a8b1936430e2487eb23b55`, copied unmodified below this banner; indexed in [README.md](README.md).
+
 A note is text signed by one or more keys.
 
 The text MUST be ignored unless the note is signed by a trusted key and the
