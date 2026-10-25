@@ -250,3 +250,47 @@ func TestSealWatch_AttachWithoutListenerLogsOtherErrors(t *testing.T) {
 		t.Fatalf("logged %q; want the unsealed error and one sealed error", logger.errors)
 	}
 }
+
+// TestSealWatch_FlushWokenAfterResumeReturnsTheEpisodeError drives the
+// interleaving in which a sealed background error ends a flush's wait and a
+// successful flush or compaction ends the episode before the waiter runs. The
+// waiter's flush never completed, so it must report the episode's error, not
+// success.
+func TestSealWatch_FlushWokenAfterResumeReturnsTheEpisodeError(t *testing.T) {
+	logger := &recordingLogger{}
+	w := NewSealWatch(logger, isTestSealed)
+	w.mu.Lock()
+	ep := w.episode
+	w.mu.Unlock()
+
+	w.observe(errTestSealed)
+	w.resume()
+	if err := w.Err(); err != nil {
+		t.Fatalf("Err() after resume = %v; want nil", err)
+	}
+
+	err := ep.await(make(chan struct{}))
+	var sealed *SealedError
+	if !errors.As(err, &sealed) || !errors.Is(err, errTestSealed) {
+		t.Fatalf("await = %v; want a *SealedError wrapping the episode's error", err)
+	}
+}
+
+// TestSealWatch_CompletedFlushSucceeds checks that a flush whose done channel
+// fires returns nil, whether or not an episode began while it waited.
+func TestSealWatch_CompletedFlushSucceeds(t *testing.T) {
+	w := NewSealWatch(&recordingLogger{}, isTestSealed)
+	w.mu.Lock()
+	ep := w.episode
+	w.mu.Unlock()
+	done := make(chan struct{})
+	close(done)
+
+	if err := ep.await(done); err != nil {
+		t.Fatalf("await with a completed flush = %v; want nil", err)
+	}
+	w.observe(errTestSealed)
+	if err := ep.await(done); err != nil {
+		t.Fatalf("await with a completed flush in an episode = %v; want nil", err)
+	}
+}
