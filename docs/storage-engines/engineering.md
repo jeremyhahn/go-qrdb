@@ -83,12 +83,14 @@ func (e *Encryptor) Wrap(base vfs.FS) vfs.FS        // file engine: over its bas
 ```go
 // pkg/server/lifecycle
 func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor,
-	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, error)
 ```
 
 `NewLocalStorage` opens `pebble` and `file` through `enc`; it is the
 constructor every standalone node store goes through — the daemon, the SDK
-node and the embedded server. A raft replica's `file` storage takes the same
+node and the embedded server. It returns the storage alone, never the raw
+Pebble handle beneath it, so every write passes the store's seal watch
+([barrier-seal](../barrier-seal/engineering.md)). A raft replica's `file` storage takes the same
 encryptor from `statemachine.StorageConfig.Encryptor`.
 
 `pkg/database` — re-encrypting a `file` store under a new key, the file

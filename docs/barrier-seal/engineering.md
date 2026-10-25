@@ -578,7 +578,13 @@ services and to the server, which wraps the node's sealed-window probe with
   machines, the stores those machines build over their own database with
   `NewFromDB` and `WithSealWatch` (the MVCC store and the time-series
   auto-commit), the vector store (whose ID allocation refuses before it spends
-  an ID), and the destination of `database.ReencryptPebbleStore`. Read-only
+  an ID), a `pkg/index/pebbleindex` index built over a watched database, the
+  HNSW index's `Save` into a watched database, and the destination of
+  `database.ReencryptPebbleStore`. The raft-free composition in
+  `pkg/server/lifecycle` (`NewLocalStorage`, used by `qrdbd`, the standalone
+  server and the embedded node) returns only the `storage.Storage`, never the
+  raw `*pebble.DB` beneath it, so every write to that database passes the
+  watch. Read-only
   opens and read-only `NewFromDB` views carry no watch. The check and the write
   are not atomic, so a seal landing between them can still reach the WAL.
 - **Until `cluster-seal` is activated, sealing is node-local** and every
