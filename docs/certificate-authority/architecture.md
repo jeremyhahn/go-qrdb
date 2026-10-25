@@ -1109,6 +1109,18 @@ actually trusts (see `SetClusterCA`/`SetKeyBProvider` above). A `nil`
 check unenforced on both paths — but that is the ONLY case left
 unenforced, not every case lacking a Key B provider.
 
+A composer's own handler mounted on a node listener reaches the same pool
+through the SDK, never through a verifier it builds itself and never by
+trusting `PeerCertificates[0]`: `node.Node.IssuerVerifier()` returns the
+node's `clienttrust.Pool` as an `sdk.IssuerVerifier`
+(`node.ErrTrustPoolNotWired` before boot builds it), and
+`sdk.ResolveVerifiedChains(ctx, state, verifier)` — `auth.ResolveVerifiedChains`
+re-exported — returns the chain the pool verified for a connection whose
+`VerifiedChains` the `ClientAuth` remap left empty. It refuses with
+`sdk.ErrNoPeerCertificate` (no certificate), `sdk.ErrInvalidClientCertificate`
+(one the pool does not trust) or `*sdk.TrustStateUnavailableError` (refused
+while the pool could not read its trust state; retry).
+
 ## Trust boundaries
 
 - **Each tenant's CA key is stored like every other replicated system

@@ -357,6 +357,35 @@ field, so with `ChainReplaceMTLS` a QUIC caller authenticates only if a
 replacing authenticator accepts what QUIC does carry: the verified client
 certificate in `sdk.TLSStateFromContext`.
 
+**On a listener the node's trust pool wired, `VerifiedChains` is empty.** The
+dynamic client-auth trust pool remaps `RequireAndVerifyClientCert` to
+`RequireAnyClientCert` (and `VerifyClientCertIfGiven` to `RequestClientCert`)
+and verifies the peer itself, so crypto/tls builds no chain. A handler that
+needs the caller's verified certificate resolves it against the node's own
+pool, the one its mTLS authenticator verifies against:
+
+```go
+verifier, err := n.IssuerVerifier() // node.ErrTrustPoolNotWired before boot
+if err != nil {
+	return err
+}
+chains, err := sdk.ResolveVerifiedChains(ctx, state, verifier)
+if err != nil {
+	return err
+}
+leaf := chains[0][0]
+```
+
+| Error | When |
+|---|---|
+| `sdk.ErrNoPeerCertificate` | the connection presented no certificate, or `state` is nil |
+| `sdk.ErrInvalidClientCertificate` | the pool does not trust the certificate |
+| `*sdk.TrustStateUnavailableError` | the pool refused while it could not read its trust state; retry |
+
+`ResolveVerifiedChains` returns `state.VerifiedChains` unchanged when crypto/tls
+built them. Never read `PeerCertificates[0]` as the caller's identity, and
+never build a second verifier: the pool is the one canonical verifier.
+
 Construction refuses an invalid chain, wrapped in `*node.AuthMiddlewareWiringError`:
 
 | Error | When |
