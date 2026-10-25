@@ -419,8 +419,12 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 // holdDocker is a stub docker that keeps its images and containers as files
 // under $STUB_DIR (an image file holds its .Created and its
 // .Metadata.LastTagTime.Unix, the reaper's inspect format; a container file
-// its image, then its .Created) and, as dockerd does, refuses `image rm` of an
-// image any container uses, in any state. buildx builds and tags
+// its image, then its .Created). An image file may carry a second line, the
+// image ID: names with one ID are one image, and a name without the line is an
+// image of its own. As dockerd does, `image rm` of one of several names only
+// untags it, and of an image's last name refuses when any container, in any
+// state, uses the image; `ps -aq --filter ancestor=<name>` lists those
+// containers. buildx builds and tags
 // $STUB_IMAGE, so a build sets both times to now. A
 // $STUB_DIR/vanish file makes the next `create` find the image gone, as a
 // reaper running between docker-build-it's check and its hold would. A
@@ -430,6 +434,20 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 const holdDocker = `#!/bin/sh
 img=$STUB_DIR/images ctr=$STUB_DIR/containers
 mkdir -p "$img" "$ctr"
+# id_of prints the image a name refers to: the second line of its file, or
+# the name itself, so a name seeded alone is an image of its own.
+id_of() {
+	id=
+	[ -f "$img/$1" ] && { read -r _; read -r id; } < "$img/$1"
+	echo "${id:-$1}"
+}
+# ctr_id prints the image container file $1 was created from.
+ctr_id() {
+	used= id=
+	{ read -r used; read -r _; read -r id; } < "$1"
+	[ -n "$id" ] || id=$(id_of "$used")
+	echo "$id"
+}
 case "$1 $2" in
 "buildx version") exit 0 ;;
 "buildx build") : > "$STUB_DIR/built"; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" > "$img/$STUB_IMAGE"; exit 0 ;;
@@ -439,11 +457,17 @@ case "$1 $2" in
 	[ "$3" = -f ] && cat "$img/$ref"
 	exit 0 ;;
 "image rm")
+	# Docker untags one of several names whether or not a container uses
+	# the image, and refuses only the last name of an image in use.
 	[ -f "$img/$3" ] || exit 1
+	id=$(id_of "$3")
+	for f in $(find "$img" -type f); do
+		ref=${f#"$img"/}
+		[ "$ref" != "$3" ] && [ "$(id_of "$ref")" = "$id" ] && { rm -f "$img/$3"; exit 0; }
+	done
 	for c in "$ctr"/*; do
 		[ -f "$c" ] || continue
-		{ read -r used; } < "$c"
-		[ "$used" = "$3" ] && { echo "conflict: unable to remove $3: image is being used by a container" >&2; exit 1; }
+		[ "$(ctr_id "$c")" = "$id" ] && { echo "conflict: unable to remove $3: image is being used by a container" >&2; exit 1; }
 	done
 	rm -f "$img/$3"; exit 0 ;;
 "images --filter") for i in "$img"/*; do [ -f "$i" ] && basename "$i"; done; exit 0 ;;
@@ -464,7 +488,12 @@ case "$1 $2" in
 	while [ $# -gt 0 ]; do case $1 in --name) name=$2; shift ;; *) ref=$1 ;; esac; shift; done
 	[ -f "$STUB_DIR/vanish" ] && rm -f "$STUB_DIR/vanish" "$img/$ref"
 	[ -f "$img/$ref" ] || { echo "No such image: $ref" >&2; exit 1; }
-	printf '%s\n%s\n' "$ref" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ctr/$name"; exit 0 ;;
+	printf '%s\n%s\n%s\n' "$ref" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(id_of "$ref")" > "$ctr/$name"; exit 0 ;;
+"ps -aq")
+	case $4 in ancestor=*) ;; *) exit 99 ;; esac
+	id=$(id_of "${4#ancestor=}")
+	for c in "$ctr"/*; do [ -f "$c" ] && [ "$(ctr_id "$c")" = "$id" ] && echo "${c##*/}"; done
+	exit 0 ;;
 "rm -f" | "rm -v")
 	shift 2
 	for name; do [ -f "$ctr/$name" ] || exit 1; rm -f "$ctr/$name"; done; exit 0 ;;
@@ -622,6 +651,51 @@ func TestIntegrationFeatureCoverage_PulledImagesAreReaped(t *testing.T) {
 	}
 	if _, err := os.Stat(hold); err != nil {
 		t.Fatalf("the reaper removed a live job's hold:\n%s", reaped)
+	}
+}
+
+// TestIntegrationFeatureCoverage_HeldImageKeepsEveryName: an image known by
+// several names (the producer's local content tag, its registry tag and the
+// digest reference a consumer pulled) and held by one job keeps every name.
+// Docker untags any but the last name of an image in use without complaint,
+// so a reaper that relied on its refusal dropped the digest reference the
+// holder's next `docker create --pull never` runs. Released, every name goes.
+func TestIntegrationFeatureCoverage_HeldImageKeepsEveryName(t *testing.T) {
+	root := repoRoot(t)
+	const reg, old, id = "db.example.com/jeremyhahn/", "2000-01-01T00:00:00Z", "sha256:image"
+	local := featureImageRepo + ":0123456789abcdef"
+	digestRef := reg + featureImageRepo + "@sha256:" + strings.Repeat("b", 64)
+	names := []string{local, reg + featureImageRepo + ":0123456789abcdef-pr", digestRef}
+	for _, held := range []bool{true, false} {
+		t.Run(map[bool]string{true: "held", false: "released"}[held], func(t *testing.T) {
+			stub := holdStub(t, local, old, neverTagged)
+			for _, n := range names {
+				f := filepath.Join(stub, "images", filepath.FromSlash(n))
+				if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+					t.Fatalf("mkdir stub image: %v", err)
+				}
+				if err := os.WriteFile(f, []byte(old+" "+neverTagged+"\n"+id+"\n"), 0o600); err != nil {
+					t.Fatalf("seed stub image: %v", err)
+				}
+			}
+			ctr := filepath.Join(stub, "containers")
+			if err := os.MkdirAll(ctr, 0o700); err != nil {
+				t.Fatalf("mkdir stub containers: %v", err)
+			}
+			if held {
+				hold := filepath.Join(ctr, "qrdb-ci-hold-1-1-key-value")
+				body := digestRef + "\n" + time.Now().UTC().Format(time.RFC3339) + "\n" + id + "\n"
+				if err := os.WriteFile(hold, []byte(body), 0o600); err != nil {
+					t.Fatalf("seed stub hold: %v", err)
+				}
+			}
+			reaped := runHoldStub(t, root, stub, local, "scripts/reap-stale-ci-stacks.sh", featureReapPrefix)
+			for _, n := range names {
+				if _, err := os.Stat(filepath.Join(stub, "images", filepath.FromSlash(n))); (err == nil) != held {
+					t.Fatalf("%s kept: %v; want %v:\n%s", n, err == nil, held, reaped)
+				}
+			}
+		})
 	}
 }
 

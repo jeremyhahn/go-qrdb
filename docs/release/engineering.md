@@ -107,7 +107,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg needs `docker-build` and runs exactly five steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"`, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and an `IT_IMAGE` that is `docker-build`'s `it_ref` output (DS-3516); `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that refuses to remove an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; the reaper removes a stale image pulled from the registry, by tag and by digest, and keeps one a hold uses, one that is fresh, and another repository's; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg needs `docker-build` and runs exactly five steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `scripts/ci-registry.sh pull "$IT_IMAGE" "$IT_HOLD"`, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and an `IT_IMAGE` that is `docker-build`'s `it_ref` output (DS-3516); `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that untags one of several names freely and refuses to remove the last name of an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; the reaper removes a stale image pulled from the registry, by tag and by digest, and keeps one a hold uses (every name of it: the local tag, the registry tag and the digest), one that is fresh, and another repository's; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/buildgates/ci_image_digest_test.go` (run by `make test` and `make check-action-pins` with the rest of `test/buildgates`) | `docker-build` sets `packages: write`, pushes with `scripts/ci-registry.sh push`, validates its outputs against `^[^@ ]+@sha256:[0-9a-f]{64}$` and outputs `toolchain_ref` and `it_ref` from a step; every other job that reads one of those outputs needs `docker-build`, sets `packages: read`, has no `runs-on` that follows `docker-build`, reads no other output, pulls each output it reads with `scripts/ci-registry.sh pull` bound to that output before its first stage, and never probes for or builds an image (`docker image inspect`, `docker build`, `make docker-build-*`); a job that runs `scripts/in-toolchain-image.sh` or `make integration-test` must be such a consumer; at least five consumers (DS-3516). A copy of ci.yml with `lint` reverted to `docker image inspect \|\| make docker-build-toolchain` must fail it, and each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag-ollama`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
@@ -168,8 +168,10 @@ repeats the value a scanner exists to keep out of the tree.
 **The images are built once per run and pulled by digest** (DS-3516). The
 `docker-build` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag) and pushes each to the
-Gitea registry, derived from `github.server_url` and never written in a
-tracked file, under the repository owner, as `qrdb-ci-toolchain` and
+forge's registry (handbook `devops.md` §2): the Gitea registry, which shares
+the web UI's host and port and so is derived from `github.server_url` and
+never written in a tracked file, or `ghcr.io` when the run is on GitHub,
+under the repository owner, as `qrdb-ci-toolchain` and
 `qrdb-ci-it`. `scripts/ci-registry.sh push` tags each
 `<content-hash>-<trust>`, the 16-hex hash the Makefile built it under and the
 trust class (`main` for a push to `main`, `pr` otherwise), and prints the
@@ -382,8 +384,12 @@ toolchain consumers `TOOLCHAIN_HOLD`), and `scripts/ci-registry.sh pull`
 creates a container of that name from the pulled image, never started, before
 it returns. The job's `always()` teardown removes it
 (`scripts/ci-registry.sh release`, or `make docker-down-it` in a leg and the
-soak). `docker image rm` without force refuses an image any container uses, so
-the reaper cannot remove a held image. If the reaper removes the image between
+soak). The reaper asks `docker ps -a --filter ancestor=<name>` before it
+removes any name of an aged image and keeps every name of one a container
+uses, so it cannot remove a held image or any reference to it. `docker image
+rm` alone would not be enough: it refuses only an image's last name and untags
+any other, so the producer's local tag plus the registry references would let
+it drop the digest a holding job's next `docker create` runs. If the reaper removes the image between
 the pull and the hold, `docker create --pull never` fails and the next attempt
 pulls it again. `docker-build` holds what it built only from the build to the
 push and releases that hold under `always()`; nothing hands a hold from one job
@@ -391,8 +397,9 @@ to another, since each consumer pulls on its own runner. A job that dies
 before its teardown leaves a `qrdb-ci-` container in the created state, which
 the reaper removes once it is stale, and the image in the same pass.
 `feature_jobs_gate_test.go` runs the build recipe and the reaper against a stub
-`docker` that refuses to remove an image a container uses, and fails if the
-reaper removes a held image, local or pulled.
+`docker` that, as dockerd does, untags one of several names of an image freely
+and refuses only the last name of one a container uses, and fails if the
+reaper removes a held image or any of its names, local or pulled.
 
 A feature that selects nothing says so and passes, before any image is built,
 as `integration-test-<feature>` does. On a host, `make integration-test-<feature>`

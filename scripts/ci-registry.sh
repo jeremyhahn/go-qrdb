@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ci-registry.sh moves the CI images between this job and the Gitea registry
+# ci-registry.sh moves the CI images between this job and the forge's
+# container registry, the Gitea registry or GHCR on the public mirror
 # (DS-3516). docker-build builds each image once per run and pushes it; every
 # other job pulls that exact image by digest. Nothing here builds an image: a
 # consumer that cannot pull fails, loudly, rather than run its stages on an
@@ -10,8 +11,9 @@
 #   ci-registry.sh release <hold>...                   removes the holds
 #   ci-registry.sh check-ref <ref>...                  validates digest references
 #
-# The registry is the forge the run belongs to, derived from GITHUB_SERVER_URL;
-# no address is written here or in ci.yml. The owner is GITHUB_REPOSITORY_OWNER.
+# The registry is the forge the run belongs to, derived from GITHUB_SERVER_URL:
+# ghcr.io on GitHub, the forge's own host[:port] on Gitea (handbook devops.md
+# §2); no internal address is written here or in ci.yml. The owner is GITHUB_REPOSITORY_OWNER.
 # push and pull log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the latter
 # read from the environment and fed to docker on stdin only. The login lives in
 # a private DOCKER_CONFIG that is deleted on exit, so the credential outlives
@@ -39,14 +41,27 @@ die() {
 	exit 1
 }
 
-# registry_host prints host[:port] of GITHUB_SERVER_URL.
+# registry_host prints the registry of the forge at GITHUB_SERVER_URL
+# (handbook devops.md §2): on GitHub that is GHCR, ghcr.io, which is not the
+# forge's own host; on Gitea the registry shares the web UI's host[:port], so
+# it is derived from the URL rather than written down.
 registry_host() {
 	local url=${GITHUB_SERVER_URL:-}
 	[ -n "$url" ] || die "GITHUB_SERVER_URL is empty: the registry is derived from it, never written down"
 	local host=${url#*://}
 	host=${host%%/*}
 	[[ $host =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || die "GITHUB_SERVER_URL does not name a registry host"
-	printf '%s\n' "${host,,}"
+	host=${host,,}
+	case $host in github.com) host=ghcr.io ;; esac
+	printf '%s\n' "$host"
+}
+
+# registry_name names the registry at host $1 in an error message.
+registry_name() {
+	case $1 in
+	ghcr.io) printf 'GHCR\n' ;;
+	*) printf 'the Gitea registry\n' ;;
+	esac
 }
 
 registry_owner() {
@@ -68,7 +83,7 @@ login() {
 	export DOCKER_CONFIG
 	trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 	if ! printf '%s' "$CI_REGISTRY_TOKEN" | docker login "$host" -u "$CI_REGISTRY_USER" --password-stdin >/dev/null; then
-		die "the Gitea registry refused the login: the run's token cannot use $(registry_owner)'s container packages"
+		die "$(registry_name "$host") refused the login: the run's token cannot use $(registry_owner)'s container packages"
 	fi
 }
 
@@ -86,7 +101,7 @@ push() {
 	local target=$repo:$hash-$trust
 	login "$host"
 	docker tag "$image" "$target" || die "cannot tag $image as $target"
-	docker push "$target" >&2 || die "the Gitea registry refused the push of $target"
+	docker push "$target" >&2 || die "$(registry_name "$host") refused the push of $target"
 	local digest="" d
 	while IFS= read -r d; do
 		case $d in "$repo@"*) digest=$d ;; esac
