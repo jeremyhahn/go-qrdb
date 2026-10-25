@@ -1,4 +1,11 @@
 # ci-template: v1.25 — canonical CI for all first-party Go repos.
+# v1.27.0, the lint-gates job alone (DS-3603, DS-3609; Company Agent m1192 (6),
+# item 27, m1207 (1)): `make lint-gates` runs as its own job, in parallel with
+# the lint job's `make lint`, not as a step after it, so Lint's wall time is
+# the longer of the two and not their sum. The lint job's lint-gates step is
+# gone, so the gates run once. CUSTOMIZE (go-qrdb): v1.26's draft skip and
+# v1.27's header are not adopted here; the job takes docker-build's
+# toolchain image, as the lint job does.
 # v1.25 (Company Agent m857, 2026-10-20): main has one concurrency group per
 # event, so a newer push to main cancels the older in-progress main push run.
 # At 20:00Z go-qrdb had three main-push runs in progress on three commits and
@@ -567,18 +574,18 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
   # template's one image job (m601 (a)). The stages run in two jobs side by
-  # side, lint (make lint, make lint-gates, make lint-sweeps) and image (the
+  # side, lint (make lint, make lint-sweeps) and image (the
   # tag assertion, build, the release cross-build, the unit suites, security,
   # deps-check, trivy image), in the one toolchain image docker-build built,
   # each with its own limit: together they outlast one job's 90 minutes on a
   # loaded runner, where lint with lint-sweeps takes most of an hour and
   # coverage about half of one.
-  # lint is the PR tier and is all a docs-only PR runs of the stages; image is
-  # the code tier (DS-3160) and skips there. Only image holds the integration
+  # lint is the PR tier and, with lint-gates (below), is all a docs-only PR
+  # runs of the stages; image is the code tier (DS-3160) and skips there. Only image holds the integration
   # image (IT_HOLD): lint reads the toolchain image alone, so it neither takes
   # nor releases a hold.
   lint:
-    name: Devcontainer image [lint, lint-gates, lint-sweeps]
+    name: Devcontainer image [lint, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
     timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
@@ -648,29 +655,106 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
-      # CUSTOMIZE (go-qrdb): the repository gates the Lint job ran beside
-      # `make lint` (Makefile LINT_GATES): the script, workflow, generated-code
-      # and module gates, `make vet` over the default tag set, the secure
-      # analyzer's self-test and the sdk/go linters. -k reports every failing
-      # gate in one pass. The network is as it was when this step also ran
-      # vet-tags (make lint-sweeps, below).
-      - name: make lint-gates
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-
       # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
       # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
       # push to main and on the daily full-tier workflow_dispatch, never on a
       # pull request, which must finish within one hour. release.yml runs both
-      # again before a tag. A network for vet-tags' nested benchmark modules,
-      # as above.
+      # again before a tag. A network for vet-tags' nested benchmark modules.
       - name: make lint-sweeps
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # v1.27.0 (Company Agent m1192 (6), item 27; DS-3609): the repository's
+  # `make lint-gates` (Makefile LINT_GATES: the script, workflow,
+  # generated-code and module gates, `make vet` over the default tag set, the
+  # secure analyzer's self-test and the sdk/go linters) runs in this job, in
+  # parallel with the lint job's `make lint`, not in series after it, so
+  # Lint's wall time is the longer of the two and not their sum. It runs only
+  # when the Makefile (or a tracked *.mk) defines a lint-gates target. A
+  # lint-class check, so it is on the PR tier and runs on a docs-only PR: the
+  # gates read docs/. CUSTOMIZE (go-qrdb, DS-3044): docker-build built the
+  # toolchain image, so this job ensures that tag as the lint job does rather
+  # than running the template's `make docker-build`.
+  lint-gates:
+    name: Lint Gates [toolchain image]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE: lint-gates took 6.5 warm minutes on main run 64873; headroom for a cold, loaded runner
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # v1.22: the cache volumes' trust class (as in the lint job).
+      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1: mask the forge credentials before any other step (as above).
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # A source check on the runner's shell: no make recipe runs here.
+      - name: Does the Makefile define lint-gates?
+        id: probe
+        run: |
+          mapfile -t mk < <(git ls-files -- Makefile '*.mk')
+          if [ "${#mk[@]}" -gt 0 ] && grep -qE '^lint-gates[[:space:]]*:([^=]|$)' "${mk[@]}"; then
+            echo "lint-gates target found"
+            echo "has_target=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "OK: no lint-gates target in the Makefile; nothing to run"
+            echo "has_target=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # CUSTOMIZE (go-qrdb, #813): reaps under qrdb-ci- too (as in the lint job).
+      - name: Reap stale CI stacks
+        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      # CUSTOMIZE (go-qrdb, DS-3044): as in the lint job, build the
+      # content-hashed toolchain tag only when the daemon lacks it.
+      - name: Ensure the toolchain image
+        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      # v1.22: bound this repo's cache volumes (as in the lint job). It never
+      # fails the job and keeps every volume a container mounts.
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      # -k reports every failing gate in one pass. CUSTOMIZE (go-qrdb):
+      # IN_IMAGE_NETWORK is bridge, as the lint job's step had it: the gates'
+      # vet and sdk/go linters resolve nested modules through the proxy.
+      - name: make lint-gates
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Tear down
         if: always()
@@ -1366,13 +1450,14 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, docker-build, lint, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
+    needs: [changes, docker-build, lint, lint-gates, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
     steps:
       - name: Fail closed on any non-success
         env:
           RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_LINT: ${{ needs.lint.result }}
+          RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
@@ -1431,6 +1516,7 @@ jobs:
           check changes "$RESULT_CHANGES" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
+          check lint-gates "$RESULT_LINT_GATES" pr
           check image "$RESULT_IMAGE" code
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check arch-gates "$RESULT_ARCH_GATES" pr

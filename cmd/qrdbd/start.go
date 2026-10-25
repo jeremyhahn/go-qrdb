@@ -183,7 +183,6 @@ type startFlags struct {
 	pgsqlPort             int
 	authEnabled           bool
 	separationOfDuties    bool
-	spiffeTrustDomain     string
 
 	invitationTTL           string
 	invitationRequireKeyPin bool
@@ -503,17 +502,16 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 	}
 	validateCfg := qrdbconfig.DefaultConfig()
 	validateCfg.Auth.Enabled = qrdbconfig.BoolPtr(f.authEnabled)
-	validateCfg.Auth.SPIFFETrustDomain = f.spiffeTrustDomain
 	validateCfg.Auth.ClusterTrustDomain = f.clusterTrustDomain
 	validateCfg.Seal = f.sealConfig
 	validateCfg.Databases = f.databases
 	if err := validateCfg.Validate(); err != nil {
 		return err
 	}
-	// Resolve the tenant trust domain only once both inputs are final:
-	// --cluster-trust-domain overrides the YAML, and an empty
-	// spiffe_trust_domain takes the cluster one.
-	f.spiffeTrustDomain = validateCfg.Auth.EffectiveSPIFFETrustDomain()
+	// Resolve the trust domain only once its inputs are final:
+	// --cluster-trust-domain overrides the YAML, and an empty value takes
+	// the default, so the CA and the authenticator never see an empty one.
+	f.clusterTrustDomain = validateCfg.Auth.EffectiveClusterTrustDomain()
 	return nil
 }
 
@@ -871,15 +869,13 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// RBAC posture: config can only raise strictness; a FIPS 140-3 build
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
-	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
 	f.invitationTTL = cfg.Auth.InvitationTTL
 	f.invitationRequireKeyPin = cfg.Auth.InvitationRequireKeyPin
 	f.invitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
-	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
-	// trust domain above.
+	// ABAC decorator: config-only (no CLI flag).
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
 	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
 	if !cmd.Flags().Changed("cluster-trust-domain") && cfg.Auth.ClusterTrustDomain != "" {
@@ -2006,7 +2002,7 @@ func runStart(f *startFlags) (err error) {
 				DEKKeyDir:                 f.dekKeyDir,
 				KeyWrapRegistry:           keyWrapInjection.registry,
 				KeyWrapProvider:           keyWrapInjection.provider,
-				SPIFFETrustDomain:         f.spiffeTrustDomain,
+				ClusterTrustDomain:        f.clusterTrustDomain,
 				InvitationTTL:             f.invitationTTL,
 				InvitationRequireKeyPin:   f.invitationRequireKeyPin,
 				InvitationRedeemLimit:     f.invitationRedeemLimit,
@@ -2345,7 +2341,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -4427,7 +4423,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4598,7 +4594,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,
-		SPIFFETrustDomain:   spiffeTrustDomain,
+		ClusterTrustDomain:  clusterTrustDomain,
 		Tenants:             mgmt.tenantSvc,
 		ABACEnabled:         abacCfg.Enabled,
 		ABACPolicyDir:       abacCfg.PolicyDir,

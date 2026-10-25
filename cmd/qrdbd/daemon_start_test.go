@@ -75,21 +75,21 @@ func drawDaemonPorts() (daemonPorts, error) {
 func fullStartFlags(dir string, p daemonPorts) *startFlags {
 	raftAddr := net.JoinHostPort(raftAdvertiseHost, strconv.Itoa(p.raft))
 	return &startFlags{
-		dataDir:           dir,
-		smType:            "pebble",
-		discoveryMethod:   "static",
-		peers:             []string{"1=" + raftAddr},
-		listen:            net.JoinHostPort(raftListenHost, strconv.Itoa(p.raft)),
-		raftAddress:       raftAddr,
-		shardID:           1,
-		replicaID:         1,
-		deploymentID:      1,
-		adminPort:         p.admin,
-		grpcPort:          p.grpc,
-		enableREST:        true,
-		enableGRPC:        true,
-		host:              testBindHost,
-		spiffeTrustDomain: qrdbconfig.DefaultClusterTrustDomain,
+		dataDir:            dir,
+		smType:             "pebble",
+		discoveryMethod:    "static",
+		peers:              []string{"1=" + raftAddr},
+		listen:             net.JoinHostPort(raftListenHost, strconv.Itoa(p.raft)),
+		raftAddress:        raftAddr,
+		shardID:            1,
+		replicaID:          1,
+		deploymentID:       1,
+		adminPort:          p.admin,
+		grpcPort:           p.grpc,
+		enableREST:         true,
+		enableGRPC:         true,
+		host:               testBindHost,
+		clusterTrustDomain: qrdbconfig.DefaultClusterTrustDomain,
 	}
 }
 

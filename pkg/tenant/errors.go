@@ -176,6 +176,30 @@ func (e *ReservedTenantIDError) Error() string {
 	return "tenant: id " + e.TenantID + " is reserved: " + e.Reason
 }
 
+// ErrTenantIDIsClusterTrustDomain is the reason a tenant ID equal to the
+// cluster's own SPIFFE trust domain is refused: a certificate under that
+// trust domain names no tenant, so the mTLS authenticator never admits a
+// principal of such a tenant and the CA never issues one.
+var ErrTenantIDIsClusterTrustDomain = errors.New("tenant: id names the cluster trust domain")
+
+// TenantTrustDomainError is returned when a tenant ID cannot be a SPIFFE
+// trust domain. A tenant principal is spiffe://<tenantID>/<kind>/<name>, so
+// the tenant ID is the trust domain verbatim. Err is a
+// *spiffe.TrustDomainError (unwrapping to spiffe.ErrTrustDomainEmpty or
+// spiffe.ErrTrustDomainInvalid) when the ID does not round-trip through a
+// SPIFFE ID, or ErrTenantIDIsClusterTrustDomain.
+type TenantTrustDomainError struct {
+	TenantID string
+	Err      error
+}
+
+func (e *TenantTrustDomainError) Error() string {
+	return "tenant: id " + strconv.Quote(e.TenantID) + " cannot be a SPIFFE trust domain: " + e.Err.Error()
+}
+
+// Unwrap returns the reason the ID was refused.
+func (e *TenantTrustDomainError) Unwrap() error { return e.Err }
+
 // TenantScopeError is returned when a caller bound to one tenant attempts a
 // per-tenant barrier operation against a different tenant. This is the
 // service-layer tenant-isolation defense: transport-level RBAC

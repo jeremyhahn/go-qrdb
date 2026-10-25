@@ -57,7 +57,7 @@ limitations under the License.
   different connection observes all of them, so the step fetches and
   re-audits up to ten times, three seconds apart, before failing.
 - **`gate` runs the same commands as the lint, build and unit-test stages of
-  ci.yml's `lint` and `image` jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
+  ci.yml's `lint`, `lint-gates` and `image` jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
   `make lint`, `go build ./...`, `make build-server`, `make coverage`,
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped. The two
@@ -138,7 +138,7 @@ values to the Dockerfile as build arguments, the Makefile includes it, and
 fails on a tool pin in ci.yml or an assignment in the Makefile, either of
 which would be a second pin. Module credentials reach the build only as the
 `gomodauth` BuildKit secret (`$(stage-gomodauth)`). In CI the `docker-build`,
-`lint` and `image` jobs each write the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, pass
+`lint`, `lint-gates` and `image` jobs each write the four `GIT_CONFIG_*` variables to a file under `$RUNNER_TEMP`, pass
 it as `MODULE_ENV_FILE` (handbook `devcontainer.md` §7) and remove it after
 the build; outside CI the recipe reads them from the environment. No layer, no
 command line and no log line holds them: the recipe is silent, printing only
@@ -146,7 +146,7 @@ which source it used.
 
 **Every job that can print a forge credential masks it first.** The runner
 injects the credentials into every job, and the `docker-build`, `lint`,
-`image`, `test-typescript`, `arch-gates`, `integration-features`,
+`lint-gates`, `image`, `test-typescript`, `arch-gates`, `integration-features`,
 `integration-standalone`, `fips` and `soak` jobs, each of which runs a make
 target, a script, npm or curl, open with "Mask the forge credentials", which
 registers each credential value with the runner's log masker before any other
@@ -166,10 +166,11 @@ repeats the value a scanner exists to keep out of the tree.
 
 The `docker-build` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag) and passes both image
-names to the jobs after it as job outputs. Two jobs need it and run the
+names to the jobs after it as job outputs. Three jobs need it and run the
 stages side by side in the one toolchain image: `lint`, in the PR tier
-(`make lint`, `make lint-gates` and, on a push to `main` and a dispatch,
-`make lint-sweeps`), and `image`, in the code tier (the build-tag assertion,
+(`make lint` and, on a push to `main` and a dispatch, `make lint-sweeps`),
+`lint-gates`, in the PR tier (`make lint-gates`, its own job from
+ci-template v1.27.0), and `image`, in the code tier (the build-tag assertion,
 the builds, `make coverage` and the other unit suites and, in the full tier,
 security, deps-check and the trivy image scan). The ci-template runs them all
 in one image job; this repository splits it because together the stages
@@ -178,17 +179,17 @@ limit sized to its own stages (architecture.md, "CI tiers"). Each
 first runs the idempotent builds of what it uses: `make
 docker-build-toolchain` only when its daemon lacks the content-hashed
 toolchain tag, since that target rebuilds whenever it runs, and, in `image`
-alone, `make docker-build-it`, which skips a held tag itself; `lint` takes no
-hold on the integration image. On the runner `docker-build` used both are
+alone, `make docker-build-it`, which skips a held tag itself; `lint` and
+`lint-gates` take no hold on the integration image. On the runner `docker-build` used both are
 cache hits; on another they build, so a daemon without the images never fails
 the job. Each job then runs each stage in a toolchain container through
 `scripts/in-toolchain-image.sh`. That container
 holds the job's CPU bound: the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. Both jobs also need the `changes` job: on a docs-only pull
+number. The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
-or under `docs/`), `lint` runs lint and the lint gates and succeeds, and
+or under `docs/`), `lint` runs lint and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with `test-typescript`, the code tier. On such a run
 `docker-build` builds the toolchain image alone and outputs an empty
 integration image, which no job reads (architecture.md, "CI tiers").
@@ -258,7 +259,7 @@ reported with its age and does not fail the check, since no one could yet have
 adopted it; one seven or more days old fails, and one whose time cannot be read
 is treated as old. A module whose lookup fails, offline or without credentials,
 fails the check: the question was not answered.
-`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint` job) proves
+`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint-gates` job) proves
 each branch with a fake `go`, and the publish time with the real one over a
 `file://` proxy.
 
