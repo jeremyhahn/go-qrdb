@@ -96,6 +96,9 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdatePool", Err: &transport.NilRequestError{}}
+	}
 	var pool transport.VolumePool
 	path := "/v1/volume-pools/" + url.PathEscape(req.Name)
 	if err := t.putJSONDecode(ctx, "UpdatePool", path, req, &pool); err != nil {

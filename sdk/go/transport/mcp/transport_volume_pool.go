@@ -104,6 +104,9 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdatePool", Err: &transport.NilRequestError{}}
+	}
 	args := map[string]any{"pool": req.Name}
 	if req.Description != nil {
 		args["description"] = *req.Description

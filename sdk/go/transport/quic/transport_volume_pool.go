@@ -103,6 +103,9 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdatePool", Err: &transport.NilRequestError{}}
+	}
 	pbReq := &pb.VolumePoolUpdateRequest{Name: req.Name}
 	if req.Description != nil {
 		pbReq.Description = wrapperspb.String(*req.Description)
