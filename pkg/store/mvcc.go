@@ -270,6 +270,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	if s.enableTimeSeries {
 		ts, tsErr := timeseries.New(s.storage)
 		if tsErr != nil {
+			seals.Close()
 			_ = db.Close()
 			s.db = nil
 			s.storage = nil
@@ -280,6 +281,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 
 	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
 	if err != nil {
+		seals.Close()
 		_ = db.Close()
 		s.db = nil
 		s.storage = nil
@@ -290,6 +292,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
 		_ = e.Close(context.Background())
+		seals.Close()
 		_ = db.Close()
 		s.db = nil
 		s.storage = nil
@@ -903,6 +906,7 @@ func (s *MVCCStateMachine) Close(ctx context.Context) error {
 		s.engine = nil
 	}
 
+	s.seals.Close()
 	err := s.db.Close()
 	s.db = nil
 	s.storage = nil

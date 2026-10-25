@@ -398,6 +398,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	if s.enableTimeSeries && s.ts == nil {
 		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir)))
 		if tsErr != nil {
+			seals.Close()
 			_ = db.Close()
 			s.db = nil
 			return 0, &OpenError{Dir: initialDir, Err: tsErr}
@@ -407,6 +408,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -417,6 +419,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// log, so the lessor's state has to come back from the lease table this
 	// database already holds.
 	if err := s.restoreLessor(); err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -427,6 +430,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// lessor's state, and for the same reason: a disk state machine resumes
 	// from lastApplied rather than replaying the log.
 	if err := s.restoreAuditChain(); err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -1157,6 +1161,7 @@ func (s *PebbleStateMachine) Close(_ context.Context) error {
 		return nil
 	}
 
+	s.seals.Close()
 	err := s.db.Close()
 	s.db = nil
 	return err

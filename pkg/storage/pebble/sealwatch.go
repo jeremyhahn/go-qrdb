@@ -21,6 +21,8 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 )
 
 // ErrBarrierSealed is the cause a *SealedError carries when the database's
@@ -61,6 +63,10 @@ type SealWatch struct {
 	// barrierSealed reports the filesystem's barrier state; nil when the
 	// filesystem cannot report it.
 	barrierSealed func() bool
+	// gate is the filesystem barrier's quiesce gate, and lease this store's
+	// hold on it (registered by Open); nil when the filesystem has none.
+	gate  *quiesce.Gate
+	lease *quiesce.Lease
 
 	mu         sync.Mutex
 	episode    *sealEpisode // the current episode, or the next one to begin
@@ -95,6 +101,21 @@ func barrierSealedProbe(fs vfs.FS) func() bool {
 	return nil
 }
 
+// quiesceGateProbe returns the seal-quiesce gate fs exposes, looking through
+// the filesys adapter the same way barrierSealedProbe does; nil when fs has
+// no gate.
+func quiesceGateProbe(fs vfs.FS) *quiesce.Gate {
+	if p, ok := fs.(interface{ Quiesce() *quiesce.Gate }); ok {
+		return p.Quiesce()
+	}
+	if a, ok := fs.(*vfsFS); ok {
+		if p, ok := a.fs.(interface{ Quiesce() *quiesce.Gate }); ok {
+			return p.Quiesce()
+		}
+	}
+	return nil
+}
+
 func NewSealWatch(logger pebble.Logger, isSealed func(error) bool) *SealWatch {
 	return &SealWatch{logger: logger, isSealed: isSealed, episode: newSealEpisode()}
 }
@@ -106,6 +127,7 @@ func NewSealWatch(logger pebble.Logger, isSealed func(error) bool) *SealWatch {
 // error raised while the barrier is sealed as sealed.
 func (w *SealWatch) Attach(opts *pebble.Options) {
 	w.barrierSealed = barrierSealedProbe(opts.FS)
+	w.gate = quiesceGateProbe(opts.FS)
 	var prev pebble.EventListener
 	if opts.EventListener != nil {
 		prev = *opts.EventListener
@@ -153,16 +175,48 @@ func (w *SealWatch) Check() error {
 	return nil
 }
 
+// Admit checks the barrier as Check does and, when it admits, holds the
+// store's quiesce lease until Done, so a Seal waits for the operation before
+// the key leaves memory. Once the barrier is sealing it refuses with the same
+// *SealedError a sealed barrier gives. Every nil return is paired with one
+// Done.
+func (w *SealWatch) Admit() error {
+	if err := w.lease.Acquire(); err != nil {
+		return &SealedError{Err: ErrBarrierSealed}
+	}
+	if err := w.Check(); err != nil {
+		w.lease.Release()
+		return err
+	}
+	return nil
+}
+
+// Done ends an operation Admit admitted.
+func (w *SealWatch) Done() {
+	w.lease.Release()
+}
+
+// Close removes the store's lease from the barrier's quiesce gate; call it
+// when the watched database closes. It is idempotent.
+func (w *SealWatch) Close() {
+	if w == nil {
+		return
+	}
+	w.lease.Unregister()
+}
+
 // Flush flushes db's memtable and waits for it, like DB.Flush, but returns a
 // *SealedError rather than waiting while the barrier is sealed. Every flush
-// rotates the WAL, so Flush refuses before calling into Pebble when Check
-// does. It returns nil only when its flush completed: a flush whose wait an
+// rotates the WAL, so Flush refuses before calling into Pebble when Admit
+// does, and holds the store's quiesce lease until the flush ends. It returns
+// nil only when its flush completed: a flush whose wait an
 // episode ended reports that episode's error even if the episode is over by
 // the time it returns.
 func (w *SealWatch) Flush(db *pebble.DB) error {
-	if err := w.Check(); err != nil {
+	if err := w.Admit(); err != nil {
 		return err
 	}
+	defer w.Done()
 	w.mu.Lock()
 	ep := w.episode
 	w.mu.Unlock()
@@ -258,5 +312,6 @@ func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.
 	if err != nil {
 		return nil, nil, err
 	}
+	seals.lease = seals.gate.Register(dir)
 	return db, seals, nil
 }
