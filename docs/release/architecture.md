@@ -183,7 +183,7 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint` and `make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (build and the unit suites), `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (one leg per feature) and `fips` (both unit suites under FIPS 140-3) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
@@ -210,17 +210,18 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
 which builds the devcontainer images in about two minutes and pushes them to
-the Gitea registry, derived from `github.server_url`, and `test-typescript`
-and `arch-gates`. They run beside `lint` and `image`, which need
-`docker-build` too and run, side by side in those images, the lint stages
-(`lint`) and the build, every unit suite and, in the full tier, the security
+the forge's registry (the Gitea registry, derived from `github.server_url`,
+or `ghcr.io` on GitHub), and `test-typescript` and `arch-gates`. They run
+beside `lint`, `lint-gates` and `image`, which need `docker-build` too and
+run, side by side in those images, the lint stages (`lint`), the repository
+gates (`lint-gates`) and the build, every unit suite and, in the full tier, the security
 stages (`image`), so the long legs wait for neither. A full-tier run whose
-`lint` or `image` job fails still runs
+`lint`, `lint-gates` or `image` job fails still runs
 the legs, and `ci-gate`, which needs every job, fails on that result; a run
 whose `docker-build`, `test-typescript` or `arch-gates` fails reports the
 legs `skipped`, which `ci-gate` fails as well.
 
-Every job that runs a stage in an image (`lint`, `image`, `fips`, the
+Every job that runs a stage in an image (`lint`, `lint-gates`, `image`, `fips`, the
 `integration-features` legs and `soak`) pulls the exact digest `docker-build`
 pushed, its `toolchain_ref` or `it_ref` output, and runs its stages on that
 reference (DS-3516). None builds an image or falls back to one: a consumer
@@ -243,9 +244,12 @@ reached by any unit test fails it, and `ci-gate` fails with it
 under `-race`, which no pull request's one-hour budget holds, so it is a
 full-tier job.
 
-Within the `lint` job, one step depends on the trigger. `make lint-gates`
+`make lint-gates` is its own `lint-gates` job (ci-template v1.27.0), in
+parallel with the `lint` job's `make lint` rather than a step after it, so
+the PR tier's lint wall time is the longer of the two and not their sum. It
 runs on every run and holds `make vet` over the default tag set and the
-secure analyzer's self-test (`test-secure-analyzer`). `make lint-sweeps`,
+secure analyzer's self-test (`test-secure-analyzer`). Within the `lint` job,
+one step depends on the trigger. `make lint-sweeps`,
 `make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
 combination, is the longest stage (about 45 minutes), so it runs only on a
 push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
@@ -257,11 +261,11 @@ runs both sweeps again before a tag. The integration legs run without
 
 A pull request whose every changed file is markdown or under `docs/`
 (`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
-`changes`, `docker-build`, `lint`, `arch-gates` and `ci-gate`.
+`changes`, `docker-build`, `lint`, `lint-gates`, `arch-gates` and `ci-gate`.
 `docker-build` builds and pushes the toolchain image alone: no job of a
 docs-only run uses the integration image, so it builds none and outputs an
 empty `it_ref`.
-`lint` runs `make lint` and `make lint-gates`.
+`lint` runs `make lint`, and `lint-gates` runs `make lint-gates`.
 `arch-gates` runs `make check-public-releasable`, which scans the whole
 tracked tree, docs included, and skips its two code-only steps (the
 go-objstore import check and the compose-target check). Those jobs still
@@ -272,7 +276,7 @@ other unit suites, and `test-typescript`) carries exactly
 skipped. The gates that read `docs/` --
 `check-publication-bound`, `check-integration-feature-coverage` and
 `check-no-alias-language` -- are in `make lint-gates`, so a docs-only pull
-request runs every one of them. `changes` decides nothing off a pull request
+request runs every one of them in the `lint-gates` job. `changes` decides nothing off a pull request
 or under `ci:full`: those runs are never docs-only.
 
 The `ci:full` label goes on a pull request once, when it is green on the PR

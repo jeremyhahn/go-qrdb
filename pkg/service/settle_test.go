@@ -75,20 +75,31 @@ func TestSettleLeadership_NonTransientErrorIsFinal(t *testing.T) {
 	}
 }
 
+// TestSettleLeadership_ElectionOutlastsBudget: an election that never ends is
+// cut by the budget. Whether the budget leaves room for a retry depends on how
+// fast the runner is, so only the bound is asserted here; the retry itself is
+// TestSettleLeadership_WaitsOutElection's.
 func TestSettleLeadership_ElectionOutlastsBudget(t *testing.T) {
-	errs := make([]error, 1000)
-	for i := range errs {
-		errs[i] = &ReadError{Err: quicraft.ErrTimeout}
-	}
-	attempt, calls := settleAttempts(errs...)
+	calls := 0
 	policy := testSettlePolicy
 	policy.Budget = 20 * time.Millisecond
-	v, err := SettleLeadership(context.Background(), policy, attempt)
+	v, err := SettleLeadership(context.Background(), policy, func(context.Context) (string, error) {
+		calls++
+		return "partial", &ReadError{Err: quicraft.ErrTimeout}
+	})
 	if !errors.Is(err, quicraft.ErrTimeout) || v != "" {
 		t.Fatalf("SettleLeadership = (%q, %v), want the zero value and the election's %v", v, err, quicraft.ErrTimeout)
 	}
-	if *calls < 2 || *calls >= len(errs) {
-		t.Fatalf("calls = %d, want a retry and the budget to stop it before %d", *calls, len(errs))
+	if calls < 1 {
+		t.Fatalf("calls = %d, want at least the first attempt", calls)
+	}
+}
+
+// noPoll is a poll timer for a wait that must never reach its poll.
+func noPoll(t *testing.T) func(time.Duration) <-chan time.Time {
+	return func(d time.Duration) <-chan time.Time {
+		t.Errorf("polled for %v, want no retry", d)
+		return nil
 	}
 }
 
@@ -96,30 +107,52 @@ func TestSettleLeadership_CancelledContextIsNotRetried(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	attempt, calls := settleAttempts(&ReadError{Err: quicraft.ErrTimeout})
-	v, err := SettleLeadership(ctx, testSettlePolicy, attempt)
-	if !errors.Is(err, quicraft.ErrTimeout) || v != "partial" {
-		t.Fatalf("SettleLeadership = (%q, %v), want the attempt's own answer", v, err)
+	v, err := settleLeadership(ctx, testSettlePolicy, attempt, noPoll(t))
+	if !errors.Is(err, quicraft.ErrTimeout) || v != "" {
+		t.Fatalf("SettleLeadership = (%q, %v), want the zero value and the election's error", v, err)
 	}
 	if *calls != 1 {
 		t.Fatalf("calls = %d, want a cancelled request never retried", *calls)
 	}
 }
 
+// TestSettleLeadership_ContextEndsDuringPoll: the poll timer ends the caller's
+// context and never fires itself, so only the context can end the wait, and
+// it does so strictly during the poll.
 func TestSettleLeadership_ContextEndsDuringPoll(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	calls := 0
-	policy := testSettlePolicy
-	policy.Poll = time.Hour
-	v, err := SettleLeadership(ctx, policy, func(context.Context) (string, error) {
+	calls, polls := 0, 0
+	v, err := settleLeadership(ctx, testSettlePolicy, func(context.Context) (string, error) {
 		calls++
 		return "partial", &ReadError{Err: quicraft.ErrTimeout}
+	}, func(d time.Duration) <-chan time.Time {
+		polls++
+		if d != testSettlePolicy.Poll {
+			t.Errorf("poll = %v, want the policy's %v", d, testSettlePolicy.Poll)
+		}
+		cancel()
+		return nil
 	})
 	if !errors.Is(err, quicraft.ErrTimeout) || v != "" {
 		t.Fatalf("SettleLeadership = (%q, %v), want the zero value and the election's error", v, err)
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want the context to end the poll before a second attempt", calls)
+	if calls != 1 || polls != 1 {
+		t.Fatalf("calls = %d, polls = %d, want the context to end the first poll before a second attempt", calls, polls)
+	}
+}
+
+// TestSettleLeadership_NonTransientErrorAfterContextEndsIsFinal: an attempt
+// that answers with anything but an election keeps its own answer, even once
+// the caller's context has ended.
+func TestSettleLeadership_NonTransientErrorAfterContextEndsIsFinal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	final := errors.New("not found")
+	attempt, calls := settleAttempts(final)
+	v, err := settleLeadership(ctx, testSettlePolicy, attempt, noPoll(t))
+	if !errors.Is(err, final) || v != "partial" || *calls != 1 {
+		t.Fatalf("SettleLeadership = (%q, %v) after %d calls, want the attempt's own answer after 1", v, err, *calls)
 	}
 }
 

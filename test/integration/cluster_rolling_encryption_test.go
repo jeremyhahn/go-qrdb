@@ -417,9 +417,17 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 	waitForLeaderViaAdmin(t, ca, []int{adminPorts[inTurn]}, 60*time.Second)
 	request(inTurn)
 
-	// Every node, over every transport: the superseding generation keeps the
-	// owner in turn first and alone recycling.
-	for _, node := range c.nodes {
+	// The other two nodes, over every transport: the superseding generation
+	// keeps the owner in turn first and alone recycling. Neither has a
+	// credential, so the record cannot advance past this step while they are
+	// asked. The owner in turn is not asked yet: the retry handed it the
+	// credential, so it may already be recycling, and a node back sealed
+	// from its recycle reads no record until it is unsealed.
+	var superseding *transport.ClusterMigration
+	for i, node := range c.nodes {
+		if i == inTurn {
+			continue
+		}
 		for _, proto := range multiProtocols {
 			m := waitForCLIMigration(t, cli, c, node, proto, 60*time.Second,
 				fmt.Sprintf("superseding generation %d", first.Generation),
@@ -431,7 +439,15 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 			if len(m.Nodes) != 3 || m.Nodes[0].NodeID != owner || id != owner || serving != 0 || recycling != 1 || pending != 2 {
 				t.Errorf("[%s] admin port %d: generation %d steps %+v, want %s first and alone recycling", proto.name, node.admin, m.Generation, m.Nodes, owner)
 			}
+			if superseding == nil {
+				superseding = m
+			} else if m.Generation != superseding.Generation {
+				t.Errorf("[%s] admin port %d: generation %d, another answer named generation %d", proto.name, node.admin, m.Generation, superseding.Generation)
+			}
 		}
+	}
+	if superseding == nil {
+		t.FailNow()
 	}
 
 	// The owner in turn now leads and holds the retry's credential, so it
@@ -452,6 +468,26 @@ func TestClusterEnableEncryption_Rolling_RF3_RetryAfterLeaderChange(t *testing.T
 		t.Fatalf("node %d did not migrate with the retry's credential within 180s", inTurn+1)
 	}
 	settle(inTurn)
+
+	// The owner in turn, unsealed, over every transport: the same superseding
+	// generation in the same order. The other two still hold their turns
+	// without a credential, so the record is not reaped underneath the check.
+	for _, proto := range multiProtocols {
+		node := c.nodes[inTurn]
+		m := waitForCLIMigration(t, cli, c, node, proto, 60*time.Second,
+			fmt.Sprintf("superseding generation %d at generation %d", first.Generation, superseding.Generation),
+			func(m *transport.ClusterMigration) bool { return m.Generation == superseding.Generation })
+		if m == nil {
+			continue
+		}
+		same := len(m.Nodes) == len(superseding.Nodes)
+		for j := 0; same && j < len(m.Nodes); j++ {
+			same = m.Nodes[j].NodeID == superseding.Nodes[j].NodeID
+		}
+		if !same {
+			t.Errorf("[%s] admin port %d: generation %d orders %+v, the other nodes ordered %+v", proto.name, node.admin, m.Generation, m.Nodes, superseding.Nodes)
+		}
+	}
 
 	// Then the other two, one at a time, each on its own credential.
 	done := map[int]bool{inTurn: true}

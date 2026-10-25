@@ -68,3 +68,17 @@ var WithRegisterUserService = qrdbgrpc.WithRegisterUserService
 // service. RegisterGRPCService registers it as the separate
 // qrdb.v1.UserAuthFactorService on the same *grpc.Server.
 var WithRegisterUserAuthFactorService = qrdbgrpc.WithRegisterUserAuthFactorService
+
+// WithRegisterTenantBarrierService attaches the per-tenant barrier lifecycle
+// service (a ServiceTenantServicer). RegisterGRPCService registers it as the
+// separate qrdb.v1.TenantBarrierService on the same *grpc.Server, gated by
+// the middleware from WithRegisterAuthMiddleware; a nil middleware is the
+// no-auth posture.
+var WithRegisterTenantBarrierService = qrdbgrpc.WithRegisterTenantBarrierService
+
+// WithRegisterAuthMiddleware attaches the AuthMiddleware the registered
+// services use for their handler-level tenancy gates (the certs surface and
+// TenantBarrierService). It is the same instance the interceptors use; a
+// composer that omits it gets the no-auth posture, in which the gates are
+// no-ops.
+var WithRegisterAuthMiddleware = qrdbgrpc.WithRegisterAuthMiddleware

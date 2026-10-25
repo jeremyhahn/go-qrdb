@@ -766,8 +766,7 @@ Configures authentication and role-based access control (RBAC).
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
-| `spiffe_trust_domain` | string | `""` (= `cluster_trust_domain`) | no | N/A          | SPIFFE trust domain the mTLS authenticator **pins**, and the one the built-in CA mints client-certificate tenant SANs under. Empty takes `cluster_trust_domain`. See the note below |
-| `cluster_trust_domain` | string | `"qrdb.cluster"` | no | `--cluster-trust-domain` | SPIFFE trust domain of the cluster's node certificates (`spiffe://<trust-domain>/node/<raft-address>`), and of tenant principals when `spiffe_trust_domain` is empty. The same value on every node |
+| `cluster_trust_domain` | string | `"qrdb.cluster"` | no | `--cluster-trust-domain` | The cluster's SPIFFE trust domain: the one its node certificates are under (`spiffe://<trust-domain>/node/<raft-address>`), the one the mTLS authenticator **pins**, and the one no tenant may be. The same value on every node. See the note below |
 | `mtls_binding_policy` | string | `"required"` | no     | N/A                | **Whether every certificate login must present an enrolled key** (`"required"`, the default) or only accounts that enrolled one are held to it (`"enrolled"`). See the note below |
 | `invitation_ttl`   | string | `"24h"`     | no       | N/A                | How long a `users:invite` token stays redeemable. Positive, at most 7 days |
 | `invitation_require_key_pin` | bool | `false` | no   | N/A                | Refuse any invitation not pinned to the invited user's key            |
@@ -792,7 +791,7 @@ Configures authentication and role-based access control (RBAC).
   (e.g. `"30s"`, `"0"`). An unparseable value fails the boot rather than
   reverting to the default: it is a security window, and a value silently
   different from the configured one is worse than a refusal to start.
-- `cluster_trust_domain`, and `spiffe_trust_domain` when set, must survive
+- `cluster_trust_domain` must survive
   being written into a SPIFFE ID and parsed back unchanged (no `/`, `?`, `#`,
   `@` or whitespace). The validation error names the field and quotes the
   rejected value (`spiffe.TrustDomainError`).
@@ -840,7 +839,7 @@ Configures authentication and role-based access control (RBAC).
   respectively. There is deliberately no `auth.so_audit_failure_policy`: two
   keys would let a deployment end up recording one assertion and not the other.
   See [seal/so-dual-factor.md](seal/so-dual-factor.md).
-- **`spiffe_trust_domain` is the cluster's own trust domain, which no tenant
+- **`cluster_trust_domain` is the cluster's own trust domain, which no tenant
   may be.** A tenant is a SPIFFE trust domain: a client certificate names a
   tenant only when its first Subject OU and the trust domain of its SPIFFE ID
   URI SAN (`spiffe://<tenant>/<kind>/<name>`) are both present and agree. A
@@ -848,11 +847,11 @@ Configures authentication and role-based access control (RBAC).
   whose OU names it is refused, fail-closed. The CA writes the OU and
   `spiffe://<tenant>/user/<username>` into every client certificate it mints,
   and refuses a tenant that is not a valid trust domain name, a tenant equal to
-  this trust domain, or a `/` in the username. The value itself must be a bare
-  host name that round-trips through a SPIFFE ID; anything else fails the
-  load. When unset it is `cluster_trust_domain` (itself `"qrdb.cluster"` when
-  unset), so every deployment pins a trust domain and issues the SAN. Set the
-  same value on every node. See
+  this trust domain, or a `/` in the username, and tenant creation refuses
+such a tenant ID before the tenant exists. The value itself must be a bare host name that round-trips
+  through a SPIFFE ID; anything else fails the load. When unset it is
+  `"qrdb.cluster"`, so every deployment pins a trust domain and issues the
+  SAN. Set the same value on every node. See
   [certificate-authority/architecture.md](certificate-authority/architecture.md#how-an-issued-certificate-names-its-tenant).
 - **`mtls_binding_policy: "required"` (the default) closes the
   unenrolled-account hole and is a lockout risk.** Under `"enrolled"`, an

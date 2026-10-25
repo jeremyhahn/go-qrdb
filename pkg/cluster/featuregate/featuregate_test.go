@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -864,4 +865,122 @@ func TestGate_ActivationsLoaded(t *testing.T) {
 	var unsupported *UnsupportedFeatureError
 	require.ErrorAs(t, refused.CheckActivated(context.Background(), kv), &unsupported)
 	assert.False(t, refused.ActivationsLoaded(), "loaded after a refused read")
+}
+
+// callLog numbers the calls made to one method of a test double and reports
+// each number, in order, so a test waits on the call that proves a background
+// path ran rather than on the clock. It holds three numbers; a later call
+// waits for room or for the gate to stop.
+type callLog struct {
+	n     atomic.Int32
+	calls chan int32
+}
+
+func newCallLog() *callLog { return &callLog{calls: make(chan int32, 3)} }
+
+func (l *callLog) record(ctx context.Context) int32 {
+	n := l.n.Add(1)
+	select {
+	case l.calls <- n:
+	case <-ctx.Done():
+	}
+	return n
+}
+
+// await returns once the log has reported call n.
+func (l *callLog) await(t *testing.T, n int32) {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case got := <-l.calls:
+			if got >= n {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("call %d never came", n)
+		}
+	}
+}
+
+// rewatchStore hands the gate a watch that has already ended, then refuses
+// every later watch.
+type rewatchStore struct {
+	*leaseStore
+	watches *callLog
+}
+
+func (s rewatchStore) WatchMembers(ctx context.Context) (<-chan cluster.MemberEvent, error) {
+	if s.watches.record(ctx) == 1 {
+		ch := make(chan cluster.MemberEvent)
+		close(ch)
+		return ch, nil
+	}
+	return nil, errors.New("watch unavailable")
+}
+
+// A watch that ends is replaced after the refresh interval, and a
+// replacement that cannot be had leaves the gate on the refresh until the
+// next attempt. The third watch is made only after the second has failed.
+func TestGate_EndedWatchIsReplacedOnRefresh(t *testing.T) {
+	store := rewatchStore{newLeaseStore(), newCallLog()}
+	g, err := New(Config{
+		Self:            Self{ReplicaID: 1},
+		SystemShardID:   systemShard,
+		Members:         threeNodes(),
+		RefreshInterval: time.Millisecond,
+	})
+	require.NoError(t, err)
+	require.NoError(t, g.Start(context.Background(), newMemKV(), store))
+
+	store.watches.await(t, 3)
+	require.NoError(t, g.Close())
+}
+
+// failingRefreshStore lists its advertisements for the seed and fails every
+// later list.
+type failingRefreshStore struct {
+	*leaseStore
+	lists *callLog
+}
+
+func (s failingRefreshStore) ListMembers(ctx context.Context) ([]cluster.Member, error) {
+	if s.lists.record(ctx) == 1 {
+		return s.leaseStore.ListMembers(ctx)
+	}
+	return nil, errors.New("unavailable")
+}
+
+// onceReadableKV reads its activations for Start and fails every later read.
+type onceReadableKV struct {
+	*memKV
+	reads atomic.Int32
+}
+
+func (k *onceReadableKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	if k.reads.Add(1) == 1 {
+		return k.memKV.ListAll(ctx, prefix)
+	}
+	return nil, errors.New("not leader")
+}
+
+// A refresh whose advertisement list and activation read both fail keeps the
+// gate running on what it last saw. The third list is made only after the
+// first refresh has finished.
+func TestGate_RefreshSurvivesUnreadableStores(t *testing.T) {
+	store := failingRefreshStore{newLeaseStore(), newCallLog()}
+	store.advertise(t, 1, "n1:7000", SupportedNames()...)
+	g, err := New(Config{
+		Self:            Self{ReplicaID: 1},
+		SystemShardID:   systemShard,
+		Members:         threeNodes(),
+		RefreshInterval: time.Millisecond,
+	})
+	require.NoError(t, err)
+	require.NoError(t, g.Start(context.Background(), &onceReadableKV{memKV: newMemKV()}, store))
+
+	store.lists.await(t, 3)
+	require.NoError(t, g.Close())
+	assert.True(t, g.ActivationsLoaded())
+	assert.False(t, g.Activated(GuardedWrites))
 }

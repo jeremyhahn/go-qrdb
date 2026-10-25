@@ -1015,6 +1015,8 @@ func TestMapTenantError_AllCodes(t *testing.T) {
 		{"already exists", tenant.ErrTenantAlreadyExists, http.StatusConflict},
 		{"not found", tenant.ErrTenantNotFound, http.StatusNotFound},
 		{"invalid id", &tenant.InvalidTenantIDError{TenantID: "x", Reason: "bad"}, http.StatusBadRequest},
+		{"id is not a trust domain", &tenant.TenantTrustDomainError{TenantID: "Acme", Err: errSentinel}, http.StatusBadRequest},
+		{"id is the cluster trust domain", &tenant.TenantTrustDomainError{TenantID: "qrdb.cluster", Err: tenant.ErrTenantIDIsClusterTrustDomain}, http.StatusBadRequest},
 		{"store error", &tenant.StoreError{Op: "op", Err: errSentinel}, http.StatusInternalServerError},
 		{"barrier error", &tenant.BarrierError{TenantID: "t", Op: "init", Err: errSentinel}, http.StatusInternalServerError},
 		{"unknown", errSentinel, http.StatusInternalServerError},

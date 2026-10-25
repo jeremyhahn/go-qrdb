@@ -559,12 +559,17 @@ func (f *fakeResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosed
 func TestResponseWriter_TextWriteError(t *testing.T) {
 	f := &fakeResponseWriter{header: make(http.Header)}
 	rw := &responseWriter{w: f, rc: http.NewResponseController(f), header: http.Header{"Content-Type": {"application/grpc"}}, text: true}
-	if _, err := rw.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+	if _, err := rw.Write([]byte{0, 0, 0, 0, 0}); !errors.Is(err, io.ErrClosedPipe) {
 		t.Errorf("Write error = %v, want io.ErrClosedPipe", err)
 	}
 	rw.header.Add("Trailer", "Grpc-Status")
 	rw.trailers = []string{"Grpc-Status"}
 	rw.header.Set("Grpc-Status", "0")
+	rw.finish()
+
+	if _, err := rw.Write([]byte{0, 0}); err != nil {
+		t.Errorf("Write of part of a message = %v, want it held back", err)
+	}
 	rw.finish()
 }
 

@@ -57,7 +57,7 @@ limitations under the License.
   different connection observes all of them, so the step fetches and
   re-audits up to ten times, three seconds apart, before failing.
 - **`gate` runs the same commands as the lint, build and unit-test stages of
-  ci.yml's `lint` and `image` jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
+  ci.yml's `lint`, `lint-gates` and `image` jobs** (`make fmt`, `make vet`, `make vet-tags`, `make secure-analyzer`,
   `make lint`, `go build ./...`, `make build-server`, `make coverage`,
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped. The two
@@ -147,7 +147,7 @@ which source it used.
 
 **Every job that can print a forge credential masks it first.** The runner
 injects the credentials into every job, and the `docker-build`, `lint`,
-`image`, `test-typescript`, `arch-gates`, `integration-features`,
+`lint-gates`, `image`, `test-typescript`, `arch-gates`, `integration-features`,
 `integration-standalone`, `fips` and `soak` jobs, each of which runs a make
 target, a script, npm or curl, open with "Mask the forge credentials", which
 registers each credential value with the runner's log masker before any other
@@ -189,11 +189,12 @@ on exit, so the credential reaches no other job on the same Docker host. A
 refused login, push or pull fails the job with a typed `::error::` line: there
 is no local rebuild to fall back to.
 
-Five jobs consume the images, and each pulls exactly the digest it was handed
+Six jobs consume the images, and each pulls exactly the digest it was handed
 with `scripts/ci-registry.sh pull` (at most 3 attempts, 10 s and 20 s apart)
-before its first stage: `lint`, in the PR tier (`make lint`,
-`make lint-gates` and, on a push to `main` and a dispatch,
-`make lint-sweeps`), and `fips`, which pull the toolchain image; `image`, in
+before its first stage: `lint`, in the PR tier (`make lint` and, on a push to
+`main` and a dispatch, `make lint-sweeps`), `lint-gates`, in the PR tier
+(`make lint-gates`, its own job from ci-template v1.27.0), and `fips`, which
+pull the toolchain image; `image`, in
 the code tier (the build-tag assertion, the builds, `make coverage` and the
 other unit suites and, in the full tier, security, deps-check and the trivy
 image scan), which pulls both; and the `integration-features` legs and the
@@ -208,13 +209,14 @@ reference makes `make integration-test` require the pulled image rather than
 build it, and `make docker-build-it` refuses one.
 `test/buildgates/ci_image_digest_test.go` holds every consumer to the pull.
 Each job then runs each stage in a toolchain container through
+Each job then runs each stage in a toolchain container through
 `scripts/in-toolchain-image.sh`. That container
 holds the job's CPU bound: the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. `lint` and `image` also need the `changes` job: on a docs-only pull
+number. The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
-or under `docs/`), `lint` runs lint and the lint gates and succeeds, and
+or under `docs/`), `lint` runs lint and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with `test-typescript`, the code tier. On such a run
 `docker-build` builds and pushes the toolchain image alone and outputs an
 empty `it_ref`, which no job reads (architecture.md, "CI tiers").
@@ -285,7 +287,7 @@ reported with its age and does not fail the check, since no one could yet have
 adopted it; one seven or more days old fails, and one whose time cannot be read
 is treated as old. A module whose lookup fails, offline or without credentials,
 fails the check: the question was not answered.
-`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint` job) proves
+`scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint-gates` job) proves
 each branch with a fake `go`, and the publish time with the real one over a
 `file://` proxy.
 

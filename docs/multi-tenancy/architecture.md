@@ -156,6 +156,22 @@ answers success. A completion that gives up leaves the record for the hook's
 next trigger. The success or failure audit record is written before the
 response, on its own bound rather than the request's.
 
+### The tenant ID is a trust domain
+
+A tenant's principals are `spiffe://<tenant>/<kind>/<name>`: the tenant ID is
+their SPIFFE trust domain verbatim (see
+[identity-rbac/architecture.md](../identity-rbac/architecture.md#identity-mapping)).
+An ID that cannot be one names a tenant no certificate could ever name, so the
+CA could never issue its admin a certificate and the mTLS authenticator could
+never admit one. Creation therefore refuses, before anything is written, an ID
+that does not survive being written into a SPIFFE ID and parsed back unchanged
+(SPIFFE-ID §2.1: lowercase letters, digits, `.`, `-` and `_`; an uppercase
+letter is refused, not folded), and an ID equal to the cluster trust domain
+(`auth.cluster_trust_domain`), under which a certificate names no tenant. The
+refusal is `*tenant.TenantTrustDomainError`, an invalid-input error on every
+transport, and it is enforced in the one create path every transport and the
+CLI share, so no transport can create a tenant another refuses.
+
 ### One unit, with compensation
 
 Every input that can be refused — the trust anchors, the CSR, the
