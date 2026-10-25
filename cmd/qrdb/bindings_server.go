@@ -26,7 +26,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cockroachdb/pebble/v2"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
@@ -613,7 +612,7 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 	}
 
 	// Create storage backend.
-	stg, pebbleDB, err := b.createStorage(cfg, dataDir)
+	stg, err := b.createStorage(cfg, dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +643,7 @@ func (b *EmbeddedServerBinding) startLocalNode(cfg *EmbeddedConfig, hub *watch.H
 		// binding sweeps (see StartEmbedded): an engine whose lessor nothing
 		// sweeps grants leases whose keys are never deleted.
 		lr := lease.NewLessor()
-		eng, engErr := lifecycle.NewLocalEngine(localBackendType(cfg.StorageBackend), stg, pebbleDB, hub, lr)
+		eng, engErr := lifecycle.NewLocalEngine(localBackendType(cfg.StorageBackend), stg, hub, lr)
 		if engErr != nil {
 			return nil, &SMOpenError{Backend: engineType, Err: engErr}
 		}
@@ -684,9 +683,8 @@ func (b *EmbeddedServerBinding) stopLocalLeaseExpiry() {
 }
 
 // createStorage creates the appropriate storage.Storage backend based on
-// the configured backend name. Returns the storage, an optional *pebble.DB
-// (non-nil for pebble backends), and any error.
-func (b *EmbeddedServerBinding) createStorage(cfg *EmbeddedConfig, dataDir string) (storage.Storage, *pebble.DB, error) {
+// the configured backend name.
+func (b *EmbeddedServerBinding) createStorage(cfg *EmbeddedConfig, dataDir string) (storage.Storage, error) {
 	backendName := cfg.StorageBackend
 	if backendName == "" {
 		backendName = "pebble"
@@ -694,29 +692,28 @@ func (b *EmbeddedServerBinding) createStorage(cfg *EmbeddedConfig, dataDir strin
 
 	switch backendName {
 	case "memory":
-		return memory.NewStorage(), nil, nil
+		return memory.NewStorage(), nil
 
 	case "file":
 		stg, err := file.New(filepath.Join(dataDir, "file"))
 		if err != nil {
-			return nil, nil, &DataDirCreateError{Path: dataDir, Err: err}
+			return nil, &DataDirCreateError{Path: dataDir, Err: err}
 		}
-		return stg, nil, nil
+		return stg, nil
 
 	case "pebble", "pebbledb":
 		pebbleDir := filepath.Join(dataDir, "pebble")
 		stg, err := pebbleStorage.New(pebbleStorage.DefaultConfig(pebbleDir))
 		if err != nil {
 			if isPebbleLockError(err) {
-				return nil, nil, &DataDirLockedError{Path: pebbleDir, Err: err}
+				return nil, &DataDirLockedError{Path: pebbleDir, Err: err}
 			}
-			return nil, nil, &SMOpenError{Backend: "pebble", Err: err}
+			return nil, &SMOpenError{Backend: "pebble", Err: err}
 		}
-		db := stg.DB()
-		return stg, db, nil
+		return stg, nil
 
 	default:
-		return nil, nil, &UnknownBackendError{Backend: backendName}
+		return nil, &UnknownBackendError{Backend: backendName}
 	}
 }
 

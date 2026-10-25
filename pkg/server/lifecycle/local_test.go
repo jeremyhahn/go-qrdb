@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -55,33 +56,19 @@ import (
 // longer needs it -- the engine and its time-series storage are both built
 // from stg alone, which every backend provides.
 func TestNewLocalStorage_EveryBackend(t *testing.T) {
-	for _, tc := range []struct {
-		backend    database.BackendType
-		wantPebble bool
-	}{
-		{database.BackendMemory, false},
-		{database.BackendFile, false},
-		{database.BackendPebble, true},
-		{database.BackendObjstore, false},
+	for _, backend := range []database.BackendType{
+		database.BackendMemory, database.BackendFile, database.BackendPebble, database.BackendObjstore,
 	} {
-		t.Run(string(tc.backend), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+		t.Run(string(backend), func(t *testing.T) {
+			stg, err := lifecycle.NewLocalStorage(
+				backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
-				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
+				t.Fatalf("NewLocalStorage(%s): %v", backend, err)
 			}
 			if stg == nil {
-				t.Fatalf("NewLocalStorage(%s) returned a nil storage and no error", tc.backend)
+				t.Fatalf("NewLocalStorage(%s) returned a nil storage and no error", backend)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
-
-			if tc.wantPebble && pdb == nil {
-				t.Errorf("%s must return a *pebble.DB handle: the MVCC engine and "+
-					"timeseries.New are both built from it", tc.backend)
-			}
-			if !tc.wantPebble && pdb != nil {
-				t.Errorf("%s returned a *pebble.DB handle; only the pebble backend has one", tc.backend)
-			}
 		})
 	}
 }
@@ -93,7 +80,7 @@ func TestNewLocalStorage_EveryBackend(t *testing.T) {
 func TestNewLocalStorage_UnsupportedBackend(t *testing.T) {
 	for _, backend := range []database.BackendType{database.BackendRaft, "", "not-a-backend"} {
 		t.Run(string(backend), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(
+			stg, err := lifecycle.NewLocalStorage(
 				backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err == nil {
 				t.Fatalf("NewLocalStorage(%q) returned no error", backend)
@@ -105,8 +92,8 @@ func TestNewLocalStorage_UnsupportedBackend(t *testing.T) {
 			if unsupported.Backend != backend {
 				t.Errorf("Backend = %q, want %q", unsupported.Backend, backend)
 			}
-			if stg != nil || pdb != nil {
-				t.Error("a refused backend must return no storage and no handle")
+			if stg != nil {
+				t.Error("a refused backend must return no storage")
 			}
 		})
 	}
@@ -134,7 +121,7 @@ func TestNewLocalStorage_OpenFailureNamesTheBackend(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(string(tc.backend), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, tc.dataDir, nil, tc.objCfg)
+			stg, err := lifecycle.NewLocalStorage(tc.backend, tc.dataDir, nil, tc.objCfg)
 			var target *lifecycle.LocalStorageError
 			if !asError(err, &target) {
 				t.Fatalf("error = %T (%v), want *LocalStorageError", err, err)
@@ -145,8 +132,8 @@ func TestNewLocalStorage_OpenFailureNamesTheBackend(t *testing.T) {
 			if target.Err == nil {
 				t.Error("LocalStorageError carries no cause")
 			}
-			if stg != nil || pdb != nil {
-				t.Error("a failed open must return no storage and no handle")
+			if stg != nil {
+				t.Error("a failed open must return no storage")
 			}
 		})
 	}
@@ -163,7 +150,7 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile} {
 		t.Run(string(backend), func(t *testing.T) {
 			dataDir := t.TempDir()
-			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.ObjstoreConfig{})
+			stg, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", backend, err)
 			}
@@ -208,6 +195,44 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 	}
 }
 
+// TestNewLocalStorage_SealedBarrierRefusesPebbleWrites pins that the storage
+// NewLocalStorage returns over an encrypted pebble database is the one path
+// to it, and that path checks the seal watch: once the barrier seals, a write
+// is refused with the typed sealed error rather than reaching Pebble, and once
+// it unseals, writes resume.
+func TestNewLocalStorage_SealedBarrierRefusesPebbleWrites(t *testing.T) {
+	barrier := newUnsealedBarrier(t)
+	stg, err := lifecycle.NewLocalStorage(database.BackendPebble, t.TempDir(), atrest.New(barrier), qrdbconfig.ObjstoreConfig{})
+	if err != nil {
+		t.Fatalf("NewLocalStorage(pebble): %v", err)
+	}
+	if err := stg.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set under an unsealed barrier: %v", err)
+	}
+
+	if err := barrier.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	var sealed *pebbleStorage.SealedError
+	if err := stg.Set([]byte("k2"), []byte("v")); !errors.As(err, &sealed) || !errors.Is(err, pebbleStorage.ErrBarrierSealed) {
+		t.Fatalf("Set under a sealed barrier = %v; want a *SealedError wrapping ErrBarrierSealed", err)
+	}
+	if err := stg.Delete([]byte("k")); !errors.Is(err, pebbleStorage.ErrBarrierSealed) {
+		t.Fatalf("Delete under a sealed barrier = %v; want ErrBarrierSealed", err)
+	}
+
+	ctx := context.Background()
+	if err := barrier.Unseal(ctx, seal.MustCredentials(ctx, []byte("localstore-at-rest-passphrase"))); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if err := stg.Set([]byte("k2"), []byte("v")); err != nil {
+		t.Fatalf("Set after unseal: %v", err)
+	}
+	if err := stg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // newUnsealedBarrier returns an initialized, unsealed barrier over an
 // in-memory backend.
 func newUnsealedBarrier(t *testing.T) *seal.StorageBarrier {
@@ -242,7 +267,7 @@ func newUnsealedBarrier(t *testing.T) *seal.StorageBarrier {
 // up, and does it without an error.
 func TestNewLocalStorage_ObjstoreDefaultsUnderDataDir(t *testing.T) {
 	dataDir := t.TempDir()
-	stg, _, err := lifecycle.NewLocalStorage(
+	stg, err := lifecycle.NewLocalStorage(
 		database.BackendObjstore, dataDir, nil, qrdbconfig.ObjstoreConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage(objstore): %v", err)
@@ -260,7 +285,7 @@ func TestNewLocalStorage_ObjstoreHonoursAnExplicitPath(t *testing.T) {
 	dataDir := t.TempDir()
 	explicit := filepath.Join(t.TempDir(), "elsewhere")
 
-	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, dataDir, nil,
+	stg, err := lifecycle.NewLocalStorage(database.BackendObjstore, dataDir, nil,
 		qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": explicit}})
 	if err != nil {
 		t.Fatalf("NewLocalStorage(objstore): %v", err)
@@ -283,7 +308,7 @@ func TestNewLocalStorage_DoesNotMutateTheCallerSettings(t *testing.T) {
 	settings := map[string]string{}
 	cfg := qrdbconfig.ObjstoreConfig{Provider: "local", Settings: settings}
 
-	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil, cfg)
+	stg, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil, cfg)
 	if err != nil {
 		t.Fatalf("NewLocalStorage(objstore): %v", err)
 	}
@@ -312,14 +337,14 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 		database.BackendObjstore,
 	} {
 		t.Run(string(tc), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(
+			stg, err := lifecycle.NewLocalStorage(
 				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
 
-			eng, err := lifecycle.NewLocalEngine(tc, stg, pdb, watch.NewHub(), lease.NewLessor())
+			eng, err := lifecycle.NewLocalEngine(tc, stg, watch.NewHub(), lease.NewLessor())
 			if err != nil {
 				t.Fatalf("NewLocalEngine(%s): %v", tc, err)
 			}
@@ -357,12 +382,12 @@ func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 			if got := lifecycle.LocalEngineKeepsLeases(tc.backend); got != tc.want {
 				t.Fatalf("LocalEngineKeepsLeases(%s) = %v; want %v", tc.backend, got, tc.want)
 			}
-			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+			stg, err := lifecycle.NewLocalStorage(tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
-			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, pdb, watch.NewHub(), lease.NewLessor())
+			eng, err := lifecycle.NewLocalEngine(tc.backend, stg, watch.NewHub(), lease.NewLessor())
 			if err != nil {
 				t.Fatalf("NewLocalEngine(%s): %v", tc.backend, err)
 			}
@@ -388,14 +413,14 @@ func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 // nil one must not panic. The engine is the only publisher of change events,
 // so a nil hub means "nothing is watching", not "misconfigured".
 func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
-	stg, pdb, err := lifecycle.NewLocalStorage(
+	stg, err := lifecycle.NewLocalStorage(
 		database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage: %v", err)
 	}
 	t.Cleanup(func() { _ = stg.Close() })
 
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil, nil)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, nil)
 	if err != nil {
 		t.Fatalf("NewLocalEngine with a nil hub: %v", err)
 	}
@@ -418,14 +443,14 @@ func TestNewLocalEngine_AttachesAuditChainUnconditionally(t *testing.T) {
 		database.BackendObjstore,
 	} {
 		t.Run(string(tc), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(
+			stg, err := lifecycle.NewLocalStorage(
 				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}
 			t.Cleanup(func() { _ = stg.Close() })
 
-			eng, err := lifecycle.NewLocalEngine(tc, stg, pdb, nil, nil)
+			eng, err := lifecycle.NewLocalEngine(tc, stg, nil, nil)
 			if err != nil {
 				t.Fatalf("NewLocalEngine(%s): %v", tc, err)
 			}

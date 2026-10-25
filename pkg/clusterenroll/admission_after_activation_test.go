@@ -170,13 +170,13 @@ func TestAdmission_JoinerIsAdmittedWhileAFeatureGateIsActive(t *testing.T) {
 	)
 
 	// --- Build one real, raft-free store (lease + MVCC) everything shares. ---
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	stg, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage: %v", err)
 	}
 	t.Cleanup(func() { _ = stg.Close() })
 	lr := lease.NewLessor()
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, pdb, nil, lr)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, lr)
 	if err != nil {
 		t.Fatalf("NewLocalEngine: %v", err)
 	}

@@ -41,20 +41,17 @@ import (
 func newRealKVService(t *testing.T) service.KVServicer {
 	t.Helper()
 
-	stg, pdb, err := createServerStorage(database.BackendMemory, t.TempDir(), nil)
+	stg, err := createServerStorage(database.BackendMemory, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("createServerStorage(memory): %v", err)
 	}
 	t.Cleanup(func() {
-		if pdb != nil {
-			_ = pdb.Close()
-		}
 		if stg != nil {
 			_ = stg.Close()
 		}
 	})
 
-	sm, err := createServerEngine(database.BackendMemory, stg, pdb, nil, nil)
+	sm, err := createServerEngine(database.BackendMemory, stg, nil, nil)
 	if err != nil {
 		t.Fatalf("createServerEngine(memory): %v", err)
 	}

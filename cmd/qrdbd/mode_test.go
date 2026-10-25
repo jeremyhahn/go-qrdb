@@ -98,7 +98,7 @@ func TestLocalDataPlaneCloser_ClosesBackendThenStorage(t *testing.T) {
 	t.Parallel()
 
 	stg := memory.NewStorage()
-	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, nil, nil)
+	eng, err := lifecycle.NewLocalEngine(database.BackendMemory, stg, nil, nil)
 	require.NoError(t, err)
 	c := localDataPlaneCloser{local: backend.NewLocalBackend(eng), storage: stg}
 	require.NoError(t, c.Close())

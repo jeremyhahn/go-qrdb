@@ -19,8 +19,6 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -45,33 +43,35 @@ import (
 // the resulting engine) prevents the three roots from drifting.
 
 // NewLocalStorage creates the node-local storage backend for a raft-free
-// composition and returns the storage interface plus an optional *pebble.DB
-// handle (non-nil only for the pebble backend). enc is the at-rest encryption
+// composition. It hands out no raw handle to the database beneath: on an
+// encrypted backend every write must reach the database through the storage,
+// which checks the seal barrier's watch, so nothing outside it can write to a
+// sealed database. enc is the at-rest encryption
 // every on-disk backend writes through: the pebble backend installs its file
 // system and the file backend does its record I/O through it, so both are
 // encrypted under the same barrier by the same mechanism (the seal barrier's
 // encfs). A nil or disabled enc leaves them plaintext. The memory backend
 // holds nothing on disk and the objstore backend is not a local file system,
 // so both ignore enc.
-func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, error) {
 	switch backendType {
 	case database.BackendMemory:
-		return memory.NewStorage(), nil, nil
+		return memory.NewStorage(), nil
 
 	case database.BackendFile:
 		stg, err := file.New(filepath.Join(dataDir, "file"), file.WithEncryptor(enc))
 		if err != nil {
-			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
+			return nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
-		return stg, nil, nil
+		return stg, nil
 
 	case database.BackendObjstore:
 		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
 		stg, err := objstore.New(provider, settings)
 		if err != nil {
-			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
+			return nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
-		return stg, nil, nil
+		return stg, nil
 
 	case database.BackendPebble:
 		pebbleDir := filepath.Join(dataDir, "pebble")
@@ -81,13 +81,12 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		}
 		stg, err := pebbleStorage.New(cfg)
 		if err != nil {
-			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
+			return nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
-		pdb := stg.DB()
-		return stg, pdb, nil
+		return stg, nil
 
 	default:
-		return nil, nil, &UnsupportedLocalBackendError{Backend: backendType}
+		return nil, &UnsupportedLocalBackendError{Backend: backendType}
 	}
 }
 
@@ -148,11 +147,7 @@ func LocalEngineKeepsLeases(_ database.BackendType) bool {
 // handler itself has no notion of "standalone" and would otherwise refuse
 // every protocol.OpAuditAppend this composition root receives with
 // *statemachine.ServiceNotConfiguredError.
-//
-// pdb is accepted for callers that still need the raw pebble handle for
-// backend-specific concerns outside the engine (compaction scheduling,
-// metrics); the engine itself needs only stg, which every backend provides.
-func NewLocalEngine(_ database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
+func NewLocalEngine(_ database.BackendType, stg storage.Storage, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
 	mvccOpts := []engine.MVCCOption{engine.WithMVCCLogs(vlog.NewChain())}
 	if lr != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCLessor(lr))

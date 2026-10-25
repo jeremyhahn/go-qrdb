@@ -1770,11 +1770,11 @@ func runStart(f *startFlags) (err error) {
 				if localBackend == database.BackendRaft {
 					return &StandaloneRaftBackendError{}
 				}
-				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig.Objstore)
+				stg, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig.Objstore)
 				if lerr != nil {
 					return lerr
 				}
-				eng, lerr := lifecycle.NewLocalEngine(localBackend, stg, pdb, watchHub, lr)
+				eng, lerr := lifecycle.NewLocalEngine(localBackend, stg, watchHub, lr)
 				if lerr != nil {
 					_ = stg.Close()
 					return lerr

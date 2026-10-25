@@ -81,7 +81,6 @@ func TestNode_CloseClosesTheDataPlaneBeforeSealingItsBarrier(t *testing.T) {
 	require.True(t, barrier.IsSealed(), "Close must still seal the barrier")
 	require.True(t, probe.fs.BarrierSealed())
 	require.Nil(t, n.stg)
-	require.Nil(t, n.pebbleDB)
 }
 
 func TestNode_CloseReportsADataPlaneCloseErrorAndStillSeals(t *testing.T) {

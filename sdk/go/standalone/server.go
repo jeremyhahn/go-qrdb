@@ -21,8 +21,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/cockroachdb/pebble/v2"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -357,7 +355,6 @@ type Server struct {
 	client       *sdk.Client
 	localBackend *backend.LocalBackend
 	stg          storage.Storage
-	pebbleDB     *pebble.DB
 	sealStore    *pebbleStorage.PebbleStorage
 	barrier      *seal.StorageBarrier
 	logger       *slog.Logger
@@ -478,20 +475,19 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 	// Create storage backend. enc is non-nil only for an on-disk backend
 	// with an unsealed barrier; in every other case the store is plaintext.
-	stg, pdb, err := createServerStorage(backendType, config.DataDir, enc)
+	stg, err := createServerStorage(backendType, config.DataDir, enc)
 	if err != nil {
 		srv.closeSeal()
 		return nil, err
 	}
 	srv.stg = stg
-	srv.pebbleDB = pdb
 
 	// Create store engine. MVCC for pebble/memory, KV for file. The engine
 	// publishes its changes to the watch hub and keeps its leases in the
 	// lessor, which the watch, lease and lock services below are built over.
 	srv.hub = watch.NewHub()
 	srv.lessor = lease.NewLessor()
-	sm, err := createServerEngine(backendType, stg, pdb, srv.hub, srv.lessor)
+	sm, err := createServerEngine(backendType, stg, srv.hub, srv.lessor)
 	if err != nil {
 		srv.closeCoordination()
 		srv.closeStorage()
@@ -647,7 +643,6 @@ func (s *Server) Shutdown(_ context.Context) error {
 			firstErr = err
 		}
 		s.stg = nil
-		s.pebbleDB = nil
 	}
 
 	// 5. The trail closes last: everything above may still record on it.
@@ -715,28 +710,26 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 	return nil
 }
 
-// createServerStorage creates the appropriate storage backend and returns
-// the storage interface along with an optional *pebble.DB handle (non-nil
-// for pebble backends). A non-nil enc encrypts the on-disk backends at rest
-// (see lifecycle.NewLocalStorage).
-func createServerStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor) (storage.Storage, *pebble.DB, error) {
-	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, enc, qrdbconfig.ObjstoreConfig{})
+// createServerStorage creates the appropriate storage backend. A non-nil
+// enc encrypts the on-disk backends at rest (see lifecycle.NewLocalStorage).
+func createServerStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor) (storage.Storage, error) {
+	stg, err := lifecycle.NewLocalStorage(backendType, dataDir, enc, qrdbconfig.ObjstoreConfig{})
 	if err != nil {
 		var unsupported *lifecycle.UnsupportedLocalBackendError
 		if errors.As(err, &unsupported) {
-			return nil, nil, &ServerConfigError{Field: "Backend", Message: "unsupported backend: " + string(backendType)}
+			return nil, &ServerConfigError{Field: "Backend", Message: "unsupported backend: " + string(backendType)}
 		}
-		return nil, nil, &StorageCreateError{Backend: backendType, Err: err}
+		return nil, &StorageCreateError{Backend: backendType, Err: err}
 	}
-	return stg, pdb, nil
+	return stg, nil
 }
 
 // createServerEngine creates the appropriate store engine for the given
 // backend type. MVCC is used for pebble and memory backends; KV for file
 // backends. hub and lr are the watch hub and lessor the engine publishes to
 // and keeps its leases in (see lifecycle.NewLocalEngine).
-func createServerEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
-	eng, err := lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
+func createServerEngine(backendType database.BackendType, stg storage.Storage, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
+	eng, err := lifecycle.NewLocalEngine(backendType, stg, hub, lr)
 	if err != nil {
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
 	}
@@ -1042,7 +1035,6 @@ func (s *Server) closeStorage() {
 	if s.stg != nil {
 		_ = s.stg.Close()
 		s.stg = nil
-		s.pebbleDB = nil
 	}
 }
 

@@ -97,7 +97,6 @@ import (
 
 	"log/slog"
 
-	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -1166,9 +1165,6 @@ type Node struct {
 	carriedCeremony atomic.Pointer[ceremony.CeremonyService]
 	host            quicraftCloser // nil for standalone
 	stg             storage.Storage
-	// pebbleDB is the main data-plane pebble instance; nil for memory/file
-	// backends and for sealed nodes before Unseal completes.
-	pebbleDB *pebble.DB
 	// sealStore is the dedicated store backing the seal sub-store; it must
 	// outlive the barrier and the data-plane PebbleDB. Typed as
 	// seal.LegacyStorage -- the interface seal.NewStorageAdapter already
@@ -1663,16 +1659,15 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		encryptor = atrest.New(barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
+	stg, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
 	n.stg = stg
-	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
 	lr := lease.NewLessor(lease.WithClock(n.clock))
-	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
+	smAdapter, err := createNodeEngine(pending.backendType, stg, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
 		n.stg = nil
@@ -2848,7 +2843,6 @@ func (n *Node) Close() error {
 	if n.stg != nil {
 		record(n.stg.Close())
 		n.stg = nil
-		n.pebbleDB = nil
 	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
@@ -3049,16 +3043,15 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Seal disabled: build storage + engine + services immediately.
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
+	stg, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: string(backendType), Err: err}
 	}
 	n.stg = stg
-	n.pebbleDB = pdb
 
 	watchHub := watch.NewHub()
 	lr := lease.NewLessor(lease.WithClock(n.clock))
-	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
+	smAdapter, err := createNodeEngine(backendType, stg, watchHub, lr)
 	if err != nil {
 		_ = n.stg.Close()
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
@@ -4797,7 +4790,7 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, error) {
 	if factory != nil {
 		// A composer's storage writes its files through the barrier's
 		// encrypting file system whatever the backend type names.
@@ -4807,11 +4800,9 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 		}
 		stg, err := factory(dataDir, dataPlaneFS)
 		if err != nil {
-			return nil, nil, &lifecycle.LocalStorageError{Backend: backendType, Err: err}
+			return nil, &lifecycle.LocalStorageError{Backend: backendType, Err: err}
 		}
-		// The engine needs only the storage; the raw pebble handle is for
-		// backend-specific concerns a composer's storage does not have.
-		return stg, nil, nil
+		return stg, nil
 	}
 	switch backendType {
 	case database.BackendMemory, database.BackendFile, database.BackendObjstore:
@@ -4825,8 +4816,8 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 // raft-free composition in pkg/server/lifecycle (see
 // lifecycle.NewLocalEngine for the engine-boundary, watch-hub and lessor
 // contracts).
-func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
-	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub, lr)
+func createNodeEngine(backendType database.BackendType, stg storage.Storage, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error) {
+	return lifecycle.NewLocalEngine(backendType, stg, hub, lr)
 }
 
 // buildClusteredHost creates the quicraft.Host, starts the KV shard and waits

@@ -210,7 +210,6 @@ var leanStandaloneEdges = map[string]bool{
 	"sdk/go -> pkg/vector/ivf":                                      true,
 
 	// The node composer builds every mode and backend in one package.
-	"sdk/go/node -> github.com/cockroachdb/pebble/v2":             true,
 	"sdk/go/node -> github.com/cockroachdb/pebble/v2/vfs":         true,
 	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg":        true,
 	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg/config": true,
