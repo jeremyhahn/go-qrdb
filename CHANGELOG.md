@@ -43,6 +43,21 @@ are not reconstructed here — their history is in the git log.
   Unix socket server registers the service through the same option instead of
   a separate call.
 
+### Fixed
+
+- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
+  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
+  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
+  transit, so on a busy runner the read timed out on a replica that was ready
+  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
+  `NewClusteredNode` was not at fault: it returns only after
+  `server.WaitForShardServing` has served a ReadIndex on that same host. The
+  test now checks at the moment each founder returns: the replica must
+  already know a leader, and its first read must not be refused. A read
+  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
+  outcome retried, up to three times. A constructor that skips the wait still
+  fails on the first attempt.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed

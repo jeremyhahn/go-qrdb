@@ -147,6 +147,16 @@ func bootFormationCluster(t *testing.T, ca *qrdbdharness.CA, replicas []formatio
 // replica's server.
 func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), serverOpts ...server.ServerOption) ([]*Node, error) {
 	t.Helper()
+	return bootFormationClusterObserved(t, ca, replicas, identitiesFor, configure, nil, serverOpts...)
+}
+
+// bootFormationClusterObserved is bootFormationClusterWith with onReturn, when
+// non-nil, called on each replica's own boot goroutine the moment its
+// NewClusteredNode returns a node: what onReturn observes is the state the
+// constructor handed out, before the other founders finish booting. It may not
+// t.Fatal; it records what it saw for the test goroutine to judge.
+func bootFormationClusterObserved(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), onReturn func(i int, n *Node), serverOpts ...server.ServerOption) ([]*Node, error) {
+	t.Helper()
 	caPEM := mustReadCAPEM(t, ca)
 	members := make(map[uint64]string, len(replicas))
 	for _, r := range replicas {
@@ -167,6 +177,9 @@ func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []form
 		go func() {
 			defer wg.Done()
 			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, serverOpts, WithRaftMTLS(mtls))
+			if errs[i] == nil && onReturn != nil {
+				onReturn(i, nodes[i])
+			}
 		}()
 	}
 	wg.Wait()
@@ -630,27 +643,163 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 
 // TestNewClusteredNode_ServesALinearizableReadOnReturn holds the clustered
 // constructor to the host-open contract every other path keeps: a node is
-// handed out only once its system shard can serve a linearizable read, so the
-// caller's FIRST read succeeds -- no leader poll, no retry. Three founders boot
-// concurrently, as an operator's do, and nothing waits for an election before
-// each returned node is asked for one ReadIndex. Without the wait the founders
-// return within milliseconds of StartShard, seconds before any election
-// timeout fires, and the probe finds no leader -- or a leader that has not yet
+// handed out only once its system shard can serve a linearizable read. Three
+// founders boot concurrently, as an operator's do, and nothing waits for an
+// election: the moment each NewClusteredNode returns, on its own boot
+// goroutine, the replica must already know a leader, and its first ReadIndex
+// must not be refused. Without the wait the founders return within
+// milliseconds of StartShard, seconds before any election timeout fires, so
+// the leader check finds none -- or the read meets a leader that has not yet
 // committed in its term (quicraft.ErrReadIndexNotReady), which is what a
 // replica add's committed-membership read hit. Tenant isolation is off: the
 // wait must not ride on that option.
+//
+// A refusal fails the test on the first attempt. The one outcome retried is an
+// attempt that ran out its own bound: go-quicraft answers nothing for a
+// forwarded ReadIndex lost in transit, so on a loaded host such an attempt
+// times out with the cluster ready and serving (go-qrdb main run 65619). See
+// firstLinearizableRead.
 func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
 	ca, replicas := newFormationReplicas(t, 3)
-	nodes, err := bootFormationCluster(t, ca, replicas, func(self uint64) string {
+	leaderAtReturn := make([]bool, len(replicas))
+	readAtReturn := make([]error, len(replicas))
+	_, err := bootFormationClusterObserved(t, ca, replicas, func(self uint64) string {
 		return peerIdentitySpecs(t, self, replicas)
+	}, nil, func(i int, n *Node) {
+		host := n.host.(*quicraft.Host)
+		_, leaderAtReturn[i], _ = host.GetLeaderID(shard.ShardKV)
+		readAtReturn[i] = firstLinearizableRead(context.Background(), readIndexAttempt(host),
+			server.StartupReadAttemptTimeout, firstReadAttempts)
 	})
 	if err != nil {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
-	for i, n := range nodes {
-		if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
-			t.Fatalf("replica %d: first linearizable read after NewClusteredNode returned: %v", replicas[i].id, err)
+	for i, r := range replicas {
+		if !leaderAtReturn[i] {
+			t.Fatalf("replica %d: NewClusteredNode returned before the replica knew a leader", r.id)
 		}
+		if readAtReturn[i] != nil {
+			t.Fatalf("replica %d: first linearizable read after NewClusteredNode returned: %v", r.id, readAtReturn[i])
+		}
+	}
+}
+
+// firstReadAttempts is how many attempts firstLinearizableRead makes, each
+// bounded by its attempt timeout, before it reports the last one's error.
+const firstReadAttempts = 3
+
+// firstLinearizableRead runs read, retrying only an attempt that ran out its
+// own bound -- attemptTimeout, derived from ctx -- up to attempts times, and
+// returns the first other outcome as it is. A refusal (ErrReadIndexNotReady,
+// no leader, any error that is not the attempt's own deadline) is returned at
+// once: that is the readiness contract failing, and a retry would wait it out.
+// A timed-out attempt is not: go-quicraft documents that a forwarded ReadIndex
+// or its response lost in transit is answered by nothing and bounded only by
+// ctx, so it says the host was slow, not that the shard was unready.
+func firstLinearizableRead(ctx context.Context, read func(context.Context) error, attemptTimeout time.Duration, attempts int) error {
+	var err error
+	for range attempts {
+		actx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		err = read(actx)
+		timedOut := err != nil && ctx.Err() == nil && errors.Is(actx.Err(), context.DeadlineExceeded)
+		cancel()
+		if !timedOut {
+			return err
+		}
+	}
+	return err
+}
+
+// readIndexAttempt adapts host to firstLinearizableRead: one linearizable
+// ReadIndex against the system shard, bounded by the attempt's ctx.
+func readIndexAttempt(host *quicraft.Host) func(context.Context) error {
+	return func(ctx context.Context) error {
+		rs, err := host.ReadIndex(ctx, shard.ShardKV)
+		if err != nil {
+			return err
+		}
+		defer rs.Release()
+		_, err = rs.Result()
+		return err
+	}
+}
+
+// TestFirstLinearizableRead_RefusalFailsTheFirstAttempt: a refusal is the
+// readiness contract failing, so it is reported on the attempt that met it,
+// never waited out by a retry.
+func TestFirstLinearizableRead_RefusalFailsTheFirstAttempt(t *testing.T) {
+	for _, refusal := range []error{quicraft.ErrReadIndexNotReady, quicraft.ErrNoLeader, quicraft.ErrCanceled} {
+		t.Run(refusal.Error(), func(t *testing.T) {
+			calls := 0
+			err := firstLinearizableRead(context.Background(), func(context.Context) error {
+				calls++
+				return refusal
+			}, time.Minute, firstReadAttempts)
+			if !errors.Is(err, refusal) || calls != 1 {
+				t.Fatalf("firstLinearizableRead = %v after %d attempts, want %v after 1", err, calls, refusal)
+			}
+		})
+	}
+}
+
+// TestFirstLinearizableRead_RetriesAnAttemptThatRanOutItsBound: an attempt
+// answered by nothing ends at its own deadline and the next one is made.
+func TestFirstLinearizableRead_RetriesAnAttemptThatRanOutItsBound(t *testing.T) {
+	calls := 0
+	err := firstLinearizableRead(context.Background(), func(ctx context.Context) error {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return quicraft.ErrTimeout
+		}
+		return nil
+	}, time.Millisecond, firstReadAttempts)
+	if err != nil || calls != 2 {
+		t.Fatalf("firstLinearizableRead = %v after %d attempts, want nil after 2", err, calls)
+	}
+}
+
+// TestFirstLinearizableRead_ReportsTheLastTimeoutOnceAttemptsRunOut: the
+// retry is bounded by the attempt count, and what it reports is what the last
+// attempt said.
+func TestFirstLinearizableRead_ReportsTheLastTimeoutOnceAttemptsRunOut(t *testing.T) {
+	calls := 0
+	err := firstLinearizableRead(context.Background(), func(ctx context.Context) error {
+		calls++
+		<-ctx.Done()
+		return quicraft.ErrTimeout
+	}, time.Millisecond, firstReadAttempts)
+	if !errors.Is(err, quicraft.ErrTimeout) || calls != firstReadAttempts {
+		t.Fatalf("firstLinearizableRead = %v after %d attempts, want %v after %d", err, calls, quicraft.ErrTimeout, firstReadAttempts)
+	}
+}
+
+// TestFirstLinearizableRead_CallerCancellationIsNotRetried: an attempt ended
+// by the caller's context, not its own bound, is the caller giving up.
+func TestFirstLinearizableRead_CallerCancellationIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	err := firstLinearizableRead(ctx, func(actx context.Context) error {
+		calls++
+		cancel()
+		<-actx.Done()
+		return quicraft.ErrCanceled
+	}, time.Minute, firstReadAttempts)
+	if !errors.Is(err, quicraft.ErrCanceled) || calls != 1 {
+		t.Fatalf("firstLinearizableRead = %v after %d attempts, want %v after 1", err, calls, quicraft.ErrCanceled)
+	}
+}
+
+// TestFirstLinearizableRead_SucceedsOnTheFirstAttempt: a served read makes
+// exactly one attempt.
+func TestFirstLinearizableRead_SucceedsOnTheFirstAttempt(t *testing.T) {
+	calls := 0
+	err := firstLinearizableRead(context.Background(), func(context.Context) error {
+		calls++
+		return nil
+	}, time.Minute, firstReadAttempts)
+	if err != nil || calls != 1 {
+		t.Fatalf("firstLinearizableRead = %v after %d attempts, want nil after 1", err, calls)
 	}
 }
 
@@ -659,13 +808,7 @@ func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
 func readIndexOnce(host *quicraft.Host) error {
 	ctx, cancel := context.WithTimeout(context.Background(), firstReadBudget)
 	defer cancel()
-	rs, err := host.ReadIndex(ctx, shard.ShardKV)
-	if err != nil {
-		return err
-	}
-	defer rs.Release()
-	_, err = rs.Result()
-	return err
+	return readIndexAttempt(host)(ctx)
 }
 
 // firstReadBudget bounds the single probe readIndexOnce issues: a round trip
