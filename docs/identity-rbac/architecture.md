@@ -92,9 +92,13 @@ tenant's principal is `spiffe://<tenant>/<kind>/<name>`, kind `user` or `svc`:
 the trust domain is the tenant ID verbatim. The first Subject OU and that trust
 domain must both be present and must agree; there is no fallback from one to
 the other. A certificate that names no tenant is under the cluster trust
-domain (`auth.spiffe_trust_domain`, which defaults to
-`auth.cluster_trust_domain`), and no tenant may be the cluster trust domain, so
-no tenant shares the cluster's trust bundle. A certificate missing either name,
+domain (`auth.cluster_trust_domain`), and no tenant may be the cluster trust
+domain, so no tenant shares the cluster's trust bundle. Tenant creation
+enforces both halves: an ID that is not a valid trust domain, or that equals
+the cluster trust domain, is refused before anything is written
+(`*tenant.TenantTrustDomainError`; see
+[multi-tenancy/architecture.md](../multi-tenancy/architecture.md#the-tenant-id-is-a-trust-domain)).
+A certificate missing either name,
 whose two names disagree (which is how a foreign trust domain presents), whose
 OU names the cluster trust domain, or with no OU and a SAN under a foreign
 trust domain is refused (`*auth.CertificateTenantError`). So is one whose two

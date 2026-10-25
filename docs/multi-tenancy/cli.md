@@ -20,7 +20,7 @@ Creates a tenant **together with its first admin**, or not at all.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--id` | string | — | required; tenant ID, must be unique |
+| `--id` | string | — | required; tenant ID, must be unique and a SPIFFE trust domain (lowercase letters, digits, `.`, `-`, `_`) other than `auth.cluster_trust_domain` |
 | `--name` | string | — | required; human-readable name |
 | `--isolation-type` | string | `prefix` | `prefix \| barrier \| volume \| raft` |
 | `--pool` | string | the tenant's default pool | for a `volume`/`raft` tenant, place it on this named volume pool instead of its default; the tenant must be entitled to the pool |

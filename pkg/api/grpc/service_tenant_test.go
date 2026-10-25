@@ -683,6 +683,8 @@ func TestMapTenantError_SentinelErrors(t *testing.T) {
 		{"has data", tenant.ErrTenantHasData, codes.FailedPrecondition},
 		{"not found", tenant.ErrTenantNotFound, codes.NotFound},
 		{"invalid id", &tenant.InvalidTenantIDError{TenantID: "bad!", Reason: "special chars"}, codes.InvalidArgument},
+		{"id is not a trust domain", &tenant.TenantTrustDomainError{TenantID: "Acme", Err: errors.New("invalid")}, codes.InvalidArgument},
+		{"id is the cluster trust domain", &tenant.TenantTrustDomainError{TenantID: "qrdb.cluster", Err: tenant.ErrTenantIDIsClusterTrustDomain}, codes.InvalidArgument},
 		{"store error", &tenant.StoreError{Op: "get", Err: errors.New("io")}, codes.Internal},
 		{"barrier error", &tenant.BarrierError{TenantID: "t1", Op: "init", Err: errors.New("key missing")}, codes.Internal},
 		{"unknown error", errors.New("something else"), codes.Internal},

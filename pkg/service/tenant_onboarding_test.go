@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -207,6 +208,36 @@ func TestOnboardTenant_FieldValidation(t *testing.T) {
 			_, err := svc.OnboardTenant(ctx, tt.req)
 			if !errors.As(err, &field) || field.Field != tt.want {
 				t.Fatalf("OnboardTenant(%+v) = %v, want *TenantOnboardingFieldError{%s}", tt.req, err, tt.want)
+			}
+		})
+	}
+}
+
+// A tenant ID is the trust domain of every SPIFFE ID minted into it, so
+// onboarding refuses one that cannot be a trust domain, and the cluster's own
+// trust domain, before anything is provisioned.
+func TestOnboardTenant_RefusesAnIDThatCannotBeATrustDomain(t *testing.T) {
+	deps := newOnboardingDeps(t)
+	svc := NewTenantOnboardingService(deps)
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		id   string
+		want error
+	}{
+		{"uppercase", "Acme", spiffe.ErrTrustDomainInvalid},
+		{"cluster trust domain", enrollmentTrustDomain, tenant.ErrTenantIDIsClusterTrustDomain},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{ID: tt.id, AdminUsername: "admin"})
+			var tdErr *tenant.TenantTrustDomainError
+			if !errors.As(err, &tdErr) || tdErr.TenantID != tt.id || !errors.Is(err, tt.want) {
+				t.Fatalf("OnboardTenant(%q) = %v, want *tenant.TenantTrustDomainError wrapping %v", tt.id, err, tt.want)
+			}
+			if _, getErr := deps.Tenants.GetTenant(ctx, tt.id); getErr == nil {
+				t.Fatalf("tenant %q was created despite the refusal", tt.id)
 			}
 		})
 	}
