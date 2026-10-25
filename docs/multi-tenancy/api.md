@@ -486,6 +486,7 @@ leaks to a caller with no access to the tier.
 | Tenant onboarding not configured on this node | 501 | `UNIMPLEMENTED` |
 | Barrier init by any certificate other than the onboarded admin's | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitCertificateMismatchError` |
 | Barrier init, `auth.mtls_binding_policy: required`, tenant has no onboarded admin | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitNotOnboardedError` |
+| Create with an id that is not a SPIFFE trust domain (anything but lowercase letters, digits, `.`, `-`, `_`), or that equals `auth.cluster_trust_domain` | 400 | `INVALID_ARGUMENT` — `*tenant.TenantTrustDomainError`; nothing written |
 | Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError` |
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |

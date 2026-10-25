@@ -96,13 +96,15 @@ func (t *Transport) VerifyFactor(ctx context.Context, req *transport.VerifyFacto
 		return &transport.ClosedError{}
 	}
 
-	_, err := pb.NewAuthFactorServiceClient(t.conn).VerifyFactor(ctx, &pb.VerifyFactorRequest{
+	if _, err := pb.NewAuthFactorServiceClient(t.conn).VerifyFactor(ctx, &pb.VerifyFactorRequest{
 		FactorName:  req.FactorName,
 		ChallengeId: req.ChallengeID,
 		Value:       req.Value,
 		Metadata:    req.Metadata,
-	})
-	return mapGRPCError("VerifyFactor", err)
+	}); err != nil {
+		return mapGRPCError("VerifyFactor", err)
+	}
+	return nil
 }
 
 // ListFactors lists enrolled auth factors via gRPC.
@@ -148,10 +150,12 @@ func (t *Transport) RevokeFactor(ctx context.Context, req *transport.RevokeFacto
 		return &transport.ClosedError{}
 	}
 
-	_, err := pb.NewAuthFactorServiceClient(t.conn).RevokeFactor(ctx, &pb.RevokeFactorRequest{
+	if _, err := pb.NewAuthFactorServiceClient(t.conn).RevokeFactor(ctx, &pb.RevokeFactorRequest{
 		EnrollmentId: req.EnrollmentID,
-	})
-	return mapGRPCError("RevokeFactor", err)
+	}); err != nil {
+		return mapGRPCError("RevokeFactor", err)
+	}
+	return nil
 }
 
 // anyToString converts any value to a string for protobuf map<string,string>

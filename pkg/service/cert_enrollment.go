@@ -125,7 +125,7 @@ var _ CertEnrollmentServicer = (*CertEnrollmentService)(nil)
 type CertEnrollmentOption func(*CertEnrollmentService)
 
 // WithEnrollmentTrustDomain sets the SPIFFE trust domain the node's mTLS
-// authenticator pins (auth.spiffe_trust_domain), so a bring-your-own
+// authenticator pins (auth.cluster_trust_domain), so a bring-your-own
 // certificate's identity is read exactly as a login will read it.
 func WithEnrollmentTrustDomain(trustDomain string) CertEnrollmentOption {
 	return func(s *CertEnrollmentService) { s.trustDomain = trustDomain }

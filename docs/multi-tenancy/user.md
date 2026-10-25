@@ -248,6 +248,14 @@ server cannot tell whether you are the same customer as the one that held the
 name before, and guessing wrong would hand you their data, so it does not
 guess. The message includes when the id was retired.
 
+**"cannot be a SPIFFE trust domain" when creating a tenant.** The tenant ID is
+the trust domain of every certificate in the tenant
+(`spiffe://<tenant>/user/<username>`), so it must be one: lowercase letters,
+digits, `.`, `-` and `_` only. `Acme` is refused; use `acme`. The deployment's
+own trust domain (`auth.cluster_trust_domain`, `qrdb.cluster` unless set) is
+refused too, because a certificate under it names no tenant. Nothing was
+written, so the ID is still free to use once corrected.
+
 **"id system is reserved" when deleting a tenant.** The platform's own tenant
 and the other reserved names (`default`, `custodian`, `security-officer`, anything starting with `_`, anything
 containing `:`) cannot be deleted. Nothing was changed when you saw that

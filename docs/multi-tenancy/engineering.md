@@ -21,7 +21,13 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 
 Server option: `server.WithTenantService(svc tenant.TenantServicer)`. gRPC
 registers `TenantBarrierService` when a tenant servicer is set; the Unix
-socket server takes it through `unix.WithTenantBarrierService`.
+socket server takes it through `unix.WithTenantBarrierService`. A composer
+that builds its own `*grpc.Server` registers it through the SDK's
+`RegisterGRPCService` with `WithRegisterTenantBarrierService(svc)`, which
+registers `qrdb.v1.TenantBarrierService` beside `QRDBService`; its
+tenant-scoped gate is the middleware passed with `WithRegisterAuthMiddleware`,
+and without one the service runs in the no-auth posture. The Unix socket server
+registers it the same way, through that one option.
 
 Tenant creation delegates, on every transport, to one service
 (`pkg/service/tenant_onboarding.go`), wired with
@@ -62,6 +68,18 @@ type TenantAdminCredential struct {
 	AwaitsBarrierInit bool
 }
 ```
+
+Before any write, `OnboardTenant` calls
+`tenant.ValidateTenantIDTrustDomain(req.ID, clusterTrustDomain)`, which
+returns a `*tenant.TenantTrustDomainError` for an ID that
+`spiffe.ValidateTrustDomain` refuses (`Err` is the `*spiffe.TrustDomainError`)
+or that equals the cluster trust domain (`Err` is
+`tenant.ErrTenantIDIsClusterTrustDomain`). `pkg/api/errclass` classifies it as
+invalid input: 400 on REST, `InvalidArgument` on gRPC, and the same class on
+every other transport. The check lives in the service, not a transport, so every
+transport and the CLI refuse the same IDs;
+`TestTenant_CLI_TrustDomainRefusal_PerProtocol` drives the refusal through the
+CLI on each.
 
 `OnboardTenant` calls `bootstrap.ProvisionTenant` with
 `AdminEnrollment: AdminEnrollCert`, `Exclusive: true` and

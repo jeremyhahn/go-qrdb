@@ -52,13 +52,13 @@ func buildStrictCANode(t *testing.T) *lifecycle.Node {
 	registry := newPooledRegistry(t, barrier)
 
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:              host,
-		WatchHub:          hub,
-		DataDir:           t.TempDir(),
-		SealBarrier:       barrier,
-		BarrierRegistry:   registry,
-		CredentialCoreSvc: credSvc,
-		SPIFFETrustDomain: "cluster.example.com",
+		Host:               host,
+		WatchHub:           hub,
+		DataDir:            t.TempDir(),
+		SealBarrier:        barrier,
+		BarrierRegistry:    registry,
+		CredentialCoreSvc:  credSvc,
+		ClusterTrustDomain: "cluster.example.com",
 		DefaultTenantEntitlements: &quota.Entitlements{
 			AllowedIsolationModes: []string{quota.IsolationModePrefix, quota.IsolationModeRaft},
 			AllowDedicatedRaft:    true,

@@ -1059,6 +1059,8 @@ var tenantRules = []rule{
 	is(tenant.ErrTenantDataUnverifiable, Unavailable),
 	is(tenant.ErrTenantNotFound, NotFound),
 	as(&tenant.InvalidTenantIDError{}, InvalidArgument),
+	// A tenant ID no SPIFFE ID could carry as its trust domain.
+	as(&tenant.TenantTrustDomainError{}, InvalidArgument),
 	// A reserved id is not the caller's to name, on create or on delete.
 	as(&tenant.ReservedTenantIDError{}, InvalidArgument),
 }

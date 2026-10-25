@@ -434,16 +434,16 @@ func TestBuildAuthMiddleware_UnauthenticatedRejected(t *testing.T) {
 	assert.ErrorIs(t, err, auth.ErrUnauthenticated)
 }
 
-// TestBuildAuthMiddleware_SPIFFETrustDomain verifies that a non-empty
-// SPIFFETrustDomain does not prevent middleware construction (the mTLS
+// TestBuildAuthMiddleware_ClusterTrustDomain verifies that a non-empty
+// ClusterTrustDomain does not prevent middleware construction (the mTLS
 // authenticator is pinned to the trust domain but authorization behaves
 // identically since AuthorizeTenant does not re-run authentication).
-func TestBuildAuthMiddleware_SPIFFETrustDomain(t *testing.T) {
+func TestBuildAuthMiddleware_ClusterTrustDomain(t *testing.T) {
 	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
-		Enabled:           true,
-		RoleService:       adminRoleService(),
-		UserService:       &fakeUserService{},
-		SPIFFETrustDomain: "spiffe://example.org",
+		Enabled:            true,
+		RoleService:        adminRoleService(),
+		UserService:        &fakeUserService{},
+		ClusterTrustDomain: "spiffe://example.org",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, mw)

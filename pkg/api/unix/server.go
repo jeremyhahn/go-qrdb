@@ -819,6 +819,15 @@ func (s *Server) Start() error {
 	if s.authMW != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterAuthMiddleware(s.authMW))
 	}
+	// RegisterService registers TenantBarrierService alongside QRDBService
+	// when configured. The same TenantServicer can be passed to both
+	// WithTenantService (for CRUD) and WithTenantBarrierService (for the
+	// per-tenant barrier lifecycle); they expose disjoint gRPC methods on
+	// disjoint service descriptors. s.authMW (which may be nil) supplies the
+	// tenant-scoped authorization gate, exactly as on the TCP gRPC server.
+	if s.tenantBarrierSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterTenantBarrierService(s.tenantBarrierSvc))
+	}
 
 	// Reuse the gRPC package's service registration.
 	grpcpkg.RegisterService(s.server, s.kvSvc, s.adminSvc, regOpts...)
@@ -841,16 +850,6 @@ func (s *Server) Start() error {
 	// ListUsers/UpdateUser projection, so a second, direct
 	// RegisterUserAuthFactorService call here would register the
 	// qrdb.v1.UserAuthFactorService proto service on s.server twice.
-
-	// Register TenantBarrierService alongside QRDBService when configured.
-	// The same TenantServicer can be passed to both WithTenantService (for
-	// CRUD) and WithTenantBarrierService (for the per-tenant barrier
-	// lifecycle); they expose disjoint gRPC methods on disjoint service
-	// descriptors. s.authMW (which may be nil) supplies the tenant-scoped
-	// authorization gate, exactly as on the TCP gRPC server.
-	if s.tenantBarrierSvc != nil {
-		grpcpkg.RegisterTenantBarrierService(s.server, s.tenantBarrierSvc, s.authMW)
-	}
 
 	// Register capability modules' gRPC service(s) alongside QRDBService. The
 	// Unix transport serves the same gRPC wire over a UDS, so modules gain

@@ -128,7 +128,7 @@ func (ca *loginCA) sign(t *testing.T, g delegation.Grant, notBefore time.Time, l
 	}
 	// The tenant is named twice and the two must agree: the Subject OU and
 	// the service SPIFFE ID SAN under the trust domain the node pins.
-	uris, err := auth.TenantPrincipalURIs(qrdbconfig.DefaultConfig().Auth.EffectiveSPIFFETrustDomain(), g.Tenant, spiffe.KindService, g.Principal)
+	uris, err := auth.TenantPrincipalURIs(qrdbconfig.DefaultConfig().Auth.EffectiveClusterTrustDomain(), g.Tenant, spiffe.KindService, g.Principal)
 	if err != nil {
 		t.Fatalf("delegation SPIFFE ID: %v", err)
 	}
