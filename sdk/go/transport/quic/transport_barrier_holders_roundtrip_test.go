@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,13 @@ type holderBarrierSvc struct {
 
 	err error
 
+	mu  sync.Mutex
+	rec holderBarrierCalls
+}
+
+// holderBarrierCalls is what holderBarrierSvc last saw. The QUIC server calls
+// the double on a handler goroutine, so a test reads it through seen.
+type holderBarrierCalls struct {
 	domain     seal.QuorumDomain
 	username   string
 	thumbprint string
@@ -37,10 +45,19 @@ type holderBarrierSvc struct {
 	unsealed   bool
 }
 
+// seen returns a copy of what the double has recorded so far.
+func (m *holderBarrierSvc) seen() holderBarrierCalls {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rec
+}
+
 var _ service.BarrierServicer = (*holderBarrierSvc)(nil)
 
 func (m *holderBarrierSvc) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
-	m.unsealed = true
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.unsealed = true
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -48,7 +65,9 @@ func (m *holderBarrierSvc) BarrierClusterUnseal(context.Context) (*clusterseal.R
 }
 
 func (m *holderBarrierSvc) BarrierOfficerRegister(_ context.Context, domain seal.QuorumDomain, req *service.BarrierOfficerRegisterRequest) (*service.BarrierOfficerRegisterResult, error) {
-	m.domain, m.register = domain, req
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.domain, m.rec.register = domain, req
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -56,7 +75,9 @@ func (m *holderBarrierSvc) BarrierOfficerRegister(_ context.Context, domain seal
 }
 
 func (m *holderBarrierSvc) BarrierOfficerList(_ context.Context, domain seal.QuorumDomain) ([]*service.BarrierOfficerStatus, error) {
-	m.domain = domain
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.domain = domain
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -64,7 +85,9 @@ func (m *holderBarrierSvc) BarrierOfficerList(_ context.Context, domain seal.Quo
 }
 
 func (m *holderBarrierSvc) BarrierShareClaimBegin(_ context.Context, domain seal.QuorumDomain, username, thumbprint string) (*service.BarrierShareClaimChallenge, error) {
-	m.domain, m.username, m.thumbprint = domain, username, thumbprint
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.domain, m.rec.username, m.rec.thumbprint = domain, username, thumbprint
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -72,7 +95,9 @@ func (m *holderBarrierSvc) BarrierShareClaimBegin(_ context.Context, domain seal
 }
 
 func (m *holderBarrierSvc) BarrierShareClaimComplete(_ context.Context, domain seal.QuorumDomain, username, nonceHex string, signature []byte, thumbprint string) (*service.BarrierShareClaimResult, error) {
-	m.domain, m.username, m.nonceHex, m.signature, m.thumbprint = domain, username, nonceHex, signature, thumbprint
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.domain, m.rec.username, m.rec.nonceHex, m.rec.signature, m.rec.thumbprint = domain, username, nonceHex, signature, thumbprint
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -80,7 +105,9 @@ func (m *holderBarrierSvc) BarrierShareClaimComplete(_ context.Context, domain s
 }
 
 func (m *holderBarrierSvc) BarrierQuorumBegin(_ context.Context, req *service.QuorumBeginRequest) (*service.QuorumChallengeInfo, error) {
-	m.begin = req
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.begin = req
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -88,7 +115,9 @@ func (m *holderBarrierSvc) BarrierQuorumBegin(_ context.Context, req *service.Qu
 }
 
 func (m *holderBarrierSvc) BarrierQuorumSubmit(_ context.Context, req *service.QuorumSubmitRequest) (*service.QuorumOutcomeInfo, error) {
-	m.submit = &service.QuorumSubmitRequest{Domain: req.Domain, Op: req.Op, Username: req.Username, ChallengeID: req.ChallengeID,
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.submit = &service.QuorumSubmitRequest{Domain: req.Domain, Op: req.Op, Username: req.Username, ChallengeID: req.ChallengeID,
 		Factor: req.Factor, Response: append([]byte(nil), req.Response...), PeerCertThumbprint: req.PeerCertThumbprint}
 	if m.err != nil {
 		return nil, m.err
@@ -97,7 +126,9 @@ func (m *holderBarrierSvc) BarrierQuorumSubmit(_ context.Context, req *service.Q
 }
 
 func (m *holderBarrierSvc) BarrierOfficerRevoke(_ context.Context, domain seal.QuorumDomain, username string, threshold int, soPIN string) (*service.QuorumRoundInfo, error) {
-	m.domain, m.username, m.threshold, m.soPIN = domain, username, threshold, soPIN
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.domain, m.rec.username, m.rec.threshold, m.rec.soPIN = domain, username, threshold, soPIN
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -128,23 +159,23 @@ func TestQUICRoundTrip_BarrierHolders_RegisterAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OfficerRegister: %v", err)
 	}
-	if svc.domain != seal.DomainUnseal || svc.register.Username != "alice" || string(svc.register.CSRPEM) != "csr-pem" || svc.register.Role != seal.RoleSecurityOfficer {
-		t.Fatalf("service saw domain %q request %+v", svc.domain, svc.register)
+	if svc.seen().domain != seal.DomainUnseal || svc.seen().register.Username != "alice" || string(svc.seen().register.CSRPEM) != "csr-pem" || svc.seen().register.Role != seal.RoleSecurityOfficer {
+		t.Fatalf("service saw domain %q request %+v", svc.seen().domain, svc.seen().register)
 	}
 	if reg.CertPEM != "cert-unseal" || reg.Role != string(seal.RoleSecurityOfficer) || len(reg.Factors) != 1 || reg.Factors[0] != "mtls" {
 		t.Fatalf("OfficerRegister = %+v", reg)
 	}
 	reg, err = tr.RecoveryOfficerRegister(ctx, req)
-	if err != nil || svc.domain != seal.DomainRecovery || reg.CertPEM != "cert-recovery" {
-		t.Fatalf("RecoveryOfficerRegister: err %v, domain %q, response %+v", err, svc.domain, reg)
+	if err != nil || svc.seen().domain != seal.DomainRecovery || reg.CertPEM != "cert-recovery" {
+		t.Fatalf("RecoveryOfficerRegister: err %v, domain %q, response %+v", err, svc.seen().domain, reg)
 	}
 
 	officers, err := tr.OfficerList(ctx)
 	if err != nil {
 		t.Fatalf("OfficerList: %v", err)
 	}
-	if svc.domain != seal.DomainUnseal || len(officers) != 1 || officers[0].Username != "alice" || officers[0].ShareIndex != 1 || !officers[0].ClaimedAt.Equal(time.Unix(1700000100, 0)) {
-		t.Fatalf("OfficerList: domain %q officers %+v", svc.domain, officers)
+	if svc.seen().domain != seal.DomainUnseal || len(officers) != 1 || officers[0].Username != "alice" || officers[0].ShareIndex != 1 || !officers[0].ClaimedAt.Equal(time.Unix(1700000100, 0)) {
+		t.Fatalf("OfficerList: domain %q officers %+v", svc.seen().domain, officers)
 	}
 }
 
@@ -161,20 +192,22 @@ func TestQUICRoundTrip_BarrierHolders_ShareClaimBothDomains(t *testing.T) {
 		{seal.DomainUnseal, tr.ShareClaimBegin, tr.ShareClaimComplete},
 		{seal.DomainRecovery, tr.RecoveryShareClaimBegin, tr.RecoveryShareClaimComplete},
 	} {
-		svc.thumbprint = ""
+		svc.mu.Lock()
+		svc.rec.thumbprint = ""
+		svc.mu.Unlock()
 		ch, err := tc.begin(ctx, &transport.ShareClaimBeginRequest{Username: "alice"})
 		if err != nil {
 			t.Fatalf("%s claim begin: %v", tc.domain, err)
 		}
-		if svc.domain != tc.domain || svc.username != "alice" || svc.thumbprint == "" || ch.NonceHex != "beef" || !ch.ExpiresAt.Equal(time.Unix(1700000600, 0)) {
-			t.Fatalf("%s claim begin: service saw %q/%q/%q, returned %+v", tc.domain, svc.domain, svc.username, svc.thumbprint, ch)
+		if svc.seen().domain != tc.domain || svc.seen().username != "alice" || svc.seen().thumbprint == "" || ch.NonceHex != "beef" || !ch.ExpiresAt.Equal(time.Unix(1700000600, 0)) {
+			t.Fatalf("%s claim begin: service saw %q/%q/%q, returned %+v", tc.domain, svc.seen().domain, svc.seen().username, svc.seen().thumbprint, ch)
 		}
 		got, err := tc.complete(ctx, &transport.ShareClaimCompleteRequest{Username: "alice", NonceHex: "beef", Signature: []byte("sig")})
 		if err != nil {
 			t.Fatalf("%s claim complete: %v", tc.domain, err)
 		}
-		if svc.nonceHex != "beef" || string(svc.signature) != "sig" || got.ShareIndex != 4 || string(got.Envelope) != "envelope-"+string(tc.domain) {
-			t.Fatalf("%s claim complete: service saw %q/%q, returned %+v", tc.domain, svc.nonceHex, svc.signature, got)
+		if svc.seen().nonceHex != "beef" || string(svc.seen().signature) != "sig" || got.ShareIndex != 4 || string(got.Envelope) != "envelope-"+string(tc.domain) {
+			t.Fatalf("%s claim complete: service saw %q/%q, returned %+v", tc.domain, svc.seen().nonceHex, svc.seen().signature, got)
 		}
 	}
 }
@@ -188,8 +221,8 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 	if err != nil {
 		t.Fatalf("BarrierQuorumBegin: %v", err)
 	}
-	if svc.begin == nil || svc.begin.Username != "alice" || svc.begin.Domain != seal.DomainUnseal || ch.ChallengeID != "q-1" || ch.Username != "alice" || string(ch.Nonce) != "n" {
-		t.Fatalf("BarrierQuorumBegin: service saw %+v, returned %+v", svc.begin, ch)
+	if svc.seen().begin == nil || svc.seen().begin.Username != "alice" || svc.seen().begin.Domain != seal.DomainUnseal || ch.ChallengeID != "q-1" || ch.Username != "alice" || string(ch.Nonce) != "n" {
+		t.Fatalf("BarrierQuorumBegin: service saw %+v, returned %+v", svc.seen().begin, ch)
 	}
 
 	out, err := tr.BarrierQuorumSubmit(ctx, &transport.QuorumSubmitRequest{Domain: "unseal", Op: "unseal", Username: "alice",
@@ -197,7 +230,7 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 	if err != nil {
 		t.Fatalf("BarrierQuorumSubmit: %v", err)
 	}
-	if s := svc.submit; s == nil || s.ChallengeID != "q-1" || string(s.Response) != "resp" || s.PeerCertThumbprint == "" {
+	if s := svc.seen().submit; s == nil || s.ChallengeID != "q-1" || string(s.Response) != "resp" || s.PeerCertThumbprint == "" {
 		t.Fatalf("BarrierQuorumSubmit: service saw %+v", s)
 	}
 	if out.Required != 2 || out.Submitted != 1 || out.Complete || out.Domain != "unseal" {
@@ -208,8 +241,8 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 	if err != nil {
 		t.Fatalf("BarrierOfficerRevoke: %v", err)
 	}
-	if svc.domain != seal.DomainUnseal || svc.username != "bob" || svc.threshold != 2 || svc.soPIN != "so-pin" {
-		t.Fatalf("BarrierOfficerRevoke: service saw %q/%q/%d/%q", svc.domain, svc.username, svc.threshold, svc.soPIN)
+	if svc.seen().domain != seal.DomainUnseal || svc.seen().username != "bob" || svc.seen().threshold != 2 || svc.seen().soPIN != "so-pin" {
+		t.Fatalf("BarrierOfficerRevoke: service saw %q/%q/%d/%q", svc.seen().domain, svc.seen().username, svc.seen().threshold, svc.seen().soPIN)
 	}
 	if round.Required != 2 || round.NewThreshold != 2 || len(round.Remove) != 1 || round.Remove[0] != "bob" || !round.ExpiresAt.Equal(time.Unix(1700001000, 0)) {
 		t.Fatalf("BarrierOfficerRevoke = %+v", round)
@@ -219,14 +252,14 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 		t.Fatalf("WithSOPIN: %v", err)
 	}
 	defer release()
-	if _, err := tr.BarrierOfficerRevoke(pinCtx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "carol"}); err != nil || svc.soPIN != "bound-pin" {
-		t.Fatalf("BarrierOfficerRevoke with a bound PIN: err %v, service saw %q", err, svc.soPIN)
+	if _, err := tr.BarrierOfficerRevoke(pinCtx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "carol"}); err != nil || svc.seen().soPIN != "bound-pin" {
+		t.Fatalf("BarrierOfficerRevoke with a bound PIN: err %v, service saw %q", err, svc.seen().soPIN)
 	}
 	var conflict *transport.SOPINConflictError
 	if _, err := tr.BarrierOfficerRevoke(pinCtx, &transport.OfficerRevokeRequest{Domain: "unseal", Username: "dave", SOPin: "other"}); !errors.As(err, &conflict) {
 		t.Fatalf("BarrierOfficerRevoke with a conflicting PIN: err = %v, want *transport.SOPINConflictError", err)
 	}
-	if svc.username == "dave" {
+	if svc.seen().username == "dave" {
 		t.Fatal("a conflicting SO PIN reached the service")
 	}
 
@@ -234,8 +267,8 @@ func TestQUICRoundTrip_BarrierHolders_QuorumRevokeAndClusterUnseal(t *testing.T)
 	if err != nil {
 		t.Fatalf("BarrierClusterUnseal: %v", err)
 	}
-	if !svc.unsealed || !rep.Active || rep.Epoch != 7 || rep.Principal != "root" {
-		t.Fatalf("BarrierClusterUnseal = %+v (service reached: %v)", rep, svc.unsealed)
+	if !svc.seen().unsealed || !rep.Active || rep.Epoch != 7 || rep.Principal != "root" {
+		t.Fatalf("BarrierClusterUnseal = %+v (service reached: %v)", rep, svc.seen().unsealed)
 	}
 }
 
@@ -304,7 +337,7 @@ func TestQUICRoundTrip_BarrierHolders_NilRequest(t *testing.T) {
 			t.Errorf("%s: err = %v, want *transport.NilRequestError", name, err)
 		}
 	}
-	if svc.register != nil || svc.begin != nil || svc.submit != nil || svc.username != "" {
+	if svc.seen().register != nil || svc.seen().begin != nil || svc.seen().submit != nil || svc.seen().username != "" {
 		t.Fatal("a nil request reached the barrier service")
 	}
 }

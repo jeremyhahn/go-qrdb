@@ -83,15 +83,34 @@ func (f *fakeSQLSvc) Execute(_ context.Context, database, query string) (*servic
 type fakeInvitationSvc struct {
 	invitation *service.Invitation
 	enrolled   *service.EnrolledCertificate
-	err        error
 
+	// mu guards what follows: the QUIC server calls the double on a handler
+	// goroutine while the test reads and sets it.
+	mu        sync.Mutex
+	err       error
 	gotInvite *service.InviteUserRequest
 	gotRedeem *service.RedeemInvitationRequest
+}
+
+// received returns the last invite and redeem requests the double saw.
+func (f *fakeInvitationSvc) received() (*service.InviteUserRequest, *service.RedeemInvitationRequest) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotInvite, f.gotRedeem
+}
+
+// fail makes every later call refuse with err.
+func (f *fakeInvitationSvc) fail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
 }
 
 var _ service.InvitationServicer = (*fakeInvitationSvc)(nil)
 
 func (f *fakeInvitationSvc) InviteUser(_ context.Context, req *service.InviteUserRequest) (*service.Invitation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.gotInvite = req
 	if f.err != nil {
 		return nil, f.err
@@ -100,6 +119,8 @@ func (f *fakeInvitationSvc) InviteUser(_ context.Context, req *service.InviteUse
 }
 
 func (f *fakeInvitationSvc) RedeemInvitation(_ context.Context, req *service.RedeemInvitationRequest) (*service.EnrolledCertificate, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.gotRedeem = req
 	if f.err != nil {
 		return nil, f.err
@@ -223,7 +244,7 @@ func TestQUICRoundTrip_Invitations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InviteUser: %v", err)
 	}
-	if g := svc.gotInvite; g == nil || g.Username != "ada" || g.Email != "ada@example.com" || g.Name != "Ada" ||
+	if g, _ := svc.received(); g == nil || g.Username != "ada" || g.Email != "ada@example.com" || g.Name != "Ada" ||
 		g.KeyPinFingerprint != "pin" {
 		t.Fatalf("server received %+v", g)
 	}
@@ -238,7 +259,7 @@ func TestQUICRoundTrip_Invitations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RedeemInvitation: %v", err)
 	}
-	if g := svc.gotRedeem; g == nil || g.TenantID != "acme" || g.Token != "tok" || string(g.CSRPEM) != "CSR" ||
+	if _, g := svc.received(); g == nil || g.TenantID != "acme" || g.Token != "tok" || string(g.CSRPEM) != "CSR" ||
 		string(g.CertPEM) != "OWN" || string(g.ChainPEM) != "CHAIN" {
 		t.Fatalf("server received %+v", g)
 	}
@@ -247,7 +268,7 @@ func TestQUICRoundTrip_Invitations(t *testing.T) {
 		t.Fatalf("RedeemInvitation = %+v", cert)
 	}
 
-	svc.err = &service.InvitationInvalidError{}
+	svc.fail(&service.InvitationInvalidError{})
 	requireQUICRequestError(t, func() error {
 		_, err := tr.InviteUser(ctx, &transport.InviteUserRequest{Username: "ada"})
 		return err
@@ -297,10 +318,23 @@ func TestQUICRoundTrip_ImportAbort(t *testing.T) {
 func TestQUICRoundTrip_VolumePools(t *testing.T) {
 	created := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	reported := created.Add(2 * time.Hour)
-	var gotCreate volume.CreatePoolRequest
-	var gotUpdate volume.UpdatePoolRequest
-	var gotUpdateName, gotTenantsPage string
-	var deleted string
+	// poolCalls is what the volume service saw. The QUIC server calls it on a
+	// handler goroutine, so the test reads it through seen.
+	type poolCalls struct {
+		create                  volume.CreatePoolRequest
+		update                  volume.UpdatePoolRequest
+		updateName, tenantsPage string
+		deleted                 string
+	}
+	var (
+		mu  sync.Mutex
+		rec poolCalls
+	)
+	seen := func() poolCalls {
+		mu.Lock()
+		defer mu.Unlock()
+		return rec
+	}
 	svc := &volumetest.Service{T: t,
 		ListPoolsFn: func(context.Context) ([]volume.PoolView, error) {
 			return []volume.PoolView{{
@@ -320,19 +354,27 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 			}, nil
 		},
 		CreatePoolFn: func(_ context.Context, req volume.CreatePoolRequest) (*volume.Pool, error) {
-			gotCreate = req
+			mu.Lock()
+			rec.create = req
+			mu.Unlock()
 			return &volume.Pool{Name: req.Name, Provider: req.Provider, CapacityBytes: req.CapacityBytes}, nil
 		},
 		UpdatePoolFn: func(_ context.Context, name string, req volume.UpdatePoolRequest) (*volume.Pool, error) {
-			gotUpdateName, gotUpdate = name, req
+			mu.Lock()
+			rec.updateName, rec.update = name, req
+			mu.Unlock()
 			return &volume.Pool{Name: name, Provider: "dir", CapacityBytes: 200}, nil
 		},
 		DeletePoolFn: func(_ context.Context, name string) error {
-			deleted = name
+			mu.Lock()
+			rec.deleted = name
+			mu.Unlock()
 			return nil
 		},
 		ListAssignmentsFn: func(_ context.Context, pool, pageToken string, pageSize int) (*volume.AssignmentPage, error) {
-			gotTenantsPage = pool + "|" + pageToken + "|" + strconv.Itoa(pageSize)
+			mu.Lock()
+			rec.tenantsPage = pool + "|" + pageToken + "|" + strconv.Itoa(pageSize)
+			mu.Unlock()
 			return &volume.AssignmentPage{
 				Assignments:   []volume.Assignment{{TenantID: "acme", ReservedBytes: 5}, {TenantID: "globex", ReservedBytes: 6}},
 				NextPageToken: "next",
@@ -368,8 +410,8 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePool: %v", err)
 	}
-	if gotCreate.Name != "slow" || gotCreate.Provider != "dir" || gotCreate.CapacityBytes != 10 || p.Name != "slow" {
-		t.Fatalf("CreatePool: server got %+v, returned %+v", gotCreate, p)
+	if got := seen().create; got.Name != "slow" || got.Provider != "dir" || got.CapacityBytes != 10 || p.Name != "slow" {
+		t.Fatalf("CreatePool: server got %+v, returned %+v", got, p)
 	}
 
 	capacity := int64(200)
@@ -377,24 +419,24 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdatePool: %v", err)
 	}
-	if gotUpdateName != "slow" || gotUpdate.CapacityBytes == nil || *gotUpdate.CapacityBytes != 200 || p.CapacityBytes != 200 {
-		t.Fatalf("UpdatePool: server got %+v, returned %+v", gotUpdate, p)
+	if got := seen(); got.updateName != "slow" || got.update.CapacityBytes == nil || *got.update.CapacityBytes != 200 || p.CapacityBytes != 200 {
+		t.Fatalf("UpdatePool: server got %+v, returned %+v", got.update, p)
 	}
 
 	tenants, err := tr.ListPoolTenants(ctx, &transport.ListVolumePoolTenantsRequest{Pool: "slow", PageToken: "p1", PageSize: 2})
 	if err != nil {
 		t.Fatalf("ListPoolTenants: %v", err)
 	}
-	if gotTenantsPage != "slow|p1|2" || tenants.NextPageToken != "next" || len(tenants.Tenants) != 2 ||
+	if got := seen().tenantsPage; got != "slow|p1|2" || tenants.NextPageToken != "next" || len(tenants.Tenants) != 2 ||
 		tenants.Tenants[0] != (transport.VolumePoolTenant{TenantID: "acme", ReservedBytes: 5}) ||
 		tenants.Tenants[1].TenantID != "globex" {
-		t.Fatalf("ListPoolTenants: server got %q, returned %+v", gotTenantsPage, tenants)
+		t.Fatalf("ListPoolTenants: server got %q, returned %+v", got, tenants)
 	}
-	if _, err := tr.ListPoolTenants(ctx, nil); err != nil || gotTenantsPage != "||0" {
-		t.Fatalf("ListPoolTenants(nil): err = %v, server got %q", err, gotTenantsPage)
+	if _, err := tr.ListPoolTenants(ctx, nil); err != nil || seen().tenantsPage != "||0" {
+		t.Fatalf("ListPoolTenants(nil): err = %v, server got %q", err, seen().tenantsPage)
 	}
-	if err := tr.DeletePool(ctx, "slow"); err != nil || deleted != "slow" {
-		t.Fatalf("DeletePool: err = %v, deleted %q", err, deleted)
+	if err := tr.DeletePool(ctx, "slow"); err != nil || seen().deleted != "slow" {
+		t.Fatalf("DeletePool: err = %v, deleted %q", err, seen().deleted)
 	}
 }
 

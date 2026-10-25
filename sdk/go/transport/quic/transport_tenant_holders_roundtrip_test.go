@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,8 +39,14 @@ import (
 type quicTenantHolderSvc struct {
 	tenant.TenantServicer
 
+	mu  sync.Mutex
 	err error
+	rec quicTenantHolderCalls
+}
 
+// quicTenantHolderCalls is what quicTenantHolderSvc last saw. The QUIC server
+// calls the double on a handler goroutine, so a test reads it through seen.
+type quicTenantHolderCalls struct {
 	tenantID   string
 	username   string
 	thumbprint string
@@ -56,10 +63,26 @@ type quicTenantHolderSvc struct {
 	entitled   *quota.Entitlements
 }
 
+// seen returns a copy of what the double has recorded so far.
+func (m *quicTenantHolderSvc) seen() quicTenantHolderCalls {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rec
+}
+
+// fail makes every later call refuse with err.
+func (m *quicTenantHolderSvc) fail(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.err = err
+}
+
 var _ tenant.TenantServicer = (*quicTenantHolderSvc)(nil)
 
 func (m *quicTenantHolderSvc) TenantBarrierOfficerRegister(_ context.Context, tenantID string, req *ceremony.RegisterOfficerRequest) (*ceremony.RegisterOfficerResult, error) {
-	m.tenantID, m.register = tenantID, req
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.register = tenantID, req
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -70,7 +93,9 @@ func (m *quicTenantHolderSvc) TenantBarrierOfficerRegister(_ context.Context, te
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierOfficerList(_ context.Context, tenantID string) ([]*ceremony.OfficerStatus, error) {
-	m.tenantID = tenantID
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID = tenantID
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -80,7 +105,9 @@ func (m *quicTenantHolderSvc) TenantBarrierOfficerList(_ context.Context, tenant
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierShareClaimBegin(_ context.Context, tenantID, username, thumbprint string) (*ceremony.ChallengeResponse, error) {
-	m.tenantID, m.username, m.thumbprint = tenantID, username, thumbprint
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.username, m.rec.thumbprint = tenantID, username, thumbprint
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -88,7 +115,9 @@ func (m *quicTenantHolderSvc) TenantBarrierShareClaimBegin(_ context.Context, te
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierShareClaimComplete(_ context.Context, tenantID, username, nonceHex string, signature []byte, thumbprint string) (*ceremony.ShareClaimResult, error) {
-	m.tenantID, m.username, m.nonceHex, m.signature, m.thumbprint = tenantID, username, nonceHex, signature, thumbprint
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.username, m.rec.nonceHex, m.rec.signature, m.rec.thumbprint = tenantID, username, nonceHex, signature, thumbprint
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -96,7 +125,9 @@ func (m *quicTenantHolderSvc) TenantBarrierShareClaimComplete(_ context.Context,
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierQuorumBegin(_ context.Context, tenantID string, op seal.QuorumOp, username, factor string) (*ceremony.QuorumChallenge, error) {
-	m.tenantID, m.op, m.username, m.factor = tenantID, op, username, factor
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.op, m.rec.username, m.rec.factor = tenantID, op, username, factor
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -109,8 +140,10 @@ func (m *quicTenantHolderSvc) TenantBarrierQuorumBegin(_ context.Context, tenant
 // TenantBarrierQuorumSubmit records the submission without its share: the
 // server handler wipes the share once this returns.
 func (m *quicTenantHolderSvc) TenantBarrierQuorumSubmit(_ context.Context, tenantID string, sub *seal.HolderSubmission) (*seal.QuorumOutcome, error) {
-	m.tenantID = tenantID
-	m.submission = &seal.HolderSubmission{Domain: sub.Domain, Op: sub.Op, Holder: sub.Holder, Share: bytes.Clone(sub.Share)}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID = tenantID
+	m.rec.submission = &seal.HolderSubmission{Domain: sub.Domain, Op: sub.Op, Holder: sub.Holder, Share: bytes.Clone(sub.Share)}
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -118,7 +151,9 @@ func (m *quicTenantHolderSvc) TenantBarrierQuorumSubmit(_ context.Context, tenan
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierRekeyStart(_ context.Context, tenantID string, threshold int, policy seal.FactorPolicy) (*seal.QuorumRoundInfo, error) {
-	m.tenantID, m.threshold, m.policy = tenantID, threshold, policy
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.threshold, m.rec.policy = tenantID, threshold, policy
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -126,7 +161,9 @@ func (m *quicTenantHolderSvc) TenantBarrierRekeyStart(_ context.Context, tenantI
 }
 
 func (m *quicTenantHolderSvc) TenantBarrierOfficerRevoke(_ context.Context, tenantID, username string, threshold int) (*seal.QuorumRoundInfo, error) {
-	m.tenantID, m.username, m.threshold = tenantID, username, threshold
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.username, m.rec.threshold = tenantID, username, threshold
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -134,7 +171,9 @@ func (m *quicTenantHolderSvc) TenantBarrierOfficerRevoke(_ context.Context, tena
 }
 
 func (m *quicTenantHolderSvc) ListDeletedTenants(_ context.Context, pageToken string, pageSize int) (*tenant.DeletedTenantsPage, error) {
-	m.pageToken, m.pageSize = pageToken, pageSize
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.pageToken, m.rec.pageSize = pageToken, pageSize
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -145,7 +184,9 @@ func (m *quicTenantHolderSvc) ListDeletedTenants(_ context.Context, pageToken st
 }
 
 func (m *quicTenantHolderSvc) UpdateEntitlements(_ context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
-	m.tenantID, m.entitled = id, e
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rec.tenantID, m.rec.entitled = id, e
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -174,8 +215,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_RegisterAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierOfficerRegister: %v", err)
 	}
-	if svc.tenantID != "acme" || svc.register.Username != "carol" || svc.register.Role != seal.RoleCustodian || string(svc.register.CSRPEM) != "csr-pem" {
-		t.Fatalf("service saw tenant %q, request %+v", svc.tenantID, svc.register)
+	if svc.seen().tenantID != "acme" || svc.seen().register.Username != "carol" || svc.seen().register.Role != seal.RoleCustodian || string(svc.seen().register.CSRPEM) != "csr-pem" {
+		t.Fatalf("service saw tenant %q, request %+v", svc.seen().tenantID, svc.seen().register)
 	}
 	if reg.CertPEM != "cert-pem" || reg.Role != string(seal.RoleCustodian) || reg.Designated != "mtls" || reg.EncryptionKEM != "DHKEM(P-256)" || !reflect.DeepEqual(reg.Factors, []string{"mtls"}) {
 		t.Fatalf("OfficerRegisterResponse = %+v", reg)
@@ -203,8 +244,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_ShareClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierShareClaimBegin: %v", err)
 	}
-	if svc.tenantID != "acme" || svc.username != "carol" || svc.thumbprint == "" {
-		t.Fatalf("service saw tenant %q user %q thumbprint %q", svc.tenantID, svc.username, svc.thumbprint)
+	if svc.seen().tenantID != "acme" || svc.seen().username != "carol" || svc.seen().thumbprint == "" {
+		t.Fatalf("service saw tenant %q user %q thumbprint %q", svc.seen().tenantID, svc.seen().username, svc.seen().thumbprint)
 	}
 	if begin.NonceHex != "cafe" || !begin.ExpiresAt.Equal(time.Unix(1700000600, 0)) {
 		t.Fatalf("ShareClaimBeginResponse = %+v", begin)
@@ -216,8 +257,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_ShareClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierShareClaimComplete: %v", err)
 	}
-	if svc.nonceHex != "cafe" || !bytes.Equal(svc.signature, []byte("sig")) || svc.thumbprint == "" {
-		t.Fatalf("service saw nonce %q signature %q thumbprint %q", svc.nonceHex, svc.signature, svc.thumbprint)
+	if svc.seen().nonceHex != "cafe" || !bytes.Equal(svc.seen().signature, []byte("sig")) || svc.seen().thumbprint == "" {
+		t.Fatalf("service saw nonce %q signature %q thumbprint %q", svc.seen().nonceHex, svc.seen().signature, svc.seen().thumbprint)
 	}
 	if done.ShareIndex != 3 || string(done.Envelope) != `{"env":1}` {
 		t.Fatalf("ShareClaimCompleteResponse = %+v", done)
@@ -233,8 +274,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_QuorumRekeyRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierQuorumBegin: %v", err)
 	}
-	if svc.op != seal.OpUnseal || svc.username != "carol" || svc.factor != "mtls" {
-		t.Fatalf("service saw op %q user %q factor %q", svc.op, svc.username, svc.factor)
+	if svc.seen().op != seal.OpUnseal || svc.seen().username != "carol" || svc.seen().factor != "mtls" {
+		t.Fatalf("service saw op %q user %q factor %q", svc.seen().op, svc.seen().username, svc.seen().factor)
 	}
 	if ch.ChallengeID != "ch-1" || ch.Domain != string(seal.DomainUnseal) || ch.Op != string(seal.OpUnseal) || ch.Username != "carol" ||
 		string(ch.Nonce) != "nonce" || ch.MethodData["k"] != "v" || !ch.ExpiresAt.Equal(time.Unix(1700000900, 0)) {
@@ -248,8 +289,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_QuorumRekeyRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierQuorumSubmit: %v", err)
 	}
-	if sub := svc.submission; svc.tenantID != "acme" || sub == nil || sub.Holder != "carol" || sub.Op != seal.OpUnseal || string(sub.Share) != "share" {
-		t.Fatalf("service saw tenant %q submission %+v", svc.tenantID, svc.submission)
+	if sub := svc.seen().submission; svc.seen().tenantID != "acme" || sub == nil || sub.Holder != "carol" || sub.Op != seal.OpUnseal || string(sub.Share) != "share" {
+		t.Fatalf("service saw tenant %q submission %+v", svc.seen().tenantID, svc.seen().submission)
 	}
 	if out.Op != string(seal.OpUnseal) || out.Required != 2 || out.Submitted != 1 || out.Complete {
 		t.Fatalf("QuorumOutcome = %+v", out)
@@ -259,8 +300,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_QuorumRekeyRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierRekeyStart: %v", err)
 	}
-	if svc.threshold != 3 || svc.policy != seal.FactorPolicyAnyEnrolled {
-		t.Fatalf("service saw threshold %d policy %q", svc.threshold, svc.policy)
+	if svc.seen().threshold != 3 || svc.seen().policy != seal.FactorPolicyAnyEnrolled {
+		t.Fatalf("service saw threshold %d policy %q", svc.seen().threshold, svc.seen().policy)
 	}
 	if round.Op != string(seal.OpRekey) || round.Required != 2 || round.NewThreshold != 3 || round.Policy != string(seal.FactorPolicyAnyEnrolled) {
 		t.Fatalf("rekey QuorumRound = %+v", round)
@@ -270,8 +311,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_QuorumRekeyRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TenantBarrierOfficerRevoke: %v", err)
 	}
-	if svc.username != "bob" || svc.threshold != 2 {
-		t.Fatalf("service saw user %q threshold %d", svc.username, svc.threshold)
+	if svc.seen().username != "bob" || svc.seen().threshold != 2 {
+		t.Fatalf("service saw user %q threshold %d", svc.seen().username, svc.seen().threshold)
 	}
 	if round.Submitted != 1 || !reflect.DeepEqual(round.Remove, []string{"bob"}) {
 		t.Fatalf("revoke QuorumRound = %+v", round)
@@ -321,7 +362,9 @@ func TestQUICRoundTrip_TenantBarrierHolders_ErrorsAndNilRequests(t *testing.T) {
 		requireQUICRequestError(t, call(), method)
 	}
 
-	svc.tenantID = ""
+	svc.mu.Lock()
+	svc.rec.tenantID = ""
+	svc.mu.Unlock()
 	nilCalls := map[string]func() error{
 		"TenantBarrierOfficerRegister":    func() error { _, err := tr.TenantBarrierOfficerRegister(ctx, nil); return err },
 		"TenantBarrierShareClaimBegin":    func() error { _, err := tr.TenantBarrierShareClaimBegin(ctx, nil); return err },
@@ -334,8 +377,8 @@ func TestQUICRoundTrip_TenantBarrierHolders_ErrorsAndNilRequests(t *testing.T) {
 	for method, call := range nilCalls {
 		requireQUICNilTenantHolderRequest(t, call(), method)
 	}
-	if svc.tenantID != "" {
-		t.Fatalf("a nil request reached the service (tenant %q)", svc.tenantID)
+	if svc.seen().tenantID != "" {
+		t.Fatalf("a nil request reached the service (tenant %q)", svc.seen().tenantID)
 	}
 }
 
@@ -397,8 +440,8 @@ func TestQUICRoundTrip_ListDeletedTenants_PagesThroughTheService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDeletedTenants: %v", err)
 	}
-	if svc.pageToken != "p1" || svc.pageSize != 5 {
-		t.Fatalf("service saw token %q size %d", svc.pageToken, svc.pageSize)
+	if svc.seen().pageToken != "p1" || svc.seen().pageSize != 5 {
+		t.Fatalf("service saw token %q size %d", svc.seen().pageToken, svc.seen().pageSize)
 	}
 	if resp.NextPageToken != "next" || len(resp.Tenants) != 1 {
 		t.Fatalf("ListDeletedTenantsResponse = %+v", resp)
@@ -411,11 +454,11 @@ func TestQUICRoundTrip_ListDeletedTenants_PagesThroughTheService(t *testing.T) {
 	if _, err := tr.ListDeletedTenants(ctx, nil); err != nil {
 		t.Fatalf("ListDeletedTenants(nil): %v", err)
 	}
-	if svc.pageToken != "" || svc.pageSize != 0 {
-		t.Fatalf("nil request reached the service as token %q size %d", svc.pageToken, svc.pageSize)
+	if svc.seen().pageToken != "" || svc.seen().pageSize != 0 {
+		t.Fatalf("nil request reached the service as token %q size %d", svc.seen().pageToken, svc.seen().pageSize)
 	}
 
-	svc.err = errors.New("tombstones unreadable")
+	svc.fail(errors.New("tombstones unreadable"))
 	_, err = tr.ListDeletedTenants(ctx, nil)
 	requireQUICRequestError(t, err, "ListDeletedTenants")
 }
@@ -434,18 +477,18 @@ func TestQUICRoundTrip_UpdateTenantEntitlements_ForwardsEveryField(t *testing.T)
 	if err != nil {
 		t.Fatalf("UpdateTenantEntitlements: %v", err)
 	}
-	got := svc.entitled
-	if svc.tenantID != "acme" || got == nil ||
+	got := svc.seen().entitled
+	if svc.seen().tenantID != "acme" || got == nil ||
 		!reflect.DeepEqual(got.AllowedIsolationModes, want.AllowedIsolationModes) || !got.AllowDedicatedRaft || !got.AllowVolumeStorage ||
 		!got.AllowSystemManagedBarrier || !reflect.DeepEqual(got.AllowedBarrierModes, want.AllowedBarrierModes) || !got.AllowDedicatedWAL ||
 		!reflect.DeepEqual(got.AllowedVolumePools, want.AllowedVolumePools) {
-		t.Fatalf("service saw tenant %q entitlements %+v", svc.tenantID, got)
+		t.Fatalf("service saw tenant %q entitlements %+v", svc.seen().tenantID, got)
 	}
 	if resp.Tenant.ID != "acme" || resp.Tenant.Name != "Acme" {
 		t.Fatalf("UpdateTenantEntitlementsResponse = %+v", resp)
 	}
 
-	svc.err = errors.New("tenant locked")
+	svc.fail(errors.New("tenant locked"))
 	_, err = tr.UpdateTenantEntitlements(ctx, &transport.UpdateTenantEntitlementsRequest{TenantID: "acme", Entitlements: want})
 	requireQUICRequestError(t, err, "UpdateTenantEntitlements")
 }
@@ -460,7 +503,7 @@ func TestQUICRoundTrip_UpdateTenantEntitlements_NilRequest(t *testing.T) {
 	if !errors.As(err, &nre) {
 		t.Fatalf("UpdateTenantEntitlements(nil): err = %v, want *NilRequestError", err)
 	}
-	if svc.entitled != nil || svc.tenantID != "" {
-		t.Fatalf("a nil request reached the service: tenant %q", svc.tenantID)
+	if svc.seen().entitled != nil || svc.seen().tenantID != "" {
+		t.Fatalf("a nil request reached the service: tenant %q", svc.seen().tenantID)
 	}
 }
