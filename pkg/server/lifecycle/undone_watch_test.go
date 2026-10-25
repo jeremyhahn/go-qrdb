@@ -119,7 +119,7 @@ func TestWatchUndoneTenants_ReconcilesEachTombstoneWrite(t *testing.T) {
 	r := newRecordingReconciler()
 	r.undoE = errors.New("not yet")
 
-	if err := watchUndoneTenants(ctx, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+	if err := watchUndoneTenants(ctx, &nodeWork{}, ws, r, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("watchUndoneTenants: %v", err)
 	}
 	if len(ws.prefixes) != 1 || ws.prefixes[0] != tenant.TombstonePrefix {
@@ -155,7 +155,7 @@ func TestWatchUndoneTenants_ReestablishesAndCatchesUp(t *testing.T) {
 	first, second := newChanWatcher(), newChanWatcher()
 	ws := &queueWatchService{watchers: []*chanWatcher{first, second}, errs: []error{nil, errors.New("hub not ready")}}
 	r := newRecordingReconciler()
-	if err := watchUndoneTenants(ctx, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+	if err := watchUndoneTenants(ctx, &nodeWork{}, ws, r, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("watchUndoneTenants: %v", err)
 	}
 	receive(t, r.full, "the full reconcile once the first watch is registered")
@@ -174,7 +174,7 @@ func TestWatchUndoneTenants_ReconcilesOnceTheWatchIsRegistered(t *testing.T) {
 	t.Cleanup(cancel)
 	ws := &queueWatchService{watchers: []*chanWatcher{newChanWatcher()}}
 	r := newRecordingReconciler()
-	if err := watchUndoneTenants(ctx, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+	if err := watchUndoneTenants(ctx, &nodeWork{}, ws, r, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("watchUndoneTenants: %v", err)
 	}
 	receive(t, r.full, "the full reconcile once the watch is registered")
@@ -188,7 +188,7 @@ func TestWatchUndoneTenants_AFailedReconcileStillWatches(t *testing.T) {
 	ws := &queueWatchService{watchers: []*chanWatcher{w}}
 	r := newRecordingReconciler()
 	r.fullE = errors.New("sealed")
-	if err := watchUndoneTenants(ctx, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+	if err := watchUndoneTenants(ctx, &nodeWork{}, ws, r, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("watchUndoneTenants: %v", err)
 	}
 	receive(t, r.full, "the failing full reconcile")
@@ -201,7 +201,7 @@ func TestWatchUndoneTenants_AFailedReconcileStillWatches(t *testing.T) {
 func TestWatchUndoneTenants_OpenFailureIsTyped(t *testing.T) {
 	boom := errors.New("no hub")
 	ws := &queueWatchService{errs: []error{boom}}
-	err := watchUndoneTenants(context.Background(), ws, newRecordingReconciler(), slog.New(slog.DiscardHandler))
+	err := watchUndoneTenants(context.Background(), &nodeWork{}, ws, newRecordingReconciler(), slog.New(slog.DiscardHandler))
 	var typed *UndoneTenantWatchError
 	if !errors.As(err, &typed) || !errors.Is(err, boom) {
 		t.Fatalf("watchUndoneTenants = %v, want *UndoneTenantWatchError wrapping %v", err, boom)
@@ -229,3 +229,91 @@ func TestReestablishUndoneWatch_StopsWithItsContext(t *testing.T) {
 		t.Fatal("reestablishUndoneWatch on a cancelled context reported a watch")
 	}
 }
+
+// blockingReconciler's full pass reads until its context ends, as a reconcile
+// scanning the tenant keyspace holds a storage iterator for as long as it runs.
+type blockingReconciler struct {
+	entered chan struct{}
+	left    chan struct{}
+}
+
+func newBlockingReconciler() *blockingReconciler {
+	return &blockingReconciler{entered: make(chan struct{}), left: make(chan struct{})}
+}
+
+func (r *blockingReconciler) ReconcileUndone(context.Context, string) error { return nil }
+
+func (r *blockingReconciler) ReconcileDeletedTenants(ctx context.Context) (*tenant.ReconcileReport, error) {
+	close(r.entered)
+	defer close(r.left)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+var _ undoneReconciler = (*blockingReconciler)(nil)
+
+// Stop returns only once the undone watch's reconcile has: the composer closes
+// the storage the reconcile reads through right after Stop, and the context
+// the watch was started with outlives Stop (the node's, across a data-plane
+// rebuild), so nothing else ends it in time.
+func TestNodeStop_WaitsForTheUndoneWatchReconcile(t *testing.T) {
+	n := &Node{}
+	r := newBlockingReconciler()
+	ws := &queueWatchService{watchers: []*chanWatcher{newChanWatcher()}}
+	if err := watchUndoneTenants(context.Background(), &n.work, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("watchUndoneTenants: %v", err)
+	}
+	receive(t, r.entered, "the full reconcile once the watch is registered")
+
+	if err := n.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-r.left:
+	default:
+		t.Fatal("Stop returned while the undone watch's reconcile was still reading")
+	}
+}
+
+// closeRecordingWatcher is a chanWatcher that reports its Close.
+type closeRecordingWatcher struct {
+	*chanWatcher
+	closed chan struct{}
+}
+
+func (w *closeRecordingWatcher) Close() error {
+	close(w.closed)
+	return nil
+}
+
+var _ watch.Watcher = (*closeRecordingWatcher)(nil)
+
+// A watch opened after the node stopped is closed again and supervised by
+// nothing, so no reconcile can start against storage being closed.
+func TestWatchUndoneTenants_StartsNothingOnceTheNodeStopped(t *testing.T) {
+	work := &nodeWork{}
+	work.stop()
+	w := &closeRecordingWatcher{chanWatcher: newChanWatcher(), closed: make(chan struct{})}
+	ws := &recordedWatchService{w: w}
+	r := newRecordingReconciler()
+	if err := watchUndoneTenants(context.Background(), work, ws, r, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("watchUndoneTenants: %v", err)
+	}
+	select {
+	case <-w.closed:
+	default:
+		t.Fatal("the watch opened after the node stopped was left open")
+	}
+	if len(r.full) != 0 {
+		t.Fatal("a reconcile ran after the node stopped")
+	}
+}
+
+// recordedWatchService hands out one watcher.
+type recordedWatchService struct{ w watch.Watcher }
+
+func (s *recordedWatchService) WatchPrefix(context.Context, string, ...watch.WatchOption) (watch.Watcher, error) {
+	return s.w, nil
+}
+
+var _ prefixWatcher = (*recordedWatchService)(nil)
