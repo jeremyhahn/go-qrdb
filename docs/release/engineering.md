@@ -1,6 +1,7 @@
 # Release — Engineering
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn

@@ -1,6 +1,7 @@
 # Unified API Server — Architecture
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-25
+> Conflicts with this document are defects. Fix them here first.
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
