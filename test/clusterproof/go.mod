@@ -17,8 +17,8 @@ go 1.27.3
 
 require (
 	github.com/anishathalye/porcupine v1.3.1
-	github.com/jeremyhahn/go-qrdb v0.56.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.56.0-alpha
+	github.com/jeremyhahn/go-qrdb v0.57.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.57.0-alpha
 	golang.org/x/sys v0.49.0
 )
 

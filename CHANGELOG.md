@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.57.0-alpha] - 2026-10-26
+
 ### Changed
 
 - **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
