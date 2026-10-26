@@ -2578,9 +2578,13 @@ check-no-alias-language:
 
 # A lean standalone embedder -- sdk/go/node on the file backend, the embedded
 # transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not
-# compile features it does not use: the Raft host, PebbleDB, the network API
-# servers, clustering, vectors, time series, metrics, MCP, chi, gin or the
-# object store (#627). The gate reads the example's `go list -deps` graph and
+# compile features it does not use: go-quicraft's Raft engine, PebbleDB, the
+# network API servers, clustering, vectors, time series, metrics, MCP, chi, gin
+# or the object store (#627). Ruling 193 narrowed two entries: on the
+# go-quicraft side only the engine is forbidden -- the NodeHost package
+# go-quicraft/pkg itself and the pkg/internal/... beneath it -- so the seal,
+# Shamir and other leaf packages stay allowed; on the pkg/api side only its
+# subpackages are, so the root's contract types stay allowed. The gate reads the example's `go list -deps` graph and
 # compares every import edge into those packages with the ratchet table in
 # test/buildgates/lean_standalone_test.go: a new edge fails, and so does a
 # listed edge that no longer occurs, so the table only shrinks toward empty.

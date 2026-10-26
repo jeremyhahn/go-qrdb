@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **The lean-standalone import gate forbids only go-quicraft's Raft engine and
+  the `pkg/api` subpackages** (#627, ruling 193). On the go-quicraft side the
+  gate forbids only the NodeHost package (`go-quicraft/pkg`) and its
+  `pkg/internal/...` engine. The seal and Shamir primitives, and the other
+  public leaf packages, no longer count as violations. On the `pkg/api` side
+  the gate forbids only the subpackages, so the root's contract types are
+  allowed. The 31 ratchet entries those edges held are deleted, and every
+  edge into the engine stays listed. `make check-lean-standalone` proves each
+  narrowed rule against a synthetic forbidden edge.
+
 ## [0.56.0-alpha] - 2026-10-26
 
 ### Removed
