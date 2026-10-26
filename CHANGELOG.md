@@ -166,6 +166,30 @@ are not reconstructed here — their history is in the git log.
 - **The `sdk/go` index re-exports are `ServiceIndexServicer` and
   `NewServiceIndexService`** (#928), in the `ServiceBatchServicer` family;
   `sdk.IndexServicer` and `sdk.NewIndexService` are removed.
+- **CI builds its images once per run and every job pulls them by digest**
+  (DS-3516): `docker-build` pushes the toolchain and integration images to the
+  forge's registry (the Gitea registry, derived from `github.server_url`, or
+  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
+  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
+  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
+  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
+  rather than rebuild when they cannot. `make integration-test` given a digest
+  `IT_IMAGE` requires the pulled image instead of building it, and the
+  reaper removes stale pulled images, never a name of an image any container
+  uses. `test/buildgates/ci_image_digest_test.go`
+  holds every consumer to the pull.
+- **A push to `main` publishes the CI images from the release runner**
+  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
+  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
+  on every other event; github.com keeps `ubuntu-latest`. The push reads the
+  release runner's credential contract alone (ruling 173, claude-agents#329):
+  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
+  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
+  secret, and no `env:` in ci.yml sets any of the three so none can mask
+  them. `scripts/ci-registry.sh` names the credential a refused or empty
+  login used, never its value. `test/buildgates/ci_image_digest_test.go`
+  fails when `docker-build` runs anywhere but `release` on a push to `main`,
+  on `release` on any other event, or when any other job can run there.
 
 ## [0.54.0-alpha] - 2026-10-23
 
