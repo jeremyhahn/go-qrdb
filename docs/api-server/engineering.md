@@ -125,6 +125,35 @@ A module does not use these to report a failure: its MCP tool returns an error
 and the server's outermost `errorCodeMiddleware` renders the envelope, exactly
 as for a built-in tool (`TestModuleTool_ErrorsCarryTheClassifiedEnvelope`).
 
+`sdk/go/server/mcp.go` — the combined MCP server, the one `startMCP` in
+`pkg/server` builds for a regular listener: `mcp.NewServer` over the KV and
+admin services, with every tool an option adds and, under
+`WithSealedWindowProbe` and `WithSealedWindowDispatch`, the sealed-window
+tools behind the same `/mcp` endpoint. An embedder builds, starts and stops
+it from `sdk/go` alone:
+
+```go
+type MCPServer                = mcpapi.Server   // Start, Addr, Stop
+type MCPServerOption          = mcpapi.ServerOption
+type MCPTLSNotConfiguredError = mcpapi.TLSNotConfiguredError
+
+var NewMCPServer                      = mcpapi.NewServer
+var WithMCPServerTLS                  = mcpapi.WithTLS
+var WithMCPServerListener             = mcpapi.WithListener
+var WithMCPServerMaxConnections       = mcpapi.WithMaxConnections
+var WithMCPServerMaxBodyBytes         = mcpapi.WithMaxBodyBytes
+var WithMCPServerMaxConnsPerPeer      = mcpapi.WithMaxConnsPerPeer
+var WithMCPServerAuthMiddleware       = mcpapi.WithAuthMiddleware
+var WithMCPServerSealedWindowProbe    = mcpapi.WithSealedWindowProbe
+var WithMCPServerSealedWindowDispatch = mcpapi.WithSealedWindowDispatch
+```
+
+The per-service tool options (`WithMVCC`, `WithBarrierService` and the rest)
+are not re-exported yet: a node started through `sdk/go/node` serves this
+server with every service it composes wired in.
+`TestNewMCPServer_ServesToolsOverListener` drives `tools/list`, `qrdb_put`
+and `qrdb_get` over a caller-bound HTTPS listener.
+
 ## `ServiceModule`
 
 ```go

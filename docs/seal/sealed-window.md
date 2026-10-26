@@ -116,7 +116,9 @@ matches one non-empty path segment in that place, which is how the claim
 routes (`POST /v1/barrier/officers/{username}/claim/begin` and
 `.../complete`, and their recovery forms) are listed, so that
 `/v1/barrier/officers/revoke` is not admitted; anything else matches exactly
-(`sealedwindow.RESTEntryMatches`). REST additionally allowlists one
+(`sealedwindow.RESTEntryMatches`, re-exported as
+`sdk/go/server.SealedWindowRESTEntryMatches` beside
+`SealedWindowRESTAllowlist`). REST additionally allowlists one
 transport-specific prefix with no transport-neutral verb
 (`sealedwindow.RESTExtra`): `/v1/cluster/`, the cluster peer key transport.
 Its receiver authorizes itself with the node certificate and a placement

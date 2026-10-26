@@ -138,6 +138,51 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 	}
 }
 
+// TestSealedWindowRESTEntryMatches_ReExport checks that the alias is the
+// gate's matcher: every allowlist entry admits a concrete request built from
+// its own pattern, and a path on no entry is admitted by none.
+func TestSealedWindowRESTEntryMatches_ReExport(t *testing.T) {
+	// concrete turns an entry into a method and a path the entry admits.
+	concrete := func(entry string) (string, string) {
+		method, path := http.MethodGet, entry
+		if m, p, qualified := strings.Cut(entry, " "); qualified {
+			method, path = m, p
+		}
+		if strings.HasSuffix(path, "/") {
+			path += "probe"
+		}
+		segs := strings.Split(path, "/")
+		for i, s := range segs {
+			if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+				segs[i] = "probe"
+			}
+		}
+		return method, strings.Join(segs, "/")
+	}
+
+	entries := sdkserver.SealedWindowRESTAllowlist()
+	if len(entries) == 0 {
+		t.Fatal("REST allowlist is empty")
+	}
+	for _, entry := range entries {
+		method, path := concrete(entry)
+		if !sdkserver.SealedWindowRESTEntryMatches(entry, method, path) {
+			t.Errorf("SealedWindowRESTEntryMatches(%q, %q, %q) = false, want true", entry, method, path)
+		}
+		if got, want := sdkserver.SealedWindowRESTEntryMatches(entry, method, path),
+			sealedwindow.RESTEntryMatches(entry, method, path); got != want {
+			t.Errorf("alias and sealedwindow.RESTEntryMatches disagree on %q %q %q", entry, method, path)
+		}
+	}
+
+	// A data-plane path is on no entry while sealed.
+	for _, entry := range entries {
+		if sdkserver.SealedWindowRESTEntryMatches(entry, http.MethodGet, "/v1/kv/probe") {
+			t.Errorf("entry %q admits GET /v1/kv/probe", entry)
+		}
+	}
+}
+
 // TestSealedWindowMiddleware_ReExport verifies the re-exported REST
 // middleware enforces the sealed envelope with a probe supplied through
 // the SDK types.

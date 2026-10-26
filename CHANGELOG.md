@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+- **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
+- **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+
 ### Changed
 - CI: a draft pull request runs no CI. Every job skips on `pull_request.draft` and CI Gate fails on a draft; a PR leaving draft starts its run with an empty commit or a merge of main (ci-standard §10 (f), ruling 214).
 - CI: ci.yml carries ci-template v1.27.0's nightly `schedule:` trigger again (cron `0 4 * * *`), so the full and nightly tiers, soak included, run on main each night; `test/buildgates/ci_tiers_test.go` allows a schedule in ci.yml and automerge.yml alone. This reverses the 2026-10-11 owner ruling and Company Agent m433 on Software's order DS-3913 (m1378 (2)).
