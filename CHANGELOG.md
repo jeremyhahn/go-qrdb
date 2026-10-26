@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.56.0-alpha] - 2026-10-26
+
 ### Removed
 
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
