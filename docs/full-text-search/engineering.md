@@ -139,7 +139,7 @@ used.
   the Makefile's default `BUILD_TAGS` (`WITH_QRDB_FTS=0`).
 - **The real implementation is gated separately**, `make coverage-fts`
   (`go test -race -tags "$BUILD_TAGS qrdb_fts" ./pkg/fts/...` plus a coverage
-  check), run as its own CI step in the `image` job. `make coverage`'s own
+  check), run as its own CI job, `coverage-fts`. `make coverage`'s own
   profile never compiles this package's real code -- only the stub -- so the
   stub tests above do not exercise it, and this is the step that does, on
   every push. Its coverage is ratcheted against

@@ -336,7 +336,7 @@ described in the next section.
 `make check-lean-standalone` runs the gate. It runs
 `TestLeanStandaloneImportGraph` and the other `TestLeanStandalone*` proofs of
 its edge finder in
-`test/buildgates/lean_standalone_test.go`, and CI's `image` job runs the same
+`test/buildgates/lean_standalone_test.go`, and CI's `lint-gates` job runs the same
 target. The gate works as follows:
 
 - **Fixture.** `sdk/go/examples/leanstandalone` is a standalone `file`-backend
