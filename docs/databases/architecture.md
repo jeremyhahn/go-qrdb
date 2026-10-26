@@ -272,13 +272,14 @@ The shipped drop reclaims a keyspace inside a shared store, dependents first
 and the catalog record last (below, "What a drop reclaims"). With a store per
 database, a drop is:
 
-1. **Fence** — write the database's fence key through the binding's host.
-   Every write to the database is a guarded command carrying "fence key absent",
-   so a write proposed before the fence and applied after it is refused on every
+1. **Fence** — set the database's fence marker (`service.DropFenceKey`) to a
+   tombstone through the binding's host. Every write to the database is a
+   guarded command carrying "the fence marker holds my incarnation"
+   (`service.DropFenceGuard`), so a write proposed before the fence and applied after it is refused on every
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
    ones, because both apply through the same engine. The fence is behind the
-   cluster feature gate (rule 6): a drop in a group whose members do not all
+   cluster feature gate: a drop in a group whose members do not all
    support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
    close and remove the local store's directory or object prefix, and remove

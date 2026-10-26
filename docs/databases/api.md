@@ -177,8 +177,8 @@ does not decide where most databases' data lives, and
 
 ### Target: create and info (remaining, unshipped)
 
-`backend` becomes optional; when absent the node's `database_defaults.backend`
-is written into the record (OD-3). `raft.stateStorage` selects a raft
+`backend` becomes optional; when absent the run mode's default (`raft` in raft
+mode, `pebble` in standalone mode) is written into the record (OD-3). `raft.stateStorage` selects a raft
 database's state-machine store (OD-8).
 
 ```json

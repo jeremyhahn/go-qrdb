@@ -116,8 +116,8 @@ remaining gap, listed under [Open gaps](#open-gaps).
   clustered MVCC store (`raft.sm_type` empty, `pebble` or `mvcc`) opens its own
   Pebble database, and it and the state machines that carry their own storage
   refuse the option with `statemachine.ReplicaStorageNotApplicableError`
-  rather than ignore it. `WithStorageFactory` is unchanged and still reaches
-  only the standalone data plane.
+  rather than ignore it. `WithStorageFactory` reaches only the standalone
+  data plane.
 - **`keydelivery.Decrypter`** is the HPKE receive seam. The receiver and
   `ShareEnvelope.Open` open through it, so a device that performs the key
   agreement never exposes the private key. `WithClock` on the receiver anchors
