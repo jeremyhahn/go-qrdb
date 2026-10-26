@@ -21,6 +21,43 @@ are not reconstructed here — their history is in the git log.
   the node's client trust up to date before answering
   (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
 
+- **The rolling enable-encryption coordinator-restart test no longer requires
+  the restarted coordinator to make the hand-on itself** (#1167).
+  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
+  restarted coordinator lost leadership of the system shard before the second
+  turn: the node elected then handed the turn on from the record, as
+  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
+  every node's log since the restart, and accepts another node's only when the
+  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
+  pin the condition: a stepped-down coordinator writes and logs nothing, and
+  the new leader, or the coordinator leading again, hands the turn on.
+
+- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
+  (#1042): the CSR reads were keyed by path, so the second flag left the
+  admin's CSR empty.
+
+
+- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
+  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
+  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
+  transit, so on a busy runner the read timed out on a replica that was ready
+  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
+  `NewClusteredNode` was not at fault: it returns only after
+  `server.WaitForShardServing` has served a ReadIndex on that same host. The
+  test now checks at the moment each founder returns: the replica must
+  already know a leader, and its first read must not be refused. A read
+  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
+  outcome retried, up to three times. A constructor that skips the wait still
+  fails on the first attempt.
+
+
+- **Every `make coverage-<pkg>` target now compares its figure with
+  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
+  does not have, so the comparison produced nothing and the target passed at
+  any coverage, 0% included. It now compares with `awk`, and a profile with no
+  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
+  drives the check through `make` over profiles above and below the floor.
+
 ### Added
 
 - **The separation-of-duties posture is readable and its changes are
@@ -46,6 +83,15 @@ are not reconstructed here — their history is in the git log.
   a half match is refused. An isolated tenant records the SO as
   `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
   SO authenticator to tenant onboarding.
+
+- **A conformance test holds Get-after-Delete to typed not-found on every
+  engine and transport** (#1163). `TestDeleteThenGetIsTypedNotFound` in
+  `sdk/go/conformance` runs Put, Delete, then Get and Exists for 50 rounds on
+  every cell of the guarded-verb matrix plus a standalone objstore cell per
+  transport, with short keys, keys objstore stores under a hashed name, and one
+  reused key. go-qrdb's read plane already answered not-found in every cell;
+  the read failure #1163 reported is not raised by go-qrdb or go-objstore.
+
 ### Changed
 
 - **The lean-standalone import gate forbids only go-quicraft's Raft engine and
@@ -57,6 +103,40 @@ are not reconstructed here — their history is in the git log.
   allowed. The 31 ratchet entries those edges held are deleted, and every
   edge into the engine stays listed. `make check-lean-standalone` proves each
   narrowed rule against a synthetic forbidden edge.
+
+- **The Security Officer separation checks hold only under strict separation
+  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
+  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
+  now gates the SO-exclusive grant and revoke of the `so` role
+  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
+  the first admin, as it already gated the Owner role's voiding. In the
+  standard posture the tenant Admin grants and revokes `so` like any other
+  role, and may be named the tenant's SO.
+
+- **CI builds its images once per run and every job pulls them by digest**
+  (DS-3516): `docker-build` pushes the toolchain and integration images to the
+  forge's registry (the Gitea registry, derived from `github.server_url`, or
+  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
+  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
+  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
+  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
+  rather than rebuild when they cannot. `make integration-test` given a digest
+  `IT_IMAGE` requires the pulled image instead of building it, and the
+  reaper removes stale pulled images, never a name of an image any container
+  uses. `test/buildgates/ci_image_digest_test.go`
+  holds every consumer to the pull.
+- **A push to `main` publishes the CI images from the release runner**
+  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
+  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
+  on every other event; github.com keeps `ubuntu-latest`. The push reads the
+  release runner's credential contract alone (ruling 173, claude-agents#329):
+  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
+  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
+  secret, and no `env:` in ci.yml sets any of the three so none can mask
+  them. `scripts/ci-registry.sh` names the credential a refused or empty
+  login used, never its value. `test/buildgates/ci_image_digest_test.go`
+  fails when `docker-build` runs anywhere but `release` on a push to `main`,
+  on `release` on any other event, or when any other job can run there.
 
 ## [0.56.0-alpha] - 2026-10-26
 
@@ -98,13 +178,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
-- **A conformance test holds Get-after-Delete to typed not-found on every
-  engine and transport** (#1163). `TestDeleteThenGetIsTypedNotFound` in
-  `sdk/go/conformance` runs Put, Delete, then Get and Exists for 50 rounds on
-  every cell of the guarded-verb matrix plus a standalone objstore cell per
-  transport, with short keys, keys objstore stores under a hashed name, and one
-  reused key. go-qrdb's read plane already answered not-found in every cell;
-  the read failure #1163 reported is not raised by go-qrdb or go-objstore.
 - **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
   through the new `WithRegisterTenantBarrierService` option, gated by the
   middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);
@@ -131,50 +204,9 @@ are not reconstructed here — their history is in the git log.
   `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
   `PeerCertificates[0]` or building a verifier of its own.
 
-### Fixed
-
-- **The rolling enable-encryption coordinator-restart test no longer requires
-  the restarted coordinator to make the hand-on itself** (#1167).
-  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
-  restarted coordinator lost leadership of the system shard before the second
-  turn: the node elected then handed the turn on from the record, as
-  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
-  every node's log since the restart, and accepts another node's only when the
-  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
-  pin the condition: a stepped-down coordinator writes and logs nothing, and
-  the new leader, or the coordinator leading again, hands the turn on.
-
-### Fixed
-
-- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
-  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
-  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
-  transit, so on a busy runner the read timed out on a replica that was ready
-  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
-  `NewClusteredNode` was not at fault: it returns only after
-  `server.WaitForShardServing` has served a ReadIndex on that same host. The
-  test now checks at the moment each founder returns: the replica must
-  already know a leader, and its first read must not be refused. A read
-  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
-  outcome retried, up to three times. A constructor that skips the wait still
-  fails on the first attempt.
-
-### Fixed
-
-- **Every `make coverage-<pkg>` target now compares its figure with
-  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
-  does not have, so the comparison produced nothing and the target passed at
-  any coverage, 0% included. It now compares with `awk`, and a profile with no
-  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
-  drives the check through `make` over profiles above and below the floor.
-
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
-
-- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
-  (#1042): the CSR reads were keyed by path, so the second flag left the
-  admin's CSR empty.
 
 - **MCP collection document IDs travel as decimal strings, losslessly**: the
   `id` argument of `qrdb_collection_get`, `qrdb_collection_update` and
@@ -211,44 +243,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
-- **The Security Officer separation checks hold only under strict separation
-  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
-  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
-  now gates the SO-exclusive grant and revoke of the `so` role
-  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
-  the first admin, as it already gated the Owner role's voiding. In the
-  standard posture the tenant Admin grants and revokes `so` like any other
-  role, and may be named the tenant's SO.
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
   Host gets its own in-memory Pebble filesystem, so a test built over it
   writes nothing to disk.
 - **The `sdk/go` index re-exports are `ServiceIndexServicer` and
   `NewServiceIndexService`** (#928), in the `ServiceBatchServicer` family;
   `sdk.IndexServicer` and `sdk.NewIndexService` are removed.
-- **CI builds its images once per run and every job pulls them by digest**
-  (DS-3516): `docker-build` pushes the toolchain and integration images to the
-  forge's registry (the Gitea registry, derived from `github.server_url`, or
-  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
-  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
-  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
-  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
-  rather than rebuild when they cannot. `make integration-test` given a digest
-  `IT_IMAGE` requires the pulled image instead of building it, and the
-  reaper removes stale pulled images, never a name of an image any container
-  uses. `test/buildgates/ci_image_digest_test.go`
-  holds every consumer to the pull.
-- **A push to `main` publishes the CI images from the release runner**
-  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
-  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
-  on every other event; github.com keeps `ubuntu-latest`. The push reads the
-  release runner's credential contract alone (ruling 173, claude-agents#329):
-  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
-  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
-  secret, and no `env:` in ci.yml sets any of the three so none can mask
-  them. `scripts/ci-registry.sh` names the credential a refused or empty
-  login used, never its value. `test/buildgates/ci_image_digest_test.go`
-  fails when `docker-build` runs anywhere but `release` on a push to `main`,
-  on `release` on any other event, or when any other job can run there.
 
 ## [0.54.0-alpha] - 2026-10-23
 
