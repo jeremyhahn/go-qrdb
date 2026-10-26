@@ -288,9 +288,9 @@ func writeAndAwaitLogRange(ctx context.Context, t *testing.T, host *quicraft.Hos
 	deadline := time.Now().Add(wait)
 	for {
 		var err error
-		lr, err = host.GetLogRange(shardID)
+		lr, err = host.LogRange(shardID)
 		if err != nil {
-			t.Fatalf("GetLogRange: %v", err)
+			t.Fatalf("LogRange: %v", err)
 		}
 		if lr.FirstIndex > 1 || time.Now().After(deadline) {
 			return lr
@@ -1242,6 +1242,20 @@ func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
 
 	if err := f.CloseAll(); err != nil {
 		t.Fatalf("CloseAll: %v", err)
+	}
+	// The host holds the shared WAL's directory lock until it closes; a
+	// second opener is refused while it is held. Closing it seals the
+	// system barrier's EpochBarrier underneath the StorageBarrier, so the
+	// wrapper is sealed to match and unsealed again: the WAL needs the
+	// EpochBarrier unsealed to open.
+	if err := host.Close(); err != nil {
+		t.Fatalf("close the host: %v", err)
+	}
+	if err := sysBarrier.Seal(); err != nil {
+		t.Fatalf("Seal system barrier: %v", err)
+	}
+	if err := sysBarrier.Unseal(ctx, seal.MustCredentials(ctx, []byte("mux-shared-wal-test"))); err != nil {
+		t.Fatalf("Unseal system barrier: %v", err)
 	}
 	shared, err := waldb.Open(filepath.Join(hostDir, "wal"), waldb.WithBarrier(sysBarrier.EpochBarrier()))
 	if err != nil {

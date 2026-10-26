@@ -45,7 +45,7 @@ func TestNewSecretFromBuffer_SealsTheBuffersOwnPages(t *testing.T) {
 
 	var sealedAddr *byte
 	prevNewSealed := newSealed
-	newSealed = func(ctx context.Context, src []byte) (*enclave.SealedEnclave, error) {
+	newSealed = func(ctx context.Context, src []byte) (enclave.Sealed, error) {
 		sealedAddr = unsafe.SliceData(src) // #nosec G103 -- address comparison only; nothing is read through it.
 		return prevNewSealed(ctx, src)
 	}
@@ -93,7 +93,7 @@ func TestNewSecretFromBuffer_SealerMayUseProtectedMemory(t *testing.T) {
 	defer inner.Destroy()
 
 	prevNewSealed := newSealed
-	newSealed = func(ctx context.Context, src []byte) (*enclave.SealedEnclave, error) {
+	newSealed = func(ctx context.Context, src []byte) (enclave.Sealed, error) {
 		scratch, err := NewBuffer(len(src))
 		if err != nil {
 			return nil, err

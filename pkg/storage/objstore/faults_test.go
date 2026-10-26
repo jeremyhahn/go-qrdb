@@ -84,7 +84,7 @@ func (*failingReader) Read([]byte) (int, error) { return 0, errProvider }
 // armed, already carrying this layout's format marker.
 func newFaultEngine(t *testing.T) (*Engine, *faultStore) {
 	t.Helper()
-	inner, err := objfactory.NewStorage("memory", map[string]string{})
+	inner, err := objfactory.NewStorage("memory", map[string]string{}, objcommon.Credentials{})
 	require.NoError(t, err)
 	fs := &faultStore{
 		Storage:   inner,

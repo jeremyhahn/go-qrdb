@@ -610,7 +610,7 @@ type fakeReader struct {
 	err error
 }
 
-func (r fakeReader) GetShardMembership(uint64) (*quicraft.Membership, error) { return r.ms, r.err }
+func (r fakeReader) ShardMembership(uint64) (*quicraft.Membership, error) { return r.ms, r.err }
 
 // HostMembership counts voters and observers, which apply the log, and not
 // witnesses, which keep no state machine.

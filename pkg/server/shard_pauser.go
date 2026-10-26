@@ -29,7 +29,7 @@ import (
 
 // shardHost is the part of *quicraft.Host the shard pauser drives.
 type shardHost interface {
-	GetNodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
+	NodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
 	PauseShard(ctx context.Context, shardID uint64) error
 	ResumeShard(ctx context.Context, shardID uint64) error
 }
@@ -182,7 +182,7 @@ func (p *ShardPauser) PauseShards(ctx context.Context) error {
 func (p *ShardPauser) targets() map[pauseKey]string {
 	out := make(map[pauseKey]string)
 	add := func(host shardHost, tenantID string) {
-		info := host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+		info := host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 		if info == nil {
 			return
 		}

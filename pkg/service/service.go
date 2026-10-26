@@ -339,9 +339,9 @@ type Host interface {
 	// ShardCount returns the number of shards loaded on this host.
 	ShardCount() int
 
-	// GetNodeHostInfo returns a snapshot of the host's state for
+	// NodeHostInfo returns a snapshot of the host's state for
 	// monitoring and debugging.
-	GetNodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
+	NodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
 
 	// HealthCheck returns the aggregate health status of the host.
 	HealthCheck() *quicraft.HealthStatus
@@ -411,10 +411,10 @@ type Host interface {
 	// latency than requiring the leader to execute the query itself.
 	FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 
-	// GetLeaderID returns the current leader's replica ID for the shard
+	// LeaderID returns the current leader's replica ID for the shard
 	// and whether a leader is known. Returns 0, false, error if the shard
 	// does not exist.
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 
 	// GetShardRaftState returns the Raft state for a shard: the config
 	// change index and current term. Used for monitoring and consistency
@@ -1215,7 +1215,7 @@ func (s *AdminService) Health(_ context.Context) (*HealthStatus, error) {
 // shards. This includes the host identity, Raft address, leadership state,
 // drain state, and per-shard information.
 func (s *AdminService) Status(_ context.Context) (*StatusInfo, error) {
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
 	isLeader := false
 	var leaderID uint64
@@ -1242,7 +1242,7 @@ func (s *AdminService) Status(_ context.Context) (*StatusInfo, error) {
 // membership includes all known replicas, their addresses, and which
 // replica is the current leader.
 func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
 	shards := make([]ShardPeers, 0, len(info.ShardInfoList))
 	for _, si := range info.ShardInfoList {
@@ -1428,7 +1428,7 @@ type hostLeaderResolver struct {
 
 // LeaderReplicaID reports the replica this node believes leads shardID.
 func (r hostLeaderResolver) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
-	return r.host.GetLeaderID(shardID)
+	return r.host.LeaderID(shardID)
 }
 
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.
@@ -1511,7 +1511,7 @@ func (s *AdminService) GetShardState(_ context.Context, shardID uint64) (*ShardS
 	if err != nil {
 		return nil, &ShardStateError{ShardID: shardID, Err: err}
 	}
-	leaderID, hasLeader, err := s.host.GetLeaderID(shardID)
+	leaderID, hasLeader, err := s.host.LeaderID(shardID)
 	if err != nil {
 		return nil, &ShardStateError{ShardID: shardID, Err: err}
 	}
@@ -1527,7 +1527,7 @@ func (s *AdminService) GetShardState(_ context.Context, shardID uint64) (*ShardS
 // GetTopology returns the full cluster topology as seen from this node,
 // including all loaded shards and their membership.
 func (s *AdminService) GetTopology(_ context.Context) (*TopologyResponse, error) {
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	shards := make([]TopologyShardInfo, 0, len(info.ShardInfoList))
 	for _, si := range info.ShardInfoList {
 		shards = append(shards, TopologyShardInfo{

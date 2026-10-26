@@ -27,8 +27,8 @@ import (
 // reads: the leader's view of each replica's match index, and its commit
 // index.
 type replicationHost interface {
-	GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
-	DiagRaftState(shardID uint64) (term, committed, processed, lastIdx uint64, msgs int, state string, err error)
+	ShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
+	DiagRaftState(shardID uint64) (quicraft.RaftStateDiag, error)
 }
 
 // ReplicationProgressError is a Raft host query that failed while answering a
@@ -113,7 +113,7 @@ func (p *hostReplicationProgress) MatchIndex(shardID uint64, nodeID string) (uin
 
 // leaderInfo returns the shard's info if this host leads it.
 func (p *hostReplicationProgress) leaderInfo(shardID uint64) (*quicraft.ShardInfo, error) {
-	info, err := p.host.GetShardInfo(shardID)
+	info, err := p.host.ShardInfo(shardID)
 	if err != nil {
 		return nil, &ReplicationProgressError{Op: "shard-info", ShardID: shardID, Err: err}
 	}
@@ -124,11 +124,11 @@ func (p *hostReplicationProgress) leaderInfo(shardID uint64) (*quicraft.ShardInf
 }
 
 func (p *hostReplicationProgress) committed(shardID uint64) (uint64, bool, error) {
-	_, committed, _, _, _, _, err := p.host.DiagRaftState(shardID)
+	diag, err := p.host.DiagRaftState(shardID)
 	if err != nil {
 		return 0, false, &ReplicationProgressError{Op: "raft-state", ShardID: shardID, Err: err}
 	}
-	return committed, committed > 0, nil
+	return diag.Committed, diag.Committed > 0, nil
 }
 
 // replicaIDOf returns the replica ID whose address is nodeID.

@@ -270,12 +270,12 @@ func (s *RebalanceService) SetRaftHost(h RaftHost) { s.raftHost = h }
 // state machine for key count and byte count, and retrieves leader and
 // membership information from the host.
 func (s *RebalanceService) GetShardStats(ctx context.Context, shardID uint64) (*ShardStats, error) {
-	leaderID, _, err := s.host.GetLeaderID(shardID)
+	leaderID, _, err := s.host.LeaderID(shardID)
 	if err != nil {
 		return nil, &ShardStatsError{ShardID: shardID, Err: err}
 	}
 
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	replicaCount := 0
 	for _, si := range info.ShardInfoList {
 		if si.ShardID == shardID {
@@ -359,7 +359,7 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 	})
 
 	// Generate moves by shifting load from overloaded to underloaded nodes.
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
 	moves := make([]RebalanceMovePlan, 0)
 	moveCount := 0
@@ -485,7 +485,7 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 	completed := 0
 	var failures []RebalanceMoveFailure
 
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
 	// Build a shardID→Placement index. A shard present in this index belongs to
 	// a dedicated-tenant Raft group and requires the full tenant-aware MOVE.
@@ -938,7 +938,7 @@ func clonePlacementWithReplica(p *placement.Placement, r placement.Replica) *pla
 // identification. The imbalance score is calculated as the coefficient
 // of variation (standard deviation / mean) of byte counts across nodes.
 func (s *RebalanceService) GetImbalanceReport(ctx context.Context) (*ImbalanceReportResult, error) {
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
 	// Build per-node load information.
 	nodeMap := make(map[string]*NodeLoadInfo)

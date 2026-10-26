@@ -29,8 +29,8 @@ type RaftNode interface {
 	// StartShard starts a Raft shard with the given members.
 	StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
 
-	// GetLeaderID returns the leader ID for the given shard.
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	// LeaderID returns the leader ID for the given shard.
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // Config holds bootstrap configuration.

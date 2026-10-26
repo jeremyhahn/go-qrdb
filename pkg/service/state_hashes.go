@@ -181,7 +181,7 @@ func shardFilter(shardIDs []uint64) map[uint64]struct{} {
 // hostStateHashes hashes every replica of host whose shard want selects (nil
 // selects all), labelling each entry with tenantID.
 func hostStateHashes(ctx context.Context, tenantID string, host Host, want map[uint64]struct{}) []ReplicaStateHash {
-	info := host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info == nil {
 		return nil
 	}

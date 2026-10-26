@@ -60,7 +60,7 @@ type fakeLeaderSource struct {
 	err     error
 	onPoll  func(n int64)
 	leaderA int64 // become leader on this poll number (0 = never)
-	// errOn makes GetLeaderID fail on exactly these poll numbers and answer
+	// errOn makes LeaderID fail on exactly these poll numbers and answer
 	// cleanly (no leader, no error) on every other one. That INTERMITTENT shape
 	// is what a uniformly-erroring fake cannot express, and it is the shape that
 	// caught the lastErr erasure -- see
@@ -94,7 +94,7 @@ func (f *fakeLeaderSource) ReadReady(_ context.Context, _ uint64) error {
 	return nil
 }
 
-func (f *fakeLeaderSource) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (f *fakeLeaderSource) LeaderID(shardID uint64) (uint64, bool, error) {
 	n := f.polls.Add(1)
 	if f.onPoll != nil {
 		f.onPoll(n)
@@ -228,7 +228,7 @@ func TestShardLeaderWaitError_StillMatchesTheSentinel(t *testing.T) {
 	}
 }
 
-// The defect this replaces: `if _, ok, err := host.GetLeaderID(id); err == nil
+// The defect this replaces: `if _, ok, err := host.LeaderID(id); err == nil
 // && ok` discarded err entirely, so a shard answering "no such shard" 750 times
 // was reported as one that failed to elect.
 func TestShardLeaderWaitError_ReportsTheSwallowedPollError(t *testing.T) {
@@ -242,7 +242,7 @@ func TestShardLeaderWaitError_ReportsTheSwallowedPollError(t *testing.T) {
 	}
 	wantPolls(t, we, 4)
 	if !errors.Is(we.LastErr, boom) {
-		t.Fatalf("LastErr = %v, want it to carry the GetLeaderID failure %v", we.LastErr, boom)
+		t.Fatalf("LastErr = %v, want it to carry the LeaderID failure %v", we.LastErr, boom)
 	}
 	msg := we.Error()
 	if !strings.Contains(msg, "COULD NOT BE ASKED") {

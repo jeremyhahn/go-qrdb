@@ -95,7 +95,7 @@ func startLeaseFailoverCluster(t *testing.T, shardID uint64, interval, grace tim
 			defer sweepers.Done()
 			lr.RunExpiry(ctx, 50*time.Millisecond,
 				func() bool {
-					id, known, err := host.GetLeaderID(shardID)
+					id, known, err := host.LeaderID(shardID)
 					return err == nil && known && id == replicaID
 				},
 				replicas[replicaID-1].svc.Revoke,

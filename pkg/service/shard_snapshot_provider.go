@@ -192,7 +192,7 @@ func NewHostShardSnapshotProvider(host Host, opts ...HostShardSnapshotProviderOp
 
 // AvailableShards returns the IDs of every shard currently loaded on the host.
 func (p *hostShardSnapshotProvider) AvailableShards(_ context.Context) ([]uint64, error) {
-	info := p.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := p.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info == nil {
 		return nil, nil
 	}

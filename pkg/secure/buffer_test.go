@@ -263,7 +263,7 @@ func TestWrapAllocError(t *testing.T) {
 }
 
 // TestBuffer_ReadsSurviveTheUnderlyingEnclaveBeingDestroyed drives CopyOut and
-// WithBytes against a Buffer whose go-enclave MemoryEnclave was
+// WithBytes against a Buffer whose go-enclave memory enclave was
 // destroyed WITHOUT going through this package's own Destroy — the one way
 // b.destroyed can read false while b.enc no longer holds anything. Both
 // accessors must report empty/refused rather than propagate go-enclave's

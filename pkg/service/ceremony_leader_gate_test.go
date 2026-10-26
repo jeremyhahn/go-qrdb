@@ -127,7 +127,7 @@ func TestCeremonyServiceWithLeaderGate_ComposesOverAdminRebind(t *testing.T) {
 }
 
 // TestHostLeaderChecker_ReportsLeadership covers the three outcomes
-// HostLeaderChecker.IsLeader derives from Host.GetLeaderID (go-qrdb#548
+// HostLeaderChecker.IsLeader derives from Host.LeaderID (go-qrdb#548
 // review item 6): this replica is the leader, another replica is and its
 // address is known from Members, and no leader is known yet.
 func TestHostLeaderChecker_ReportsLeadership(t *testing.T) {
@@ -200,7 +200,7 @@ type stubLeaderHost struct {
 	getLeaderIDFn func(shardID uint64) (uint64, bool, error)
 }
 
-func (s *stubLeaderHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (s *stubLeaderHost) LeaderID(shardID uint64) (uint64, bool, error) {
 	return s.getLeaderIDFn(shardID)
 }
 

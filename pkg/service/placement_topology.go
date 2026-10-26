@@ -79,7 +79,7 @@ func (p *HostTopologyProvider) Nodes() []placement.NodeLoad {
 	// Roster + shard counts from the host's view. NodeHostInfo.ShardInfoList
 	// enumerates every shard and its members (replicaID -> raft address), so
 	// the union of member addresses is the cluster roster.
-	info := p.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := p.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info != nil {
 		if info.RaftAddress != "" {
 			ensure(info.RaftAddress)

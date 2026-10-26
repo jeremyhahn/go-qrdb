@@ -62,7 +62,7 @@ func openStores(provider string, settings map[string]string, store objcommon.Sto
 	if physical != settings[rootSetting] {
 		dataSettings := maps.Clone(settings)
 		dataSettings[rootSetting] = physical
-		if store, err = objfactory.NewStorage(provider, dataSettings); err != nil {
+		if store, err = objfactory.NewStorage(provider, dataSettings, objcommon.Credentials{}); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -75,7 +75,7 @@ func openStores(provider string, settings map[string]string, store objcommon.Sto
 	}
 	journalSettings := maps.Clone(settings)
 	journalSettings[rootSetting] = root
-	if journal, err = objfactory.NewStorage(provider, journalSettings); err != nil {
+	if journal, err = objfactory.NewStorage(provider, journalSettings, objcommon.Credentials{}); err != nil {
 		return nil, nil, err
 	}
 	return store, journal, nil

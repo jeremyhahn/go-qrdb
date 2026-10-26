@@ -59,7 +59,7 @@ type SymmetricEncrypter = seal.SymmetricEncrypter
 type StorageBackend = seal.StorageBackend
 
 // Credentials holds authentication credentials for barrier operations. The
-// secret is protected memory — a *enclave.SealedEnclave, never a []byte — and
+// secret is protected memory — an enclave.Sealed, never a []byte — and
 // is built with NewCredentials (consuming) or CredentialsFor (borrowing). The
 // zero value means "no credentials supplied". The caller OWNS a credential it
 // builds: destroy it (seal.DestroyCredentials(creds), nil-safe) once the seal or

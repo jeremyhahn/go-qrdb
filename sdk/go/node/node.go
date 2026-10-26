@@ -2041,7 +2041,7 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 		defer n.bgWG.Done()
 		lr.RunExpiry(ctx, lease.DefaultExpiryInterval,
 			func() bool {
-				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				leaderID, ok, err := host.LeaderID(shard.ShardKV)
 				return err == nil && ok && leaderID == replicaID
 			},
 			leaseSvc.Revoke,
@@ -2078,7 +2078,7 @@ func (n *Node) startReclaimSweep(host *quicraft.Host, sweeper *service.ReclaimSw
 		defer n.bgWG.Done()
 		sweeper.Run(ctx, service.DefaultReclaimInterval,
 			func() bool {
-				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				leaderID, ok, err := host.LeaderID(shard.ShardKV)
 				return err == nil && ok && leaderID == replicaID
 			},
 			n.logger,

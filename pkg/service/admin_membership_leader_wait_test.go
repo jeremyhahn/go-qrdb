@@ -31,7 +31,7 @@ type electingLeader struct {
 	calls      int
 }
 
-func (e *electingLeader) GetLeaderID(uint64) (uint64, bool, error) {
+func (e *electingLeader) LeaderID(uint64) (uint64, bool, error) {
 	e.calls++
 	if e.calls <= e.unknownFor {
 		return 0, false, nil
@@ -113,7 +113,7 @@ func TestAdminService_MembershipWaitsForKnownLeader(t *testing.T) {
 	for _, op := range membershipOps() {
 		t.Run(op.name, func(t *testing.T) {
 			leader := &electingLeader{unknownFor: 3}
-			host := &mockHost{getLeaderIDFn: leader.GetLeaderID}
+			host := &mockHost{getLeaderIDFn: leader.LeaderID}
 			proposals := 0
 			op.wire(host, func() (*quicraft.RequestState, error) {
 				proposals++

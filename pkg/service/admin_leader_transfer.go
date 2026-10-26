@@ -75,7 +75,7 @@ func (s *AdminService) TransferLeadership(ctx context.Context, shardID, targetRe
 	if targetReplicaID == 0 {
 		return &UnknownReplicaError{ShardID: shardID}
 	}
-	from, _, err := s.host.GetLeaderID(shardID)
+	from, _, err := s.host.LeaderID(shardID)
 	if err != nil {
 		return translateLeaderTransferError(shardID, err)
 	}
@@ -88,7 +88,7 @@ func (s *AdminService) TransferLeadership(ctx context.Context, shardID, targetRe
 		timeout = defaultLeaderTransferWaitTimeout
 	}
 	return awaitLeaderTransfer(ctx,
-		func() (uint64, bool, error) { return s.host.GetLeaderID(shardID) },
+		func() (uint64, bool, error) { return s.host.LeaderID(shardID) },
 		func(id uint64) bool { return id == targetReplicaID },
 		&LeaderTransferTimeoutError{ShardID: shardID, FromReplicaID: from, ToReplicaID: targetReplicaID, Timeout: timeout})
 }

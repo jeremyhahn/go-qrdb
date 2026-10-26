@@ -1458,29 +1458,35 @@ the shape of the go-enclave interface it would carry.
 
 ### go-enclave bindings
 
-go-enclave v0.8.0-alpha exports interfaces only for providers
-(`KeyProtector`, `RootUnsealer`, `HealthReporter`); go-qrdb implements none of
-them. Every operation go-qrdb performs on protected memory goes through a
-concrete type, because no interface exists for it yet:
+go-enclave v0.10.0-alpha exports the protected-memory types themselves as
+interfaces: `Sealed` (material encrypted at rest in memory), `ByteAccess` (a
+`Handle` whose bytes are readable inside a borrow) and `Allocator` (a budgeted
+`Backend`). go-qrdb binds to those interfaces at every site and still
+implements none of them; the only implementations it uses are go-enclave's own,
+and its provider interfaces (`KeyProtector`, `RootUnsealer`, `HealthReporter`)
+are likewise unimplemented here:
 
-| Site | Concrete binding | Operations used |
+| Site | Interface binding | Operations used |
 |---|---|---|
-| `pkg/secure/buffer.go:56` | `Buffer.enc *enclave.MemoryEnclave` | `WithBytes`, `Size`, `Destroy` |
-| `pkg/secure/buffer.go:134` | `processAllocator() (*enclave.Allocator, error)` | `NewSized` |
-| `pkg/secure/secret.go:49` | `Secret.enclave atomic.Pointer[enclave.SealedEnclave]` | `Open`, `Destroy` |
-| `pkg/secure/secret.go:80` | `newSealed = enclave.NewSealed` (returns `*enclave.SealedEnclave`) | construction |
-| `pkg/secure/secret.go:150` | `var sealed *enclave.SealedEnclave` | construction |
-| `pkg/secure/secret.go:262` | `copyFrozenToWritable(frozen *enclave.MemoryEnclave)` | `WithBytes`, `Destroy` |
-| `sdk/go/secure/secure.go:226` | `type Allocator = enclave.Allocator` | re-export |
-| `pkg/seal/shamir.go:161` | `combineProtected = shamir.CombineProtected` (returns `*enclave.MemoryEnclave`, go-quicraft) | `WithBytes`, `Destroy` |
-| `pkg/seal/strategy.go:78` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Destroy` |
-| `pkg/clustermig/credentials.go:146` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
-| `pkg/seal/sealtest/sealtest.go:48`, `:79` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
+| `pkg/secure/buffer.go:55` | `Buffer.enc enclave.ByteAccess` | `WithBytes`, `Size`, `Destroy` |
+| `pkg/secure/buffer.go:133` | `processAllocator() (enclave.Allocator, error)` | `NewSized` |
+| `pkg/secure/secret.go:50` | `Secret.enclave atomic.Pointer[enclave.Sealed]` | `OpenIn`, `Destroy` |
+| `pkg/secure/secret.go:81` | `newSealed = enclave.NewSealed` (returns `enclave.Sealed`) | construction |
+| `pkg/secure/secret.go:151` | `var sealed enclave.Sealed` | construction |
+| `pkg/secure/secret.go:271` | `copyFrozenToWritable(frozen enclave.ByteAccess)` | `WithBytes`, `Destroy` |
+| `sdk/go/secure/secure.go:225` | `type Allocator = enclave.Allocator` | re-export |
+| `pkg/seal/shamir.go:161` | `combineProtected = shamir.CombineProtected` (returns `enclave.ByteAccess`, go-quicraft) | `WithBytes`, `Destroy` |
+| `pkg/seal/strategy.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Destroy` |
+| `pkg/clustermig/credentials.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Open` |
+| `pkg/seal/sealtest/sealtest.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Open` |
 
-`pkg/clusterkeys`, `pkg/keydelivery` and `pkg/secure` also call the free
-function `enclave.Wipe`, which is not a type binding. The last four rows name
-types that go-quicraft's exported API returns, so they convert when
-go-quicraft binds to the same interface.
+`Secret.Open` opens into the allocator's backend through `Sealed.OpenIn`, which
+returns a `Handle`; a backend whose handles do not expose their bytes fails the
+open with go-enclave's `*enclave.CapabilityError` for `CapabilityBytes` rather
+than returning a handle `secure.Buffer` cannot read. `pkg/clusterkeys`,
+`pkg/keydelivery` and `pkg/secure` also call the free function `enclave.Wipe`,
+which is not a type binding. The last four rows name types that go-quicraft's
+exported API returns; go-quicraft v0.24.2-alpha binds to the same interfaces.
 
 ### Follow-on set
 

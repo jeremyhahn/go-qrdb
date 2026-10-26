@@ -112,7 +112,7 @@ type MemberEvent struct {
 
 // Reconfigurer applies Raft membership changes for a single shard and reports
 // the current leader. The qrdb AdminService satisfies it (AddMember /
-// RemoveMember plus a leader lookup wrapping GetLeaderID).
+// RemoveMember plus a leader lookup wrapping LeaderID).
 type Reconfigurer interface {
 	// AddMember adds a replica to the shard's Raft group.
 	AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
