@@ -1520,7 +1520,9 @@ acknowledgements are ordinary metadata writes.
 - **Each node acknowledges as the mark arrives.** The node that ran the undo
   acknowledges at the undo itself. Every node also holds a watch on the
   tombstone prefix, started by `lifecycle.StartNodeWatchers`, the one
-  composition qrdbd and `sdk/go/node` share. A put of an `undone` tombstone
+  composition qrdbd and `sdk/go/node` share. The watch is the node's own
+  work: stopping the node ends it and waits for it, before any store it reads
+  through is closed. A put of an `undone` tombstone
   makes the node clean up that id and acknowledge. The mark is written after
   the tenant's record is deleted, so a node that saw the first tombstone
   write while the record still existed sees the mark after it, and a reuse

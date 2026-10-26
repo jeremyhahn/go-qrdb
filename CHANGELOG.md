@@ -56,6 +56,17 @@ are not reconstructed here — their history is in the git log.
   `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
   Unix socket server registers the service through the same option instead of
   a separate call.
+- **`sdk/go` resolves the verified client chain of a connection the node's
+  trust pool admitted** (#1181). The dynamic client-auth trust pool remaps a
+  verifying `ClientAuth` mode to a non-verifying one and verifies the peer
+  itself, so such a connection's `tls.ConnectionState.VerifiedChains` is
+  empty. `sdk/go` re-exports `ResolveVerifiedChains`, `IssuerVerifier`,
+  `ErrNoPeerCertificate` and `TrustStateUnavailableError`, and
+  `node.Node.IssuerVerifier()` returns the node's own pool, the one its mTLS
+  authenticator verifies against (`node.ErrTrustPoolNotWired` before boot
+  builds it and after `Close`). A handler mounted on a node listener calls
+  `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
+  `PeerCertificates[0]` or building a verifier of its own.
 
 ## [0.55.0-alpha] - 2026-10-24
 

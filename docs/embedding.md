@@ -50,6 +50,13 @@ operation. With auth disabled there is no middleware and the embedded
 transport admits every call, as a network transport run with
 `--auth-enabled=false` does.
 
+**A handler on a node listener verifies a client certificate through the
+node.** `n.IssuerVerifier()` returns the node's dynamic client-auth trust pool,
+the one its mTLS authenticator verifies against, and
+`sdk.ResolveVerifiedChains(ctx, state, verifier)` returns the chain it verified,
+which a connection the pool admitted does not carry in `VerifiedChains`
+(`docs/identity-rbac/api.md`).
+
 **The service handles (`n.Services()`, `n.AdminService()`) are a fully
 trusted, in-process surface with no authorization of their own.** Every
 transport, embedded included, enforces permissions in its own handler or

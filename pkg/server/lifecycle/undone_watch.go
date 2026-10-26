@@ -77,9 +77,16 @@ func (e *UndoneTenantWatchError) Unwrap() error { return e.Err }
 // that closes while ctx is live is re-established, backing off, and followed
 // by another, which covers a write the gap hid.
 //
-// Runs until ctx is canceled; StartNodeWatchers calls it once per node. A
-// node without a watch service, or whose tenant service reconciles no undone
-// id, starts nothing.
+// Runs until ctx is canceled or n stops; StartNodeWatchers calls it once per
+// node. The watch is n's own work (nodeWork), so Stop cancels it and waits for
+// it to return before running any closer: every reconcile it runs reads
+// through the tenant service, and so through the storage beneath it, and one
+// still in flight when that storage closes holds an iterator open across the
+// close, which Pebble refuses. Cancelling ctx alone does not end that
+// reconcile in time, and a composer that rebuilds its data plane (an
+// in-process encryption migration) keeps its long-lived ctx across the
+// rebuild. A node without a watch service, or whose tenant service reconciles
+// no undone id, starts nothing.
 func startUndoneWatch(ctx context.Context, n *Node) error {
 	if n == nil || n.Watch == nil || n.Tenant == nil {
 		return nil
@@ -88,15 +95,30 @@ func startUndoneWatch(ctx context.Context, n *Node) error {
 	if !ok {
 		return nil
 	}
-	return watchUndoneTenants(ctx, n.Watch, r, slog.Default())
+	return watchUndoneTenants(ctx, &n.work, n.Watch, r, slog.Default())
 }
 
-func watchUndoneTenants(ctx context.Context, ws prefixWatcher, r undoneReconciler, logger *slog.Logger) error {
+// watchUndoneTenants opens the watch on the tenant tombstones and supervises
+// it as a piece of work, until ctx ends or work stops. Once work has stopped
+// it supervises nothing: the watch it opened is closed again.
+func watchUndoneTenants(ctx context.Context, work *nodeWork, ws prefixWatcher, r undoneReconciler, logger *slog.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	stopWithNode := context.AfterFunc(work.context(), cancel)
 	w, err := ws.WatchPrefix(ctx, tenant.TombstonePrefix, undoneWatchOptions()...)
 	if err != nil {
+		stopWithNode()
+		cancel()
 		return &UndoneTenantWatchError{Err: err}
 	}
-	go superviseUndoneWatch(ctx, ws, r, w, logger)
+	if !work.start(func(context.Context) {
+		defer cancel()
+		defer stopWithNode()
+		superviseUndoneWatch(ctx, ws, r, w, logger)
+	}) {
+		stopWithNode()
+		cancel()
+		_ = w.Close()
+	}
 	return nil
 }
 
