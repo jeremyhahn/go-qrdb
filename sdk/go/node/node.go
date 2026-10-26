@@ -1562,7 +1562,7 @@ func (n *Node) AuthMiddleware() *middleware.AuthMiddleware { return n.authMiddle
 // at start: true under strict separation, which FIPS 140-3 mode forces on,
 // otherwise the auth.separation_of_duties setting (sdk.ResolveStrictSeparation).
 // It reports false until the node has wired its authorizer, which a sealed node
-// does once Unseal completes the boot.
+// does once Unseal completes the boot, and false again after Close.
 func (n *Node) StrictSeparation() bool { return n.strictSeparation.Load() }
 
 // Authorizer returns the node's composed RBAC[+ABAC] auth.Authorizer -- the
@@ -2845,6 +2845,9 @@ func (n *Node) Close() error {
 		_ = sock.Close()
 	}
 	n.retractDataPlaneServices()
+	// The posture describes the authorizer just retracted; a closed node has
+	// none, so it reports false as it did before the authorizer was wired.
+	n.strictSeparation.Store(false)
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
 		record(svcNode.Stop(context.Background()))
 	}

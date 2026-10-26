@@ -85,11 +85,18 @@ func TestRecordSeparationPostureAtStart_ChangeEmitsOne(t *testing.T) {
 	trail := audit.NewRingBuffer(8)
 	kv := postureRecordKV(wiring.PostureStrict)
 
+	// FIPS 140 mode forces strict separation whatever is configured, so there
+	// configuring the standard posture changes nothing and emits no event.
+	wantPosture, wantEvents := wiring.PostureStandard, 1
+	if wiring.ResolveStrictSeparation(false) {
+		wantPosture, wantEvents = wiring.PostureStrict, 0
+	}
+
 	require.NoError(t, recordSeparationPostureAtStart(context.Background(), kv, trail, false))
-	assert.Equal(t, 1, postureChangeCount(t, trail))
+	assert.Equal(t, wantEvents, postureChangeCount(t, trail))
 	got, err := kv.Get(context.Background(), wiring.SeparationPostureKey)
 	require.NoError(t, err)
-	assert.Equal(t, wiring.PostureStandard, string(got))
+	assert.Equal(t, wantPosture, string(got))
 }
 
 func TestRecordSeparationPostureAtStart_ReadFailureRefusesStart(t *testing.T) {

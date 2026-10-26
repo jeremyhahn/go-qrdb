@@ -17,8 +17,11 @@ package conformance
 import (
 	"crypto/tls"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -135,6 +138,18 @@ func TestTenantOnboarding_StandardPostureTheAdminIsTheSO(t *testing.T) {
 				AdminUsername: "alice", AdminCSRPEM: string(csr),
 				SOUsername: "alice", SOCSRPEM: string(csr), SOPin: "alice-pin-1234",
 			})
+			// FIPS 140 mode forces strict separation whatever is configured,
+			// so there the create is refused exactly as in the strict posture.
+			if wiring.ResolveStrictSeparation(false) {
+				want := (&bootstrap.SOMatchesAdminError{Field: "username"}).Error()
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s: FIPS 140 mode forces strict separation of duties: create err = %v, want %q", tk, err, want)
+				}
+				if _, err := c.n.Services().Tenant.GetTenant(boundedCtx(t), "acme"); err == nil {
+					t.Fatalf("%s: the refused create left tenant acme behind", tk)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("%s: create tenant with the admin as its SO: %v", tk, err)
 			}
