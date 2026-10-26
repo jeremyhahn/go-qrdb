@@ -1740,12 +1740,23 @@ perf-docs: _kvcompare-build
 # Coverage
 # ============================================================================
 
-# check-coverage: extract percentage from coverage profile and fail if below threshold
+# check-coverage: extract the total from a coverage profile and fail if it is
+# below COVER_MIN, or if there is no total to compare: a missing, empty or
+# unreadable profile fails rather than passing.
 # Usage: $(call check-coverage,profile.out,package-name)
+#
+# awk does the comparison because it is in the CI image (gawk) and in every
+# POSIX shell environment; bc is not in the image, and an absent bc made this
+# check pass at any figure, 0% included (found by lane sdkfix2).
+# test/buildgates/check_coverage_test.go drives this macro through make.
 define check-coverage
-	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
+	@COVERAGE=$$($(GO) tool cover -func=$(1) | awk '$$1 == "total:" { sub(/%$$/, "", $$NF); print $$NF }'); \
+	if ! awk -v c="$${COVERAGE}" 'BEGIN { exit !(c ~ /^[0-9]+(\.[0-9]+)?$$/) }'; then \
+		echo "FAIL: $(2) coverage profile $(1) has no total to compare"; \
+		exit 1; \
+	fi; \
 	echo "$(2) coverage: $${COVERAGE}%"; \
-	if [ $$(echo "$${COVERAGE} < $(COVER_MIN)" | bc -l) -eq 1 ]; then \
+	if awk -v c="$${COVERAGE}" -v m="$(COVER_MIN)" 'BEGIN { exit !(c + 0 < m + 0) }'; then \
 		echo "FAIL: $(2) coverage $${COVERAGE}% is below minimum $(COVER_MIN)%"; \
 		exit 1; \
 	fi

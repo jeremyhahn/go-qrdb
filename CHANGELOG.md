@@ -112,6 +112,15 @@ are not reconstructed here — their history is in the git log.
   outcome retried, up to three times. A constructor that skips the wait still
   fails on the first attempt.
 
+### Fixed
+
+- **Every `make coverage-<pkg>` target now compares its figure with
+  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
+  does not have, so the comparison produced nothing and the target passed at
+  any coverage, 0% included. It now compares with `awk`, and a profile with no
+  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
+  drives the check through `make` over profiles above and below the floor.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
