@@ -29,8 +29,9 @@ import (
 //     undone id is not held until this node's next deleted-tenant reconcile.
 //
 // Call once, after BuildServices, with the node's long-lived background
-// context. n.Stop ends the undone-tenant watch and waits for it, before it
-// closes anything the watch reads through. A watcher that fails to start does not stop the others; their
+// context. n.Stop ends every watcher this starts and waits for it, before it
+// closes anything the watcher reads through. A watcher that fails to start
+// does not stop the others; their
 // errors are joined. Neither is fatal to the node: an undone id still clears
 // at the next reconcile-deleted-tenants pass, and Key B still ages out.
 func StartNodeWatchers(ctx context.Context, n *Node) error {

@@ -18,6 +18,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -96,26 +97,41 @@ type WatchPrefixer interface {
 // A no-op when WithWatchService was never called (watchSvc is nil) -- the
 // documented "evict only by TTL" posture a deployment with no replicated
 // watch hub has (a test constructing DefaultCertProvider directly, or an
-// embedder that chose not to wire one). Runs until ctx is canceled; call
-// once, after the node's watch hub is live.
-func (p *DefaultCertProvider) WatchForDeletions(ctx context.Context) error {
+// embedder that chose not to wire one), and then done is nil. Runs until ctx
+// is canceled; call once, after the node's watch hub is live.
+//
+// done closes once both watchers have returned, so the caller can wait for
+// them before closing anything they read through: canceling ctx only asks
+// them to stop, and one still re-establishing its watch would otherwise call
+// into a watch service that is closing.
+func (p *DefaultCertProvider) WatchForDeletions(ctx context.Context) (done <-chan struct{}, err error) {
 	if p.watchSvc == nil {
-		return nil
+		return nil, nil
 	}
 	certCAWatcher, err := p.watchSvc.WatchPrefix(ctx, prefixCertCA, watch.WithFilters(watch.WatchFilterNoPut))
 	if err != nil {
-		return &StoreError{Op: "watch", Detail: prefixCertCA, Err: err}
+		return nil, &StoreError{Op: "watch", Detail: prefixCertCA, Err: err}
 	}
 	tombstoneWatcher, err := p.watchSvc.WatchPrefix(ctx, tenant.TombstonePrefix, watch.WithFilters(watch.WatchFilterNoDelete))
 	if err != nil {
 		_ = certCAWatcher.Close()
-		return &StoreError{Op: "watch", Detail: tenant.TombstonePrefix, Err: err}
+		return nil, &StoreError{Op: "watch", Detail: tenant.TombstonePrefix, Err: err}
 	}
-	go p.superviseWatch(ctx, "cert_ca deletions", prefixCertCA,
-		[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoPut)}, certCAWatcher, p.consumeCertCADeletes)
-	go p.superviseWatch(ctx, "tenant tombstones", tenant.TombstonePrefix,
-		[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoDelete)}, tombstoneWatcher, p.consumeTombstonePuts)
-	return nil
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		p.superviseWatch(ctx, "cert_ca deletions", prefixCertCA,
+			[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoPut)}, certCAWatcher, p.consumeCertCADeletes)
+	})
+	wg.Go(func() {
+		p.superviseWatch(ctx, "tenant tombstones", tenant.TombstonePrefix,
+			[]watch.WatchOption{watch.WithFilters(watch.WatchFilterNoDelete)}, tombstoneWatcher, p.consumeTombstonePuts)
+	})
+	closed := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(closed)
+	}()
+	return closed, nil
 }
 
 // superviseWatch runs consume over w until ctx is canceled or w's channel
