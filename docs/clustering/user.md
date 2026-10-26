@@ -1,6 +1,7 @@
 # Clustering — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> Conflicts with this document are defects. Fix them here first.
 
 Forming a cluster, watching it, changing its membership, and moving shards
 around when the load goes lopsided.

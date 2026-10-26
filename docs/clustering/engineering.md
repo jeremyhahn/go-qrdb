@@ -1,6 +1,7 @@
 # Clustering — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 **Raft mode only.** In standalone every capability here refuses with
 `requires mode: raft`.

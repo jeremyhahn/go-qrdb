@@ -1,6 +1,7 @@
 # Unified API Server — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 **No `qrdb` verb group.** The unified server is hosting infrastructure: it is
 configured on the daemon and observed through `admin`, not driven by a client

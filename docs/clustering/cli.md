@@ -1,6 +1,7 @@
 # Clustering — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> Conflicts with this document are defects. Fix them here first.
 
 Two command groups: `qrdb admin` (node and shard administration) and
 `qrdb rebalance` (shard distribution). Both accept the root persistent flags

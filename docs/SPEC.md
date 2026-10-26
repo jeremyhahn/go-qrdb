@@ -1,6 +1,7 @@
 # go-qrdb specification
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> Conflicts with this document are defects. Fix them here first.
 > **Rules of this file.** This project carries `docs/SPEC.md` (what it is, and every feature with its requirements and status) and [`ROADMAP.md`](../ROADMAP.md) (what is complete and what remains). The two agree. A feature listed here, in any status, is never deleted: not its docs, its code or its issues. Removing or re-scoping a feature needs the owner's change to this file. The feature folders `docs/<feature>/` stay the detail behind each row. The owner approves this file and ROADMAP.md before they merge.
 
 ## Purpose
@@ -92,7 +93,8 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 | release | shipped | `make release-alpha`, VERSION as the release record, lockstep module tags, post-publish validation. | [release/](release/) |
 | ci-actionlint | shipped | `make lint` runs actionlint. | #636, [release/](release/) |
 | dead-code-triage | shipped | Triage the unreachable symbols; wiring is an answer as well as deletion. | #350, [release/](release/) |
-| port-reservation-package | shipped | Decide the shared port-reservation package, now that production code is a caller. | #306 |
+| documentation | shipped | ROADMAP.md lists every milestone and names the folder behind each item; document banners; a spec-review scrub of docs/ for the release candidate; where the agent spec lives. | #657, #658, #635, #634, [README.md](README.md) |
+| port-reservation-package | shipped | Decide the shared port-reservation package, now that production code is a caller. | #306, [api-server/](api-server/) |
 | api-server | shipped | The unified multi-protocol server and the `ServiceModule` seam. | [api-server/](api-server/), [embedding.md](embedding.md) |
 | optional-auth-route | shipped | `ModuleHTTPRegistrar` (`sdk/go`, `apimodule.HTTPRegistrar`) gains a third route mode, `HandleOptional`, beside `Handle` and `HandlePublic`. On a `HandleOptional` route a presented credential runs the configured auth chain, and the chain itself resolves the mTLS identity to an `sdk.User`; a request with no credential is admitted as an anonymous caller; a presented credential that is invalid is rejected. The provider side of the seam with go-quicbaas's OAuth authorization endpoint. Consumer: go-quicbaas #1457. | [api-server/](api-server/) |
 | request-context-dpop | shipped | The request context carries the DPoP proof, HTTP method and URI to authenticators. | #646, [api-server/](api-server/) |
@@ -147,13 +149,12 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 
 | Feature | Status | Requirements | Detail |
 |---|---|---|---|
-| cluster-verification | in progress | The qrdb-3-node-proven gate: a linearizability checker, nemesis and soak harness; a clock nemesis that perturbs rate, with lease reads on; a pinned port set for the three-node cluster; cluster suites green on main. | #669, #679, #671, #668 |
+| cluster-verification | in progress | The qrdb-3-node-proven gate: a linearizability checker, nemesis and soak harness; a clock nemesis that perturbs rate, with lease reads on; a pinned port set for the three-node cluster; cluster suites green on main. | #669, #679, #671, #668, [cluster-verification/](cluster-verification/) |
 | sealed-mode-serving | shipped | Adopt the go-quicraft v0.21.0 release candidate, with sealed-mode serving. | #659, [barrier-seal/](barrier-seal/) |
 | bounded-startup-read | shipped | Each startup read attempt is bounded and a boot failure is logged; go-quicraft's typed retryable `ErrReadIndexNotReady` (errors.Is-matchable, classed Unavailable, returned while the leader has not committed the read index) is retried until the startup deadline. The consuming side of the seam with go-quicraft. | #668, [clustering/](clustering/) |
 | lease-reads | shipped | Lease reads are documented as linearizable under the 1 % clock-rate bound, not as a stale-read window. | #678, [key-value/](key-value/) |
 | auth-factor-claim | shipped | A conditional factor-add, one-time-claim primitive; a hard delete or rollback reinstate, so a rolled-back add frees its SPKI and credential indexes. | #655, #684, [auth-factors/](auth-factors/) |
 | fips-140-3 | shipped | The FIPS 140-3 job is green and measured; it is the required `fips` job of ci.yml's full tier (in the CI gate's needs), which runs both unit suites under `GOFIPS140=latest` and `GODEBUG=fips140=only`. clusterenroll adopts go-truststrap's P-256 handshake to clear the X25519 blocker: `clusterenroll.BootstrapOptions.P256Key` and `JoinP256Key` select the `p256proto` suite. | #618, #608, #20, #118, [seal/fips140-mode.md](seal/fips140-mode.md), [clustering/architecture.md](clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) |
-| documentation | in progress | ROADMAP.md lists every milestone and names the folder behind each item; document banners; a spec-review scrub of docs/ for the release candidate; where the agent spec lives. | #657, #658, #635, #634, [README.md](README.md) |
 | file-backend-encryption | shipped | The file backend encrypts data at rest under the node barrier, as pebble does. | #630, [storage-engines/](storage-engines/) |
 | embedder-seams | shipped | `sdk/go` exposes the seams embedders need: cakey, cert-key factory, volume keys, DAO-from-factory, permission proto, SPIFFE. They are `sdk.CAKeyProviderFactory`, `node.WithCertKeyProviderFactory`, `sdk.VolumeKeyProvider`, `sdk.NewDatabaseDAO` over `sdk.NewClientDAOFactory`, the permission proto descriptor `qrdbv1.File_qrdb_v1_permission_proto` in `sdk/go/proto/qrdb/v1`, and `sdk.SpiffeID`. | #626, [release/extension-seams.md](release/extension-seams.md) |
 | strict-tenant-isolation | in progress | Each strict tenant gets a home store holding every record the platform does not need to place, route, size or retire it, partially implemented; per-node tenant barrier init. | #683, [multi-tenancy/](multi-tenancy/) |
