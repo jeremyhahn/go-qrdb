@@ -70,8 +70,9 @@ const (
 	// against before a consumer starts.
 	digestRefPattern = `^[^@ ]+@sha256:[0-9a-f]{64}$`
 
-	// digestConsumerFloor is a discovery floor: lint, lint-gates, image,
-	// fips, integration-features and soak consume the images today.
+	// digestConsumerFloor is a discovery floor, a count beneath the jobs
+	// digestConsumersWant names: a parse that finds too little fails on it
+	// before any name is compared.
 	digestConsumerFloor = 6
 
 	// ciPublishExpr is the one value CI_PUBLISH may have: a push to main.
@@ -95,6 +96,15 @@ const (
 
 // releaseLabel matches a runs-on that can place a job on the release
 // runner: the bare label, or the label quoted in an expression.
+// digestConsumersWant names every ci.yml job that runs a docker-build image,
+// v1.27.0's lint-gates and five unit-suite jobs among them (ruling 211).
+// Discovery must find each one, and each must take its image both ways, so a
+// job the parse stops seeing, or one that loses either path, fails the gate.
+var digestConsumersWant = []string{
+	"coverage", "coverage-fts", "fips", "image", "integration-features", "lint",
+	"lint-gates", "soak", "test-clusterproof", "test-sdk", "test-tags",
+}
+
 var releaseLabel = regexp.MustCompile(`(^|')release('|$)`)
 
 // runnerCredential lists the names the release runner's env file exports, its
@@ -122,7 +132,7 @@ var (
 // imageStages maps each image family to the stages that run in it.
 var imageStages = map[string]*regexp.Regexp{
 	"toolchain": regexp.MustCompile(`scripts/in-toolchain-image\.sh`),
-	"it":        regexp.MustCompile(`make integration-test\s`),
+	"it":        regexp.MustCompile(`make integration-test(-features)?\s`),
 }
 
 type digestStep struct {
@@ -155,6 +165,12 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	if err := yaml.Unmarshal(body, &wf); err != nil {
 		return []string{"ci.yml is not a workflow this gate can read: " + err.Error()}, nil
 	}
+	return workflowDigestProblems(wf, floor)
+}
+
+// workflowDigestProblems is digestProblems over an already parsed workflow,
+// so a case can mutate one job's steps and run the same checks.
+func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers []string) {
 	if v := strings.TrimSpace(wf.Env["CI_PUBLISH"]); v != ciPublishExpr {
 		problems = append(problems, "ci.yml's CI_PUBLISH is "+strconv.Quote(v)+"; want "+strconv.Quote(ciPublishExpr)+
 			": only a push to main logs in to the registry or pushes to it")
@@ -369,9 +385,9 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 		}
 		i, ok := pulled[family]
 		switch {
-		case !ok && job.If == nightlyIf:
-			// A dispatch-only job never runs on a push to main: the local
-			// path is its only one.
+		case !ok && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf):
+			// A nightly job (nightlyIf, draft guard aside) never runs on a
+			// push to main: the local path is its only one.
 		case !ok:
 			problems = append(problems, name+" runs the "+family+" image but never pulls it with scripts/ci-registry.sh pull: "+
 				"on main it would run an image docker-build did not push")
@@ -440,7 +456,49 @@ func TestCIImageDigest_EveryConsumerPullsByDigest(t *testing.T) {
 	for _, p := range problems {
 		t.Error(p)
 	}
+	for _, name := range digestConsumersWant {
+		if !slices.Contains(consumers, name) {
+			t.Errorf("%s is not a consumer of %s's images: the gate no longer checks how it takes its image", name, digestProducer)
+		}
+	}
 	t.Logf("consumers of %s's images: %s", digestProducer, strings.Join(consumers, ", "))
+}
+
+// TestCIImageDigest_EveryNamedConsumerNeedsBothPaths drops each named
+// consumer's digest pull, then its local build, from the parsed ci.yml and
+// requires the gate to report that job. A nightly job has no pull to drop:
+// the local path is its only one.
+func TestCIImageDigest_EveryNamedConsumerNeedsBothPaths(t *testing.T) {
+	paths := map[string]*regexp.Regexp{"pull": registryPull, "local": registryLocal}
+	for _, name := range digestConsumersWant {
+		for _, path := range slices.Sorted(maps.Keys(paths)) {
+			t.Run(name+"/"+path, func(t *testing.T) {
+				var wf digestWorkflow
+				if err := yaml.Unmarshal(readCIWorkflowBytes(t), &wf); err != nil {
+					t.Fatalf("ci.yml does not parse: %v", err)
+				}
+				job, ok := wf.Jobs[name]
+				if !ok {
+					t.Fatalf("ci.yml has no %s job", name)
+				}
+				kept := slices.DeleteFunc(slices.Clone(job.Steps), func(s digestStep) bool {
+					return paths[path].MatchString(s.Run)
+				})
+				if len(kept) == len(job.Steps) {
+					if path == "pull" && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf) {
+						return
+					}
+					t.Fatalf("%s has no %s step to drop", name, path)
+				}
+				job.Steps = kept
+				wf.Jobs[name] = job
+				problems, _ := workflowDigestProblems(wf, digestConsumerFloor)
+				if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, name+" ") }) {
+					t.Fatalf("%s without its %s step passed the gate: %v", name, path, problems)
+				}
+			})
+		}
+	}
 }
 
 // TestCIImageDigest_RevertedConsumerFails reverts one consumer of the real

@@ -1092,8 +1092,15 @@ jobs:
     if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes, docker-build]
     timeout-minutes: 75       # CUSTOMIZE (ruling 211): the bulk of the ~36 warm minutes the two steps took, doubled for a loaded runner
+    # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
+    # the forge's registry (DS-3516), in this job and the four below.
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # CUSTOMIZE (go-qrdb): this job's hold on the toolchain image (DS-3516).
+      TOOLCHAIN_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-coverage-toolchain
       # v1.22: the cache volumes' trust class (as in the lint job).
       CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
@@ -1113,24 +1120,26 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      # CUSTOMIZE (go-qrdb, DS-3044): as in the lint-gates job, build the
-      # content-hashed toolchain tag only when the daemon lacks it.
-      - name: Ensure the toolchain image
+      # CUSTOMIZE (go-qrdb): as in the lint job, on a push to main pull the
+      # toolchain image docker-build pushed, by digest, and hold it until the
+      # teardown; nothing on this path rebuilds the image (DS-3516). On every
+      # other event, the runner's own image, held by image ID; no login
+      # (claude-agents#329). The four jobs below take it the same way.
+      - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
+          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
-          else
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
-          fi
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
+          echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       # v1.22: bound this repo's cache volumes (as in the lint job).
       - name: Trim the CI caches
@@ -1141,9 +1150,10 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"
 
+      # CUSTOMIZE (go-qrdb): release the hold the pull took (DS-3516).
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+        run: scripts/ci-registry.sh release "$TOOLCHAIN_HOLD"
 
   # CUSTOMIZE (go-qrdb): the suites `make coverage` does not reach, one job
   # each, every one shaped as the coverage job. test-clusterproof is a
@@ -1154,8 +1164,12 @@ jobs:
     if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes, docker-build]
     timeout-minutes: 45       # CUSTOMIZE (ruling 211): no per-suite time on record; the four suites' share of the ~36 warm minutes, doubled
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      TOOLCHAIN_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-test-clusterproof-toolchain
       CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1172,22 +1186,21 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Ensure the toolchain image
+      - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
+          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
-          else
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
-          fi
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
+          echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Trim the CI caches
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1197,9 +1210,10 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-clusterproof GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      # CUSTOMIZE (go-qrdb): release the hold the pull took (DS-3516).
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+        run: scripts/ci-registry.sh release "$TOOLCHAIN_HOLD"
 
   # coverage-fts runs pkg/fts's real index under qrdb_fts and ratchets it
   # against test/coverage-baseline-fts.txt (#610).
@@ -1209,8 +1223,12 @@ jobs:
     if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes, docker-build]
     timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      TOOLCHAIN_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-coverage-fts-toolchain
       CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1227,22 +1245,21 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Ensure the toolchain image
+      - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
+          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
-          else
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
-          fi
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
+          echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Trim the CI caches
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1252,9 +1269,10 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k coverage-fts GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      # CUSTOMIZE (go-qrdb): release the hold the pull took (DS-3516).
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+        run: scripts/ci-registry.sh release "$TOOLCHAIN_HOLD"
 
   # test-tags RUNS the CLI suites under the reduced protocol-family rungs.
   test-tags:
@@ -1263,8 +1281,12 @@ jobs:
     if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes, docker-build]
     timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      TOOLCHAIN_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-test-tags-toolchain
       CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1281,22 +1303,21 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Ensure the toolchain image
+      - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
+          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
-          else
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
-          fi
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
+          echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Trim the CI caches
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1306,9 +1327,10 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-tags GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      # CUSTOMIZE (go-qrdb): release the hold the pull took (DS-3516).
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+        run: scripts/ci-registry.sh release "$TOOLCHAIN_HOLD"
 
   # test-sdk is the sdk/go module's race suite (#132), which `./...` at the
   # root never crosses.
@@ -1318,8 +1340,12 @@ jobs:
     if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes, docker-build]
     timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      TOOLCHAIN_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-test-sdk-toolchain
       CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1336,22 +1362,21 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Ensure the toolchain image
+      - name: Pull the toolchain image
+        if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
+          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
-          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
-            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
-            done )
-          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
-            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
-          else
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
-          fi
-          rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+          scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
+          echo "TOOLCHAIN_IMAGE=$TOOLCHAIN_REF" >> "$GITHUB_ENV"
+
+      - name: Build or reuse the toolchain image on this runner
+        if: ${{ env.CI_PUBLISH != 'true' }}
+        run: |
+          image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+          echo "TOOLCHAIN_IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Trim the CI caches
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1361,9 +1386,10 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      # CUSTOMIZE (go-qrdb): release the hold the pull took (DS-3516).
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+        run: scripts/ci-registry.sh release "$TOOLCHAIN_HOLD"
 
   # Integration tests run in the integration image (ci-standard.md §2), as a
   # compose stack on the runner host started by `make integration-test`. The
