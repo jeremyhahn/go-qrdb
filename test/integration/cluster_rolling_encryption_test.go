@@ -574,7 +574,10 @@ func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
 	// The coordinator stops and starts again while the second turn is held,
 	// then leads again.
 	c.stop(t, coord)
-	restartedAt := len(c.logs[coord].String())
+	restartedAt := make([]int, len(c.logs))
+	for i, l := range c.logs {
+		restartedAt[i] = len(l.String())
+	}
 	c.restart(t, coord)
 	out, err := runQRDB(t, cli, c.nodes[second].cliArgsFor(ca, c.adminCert, c.adminKey, multiProtocols[0]),
 		"admin", "member", "transfer-leadership", strconv.Itoa(coord+1), "--shard-id", "1")
@@ -604,12 +607,29 @@ func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
 	}
 
 	// The restarted coordinator hands the second turn on once its owner is
-	// back.
+	// back, from the record, if it still leads. Raft keeps no leader in
+	// place: a leader that loses its quorum steps down, and the node elected
+	// then hands the turn on instead (Coordinator.Advance). So the hand-on is
+	// looked for in every node's log since the restart, and a node other
+	// than the coordinator may make it only once the coordinator has stepped
+	// down.
 	migrate(2, second)
+	handedOnBy := -1
 	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
-		return slices.ContainsFunc(handOnsInText(c.logs[coord].String()[restartedAt:]), func(h handOn) bool { return h.node == secondID })
+		for i, l := range c.logs {
+			if slices.ContainsFunc(handOnsInText(l.String()[restartedAt[i]:]), func(h handOn) bool { return h.node == secondID }) {
+				handedOnBy = i
+				return true
+			}
+		}
+		return false
 	}) {
-		t.Errorf("the restarted coordinator, node %d, never handed on %s's turn", coord+1, secondID)
+		t.Errorf("no node handed on %s's turn after the coordinator, node %d, restarted", secondID, coord+1)
+	} else if handedOnBy != coord {
+		if !steppedDown(c.logs[coord].String()[restartedAt[coord]:]) {
+			t.Errorf("node %d handed on %s's turn while the restarted coordinator, node %d, still led", handedOnBy+1, secondID, coord+1)
+		}
+		t.Logf("the restarted coordinator, node %d, stepped down; node %d handed on %s's turn", coord+1, handedOnBy+1, secondID)
 	}
 
 	// The coordinator's own turn comes last. The restart cost it the
@@ -854,6 +874,18 @@ func handOnsInText(log string) []handOn {
 		got = append(got, h)
 	}
 	return got
+}
+
+// steppedDown reports whether a node's log records it giving up leadership
+// of the system shard, shard 1: quicraft logs "leader lost" on the leader
+// itself whenever it steps down, by a lost quorum or a transfer.
+func steppedDown(log string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, `msg="leader lost"`) && strings.Contains(line, " shard=1 ") {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForHandOns polls the node logs until they hold want hand-on lines and

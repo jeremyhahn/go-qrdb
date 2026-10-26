@@ -84,6 +84,19 @@ are not reconstructed here — their history is in the git log.
   `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
   `PeerCertificates[0]` or building a verifier of its own.
 
+### Fixed
+
+- **The rolling enable-encryption coordinator-restart test no longer requires
+  the restarted coordinator to make the hand-on itself** (#1167).
+  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
+  restarted coordinator lost leadership of the system shard before the second
+  turn: the node elected then handed the turn on from the record, as
+  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
+  every node's log since the restart, and accepts another node's only when the
+  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
+  pin the condition: a stepped-down coordinator writes and logs nothing, and
+  the new leader, or the coordinator leading again, hands the turn on.
+
 ## [0.55.0-alpha] - 2026-10-24
 
 ### Fixed
