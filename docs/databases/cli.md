@@ -61,7 +61,7 @@ These rows are not yet implemented.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--backend` | string | node `database_defaults.backend` (OD-3) | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
+| `--backend` | string | `pebble` | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
 | `--data-dir` | string | under the tenant's data root | the database's store directory; for volume and raft tenants it must lie under the tenant's root |
 | `--cluster-mode` | string | node default | `local \| distributed` — **raft backend only**, refused otherwise |
 | `--replicas` | int | node default | replication factor — **raft backend only**, refused otherwise |

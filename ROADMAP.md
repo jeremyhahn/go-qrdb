@@ -97,7 +97,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **auth-factor-claim** — conditional factor add; hard delete of a rolled-back add — [#655](../../issues/655), [#684](../../issues/684), PR [#681](../../pulls/681) — open
 - **storage-latency-observability** — go-quicraft host metrics on /metrics, storage syncs timed, a slow-sync warning — [#742](../../issues/742) — done
 - **rolling-enable-encryption** — `cluster enable-encryption` recycles one node at a time from a replicated per-node step record, behind a cluster feature gate — [#775](../../issues/775) — done
-- **identity-ou-spiffe-agree** — tenant identity requires both a subject OU and a SPIFFE ID SAN that agree; no fallbacks; every issuer sets both — [#777](../../issues/777) — in progress
+- **identity-ou-spiffe-agree** — tenant identity requires both a subject OU and a SPIFFE ID SAN that agree; no fallbacks; every issuer sets both — [#777](../../issues/777) — done
 - **optional-auth-route** — a `HandleOptional` route mode on `ModuleHTTPRegistrar`: a presented credential runs the auth chain, none admits an anonymous caller, an invalid one is rejected; consumer go-quicbaas #1457 — [docs/api-server/](docs/api-server/) — done
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042) — in progress
@@ -114,7 +114,7 @@ The cluster engine and database system for every project in the stack: embedded,
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565) — open
 - **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
-- **tenant-metadata-description** — `UpdateTenantRequest` and `TenantInfo` carry `Metadata` and `Description`, persisted in the tenant record, on every transport and the Go SDK; consumer go-quicbaas #1518 — [docs/multi-tenancy/](docs/multi-tenancy/) — open
+- **tenant-metadata-description** — `UpdateTenantRequest` and `TenantInfo` carry `Metadata` and `Description`, persisted in the tenant record, on every transport and the Go SDK; consumer go-quicbaas #1518 — [docs/multi-tenancy/api.md](docs/multi-tenancy/api.md) — done
 
 ## Future
 

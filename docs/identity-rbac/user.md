@@ -444,6 +444,11 @@ A Go program that authorizes its own requests imports only the SDK
   decision was made. Use `errors.As` to tell the two apart.
 - The user and role management permissions are `sdk.PermissionUsers*` and
   `sdk.PermissionRoles*`.
+- `sdk.EffectivePermissions(ctx, roles, roleIDs)` returns the concrete
+  permissions a set of roles grants in the context tenant, with every
+  wildcard grant expanded. It checks no permission itself, so call it only
+  where your own code has already decided the caller may read those grants,
+  such as issuing a token at login.
 
 To put the server's own mTLS authentication and authorization in front of a
 router of your own, build the middleware from the SDK:
@@ -458,8 +463,8 @@ router of your own, build the middleware from the SDK:
   `sdk.RoleNameResolver`). The role resolver is required: without it every
   authenticated request is refused.
 - `sdk.NewRESTRouteRegistry()` returns an `sdk.RESTRouteRegistry`. `Register`
-  each route with its permission, then wrap your router with
-  `middleware.RESTMiddleware(routes, router)`. A request whose method has no
+  each route with its permission, then wrap your router with the middleware's
+  `RESTMiddleware(routes, router)` method. A request whose method has no
   registered entry on a registered path is refused. A path you did not register
   needs an authenticated caller but no permission, so register every route.
 
