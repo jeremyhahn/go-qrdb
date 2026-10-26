@@ -188,6 +188,14 @@ sweep becoming an enumeration of the internal keyspace.
   zero-length value for the second; `Exists` is false and true respectively.
   This is a promise about the read plane, not about any one state machine —
   see [Point reads and absence](#point-reads-and-absence).
+- **A `Get` issued after `Delete` has returned reports not-found.** On every
+  storage engine (memory, file, pebble, objstore) and every transport, the
+  answer is the typed `*transport.KeyNotFoundError` and `Exists` is false,
+  never a read failure: `Delete` returns only once applied, `Get` is a
+  linearizable read, and every engine maps its backend's own not-found to an
+  absent key. `TestDeleteThenGetIsTypedNotFound` in `sdk/go/conformance`
+  holds it over 50 rounds per cell, for short keys and for keys long enough
+  that objstore stores them under a hashed name (#1163).
 - **A refusal never costs the shard its reads.** Raft treats any non-nil error
   out of `Update` as a fatal apply failure: `lastApplied` stops advancing, and
   every subsequent linearizable read on that shard — on any engine sharing it,
