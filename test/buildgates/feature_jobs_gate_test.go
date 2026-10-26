@@ -179,8 +179,8 @@ func featureJobProblems(body []byte, want []string) []string {
 	if !ok {
 		return append(problems, "ci.yml has no "+featureJob+" job: no feature's integration tests run in CI")
 	}
-	if strings.TrimSpace(job.If) != fullTierIf {
-		problems = append(problems, featureJob+"'s if: is "+strconv.Quote(job.If)+"; want the full-tier condition")
+	if strings.TrimSpace(withoutDraftSkip(job.If)) != fullTierIf {
+		problems = append(problems, featureJob+"'s if: is "+strconv.Quote(withoutDraftSkip(job.If))+"; want the full-tier condition")
 	}
 	switch tm := job.TimeoutMinutes; {
 	case tm == nil:

@@ -18,8 +18,8 @@ package buildgates
 // pattern is go-quicraft#294), and a third for the soak. The PR tier runs on
 // every event; the full tier runs on every event but a pull request, and on a
 // pull request labelled `ci:full` (ci-template v1.23's CI_FULL_TIER); the
-// nightly tier runs on schedule and workflow_dispatch only (v1.24), and since
-// ci.yml has no schedule (Company Agent m433) that is dispatch alone. CI Gate
+// nightly tier runs on schedule and workflow_dispatch only (v1.24); ci.yml's
+// schedule was restored by DS-3913 (m1378 (2)), reversing m433. CI Gate
 // stays the one required check, and it passes a skipped job only when the job
 // is tagged `full` or `nightly` and the run did not select that tier. The code
 // tier (DS-3160) runs on every event but a docs-only pull request, and the gate
@@ -46,8 +46,9 @@ package buildgates
 //     cancel-in-progress, Company Agent m701);
 //   - any other pull_request workflow without the ref-keyed concurrency group
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
-//     v1.22.1), or any workflow regaining a `schedule:` (owner ruling
-//     2026-10-11: no workflow runs on a cron).
+//     v1.22.1), or any workflow but ci.yml and automerge.yml regaining a
+//     `schedule:` (owner ruling 2026-10-11: no workflow runs on a cron;
+//     amended for ci.yml's nightly by DS-3913, Company Agent m1378 (2)).
 //
 // The gate's own shell is executed, not read: TestCIGateScriptHonoursTheTiers
 // runs ci-gate's step under bash with each combination of results.
@@ -128,11 +129,17 @@ const (
 	// never released go-qrdb main runs 57063 and 57200 while it was an
 	// expression, so no expression reaches it.
 	cancelLiteral = "true"
-
-	// scheduleExempt is the one workflow allowed a `schedule:`. automerge.yml
-	// is under owner hold and out of #674's scope.
-	scheduleExempt = "automerge.yml"
 )
+
+// scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
+// ci-template v1.27.0's nightly cron, restored on Software's typed order
+// DS-3913 (Company Agent m1378 (2)), which reverses the owner ruling of
+// 2026-10-11 and m433 for that file alone. automerge.yml is under owner hold
+// and out of #674's scope.
+var scheduleAllowed = map[string]bool{
+	ciWorkflowName:  true,
+	"automerge.yml": true,
+}
 
 // prTierJobs, codeTierJobs, fullTierJobs, nightlyTierJobs and fullTierJob pin
 // the split itself, not just its consistency: moving a job between tiers is a
@@ -140,12 +147,13 @@ const (
 // with a matrix leg per feature; ci-gate reads its aggregate result. changes
 // (v1.24) is PR tier: it decides whether a pull request is docs-only, and lint
 // and image need it. lint, lint-gates (v1.27.0) and arch-gates stay PR tier
-// because make lint-gates and make check-public-releasable read docs too; image (#1046) and
-// test-typescript build and test nothing a docs-only pull request changes
-// (DS-3160).
+// because make lint-gates and make check-public-releasable read docs too; image (#1046),
+// the unit-suite jobs (coverage, test-clusterproof, coverage-fts, test-tags
+// and test-sdk, ruling 211) and test-typescript build and test nothing a
+// docs-only pull request changes (DS-3160).
 var (
 	prTierJobs      = []string{changesJob, "lint", "lint-gates", "arch-gates"}
-	codeTierJobs    = []string{"test-typescript", "image"}
+	codeTierJobs    = []string{"test-typescript", "image", "coverage", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
 )
@@ -361,17 +369,17 @@ func ciTierProblems(wf ciWorkflow) []string {
 		tierOf[name] = c.tier
 		switch c.tier {
 		case tierFull:
-			if job.If != fullTierIf {
+			if withoutDraftSkip(job.If) != fullTierIf {
 				problems = append(problems, "job "+name+" is tagged full in "+ciGateJob+
-					" but its `if:` is "+strconv.Quote(job.If)+", not the full-tier condition")
+					" but its `if:` is "+strconv.Quote(withoutDraftSkip(job.If))+", not the full-tier condition")
 			}
 			if slices.Contains(prTierJobs, name) {
 				problems = append(problems, "job "+name+" is a PR-tier job tagged full: it would stop "+
 					"gating pull requests")
 			}
 		case tierPR:
-			if job.If != "" {
-				problems = append(problems, "job "+name+" is PR tier but carries `if: "+job.If+
+			if withoutDraftSkip(job.If) != "" {
+				problems = append(problems, "job "+name+" is PR tier but carries `if: "+withoutDraftSkip(job.If)+
 					"`: a PR-tier job must run on every event, and "+ciGateJob+" fails it when skipped")
 			}
 			if fullTierJob(name) {
@@ -383,9 +391,9 @@ func ciTierProblems(wf ciWorkflow) []string {
 					" would fail every docs-only pull request that skips it")
 			}
 		case tierCode:
-			if job.If != codeTierIf {
+			if withoutDraftSkip(job.If) != codeTierIf {
 				problems = append(problems, "job "+name+" is tagged code in "+ciGateJob+
-					" but its `if:` is "+strconv.Quote(job.If)+", not the code-tier condition "+strconv.Quote(codeTierIf))
+					" but its `if:` is "+strconv.Quote(withoutDraftSkip(job.If))+", not the code-tier condition "+strconv.Quote(codeTierIf))
 			}
 			if !slices.Contains(needsList(job.Needs), changesJob) {
 				problems = append(problems, "code-tier job "+name+" does not need "+changesJob+
@@ -396,9 +404,9 @@ func ciTierProblems(wf ciWorkflow) []string {
 					"stop gating docs-only pull requests or main")
 			}
 		case tierNightly:
-			if job.If != nightlyIf {
+			if withoutDraftSkip(job.If) != withoutDraftSkip(nightlyIf) {
 				problems = append(problems, "job "+name+" is tagged nightly in "+ciGateJob+
-					" but its `if:` is "+strconv.Quote(job.If)+", not the nightly condition")
+					" but its `if:` is "+strconv.Quote(withoutDraftSkip(job.If))+", not the nightly condition")
 			}
 			if slices.Contains(prTierJobs, name) || fullTierJob(name) {
 				problems = append(problems, "job "+name+" is a PR-tier or full-tier job tagged nightly: it would "+
@@ -733,7 +741,7 @@ func TestCIGateScriptHonoursTheTiers(t *testing.T) {
 		return m
 	}
 	// A plain PR selects neither tier, a push to main the full tier alone,
-	// and a workflow_dispatch both; schedule never fires here (no cron).
+	// and a schedule or workflow_dispatch both (FULL_TIER and NIGHTLY true).
 	allFull := func(result string) map[string]string { return all(full, result) }
 	allNightly := func(result string) map[string]string { return all(nightly, result) }
 	offTier := func(result string) map[string]string {
@@ -852,9 +860,9 @@ type workflowFile struct {
 func workflowTriggerProblems(name string, wf workflowFile) []string {
 	var problems []string
 	triggers := onTriggers(wf.On)
-	if slices.Contains(triggers, "schedule") && name != scheduleExempt {
-		problems = append(problems, name+" runs on `schedule:`: no workflow runs on a cron (owner ruling "+
-			"2026-10-11); keep workflow_dispatch and let the coordinator's nightly dispatch it")
+	if slices.Contains(triggers, "schedule") && !scheduleAllowed[name] {
+		problems = append(problems, name+" runs on `schedule:`: only ci.yml's nightly runs on a cron (owner ruling "+
+			"2026-10-11, amended by DS-3913); keep workflow_dispatch and let the coordinator's nightly dispatch it")
 	}
 	if !slices.Contains(triggers, "pull_request") {
 		return problems
@@ -941,16 +949,23 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems("x.yml", parse(good)); len(p) != 0 {
 		t.Fatalf("the valid fixture must have no problems, got %v", p)
 	}
-	if p := workflowTriggerProblems(scheduleExempt, parse("on:\n  schedule:\n    - cron: '0 3 * * *'\n")); len(p) != 0 {
-		t.Fatalf("%s is exempt from the schedule rule, got %v", scheduleExempt, p)
+	if p := workflowTriggerProblems("automerge.yml", parse("on:\n  schedule:\n    - cron: '0 3 * * *'\n")); len(p) != 0 {
+		t.Fatalf("automerge.yml is exempt from the schedule rule, got %v", p)
 	}
 	const ciGood = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + mainKeyedGroup + "\n  cancel-in-progress: " + cancelLiteral + "\n"
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
 		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
+	// DS-3913: ci.yml carries v1.27.0's nightly cron; any other workflow's
+	// schedule still reddens (the "schedule" case below).
+	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n", 1)
+	if p := workflowTriggerProblems(ciWorkflowName, parse(ciScheduled)); len(p) != 0 {
+		t.Fatalf("%s may run on schedule, got %v", ciWorkflowName, p)
+	}
 	type fixture struct{ file, body string }
 	cases := map[string]fixture{
 		"schedule":                {"x.yml", "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n"},
+		"nightly.yml schedule":    {"nightly.yml", "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n"},
 		"no concurrency":          {"x.yml", "on:\n  pull_request:\n"},
 		"group not ref-keyed":     {"x.yml", strings.Replace(good, refKeyedGroup, "${{ github.workflow }}", 1)},
 		"cancel-in-progress off":  {"x.yml", strings.Replace(good, cancelOffMain, "false", 1)},

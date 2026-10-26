@@ -62,7 +62,7 @@ Build the release binaries into `dist/`: qrdbd and the headless qrdb CLI,
 each plain and FIPS, named `<binary>-<VERSION>-<goos>-<goarch>[-fips]`.
 `release-artifacts` empties `dist/`, builds every platform in
 `RELEASE_PLATFORMS` and writes `dist/SHA256SUMS`; it is what `release.yml`'s
-`publish` job runs. `release-cross` builds one platform, and is what CI runs
+`publish` job runs. `release-cross` builds one platform, and is what CI's full tier runs
 for `linux/arm64`.
 
 | Variable | Default | Meaning |

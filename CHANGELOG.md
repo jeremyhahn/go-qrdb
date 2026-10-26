@@ -92,7 +92,10 @@ are not reconstructed here — their history is in the git log.
   reused key. go-qrdb's read plane already answered not-found in every cell;
   the read failure #1163 reported is not raised by go-qrdb or go-objstore.
 ### Changed
+- CI: a draft pull request runs no CI. Every job skips on `pull_request.draft` and CI Gate fails on a draft; a PR leaving draft starts its run with an empty commit or a merge of main (ci-standard §10 (f), ruling 214).
+- CI: ci.yml carries ci-template v1.27.0's nightly `schedule:` trigger again (cron `0 4 * * *`), so the full and nightly tiers, soak included, run on main each night; `test/buildgates/ci_tiers_test.go` allows a schedule in ci.yml and automerge.yml alone. This reverses the 2026-10-11 owner ruling and Company Agent m433 on Software's order DS-3913 (m1378 (2)).
 
+- **CI adopts ci-template v1.27.0 (ruling 211):** `make coverage` and the `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` suites are five parallel code-tier jobs instead of serial `image` steps, and the linux/arm64 release cross-build (plain and FIPS) runs on the full tier only, like `fips`.
 - **`service.Host` is split into a data host and a Raft-admin host** (#627,
   slice A). `service.Host` keeps the eleven methods the data services call
   (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,

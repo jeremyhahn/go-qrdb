@@ -526,7 +526,7 @@ gate red.
 
 **Why the full tier and not every pull request.** The job rebuilds the tree
 against the FIPS module and reruns both unit suites under `-race`, so it costs
-what `image`'s unit stages cost again, on top of them. A pull request's
+what the unit-suite jobs cost again, on top of them. A pull request's
 pipeline is held to one hour and already runs those suites once without the
 FIPS module; a second pass does not fit. The full tier runs on every push to
 `main` and every `workflow_dispatch`, and a pull request labelled `ci:full`
