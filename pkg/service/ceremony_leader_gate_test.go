@@ -200,6 +200,8 @@ type stubLeaderHost struct {
 	getLeaderIDFn func(shardID uint64) (uint64, bool, error)
 }
 
+var _ Host = (*stubLeaderHost)(nil)
+
 func (s *stubLeaderHost) LeaderID(shardID uint64) (uint64, bool, error) {
 	return s.getLeaderIDFn(shardID)
 }

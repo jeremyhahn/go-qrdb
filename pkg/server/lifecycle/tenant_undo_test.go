@@ -29,11 +29,13 @@ import (
 
 // membershipHost answers the system shard's committed membership.
 type membershipHost struct {
-	service.Host
+	service.AdminHost
 	shardID uint64
 	m       *quicraft.Membership
 	err     error
 }
+
+var _ service.AdminHost = (*membershipHost)(nil)
 
 func (h *membershipHost) SyncGetShardMembership(_ context.Context, shardID uint64) (*quicraft.Membership, error) {
 	h.shardID = shardID

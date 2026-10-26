@@ -156,8 +156,8 @@ servers that do not serve them.
 per-route declaration above confines a module's handler to the REQUEST's own
 identity tenant. A module whose operation legitimately acts on a
 caller-named tenant implements `ModuleTenantTargetAware`
-(`sdk.ModuleTenantTargetAware`) to receive a `TenantTargetAuthorizer`
-(`sdk.TenantTargetAuthorizer`) and calls its `AuthorizeTenantTarget(ctx,
+(`sdkserver.ModuleTenantTargetAware`) to receive a `TenantTargetAuthorizer`
+(`sdkserver.TenantTargetAuthorizer`) and calls its `AuthorizeTenantTarget(ctx,
 tenantID, perm)` from the handler, admitted or refused under the SAME RBAC
 ScopeCross/ScopeSelf rules qrdb's own tenant routes enforce — see
 [../multi-tenancy/api.md](../multi-tenancy/api.md). An embedded/Unix host

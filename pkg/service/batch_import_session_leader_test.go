@@ -48,6 +48,8 @@ type alwaysEnabledHost struct {
 	*raftbackend.HostAdapter
 }
 
+var _ AdminHost = (*alwaysEnabledHost)(nil)
+
 func (alwaysEnabledHost) FeatureEnabled(_ uint64, _ featuregate.Feature) bool { return true }
 
 // startImportLeaderClusterShard starts a dedicated shard (distinct from the

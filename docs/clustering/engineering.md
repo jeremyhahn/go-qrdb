@@ -86,7 +86,7 @@ identity for the host at the replica's Raft address, else the operator's
 override, else a typed refusal. An override is validated and checked against
 any committed identity. A transport-less host reads nothing and commits none.
 Every add then goes through go-quicraft's `*WithIdentity` API
-(`service.Host.RequestAddNodeWithIdentity`, `RequestAddObserverWithIdentity`);
+(`raftadmin.Host.RequestAddNodeWithIdentity`, `RequestAddObserverWithIdentity`);
 the identity-less forms are not called. The dedicated-shard
 factory builds a founder's `MemberIdentities` for every placement replica the
 same way (a joiner keeps whichever anchors resolve).

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk_test
+package server_test
 
 import (
 	"context"
@@ -21,10 +21,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
-// fakeTenantTargetAuthorizer is a canned sdk.TenantTargetAuthorizer, so a
+// fakeTenantTargetAuthorizer is a canned sdkserver.TenantTargetAuthorizer, so a
 // module written against the SDK alone can be exercised without a real
 // *AuthMiddleware.
 type fakeTenantTargetAuthorizer struct {
@@ -43,24 +43,24 @@ func (f *fakeTenantTargetAuthorizer) AuthorizeTenantTarget(_ context.Context, te
 // SDK alone: it stashes the authorizer the server hands it and uses it from
 // a handler on whichever transport it registers.
 type targetAwareModule struct {
-	sdk.BaseModule
-	authz sdk.TenantTargetAuthorizer
+	sdkserver.BaseModule
+	authz sdkserver.TenantTargetAuthorizer
 }
 
 func (m *targetAwareModule) Name() string { return "target-aware" }
 
-func (m *targetAwareModule) SetTenantTargetAuthorizer(a sdk.TenantTargetAuthorizer) {
+func (m *targetAwareModule) SetTenantTargetAuthorizer(a sdkserver.TenantTargetAuthorizer) {
 	m.authz = a
 }
 
 // Compile-time: a module written against the SDK names is the server's own
 // extension -- the aliases are the pkg/apimodule declarations, not copies.
 var (
-	_ sdk.ServiceModule                 = (*targetAwareModule)(nil)
-	_ sdk.ModuleTenantTargetAware       = (*targetAwareModule)(nil)
+	_ sdkserver.ServiceModule           = (*targetAwareModule)(nil)
+	_ sdkserver.ModuleTenantTargetAware = (*targetAwareModule)(nil)
 	_ apimodule.ModuleTenantTargetAware = (*targetAwareModule)(nil)
 	_ apimodule.TenantTargetAuthorizer  = (*fakeTenantTargetAuthorizer)(nil)
-	_ sdk.TenantTargetAuthorizer        = (*fakeTenantTargetAuthorizer)(nil)
+	_ sdkserver.TenantTargetAuthorizer  = (*fakeTenantTargetAuthorizer)(nil)
 )
 
 // TestSDK_ModuleTenantTargetAware_ReachesTheAuthorizer verifies an

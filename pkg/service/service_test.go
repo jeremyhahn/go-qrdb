@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -70,6 +71,12 @@ type mockHost struct {
 	stopShardFn             func(shardID uint64) error
 	closeFn                 func() error
 }
+
+// mockHost is a whole node host: the data host and the Raft-admin host.
+var (
+	_ Host           = (*mockHost)(nil)
+	_ raftadmin.Host = (*mockHost)(nil)
+)
 
 func (m *mockHost) ID() string {
 	if m.idFn != nil {

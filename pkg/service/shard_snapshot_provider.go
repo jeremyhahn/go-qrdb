@@ -131,7 +131,7 @@ type OnlineShardRestorer interface {
 // ExportSnapshot (including the epoch/barrier metadata needed for at-rest
 // encrypted shards); RestoreShard feeds them back through ImportSnapshot.
 type hostShardSnapshotProvider struct {
-	host         Host
+	host         AdminHost
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 
@@ -178,7 +178,7 @@ func WithShardRestarter(r ShardRestarter) HostShardSnapshotProviderOption {
 // NewHostShardSnapshotProvider returns a ShardSnapshotProvider backed by the
 // given Raft host. It is the production provider wired into BackupService by
 // lifecycle.BuildServices when a snapshot-capable (clustered) host is present.
-func NewHostShardSnapshotProvider(host Host, opts ...HostShardSnapshotProviderOption) ShardSnapshotProvider {
+func NewHostShardSnapshotProvider(host AdminHost, opts ...HostShardSnapshotProviderOption) ShardSnapshotProvider {
 	p := &hostShardSnapshotProvider{
 		host:         host,
 		pollInterval: defaultSnapshotPollInterval,

@@ -16,7 +16,6 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,13 +34,6 @@ import (
 // NodeAuditLogger is the embedded node's compliance-grade audit sink. It is
 // the pkg/audit.AuditLogger interface that backs the node's audit subsystem.
 type NodeAuditLogger = audit.AuditLogger
-
-// WithAuditLogger attaches a compliance-grade audit sink to the embedded
-// qrdb node. Without it the node has no default audit logger and
-// Client().Audit().EmitAudit returns a missing-logger error.
-func WithAuditLogger(l NodeAuditLogger) ServerOption {
-	return qrdbserver.WithAuditLogger(l)
-}
 
 // NewAuditFileLogger returns a SHA-256 hash-chained, tamper-evident file audit
 // logger writing to path. Use it as the node sink when persistent,

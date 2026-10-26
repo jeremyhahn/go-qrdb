@@ -56,11 +56,11 @@ func digestHost(id string, records map[uint64][][2]string) *mockHost {
 }
 
 // staticTenantHosts is a TenantReplicaHosts over a fixed map.
-type staticTenantHosts map[string]Host
+type staticTenantHosts map[string]AdminHost
 
-func (h staticTenantHosts) StartedHosts() map[string]Host { return h }
+func (h staticTenantHosts) StartedHosts() map[string]AdminHost { return h }
 
-func newStateHashAdmin(host Host) *AdminService {
+func newStateHashAdmin(host AdminHost) *AdminService {
 	return NewAdminService(host).(*AdminService)
 }
 

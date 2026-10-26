@@ -68,11 +68,13 @@ missing — see [../run-modes/cli.md](../run-modes/cli.md).
 There is no CLI for this. Modules are Go code registered at composition:
 
 ```go
-node, err := node.NewStandaloneNode(ctx, cfg, []server.ServerOption{
-	sdk.WithModule(myModule),
-	sdk.WithStrategyRegistry(reg),
-	sdk.WithPINBackend(backend),
-	sdk.WithCeremonyCA(ca),
+import sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
+
+node, err := node.NewStandaloneNode(ctx, cfg, []sdkserver.ServerOption{
+	sdkserver.WithModule(myModule),
+	sdkserver.WithStrategyRegistry(reg),
+	sdkserver.WithPINBackend(backend),
+	sdkserver.WithCeremonyCA(ca),
 })
 ```
 

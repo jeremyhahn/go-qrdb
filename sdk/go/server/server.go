@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package server
 
 import (
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
@@ -22,6 +22,8 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // ---------------------------------------------------------------------------
@@ -33,6 +35,19 @@ import (
 
 // ServerOption configures an embedded qrdb server at construction time.
 type ServerOption = qrdbserver.ServerOption
+
+// WithAuditLogger attaches a compliance-grade audit sink to the embedded
+// qrdb node. Without it the node has no default audit logger and
+// Client().Audit().EmitAudit returns a missing-logger error.
+func WithAuditLogger(l sdk.NodeAuditLogger) ServerOption {
+	return qrdbserver.WithAuditLogger(l)
+}
+
+// CertProviderConflictError is returned when a node is built with both
+// node.WithCertProvider and node.WithCertKeyProviderFactory: the factory keys
+// the built-in login CA the provider replaces, so the pair has no meaning.
+// (Aliases pkg/server/lifecycle.CertProviderConflictError.)
+type CertProviderConflictError = lifecycle.CertProviderConflictError
 
 // WithStrategyRegistry attaches a seal strategy registry to the embedded
 // qrdb server.

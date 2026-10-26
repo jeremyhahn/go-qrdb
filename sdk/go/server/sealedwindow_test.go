@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk_test
+package server_test
 
 import (
 	"context"
@@ -22,10 +22,10 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
-// fakeProbe is a deterministic sdk.SealedWindowProbe.
+// fakeProbe is a deterministic sdkserver.SealedWindowProbe.
 type fakeProbe struct {
 	sealed, enrollment bool
 	sealedwindow.Admission
@@ -37,30 +37,30 @@ func (p *fakeProbe) EnrollmentOpen(context.Context) bool { return p.enrollment }
 // Compile-time checks that the sealed-window re-exports satisfy the
 // upstream contracts.
 var (
-	_ sdk.SealedWindowProbe = (*fakeProbe)(nil)
-	_ sdk.ServerOption      = sdk.WithSealedWindowProbe(&fakeProbe{})
-	_ sdk.ServerOption      = sdk.WithAuthMiddleware(nil)
+	_ sdkserver.SealedWindowProbe = (*fakeProbe)(nil)
+	_ sdkserver.ServerOption      = sdkserver.WithSealedWindowProbe(&fakeProbe{})
+	_ sdkserver.ServerOption      = sdkserver.WithAuthMiddleware(nil)
 )
 
 // TestSealedWindowAllowlists_ReExported verifies the four per-transport
 // allowlists are populated and agree on representative verbs, proving
 // they derive from the same canonical table.
 func TestSealedWindowAllowlists_ReExported(t *testing.T) {
-	if len(sdk.RESTSealedWindowAllowlist) == 0 {
+	if len(sdkserver.RESTSealedWindowAllowlist) == 0 {
 		t.Fatal("REST allowlist re-export is empty")
 	}
-	if len(sdk.GRPCSealedWindowAllowlist) == 0 {
+	if len(sdkserver.GRPCSealedWindowAllowlist) == 0 {
 		t.Fatal("gRPC allowlist re-export is empty")
 	}
-	if len(sdk.QUICSealedWindowAllowlist) == 0 {
+	if len(sdkserver.QUICSealedWindowAllowlist) == 0 {
 		t.Fatal("QUIC allowlist re-export is empty")
 	}
-	if len(sdk.MCPSealedWindowAllowlist) == 0 {
+	if len(sdkserver.MCPSealedWindowAllowlist) == 0 {
 		t.Fatal("MCP allowlist re-export is empty")
 	}
 
 	restHas := func(p string) bool {
-		for _, e := range sdk.RESTSealedWindowAllowlist {
+		for _, e := range sdkserver.RESTSealedWindowAllowlist {
 			if e == p {
 				return true
 			}
@@ -68,7 +68,7 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 		return false
 	}
 	grpcHas := func(m string) bool {
-		for _, e := range sdk.GRPCSealedWindowAllowlist {
+		for _, e := range sdkserver.GRPCSealedWindowAllowlist {
 			if e == m {
 				return true
 			}
@@ -87,10 +87,10 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 	if !grpcHas("/qrdb.v1.QRDBService/BarrierUnseal") {
 		t.Error("gRPC allowlist missing /qrdb.v1.QRDBService/BarrierUnseal")
 	}
-	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.Unseal"]; !ok {
+	if _, ok := sdkserver.QUICSealedWindowAllowlist["barrier.Unseal"]; !ok {
 		t.Error("QUIC allowlist missing barrier.Unseal")
 	}
-	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_unseal"]; !ok {
+	if _, ok := sdkserver.MCPSealedWindowAllowlist["qrdb_barrier_unseal"]; !ok {
 		t.Error("MCP allowlist missing qrdb_barrier_unseal")
 	}
 
@@ -111,10 +111,10 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 	if !grpcHas("/qrdb.v1.QRDBService/BarrierQuorumSubmit") {
 		t.Error("gRPC allowlist missing /qrdb.v1.QRDBService/BarrierQuorumSubmit")
 	}
-	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.QuorumSubmit"]; !ok {
+	if _, ok := sdkserver.QUICSealedWindowAllowlist["barrier.QuorumSubmit"]; !ok {
 		t.Error("QUIC allowlist missing barrier.QuorumSubmit")
 	}
-	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_quorum_submit"]; !ok {
+	if _, ok := sdkserver.MCPSealedWindowAllowlist["qrdb_barrier_quorum_submit"]; !ok {
 		t.Error("MCP allowlist missing qrdb_barrier_quorum_submit")
 	}
 
@@ -123,18 +123,18 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 	if grpcHas("/qrdb.v1.QRDBService/BarrierRekeyStart") {
 		t.Error("gRPC allowlist admits BarrierRekeyStart while sealed")
 	}
-	if _, ok := sdk.QUICSealedWindowAllowlist["barrier.RekeyStart"]; ok {
+	if _, ok := sdkserver.QUICSealedWindowAllowlist["barrier.RekeyStart"]; ok {
 		t.Error("QUIC allowlist admits barrier.RekeyStart while sealed")
 	}
-	if _, ok := sdk.MCPSealedWindowAllowlist["qrdb_barrier_rekey_start"]; ok {
+	if _, ok := sdkserver.MCPSealedWindowAllowlist["qrdb_barrier_rekey_start"]; ok {
 		t.Error("MCP allowlist admits qrdb_barrier_rekey_start while sealed")
 	}
 
 	// SealedWindowRESTAllowlist derives a fresh, equal list.
-	fresh := sdk.SealedWindowRESTAllowlist()
-	if len(fresh) != len(sdk.RESTSealedWindowAllowlist) {
+	fresh := sdkserver.SealedWindowRESTAllowlist()
+	if len(fresh) != len(sdkserver.RESTSealedWindowAllowlist) {
 		t.Errorf("fresh REST derivation has %d entries, shared var has %d",
-			len(fresh), len(sdk.RESTSealedWindowAllowlist))
+			len(fresh), len(sdkserver.RESTSealedWindowAllowlist))
 	}
 }
 
@@ -142,7 +142,7 @@ func TestSealedWindowAllowlists_ReExported(t *testing.T) {
 // middleware enforces the sealed envelope with a probe supplied through
 // the SDK types.
 func TestSealedWindowMiddleware_ReExport(t *testing.T) {
-	mw := sdk.SealedWindowMiddleware(&fakeProbe{sealed: true}, nil)
+	mw := sdkserver.SealedWindowMiddleware(&fakeProbe{sealed: true}, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -170,7 +170,7 @@ func TestSealedWindowMiddleware_ReExport(t *testing.T) {
 // probe reports unsealed.
 func TestSealedWindowListenerMiddleware_ReExport(t *testing.T) {
 	probe := &fakeProbe{sealed: true}
-	handler := sdk.SealedWindowListenerMiddleware(probe, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := sdkserver.SealedWindowListenerMiddleware(probe, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	rec := httptest.NewRecorder()
@@ -184,7 +184,7 @@ func TestSealedWindowListenerMiddleware_ReExport(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("allowlisted path once unsealed: status = %d, want 503", rec.Code)
 	}
-	if sdk.SealedWindowListenerUnaryInterceptor(probe, nil) == nil || sdk.SealedWindowListenerStreamInterceptor(probe, nil) == nil {
+	if sdkserver.SealedWindowListenerUnaryInterceptor(probe, nil) == nil || sdkserver.SealedWindowListenerStreamInterceptor(probe, nil) == nil {
 		t.Fatal("listener interceptor re-exports returned nil")
 	}
 }
@@ -192,7 +192,7 @@ func TestSealedWindowListenerMiddleware_ReExport(t *testing.T) {
 // TestBuildSealServicesOnly_ReExport verifies the lifecycle re-export is
 // callable and enforces its nil-barrier contract through the SDK alias.
 func TestBuildSealServicesOnly_ReExport(t *testing.T) {
-	if _, err := sdk.BuildSealServicesOnly(t.Context(), sdk.LifecycleInfra{}); err == nil {
+	if _, err := sdkserver.BuildSealServicesOnly(t.Context(), sdkserver.LifecycleInfra{}); err == nil {
 		t.Fatal("BuildSealServicesOnly must reject a nil seal barrier")
 	}
 }

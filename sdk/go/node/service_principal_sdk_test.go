@@ -26,6 +26,7 @@ import (
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // newServicePrincipalNode boots an auth-enabled, in-memory standalone node
@@ -45,7 +46,7 @@ func newServicePrincipalNode(t *testing.T, name string) (*node.Node, sdk.NodeAud
 
 	trail := sdk.NewAuditRingBuffer(256)
 	n, err := node.NewStandaloneNode(context.Background(), cfg,
-		[]sdk.ServerOption{sdk.WithAuditLogger(trail)}, node.WithServicePrincipal(name))
+		[]sdkserver.ServerOption{sdkserver.WithAuditLogger(trail)}, node.WithServicePrincipal(name))
 	if err != nil {
 		t.Fatalf("NewStandaloneNode: %v", err)
 	}

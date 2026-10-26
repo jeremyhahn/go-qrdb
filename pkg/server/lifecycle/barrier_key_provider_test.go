@@ -49,12 +49,14 @@ func (p *capturingKeyProvider) BarrierStrategy(_ context.Context, req seal.Barri
 
 var _ seal.BarrierKeyProvider = (*capturingKeyProvider)(nil)
 
-// raftAddrHost is a clustered service.Host: not a LocalBackend, and answering
+// raftAddrHost is a clustered service.AdminHost: not a LocalBackend, and answering
 // addr as its Raft address.
 type raftAddrHost struct {
-	service.Host
+	service.AdminHost
 	addr string
 }
+
+var _ service.AdminHost = raftAddrHost{}
 
 func (h raftAddrHost) RaftAddress() string { return h.addr }
 
@@ -109,10 +111,10 @@ func initThroughOpts(t *testing.T, infra Infra, strategy seal.StrategyID) error 
 // node's identity: its Raft address, or LocalNodeID when standalone.
 func TestBuildTenantServiceOpts_ProviderAndNodeIdentity(t *testing.T) {
 	tests := map[string]struct {
-		host   service.Host
+		host   service.AdminHost
 		nodeID string
 	}{
-		"raft":       {host: raftAddrHost{Host: newStandaloneHost(), addr: "10.0.0.1:7000"}, nodeID: "10.0.0.1:7000"},
+		"raft":       {host: raftAddrHost{AdminHost: newStandaloneHost(), addr: "10.0.0.1:7000"}, nodeID: "10.0.0.1:7000"},
 		"standalone": {host: newStandaloneHost(), nodeID: LocalNodeID},
 		"no host":    {nodeID: LocalNodeID},
 	}

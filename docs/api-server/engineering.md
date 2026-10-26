@@ -72,7 +72,10 @@ secret, err := n.Client().Credentials().CredentialRetrieveBuffer(svcCtx, "ca-sta
   actor `qrdb-service:<name>`, action `auth.authorize` and the permission as
   the resource.
 
-`sdk/go/types_server.go` — the Tier 2 alias file:
+`sdk/go/server/server.go` (package `server`, imported as
+`github.com/jeremyhahn/go-qrdb/sdk/go/server`) — the Tier 2 alias file. It
+lives outside the `sdk/go` root so that importing the root's config, entity,
+seal and error types links no server (#627):
 
 ```go
 type ServerOption = qrdbserver.ServerOption
@@ -157,7 +160,7 @@ certificate to its user account and a refusal is byte-identical to a `Handle`
 route's (`TestRESTMiddleware_OptionalRoute_InvalidCredentialRejectedAsOnHandle`).
 A credential that authenticates is treated as on an authenticated-only route:
 no permission is checked, and a holder identity is still refused. HTTP/3
-serves the same router and middleware. `sdk.NewModuleHTTPRegistrar` takes the
+serves the same router and middleware. `sdkserver.NewModuleHTTPRegistrar` takes the
 optional registration function as its fourth argument.
 
 `RegisterQUIC` takes the identical `grpc.ServiceRegistrar` type `RegisterGRPC`
@@ -435,8 +438,8 @@ The `server.grpc_web` block is `config.GRPCWebConfig`, the same three fields
 with their YAML keys; `pkg/config` imports no API package, so `pkg/server`
 converts the block to `grpcweb.Config`. `qrdbd start` copies it into the server
 configuration (`applyConfigToFlags`, `buildServerConfig`); it has no flag.
-`server.WithGRPCWeb(cfg config.GRPCWebConfig)` (SDK `sdk.WithGRPCWeb`,
-`sdk.GRPCWebConfig`) replaces the block for an embedded node. `pkg/server` hands
+`server.WithGRPCWeb(cfg config.GRPCWebConfig)` (SDK `sdkserver.WithGRPCWeb`,
+`sdkserver.GRPCWebConfig`) replaces the block for an embedded node. `pkg/server` hands
 `rest.WithGRPCWeb(cfg, backend)` a backend that is the gRPC listener's own
 `*grpc.Server`, published by `startGRPC` through an atomic pointer: REST starts
 first, so a call before that, or after the gRPC server stops, is answered

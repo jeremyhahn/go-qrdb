@@ -252,10 +252,14 @@ func (s *Storage) Close() error
 Other facts:
 
 - A standalone embedder that wants a directory-backed store uses the SDK
-  (`sdk.NewTimeSeriesStorageWithDir`, and
-  `sdk.NewTimeSeriesStorageWithEncryptor`, which takes an
-  `*atrest.Encryptor`; both in `sdk/go/types_timeseries.go`). The SDK owns
+  (`NewTimeSeriesStorageWithDir`, and
+  `NewTimeSeriesStorageWithEncryptor`, which takes an
+  `*atrest.Encryptor`; both in package
+  `github.com/jeremyhahn/go-qrdb/sdk/go/timeseries`, `sdk/go/timeseries/timeseries.go`). The SDK owns
   Pebble for that one use case; `pkg/timeseries` does not import Pebble.
+  Both return a `*TimeSeriesDirStorage`, which embeds the store and adds
+  `Batch`, the `TimeSeriesBatch` over the database it opened that every
+  write takes, and a `Close` that closes the store and that database.
 - The engine's time-series handlers pass the batch they are given; the
   engine's `WithMVCCTimeSeries(ts *timeseries.Storage)` option takes no Pebble
   handle.

@@ -1744,7 +1744,7 @@ func runStart(f *startFlags) (err error) {
 			// standalone and every raft-only stage below is guarded on it.
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
-			var svcHost service.Host
+			var svcHost service.AdminHost
 			var rnode raftNode
 			var nodeCloser io.Closer
 			// featureGate decides when this host's Raft groups may be sent
