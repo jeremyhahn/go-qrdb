@@ -14,41 +14,46 @@
 
 package buildgates
 
-// CI runs the self-spawned integration suites (test/integration) as one
-// job per feature: ci.yml's integration-features
-// job is a matrix whose legs each run `make integration-test IT_FEATURE=<feature>`
-// -- the selection `make integration-test-<feature>` runs on a host, in the
-// integration image -- under their own limit, in parallel (owner ruling 10,
-// 2026-10-14). The legs are
-// every feature test/integration/features.mk maps at least one file to;
+// CI runs the self-spawned integration suites (test/integration) as a few
+// shards of features: ci.yml's integration-features job is a matrix whose
+// include entries each name a shard and its feature list, and each shard runs
+// `make integration-test-features IT_FEATURES_IN=image` over that list --
+// `make integration-test IT_FEATURE=<feature>` per feature, the selection
+// `make integration-test-<feature>` runs on a host, in the integration image,
+// going on past a failing one -- under its own limit, in parallel (owner
+// ruling 10, 2026-10-14; sharded so the per-job setup is paid once per shard).
+// The shards together must run every feature test/integration/features.mk
+// maps at least one file to, each exactly once;
 // `make -s print-integration-features` prints them.
 //
 // Gitea cannot expand a matrix computed at run time (handbook devops.md §1),
-// so the list is literal in ci.yml, and this gate is what keeps it equal to
-// the Makefile's. Each property below is one edit from going false without
-// anything else noticing:
+// so the lists are literal in ci.yml, and this gate is what keeps their
+// union equal to the Makefile's. Each property below is one edit from going
+// false without anything else noticing:
 //
-//   - a feature mapped in features.mk but absent from the matrix: its tests
-//     never run in CI, and feature_integration_coverage_test.go still passes,
-//     because it checks the mapping, not the jobs;
-//   - a leg whose features.mk entry is empty: it runs zero tests and passes;
-//   - a limit above 45 minutes, or none at all (GitHub's default is 360);
-//   - fail-fast left at its default, true, so one red leg cancels the others
-//     and hides whether they would have passed;
-//   - a leg that runs something other than the per-feature target, or a job
+//   - a feature mapped in features.mk but in no shard: its tests never run
+//     in CI, and feature_integration_coverage_test.go still passes, because
+//     it checks the mapping, not the jobs;
+//   - a feature in two shards, which runs twice, or a listed name whose
+//     features.mk entry is empty or absent, which runs zero tests;
+//   - a limit above 30 minutes, or none at all (GitHub's default is 360);
+//   - fail-fast left at its default, true, so one red shard cancels the
+//     others and hides whether they would have passed;
+//   - a shard that runs something other than the multi-feature target, or a job
 //     that leaves the full tier or stops running on push;
-//   - a leg with no always() teardown, so a cancelled leg leaves its compose
+//   - a shard with no always() teardown, so a cancelled shard leaves its compose
 //     project on the runner;
-//   - a leg whose project name another leg or run shares, or that the reap
+//   - a shard whose project name another shard or run shares, or that the reap
 //     step's prefix does not cover;
-//   - a leg that names its own integration image (#813): every leg of a run
+//   - a shard that names its own integration image (#813): every shard of a run
 //     on one runner must reuse the Makefile's content-addressed one, `make -s
-//     it-image`, or each leg rebuilds it, and that name must sit under the
+//     it-image`, or each shard rebuilds it, and that name must sit under the
 //     reap step's prefix, which is what removes it.
 //
-// That the gate goes red when one leg fails is ci_tiers_test.go's
-// TestCIGateScriptHonoursTheTiers: a matrix is one needs entry, and its
-// result is failure when any leg fails.
+// That a shard fails when one of its features fails is the Makefile's
+// integration-test-features; that the gate goes red when one shard fails is
+// ci_tiers_test.go's TestCIGateScriptHonoursTheTiers: a matrix is one needs
+// entry, and its result is failure when any shard fails.
 
 import (
 	"bytes"
@@ -66,32 +71,41 @@ import (
 )
 
 const (
-	// featureJob is ci.yml's per-feature integration job.
+	// featureJob is ci.yml's sharded per-feature integration job.
 	featureJob = "integration-features"
 
-	// featureJobLimit is each leg's timeout-minutes ceiling (ruling 10: the
-	// 45-minute limit is not raised).
-	featureJobLimit = 45
+	// featureJobLimit is each shard's timeout-minutes ceiling: about three
+	// times the ~550 s a balanced shard is expected to take (main run 65165's
+	// per-feature times, docs/release/engineering.md).
+	featureJobLimit = 30
 
-	// featureMatrixKey is the job's one matrix axis.
-	featureMatrixKey = "feature"
+	// featureShardKey and featureListKey are the two keys of each of the
+	// matrix's include entries: the shard's name and its space-separated
+	// feature list.
+	featureShardKey = "shard"
+	featureListKey  = "features"
 
-	// featureReapPrefix is the name prefix every leg's stack and image carry,
-	// and the one featureReap removes stale leftovers under.
+	// featureListEnv is the job env entry that hands the shard's list to
+	// featureStep through the shell, never a ${{ }} spliced into the command.
+	featureListEnv = "${{ matrix." + featureListKey + " }}"
+
+	// featureReapPrefix is the name prefix every shard's stack and image
+	// carry, and the one featureReap removes stale leftovers under.
 	featureReapPrefix = "qrdb-ci-"
 
-	// featureReap is each leg's first step: it removes stacks a killed run
+	// featureReap is each shard's first step: it removes stacks a killed run
 	// left on the runner's daemon, so they do not collide with this one.
 	featureReap = "scripts/reap-stale-ci-stacks.sh " + featureReapPrefix
 
-	// featureStep is the one test command each leg runs: the feature's
-	// features.mk selection, in the integration image, under the leg's
-	// project. It passes no IT_IMAGE: the Makefile's content-addressed name
-	// is the one every leg shares.
-	featureStep = `make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"`
+	// featureStep is the one test command each shard runs: every feature in
+	// its list, each the feature's features.mk selection in the integration
+	// image, under the shard's project, past a failing one. It passes no
+	// IT_IMAGE: the Makefile's content-addressed name is the one every shard
+	// shares.
+	featureStep = `make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT"`
 
-	// featureTeardown is the leg's last step, run under always(): it removes
-	// the compose project featureStep ran under, so a cancelled leg leaves no
+	// featureTeardown is the shard's last step, run under always(): it removes
+	// the compose project featureStep ran under, so a cancelled shard leaves no
 	// stack on the runner. The image stays for the other legs; the reap step
 	// removes it once no run can need it.
 	featureTeardown = `make docker-down-it IT_PROJECT="$IT_PROJECT"`
@@ -125,13 +139,12 @@ type featureWorkflow struct {
 	} `yaml:"jobs"`
 }
 
-// featureMatrixLine is the `feature:` line ci.yml must carry for want.
-func featureMatrixLine(want []string) string {
-	return featureMatrixKey + ": [" + strings.Join(want, ", ") + "]"
-}
+// featureShardFix is the fix the gate prints for a feature no shard runs.
+const featureShardFix = "add it to the " + featureListKey + ": of the shard with the least expected time " +
+	"(docs/release/engineering.md, \"Per-feature integration jobs\")"
 
 // featureJobProblems checks ci.yml's integration-features job against want,
-// the features that must each be one leg.
+// the features that must each run in exactly one shard.
 func featureJobProblems(body []byte, want []string) []string {
 	var wf featureWorkflow
 	if err := yaml.Unmarshal(body, &wf); err != nil {
@@ -153,19 +166,23 @@ func featureJobProblems(body []byte, want []string) []string {
 	}
 	switch tm := job.TimeoutMinutes; {
 	case tm == nil:
-		problems = append(problems, featureJob+" has no timeout-minutes: a leg would get the runner's default, not its own limit")
+		problems = append(problems, featureJob+" has no timeout-minutes: a shard would get the runner's default, not its own limit")
 	case *tm <= 0 || *tm > featureJobLimit:
 		problems = append(problems, featureJob+"'s timeout-minutes is "+strconv.Itoa(*tm)+
-			"; want 1.."+strconv.Itoa(featureJobLimit)+": the 45-minute limit is not raised")
+			"; want 1.."+strconv.Itoa(featureJobLimit)+": about three times a shard's expected time")
 	}
 	if ff := job.Strategy.FailFast; ff == nil || *ff {
-		problems = append(problems, featureJob+" does not set fail-fast: false: one red leg would cancel the rest")
+		problems = append(problems, featureJob+" does not set fail-fast: false: one red shard would cancel the rest")
 	}
-	problems = append(problems, featureMatrixProblems(job.Strategy.Matrix, want)...)
+	problems = append(problems, featureShardProblems(job.Strategy.Matrix, want)...)
+	if v := job.Env["IT_FEATURES"]; v != featureListEnv {
+		problems = append(problems, featureJob+"'s IT_FEATURES is "+strconv.Quote(v)+
+			"; want "+strconv.Quote(featureListEnv)+", the list featureStep runs")
+	}
 
 	var runs, conds []string
 	for _, s := range job.Steps {
-		// The credential mask (ci-template v1.21.1) leads the leg; its shape is
+		// The credential mask (ci-template v1.21.1) leads the shard; its shape is
 		// ci_logs_test.go's to check. Only a first run step that runs no make
 		// target is taken for it, so the name cannot carry a narrowed run past
 		// this gate.
@@ -183,67 +200,118 @@ func featureJobProblems(body []byte, want []string) []string {
 	} else if conds[0] != "" || conds[1] != "" || conds[2] != "always()" {
 		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
 			"; want the reap and the tests unconditional and the teardown under always(), "+
-			"so a failed or cancelled leg still removes its stack")
+			"so a failed or cancelled shard still removes its stack")
 	}
-	// The project the steps pass must be this leg's alone: legs of one run,
+	// The project the steps pass must be this shard's alone: shards of one run,
 	// and runs sharing a daemon, would otherwise share a stack.
 	v := job.Env["IT_PROJECT"]
 	if !strings.HasPrefix(v, featureReapPrefix) {
 		problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
 			"; want it under "+strconv.Quote(featureReapPrefix)+", the prefix the reap step removes")
 	}
-	for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix.feature }}"} {
+	for _, part := range []string{"${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix." + featureShardKey + " }}"} {
 		if !strings.Contains(v, part) {
 			problems = append(problems, featureJob+"'s IT_PROJECT is "+strconv.Quote(v)+
-				"; want it to carry "+part+", so no other leg or run shares it")
+				"; want it to carry "+part+", so no other shard or run shares it")
 		}
 	}
-	// The image is the opposite: one name for every leg of the run (#813).
+	// The image is the opposite: one name for every shard of the run (#813).
 	if img, ok := job.Env["IT_IMAGE"]; ok {
 		problems = append(problems, featureJob+" sets IT_IMAGE "+strconv.Quote(img)+
-			"; want none: a leg-chosen tag rebuilds the image on every leg, where the "+
-			"Makefile's content-addressed `make -s it-image` lets the legs on one runner build it once")
+			"; want none: a shard-chosen tag rebuilds the image on every shard, where the "+
+			"Makefile's content-addressed `make -s it-image` lets the shards on one runner build it once")
 	}
 	return problems
 }
 
-// featureMatrixProblems checks that the matrix has the one feature axis and
-// that it lists exactly want, in order.
-func featureMatrixProblems(m yaml.Node, want []string) []string {
+// featureShardProblems checks that the matrix is an include list of shards,
+// each a name and a feature list, and that the lists together name every
+// feature in want exactly once and nothing else; each problem prints its fix.
+func featureShardProblems(m yaml.Node, want []string) []string {
 	if m.Kind != yaml.MappingNode {
-		return []string{featureJob + " has no matrix mapping; want " + featureMatrixLine(want)}
+		return []string{featureJob + " has no matrix mapping; want an include: list of " +
+			featureShardKey + " and " + featureListKey + " entries"}
 	}
 	var problems []string
-	var legs []string
+	var shards []string
+	shardOf := map[string]string{}
 	found := false
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		key, val := m.Content[i].Value, m.Content[i+1]
-		if key != featureMatrixKey {
+		if key != "include" {
 			problems = append(problems, featureJob+"'s matrix has key "+strconv.Quote(key)+
-				"; want only "+featureMatrixKey+": any other key multiplies or edits the legs")
+				"; want only include: any axis multiplies or edits the shards")
 			continue
 		}
 		found = true
 		if val.Kind != yaml.SequenceNode {
-			problems = append(problems, featureJob+"'s matrix "+featureMatrixKey+" is not a literal list")
+			problems = append(problems, featureJob+"'s matrix include is not a literal list")
 			continue
 		}
-		for _, c := range val.Content {
-			legs = append(legs, c.Value)
+		for _, e := range val.Content {
+			name, list, p := featureShardEntry(e)
+			if p != "" {
+				problems = append(problems, p)
+				continue
+			}
+			if slices.Contains(shards, name) {
+				problems = append(problems, featureJob+" has two shards named "+strconv.Quote(name)+
+					"; fix: rename one: the shard name is part of its compose project")
+				continue
+			}
+			shards = append(shards, name)
+			for _, f := range strings.Fields(list) {
+				if prev, dup := shardOf[f]; dup {
+					problems = append(problems, featureJob+" runs "+f+" in shard "+prev+" and again in shard "+name+
+						"; fix: delete it from shard "+name)
+					continue
+				}
+				shardOf[f] = name
+				if !slices.Contains(want, f) {
+					problems = append(problems, featureJob+"'s shard "+name+" lists "+strconv.Quote(f)+
+						", which `make -s print-integration-features` does not print; fix: delete it from shard "+
+						name+" (features.mk maps no test file to it)")
+				}
+			}
 		}
 	}
 	if !found {
-		return append(problems, featureJob+"'s matrix has no "+featureMatrixKey+" axis; want "+featureMatrixLine(want))
+		return append(problems, featureJob+"'s matrix has no include: list of shards")
 	}
-	if !slices.Equal(legs, want) {
-		problems = append(problems, featureJob+"'s matrix is out of step with `make -s print-integration-features`; want\n"+
-			featureMatrixLine(want)+"\ngot\n"+featureMatrixLine(legs))
+	for _, f := range want {
+		if _, ok := shardOf[f]; !ok {
+			problems = append(problems, featureJob+" runs no shard for "+f+
+				", which `make -s print-integration-features` prints; fix: "+featureShardFix)
+		}
 	}
 	return problems
 }
 
+// featureShardEntry reads one include entry: exactly a literal shard name and
+// a literal, non-empty feature list.
+func featureShardEntry(e *yaml.Node) (name, list, problem string) {
+	if e.Kind != yaml.MappingNode {
+		return "", "", featureJob + "'s matrix include has an entry that is not a mapping"
+	}
+	got := map[string]*yaml.Node{}
+	for i := 0; i+1 < len(e.Content); i += 2 {
+		k := e.Content[i].Value
+		if k != featureShardKey && k != featureListKey {
+			return "", "", featureJob + "'s shard entry has key " + strconv.Quote(k) +
+				"; want only " + featureShardKey + " and " + featureListKey
+		}
+		got[k] = e.Content[i+1]
+	}
+	for _, k := range []string{featureShardKey, featureListKey} {
+		if n := got[k]; n == nil || n.Kind != yaml.ScalarNode || strings.TrimSpace(n.Value) == "" {
+			return "", "", featureJob + "'s shard entry has no literal " + k
+		}
+	}
+	return got[featureShardKey].Value, got[featureListKey].Value, ""
+}
+
 // makefileFeatures returns `make -s print-integration-features`, the one
-// source of the leg list.
+// source of the features the shards must run.
 func makefileFeatures(t *testing.T, root string) []string {
 	t.Helper()
 	cmd := exec.Command("make", "-s", "print-integration-features")
@@ -257,7 +325,7 @@ func makefileFeatures(t *testing.T, root string) []string {
 	return strings.Fields(out.String())
 }
 
-func TestIntegrationFeatureCoverage_OneJobPerFeature(t *testing.T) {
+func TestIntegrationFeatureCoverage_EveryFeatureInOneShard(t *testing.T) {
 	root := repoRoot(t)
 	want := makefileFeatures(t, root)
 
@@ -321,13 +389,13 @@ func TestIntegrationFeatureCoverage_ImageIsContentAddressed(t *testing.T) {
 	}
 }
 
-// docker-down-it removes a leg's stack and never the shared image: a leg that
+// docker-down-it removes a shard's stack and never the shared image: a shard that
 // removed it would make every later leg on the runner rebuild it.
 func TestIntegrationFeatureCoverage_DownKeepsTheImage(t *testing.T) {
 	root := repoRoot(t)
 	recipe := makeOutput(t, root, "-n", "docker-down-it", "IT_PROJECT=qrdb-ci-x")
 	if !strings.Contains(recipe, "-p 'qrdb-ci-x'") || !strings.Contains(recipe, "down --volumes") {
-		t.Fatalf("make -n docker-down-it = %q; want the leg's compose project downed", recipe)
+		t.Fatalf("make -n docker-down-it = %q; want the shard's compose project downed", recipe)
 	}
 	if strings.Contains(recipe, "image rm") || strings.Contains(recipe, "rmi") {
 		t.Fatalf("make -n docker-down-it = %q; want no image removal: the legs share the image", recipe)
@@ -619,25 +687,30 @@ const featureJobFixture = `on:
     types: [opened, synchronize, reopened]
 jobs:
   integration-features:
-    name: Integration (${{ matrix.feature }})
+    name: Integration (shard ${{ matrix.shard }})
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [build]
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      IT_FEATURES: ${{ matrix.features }}
     strategy:
       fail-fast: false
       matrix:
-        feature: [audit, key-value, sql]
+        include:
+          - shard: 1
+            features: audit sql
+          - shard: 2
+            features: key-value
     steps:
       - uses: actions/checkout@0000000000000000000000000000000000000000 # v6
       - name: Mask the forge credentials
         run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
-      - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
-      - name: Tear down (${{ matrix.feature }})
+      - name: Integration tests (shard ${{ matrix.shard }})
+        run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT"
+      - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 `
@@ -648,8 +721,34 @@ func TestIntegrationFeatureCoverage_JobProblemsValidFixture(t *testing.T) {
 	if p := featureJobProblems([]byte(featureJobFixture), featureFixtureWant); len(p) != 0 {
 		t.Fatalf("the valid fixture must have no problems, got %v", p)
 	}
-	if got := featureMatrixLine(featureFixtureWant); got != "feature: [audit, key-value, sql]" {
-		t.Fatalf("featureMatrixLine = %q; want the line ci.yml carries", got)
+}
+
+// TestIntegrationFeatureCoverage_ShardProblemsPrintTheFix proves each way the
+// shard lists can drift from `make -s print-integration-features` names the
+// feature and the edit that fixes it.
+func TestIntegrationFeatureCoverage_ShardProblemsPrintTheFix(t *testing.T) {
+	cases := []struct {
+		name, old, new string
+		want           []string
+	}{
+		{"missing", "features: audit sql", "features: audit", []string{"runs no shard for sql", "fix: add it to the features:"}},
+		{"duplicate", "features: key-value", "features: key-value sql", []string{"runs sql in shard 1 and again in shard 2", "fix: delete it from shard 2"}},
+		{"duplicate in one shard", "features: audit sql", "features: audit sql audit", []string{"runs audit in shard 1 and again in shard 1"}},
+		{"unknown", "features: key-value", "features: key-value rate-limit", []string{`lists "rate-limit"`, "fix: delete it from shard 2"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(featureJobFixture, tc.old, tc.new, 1)
+			if body == featureJobFixture {
+				t.Fatal("the mutation did not apply: the case tests the valid fixture")
+			}
+			got := strings.Join(featureJobProblems([]byte(body), featureFixtureWant), "\n")
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("problems %q do not contain %q", got, w)
+				}
+			}
+		})
 	}
 }
 
@@ -660,37 +759,46 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		want     []string
 	}{
 		{name: "job missing", old: "  integration-features:\n", new: "  integration-other:\n"},
-		{name: "a mapped feature has no leg", old: "[audit, key-value, sql]", new: "[audit, sql]"},
-		{name: "a leg with no mapped feature", old: "[audit, key-value, sql]", new: "[audit, key-value, rate-limit, sql]"},
-		{name: "legs out of order", old: "[audit, key-value, sql]", new: "[key-value, audit, sql]"},
-		{name: "a duplicated leg", old: "[audit, key-value, sql]", new: "[audit, key-value, sql, sql]"},
-		{name: "matrix list is an expression", old: "feature: [audit, key-value, sql]", new: "feature: ${{ fromJSON(needs.list.outputs.features) }}"},
-		{name: "a second matrix axis", old: "        feature: [audit, key-value, sql]\n", new: "        feature: [audit, key-value, sql]\n        os: [a, b]\n"},
-		{name: "an include", old: "        feature: [audit, key-value, sql]\n", new: "        feature: [audit, key-value, sql]\n        include:\n          - feature: extra\n"},
-		{name: "no matrix", old: "      matrix:\n        feature: [audit, key-value, sql]\n", new: ""},
-		{name: "limit raised", old: "timeout-minutes: 45", new: "timeout-minutes: 46"},
-		{name: "limit zero", old: "timeout-minutes: 45", new: "timeout-minutes: 0"},
-		{name: "no limit", old: "    timeout-minutes: 45\n", new: ""},
+		{name: "a mapped feature in no shard", old: "features: audit sql", new: "features: audit"},
+		{name: "a listed name with no mapped feature", old: "features: key-value", new: "features: key-value rate-limit"},
+		{name: "a feature in two shards", old: "features: key-value", new: "features: key-value audit"},
+		{name: "a feature twice in one shard", old: "features: key-value", new: "features: key-value key-value"},
+		{name: "two shards of one name", old: "- shard: 2", new: "- shard: 1"},
+		{name: "an empty shard", old: "features: key-value", new: "features: \"\""},
+		{name: "a shard with no list", old: "\n            features: key-value", new: ""},
+		{name: "a shard with no name", old: "- shard: 2\n            features", new: "- features"},
+		{name: "a shard with another key", old: "features: key-value\n", new: "features: key-value\n            os: a\n"},
+		{name: "a list that is an expression", old: "features: key-value", new: "features: ${{ fromJSON(needs.list.outputs.features) }}"},
+		{name: "a shard that is not a mapping", old: "          - shard: 2\n            features: key-value\n", new: "          - key-value\n"},
+		{name: "include is not a list", old: "        include:\n          - shard: 1\n", new: "        include: x\n        y:\n          - shard: 1\n"},
+		{name: "a matrix axis", old: "        include:\n", new: "        feature: [audit]\n        include:\n"},
+		{name: "no include", old: "        include:\n", new: "        shards:\n"},
+		{name: "no matrix", old: "      matrix:\n        include:\n", new: "      other:\n        include:\n"},
+		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 31"},
+		{name: "limit zero", old: "timeout-minutes: 30", new: "timeout-minutes: 0"},
+		{name: "no limit", old: "    timeout-minutes: 30\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
 		{name: "left the full tier", old: "    if: github.event_name != 'pull_request' || ", new: "    if: "},
-		{name: "a fixed target", old: "IT_FEATURE=${{ matrix.feature }}", new: "IT_FEATURE=cluster"},
-		{name: "the whole suite", old: " IT_FEATURE=${{ matrix.feature }}", new: ""},
-		{name: "on the host", old: "run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"", new: "run: make integration-test-${{ matrix.feature }}"},
-		{name: "a second run step", old: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"\n", new: "        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT=\"$IT_PROJECT\"\n      - run: make integration-test-auth\n"},
+		{name: "a fixed list", old: `IT_FEATURES="$IT_FEATURES"`, new: `IT_FEATURES="cluster"`},
+		{name: "the list spliced in", old: "      IT_FEATURES: ${{ matrix.features }}\n", new: ""},
+		{name: "the list from elsewhere", old: "IT_FEATURES: ${{ matrix.features }}", new: "IT_FEATURES: audit"},
+		{name: "on the host", old: " IT_FEATURES_IN=image", new: ""},
+		{name: "one feature", old: `make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image`, new: "make integration-test IT_FEATURE=audit"},
+		{name: "a second run step", old: "IT_FEATURES_IN=image IT_PROJECT=\"$IT_PROJECT\"\n", new: "IT_FEATURES_IN=image IT_PROJECT=\"$IT_PROJECT\"\n      - run: make integration-test-auth\n"},
 		{name: "a make run named as the mask", old: "run: echo \"::add-mask::$GIT_CONFIG_VALUE_0\"", new: "run: make integration-test-auth"},
 		{name: "no reap", old: "      - name: Reap stale CI stacks\n        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-\n", new: ""},
 		{name: "reap of another prefix", old: "reap-stale-ci-stacks.sh qrdb-ci-", new: "reap-stale-ci-stacks.sh qrdb-"},
-		{name: "no teardown", old: "      - name: Tear down (${{ matrix.feature }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"\n", new: ""},
+		{name: "no teardown", old: "      - name: Tear down (shard ${{ matrix.shard }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"\n", new: ""},
 		{name: "teardown not always", old: "        if: always()\n", new: ""},
 		{name: "teardown on success only", old: "if: always()", new: "if: success()"},
 		{name: "teardown of the default names", old: "run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"", new: "run: make docker-down-it"},
-		{name: "tests made conditional", old: "      - name: Integration tests (${{ matrix.feature }})\n", new: "      - name: Integration tests (${{ matrix.feature }})\n        if: always()\n"},
-		{name: "project shared by every leg", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
-		{name: "a per-leg image tag", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.feature }}\n"},
+		{name: "tests made conditional", old: "      - name: Integration tests (shard ${{ matrix.shard }})\n", new: "      - name: Integration tests (shard ${{ matrix.shard }})\n        if: always()\n"},
+		{name: "project shared by every shard", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
+		{name: "a per-shard image tag", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.shard }}\n"},
 		{name: "project shared by every attempt", old: "qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-", new: "qrdb-ci-${{ github.run_id }}-"},
 		{name: "project outside the reaped prefix", old: "      IT_PROJECT: qrdb-ci-", new: "      IT_PROJECT: qrdb-it-"},
-		{name: "no names", old: "    env:\n      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}\n", new: ""},
+		{name: "no names", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: ""},
 		{name: "no push trigger", old: "  push:\n    branches: [main]\n", new: ""},
 		{name: "no pull_request trigger", old: "  pull_request:\n    types: [opened, synchronize, reopened]\n", new: ""},
 		{name: "want grew", want: []string{"audit", "key-value", "sql", "watch"}},

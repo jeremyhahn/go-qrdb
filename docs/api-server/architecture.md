@@ -195,6 +195,11 @@ neither owns a verb neither registered. See
   certificate is lost (vanguard v0.5.0, whose registrar takes no options:
   interceptors belong to the connect server, a second chain). The framing is small and specified, so it is
   implemented in `pkg/api/grpcweb` over the gRPC server's own handler instead.
+  Both behaviours are a reproducible probe, `test/vanguardprobe` (a module of
+  its own, outside every qrdb build): `make check-vanguard-probe` is the check
+  run at each vanguard release, and fails, naming the replacement of
+  `pkg/api/grpcweb`, the day a release keeps the interceptor or carries the
+  peer's TLS state ([engineering.md](engineering.md#testing)).
 - **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
   terminating TLS loses the caller's certificate at the node, the identity every
   authorization decision starts from.

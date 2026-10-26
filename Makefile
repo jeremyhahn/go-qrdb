@@ -819,6 +819,18 @@ test: test-clusterproof
 test-clusterproof:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof" ./...
 
+# The vanguard blocker probe (#1151): pkg/api/grpcweb stays hand-rolled while
+# connectrpc.com/vanguard's vanguardgrpc runs a service outside the grpc.Server
+# interceptor chain and hands its handler a peer with no TLS state
+# (docs/api-server/architecture.md). test/vanguardprobe asserts both of the
+# pinned release and fails, naming #1151 step 3, the day a release no longer
+# has them; run this at every vanguard release. It is a module of its own so
+# vanguard never enters the database's module graph, and it is not part of
+# `make test` or of CI's unit stage.
+.PHONY: check-vanguard-probe
+check-vanguard-probe:
+	cd test/vanguardprobe && $(GO) test -count=1 ./...
+
 # The cluster proof itself (#669): `make cluster-proof` soaks a running cluster
 # under a seeded schedule of faults and writes an evidence bundle;
 # `make cluster-proof-check` verifies a bundle's checksums and re-derives its
@@ -1321,7 +1333,8 @@ integration-image:
 # (./test/integration). IT_FEATURE=<feature>
 # narrows it to that feature's features.mk selection, exactly what
 # `make integration-test-<feature>` runs on the host; CI's integration-features
-# legs are `make integration-test IT_FEATURE=<feature>`. A feature that selects
+# shards run `make integration-test IT_FEATURE=<feature>` for each feature in
+# their list, through integration-test-features below. A feature that selects
 # nothing says so and passes, as integration-test-<feature> does, before any
 # image is built. The Docker-based
 # test/integration/api stack needs a daemon the hardened service does not
@@ -1420,8 +1433,8 @@ integration-down-%:
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
 #
-# CI does not run this stage as one job: it runs the same tests one feature per
-# job, `make integration-test-<feature>` in ci.yml's integration-features
+# CI does not run this stage as one job: it runs the same tests in shards of
+# features, `make integration-test-features` in ci.yml's integration-features
 # matrix (see INT_FEATURES). This target is the whole suite in one container,
 # for a local run.
 #
@@ -1573,15 +1586,16 @@ integration-test-local:
 INT_FEATURE_TAGS = $(LINT_TAGS),integration
 
 # INT_FEATURES is every feature whose features.mk entry maps at least one
-# file, sorted: the legs of CI's integration-features job, one job per feature,
-# each running `make integration-test-<feature>` under its own limit. An empty
-# entry is not a leg; it would run zero tests and pass.
+# file, sorted: the features CI's integration-features job runs, each in
+# exactly one of its shards (`make integration-test-features`). An empty entry
+# is not a feature here; it would run zero tests and pass.
 #
 # Gitea cannot expand a matrix computed at run time (handbook devops.md §1),
-# so ci.yml spells this list literally and
-# test/buildgates/feature_jobs_gate_test.go fails when the two differ. After
-# adding or emptying an entry, paste `make -s print-integration-features`
-# into the job's `feature:` list; the gate's failure message prints the line.
+# so ci.yml spells each shard's list literally and
+# test/buildgates/feature_jobs_gate_test.go fails when their union differs
+# from this one, or names a feature twice. After adding an entry, put the
+# feature in the `features:` of the shard with the least expected time; the
+# gate's failure message names the feature and the fix.
 INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter INTTEST_%,$(.VARIABLES)),$(if $(strip $($(v))),$(v))))))
 
 .PHONY: print-integration-features
@@ -1590,8 +1604,8 @@ print-integration-features:
 
 # integration-test-feature is the one recipe behind every per-feature target:
 # `make integration-test-feature FEATURE=<docs folder name>`. The
-# `integration-test-%` pattern rule below dispatches to it, and so does CI's
-# integration-features job through that rule. An explicit
+# `integration-test-%` pattern rule below dispatches to it, and so does integration-test-features, below, on a host.
+# An explicit
 # integration-test-<feature> rule would shadow the pattern rule (make prefers
 # the explicit recipe); test/buildgates/feature_target_shadow_test.go refuses
 # one, and test/buildgates/feature_integration_coverage_test.go fails if a
@@ -1631,6 +1645,50 @@ integration-test-feature:
 .PHONY: integration-test-%
 integration-test-%:
 	@$(MAKE) -s -C $(CURDIR) integration-test-feature FEATURE=$*
+
+# integration-test-features runs every feature in IT_FEATURES, one after
+# another, with `make -k` semantics: a failing feature does not stop the rest,
+# each prints a PASS or FAIL line with its seconds as it ends, the summary
+# repeats them all and names every failing feature, and the target fails if
+# any did. A name that is not one of INT_FEATURES (`make -s
+# print-integration-features`) is a FAIL, not a silent zero-test pass.
+#
+# IT_FEATURES_IN says where each feature runs, through the map below:
+#   host   `make integration-test-feature FEATURE=<f>`, the selection
+#          `make integration-test-<f>` runs (the default);
+#   image  `make integration-test IT_FEATURE=<f>`, in the hardened integration
+#          image, under IT_PROJECT -- CI's integration-features shards.
+# The integration image has no make, so the loop runs here and each feature
+# is its own `compose run` in it; the image is built and held once per shard,
+# by the first feature's docker-build-it, and every later one reuses it.
+IT_FEATURES    ?=
+IT_FEATURES_IN ?= host
+it_features_goal.host  = integration-test-feature FEATURE
+it_features_goal.image = integration-test IT_FEATURE
+
+.PHONY: integration-test-features
+integration-test-features:
+	@test -n "$(strip $(IT_FEATURES))" || { echo "integration-test-features: IT_FEATURES=\"<feature> ...\" is required"; exit 2; }
+	@test -n "$(it_features_goal.$(IT_FEATURES_IN))" || { echo "integration-test-features: IT_FEATURES_IN=$(IT_FEATURES_IN); want host or image"; exit 2; }
+	@summary=''; failed=''; \
+	for f in $(IT_FEATURES); do \
+		start=$$(date +%s); \
+		case ' $(INT_FEATURES) ' in \
+		*" $$f "*) rc=0; $(MAKE) -s -C $(CURDIR) $(it_features_goal.$(IT_FEATURES_IN))=$$f || rc=$$?;; \
+		*) echo "==> integration-test-features: $$f is not a feature with integration tests (make -s print-integration-features)"; rc=2;; \
+		esac; \
+		secs=$$(( $$(date +%s) - start )); \
+		if [ $$rc -eq 0 ]; then res=PASS; else res=FAIL; failed="$$failed $$f"; fi; \
+		echo "==> integration-test-features: $$res $$f $${secs}s"; \
+		summary="$$summary  $$res $$f $${secs}s\n"; \
+	done; \
+	echo "==> integration-test-features summary ($(IT_FEATURES_IN)):"; \
+	printf '%b' "$$summary"; \
+	if [ -n "$$failed" ]; then \
+		echo "==> integration-test-features: FAILED:$$failed"; \
+		exit 1; \
+	fi; \
+	echo "==> integration-test-features: all $(words $(IT_FEATURES)) passed"
 
 # ============================================================================
 # Benchmarks (always run in devcontainer)
@@ -3794,7 +3852,7 @@ DEVCONTAINER_DIR     := build/docker/devcontainer
 DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-	test/performance/qrdb test/performance/tikv
+	test/performance/qrdb test/performance/tikv test/vanguardprobe
 TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
@@ -4337,6 +4395,7 @@ help:
 	@echo ""
 	@echo "Integration Tests (devcontainer with qrdbd + all protocols):"
 	@echo "  integration-test           The CI stage: every self-spawned suite in the integration image (IT_FEATURE=<f> for one)"
+	@echo "  integration-test-features  Each feature in IT_FEATURES=\"<f> ...\", past a failing one (IT_FEATURES_IN=host|image)"
 	@echo "  integration-test-docker    The Docker api suites: auth, standalone and cluster stacks"
 	@echo "  integration-test-api       The standalone multi-protocol suite (integration-test-standalone)"
 	@echo "  integration-test-gpu       Run GPU-accelerated integration tests"

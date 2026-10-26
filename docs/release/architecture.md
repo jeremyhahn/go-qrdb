@@ -185,7 +185,7 @@ skips the code tier, and the nightly tier carries the soak:
 |---|---|---|
 | PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (build and the unit suites), `test-typescript` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (one leg per feature) and `fips` (both unit suites under FIPS 140-3) |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
@@ -307,16 +307,23 @@ certifying each with the same age check, and fails closed when none is fresh.
 A fallback widens where the database may come from, never how
 old it may be.
 
-`integration-features` is one job with a matrix leg per feature: each leg runs
-`make integration-test IT_FEATURE=<feature>` in that `integration` image,
-under its own 45-minute limit, and the legs run in parallel. `ci-gate` needs
-the job once and reads its aggregate result, which is `failure` when any leg
-fails. `integration-standalone` runs the Docker `test/integration/api`
+`integration-features` is one job with six matrix legs, the shards, each
+carrying a literal list of features: each shard runs
+`make integration-test-features IT_FEATURES_IN=image`, which runs
+`make integration-test IT_FEATURE=<feature>` in that `integration` image for
+every feature in its list, goes on past a failing one, prints a PASS/FAIL line
+with seconds per feature and fails the shard if any failed. The lists together
+name every feature of `make -s print-integration-features` once, balanced to
+about nine minutes a shard; each shard has its own 30-minute limit, and the
+shards run in parallel. Sharding pays the per-job setup once per shard rather
+than once per feature (engineering.md, "Per-feature integration jobs").
+`ci-gate` needs the job once and reads its aggregate result, which is
+`failure` when any shard fails. `integration-standalone` runs the Docker `test/integration/api`
 suites on the `.devcontainer/` image.
 
 `test/buildgates/ci_tiers_test.go` and
 `test/buildgates/feature_jobs_gate_test.go` hold the tiers, the gate, the
-triggers and the per-feature legs together; see engineering.md.
+triggers and the feature shards together; see engineering.md.
 
 ## Rejected alternatives
 

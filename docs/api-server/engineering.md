@@ -620,6 +620,19 @@ replaces it for an embedded node. See [gRPC-Web](#grpc-web) above.
   Design goals, HTTP/2 related behavior (no stream-id, no go-away), Retries,
   Keep-alive, Bidi-streaming, Versioning and Browser-specific features state
   nothing a server does, and have no test.
+- **The vanguard blocker probe.** `test/vanguardprobe`, a module of its own so
+  that `connectrpc.com/vanguard` never enters the database's module graph, holds
+  the reason `pkg/api/grpcweb` is not vanguard
+  ([architecture.md](architecture.md#alternatives-rejected)) to the pinned
+  release, over loopback TLS with an in-memory client certificate and a
+  `grpc.Server` control for each claim. `TestVanguardSkipsInterceptor`: a
+  service registered through `vanguardgrpc` receives a nil interceptor, so a
+  unary interceptor runs zero times. `TestVanguardDropsPeerTLS`: the handler's
+  `peer.FromContext` carries no `credentials.TLSInfo` with the client
+  certificate. Run `make check-vanguard-probe` at each vanguard release; a
+  failure, `vanguard now keeps the interceptor` or `vanguard now carries peer
+  TLS`, means the blocker is gone and the replacement is due. It is not part of
+  `make test` or CI's unit stage.
 
 ## Observability
 

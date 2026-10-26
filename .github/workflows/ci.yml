@@ -952,47 +952,69 @@ jobs:
   # merge.
   #
   # integration-features runs the self-spawned qrdbdharness suites
-  # (./test/integration: single-node and real 3-node Raft clusters), one leg
-  # per feature (owner ruling 10). Each leg is
-  # `make integration-test IT_FEATURE=<feature>` in the integration image; the
+  # (./test/integration: single-node and real 3-node Raft clusters) in six
+  # shards, each a fixed list of features (owner ruling 10; sharded so a
+  # feature pays the checkout, reap, image build and teardown once per shard,
+  # not once per feature). Each shard is
+  # `make integration-test-features IT_FEATURES_IN=image`, which runs
+  # `make integration-test IT_FEATURE=<feature>` in the integration image for
+  # every feature in its list, goes on past a failing one, prints a PASS/FAIL
+  # line with seconds per feature and fails the shard if any failed; the
   # selection `make integration-test-<feature>` runs on a host
   # (test/integration/features.mk). Every test in these packages is mapped to
-  # some feature (make check-integration-feature-coverage), so the legs
-  # together run the whole suite. Each leg has its own 45-minute limit and
-  # they run in parallel; a leg that does not fit is a finding about that
-  # feature's tests, not a reason to raise the limit. The list is literal
-  # because Gitea cannot expand a matrix computed at run time (devops.md §1).
-  # It is exactly `make -s print-integration-features`:
-  # test/buildgates/feature_jobs_gate_test.go fails on any difference, on a
-  # limit over 45, on fail-fast, on a tier other than the full one, and on a
-  # step that narrows the target. fail-fast is off so one red leg does not
-  # cancel the others' results; CI Gate reads the aggregate result.
+  # some feature (make check-integration-feature-coverage), so the shards
+  # together run the whole suite. The lists are balanced longest-first by the
+  # per-feature job times of main run 65165, about 550 s a shard
+  # (docs/release/engineering.md, "Per-feature integration jobs"); each shard
+  # has its own 30-minute limit, about three times that, and they run in
+  # parallel. The lists are literal because Gitea cannot expand a matrix
+  # computed at run time (devops.md §1). Their union is exactly
+  # `make -s print-integration-features`, each feature once:
+  # test/buildgates/feature_jobs_gate_test.go fails on a missing, duplicated or
+  # unknown feature, on a limit over 30, on fail-fast, on a tier other than the
+  # full one, and on a step that narrows the target. fail-fast is off so one
+  # red shard does not cancel the others' results; CI Gate reads the aggregate
+  # result.
   #
   # The project names are under qrdb-ci- (the gate pins the prefix) and carry
-  # the run, the attempt and the feature, so legs sharing a daemon never share
+  # the run, the attempt and the shard, so shards sharing a daemon never share
   # a stack. The image is the Makefile's content-addressed qrdb-ci-it:<hash>
-  # (`make -s it-image`, #813): every leg of a run on one runner names the
-  # same one, the first leg there builds it and the rest reuse it, and the
+  # (`make -s it-image`, #813): every shard of a run on one runner names the
+  # same one, the first shard there builds it and the rest reuse it, and the
   # reap step, not the teardown, removes it once no run can still need it.
   # The teardown is `make docker-down-it`, not a bare `docker compose down`:
   # test/buildgates/integration_image_tag_test.go keeps every compose call
   # behind a make target. Credentials come from the job environment, which
   # the Makefile's $(stage-gomodauth) stages as the gomodauth BuildKit secret.
   # GOMAXPROCS reaches the spawned processes through the compose service
-  # (#682). The gate holds a leg to exactly the reap, the run and the teardown.
+  # (#682). The gate holds a shard to exactly the reap, the run and the
+  # teardown.
   integration-features:
-    name: Integration (${{ matrix.feature }})
+    name: Integration (shard ${{ matrix.shard }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, test-typescript, arch-gates]
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      IT_FEATURES: ${{ matrix.features }}
     strategy:
       fail-fast: false
       matrix:
-        feature: [api-server, audit, auth-factors, backup-restore, barrier-seal, capabilities, ceremony, certificate-authority, cluster-verification, clustering, collections, coordination, credentials, databases, distributed-locks, embeddings, etcd-compatibility, firstboot, guarded-swap, identity-rbac, key-value, key-wrapping, leases, multi-tenancy, rag, replica-forwarding, row-locking, run-modes, secondary-indexes, shamir-custody, sql, storage-engines, tenant-dek, time-series, transactions, trust-anchors, trust-bootstrap, vectors, volume-pools, watch]
+        include:
+          - shard: 1
+            features: audit databases distributed-locks multi-tenancy time-series
+          - shard: 2
+            features: backup-restore capabilities ceremony clustering firstboot tenant-dek
+          - shard: 3
+            features: barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch
+          - shard: 4
+            features: api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools
+          - shard: 5
+            features: cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors
+          - shard: 6
+            features: coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -1013,12 +1035,12 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
+      - name: Integration tests (shard ${{ matrix.shard }})
+        run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT"
 
-      # integration-test downs its own stack; this covers a cancelled leg,
-      # pass, fail or cancel, and keeps the image the other legs reuse.
-      - name: Tear down (${{ matrix.feature }})
+      # integration-test downs its own stack; this covers a cancelled shard,
+      # pass, fail or cancel, and keeps the image the other shards reuse.
+      - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 

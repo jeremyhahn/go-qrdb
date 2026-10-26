@@ -34,6 +34,11 @@
 # devcontainer images and runs the stages in them, and `ci-gate`, where CI Gate runs
 # (Company Agent m386). go-quicraft's ci.yml has used both since v1.18.
 #
+# CUSTOMIZE (go-qrdb): `qwen`, the opencode review host's runner label, which
+# code-review-template v5.5 runs `review-opencode` on. The actionlint template
+# does not list it yet, so adopting v5.5 without it took `Lint` red (the v2
+# failure mode above).
+#
 # Verify against the fleet, not against this comment:
 #   curl -sH "Authorization: token $TOK" \
 #     "$GITEA/api/v1/admin/actions/runners" \
@@ -47,6 +52,7 @@ self-hosted-runner:
     - codex-task
     - claude
     - code-review
+    - qwen
     - batch
     - bigdisk
     - ci-gate

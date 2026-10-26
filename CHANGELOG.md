@@ -58,6 +58,13 @@ are not reconstructed here — their history is in the git log.
   `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
   Unix socket server registers the service through the same option instead of
   a separate call.
+- **The vanguard blocker is a reproducible probe** (#1151): `make
+  check-vanguard-probe` runs `test/vanguardprobe`, a module of its own, which
+  asserts that `connectrpc.com/vanguard` v0.5.0's `vanguardgrpc` hands a
+  method handler a nil gRPC interceptor and a peer with no TLS state, the
+  reasons `pkg/api/grpcweb` stays hand-rolled. It fails, naming the
+  replacement, the day a vanguard release no longer does either; run it at
+  each release. It is not part of `make test` and no qrdb build links it.
 - **`sdk/go` resolves the verified client chain of a connection the node's
   trust pool admitted** (#1181). The dynamic client-auth trust pool remaps a
   verifying `ClientAuth` mode to a non-verifying one and verifies the peer

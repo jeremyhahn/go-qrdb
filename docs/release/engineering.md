@@ -106,8 +106,9 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `integration-test-%` | the pattern rule, one target per feature (`make integration-test-<feature>`), that reads `features.mk`, extracts the mapped files' `Test` function names and runs exactly them over the self-spawned `sdk/go/testutil/qrdbdharness` suites — no Docker |
 | `Makefile` — `test-pkg` | `make test-pkg PKG=./pkg/foo/...`: one package's unit tests under the same tags `make test` uses |
 | `test/buildgates/feature_integration_coverage_test.go` (`make check-integration-feature-coverage`) | every `docs/*/architecture.md` folder has a `features.mk` entry, and every non-Docker integration `Test` function is named by some feature's file list |
-| `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the legs of CI's `integration-features` job. `make -s print-integration-features` prints them |
-| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix lists exactly `make -s print-integration-features`, in order, and that list is exactly the `features.mk` entries that map a file; each leg runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test IT_FEATURE=${{ matrix.feature }}` and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the feature, and no `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that refuses to remove an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; `timeout-minutes` is set and at most 45; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
+| `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the features CI's `integration-features` shards run, each in one shard. `make -s print-integration-features` prints them |
+| `Makefile` — `integration-test-features` | runs each feature in `IT_FEATURES` past a failing one, prints a PASS/FAIL line with seconds per feature and a summary naming the failures, and fails if any failed; an unknown name is a FAIL. `IT_FEATURES_IN=host` (default) runs `integration-test-feature`, `image` runs `integration-test IT_FEATURE=<f>` |
+| `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix is only `include` entries, each exactly a literal `shard` name (unique) and a non-empty literal `features` list, and the lists together name every feature of `make -s print-integration-features` exactly once and nothing else (a missing, duplicated or unknown feature fails with the feature and its fix), and that list is exactly the `features.mk` entries that map a file; each shard runs exactly four steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image` with `IT_FEATURES: ${{ matrix.features }}` in the job env, and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the shard, and no `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that refuses to remove an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; `timeout-minutes` is set and at most 30; `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag-ollama`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
 | `Makefile` — `integration-down` | the one teardown of a Docker integration run: `docker compose down -v --remove-orphans` for the run's project, then removal of the run's own images. Every stage calls it after its tests, pass or fail; CI's `always()` teardown steps call it with the job's `INT_PROJECT` |
@@ -289,8 +290,22 @@ one machine still need distinct `INT_PROJECT` values.
 
 CI runs the self-spawned integration suites (`test/integration`, no
 Docker) as `integration-features` in
-`.github/workflows/ci.yml`: one matrix leg per feature, each running
-`make integration-test IT_FEATURE=<feature>`. That target builds the
+`.github/workflows/ci.yml`: six matrix legs, the shards, each carrying a
+literal feature list (`features:` in its `include` entry, handed to the step
+as `IT_FEATURES`) and running
+`make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image`.
+That target runs `make integration-test IT_FEATURE=<feature>` for each feature
+in the list, one after another, with `make -k` semantics: a failing feature
+does not stop the rest, each prints `==> integration-test-features: PASS|FAIL
+<feature> <seconds>s` as it ends, a summary repeats every line and names the
+failing features, and the shard fails if any failed. A name that is not a
+feature with integration tests is a FAIL, not a zero-test pass. On a host,
+`make integration-test-features IT_FEATURES="<feature> ..."` (the default
+`IT_FEATURES_IN=host`) runs the same loop over `make integration-test-<feature>`.
+The loop is the Makefile's, not the workflow's, because the integration image
+has no `make`; each feature is its own `compose run` in it.
+
+`make integration-test IT_FEATURE=<feature>` builds the
 integration image (`build/docker/devcontainer/Dockerfile`, stage
 `integration`: base plus the source) and runs the feature's selection, the
 same one `make integration-test-<feature>` runs on a host, inside the hardened
@@ -305,13 +320,40 @@ one per transport: a single-node test whose daemon shares no port or path
 with another calls `t.Parallel()`, and a per-protocol test whose subtests
 each need a fresh daemon (an init, seal or drain is one-shot) runs those
 subtests in parallel, while a per-protocol test whose subtests are
-independent shares one daemon across every transport. The legs run in parallel, each under its own
-`timeout-minutes: 45`; the 45-minute limit is not raised. A feature whose
-`features.mk` entry is empty is not a leg: it would run zero tests and pass.
-`fail-fast` is `false`, so one red leg does not cancel the others.
+independent shares one daemon across every transport. The shards run in
+parallel, each under its own `timeout-minutes: 30`, about three times a
+shard's expected time; `feature_jobs_gate_test.go` refuses a limit over 30. A
+feature whose `features.mk` entry is empty is in no shard: it would run zero
+tests and pass. `fail-fast` is `false`, so one red shard does not cancel the
+others.
+
+Sharding exists because each leg pays the checkout, the credential mask, the
+reap, the image resolve and hold, and the teardown before and after its
+tests: with one leg per feature, a feature whose tests take a quarter of a
+minute held a `bigdisk` runner slot for well over a minute. The lists are
+balanced longest-first by the per-feature job times of main run 65165, with
+setup assumed to be about 60 s of each leg (counted once per shard) and
+`barrier-seal` taken at its first-attempt 300 s rather than the 585 s its
+rerun recorded:
+
+| Shard | Features | Expected (s) | Limit |
+|---|---|---|---|
+| 1 | audit databases distributed-locks multi-tenancy time-series | 552 | 30 min |
+| 2 | backup-restore capabilities ceremony clustering firstboot tenant-dek | 551 | 30 min |
+| 3 | barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch | 563 | 30 min |
+| 4 | api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools | 551 | 30 min |
+| 5 | cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors | 550 | 30 min |
+| 6 | coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap | 562 | 30 min |
+
+That run's 40 feature legs held 5654 slot-seconds (1.57 slot-hours; 5369, or
+1.49, with `barrier-seal` at 300 s); the six shards are expected to hold 3329
+(0.92 slot-hours), with the wall time of the job going from its slowest leg
+to its slowest shard, about nine and a half minutes. A new feature goes in the
+`features:` of the shard with the least expected time; rebalance when a
+shard's measured time drifts well past the others.
 
 Each leg names its own compose project, `IT_PROJECT`, from the run, the attempt
-and the feature, under the `qrdb-ci-` prefix, so legs running at once on one
+and the shard, under the `qrdb-ci-` prefix, so legs running at once on one
 runner never share a stack. The image is the opposite: every leg uses the
 Makefile's content-addressed `IT_IMAGE`, `qrdb-ci-it:<hash>` (`make -s
 it-image`), a hash of the build arguments that change the image and of the
@@ -347,7 +389,7 @@ first build's `.Created` and can be any age, and another job's reaper could
 remove it between the image job's build and the trivy step's `docker save`.
 What protects it is a hold: every job that uses the
 image (the image job, each leg and the soak) names one in its `IT_HOLD` environment,
-`qrdb-ci-hold-<run>-<attempt>-<job or feature>`, and `make docker-build-it`
+`qrdb-ci-hold-<run>-<attempt>-<job or shard>`, and `make docker-build-it`
 creates a container of that name from the image, never started, before it
 returns; `make docker-release-it` (the image job's teardown, and
 `make docker-down-it`) removes it. The `docker-build` job takes the image
@@ -377,17 +419,19 @@ as `integration-test-<feature>` does. On a host, `make integration-test-<feature
 and `make integration-down-<feature>` still run a feature without Docker;
 `integration_job_names_test.go` holds those two goals to one set of names.
 
-The leg list is `make -s print-integration-features`. Gitea cannot expand a
-matrix computed at run time (handbook devops.md §1, "Write matrices
-literally"), so ci.yml spells the list out and
-`test/buildgates/feature_jobs_gate_test.go` fails when the two differ, printing
-the line to paste. A new test needs no list edit; a new feature, or an entry
-that gains or loses its last file, needs that one line changed.
+The union of the shard lists is `make -s print-integration-features`, each
+feature in exactly one shard. Gitea cannot expand a matrix computed at run
+time (handbook devops.md §1, "Write matrices literally"), so ci.yml spells the
+lists out and `test/buildgates/feature_jobs_gate_test.go` fails on a feature
+no shard runs, a feature two shards (or one shard twice) run, and a listed
+name the Makefile does not print, naming the feature and the edit that fixes
+it. A new test needs no list edit; a new feature, or an entry that gains or
+loses its last file, needs one shard's `features:` changed.
 
 `make integration-test-<feature>` is the Makefile's `integration-test-%`
 pattern rule, and GNU make prefers an explicit rule to a pattern rule. An
 explicit target named for a feature therefore hides that feature's selection,
-from the leg and from anyone typing the target, which is why the Docker RAG run
+from `make integration-test-features` on a host and from anyone typing the target, which is why the Docker RAG run
 with the Ollama sidecar is `integration-test-rag-ollama`.
 `test/buildgates/feature_target_shadow_test.go` (in
 `make check-integration-feature-coverage`) fails when any `features.mk` feature
