@@ -474,11 +474,10 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	// init: the records land in the tenant's own encrypted IAM store. The
 	// system tenant can no longer provision records inside another
 	// tenant's IAM at all (owner ruling, 2026-10-01), so this
-	// authenticates as the tenant's own onboarded admin; its built-in
-	// Admin role cannot create a NEW role (RolesCreate is SO-exclusive),
-	// so it self-assigns its own pre-seeded SO role first, exactly like
+	// authenticates as the tenant's own onboarded admin, once
+	// awaitTenantAdminID sees that account completed, exactly like
 	// tenant_isolation_cli_test.go's provisionTenantIdentityFor.
-	selfAssignTenantSO(t, adminPort, tenantID, onboardedAdminClient)
+	awaitTenantAdminID(t, adminPort, tenantID, onboardedAdminClient)
 	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{

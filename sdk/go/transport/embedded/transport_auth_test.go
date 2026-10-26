@@ -136,7 +136,13 @@ func (m *mockRoleServicer) GetRole(ctx context.Context, id string) (*role.Role, 
 	return m.getRoleFn(ctx, id)
 }
 
+// GetRoleByName answers not-found, as a store holding no role by that name
+// does, unless the test supplies getRoleByNameFn: the role-assignment gate
+// asks for the tenant's SO role on every write that names a role.
 func (m *mockRoleServicer) GetRoleByName(ctx context.Context, tenantID, name string) (*role.Role, error) {
+	if m.getRoleByNameFn == nil {
+		return nil, &role.RoleNotFoundError{ID: name}
+	}
 	return m.getRoleByNameFn(ctx, tenantID, name)
 }
 

@@ -371,16 +371,20 @@ func newEnrollAuthServer(ce service.CertEnrollmentServicer) *Server {
 // pkg/bootstrap test directly against the real TenantOnboardingService.
 type fakeTenantOnboarding struct {
 	tenants tenant.TenantServicer
+	// so is answered as the tenant's SO; gotReq is the last request.
+	so     *service.TenantAdminCredential
+	gotReq *service.OnboardTenantRequest
 }
 
 var _ service.TenantOnboardingServicer = (*fakeTenantOnboarding)(nil)
 
 func (f *fakeTenantOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	f.gotReq = req
 	info, err := f.tenants.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
 	if err != nil {
 		return nil, err
 	}
-	return &service.OnboardTenantResult{Tenant: info}, nil
+	return &service.OnboardTenantResult{Tenant: info, SO: f.so}, nil
 }
 
 func assertContentType(t *testing.T, rec *httptest.ResponseRecorder, want string) {

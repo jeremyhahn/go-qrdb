@@ -6,7 +6,6 @@
 package integration
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -42,12 +41,11 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	username := fmt.Sprintf("tadmin-%s-%d", proto, ts)
 	roleName := fmt.Sprintf("tadmin-role-%s-%d", proto, ts)
 
-	// The role and user are created by the tenant's own bootstrap admin, which
-	// also holds the tenant's Security Officer role (roles:create is SO-exclusive):
-	// the system tenant's admin holds no cross-tenant roles:create / users:create,
-	// and a tenant's first admin is the supported way to populate it.
+	// The role and user are created by the tenant's own bootstrap admin: the
+	// built-in Admin role holds roles:create, users:create and roles:assign
+	// in its own tenant, while the system tenant's admin holds no
+	// cross-tenant roles:create / users:create.
 	boot := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
-	boot.grantSecurityOfficer(t, cfg, proto)
 
 	run := func(what string, args ...string) string {
 		t.Helper()
@@ -67,9 +65,10 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	userID := parseIDResponse(t, proto, "users create", run("users create",
 		"--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username, "--tenant-id", tenantID))
+	// roles:delete is the Security Officer's alone; the tenant's delete,
+	// registered by newTenantBootstrapAdmin, removes the role with it.
 	t.Cleanup(func() {
 		boot.exec(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
-		boot.exec(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
 	})
 	run("roles assign", "roles", "assign", "--user", userID, "--role", roleID)
 
@@ -136,51 +135,6 @@ func newTenantBootstrapAdmin(t *testing.T, cfg *TestConfig, proto ProtocolType, 
 		certFile: filepath.Join(certDir, "admin-cert.pem"),
 		keyFile:  filepath.Join(csrDir, "key.pem"),
 	}
-}
-
-// grantSecurityOfficer assigns the tenant's own pre-seeded Security Officer
-// role to the admin, as the admin itself (the built-in Admin role holds
-// roles:assign). roles:create is Security Officer-exclusive, so a test that
-// must create roles in a tenant does it as that tenant's own admin holding
-// both roles. Test setup only.
-func (a *tenantAdminIdentity) grantSecurityOfficer(t *testing.T, cfg *TestConfig, proto ProtocolType) {
-	t.Helper()
-
-	run := func(what string, args ...string) string {
-		t.Helper()
-		stdout, stderr, err := a.exec(t, cfg, proto, args...)
-		if err != nil {
-			t.Logf("stdout: %s", stdout)
-			t.Logf("stderr: %s", stderr)
-			t.Fatalf("[%s] %s failed: %v", proto, what, err)
-		}
-		return stdout
-	}
-
-	var users struct {
-		Users []struct {
-			ID       string `json:"id"`
-			Username string `json:"username"`
-		} `json:"users"`
-	}
-	out := run("users list", "--output", "json", "users", "list")
-	if err := json.Unmarshal([]byte(out), &users); err != nil {
-		t.Fatalf("[%s] decode users list JSON: %v (output: %s)", proto, err, out)
-	}
-	var userID string
-	for _, u := range users.Users {
-		if u.Username == a.username {
-			userID = u.ID
-			break
-		}
-	}
-	if userID == "" {
-		t.Fatalf("[%s] users list did not contain tenant admin %s (output: %s)", proto, a.username, out)
-	}
-
-	soRoleID := parseIDResponse(t, proto, "roles get-by-name so",
-		run("roles get-by-name so", "--output", "json", "roles", "get-by-name", "so"))
-	run("roles assign (security officer)", "roles", "assign", "--user", userID, "--role", soRoleID)
 }
 
 // exec runs the CLI as this tenant administrator.

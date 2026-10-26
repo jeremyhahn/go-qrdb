@@ -489,7 +489,7 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
-	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.UserID, []string{req.RoleID}, nil); err != nil {
+	if err := s.authMW.AuthorizeRoleAssignment(ctx, s.userSvc, s.roleSvc, req.UserID, req.RoleID); err != nil {
 		return nil, err
 	}
 
@@ -508,6 +508,7 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 
 	roleIDs := append(u.RoleIDs, req.RoleID)
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})
@@ -534,7 +535,7 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID); err != nil {
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID, req.RoleID); err != nil {
 		return nil, err
 	}
 
@@ -552,6 +553,7 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 	}
 
 	updated, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.UserID,
 		RoleIDs: roleIDs,
 	})

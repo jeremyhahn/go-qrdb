@@ -126,6 +126,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		AdminCertPEM:      []byte(req.AdminCertPEM),
 		AdminChainPEM:     []byte(req.AdminChainPEM),
 		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
+		SOUsername:        req.SOUsername,
+		SOCSRPEM:          []byte(req.SOCSRPEM),
+		SOCertPEM:         []byte(req.SOCertPEM),
+		SOChainPEM:        []byte(req.SOChainPEM),
+		SOPIN:             []byte(req.SOPin),
 	})
 	if err != nil {
 		// An undone id a serving node has not yet released names its retry
@@ -135,15 +140,31 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 
 	return &transport.CreateTenantResponse{
 		Tenant: mapTenantInfo(result.Tenant),
-		Admin: transport.TenantAdminCredential{
-			UserID:            result.Admin.UserID,
-			Username:          result.Admin.Username,
-			CertPEM:           string(result.Admin.CertPEM),
-			Serial:            result.Admin.Serial,
-			Thumbprint:        result.Admin.Thumbprint,
-			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-		},
+		Admin:  tenantAdminCredential(result.Admin),
+		SO:     tenantSOCredential(result.SO),
 	}, nil
+}
+
+// tenantAdminCredential converts an account onboarding enrolled.
+func tenantAdminCredential(c service.TenantAdminCredential) transport.TenantAdminCredential {
+	return transport.TenantAdminCredential{
+		UserID:            c.UserID,
+		Username:          c.Username,
+		CertPEM:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
+}
+
+// tenantSOCredential converts the tenant's SO; nil, for a tenant created
+// without one, is nil.
+func tenantSOCredential(c *service.TenantAdminCredential) *transport.TenantAdminCredential {
+	if c == nil {
+		return nil
+	}
+	so := tenantAdminCredential(*c)
+	return &so
 }
 
 // anchorsToTransport converts a tenant's trust anchors.

@@ -242,6 +242,63 @@ func TestGRPC_TenantCreate_Success(t *testing.T) {
 	}
 }
 
+// TestGRPC_TenantCreate_SO proves the SO's fields reach OnboardTenant and the
+// SO's credential is answered beside the admin's (go-qrdb#1042).
+func TestGRPC_TenantCreate_SO(t *testing.T) {
+	onboarding := &fakeTenantOnboarding{
+		result: &service.OnboardTenantResult{
+			Tenant: &tenant.TenantInfo{ID: "acme", Name: "ACME Corp"},
+			Admin:  service.TenantAdminCredential{UserID: 1, Username: "admin"},
+			SO:     &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Serial: "S2", Thumbprint: "tp"},
+		},
+	}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantOnboarding(onboarding))
+	defer cleanup()
+
+	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "acme", Name: "ACME Corp", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+		SoUsername: "so", SoCsrPem: "so-csr", SoChainPem: "so-chain", SoPin: "so-pin",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	so := resp.GetSo()
+	if so.GetUserId() != 2 || so.GetUsername() != "so" || so.GetCertPem() != "so-cert" || so.GetSerial() != "S2" || so.GetThumbprint() != "tp" {
+		t.Errorf("SO credential = %+v, want so's", so)
+	}
+	got := onboarding.gotReq
+	if got.SOUsername != "so" || string(got.SOCSRPEM) != "so-csr" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" || len(got.SOCertPEM) != 0 {
+		t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+	}
+}
+
+// TestGRPC_TenantCreate_NoSO proves a tenant created without an SO answers none.
+func TestGRPC_TenantCreate_NoSO(t *testing.T) {
+	onboarding := &fakeTenantOnboarding{
+		result: &service.OnboardTenantResult{
+			Tenant: &tenant.TenantInfo{ID: "acme", Name: "ACME Corp"},
+			Admin:  service.TenantAdminCredential{UserID: 1, Username: "admin"},
+		},
+	}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantOnboarding(onboarding))
+	defer cleanup()
+
+	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "acme", Name: "ACME Corp", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetSo() != nil {
+		t.Errorf("SO credential = %+v, want none", resp.GetSo())
+	}
+	if onboarding.gotReq.SOUsername != "" || len(onboarding.gotReq.SOPIN) != 0 {
+		t.Errorf("OnboardTenant request = %+v, want no SO", onboarding.gotReq)
+	}
+}
+
 func TestGRPC_TenantCreate_AlreadyExists(t *testing.T) {
 	onboarding := &fakeTenantOnboarding{err: tenant.ErrTenantAlreadyExists}
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),

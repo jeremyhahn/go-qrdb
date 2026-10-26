@@ -420,7 +420,7 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, auth
 
 		// The same gate every role-assignment write passes: roles:assign in
 		// the user's tenant, and the role must exist there.
-		if err := authMW.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, userID, []string{roleID}, nil); err != nil {
+		if err := authMW.AuthorizeRoleAssignment(ctx, userSvc, roleSvc, userID, roleID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_assign", Err: err}
 		}
 
@@ -441,6 +441,7 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, auth
 		roleIDs = append(roleIDs, roleID)
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {
@@ -483,7 +484,7 @@ func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware
 			return mcp.NewToolResultError("role_id is required"), nil
 		}
 
-		if err := authMW.AuthorizeRoleUnassignment(ctx, userSvc, userID); err != nil {
+		if err := authMW.AuthorizeRoleUnassignment(ctx, userSvc, userID, roleID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_unassign", Err: err}
 		}
 
@@ -500,6 +501,7 @@ func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware
 		}
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {

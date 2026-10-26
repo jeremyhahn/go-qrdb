@@ -99,6 +99,16 @@ func AdminCredential(c *pb.TenantAdminCredential) transport.TenantAdminCredentia
 	}
 }
 
+// SOCredential converts the tenant SO's TenantAdminCredential; nil, for a
+// tenant created without an SO, is nil.
+func SOCredential(c *pb.TenantAdminCredential) *transport.TenantAdminCredential {
+	if c == nil {
+		return nil
+	}
+	so := AdminCredential(c)
+	return &so
+}
+
 // TrustAnchors converts a TrustAnchorListResponse. It is never nil.
 func TrustAnchors(r *pb.TrustAnchorListResponse) *transport.TrustAnchorList {
 	out := &transport.TrustAnchorList{Anchors: make([]transport.TrustAnchor, 0, len(r.GetAnchors()))}
@@ -128,5 +138,10 @@ func TenantCreateRequest(req *transport.CreateTenantRequest) *pb.TenantCreateReq
 		AdminCertPem:      req.AdminCertPEM,
 		AdminChainPem:     req.AdminChainPEM,
 		TrustAnchorsPem:   req.TrustAnchorsPEM,
+		SoUsername:        req.SOUsername,
+		SoCsrPem:          req.SOCSRPEM,
+		SoCertPem:         req.SOCertPEM,
+		SoChainPem:        req.SOChainPEM,
+		SoPin:             req.SOPin,
 	}
 }

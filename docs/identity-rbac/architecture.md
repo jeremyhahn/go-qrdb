@@ -872,6 +872,7 @@ go-trusted-platform and go-xkms.
 | Permission vocabulary and registry | `pkg/permission` | go-qrdb |
 | The RBAC PDP, ABAC, middleware, authenticators | `pkg/auth` | go-qrdb |
 | Stored ABAC policies (tenant records at `__sys:abac_policy/<name>`; not yet read by the evaluator) | `pkg/service` (`PolicyServicer`) | go-qrdb |
+| Separation-of-duties posture: its resolver, the cluster record `__sys:cluster/separation_of_duties` and the `posture-change` audit event, emitted after the record is written by the node whose write wins | `pkg/auth/wiring` (`ResolveStrictSeparation`, `RecordSeparationPosture`); read by embedders as `node.Node.StrictSeparation()` | go-qrdb |
 | Certificate issuance | `pkg/cert` — see [../certificate-authority/](../certificate-authority/) | go-qrdb |
 | Auth factors framework and the mTLS factor | `pkg/authfactors` — see [../auth-factors/](../auth-factors/) | go-qrdb |
 | FIDO2 / PIV / PKCS#11 factor implementations | — | **go-xkms**, injected |

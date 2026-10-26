@@ -2007,6 +2007,7 @@ func runStart(f *startFlags) (err error) {
 				InvitationRequireKeyPin:   f.invitationRequireKeyPin,
 				InvitationRedeemLimit:     f.invitationRedeemLimit,
 				MTLSBindingPolicy:         f.mtlsBindingPolicy,
+				SeparationOfDuties:        wiring.ResolveStrictSeparation(f.separationOfDuties),
 				PINBackend:                pinBackend,
 				Logger:                    slog.Default(),
 				EmbeddingConfig:           f.embeddingConfig,
@@ -2252,7 +2253,7 @@ func runStart(f *startFlags) (err error) {
 			// separation of duties; otherwise the config flag selects it. The
 			// value flows into both the first-boot role provisioning and the RBAC
 			// authorizer so seeding and enforcement agree.
-			strictSoD := fips140.Enabled() || f.separationOfDuties
+			strictSoD := wiring.ResolveStrictSeparation(f.separationOfDuties)
 			slog.Info("RBAC posture resolved",
 				slog.Bool("separation_of_duties", strictSoD),
 				slog.Bool("fips140", fips140.Enabled()),
@@ -2323,6 +2324,17 @@ func runStart(f *startFlags) (err error) {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
 					slog.Info("user/role store bootstrap canceled by shutdown signal")
+					return nil
+				}
+				return err
+			}
+
+			// Record the resolved separation-of-duties posture in the
+			// replicated system record; a first recording or a change from
+			// the recorded posture leaves one compliance audit event (#1128).
+			if err := recordSeparationPostureAtStart(sigCtx, authKVSvc, complianceAudit, f.separationOfDuties); err != nil {
+				_ = shutdownNode(nodeCloser)
+				if sigCtx.Err() != nil {
 					return nil
 				}
 				return err
@@ -2812,6 +2824,9 @@ func runStart(f *startFlags) (err error) {
 				)
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
+					// Tenant create commits a named SO's PIN through the
+					// same authenticator the SO gate verifies it with.
+					svcNode.AttachSOPINs(authResult.soAuthenticator)
 				}
 				// go-qrdb#548 review item 3: the probe's pointer identity is
 				// always non-nil (go-qrdb#560 review B1 -- ceremony

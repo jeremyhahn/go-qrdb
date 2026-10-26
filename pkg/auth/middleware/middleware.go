@@ -91,6 +91,12 @@ type AuthMiddleware struct {
 	// auth.MTLSBindingEnrolled -- the behaviour before the setting existed.
 	bindingPolicy auth.MTLSBindingPolicy
 
+	// strictSeparation is the strict separation-of-duties posture
+	// (auth.separation_of_duties, forced on under FIPS 140-3 mode). Only under
+	// it is a tenant's so role granted and revoked by that tenant's SO alone
+	// (authorizeSORoleChange); its zero value is the standard posture.
+	strictSeparation bool
+
 	// pendingAdmins holds the first admin each tenant was onboarded with
 	// before its identity records could be written; the trust-on-first-init
 	// window of a tenant barrier admits only that admin's certificate (see
@@ -320,6 +326,17 @@ func WithMTLSBindingPolicy(p auth.MTLSBindingPolicy) Option {
 	}
 }
 
+// WithStrictSeparation selects the strict separation-of-duties posture, the
+// value wiring.ResolveStrictSeparation resolves for the authorizer. Under it a
+// write that grants or revokes a tenant's so role is admitted only for that
+// tenant's own SO; under the standard posture (false, the default)
+// roles:assign and roles:unassign decide it as they decide every other role.
+func WithStrictSeparation(strict bool) Option {
+	return func(m *AuthMiddleware) {
+		m.strictSeparation = strict
+	}
+}
+
 // MTLSBindingPolicy returns the enrolment posture this middleware enforces.
 // A nil middleware (auth disabled) enforces none and answers the default,
 // which is auth.MTLSBindingRequired (go-qrdb#548) -- the same zero value
@@ -331,6 +348,13 @@ func (m *AuthMiddleware) MTLSBindingPolicy() auth.MTLSBindingPolicy {
 		return auth.MTLSBindingRequired
 	}
 	return m.bindingPolicy
+}
+
+// StrictSeparation reports whether the middleware gates so role grants and
+// revokes under strict separation of duties (WithStrictSeparation). A nil
+// middleware reports false, the standard posture.
+func (m *AuthMiddleware) StrictSeparation() bool {
+	return m != nil && m.strictSeparation
 }
 
 // WithRevocationChecker gates the on-behalf forwarding path on certificate

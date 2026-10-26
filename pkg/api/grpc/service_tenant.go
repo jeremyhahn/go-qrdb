@@ -51,6 +51,11 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 		AdminCertPEM:      []byte(req.GetAdminCertPem()),
 		AdminChainPEM:     []byte(req.GetAdminChainPem()),
 		TrustAnchorsPEM:   []byte(req.GetTrustAnchorsPem()),
+		SOUsername:        req.GetSoUsername(),
+		SOCSRPEM:          []byte(req.GetSoCsrPem()),
+		SOCertPEM:         []byte(req.GetSoCertPem()),
+		SOChainPEM:        []byte(req.GetSoChainPem()),
+		SOPIN:             []byte(req.GetSoPin()),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -58,15 +63,25 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 
 	return &pb.TenantCreateResponse{
 		Tenant: tenantToProto(result.Tenant),
-		Admin: &pb.TenantAdminCredential{
-			UserId:            result.Admin.UserID,
-			Username:          result.Admin.Username,
-			CertPem:           string(result.Admin.CertPEM),
-			Serial:            result.Admin.Serial,
-			Thumbprint:        result.Admin.Thumbprint,
-			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-		},
+		Admin:  tenantAdminCredentialToProto(&result.Admin),
+		So:     tenantAdminCredentialToProto(result.SO),
 	}, nil
+}
+
+// tenantAdminCredentialToProto renders an account onboarding enrolled; nil
+// for none.
+func tenantAdminCredentialToProto(c *service.TenantAdminCredential) *pb.TenantAdminCredential {
+	if c == nil {
+		return nil
+	}
+	return &pb.TenantAdminCredential{
+		UserId:            c.UserID,
+		Username:          c.Username,
+		CertPem:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
 }
 
 // TenantGet retrieves a tenant by ID.

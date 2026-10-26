@@ -117,6 +117,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		"admin_cert_pem":    req.AdminCertPEM,
 		"admin_chain_pem":   req.AdminChainPEM,
 		"trust_anchors_pem": req.TrustAnchorsPEM,
+		"so_username":       req.SOUsername,
+		"so_csr_pem":        req.SOCSRPEM,
+		"so_cert_pem":       req.SOCertPEM,
+		"so_chain_pem":      req.SOChainPEM,
+		"so_pin":            req.SOPin,
 	} {
 		if value != "" {
 			args[name] = value
@@ -134,14 +139,15 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 
 	var result struct {
-		Tenant mcpTenantInfo                   `json:"tenant"`
-		Admin  transport.TenantAdminCredential `json:"admin"`
+		Tenant mcpTenantInfo                    `json:"tenant"`
+		Admin  transport.TenantAdminCredential  `json:"admin"`
+		SO     *transport.TenantAdminCredential `json:"so,omitempty"`
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin}, nil
+	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin, SO: result.SO}, nil
 }
 
 // trustAnchorTool calls a trust-anchor tool and decodes the tenant's

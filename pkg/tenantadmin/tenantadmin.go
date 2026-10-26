@@ -47,6 +47,12 @@ import (
 // "{tenant}/{database}/..." and a database name cannot hold ':'.
 const pendingKey = "__sys:pending-admin"
 
+// pendingSOKey is the reserved key a tenant's pending Security Officer lives
+// under, beside pendingKey and in the same shape: tenant create's optional SO
+// (bootstrap.TenantProvisionConfig.SO) waits there, as the first admin does,
+// for the tenant barrier that holds the SO's account.
+const pendingSOKey = "__sys:pending-so"
+
 // Pending is a tenant admin onboarded before the tenant's identity records
 // could be written.
 type Pending struct {
@@ -93,6 +99,7 @@ type Store interface {
 // KVStore is the built-in Store over the replicated system store.
 type KVStore struct {
 	store kvstore.KVStore
+	key   string
 }
 
 // Compile-time interface check.
@@ -102,7 +109,14 @@ var _ Store = (*KVStore)(nil)
 // replicated system store (not a tenant-confined one): it confines each
 // tenant itself.
 func NewKVStore(store kvstore.KVStore) *KVStore {
-	return &KVStore{store: store}
+	return &KVStore{store: store, key: pendingKey}
+}
+
+// NewSOKVStore returns the Store of tenants' pending Security Officers over
+// the same replicated store: one record per tenant under __sys:pending-so,
+// with NewKVStore's semantics.
+func NewSOKVStore(store kvstore.KVStore) *KVStore {
+	return &KVStore{store: store, key: pendingSOKey}
 }
 
 func (s *KVStore) scoped(tenantID string) (kvstore.KVStore, error) {
@@ -139,7 +153,7 @@ func (s *KVStore) Create(ctx context.Context, tenantID string, p *Pending) error
 	if err != nil {
 		return &StoreError{Op: "encode", Err: err}
 	}
-	stored, err := atomic.PutIfAbsent(ctx, pendingKey, value)
+	stored, err := atomic.PutIfAbsent(ctx, s.key, value)
 	if err != nil {
 		return &StoreError{Op: "create", Err: err}
 	}
@@ -155,7 +169,7 @@ func (s *KVStore) Get(ctx context.Context, tenantID string) (*Pending, error) {
 	if err != nil {
 		return nil, err
 	}
-	value, err := scoped.Get(ctx, pendingKey)
+	value, err := scoped.Get(ctx, s.key)
 	if err != nil {
 		return nil, &StoreError{Op: "get", Err: err}
 	}
@@ -190,7 +204,7 @@ func (s *KVStore) Delete(ctx context.Context, tenantID string, read *Pending) (b
 			return false, &StoreError{Op: "encode", Err: err}
 		}
 	}
-	deleted, err := atomic.CompareAndDelete(ctx, pendingKey, expected)
+	deleted, err := atomic.CompareAndDelete(ctx, s.key, expected)
 	if err != nil {
 		return false, &StoreError{Op: "delete", Err: err}
 	}

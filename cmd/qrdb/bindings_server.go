@@ -31,6 +31,7 @@ import (
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -281,7 +282,10 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		CertKeyProviderFactory: b.certKeyProviderFactory,
 		TrustAnchors:           b.trustAnchors,
 		ClusterTrustDomain:     embeddedClusterTrustDomain(),
-		Logger:                 slog.Default(),
+		// The embedded server has no auth.separation_of_duties; FIPS 140-3
+		// mode alone makes it strict.
+		SeparationOfDuties: wiring.ResolveStrictSeparation(false),
+		Logger:             slog.Default(),
 	})
 	if svcErr != nil {
 		hub.Close()

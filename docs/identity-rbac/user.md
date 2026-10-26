@@ -169,6 +169,10 @@ From the moment the delete starts, the role grants nothing. If the delete
 fails part way, for example because a node is unavailable, run it again: it
 picks up where it stopped.
 
+Deleting a role is the Security Officer's: the built-in `so` role carries
+`roles:delete` and the Admin role does not, so an Admin that creates and
+updates roles is refused their delete with permission denied (HTTP 403).
+
 **Store an ABAC policy and read it back.**
 
 ```bash
@@ -206,6 +210,34 @@ holder roster and authenticates with its holder certificate and factors. See
 
 The Security Officer's inability to use keys is the separation-of-duties
 control, not an oversight.
+
+The other half of that control, under strict separation of duties
+(`auth.separation_of_duties: true`, always on in FIPS 140-3 mode): only your
+tenant's Security Officer can make someone a Security Officer, or stop them
+being one. An Admin assigns and
+unassigns every other role, but `roles assign`, `roles unassign`, and a
+`users create` or `users update` whose role list adds or drops `so` are
+refused for an Admin with permission denied (HTTP 403), and nothing is
+written. The `system` tenant's Security Officer is refused too: your tenant's
+`so` role is granted by your tenant's own. Your tenant's first Security
+Officer is named at `tenant create`
+([../multi-tenancy/user.md](../multi-tenancy/user.md)). Without strict
+separation an Admin assigns and unassigns `so` like any other role.
+
+Turning `auth.separation_of_duties` on or off is audited. When the daemon
+starts under a posture other than the recorded one, or on the first start, it
+first records the new posture and then writes one `posture-change` audit
+event, which names the previous posture, the new one, and whether FIPS
+140-3 mode forced it. Restarting with the setting unchanged writes nothing.
+To see the changes:
+
+```
+qrdb audit query --action posture-change
+```
+
+If the daemon cannot read or write that record, it refuses to start.
+Changing the setting does not change any account's roles: an Admin created
+under strict separation keeps the roles it was given.
 
 Every tenant gets these roles, but the node's own barrier is not any tenant's.
 Initializing, unsealing, sealing, rekeying or recovering the node barrier,

@@ -2886,7 +2886,7 @@ func retryableStatus(status int) bool {
 // certificate the tenant-create response carries in its "admin.cert_pem"
 // field. The create issues that certificate; the auto-unseal tenant's admin
 // account behind it is completed just after the create answers, which
-// selfAssignTenantSO waits for.
+// awaitTenantAdminID waits for.
 func raftTenantAdminClient(t *testing.T, ca *testCA, adminKeyPEM, tenantCreateBody []byte) *http.Client {
 	t.Helper()
 	var resp struct {

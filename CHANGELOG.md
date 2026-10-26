@@ -11,6 +11,42 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A certificate a node issues or enrolls is admitted on its next
+  handshake** (#1128). A tenant's first certificate brings its login CA into
+  use. Until now the TLS client trust learned of that CA only through an
+  asynchronous rebuild, so a login that dialed the moment the certificate came
+  back could be refused. `SignCertificate` and `EnrollCertificate` now bring
+  the node's client trust up to date before answering
+  (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
+
+### Added
+
+- **The separation-of-duties posture is readable and its changes are
+  audited** (#1128). Embedders read the posture a node resolved with
+  `node.Node.StrictSeparation()`, and the resolver as
+  `sdk.ResolveStrictSeparation`. At daemon start, and in `Node.FirstBoot` /
+  `Node.FirstBootWithCeremony`, the resolved posture is compared with the
+  cluster record `__sys:cluster/separation_of_duties`. On a first recording or
+  a change, the record is written first; the node whose conditional write
+  wins then emits one `posture-change` audit event (`previous`, `posture`,
+  `fips_forced`). A record that cannot be read or written refuses the start.
+
+- **Tenant create takes an optional Security Officer** (#1042): `so_username`,
+  `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
+  `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
+  `qrdb tenant create --so-username --so-csr|--so-cert --so-chain --so-pin`.
+  The SO is enrolled with the tenant's `so` role alone and its PIN set through
+  the SO authenticator; the response carries its credential as `so`, and
+  `--out` writes `so-cert.pem`. A partial set or a CSR with a certificate is
+  `InvalidArgument` and creates nothing; so, under strict separation of
+  duties, is an SO matching the admin by username or key, while outside it an
+  SO matching the admin by both is the admin, granted `so` beside `admin`, and
+  a half match is refused. An isolated tenant records the SO as
+  `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
+  SO authenticator to tenant onboarding.
+
 ## [0.56.0-alpha] - 2026-10-26
 
 ### Removed
@@ -125,6 +161,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
+  (#1042): the CSR reads were keyed by path, so the second flag left the
+  admin's CSR empty.
+
 - **MCP collection document IDs travel as decimal strings, losslessly**: the
   `id` argument of `qrdb_collection_get`, `qrdb_collection_update` and
   `qrdb_collection_delete` was a JSON number, so a default `unix_nano` ID
@@ -160,6 +200,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The Security Officer separation checks hold only under strict separation
+  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
+  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
+  now gates the SO-exclusive grant and revoke of the `so` role
+  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
+  the first admin, as it already gated the Owner role's voiding. In the
+  standard posture the tenant Admin grants and revokes `so` like any other
+  role, and may be named the tenant's SO.
 - **`mvcchost.New` opens its MVCC state machine in memory** (#1030): each
   Host gets its own in-memory Pebble filesystem, so a test built over it
   writes nothing to disk.

@@ -737,6 +737,21 @@ committed meanwhile is kept rather than refused.
   [Creating a tenant](#creating-a-tenant-onboarding-with-its-first-admin)
   describes, with the request fields `admin_username`, `admin_csr_pem` and
   `admin_cert_pem`.
+- **The tenant's security officer from tenant create**: the
+  optional `so_username`, `so_csr_pem` / `so_cert_pem`, `so_chain_pem` and
+  `so_pin`, planned beside the admin in `pkg/bootstrap/tenant_so.go`. A partial
+  set or a CSR with a certificate is refused before anything is written. Under
+  strict separation of duties an SO matching the admin by username or by SPKI
+  thumbprint is refused too; outside it an SO matching the admin by both is the
+  admin, whose account is granted `so` beside `admin`, and one matching by only
+  one of the two is refused. A distinct SO is enrolled
+  with the `so` role alone and its PIN is set with
+  `SOAuthenticator.SetSOPIN`, one PIN per tenant, as the create's last step.
+  An isolated tenant records the SO as `__sys:pending-so` beside the pending
+  admin; the account is completed right after the admin's. Both postures
+  enroll the SO alike otherwise. Under strict separation only an SO grants or
+  revokes `so`. No tenant route is SO-gated yet: the SO permissions are
+  node-barrier, cross-scope.
 - **The isolation policy**, in `pkg/tenant/isolation_policy.go`: the cluster
   floor (`ClusterIsolationPolicy`: unset, `strict` or `operator-access`,
   tighten-only) and the per-tenant opt-in (`TenantIsolationPolicy`: inherit

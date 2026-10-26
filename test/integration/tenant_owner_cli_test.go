@@ -63,9 +63,9 @@ func testTenantOwnerDemotionOverProtocol(t *testing.T, node *multiProtoNode, pro
 
 	firstCert, firstKey := createTenantWithAdminCert(t, node, proto, tenantID, "Tenant Owner", "prefix", false, tenantID+"-admin")
 	firstClient := mtlsHTTPClientFromFiles(t, node.ca, firstCert, firstKey, 15*time.Second)
-	// Creating the reader role is SO-exclusive; the tenant's first admin
-	// takes the tenant's own SO role for this setup step only.
-	selfAssignTenantSO(t, node.restPort, tenantID, firstClient)
+	// The tenant's first admin creates the reader role once its account is
+	// completed.
+	awaitTenantAdminID(t, node.restPort, tenantID, firstClient)
 
 	roleBody, status := iraftAPIPost(t, firstClient, fmt.Sprintf("https://127.0.0.1:%d/roles", node.restPort),
 		map[string]any{"name": "towner-reader", "tenant_id": tenantID, "permissions": []string{"users:read"}})
