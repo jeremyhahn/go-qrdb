@@ -334,7 +334,8 @@ described in the next section.
 ## The lean-standalone import gate
 
 `make check-lean-standalone` runs the gate. It runs
-`TestLeanStandaloneImportGraph` and `TestLeanStandaloneEdgeDetection` in
+`TestLeanStandaloneImportGraph` and the other `TestLeanStandalone*` proofs of
+its edge finder in
 `test/buildgates/lean_standalone_test.go`, and CI's `image` job runs the same
 target. The gate works as follows:
 
@@ -348,10 +349,26 @@ target. The gate works as follows:
   the `sdk/go` module. `codec_json` is the only tag in the set, because the
   DAO's codec needs it at run time. Anything a plain `go build` by an
   embedder would not enable stays out.
-- **Forbidden set.** go-quicraft, PebbleDB, `pkg/api`, `pkg/server`,
-  `pkg/cluster`, `pkg/vector`, `pkg/timeseries`, mcp-go, the Prometheus
-  client, gin, chi and go-objstore. A path matches at a path-segment boundary,
-  so `pkg/api` forbids `pkg/api/rest` but not `pkg/apimodule`.
+- **Forbidden set.** go-quicraft's Raft engine, PebbleDB, the `pkg/api`
+  subpackages, `pkg/server`, `pkg/cluster`, `pkg/vector`, `pkg/timeseries`,
+  mcp-go, the Prometheus client, gin, chi and go-objstore. Each entry in
+  `leanStandaloneForbidden` is a `leanRule`. A rule forbids the package at its
+  path, the packages beneath it, or both. A path lies beneath an entry only at
+  a path-segment boundary, so `pkg/api/rest` is beneath `pkg/api` and
+  `pkg/apimodule` is not. Two entries are narrower than a whole tree:
+  - **go-quicraft.** Only the Raft engine is forbidden: the NodeHost package
+    `github.com/jeremyhahn/go-quicraft/pkg` itself, and the
+    `pkg/internal/...` packages beneath it. The seal and Shamir primitives
+    (`pkg/seal`, `pkg/crypto/shamir`) are allowed, because the ownership
+    boundary puts them in go-quicraft. So are the other public leaf packages
+    (`pkg/sm`, `pkg/config`, `pkg/logdb`, `pkg/writemode`). Each costs 1–13
+    packages and none of them pulls in the engine.
+  - **`pkg/api`.** Only its subpackages are forbidden: the protocol servers
+    and their wire and proto packages. The root package holds the contract
+    types that `pkg/mvcc` needs, and it is allowed.
+  `TestLeanStandaloneRuleMatches`, `TestLeanStandaloneForbiddenRaftEngine` and
+  `TestLeanStandaloneForbiddenAPISubpackages` pin both narrowings: a synthetic
+  edge into the engine, or into a `pkg/api` subpackage, still fails.
 - **What is compared.** The gate compares edges, not packages: every import
   from a package that is not forbidden to one that is. An edge inside the
   forbidden set disappears with the edge that reached it. Comparing edges

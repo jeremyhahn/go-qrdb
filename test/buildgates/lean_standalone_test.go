@@ -37,23 +37,45 @@ const leanStandaloneFixture = localModule + "/sdk/go/examples/leanstandalone"
 // `go build` by an embedder would not have.
 const leanStandaloneTags = "codec_json"
 
+// leanRule forbids the package at path, the packages beneath it at a
+// path-segment boundary, or both: {path: pkg/api, subpackages: true} forbids
+// pkg/api/rest and neither pkg/api nor pkg/apimodule.
+type leanRule struct {
+	path        string
+	self        bool
+	subpackages bool
+}
+
+// matches reports whether importPath falls under r.
+func (r leanRule) matches(importPath string) bool {
+	if importPath == r.path {
+		return r.self
+	}
+	return r.subpackages && strings.HasPrefix(importPath, r.path+"/")
+}
+
 // leanStandaloneForbidden lists what a lean standalone embedder must not
-// compile: features it does not use. A path is forbidden when it equals an
-// entry or lies beneath one at a path-segment boundary, so pkg/api forbids
-// pkg/api/rest and not pkg/apimodule.
-var leanStandaloneForbidden = []string{
-	"github.com/jeremyhahn/go-quicraft",
-	"github.com/cockroachdb/pebble",
-	localModule + "/pkg/api",
-	localModule + "/pkg/server",
-	localModule + "/pkg/cluster",
-	localModule + "/pkg/vector",
-	localModule + "/pkg/timeseries",
-	"github.com/mark3labs/mcp-go",
-	"github.com/prometheus/client_golang",
-	"github.com/gin-gonic/gin",
-	"github.com/go-chi/chi",
-	"github.com/jeremyhahn/go-objstore",
+// compile: features it does not use. Ruling 193 narrowed it to the Raft
+// engine and the pkg/api subpackages on the go-quicraft and pkg/api sides.
+var leanStandaloneForbidden = []leanRule{
+	// Only go-quicraft's Raft engine: the NodeHost package and the internal
+	// packages beneath it. Its seal and Shamir primitives, and the other public
+	// leaf packages, cost 1-13 dependencies and pull no engine (ruling 193 D).
+	{path: "github.com/jeremyhahn/go-quicraft/pkg", self: true},
+	{path: "github.com/jeremyhahn/go-quicraft/pkg/internal", self: true, subpackages: true},
+	{path: "github.com/cockroachdb/pebble", self: true, subpackages: true},
+	// The protocol servers beneath pkg/api, not the contract types in its root
+	// that pkg/mvcc needs (ruling 193 E).
+	{path: localModule + "/pkg/api", subpackages: true},
+	{path: localModule + "/pkg/server", self: true, subpackages: true},
+	{path: localModule + "/pkg/cluster", self: true, subpackages: true},
+	{path: localModule + "/pkg/vector", self: true, subpackages: true},
+	{path: localModule + "/pkg/timeseries", self: true, subpackages: true},
+	{path: "github.com/mark3labs/mcp-go", self: true, subpackages: true},
+	{path: "github.com/prometheus/client_golang", self: true, subpackages: true},
+	{path: "github.com/gin-gonic/gin", self: true, subpackages: true},
+	{path: "github.com/go-chi/chi", self: true, subpackages: true},
+	{path: "github.com/jeremyhahn/go-objstore", self: true, subpackages: true},
 }
 
 // leanStandaloneEdges is the ratchet: every import edge by which the fixture
@@ -70,28 +92,22 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/atrest -> github.com/cockroachdb/pebble/v2":     true,
 	"pkg/atrest -> github.com/cockroachdb/pebble/v2/vfs": true,
 
-	// Seal state from the L1 seal home; sealed-window contract types.
-	"pkg/auth -> github.com/jeremyhahn/go-quicraft/pkg/seal": true,
-	"pkg/auth -> pkg/api/sealedwindow":                       true,
+	// Sealed-window contract types.
+	"pkg/auth -> pkg/api/sealedwindow": true,
 
 	// The gRPC proto and chi types in the shared auth chain.
 	"pkg/auth/middleware -> github.com/go-chi/chi/v5": true,
 
 	// The service.Host interface LocalBackend implements is typed by the
 	// quicraft NodeHost.
-	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg":        true,
-	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg/config": true,
-	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg/sm":     true,
-	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg/sm/kv":  true,
+	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg": true,
 
 	// The Raft backend, reached through pkg/service.
-	"pkg/backend/raft -> github.com/jeremyhahn/go-quicraft/pkg":    true,
-	"pkg/backend/raft -> github.com/jeremyhahn/go-quicraft/pkg/sm": true,
-	"pkg/backend/raft -> pkg/cluster/featuregate":                  true,
+	"pkg/backend/raft -> github.com/jeremyhahn/go-quicraft/pkg": true,
+	"pkg/backend/raft -> pkg/cluster/featuregate":               true,
 
-	// Shamir from quicraft; sealed-window contract types.
-	"pkg/ceremony -> github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir": true,
-	"pkg/ceremony -> pkg/api/sealedwindow":                                true,
+	// Sealed-window contract types.
+	"pkg/ceremony -> pkg/api/sealedwindow": true,
 
 	// Cluster feature gates and membership.
 	"pkg/clusterenroll -> pkg/cluster/featuregate": true,
@@ -104,56 +120,36 @@ var leanStandaloneEdges = map[string]bool{
 	// Cluster topology types in the config schema.
 	"pkg/config -> pkg/cluster": true,
 
-	// The per-database barrier WAL is quicraft logdb on pebble.
-	"pkg/database -> github.com/cockroachdb/pebble/v2":                  true,
-	"pkg/database -> github.com/cockroachdb/pebble/v2/vfs":              true,
-	"pkg/database -> github.com/jeremyhahn/go-quicraft/pkg":             true,
-	"pkg/database -> github.com/jeremyhahn/go-quicraft/pkg/logdb":       true,
-	"pkg/database -> github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb": true,
+	// The per-database barrier WAL is quicraft logdb on pebble, opened through
+	// the NodeHost package.
+	"pkg/database -> github.com/cockroachdb/pebble/v2":      true,
+	"pkg/database -> github.com/cockroachdb/pebble/v2/vfs":  true,
+	"pkg/database -> github.com/jeremyhahn/go-quicraft/pkg": true,
 
-	// Raft state-machine interfaces; pebble vfs; vector and time-series
-	// engines.
-	"pkg/engine -> github.com/cockroachdb/pebble/v2/vfs":        true,
-	"pkg/engine -> github.com/jeremyhahn/go-quicraft/pkg/sm":    true,
-	"pkg/engine -> github.com/jeremyhahn/go-quicraft/pkg/sm/kv": true,
-	"pkg/engine -> pkg/timeseries":                              true,
-	"pkg/engine -> pkg/vector":                                  true,
+	// Pebble vfs; vector and time-series engines.
+	"pkg/engine -> github.com/cockroachdb/pebble/v2/vfs": true,
+	"pkg/engine -> pkg/timeseries":                       true,
+	"pkg/engine -> pkg/vector":                           true,
 
 	// The pebble.DB index the Raft state machine in pkg/store builds; reached
 	// only through pkg/store.
 	"pkg/index/pebbleindex -> github.com/cockroachdb/pebble/v2": true,
-
-	// The L1 seal home: pkg/seal re-exports go-quicraft/pkg/seal and Shamir
-	// (Layer Ownership), and its users follow.
-	"pkg/keydelivery -> github.com/jeremyhahn/go-quicraft/pkg/seal":   true,
-	"pkg/pin -> github.com/jeremyhahn/go-quicraft/pkg/seal":           true,
-	"pkg/seal -> github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir": true,
-	"pkg/seal -> github.com/jeremyhahn/go-quicraft/pkg/seal":          true,
-	"pkg/secure -> github.com/jeremyhahn/go-quicraft/pkg/seal":        true,
 
 	// The encrypted file system is a pebble vfs.FS.
 	"pkg/seal/encfs -> github.com/cockroachdb/pebble/v2/vfs": true,
 
 	// Every feature service is compiled into one package.
 	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg":          true,
-	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg/config":   true,
-	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg/logdb":    true,
-	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg/sm":       true,
-	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg/sm/kv":    true,
 	"pkg/service -> github.com/prometheus/client_golang/prometheus": true,
-	"pkg/service -> pkg/api":                                        true,
 	"pkg/service -> pkg/cluster":                                    true,
 	"pkg/service -> pkg/cluster/featuregate":                        true,
 	"pkg/service -> pkg/timeseries":                                 true,
 	"pkg/service -> pkg/vector":                                     true,
 	"pkg/service -> pkg/vector/hnsw":                                true,
 
-	// Raft state-machine interfaces; vector and time-series engines.
-	"pkg/statemachine -> github.com/jeremyhahn/go-quicraft/pkg/sm":    true,
-	"pkg/statemachine -> github.com/jeremyhahn/go-quicraft/pkg/sm/kv": true,
-	"pkg/statemachine -> pkg/api":                                     true,
-	"pkg/statemachine -> pkg/timeseries":                              true,
-	"pkg/statemachine -> pkg/vector/hnsw":                             true,
+	// Vector and time-series engines.
+	"pkg/statemachine -> pkg/timeseries":  true,
+	"pkg/statemachine -> pkg/vector/hnsw": true,
 
 	// The object-store backend, compiled by server/lifecycle.
 	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/common":  true,
@@ -172,53 +168,43 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/storage/vector -> github.com/cockroachdb/pebble/v2":         true,
 	"pkg/storage/vector -> github.com/cockroachdb/pebble/v2/bloom":   true,
 	"pkg/storage/vector -> github.com/cockroachdb/pebble/v2/sstable": true,
-	"pkg/storage/vector/schema -> pkg/api":                           true,
 
-	// The pebble store; Raft state-machine interfaces; time series.
-	"pkg/store -> github.com/cockroachdb/pebble/v2":            true,
-	"pkg/store -> github.com/jeremyhahn/go-quicraft/pkg/sm":    true,
-	"pkg/store -> github.com/jeremyhahn/go-quicraft/pkg/sm/kv": true,
-	"pkg/store -> pkg/timeseries":                              true,
+	// The pebble store; time series.
+	"pkg/store -> github.com/cockroachdb/pebble/v2": true,
+	"pkg/store -> pkg/timeseries":                   true,
 
 	// Prometheus metrics, reached through pkg/service.
 	"pkg/util/metrics -> github.com/prometheus/client_golang/prometheus":            true,
 	"pkg/util/metrics -> github.com/prometheus/client_golang/prometheus/collectors": true,
 	"pkg/util/metrics -> github.com/prometheus/client_golang/prometheus/promauto":   true,
 
-	// Write modes re-export quicraft's.
-	"pkg/writemode -> github.com/jeremyhahn/go-quicraft/pkg/writemode": true,
-
 	// The SDK root re-exports every feature and transport.
-	"sdk/go -> github.com/cockroachdb/pebble/v2/vfs":                true,
-	"sdk/go -> github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir": true,
-	"sdk/go -> github.com/jeremyhahn/go-quicraft/pkg/seal":          true,
-	"sdk/go -> github.com/mark3labs/mcp-go/server":                  true,
-	"sdk/go -> pkg/api/grpc":                                        true,
-	"sdk/go -> pkg/api/mcp":                                         true,
-	"sdk/go -> pkg/api/mcp/wire":                                    true,
-	"sdk/go -> pkg/api/quic":                                        true,
-	"sdk/go -> pkg/api/rest":                                        true,
-	"sdk/go -> pkg/api/sealedwindow":                                true,
-	"sdk/go -> pkg/cluster":                                         true,
-	"sdk/go -> pkg/cluster/featuregate":                             true,
-	"sdk/go -> pkg/server":                                          true,
-	"sdk/go -> pkg/server/lifecycle":                                true,
-	"sdk/go -> pkg/timeseries":                                      true,
-	"sdk/go -> pkg/vector/flat":                                     true,
-	"sdk/go -> pkg/vector/gpu":                                      true,
-	"sdk/go -> pkg/vector/hnsw":                                     true,
-	"sdk/go -> pkg/vector/ivf":                                      true,
+	"sdk/go -> github.com/cockroachdb/pebble/v2/vfs": true,
+	"sdk/go -> github.com/mark3labs/mcp-go/server":   true,
+	"sdk/go -> pkg/api/grpc":                         true,
+	"sdk/go -> pkg/api/mcp":                          true,
+	"sdk/go -> pkg/api/mcp/wire":                     true,
+	"sdk/go -> pkg/api/quic":                         true,
+	"sdk/go -> pkg/api/rest":                         true,
+	"sdk/go -> pkg/api/sealedwindow":                 true,
+	"sdk/go -> pkg/cluster":                          true,
+	"sdk/go -> pkg/cluster/featuregate":              true,
+	"sdk/go -> pkg/server":                           true,
+	"sdk/go -> pkg/server/lifecycle":                 true,
+	"sdk/go -> pkg/timeseries":                       true,
+	"sdk/go -> pkg/vector/flat":                      true,
+	"sdk/go -> pkg/vector/gpu":                       true,
+	"sdk/go -> pkg/vector/hnsw":                      true,
+	"sdk/go -> pkg/vector/ivf":                       true,
 
 	// The node composer builds every mode and backend in one package.
-	"sdk/go/node -> github.com/cockroachdb/pebble/v2":             true,
-	"sdk/go/node -> github.com/cockroachdb/pebble/v2/vfs":         true,
-	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg":        true,
-	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg/config": true,
-	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg/sm":     true,
-	"sdk/go/node -> pkg/cluster":                                  true,
-	"sdk/go/node -> pkg/cluster/featuregate":                      true,
-	"sdk/go/node -> pkg/server":                                   true,
-	"sdk/go/node -> pkg/server/lifecycle":                         true,
+	"sdk/go/node -> github.com/cockroachdb/pebble/v2":      true,
+	"sdk/go/node -> github.com/cockroachdb/pebble/v2/vfs":  true,
+	"sdk/go/node -> github.com/jeremyhahn/go-quicraft/pkg": true,
+	"sdk/go/node -> pkg/cluster":                           true,
+	"sdk/go/node -> pkg/cluster/featuregate":               true,
+	"sdk/go/node -> pkg/server":                            true,
+	"sdk/go/node -> pkg/server/lifecycle":                  true,
 
 	// The object-store pool manager seam; time series; API contract types.
 	"sdk/go/transport/embedded -> github.com/jeremyhahn/go-objstore/pkg/pool": true,
@@ -259,9 +245,9 @@ type listedPackage struct {
 
 // isLeanStandaloneForbidden reports whether path is, or lies beneath, one of
 // the forbidden entries.
-func isLeanStandaloneForbidden(path string, forbidden []string) bool {
-	for _, f := range forbidden {
-		if path == f || strings.HasPrefix(path, f+"/") {
+func isLeanStandaloneForbidden(path string, forbidden []leanRule) bool {
+	for _, r := range forbidden {
+		if r.matches(path) {
 			return true
 		}
 	}
@@ -271,7 +257,7 @@ func isLeanStandaloneForbidden(path string, forbidden []string) bool {
 // forbiddenEdges returns every edge from a package that is not forbidden to
 // one that is. An edge between two forbidden packages is not reported: it
 // disappears with the edge that reaches the first of them.
-func forbiddenEdges(pkgs []listedPackage, forbidden []string) map[string]bool {
+func forbiddenEdges(pkgs []listedPackage, forbidden []leanRule) map[string]bool {
 	edges := map[string]bool{}
 	for _, p := range pkgs {
 		if p.Standard || isLeanStandaloneForbidden(p.ImportPath, forbidden) {
@@ -331,7 +317,7 @@ func sortedKeys(set map[string]bool) []string {
 // TestLeanStandaloneEdgeDetection proves the edge finder on a graph whose
 // answer is known, so an empty result from the real graph means something.
 func TestLeanStandaloneEdgeDetection(t *testing.T) {
-	forbidden := []string{localModule + "/pkg/api", "example.com/heavy"}
+	forbidden := []leanRule{{path: localModule + "/pkg/api", self: true, subpackages: true}, {path: "example.com/heavy", self: true, subpackages: true}}
 	graph := []listedPackage{
 		{ImportPath: "fmt", Standard: true, Imports: []string{"example.com/heavy"}},
 		{ImportPath: localModule + "/sdk/go", Imports: []string{localModule + "/pkg/api/rest", localModule + "/pkg/apimodule"}},
@@ -346,6 +332,91 @@ func TestLeanStandaloneEdgeDetection(t *testing.T) {
 	}
 	got := sortedKeys(forbiddenEdges(graph, forbidden))
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestLeanStandaloneRuleMatches pins each combination of self and subpackages against
+// the package itself, one beneath it and a sibling sharing its prefix.
+func TestLeanStandaloneRuleMatches(t *testing.T) {
+	const root = "example.com/m/pkg"
+	cases := []struct {
+		rule leanRule
+		path string
+		want bool
+	}{
+		{leanRule{path: root, self: true}, root, true},
+		{leanRule{path: root, self: true}, root + "/sub", false},
+		{leanRule{path: root, subpackages: true}, root, false},
+		{leanRule{path: root, subpackages: true}, root + "/sub/deep", true},
+		{leanRule{path: root, self: true, subpackages: true}, root, true},
+		{leanRule{path: root, self: true, subpackages: true}, root + "/sub", true},
+		{leanRule{path: root, self: true, subpackages: true}, root + "module", false},
+		{leanRule{path: root}, root, false},
+	}
+	for _, c := range cases {
+		if got := c.rule.matches(c.path); got != c.want {
+			t.Errorf("%+v.matches(%q) = %v, want %v", c.rule, c.path, got, c.want)
+		}
+	}
+}
+
+// TestLeanStandaloneForbiddenRaftEngine proves the narrowed go-quicraft rule
+// (ruling 193 D) on a synthetic graph: an edge into the NodeHost package or
+// an engine internal still fails, and the seal and Shamir primitives and the
+// other public leaf packages do not.
+func TestLeanStandaloneForbiddenRaftEngine(t *testing.T) {
+	const qr = "github.com/jeremyhahn/go-quicraft/pkg"
+	for path, want := range map[string]bool{
+		qr:                           true,
+		qr + "/internal/engine":      true,
+		qr + "/internal/raft":        true,
+		qr + "/seal":                 false,
+		qr + "/crypto/shamir":        false,
+		qr + "/sm":                   false,
+		qr + "/writemode":            false,
+		"github.com/jeremyhahn/go-x": false,
+	} {
+		if got := isLeanStandaloneForbidden(path, leanStandaloneForbidden); got != want {
+			t.Errorf("isLeanStandaloneForbidden(%q) = %v, want %v", path, got, want)
+		}
+	}
+	graph := []listedPackage{
+		{ImportPath: localModule + "/pkg/seal", Imports: []string{qr + "/seal", qr + "/crypto/shamir"}},
+		{ImportPath: localModule + "/pkg/backend", Imports: []string{qr, qr + "/sm"}},
+		{ImportPath: qr, Imports: []string{qr + "/internal/engine", qr + "/seal"}},
+	}
+	want := []string{"pkg/backend -> " + qr}
+	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestLeanStandaloneForbiddenAPISubpackages proves the narrowed pkg/api rule
+// (ruling 193 E) on a synthetic graph: an edge into a pkg/api subpackage
+// still fails, and one into the pkg/api root or into pkg/apimodule does not.
+func TestLeanStandaloneForbiddenAPISubpackages(t *testing.T) {
+	const api = localModule + "/pkg/api"
+	for path, want := range map[string]bool{
+		api:                            false,
+		api + "/rest":                  true,
+		api + "/grpc/proto/qrdbv1":     true,
+		localModule + "/pkg/apimodule": false,
+	} {
+		if got := isLeanStandaloneForbidden(path, leanStandaloneForbidden); got != want {
+			t.Errorf("isLeanStandaloneForbidden(%q) = %v, want %v", path, got, want)
+		}
+	}
+	graph := []listedPackage{
+		{ImportPath: localModule + "/pkg/mvcc", Imports: []string{api}},
+		{ImportPath: localModule + "/sdk/go/transport/embedded", Imports: []string{api, api + "/dbwire"}},
+		{ImportPath: api, Imports: []string{api + "/errclass"}},
+	}
+	want := []string{
+		"pkg/api -> pkg/api/errclass",
+		"sdk/go/transport/embedded -> pkg/api/dbwire",
+	}
+	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
 	}
 }

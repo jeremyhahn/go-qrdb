@@ -214,9 +214,11 @@ the `file` backend, composed by `sdk/go/node`, reached through the embedded
 transport, with an entity DAO on top. An application of that shape compiles
 none of:
 
-- the Raft host (go-quicraft);
+- the Raft engine (go-quicraft's NodeHost package and its internals; its
+  seal, Shamir and other leaf packages are allowed);
 - PebbleDB;
-- the network API servers (`pkg/api/...`, `pkg/server/...`);
+- the network API servers (the `pkg/api` subpackages, `pkg/server/...`; the
+  `pkg/api` root holds contract types and is allowed);
 - clustering (`pkg/cluster/...`);
 - vectors (`pkg/vector/...`) and time series (`pkg/timeseries/...`);
 - Prometheus metrics, MCP, the chi and gin routers, or the object store.
