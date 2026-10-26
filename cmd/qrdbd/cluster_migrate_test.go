@@ -559,11 +559,11 @@ type fakeLeaderLocator struct {
 
 var _ systemLeaderLocator = fakeLeaderLocator{}
 
-func (f fakeLeaderLocator) GetLeaderID(uint64) (uint64, bool, error) {
+func (f fakeLeaderLocator) LeaderID(uint64) (uint64, bool, error) {
 	return f.leaderID, f.hasLeader, f.leaderErr
 }
 
-func (f fakeLeaderLocator) GetShardMembership(uint64) (*quicraft.Membership, error) {
+func (f fakeLeaderLocator) ShardMembership(uint64) (*quicraft.Membership, error) {
 	if f.memberErr != nil {
 		return nil, f.memberErr
 	}

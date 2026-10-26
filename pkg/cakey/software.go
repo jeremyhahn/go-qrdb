@@ -85,7 +85,7 @@ const serialBits = 128
 //
 // The IN-MEMORY cache is a different matter, and is this package's own to
 // protect: whenever material is established, the private key lives in a
-// secure.Secret -- a go-enclave SealedEnclave, AES-256-GCM under the
+// secure.Secret -- an enclave.Sealed, AES-256-GCM under the
 // process Sealer -- not a plain *ecdsa.PrivateKey. Signing opens it into a
 // secure.Buffer (mlocked, guard-paged) for exactly the duration of one
 // Sign call and destroys the Buffer before returning, so the DER bytes

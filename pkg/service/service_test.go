@@ -92,7 +92,7 @@ func (m *mockHost) ShardCount() int {
 	return 1
 }
 
-func (m *mockHost) GetNodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+func (m *mockHost) NodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 	if m.getNodeHostInfoFn != nil {
 		return m.getNodeHostInfoFn(opt)
 	}
@@ -217,7 +217,7 @@ func (m *mockHost) FollowerRead(ctx context.Context, shardID uint64, query inter
 	return nil, nil
 }
 
-func (m *mockHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (m *mockHost) LeaderID(shardID uint64) (uint64, bool, error) {
 	if m.getLeaderIDFn != nil {
 		return m.getLeaderIDFn(shardID)
 	}
@@ -2379,7 +2379,7 @@ func TestAdminService_GetShardState_LeaderIDError(t *testing.T) {
 		t.Error("expected nil response on error")
 	}
 	if err == nil {
-		t.Fatal("expected error from GetLeaderID failure")
+		t.Fatal("expected error from LeaderID failure")
 	}
 
 	var stateErr *ShardStateError

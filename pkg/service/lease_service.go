@@ -367,7 +367,7 @@ func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, e
 // caller retries.
 func (s *LeaseService) ttlNotLeader(ctx context.Context, l *Lease) error {
 	refusal := &LeaseTTLNotLeaderError{NotLeaderError: NotLeaderError{ShardID: s.shardID}, Lease: l}
-	leaderID, known, err := s.host.GetLeaderID(s.shardID)
+	leaderID, known, err := s.host.LeaderID(s.shardID)
 	if err != nil || !known {
 		return refusal
 	}

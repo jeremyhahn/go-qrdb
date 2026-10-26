@@ -25,14 +25,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// stubLeaderIDs answers GetLeaderID with fixed values.
+// stubLeaderIDs answers LeaderID with fixed values.
 type stubLeaderIDs struct {
 	id  uint64
 	ok  bool
 	err error
 }
 
-func (s *stubLeaderIDs) GetLeaderID(uint64) (uint64, bool, error) { return s.id, s.ok, s.err }
+func (s *stubLeaderIDs) LeaderID(uint64) (uint64, bool, error) { return s.id, s.ok, s.err }
 
 func TestSystemShardLeader(t *testing.T) {
 	cases := []struct {

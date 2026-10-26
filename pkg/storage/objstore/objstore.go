@@ -79,7 +79,9 @@ type Engine struct {
 // always available, while cloud providers ("s3", "gcs", "azure", "glacier",
 // "azurearchive") link their SDKs and are compiled in only when go-objstore's
 // matching build tag is set (awss3, gcpstorage, azureblob, glacier,
-// azurearchive). Settings are passed verbatim to the provider.
+// azurearchive). Settings are passed verbatim to the provider. No credential handle is
+// passed, so a cloud provider authenticates through its SDK's default
+// credential chain; go-objstore refuses a credential carried in settings.
 //
 // The store must be dedicated to this engine. An empty store is marked with
 // this build's object layout; a non-empty one is opened only if it carries
@@ -91,7 +93,7 @@ func New(provider string, settings map[string]string) (*Engine, error) {
 	if provider == "" {
 		return nil, storage.ErrInvalidPath
 	}
-	store, err := objfactory.NewStorage(provider, settings)
+	store, err := objfactory.NewStorage(provider, settings, objcommon.Credentials{})
 	if err != nil {
 		if errors.Is(err, objfactory.ErrUnknownBackend) {
 			return nil, &UnsupportedProviderError{Provider: provider}

@@ -530,7 +530,7 @@ func TestMain(m *testing.M) {
 // would fail or poison every seal-using test after it. Measured, not
 // theorized: wiring the real functions here produced exactly that cascade.
 //
-// newSecureAllocator still returns a REAL, functioning *secure.Allocator
+// newSecureAllocator still returns a REAL, functioning secure.Allocator
 // (via enclave.NewAllocator, so a test asserting on a bad budget still gets a
 // real rejection) — only the process-wide INSTALLATION and the destructive
 // SWEEP are doubled, since those are the two operations this binary cannot
@@ -555,7 +555,7 @@ func installTestSecureLifecycle() (restore func()) {
 	// it; pkg/secure proves the mechanism from a subprocess.
 	hardenSecureProcess = func(*slog.Logger) (secure.ProcessHardening, error) { return secure.ProcessHardened, nil }
 	newSecureAllocator = enclave.NewAllocator
-	setSecureAllocator = func(*secure.Allocator) error { return nil }
+	setSecureAllocator = func(secure.Allocator) error { return nil }
 	wipeSecureMemory = func(context.Context) (int, error) { return 0, nil }
 	// An unconfigured budget is derived from RLIMIT_MEMLOCK; reporting it
 	// unlimited keeps every runStart test in this binary off the host's own

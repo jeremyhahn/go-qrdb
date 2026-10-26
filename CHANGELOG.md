@@ -91,9 +91,37 @@ are not reconstructed here — their history is in the git log.
   transport, with short keys, keys objstore stores under a hashed name, and one
   reused key. go-qrdb's read plane already answered not-found in every cell;
   the read failure #1163 reported is not raised by go-qrdb or go-objstore.
+## [0.57.0-alpha] - 2026-10-26
 
 ### Changed
 
+- **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
+  v0.7.0-alpha and go-objstore v0.7.0-alpha in the root, SDK, GORM
+  conformance and cluster-proof modules** (#944); go-quicraft/test/performance
+  moves to v0.24.2-alpha in the two performance modules. Every call site
+  adopts the upstream renames, with no alias left behind:
+  - go-quicraft's `Host` accessors lost their `Get` prefix (`LeaderID`,
+    `LeaderIDAndTerm`, `ShardInfo`, `ShardMembership`, `NodeHostInfo`,
+    `LogRange`, `LogReader`, `NewSession`, `NewSessionWithOwner`,
+    `NoOPSession`), and so did every go-qrdb interface that mirrors them
+    (`cluster`, `featuregate`, `backend/raft`, `service`, `server`, `qrdbd`).
+  - `DiagRaftState` returns a `quicraft.RaftStateDiag`; the encryption
+    replication-progress probe reads its `Committed` field.
+  - go-enclave's protected-memory types are interfaces: `pkg/secure` holds an
+    `enclave.ByteAccess`, an `enclave.Sealed` and an `enclave.Allocator`, and
+    `Secret.Open` opens through `Sealed.OpenIn`, failing with
+    `*enclave.CapabilityError` for a backend whose handles expose no bytes.
+    `sdk/go/secure.SetAllocator`, `ProcessAllocator` and
+    `NewAllocatorWithinRLimit` take and return `secure.Allocator` by value
+    rather than `*secure.Allocator`.
+  - go-quicraft removed `shamir.Share`; `sdk/go`'s `ShamirShare` alias is
+    replaced by `ShamirProtectedShare` (`shamir.ProtectedShare`).
+  - go-objstore's `factory.NewStorage` takes a `common.Credentials` of
+    go-enclave handles. The objstore storage engine passes none, so a cloud
+    provider authenticates through its SDK's default credential chain, and a
+    credential key in the engine's `settings` (`accessKey`, `secretKey`,
+    `accountKey` and the like) now fails the open with go-objstore's
+    `*common.CredentialSettingError`.
 - **The lean-standalone import gate forbids only go-quicraft's Raft engine and
   the `pkg/api` subpackages** (#627, ruling 193). On the go-quicraft side the
   gate forbids only the NodeHost package (`go-quicraft/pkg`) and its

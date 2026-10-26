@@ -34,8 +34,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -229,7 +231,7 @@ func agreedLeader(t testing.TB, nodes []*Node) (uint64, bool) {
 		if !ok {
 			t.Fatalf("node host is %T, want *quicraft.Host", n.host)
 		}
-		id, known, err := host.GetLeaderID(shard.ShardKV)
+		id, known, err := host.LeaderID(shard.ShardKV)
 		if err != nil || !known || (leader != 0 && id != leader) {
 			return 0, false
 		}
@@ -567,6 +569,40 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
 	defer cancel()
 
+	// Every founder advertises guarded-writes, so once the leader's gate has
+	// seen their advertisements it refuses a replica on any node without a
+	// live advertisement of its own (featuregate.Gate.AdmitReplica). Each
+	// subtest runs against that settled contract, never against a race with
+	// the founders' advertisements.
+	const unadvertised = "127.0.0.1:9"
+	gate := nodes[leader-1].featureGate
+	if gate == nil {
+		t.Fatal("the leader gates no features")
+	}
+	deadline := time.Now().Add(clusterFormationBudget)
+	for {
+		var unsupported *featuregate.UnsupportedReplicaError
+		if errors.As(gate.AdmitReplica(shard.ShardKV, unadvertised), &unsupported) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the leader's gate never refused a replica on %s, which advertises nothing", unadvertised)
+		}
+		time.Sleep(clusterPollInterval)
+	}
+
+	t.Run("node without a feature advertisement is refused", func(t *testing.T) {
+		identity, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
+		if err != nil {
+			t.Fatalf("MemberIdentityFromPEM: %v", err)
+		}
+		err = admin.AddMember(ctx, shard.ShardKV, 9, unadvertised, identity)
+		var unsupported *featuregate.UnsupportedReplicaError
+		if !errors.As(err, &unsupported) || unsupported.ShardID != shard.ShardKV || unsupported.Address != unadvertised {
+			t.Fatalf("AddMember = %v, want *featuregate.UnsupportedReplicaError for shard %d on %s", err, shard.ShardKV, unadvertised)
+		}
+	})
+
 	t.Run("override contradicting a committed identity is refused", func(t *testing.T) {
 		stranger, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
 		if err != nil {
@@ -580,7 +616,8 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	})
 
 	t.Run("new node without an identity is refused", func(t *testing.T) {
-		err := admin.AddMember(ctx, shard.ShardKV, 9, "127.0.0.1:9", "")
+		advertiseJoiner(ctx, t, nodes[leader-1], 9, unadvertised)
+		err := admin.AddMember(ctx, shard.ShardKV, 9, unadvertised, "")
 		var unknown *cluster.MemberIdentityUnknownError
 		if !errors.As(err, &unknown) || unknown.ReplicaID != 9 {
 			t.Fatalf("AddMember = %v, want *cluster.MemberIdentityUnknownError for replica 9", err)
@@ -596,6 +633,7 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("MemberIdentityFromPEM: %v", err)
 		}
+		advertiseJoiner(ctx, t, nodes[leader-1], fourth.id, fourth.addr)
 		if err := admin.AddMember(ctx, shard.ShardKV, fourth.id, fourth.addr, identity); err != nil {
 			t.Fatalf("AddMember(4) with its identity: %v", err)
 		}
@@ -639,6 +677,35 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 			t.Fatalf("committed identity for replica 4 = %q, want %q", m.Identities[fourth.id], identity)
 		}
 	})
+}
+
+// advertiseJoiner publishes, through leader, the feature advertisement a
+// joining node's enrollment publishes (clusterenroll.HandleJoinRequest with
+// joinadvertise.Advertiser, as pkg/server/lifecycle wires it), then waits
+// until the leader's gate admits a replica of the KV shard on addr. The
+// formation tests boot a joiner from operator-supplied mTLS material, not
+// through a join token, so nothing else advertises it before its add.
+func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID uint64, addr string) {
+	t.Helper()
+	svc := leader.svcNode.Load()
+	advertiser := joinadvertise.New(svc.Lease, svc.MVCC)
+	if advertiser == nil {
+		t.Fatal("the leader has no lease or MVCC service to advertise through")
+	}
+	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames()); err != nil {
+		t.Fatalf("AdvertiseJoiner(%d, %s): %v", replicaID, addr, err)
+	}
+	deadline := time.Now().Add(clusterFormationBudget)
+	for {
+		err := leader.featureGate.AdmitReplica(shard.ShardKV, addr)
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the leader's gate never admitted %s after its advertisement: %v", addr, err)
+		}
+		time.Sleep(clusterPollInterval)
+	}
 }
 
 // TestNewClusteredNode_ServesALinearizableReadOnReturn holds the clustered

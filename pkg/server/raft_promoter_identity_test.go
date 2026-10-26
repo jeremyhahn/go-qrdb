@@ -61,7 +61,7 @@ func TestRaftPromoter_PromoteObserverCarriesItsIdentity(t *testing.T) {
 	// Replica 2 having applied the entry that admitted it proves the leader
 	// replicates to it.
 	for {
-		if m, err := follower.GetShardMembership(shardID); err == nil {
+		if m, err := follower.ShardMembership(shardID); err == nil {
 			if _, admitted := m.Observers[2]; admitted {
 				break
 			}

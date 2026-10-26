@@ -279,7 +279,7 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
 		t.Fatalf("ListStarted after a's failed start = %v, want only b", got)
 	}
-	if _, err := f.host.GetShardInfo(1001); err == nil {
+	if _, err := f.host.ShardInfo(1001); err == nil {
 		t.Fatal("a's failed start left its shard running on the host")
 	}
 }

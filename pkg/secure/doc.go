@@ -40,8 +40,8 @@
 // process-wide lock (purgeMu) that every allocation, every Destroy and every
 // borrow serialized on.
 //
-// It now wraps github.com/jeremyhahn/go-enclave: MemoryEnclave and
-// SealedEnclave map their own pages, carry their own per-instance lock, and
+// It now wraps github.com/jeremyhahn/go-enclave: its memory enclaves and
+// Sealed values map their own pages, carry their own per-instance lock, and
 // return a typed error — enclave.ErrLockedMemoryUnavailable — from a failed
 // mlock instead of purging and aborting. Every Buffer allocation and every
 // Secret.Open is admitted against a process-wide locked-memory BUDGET
@@ -51,7 +51,7 @@
 // with enclave.ErrBudgetExhausted before any syscall is made, so one
 // caller's allocation failure can no longer take down an unrelated caller's
 // live key material. Sealing a Secret (NewSecret, NewSecretFromBuffer) is
-// NOT admitted — go-enclave has no budgeted seal path as of v0.6.0-alpha,
+// NOT admitted — go-enclave has no budgeted seal path as of v0.10.0-alpha,
 // which its own documentation records as a deliberate, scoped gap (sealing
 // is a one-time cost per value, not a per-request one the way opening is).
 // There is no process-wide purge lock in this package any more — see
@@ -62,11 +62,11 @@
 // There are two core types:
 //
 //   - Secret: a long-lived, encrypted-at-rest-in-memory container. Wraps an
-//     enclave.SealedEnclave (AES-256-GCM under the process Sealer). Open()
+//     enclave.Sealed (AES-256-GCM under the process Sealer). Open()
 //     decrypts the material into a short-lived Buffer that the caller is
 //     responsible for destroying.
 //   - Buffer: a short-lived, mlocked, canary-guarded, guard-paged working
-//     copy. Wraps an enclave.MemoryEnclave. ALWAYS defer buf.Destroy()
+//     copy. Wraps a memory enclave (enclave.ByteAccess). ALWAYS defer buf.Destroy()
 //     immediately after construction.
 //
 // # Rules
@@ -99,8 +99,8 @@
 //
 // # Nesting: what may run inside a borrow (go-qrdb#145)
 //
-// A borrow holds only its own enclave's lock. Each MemoryEnclave and
-// SealedEnclave has an independent lock, so from inside a WithBytes callback
+// A borrow holds only its own enclave's lock. Each memory enclave and
+// Sealed value has an independent lock, so from inside a WithBytes callback
 // it is safe to allocate, open, borrow and destroy any OTHER Buffer or Secret.
 // A callee handed the borrowed bytes may therefore use protected memory of its
 // own, and the caller need not know whether it does.
@@ -156,13 +156,13 @@
 //
 // WipeAll's two effects are not the same thing, and a caller relying on it as
 // "every secret is wiped" is relying on something it does not do. It destroys
-// every live MemoryEnclave — every outstanding Buffer, and every plaintext a
+// every live memory enclave — every outstanding Buffer, and every plaintext a
 // Secret.Open call has transiently produced — wiping and unmapping their
 // pages, which IS a real wipe. A Secret's own SEALED form is different: its
 // ciphertext and wrapped-key blob live on the ordinary (unlocked) heap by
-// design (go-enclave's SealedEnclave documentation), so WipeAll does not
+// design (go-enclave's Sealed documentation), so WipeAll does not
 // touch those bytes directly. What it does instead is destroy the process
-// Sealer's own key material, which is itself a MemoryEnclave on the same
+// Sealer's own key material, which is itself a memory enclave on the same
 // registry — so every live Secret becomes permanently unopenable
 // (Secret.Open returns enclave.ErrSealerWiped) from that point on, without
 // its ciphertext bytes being zeroed. Zeroing them is Secret.Destroy's job,

@@ -26,7 +26,7 @@ import (
 )
 
 // progressHost is a replicationHost answering from fixed state, as the Raft
-// host publishes it: info for GetShardInfo, committed for DiagRaftState.
+// host publishes it: info for ShardInfo, committed for DiagRaftState.
 type progressHost struct {
 	info      *quicraft.ShardInfo
 	infoErr   error
@@ -36,15 +36,21 @@ type progressHost struct {
 
 var _ replicationHost = (*progressHost)(nil)
 
-func (h *progressHost) GetShardInfo(uint64) (*quicraft.ShardInfo, error) {
+func (h *progressHost) ShardInfo(uint64) (*quicraft.ShardInfo, error) {
 	if h.infoErr != nil {
 		return nil, h.infoErr
 	}
 	return h.info, nil
 }
 
-func (h *progressHost) DiagRaftState(uint64) (uint64, uint64, uint64, uint64, int, string, error) {
-	return 3, h.committed, h.committed, h.committed, 0, "leader", h.stateErr
+func (h *progressHost) DiagRaftState(uint64) (quicraft.RaftStateDiag, error) {
+	return quicraft.RaftStateDiag{
+		Term:      3,
+		Committed: h.committed,
+		Processed: h.committed,
+		LastIndex: h.committed,
+		State:     "leader",
+	}, h.stateErr
 }
 
 // leaderOf3 is shard 9 led by replica 1 at a:1, with b:2 caught up to 50 and

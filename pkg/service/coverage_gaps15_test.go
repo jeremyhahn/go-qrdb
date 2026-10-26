@@ -271,7 +271,7 @@ func TestAuthFactorService_LoadEnrollment_CorruptData(t *testing.T) {
 func TestRebalanceService_ExecuteRebalance_ResultError(t *testing.T) {
 	resultErr := errors.New("raft rejection")
 	host := &mockHost{
-		// GetNodeHostInfo must return the shard with nodes so the loop finds it.
+		// NodeHostInfo must return the shard with nodes so the loop finds it.
 		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 			return &quicraft.NodeHostInfo{
 				ShardInfoList: []quicraft.ShardInfo{

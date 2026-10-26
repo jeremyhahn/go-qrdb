@@ -396,7 +396,7 @@ type startFlags struct {
 // lifecycle operations. Both *quicraft.Host and test mocks satisfy it.
 type raftNode interface {
 	StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg quicraftconfig.Config) error
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 	Close() error
 }
 
@@ -2638,7 +2638,7 @@ func runStart(f *startFlags) (err error) {
 					svcNode.PlacementStore, topology, shard.ShardKV, f.raftAddress)
 				localReplicaID := f.replicaID
 				isLeader := func() bool {
-					id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+					id, ok, lerr := host.LeaderID(shard.ShardKV)
 					return lerr == nil && ok && id == localReplicaID
 				}
 				// A rolling step hands on only once its owner's Raft log has
@@ -2763,7 +2763,7 @@ func runStart(f *startFlags) (err error) {
 				if host != nil {
 					sweepReplicaID := f.replicaID
 					serverOpts = append(serverOpts, server.WithCollectionSweepLeader(func() bool {
-						id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						id, ok, lerr := host.LeaderID(shard.ShardKV)
 						return lerr == nil && ok && id == sweepReplicaID
 					}))
 				}
@@ -3052,7 +3052,7 @@ func runStart(f *startFlags) (err error) {
 				}
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
-						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						leaderID, ok, lerr := host.LeaderID(shard.ShardKV)
 						return lerr == nil && ok && leaderID == f.replicaID
 					},
 					leaseSvc.Revoke,
@@ -4165,7 +4165,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// before any leader is elected would see NotLeader and could not tell
 	// "no leader yet" apart from "this state machine cannot do this at
 	// all". runFirstBoot waits again once it starts its own sequence; that
-	// second wait is cheap (GetLeaderID is a local, already-known answer
+	// second wait is cheap (LeaderID is a local, already-known answer
 	// once a leader exists) and keeps this function independently correct
 	// rather than relying on ordering against its caller.
 	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
@@ -5041,7 +5041,7 @@ func leaderWaitBudget(f *startFlags) time.Duration {
 // *server.ShardLeaderWaitError -- naming the shard, the budget and the time
 // actually spent -- and the next round begins.
 func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
-	if _, ok, err := node.GetLeaderID(shardID); err == nil && ok {
+	if _, ok, err := node.LeaderID(shardID); err == nil && ok {
 		return nil
 	}
 	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",

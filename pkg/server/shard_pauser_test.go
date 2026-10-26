@@ -48,7 +48,7 @@ type fakeShardHost struct {
 
 var _ shardHost = (*fakeShardHost)(nil)
 
-func (f *fakeShardHost) GetNodeHostInfo(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+func (f *fakeShardHost) NodeHostInfo(quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 	info := &quicraft.NodeHostInfo{}
 	for _, id := range f.shards {
 		info.ShardInfoList = append(info.ShardInfoList, quicraft.ShardInfo{ShardID: id})
@@ -469,11 +469,11 @@ func TestShardPauser_WriteRacingTheSealNeverReachesTheLogAfterTheWipe(t *testing
 	}
 	lastIndex := func() uint64 {
 		t.Helper()
-		_, _, _, last, _, _, err := host.DiagRaftState(shard.ShardKV)
+		diag, err := host.DiagRaftState(shard.ShardKV)
 		if err != nil {
 			t.Fatalf("DiagRaftState: %v", err)
 		}
-		return last
+		return diag.LastIndex
 	}
 	if _, err := host.SyncPropose(ctx, shard.ShardKV, put); err != nil {
 		t.Fatalf("write before the seal: %v", err)

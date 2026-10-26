@@ -45,7 +45,7 @@ func newRaftPromoter(host *quicraft.Host) *raftPromoter {
 // LeaderReplicaID returns shardID's current leader replica ID via the
 // shared Raft host.
 func (p *raftPromoter) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
-	return p.host.GetLeaderID(shardID)
+	return p.host.LeaderID(shardID)
 }
 
 // PromoteObserver calls RequestAddNodeWithIdentity on the shared Raft host, targeting an

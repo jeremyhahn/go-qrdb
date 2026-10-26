@@ -62,7 +62,7 @@ type leader struct {
 	asked atomic.Int32
 }
 
-func (l *leader) GetLeaderID(uint64) (uint64, bool, error) {
+func (l *leader) LeaderID(uint64) (uint64, bool, error) {
 	l.asked.Add(1)
 	return 1, l.known.Load(), nil
 }
