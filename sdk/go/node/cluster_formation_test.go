@@ -734,7 +734,7 @@ func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
 		return peerIdentitySpecs(t, self, replicas)
 	}, nil, func(i int, n *Node) {
 		host := n.host.(*quicraft.Host)
-		_, leaderAtReturn[i], _ = host.GetLeaderID(shard.ShardKV)
+		_, leaderAtReturn[i], _ = host.LeaderID(shard.ShardKV)
 		readAtReturn[i] = firstLinearizableRead(context.Background(), readIndexAttempt(host),
 			server.StartupReadAttemptTimeout, firstReadAttempts)
 	})
