@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 )
 
 // LeaseServicer is an alias for the canonical lease.LeaseServicer interface.
@@ -364,7 +365,9 @@ func (s *LeaseService) TimeToLive(ctx context.Context, leaseID int64) (*Lease, e
 // membership records for it. A leader not yet known, or one the membership
 // cannot be read for, leaves the address empty: the refusal is then answered
 // as unavailable, as every not-leader refusal without a leader is, and the
-// caller retries.
+// caller retries. The membership is the Raft-admin host's: a data host that
+// is not also a raftadmin.Host (every Raft-backed host is) leaves the address
+// empty the same way.
 func (s *LeaseService) ttlNotLeader(ctx context.Context, l *Lease) error {
 	refusal := &LeaseTTLNotLeaderError{NotLeaderError: NotLeaderError{ShardID: s.shardID}, Lease: l}
 	leaderID, known, err := s.host.LeaderID(s.shardID)
@@ -372,7 +375,11 @@ func (s *LeaseService) ttlNotLeader(ctx context.Context, l *Lease) error {
 		return refusal
 	}
 	refusal.LeaderID = leaderID
-	if m, err := s.host.SyncGetShardMembership(ctx, s.shardID); err == nil && m != nil {
+	admin, ok := s.host.(raftadmin.Host)
+	if !ok {
+		return refusal
+	}
+	if m, err := admin.SyncGetShardMembership(ctx, s.shardID); err == nil && m != nil {
 		refusal.LeaderAddress = m.Nodes[leaderID]
 	}
 	return refusal

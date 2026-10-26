@@ -2590,7 +2590,7 @@ sdk/go	internal	func	github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw.HNSWIndex.sel
 .	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.DaemonBinding.startup
 .	internal	func	github.com/jeremyhahn/go-qrdb/cmd/qrdb.newUUID
 #
-# KEEP: helper called only from the exported mcp.SealedWindowTools, whose caller is in the sdk/go module (sdk/go/types_sealedwindow.go), outside this module's roots.
+# KEEP: helper called only from the exported mcp.SealedWindowTools, whose caller is in the sdk/go module (sdk/go/server/sealedwindow.go), outside this module's roots.
 .	internal	func	github.com/jeremyhahn/go-qrdb/pkg/api/mcp.Server.wrapTool
 #
 # KEEP: helpers of the exported database.ResolveBinding (docs/databases/architecture.md) and of NodeStoreMigration.Run, whose only caller, the service-layer EncryptionMigrationService, is constructed in the sdk/go module (sdk/go/node).

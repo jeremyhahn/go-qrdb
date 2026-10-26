@@ -98,7 +98,7 @@ var leanStandaloneEdges = map[string]bool{
 	// The gRPC proto and chi types in the shared auth chain.
 	"pkg/auth/middleware -> github.com/go-chi/chi/v5": true,
 
-	// The service.Host interface LocalBackend implements is typed by the
+	// The raftadmin.Host interface LocalBackend implements is typed by the
 	// quicraft NodeHost.
 	"pkg/backend -> github.com/jeremyhahn/go-quicraft/pkg": true,
 
@@ -134,6 +134,12 @@ var leanStandaloneEdges = map[string]bool{
 	// The pebble.DB index the Raft state machine in pkg/store builds; reached
 	// only through pkg/store.
 	"pkg/index/pebbleindex -> github.com/cockroachdb/pebble/v2": true,
+
+	// The Raft-admin host (#627): membership, snapshots and shard start and
+	// stop are typed by the quicraft NodeHost. pkg/service still composes it
+	// into AdminService, so a lean embedder compiles it until the admin
+	// services leave pkg/service.
+	"pkg/raftadmin -> github.com/jeremyhahn/go-quicraft/pkg": true,
 
 	// The encrypted file system is a pebble vfs.FS.
 	"pkg/seal/encfs -> github.com/cockroachdb/pebble/v2/vfs": true,
@@ -178,24 +184,12 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/util/metrics -> github.com/prometheus/client_golang/prometheus/collectors": true,
 	"pkg/util/metrics -> github.com/prometheus/client_golang/prometheus/promauto":   true,
 
-	// The SDK root re-exports every feature and transport.
-	"sdk/go -> github.com/cockroachdb/pebble/v2/vfs": true,
-	"sdk/go -> github.com/mark3labs/mcp-go/server":   true,
-	"sdk/go -> pkg/api/grpc":                         true,
-	"sdk/go -> pkg/api/mcp":                          true,
-	"sdk/go -> pkg/api/mcp/wire":                     true,
-	"sdk/go -> pkg/api/quic":                         true,
-	"sdk/go -> pkg/api/rest":                         true,
-	"sdk/go -> pkg/api/sealedwindow":                 true,
-	"sdk/go -> pkg/cluster":                          true,
-	"sdk/go -> pkg/cluster/featuregate":              true,
-	"sdk/go -> pkg/server":                           true,
-	"sdk/go -> pkg/server/lifecycle":                 true,
-	"sdk/go -> pkg/timeseries":                       true,
-	"sdk/go -> pkg/vector/flat":                      true,
-	"sdk/go -> pkg/vector/gpu":                       true,
-	"sdk/go -> pkg/vector/hnsw":                      true,
-	"sdk/go -> pkg/vector/ivf":                       true,
+	// The SDK root's client API: the MCP error-envelope wire types, and the
+	// cluster and feature-gate methods on *sdk.Client (#627 slice B moved
+	// every server, storage and engine re-export out of the root).
+	"sdk/go -> pkg/api/mcp/wire":        true,
+	"sdk/go -> pkg/cluster":             true,
+	"sdk/go -> pkg/cluster/featuregate": true,
 
 	// The node composer builds every mode and backend in one package.
 	"sdk/go/node -> github.com/cockroachdb/pebble/v2":      true,
@@ -281,7 +275,14 @@ func trimLocalModule(path string) string {
 // in the sdk/go module, so `go list` runs there.
 func leanStandaloneDeps(t *testing.T) []listedPackage {
 	t.Helper()
-	args := []string{"list", "-deps", "-json=ImportPath,Imports,Standard", "-tags", leanStandaloneTags, leanStandaloneFixture}
+	return sdkModuleDeps(t, leanStandaloneTags, leanStandaloneFixture)
+}
+
+// sdkModuleDeps runs go list -deps over pkg, a package of the sdk/go module,
+// under tags.
+func sdkModuleDeps(t *testing.T, tags, pkg string) []listedPackage {
+	t.Helper()
+	args := []string{"list", "-deps", "-json=ImportPath,Imports,Standard", "-tags", tags, pkg}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = filepath.Join(repoRoot(t), "sdk", "go")
 	var out, errOut bytes.Buffer

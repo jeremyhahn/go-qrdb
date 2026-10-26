@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -326,9 +327,11 @@ type PeersInfo struct {
 	Shards []ShardPeers
 }
 
-// Host is the interface the service layer requires from QuicRaft. This
-// narrow interface decouples the service from the concrete *quicraft.Host
-// type, enabling clean testing and abstraction boundaries.
+// Host is the data host: what the data services require of a node host to
+// propose, read and resolve leadership. It carries no go-quicraft engine type
+// in its method set; the Raft-admin operations (membership, snapshots, shard
+// start and stop, drain, node-host info) are raftadmin.Host, and a consumer
+// that drives both takes an AdminHost.
 type Host interface {
 	// ID returns the unique host identifier string.
 	ID() string
@@ -336,21 +339,9 @@ type Host interface {
 	// RaftAddress returns the host's Raft network address.
 	RaftAddress() string
 
-	// ShardCount returns the number of shards loaded on this host.
-	ShardCount() int
-
-	// NodeHostInfo returns a snapshot of the host's state for
-	// monitoring and debugging.
-	NodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo
-
-	// HealthCheck returns the aggregate health status of the host.
-	HealthCheck() *quicraft.HealthStatus
-
-	// Drain transitions the host into drain mode.
-	Drain() error
-
-	// IsDraining returns true when the host is in drain mode.
-	IsDraining() bool
+	// NodeIdentity returns this host's own Raft member identity, or "" for
+	// a host without a transport, which admits members without one.
+	NodeIdentity() string
 
 	// SyncPropose proposes a command through Raft consensus and waits
 	// for it to be applied.
@@ -358,37 +349,6 @@ type Host interface {
 
 	// SyncRead performs a linearizable read against the state machine.
 	SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
-
-	// RequestAddNodeWithIdentity requests adding a replica to a shard
-	// together with the node identity go-quicraft commits for it. A host
-	// with a transport refuses an empty identity for a new member.
-	RequestAddNodeWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error)
-
-	// RequestAddObserverWithIdentity requests adding a replica to a shard
-	// as a non-voting observer, together with the node identity go-quicraft
-	// commits for it. See AdminService.PromoteMember for turning the
-	// observer into a voter later.
-	RequestAddObserverWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error)
-
-	// SyncGetShardMembership returns a shard's committed membership,
-	// including the member identities go-quicraft committed.
-	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
-
-	// NodeIdentity returns this host's own Raft member identity, or "" for
-	// a host without a transport, which admits members without one.
-	NodeIdentity() string
-
-	// RequestRemoveNode requests removing a replica from a shard.
-	RequestRemoveNode(ctx context.Context, shardID, replicaID uint64, configChangeIndex uint64) (*quicraft.RequestState, error)
-
-	// RequestSnapshot requests an asynchronous snapshot for a shard.
-	RequestSnapshot(ctx context.Context, shardID uint64) (*quicraft.RequestState, error)
-
-	// RequestLeaderTransfer asks this host, which must lead shardID, to hand
-	// leadership to targetReplicaID, a current voter. It validates the
-	// target and returns; the transfer itself completes asynchronously (see
-	// AdminService.TransferLeadership for the bounded wait).
-	RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error
 
 	// ProposeWithMode proposes a write with specified durability guarantee.
 	// Allows trading consistency for performance: Sync (quorum), WALDurable
@@ -416,23 +376,17 @@ type Host interface {
 	// does not exist.
 	LeaderID(shardID uint64) (uint64, bool, error)
 
-	// GetShardRaftState returns the Raft state for a shard: the config
-	// change index and current term. Used for monitoring and consistency
-	// checks.
-	GetShardRaftState(shardID uint64) (configChangeIndex uint64, term uint64, err error)
-
-	// StartShard initializes and starts a Raft group for the given shard.
-	// members maps replicaID to address for initial cluster members. join
-	// indicates whether this node is joining an existing cluster. create
-	// is the state machine factory. cfg provides per-shard Raft
-	// configuration including ShardID and ReplicaID.
-	StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg config.Config) error
-
-	// StopShard stops the Raft group for the given shard.
-	StopShard(shardID uint64) error
-
 	// Close gracefully shuts down the host and all its Raft groups.
 	Close() error
+}
+
+// AdminHost is a node host seen whole: its data host and its Raft-admin host.
+// The admin, rebalance and lifecycle consumers that both read through Raft and
+// change membership or shards take it; a consumer that needs one half takes
+// that half.
+type AdminHost interface {
+	Host
+	raftadmin.Host
 }
 
 // KVServiceOption configures KVService at construction time.
@@ -1142,7 +1096,7 @@ func WithDefaultShardConfig(cfg config.Config) AdminServiceOption {
 
 // AdminService implements AdminServicer backed by a QuicRaft host.
 type AdminService struct {
-	host       Host
+	host       AdminHost
 	smFactory  sm.CreateFunc
 	defaultCfg config.Config
 	profile    *capabilities.Capabilities
@@ -1178,7 +1132,7 @@ type AdminService struct {
 // NewAdminService creates a new AdminServicer backed by the given host.
 // Optional AdminServiceOption values configure state machine factories
 // and other behavior.
-func NewAdminService(host Host, opts ...AdminServiceOption) AdminServicer {
+func NewAdminService(host AdminHost, opts ...AdminServiceOption) AdminServicer {
 	svc := &AdminService{
 		host:               host,
 		leaderWaitTimeout:  defaultScaleLeaderWaitTimeout,

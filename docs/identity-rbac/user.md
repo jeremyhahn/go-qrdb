@@ -451,18 +451,20 @@ A Go program that authorizes its own requests imports only the SDK
   such as issuing a token at login.
 
 To put the server's own mTLS authentication and authorization in front of a
-router of your own, build the middleware from the SDK:
+router of your own, build the middleware from the SDK (`sdk` is
+`github.com/jeremyhahn/go-qrdb/sdk/go`, `sdkserver` is
+`github.com/jeremyhahn/go-qrdb/sdk/go/server`):
 
 - `sdk.NewMTLSAuthenticator()` is the built-in mTLS authenticator.
   `sdk.NewMTLSAuthenticatorWithTrustDomain(trustDomain)` pins your cluster's
   SPIFFE trust domain. Use that one in production.
-- `sdk.NewAuthMiddleware(authorizer, opts...)` builds the `sdk.AuthMiddleware`.
-  Its options (`sdk.AuthMiddlewareOption`) are
-  `sdk.WithAuthMiddlewareAuthenticator`, `sdk.WithAuthMiddlewareUserService`
-  (an `sdk.UserServicer`) and `sdk.WithAuthMiddlewareRoleResolver` (an
+- `sdkserver.NewAuthMiddleware(authorizer, opts...)` builds the `sdkserver.AuthMiddleware`.
+  Its options (`sdkserver.AuthMiddlewareOption`) are
+  `sdkserver.WithAuthMiddlewareAuthenticator`, `sdkserver.WithAuthMiddlewareUserService`
+  (an `sdk.UserServicer`) and `sdkserver.WithAuthMiddlewareRoleResolver` (an
   `sdk.RoleNameResolver`). The role resolver is required: without it every
   authenticated request is refused.
-- `sdk.NewRESTRouteRegistry()` returns an `sdk.RESTRouteRegistry`. `Register`
+- `sdkserver.NewRESTRouteRegistry()` returns an `sdkserver.RESTRouteRegistry`. `Register`
   each route with its permission, then wrap your router with the middleware's
   `RESTMiddleware(routes, router)` method. A request whose method has no
   registered entry on a registered path is refused. A path you did not register

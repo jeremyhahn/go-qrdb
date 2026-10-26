@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package timeseries
 
 import (
+	"errors"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -32,6 +34,26 @@ type TimeSeriesStorage = timeseries.Storage
 // storage.Storage.
 var NewTimeSeriesStorage = timeseries.New
 
+// TimeSeriesDirStorage is a time series store over a dedicated PebbleDB it
+// owns. Every write method of the embedded TimeSeriesStorage stages into a
+// TimeSeriesBatch; Batch returns one over the owned database, which the
+// caller commits. Close closes the time series store and then the database.
+type TimeSeriesDirStorage struct {
+	*timeseries.Storage
+	stg storage.Storage
+}
+
+// Batch returns a write batch over the owned database.
+func (d *TimeSeriesDirStorage) Batch() TimeSeriesBatch {
+	return d.stg.Batch()
+}
+
+// Close closes the time series store and the database it owns, reporting
+// both failures when both fail.
+func (d *TimeSeriesDirStorage) Close() error {
+	return errors.Join(d.Storage.Close(), d.stg.Close())
+}
+
 // NewTimeSeriesStorageWithDir opens a dedicated PebbleDB-backed time series
 // store rooted at dataDir, for a standalone embedder that wants time-series
 // storage without the rest of the qrdb node/engine stack. The qrdb server
@@ -40,14 +62,14 @@ var NewTimeSeriesStorage = timeseries.New
 // pkg/server/lifecycle.NewLocalEngine), so a time-series write lands in the
 // same apply batch as everything else the entry does. This is equivalent to
 // NewTimeSeriesStorageWithEncryptor(dataDir, nil).
-func NewTimeSeriesStorageWithDir(dataDir string) (*timeseries.Storage, error) {
+func NewTimeSeriesStorageWithDir(dataDir string) (*TimeSeriesDirStorage, error) {
 	return NewTimeSeriesStorageWithEncryptor(dataDir, nil)
 }
 
 // NewTimeSeriesStorageWithEncryptor opens a dedicated PebbleDB-backed time
 // series store at dataDir with at-rest encryption driven by enc. A nil enc
 // or a no-op enc opens the store in plaintext mode.
-func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*timeseries.Storage, error) {
+func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*TimeSeriesDirStorage, error) {
 	if dataDir == "" {
 		return nil, &timeseries.EmptyDirError{}
 	}
@@ -59,7 +81,11 @@ func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*
 	if err != nil {
 		return nil, &timeseries.OpenDirError{Dir: dataDir, Err: err}
 	}
-	return timeseries.New(pstg)
+	ts, err := timeseries.New(pstg)
+	if err != nil {
+		return nil, errors.Join(err, pstg.Close())
+	}
+	return &TimeSeriesDirStorage{Storage: ts, stg: pstg}, nil
 }
 
 // TimeSeriesDataPoint holds a single time series data point.

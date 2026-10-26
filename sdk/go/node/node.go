@@ -355,7 +355,7 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 // server.WithCertKeyProviderFactory; forwarded in both boot paths. Mutually
 // exclusive with WithCertProvider, which replaces the provider this factory
 // configures: a node given both fails to build
-// (*sdk.CertProviderConflictError).
+// (*sdkserver.CertProviderConflictError).
 func WithCertKeyProviderFactory(f cakey.ProviderFactory) NodeOption {
 	return func(o *nodeOptions) { o.certKeyProviderFactory = f }
 }

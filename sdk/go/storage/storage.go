@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package storage
 
 import (
 	"github.com/cockroachdb/pebble/v2/vfs"
@@ -38,7 +38,7 @@ type Storage = storage.Storage
 // ObjStore storage all implement it; assert for it the way you would for a
 // syncer:
 //
-//	guarded, ok := store.(sdk.GuardedStorage)
+//	guarded, ok := store.(sdkstorage.GuardedStorage)
 //
 // A losing swap reports false with a nil error, and an absent key is never
 // created.
@@ -68,28 +68,6 @@ type StorageOpError = storage.OpError
 
 // StorageKeyNotFoundError is returned when a key does not exist.
 type StorageKeyNotFoundError = storage.KeyNotFoundError
-
-// StorageClosedError is returned when storage is closed. It carries no data;
-// match ErrStorageClosed rather than this type, so that a backend returning
-// the sentinel directly is recognized too.
-type StorageClosedError = storage.ClosedError
-
-// ErrStorageClosed is the sentinel every closed-store failure unwraps to,
-// whichever backend produced it and however deeply it is wrapped:
-//
-//	if errors.Is(err, sdk.ErrStorageClosed) {
-//		// the node closed the store under this call; conclude, do not crash
-//	}
-//
-// It survives the embedded transport intact — the service layer's ProposeError
-// and the transport's RequestError both unwrap. The network transports carry
-// the CLASSIFICATION (gRPC Unavailable, HTTP 503) but not the value, because a
-// status code is all that crosses the wire; a remote caller uses that instead.
-var ErrStorageClosed = storage.ErrStorageClosed
-
-// IsStorageClosed reports whether err is, or wraps, the store having been
-// closed. Prefer it to comparing error strings.
-var IsStorageClosed = storage.IsClosed
 
 // StorageBatchError is returned when a batch operation fails.
 type StorageBatchError = storage.BatchError

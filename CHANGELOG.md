@@ -11,6 +11,63 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **`service.Host` is split into a data host and a Raft-admin host** (#627,
+  slice A). `service.Host` keeps the eleven methods the data services call
+  (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,
+  `ProposeWithMode`, `StaleRead`, `ReadWithConsistency`, `FollowerRead`,
+  `LeaderID`, `Close`) and no go-quicraft engine type in its method set. The
+  fourteen membership, snapshot, shard-lifecycle, leadership-transfer, drain
+  and introspection methods move to the new `pkg/raftadmin` package as
+  `raftadmin.Host`. `service.AdminHost` composes the two, and is what
+  `NewAdminService`, `NewRebalanceService`, `NewHostShardSnapshotProvider`,
+  `lifecycle.Infra.Host` and `TenantReplicaHosts.StartedHosts` take;
+  `NewHostTopologyProvider` takes a `raftadmin.Host`. There is no alias for
+  the old 25-method interface: an embedder that passed a host to those
+  constructors passes the same value, and a test double that embedded
+  `service.Host` to reach admin methods embeds `service.AdminHost`.
+- **Breaking: the server, storage, engine and discovery re-exports leave the
+  `sdk/go` root for subpackages** (#627, slice B). A caller of the root alone
+  (`*sdk.Client`, the closed-store error, the MCP error codes) no longer links
+  `pkg/server`, `pkg/server/lifecycle`, `pkg/apimodule` or any protocol server
+  beneath `pkg/api`; under `BUILD_TAGS` it linked 21 of those packages before.
+  `make check-lean-standalone` now also runs `TestLeanStandaloneRootLinksNoServer`
+  over the new `sdk/go/examples/leanroot` fixture, under the lean tag set and
+  under `BUILD_TAGS`, so they cannot come back. There is no alias in the root;
+  change the import and the package qualifier:
+
+  | Symbols | Old import | New import |
+  |---|---|---|
+  | Server options and module registry (`ServerOption`, `With*` server options, `WithAuditLogger`, `ServiceModule`, `BaseModule`, `Module*`, `RESTRouteRegistry`, `AuthMiddleware`, `LifecycleNode`, `LifecycleInfra`, `BuildSealServicesOnly`, `CertProviderConflictError`, `CABootstrapConflictError`) | `sdk/go` | `sdk/go/server` |
+  | Sealed-window listener and allowlists (`SealedWindow*`, `ServeSealedWindow`, `NewSealedWindowHandler`, `*SealedWindowAllowlist`) | `sdk/go` | `sdk/go/server` |
+  | gRPC registration (`RegisterGRPCService`, `GRPCRegisterOption`, `GRPCWebConfig`, `DefaultGRPC*`) | `sdk/go` | `sdk/go/server` |
+  | Storage backends (`Storage`, `Storage*` types and errors, `NewMemoryStorage`, `NewFileStorage`, `NewPebbleStorage`, `NewObjStoreStorage`, `PebbleConfig`, `GuardedStorage`) | `sdk/go` | `sdk/go/storage` |
+  | Time series (`TimeSeries*`, `NewTimeSeriesStorage*`) | `sdk/go` | `sdk/go/timeseries` |
+  | Vector storage (`Vector*`, `NewPebbleVectorStorage`, `PebbleVectorStorage`) | `sdk/go` | `sdk/go/vector` |
+  | Vector indexes (`FlatIndex`, `HNSW*`, `IVF*`, `ErrGPUNotCompiled`) | `sdk/go` | `sdk/go/vector` |
+  | State machines (`SM*`, `KVStateMachine`, `FastStateMachine`, `*Backend` state-machine backends, `With*` state-machine options) | `sdk/go` | `sdk/go/statemachine` |
+  | Local backend (`LocalBackend`, `NewLocalBackend`, `SimpleStateMachine`, `SMAdapter`, `Backend*Error`) | `sdk/go` | `sdk/go/backend` |
+  | Discovery (`Discovery*`, `BuildDiscovery`, `NewDiscoveryManager`, `Peer`) | `sdk/go` | `sdk/go/cluster` |
+
+  The closed-store error (`ErrStorageClosed`, `StorageClosedError`,
+  `IsStorageClosed`) stays in the root: every transport returns it. So do the
+  cluster, feature-gate and membership methods on `*sdk.Client`
+  (`cluster.go`, `featuregate.go`, `membership.go`), which are client API and
+  not re-exports. What still links the root to the cluster engine is
+  `pkg/service`, `pkg/config` → `pkg/cluster` and `pkg/seal` →
+  `pkg/storage/pebble`.
+
+  `NewTimeSeriesStorageWithDir` and `NewTimeSeriesStorageWithEncryptor` now
+  return `*timeseries.TimeSeriesDirStorage` (#1207). They used to return the
+  bare `*timeseries.Storage` over a Pebble database they opened and never
+  exposed: no caller could reach the `TimeSeriesBatch` every write takes, and
+  `Close` left the database open. `TimeSeriesDirStorage` embeds the store and
+  adds `Batch`, over the database it owns, and a `Close` that closes both.
+  Each new subpackage (`sdk/go/server`, `sdk/go/storage`,
+  `sdk/go/timeseries`, `sdk/go/vector`) carries its own behavioural tests and
+  meets the 91% coverage floor on its own.
+
 ## [0.57.0-alpha] - 2026-10-26
 
 ### Changed

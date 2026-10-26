@@ -275,7 +275,7 @@ neither owns a verb neither registered. See
 | gRPC-Web framing over the gRPC server's handler | `pkg/api/grpcweb` | go-qrdb |
 | Per-(tenant, database) service resolution | `pkg/service` (`service.Registry`) | go-qrdb |
 | Node composition entry points | `sdk/go/node` | go-qrdb |
-| SDK Tier 2 aliases | `sdk/go/types_server.go` | go-qrdb |
+| SDK Tier 2 aliases | `sdk/go/server/server.go` | go-qrdb |
 | Capability modules | — | **go-xkms, go-quicbaas, go-trusted-platform** |
 
 ### Where the transports bind

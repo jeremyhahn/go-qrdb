@@ -56,7 +56,7 @@ type tenantHost struct {
 	tenantID string
 	dataRoot string
 	host     *quicraft.Host
-	adapter  service.Host
+	adapter  service.AdminHost
 	hub      *watch.Hub
 	lessor   *lease.Lessor
 	services *DatabaseServices

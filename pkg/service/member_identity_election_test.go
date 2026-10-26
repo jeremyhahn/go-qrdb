@@ -53,6 +53,8 @@ func (h *newLeaderHost) SyncGetShardMembership(context.Context, uint64) (*quicra
 // the adapter's.
 type transportAdapter struct{ *raftbackend.HostAdapter }
 
+var _ AdminHost = (*transportAdapter)(nil)
+
 func (transportAdapter) NodeIdentity() string { return identityOne }
 
 func newLeaderAdapter(inner *newLeaderHost) transportAdapter {

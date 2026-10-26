@@ -78,9 +78,10 @@ import (
 // BuildServices: storage backends, Raft host, watch hub, and (when seal is
 // enabled) barrier and registry.
 type Infra struct {
-	// Host is the service.Host implementation (Raft adapter or LocalBackend).
-	// Required.
-	Host service.Host
+	// Host is the node host (Raft adapter or LocalBackend), both its data
+	// host and its Raft-admin host: the node composes the admin, rebalance
+	// and snapshot services over it as well as the data services. Required.
+	Host service.AdminHost
 
 	// NoRevisionHistory declares that the system shard's state machine keeps
 	// no MVCC revision history (see StateMachineKeepsRevisionHistory). The

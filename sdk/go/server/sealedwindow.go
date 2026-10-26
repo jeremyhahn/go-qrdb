@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package server
 
 import (
 	"net/http"
@@ -27,6 +27,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ var NewSealedWindowListenerProbe = qrdbserver.NewSealedWindowListenerProbe
 // copying sealed-window handlers. Any service may be nil; its routes then
 // answer as they do on a server without it. Build probe with
 // NewSealedWindowListenerProbe.
-func NewSealedWindowHandler(barrier BarrierServicer, ceremony ServiceCeremonyServicer, credential ServiceCredentialServicer, probe SealedWindowListenerProbe) http.Handler {
+func NewSealedWindowHandler(barrier sdk.BarrierServicer, ceremony sdk.ServiceCeremonyServicer, credential sdk.ServiceCredentialServicer, probe SealedWindowListenerProbe) http.Handler {
 	return restapi.NewSealedWindowHandler(barrier, ceremony, credential, probe)
 }
 
@@ -223,6 +224,6 @@ func NewSealedWindowHandler(barrier BarrierServicer, ceremony ServiceCeremonySer
 // host to add to its own MCP server with AddTools. Each handler carries the
 // sealed gate and qrdb's error coding, so the tools answer exactly as on
 // qrdb's own sealed listener. Pass the same probe as NewSealedWindowHandler.
-func SealedWindowMCPTools(barrier BarrierServicer, ceremony ServiceCeremonyServicer, credential ServiceCredentialServicer, probe SealedWindowListenerProbe) []mcpserver.ServerTool {
+func SealedWindowMCPTools(barrier sdk.BarrierServicer, ceremony sdk.ServiceCeremonyServicer, credential sdk.ServiceCredentialServicer, probe SealedWindowListenerProbe) []mcpserver.ServerTool {
 	return mcpapi.SealedWindowTools(barrier, ceremony, credential, probe)
 }

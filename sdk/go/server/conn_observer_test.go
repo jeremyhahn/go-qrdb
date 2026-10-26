@@ -12,46 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk_test
+package server_test
 
 import (
 	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // gaugeModule is the module a composing host writes against the SDK alone:
 // an active-connection gauge fed by the ModuleConnObserver hook.
 type gaugeModule struct {
-	sdk.BaseModule
+	sdkserver.BaseModule
 	active atomic.Int64
 }
 
-func (m *gaugeModule) Name() string                   { return "gauge" }
-func (m *gaugeModule) ConnOpened(sdk.ModuleTransport) { m.active.Add(1) }
-func (m *gaugeModule) ConnClosed(sdk.ModuleTransport) { m.active.Add(-1) }
+func (m *gaugeModule) Name() string                         { return "gauge" }
+func (m *gaugeModule) ConnOpened(sdkserver.ModuleTransport) { m.active.Add(1) }
+func (m *gaugeModule) ConnClosed(sdkserver.ModuleTransport) { m.active.Add(-1) }
 
 // Compile-time: a module written against the SDK names is the server's
 // observer — the aliases are the pkg/apimodule declarations, not copies.
 var (
-	_ sdk.ServiceModule      = (*gaugeModule)(nil)
-	_ sdk.ModuleConnObserver = (*gaugeModule)(nil)
-	_ apimodule.ConnObserver = (*gaugeModule)(nil)
-	_ apimodule.Transport    = sdk.ModuleTransportQUIC
+	_ sdkserver.ServiceModule      = (*gaugeModule)(nil)
+	_ sdkserver.ModuleConnObserver = (*gaugeModule)(nil)
+	_ apimodule.ConnObserver       = (*gaugeModule)(nil)
+	_ apimodule.Transport          = sdkserver.ModuleTransportQUIC
 )
 
 // TestSDK_ModuleTransports_AreTheServerTransports pins each SDK transport
 // name to the value the server reports.
 func TestSDK_ModuleTransports_AreTheServerTransports(t *testing.T) {
-	pairs := map[sdk.ModuleTransport]apimodule.Transport{
-		sdk.ModuleTransportGRPC:  apimodule.TransportGRPC,
-		sdk.ModuleTransportUnix:  apimodule.TransportUnix,
-		sdk.ModuleTransportREST:  apimodule.TransportREST,
-		sdk.ModuleTransportHTTP3: apimodule.TransportHTTP3,
-		sdk.ModuleTransportMCP:   apimodule.TransportMCP,
-		sdk.ModuleTransportQUIC:  apimodule.TransportQUIC,
+	pairs := map[sdkserver.ModuleTransport]apimodule.Transport{
+		sdkserver.ModuleTransportGRPC:  apimodule.TransportGRPC,
+		sdkserver.ModuleTransportUnix:  apimodule.TransportUnix,
+		sdkserver.ModuleTransportREST:  apimodule.TransportREST,
+		sdkserver.ModuleTransportHTTP3: apimodule.TransportHTTP3,
+		sdkserver.ModuleTransportMCP:   apimodule.TransportMCP,
+		sdkserver.ModuleTransportQUIC:  apimodule.TransportQUIC,
 	}
 	if len(pairs) != 6 {
 		t.Fatalf("%d distinct transports, want 6", len(pairs))
@@ -69,12 +69,12 @@ func TestSDK_ModuleTransports_AreTheServerTransports(t *testing.T) {
 // balanced.
 func TestSDK_ModuleConnObserver_IsPickedUpByTheServer(t *testing.T) {
 	m := &gaugeModule{}
-	observers := apimodule.ConnObserversOf([]sdk.ServiceModule{m})
+	observers := apimodule.ConnObserversOf([]sdkserver.ServiceModule{m})
 	if len(observers) != 1 {
 		t.Fatalf("the server found %d observers in an SDK-written module, want 1", len(observers))
 	}
-	closeA := observers.Open(sdk.ModuleTransportMCP)
-	closeB := observers.Open(sdk.ModuleTransportQUIC)
+	closeA := observers.Open(sdkserver.ModuleTransportMCP)
+	closeB := observers.Open(sdkserver.ModuleTransportQUIC)
 	if got := m.active.Load(); got != 2 {
 		t.Fatalf("active = %d after two opens, want 2", got)
 	}

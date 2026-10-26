@@ -213,7 +213,7 @@ const hotspotThreshold = 1.5
 // the generic path (moveGenericShard), leaving existing
 // non-IsolationRaft behavior intact.
 type RebalanceService struct {
-	host           Host
+	host           AdminHost
 	placementStore *placement.Store
 	keyDeliverer   RebalanceKeyDeliverer
 	barrierLookup  RebalanceBarrierLookup
@@ -225,7 +225,7 @@ type RebalanceService struct {
 // NewRebalanceService creates a new RebalanceServicer backed by the given host.
 // Functional opts configure Phase 4c-2 dedicated-tenant move capabilities;
 // an empty opts list produces the same generic-shard-only behaviour as before.
-func NewRebalanceService(host Host, opts ...RebalanceServiceOption) RebalanceServicer {
+func NewRebalanceService(host AdminHost, opts ...RebalanceServiceOption) RebalanceServicer {
 	s := &RebalanceService{host: host, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)

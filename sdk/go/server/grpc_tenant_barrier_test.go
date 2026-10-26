@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package server
 
 import (
 	"context"
@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // sealRecordingTenantSvc is a ServiceTenantServicer whose only implemented
@@ -34,7 +35,7 @@ import (
 // method panics through the nil embedded interface, so a test that reaches
 // one fails loudly.
 type sealRecordingTenantSvc struct {
-	ServiceTenantServicer
+	sdk.ServiceTenantServicer
 	sealed atomic.Pointer[string]
 }
 

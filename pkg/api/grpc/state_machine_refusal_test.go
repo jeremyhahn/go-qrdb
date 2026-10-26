@@ -34,6 +34,8 @@ type smHost struct {
 	sm *store.MVCCStateMachine
 }
 
+var _ service.Host = (*smHost)(nil)
+
 func (h *smHost) SyncPropose(ctx context.Context, _ uint64, cmd []byte) (sm.Result, error) {
 	results := make([]sm.Result, 1)
 	if err := h.sm.Update(ctx, []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {

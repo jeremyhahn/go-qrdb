@@ -233,8 +233,10 @@ shrinks. The remaining edges are packaging rather than behaviour:
 
 - The SDK root re-exports every feature.
 - `sdk/go/node` builds both modes and every backend in one package.
-- `pkg/service` compiles every feature service.
-- `service.Host` is typed by the go-quicraft NodeHost.
+- `pkg/service` compiles every feature service, the admin services among
+  them, and classifies the go-quicraft errors a proposal or read returns.
+- The admin services compose `raftadmin.Host`, which is typed by the
+  go-quicraft NodeHost.
 
 Reaching zero is a package split, one feature at a time. The splits so far:
 
@@ -246,6 +248,13 @@ Reaching zero is a package split, one feature at a time. The splits so far:
   raw `*pebble.DB`, which only the Raft state machine builds, is
   `pkg/index/pebbleindex`. `pkg/index`, which the DAO imports, holds the index
   types and the storage-backed index, and does not import PebbleDB.
+- **The node host is two interfaces.** `service.Host` is the data host: the
+  proposals, reads, leader lookup and identity the data services use, with no
+  go-quicraft engine type in its method set. `raftadmin.Host`
+  (`pkg/raftadmin`) is the Raft-admin host: membership, snapshots, shard start
+  and stop, leadership transfer, drain and node-host info. `service.AdminHost`
+  is both, for the admin, rebalance and lifecycle consumers that drive both.
+  `LocalBackend` and the Raft `HostAdapter` implement both.
 
 ## Component boundaries
 

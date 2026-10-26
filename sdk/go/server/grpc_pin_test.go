@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sdk
+package server
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"testing"
 
@@ -27,15 +28,32 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // newSOPINGatedClient registers the qrdb gRPC service through the SDK surface
 // only, over an in-memory bufconn listener, with an initialized and unsealed
 // barrier service and the given extra options, and returns a client for it
 // along with the barrier service it serves.
-func newSOPINGatedClient(t *testing.T, opts ...GRPCRegisterOption) (pb.QRDBServiceClient, BarrierServicer) {
+// newTestBarrier builds an in-memory storage barrier with a deferred
+// software strategy, sealed until a test unseals it.
+func newTestBarrier(t *testing.T) *sdk.StorageBarrier {
 	t.Helper()
-	barrierSvc := NewBarrierService(newTestBarrier(t))
+	barrier, err := sdk.NewStorageBarrier(
+		slog.Default(),
+		sdk.NewMemoryBackend(),
+		sdk.BarrierConfig{RootKeyPath: "test/root-key"},
+		sdk.NewDeferredSoftwareStrategy(),
+	)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	return barrier
+}
+
+func newSOPINGatedClient(t *testing.T, opts ...GRPCRegisterOption) (pb.QRDBServiceClient, sdk.BarrierServicer) {
+	t.Helper()
+	barrierSvc := sdk.NewBarrierService(newTestBarrier(t))
 	if err := barrierSvc.BarrierInitialize(t.Context(), []byte("sdk-grpc-pin-passphrase")); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}

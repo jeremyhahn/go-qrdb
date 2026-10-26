@@ -180,7 +180,7 @@ provider to say so. An unregistered name is refused with
 `*seal.StrategyNotRegisteredError`, which names what is registered; a factory's
 error reaches the caller unchanged.
 
-**Injection.** `server.WithBarrierKeyProvider(p)` (also `sdk.WithBarrierKeyProvider`).
+**Injection.** `server.WithBarrierKeyProvider(p)` (also `sdkserver.WithBarrierKeyProvider`).
 The tenant service is built in `lifecycle.BuildServices`, before `server.New`
 runs, so the SDK node builders resolve the option through
 `server.ResolveCryptoOptions` and forward it into
