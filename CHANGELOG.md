@@ -84,6 +84,15 @@ are not reconstructed here — their history is in the git log.
   `sdk/go/timeseries`, `sdk/go/vector`) carries its own behavioural tests and
   meets the 91% coverage floor on its own.
 
+### Fixed
+
+- `make security` passes on main again: gosec's G204 at
+  `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
+  repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
+- `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
+  helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
+  and reading under one `os.Root` opened on the directory, not by a waiver.
+
 ## [0.57.0-alpha] - 2026-10-26
 
 ### Changed
