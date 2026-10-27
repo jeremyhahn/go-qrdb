@@ -2875,6 +2875,15 @@ func (n *Node) Close() error {
 		record(n.tenantHosts.CloseAll())
 		n.tenantHosts = nil
 	}
+	// Close the node's own store BEFORE sealing: with encryption at rest it
+	// sits on encfs over the system barrier, and a store still open when that
+	// barrier seals has every file it creates refused -- a background
+	// compaction's table, or the WAL Pebble cannot live without.
+	if n.stg != nil {
+		record(n.stg.Close())
+		n.stg = nil
+		n.pebbleDB = nil
+	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
 	// service.SealWholeNode seals every database barrier, every tenant
@@ -2904,11 +2913,6 @@ func (n *Node) Close() error {
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
-	}
-	if n.stg != nil {
-		record(n.stg.Close())
-		n.stg = nil
-		n.pebbleDB = nil
 	}
 	// Close the database manager last — after all raft shards, host, and
 	// storage are down — mirroring the daemon's deferred dbManager.Close()
