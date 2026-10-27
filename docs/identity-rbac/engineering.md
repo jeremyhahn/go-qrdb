@@ -336,7 +336,7 @@ no system-tenant lift.
 **Every `ScopeCross` permission has an SDK name.** `sdk/go/types_permission_cross.go`
 re-exports each one (`sdk.PermissionCertsRevokeCross`,
 `sdk.PermissionAuditVerify`, the `tenants`,
-`volumepool`, `registration_config` and `credentials` families,
+`volumepool` and `registration_config` families,
 the node-barrier `seal` and `ceremony` permissions, and the cluster `admin`,
 `rebalance` and `backup`
 permissions), and `TestSDK_CrossScopePermissions_AreComplete`
@@ -368,6 +368,11 @@ self-scoped permission individually.
 
 **Declare each member of a family by name, never the family through a helper**:
 a helper that later gains a member tags that member silently.
+The ten `credentials:*` permissions are `ScopeSelf`, each by name in
+`self_scope.go`: every credential call acts on the caller's own tenant's store
+and names no tenant, so a tenant administrator can grant them inside the
+tenant (`sdk/go/types_permission_credentials.go` names them for the SDK; see
+[../credentials/architecture.md](../credentials/architecture.md)).
 `orchestrator:health` sits in the broker data-plane family
 (`brokerDataPlaneScopePermissions()`, `ScopeTenantOnly`) but reads the daemon's
 own state, so it is listed in `nodeStateScopePermissions()` and declared
