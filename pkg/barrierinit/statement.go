@@ -156,12 +156,8 @@ func Sign(signer crypto.Signer, s InitStatement) (InitStatement, error) {
 	if signer == nil {
 		return InitStatement{}, &mtls.UnsupportedSignerError{}
 	}
-	spki, err := x509.MarshalPKIXPublicKey(signer.Public())
+	s, err := ForSigner(s, signer.Public())
 	if err != nil {
-		return InitStatement{}, s.refuse(ReasonMalformedKey, err)
-	}
-	s.SignerSPKI, s.Signature = spki, nil
-	if err := s.wellFormed(false); err != nil {
 		return InitStatement{}, err
 	}
 	sig, err := mtls.SignNonce(signer, s.Message())
@@ -169,6 +165,45 @@ func Sign(signer crypto.Signer, s InitStatement) (InitStatement, error) {
 		return InitStatement{}, err
 	}
 	s.Signature = sig
+	return s, nil
+}
+
+// ForSigner returns s naming pub as its signing key, unsigned: Message is then
+// exactly the bytes pub's holder signs. It is the first half of a signature
+// made away from this process -- a remote administrator signs Message and
+// Attach completes the statement. A key that does not encode as a
+// SubjectPublicKeyInfo is refused with ReasonMalformedKey, and an ill-formed
+// statement with ReasonMalformed, both as *InitStatementError.
+func ForSigner(s InitStatement, pub crypto.PublicKey) (InitStatement, error) {
+	spki, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return InitStatement{}, s.refuse(ReasonMalformedKey, err)
+	}
+	s.SignerSPKI, s.Signature = spki, nil
+	if err := s.wellFormed(false); err != nil {
+		return InitStatement{}, err
+	}
+	return s, nil
+}
+
+// Attach returns s carrying signature, a detached signature over s.Message by
+// the key s names (SignerSPKI), once it verifies under that key: ECDSA over
+// SHA-256 in ASN.1 form, RSA PKCS #1 v1.5 over SHA-256, or pure Ed25519. A
+// signature that does not verify is refused with ReasonBadSignature. Attach
+// proves only that the named key signed; whether that key may sign for the
+// barrier is Verify's question, against the barrier's anchors.
+func Attach(s InitStatement, signature []byte) (InitStatement, error) {
+	pub, err := x509.ParsePKIXPublicKey(s.SignerSPKI)
+	if err != nil {
+		return InitStatement{}, s.refuse(ReasonMalformedKey, err)
+	}
+	if !mtls.VerifyNonceSignature(pub, s.Message(), signature) {
+		return InitStatement{}, s.refuse(ReasonBadSignature, nil)
+	}
+	s.Signature = bytes.Clone(signature)
+	if err := s.wellFormed(true); err != nil {
+		return InitStatement{}, err
+	}
 	return s, nil
 }
 
@@ -185,20 +220,28 @@ func SignTenantInit(signer crypto.Signer, tenantID, strategy string, issuedAt ti
 	if signer == nil {
 		return nil, nil
 	}
-	strategyID := seal.StrategyID(strategy)
-	if strategyID == "" {
-		strategyID = seal.StrategyPassphrase
-	}
-	signed, err := Sign(signer, InitStatement{
-		Barrier:    clusterseal.TenantBarrier(tenantID),
-		Epoch:      1,
-		IssuedAt:   issuedAt.Unix(),
-		StrategyID: strategyID,
-	})
+	signed, err := Sign(signer, NewTenantInit(tenantID, strategy, "", issuedAt))
 	if err != nil {
 		return nil, err
 	}
 	return signed.Marshal()
+}
+
+// NewTenantInit returns tenantID's unsigned epoch-1 statement for a strategy
+// other than Shamir, issued at issuedAt and naming keyRef. An empty strategy
+// is the passphrase strategy, as it is for the init request.
+func NewTenantInit(tenantID, strategy, keyRef string, issuedAt time.Time) InitStatement {
+	strategyID := seal.StrategyID(strategy)
+	if strategyID == "" {
+		strategyID = seal.StrategyPassphrase
+	}
+	return InitStatement{
+		Barrier:    clusterseal.TenantBarrier(tenantID),
+		Epoch:      1,
+		IssuedAt:   issuedAt.Unix(),
+		StrategyID: strategyID,
+		KeyRef:     keyRef,
+	}
 }
 
 // SignTenantShamirInit returns the encoded statement the second request of a
@@ -211,8 +254,19 @@ func SignTenantShamirInit(signer crypto.Signer, tenantID string, threshold int, 
 	if signer == nil {
 		return nil, nil
 	}
+	signed, err := Sign(signer, NewTenantShamirInit(tenantID, threshold, roster, check, issuedAt))
+	if err != nil {
+		return nil, err
+	}
+	return signed.Marshal()
+}
+
+// NewTenantShamirInit returns tenantID's unsigned epoch-1 Shamir statement
+// over the split a node prepared: its threshold, encoded roster and unseal key
+// check value, issued at issuedAt.
+func NewTenantShamirInit(tenantID string, threshold int, roster, check []byte, issuedAt time.Time) InitStatement {
 	hash := sha256.Sum256(roster)
-	signed, err := Sign(signer, InitStatement{
+	return InitStatement{
 		Barrier:        clusterseal.TenantBarrier(tenantID),
 		Epoch:          1,
 		IssuedAt:       issuedAt.Unix(),
@@ -221,11 +275,7 @@ func SignTenantShamirInit(signer crypto.Signer, tenantID string, threshold int, 
 		RosterHash:     hash[:],
 		Roster:         roster,
 		UnsealKeyCheck: check,
-	})
-	if err != nil {
-		return nil, err
 	}
-	return signed.Marshal()
 }
 
 // SignPlatformInit returns the encoded epoch-1 statement the platform claims

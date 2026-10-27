@@ -242,6 +242,14 @@ func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id string, pas
 func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
+
+func (m *covMockTenantSvc) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *covMockTenantSvc) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
 func (m *covMockTenantSvc) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, id, key)

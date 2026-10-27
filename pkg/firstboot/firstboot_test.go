@@ -127,6 +127,14 @@ func (f *fakeTenants) TenantBarrierInit(_ context.Context, _ string, _ []byte, _
 func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
+
+func (f *fakeTenants) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (f *fakeTenants) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
 func (f *fakeTenants) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }

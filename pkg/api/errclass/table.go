@@ -1028,6 +1028,12 @@ var tenantRules = []rule{
 	is(tenant.ErrNilEntitlements, InvalidArgument),
 	as(&tenant.InvalidStrategyError{}, InvalidArgument),
 	as(&tenant.InitStatementRequiredError{}, InvalidArgument),
+	// A signed init's statement reference that was never begun, was spent or
+	// lapsed admits nothing: the caller begins again.
+	as(&tenant.SignedInitError{}, PermissionDenied),
+	as(&tenant.SignedInitFieldRequiredError{}, InvalidArgument),
+	as(&tenant.TooManySignedInitsError{}, ResourceExhausted),
+	as(&tenant.SignedInitUnsupportedError{}, FailedPrecondition),
 	// A raft-isolated tenant's barrier with no recorded init statement has
 	// nothing to reattach from: no retry or other credential changes that.
 	as(&tenant.InitStatementMissingError{}, FailedPrecondition),

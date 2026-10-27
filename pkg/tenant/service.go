@@ -355,6 +355,17 @@ type TenantServicer interface {
 	// provider.
 	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID, roster *TenantBarrierShamirRoster, opts ...TenantBarrierInitOption) (*TenantBarrierInitResult, error)
 
+	// TenantBarrierInitBegin returns the init statement a tenant barrier's
+	// administrator signs away from the node, and the single-use reference
+	// TenantBarrierInitComplete redeems it with: the two-phase signed init a
+	// remote transport carries, where no crypto.Signer reaches this process.
+	TenantBarrierInitBegin(ctx context.Context, req *TenantBarrierInitBeginRequest) (*TenantBarrierInitBeginResult, error)
+
+	// TenantBarrierInitComplete redeems a begun statement with the
+	// administrator's detached signature over it and initializes the
+	// barrier under the signed statement.
+	TenantBarrierInitComplete(ctx context.Context, req *TenantBarrierInitCompleteRequest) (*TenantBarrierInitResult, error)
+
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
 	// caller-supplied key material. There is no derived credential
 	// fallback: empty key material is rejected.
