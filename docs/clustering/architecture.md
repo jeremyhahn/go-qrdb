@@ -1,6 +1,7 @@
 # Clustering — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 Covers peer discovery, cluster formation, membership, node administration and
 shard rebalancing. **Raft mode only** — see
@@ -105,7 +106,7 @@ Where each identity comes from:
 
 | Identity | Source |
 |---|---|
-| This replica's own | derived from the certificate it presents (`WithRaftMTLS` for the SDK node, `--tls-cert-file` for `qrdbd`) |
+| This replica's own | derived from the certificate it holds (`WithRaftMTLS` for the SDK node; for `qrdbd`, `--tls-cert-file` or the certificate it enrolled or self-issued) |
 | Every other replica's | `raft.member_identities` (`--member-identities`), `replicaID=identity` specs the operator collects out of band |
 
 A peer's identity is **never learned from the peer's own connection**: that
@@ -119,7 +120,20 @@ replica must name at least one existing member it will accept its bootstrap
 from. The discovery method is irrelevant: `raft.member_identities` is keyed by
 replica ID and applies to whatever membership discovery produces. A configured
 entry for the local replica that disagrees with its certificate is refused
-before the host is built. A single-node cluster has no transport and needs none.
+before the host is built.
+
+A single-node cluster has no transport and checks no identity, but it still
+seeds its own into the membership it founds whenever it holds a certificate
+(`resolveMemberIdentities` in `cmd/qrdbd`, `buildClusteredRaftConfigs` in the
+SDK node). That committed membership is what every replica added later
+authorizes it by: a founder committed without an identity is refused as
+`missing_identity` by the first member it admits, and no leader can be elected.
+Seeding it at founding is the only point it can enter: go-quicraft takes a
+replica's identity from the bootstrap entry or from the config change that
+adds it, and the founder is never added. go-quicraft accepts identities on a
+transportless host and checks only their form there; once the founder is
+restarted with a transport, its recovered identity is checked against the
+certificate it presents, which is the one it was derived from.
 
 ### Adding replicas: identities come from the committed membership
 
@@ -832,6 +846,35 @@ already running. A diagnostic must never be what starts a tenant.
   compaction records diverge just as harmfully, and they travel in the same
   snapshots.
 
+## Leadership through a follower WAL fsync stall
+
+A follower's WAL fsync can stall for seconds on a contended or failing disk.
+Under Raft's CheckQuorum a leader steps down when it has not heard from a
+quorum within one election timeout, so a stall on a quorum of followers used
+to cost the shard its leader: every admin and linearizable request in flight
+failed on an election the disk caused, not a failure of the leader.
+
+qrdb inherits the fix from go-quicraft's heartbeat-under-fsync. While a WAL
+write is in flight, a follower answers a leader's heartbeat without waiting for
+the fsync, provided the step that produced the reply left its term, its vote,
+the vote window it owes and its log unchanged. The reply carries no log index
+of the follower's, so it never acknowledges an entry that is not on disk. A
+reply from a step that appended or changed the hard state stays ordered behind
+the fsync.
+
+**The bound** is structural, not a duration. The leader stands for as long as
+the stalled followers append nothing new: heartbeats and ReadIndex rounds go
+on, so linearizable reads and admin requests keep succeeding. A write proposed
+during the stall waits until a quorum's fsyncs return, as durability requires;
+it is never acknowledged early. There is no knob: the behaviour is on in every
+build and cannot be turned off.
+
+**Visibility.** The stall is not hidden. The WAL fsync latency histogram,
+`quicraft_logdb_fsync_latency_seconds`, records each stalled fsync at its full
+duration, and one slower than the configured threshold logs a warning naming
+the WAL directory (see `storage-latency-observability` in
+[../SPEC.md](../SPEC.md)).
+
 ## Component boundaries
 
 | Piece | Package | Owner |
@@ -940,10 +983,12 @@ already running. A diagnostic must never be what starts a tenant.
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the
   read-only `stats`/`plan`/`report`.
-- **Member-side CSR join requires the operator-configured join token** (an
-  operator-chosen secret, following the same no-default-secret rule as
-  multicast discovery's PSK); a CSR presented without it is refused before
-  Key A is ever touched.
+- **Member-side CSR join is admitted by the operator-configured join token
+  or by operator approval.** The token is an operator-chosen secret,
+  following the same no-default-secret rule as multicast discovery's PSK. A
+  CSR presented without it is queued for operator approval
+  ([Approval queue](#approval-queue-tokenless-join)) and is never signed without that
+  approval.
 - **The peer/Raft/enrollment transport trusts Key A only.** A certificate
   issued by Key B (a tenant login CA) is refused on this transport even
   though it is a validly-chained client certificate elsewhere — see

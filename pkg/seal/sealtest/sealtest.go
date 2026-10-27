@@ -15,7 +15,7 @@
 // Package sealtest holds helpers for tests that exercise seal.Credentials and
 // the storage barrier.
 //
-// A credential's secret is protected memory (a *enclave.SealedEnclave), and
+// A credential's secret is protected memory (an enclave.Sealed), and
 // production code never materializes it as a []byte: the strategy that needs
 // the passphrase opens the enclave itself for exactly as long as the KDF runs.
 // A test asserting what a handler or service PASSED DOWN has no such path — it
@@ -54,7 +54,7 @@ func Plaintext(tb testing.TB, creds seal.Credentials) []byte {
 			tb.Logf("sealtest: releasing the opened credential enclave reported a non-fatal problem: %v", derr)
 		}
 	}()
-	// A COPY, taken under the borrow: MemoryEnclave.Open returns a view of
+	// A COPY, taken under the borrow: the memory enclave's WithBytes passes a view of
 	// the locked pages, and the Destroy above unmaps them on return.
 	var b []byte
 	if err := opened.WithBytes(func(view []byte) error {

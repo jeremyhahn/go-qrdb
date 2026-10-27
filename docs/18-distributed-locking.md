@@ -1,6 +1,6 @@
 # Distributed Locking
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -228,7 +228,7 @@ An operation that may outlast the TTL extends the lock periodically.
 
 The semantics are identical in every run mode. In embedded and standalone mode the compare-and-swap and the lease-expiry sweep are local; clustered, both go through Raft. A caller does not change code between them.
 
-A lock survives a restart in both modes, because its lease is durable: a lock held when the server stops is still held by the same holder afterwards. A standalone node on the file or objstore backend keeps no leases, so every lock verb there is refused with a typed capability error. See [distributed-locks/architecture.md](distributed-locks/architecture.md#standalone-vs-clustered).
+A lock survives a restart in both modes, because its lease is durable: a lock held when the server stops is still held by the same holder afterwards. A database on a dedicated non-raft store has no lease service, so every lock verb there is refused with a typed capability error. See [distributed-locks/architecture.md](distributed-locks/architecture.md#standalone-vs-clustered).
 
 ## API
 

@@ -1,6 +1,6 @@
 # Watch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -94,7 +94,8 @@ than dropping changes between polls.
 
 | Piece | Package | Owner |
 |---|---|---|
-| Watch service and event fan-out | `pkg/watch` | go-qrdb |
+| Event fan-out (`Hub`) | `pkg/watch` | go-qrdb |
+| Watch service (`WatchServicer`, `WatchService`) | `pkg/service` | go-qrdb |
 | Revision history that replay reads from | `pkg/mvcc` | go-qrdb |
 | Streaming transport (gRPC server-streaming, QUIC stream, SSE-style REST) | `pkg/api/*` | go-qrdb |
 | Raft commit ordering that gives events their order | — | **go-quicraft** |

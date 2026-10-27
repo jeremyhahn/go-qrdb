@@ -716,7 +716,7 @@ func (m *mockRaftNode) StartShard(members map[uint64]string, join bool, create s
 	return nil
 }
 
-func (m *mockRaftNode) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (m *mockRaftNode) LeaderID(shardID uint64) (uint64, bool, error) {
 	if m.getLeaderFn != nil {
 		return m.getLeaderFn(shardID)
 	}

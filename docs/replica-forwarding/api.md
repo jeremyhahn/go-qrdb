@@ -1,7 +1,7 @@
 # Replica Forwarding — API
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-26
 
 Replica forwarding adds **no new routes, RPCs or tools**, and one QUIC method,
 `forward.OnBehalf`, that only a cluster node may call. It changes what every
@@ -110,7 +110,7 @@ err = orders.KV().Put(appCtx, "k", []byte("v"))
 |---|---|---|
 | `WithEmbeddedCaller(tls.Certificate) NodeOption` | `sdk/go/node` | The identity the node's embedded client forwards as. A certificate that is empty, does not parse, or does not match its key fails the node's construction with `*node.ConfigError`. |
 | `WithReplicaForwarding(ReplicaForwarder, auth.Authenticator) Option` | `sdk/go/transport/embedded` | Makes a database-scoped transport forward what the node refuses as a non-replica, as the identity the authenticator returns. `sdk/go/node` installs it. |
-| `ReplicaForwarder` | `sdk/go/transport/embedded` | Forwards one QUIC request frame as a caller; `*quic.FrameForwarder` (`pkg/api/quic`) is one. |
+| `ReplicaForwarder` | `sdk/go/transport/embedded` | Forwards one QUIC request frame as a caller: `Forward` to a replica of the database, `ForwardToLeader` to a named leader address in one hop; `*quic.FrameForwarder` (`pkg/api/quic`) is one. |
 | `NewFrameTransport(database string, send FrameSender) *Transport` | `sdk/go/transport/quic` | A QUIC client transport that hands each request frame to `send` instead of a connection. |
 | `(*Server).ReplicaForwarder() (*quic.FrameForwarder, error)` | `pkg/server` | The node's in-process forwarder; `(nil, nil)` when forwarding is off. |
 | `(*Server).AuthenticateCertificate(ctx, []*x509.Certificate) (*auth.Identity, error)` | `pkg/server` | Authenticates a certificate chain as the QUIC listener authenticates a client's. |

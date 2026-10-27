@@ -55,6 +55,8 @@ type mockSnapshotHost struct {
 	membershipCalls atomic.Int32
 }
 
+var _ AdminHost = (*mockSnapshotHost)(nil)
+
 var (
 	_ Host             = (*mockSnapshotHost)(nil)
 	_ snapshotExporter = (*mockSnapshotHost)(nil)
@@ -106,6 +108,8 @@ func (m *mockSnapshotHost) SyncGetShardMembership(ctx context.Context, shardID u
 type mockExporterOnlyHost struct {
 	*mockHost
 }
+
+var _ AdminHost = (*mockExporterOnlyHost)(nil)
 
 func newMockExporterOnlyHost() *mockExporterOnlyHost {
 	return &mockExporterOnlyHost{mockHost: &mockHost{}}

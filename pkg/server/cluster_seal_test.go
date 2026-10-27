@@ -604,7 +604,7 @@ type membershipReader struct {
 	err error
 }
 
-func (r membershipReader) GetShardMembership(uint64) (*quicraft.Membership, error) {
+func (r membershipReader) ShardMembership(uint64) (*quicraft.Membership, error) {
 	return r.ms, r.err
 }
 

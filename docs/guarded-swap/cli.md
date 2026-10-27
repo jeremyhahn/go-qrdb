@@ -1,6 +1,6 @@
 # Guarded Swap — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 **There is no CLI surface for guarded swap, and there is deliberately no plan
@@ -27,5 +27,6 @@ repository; new verbs are added there, not per-feature.
 
 Integration coverage: the feature-gate activation of guarded writes is driven
 over every remote transport by `make integration-test-guarded-swap`
-(`feature_gate_cluster_test.go`); see the `guarded-swap` row of
+(`feature_gate_cluster_test.go`). No integration test drives
+`sdk.GuardedSwap` itself; see the `guarded-swap` row of
 [`test/integration/COVERAGE.md`](../../test/integration/COVERAGE.md).

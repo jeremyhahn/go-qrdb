@@ -38,7 +38,7 @@ const (
 
 	// DefaultBuildTags is the tag set qrdbd must be built with for a harnessed
 	// node to serve every protocol the integration suites exercise.
-	DefaultBuildTags = "codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql"
+	DefaultBuildTags = "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql"
 
 	// stopGrace is how long Stop waits for a signalled daemon to exit before
 	// killing it.

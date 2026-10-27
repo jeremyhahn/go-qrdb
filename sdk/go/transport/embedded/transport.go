@@ -113,16 +113,22 @@ type Transport struct {
 	// made with no identity on the context; see WithHolderActLimiter.
 	holderActLimiter HolderActLimitFunc
 
-	dekSvc          service.DEKServicer
-	policySvc       service.PolicyServicer
-	ceremonySvc     service.CeremonyServicer
-	ceremonyCA      ceremony.CeremonyCA
-	credentialSvc   service.CredentialServicer
-	backupSvc       service.BackupServicer
-	rebalanceSvc    service.RebalanceServicer
-	embeddingSvc    service.EmbeddingServicer
-	ragSvc          service.RAGServicer
-	collectionSvc   service.CollectionServicer
+	dekSvc        service.DEKServicer
+	policySvc     service.PolicyServicer
+	ceremonySvc   service.CeremonyServicer
+	ceremonyCA    ceremony.CeremonyCA
+	credentialSvc service.CredentialServicer
+	backupSvc     service.BackupServicer
+	rebalanceSvc  service.RebalanceServicer
+	embeddingSvc  service.EmbeddingServicer
+	ragSvc        service.RAGServicer
+	collectionSvc service.CollectionServicer
+	logSvc        service.LogService
+	// logDatabase is the database the verifiable-log methods name. The log
+	// service is node-wide and takes the database in each request, so
+	// WithDatabase sets this rather than wrapping the service; empty means
+	// the default database.
+	logDatabase     string
 	sealStoreSvc    *seal.SealStore
 	tenantSvc       tenant.TenantServicer
 	volumeSvc       volume.Service
@@ -263,6 +269,14 @@ func WithVectorService(svc service.VectorServicer) Option {
 func WithRAGService(svc service.RAGServicer) Option {
 	return func(t *Transport) {
 		t.ragSvc = svc
+	}
+}
+
+// WithLogService injects the verifiable-log service the VlogClient methods
+// call.
+func WithLogService(svc service.LogService) Option {
+	return func(t *Transport) {
+		t.logSvc = svc
 	}
 }
 

@@ -1,6 +1,6 @@
 # Identity and RBAC — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 Who someone is, and what they may do. There are no passwords: a certificate is
@@ -80,7 +80,7 @@ holds.
 #    hold Owner yourself -- the same rule direct issuance (step 2 above)
 #    follows. The token is returned exactly once: save it now.
 qrdb users invite --username alice --email alice@acme.com --roles "$ROLE"
-# => Token: a94e3f1b...   ExpiresAt: 2026-10-07T12:00:00Z   ...
+# => Token: a94e3f1b...   ExpiresAt: <RFC 3339 time>   ...
 
 # 2. Deliver the token to alice out of band. She redeems it herself, from her
 #    own machine, with NO credential of her own yet -- "qrdb enroll" needs no
@@ -248,8 +248,7 @@ account in `acme` and give it `acme`'s Admin role; an `acme` administrator
 acts only in `acme`. This holds on REST, gRPC, the unix socket, QUIC, MCP and
 the embedded SDK.
 
-One gap remains: an Admin of the system tenant can still manage a tenant's
-users and roles. Closing it is planned work on strict tenant isolation.
+An Admin of the system tenant manages every tenant's users and roles.
 
 ```bash
 qrdb users update "$ACME_USER" --role-binding "$ACME_ROLE:acme"
@@ -379,7 +378,8 @@ posture that meets FedRAMP, HIPAA and PCI DSS 4.0: every certificate login
 must present a key the named account actually enrolled. A **fresh** fleet
 needs no migration — first boot enrols the bootstrap admin's certificate for
 you, and every other user is enrolled the ordinary way
-(`POST /users/{id}/cert-bindings`) before their first login.
+(`qrdb users cert-binding add <id> --cert <pem>`, or
+`POST /users/{id}/cert-bindings`) before their first login.
 
 This section is for an **existing** fleet still running with
 `auth.mtls_binding_policy: enrolled` set explicitly (the non-compliant
@@ -401,7 +401,8 @@ auth:
 
    Page through with `--page` until `has_more` is false. Every name printed
    would be refused under `required`. Enrol each one's certificate
-   (`POST /users/{id}/cert-bindings`, or `AddCertBinding` on any other
+   (`qrdb users cert-binding add <id> --cert <pem>` — see [cli.md](cli.md) —
+   `POST /users/{id}/cert-bindings`, or `AddCertBinding` on any other
    transport — see [api.md](api.md)). **Start with `admin` in the `system`
    tenant.**
 2. **Remove the `enrolled` line (or set it to `required`) on every node** and
@@ -444,22 +445,29 @@ A Go program that authorizes its own requests imports only the SDK
   decision was made. Use `errors.As` to tell the two apart.
 - The user and role management permissions are `sdk.PermissionUsers*` and
   `sdk.PermissionRoles*`.
+- `sdk.EffectivePermissions(ctx, roles, roleIDs)` returns the concrete
+  permissions a set of roles grants in the context tenant, with every
+  wildcard grant expanded. It checks no permission itself, so call it only
+  where your own code has already decided the caller may read those grants,
+  such as issuing a token at login.
 
 To put the server's own mTLS authentication and authorization in front of a
-router of your own, build the middleware from the SDK:
+router of your own, build the middleware from the SDK (`sdk` is
+`github.com/jeremyhahn/go-qrdb/sdk/go`, `sdkserver` is
+`github.com/jeremyhahn/go-qrdb/sdk/go/server`):
 
 - `sdk.NewMTLSAuthenticator()` is the built-in mTLS authenticator.
   `sdk.NewMTLSAuthenticatorWithTrustDomain(trustDomain)` pins your cluster's
   SPIFFE trust domain. Use that one in production.
-- `sdk.NewAuthMiddleware(authorizer, opts...)` builds the `sdk.AuthMiddleware`.
-  Its options (`sdk.AuthMiddlewareOption`) are
-  `sdk.WithAuthMiddlewareAuthenticator`, `sdk.WithAuthMiddlewareUserService`
-  (an `sdk.UserServicer`) and `sdk.WithAuthMiddlewareRoleResolver` (an
+- `sdkserver.NewAuthMiddleware(authorizer, opts...)` builds the `sdkserver.AuthMiddleware`.
+  Its options (`sdkserver.AuthMiddlewareOption`) are
+  `sdkserver.WithAuthMiddlewareAuthenticator`, `sdkserver.WithAuthMiddlewareUserService`
+  (an `sdk.UserServicer`) and `sdkserver.WithAuthMiddlewareRoleResolver` (an
   `sdk.RoleNameResolver`). The role resolver is required: without it every
   authenticated request is refused.
-- `sdk.NewRESTRouteRegistry()` returns an `sdk.RESTRouteRegistry`. `Register`
-  each route with its permission, then wrap your router with
-  `middleware.RESTMiddleware(routes, router)`. A request whose method has no
+- `sdkserver.NewRESTRouteRegistry()` returns an `sdkserver.RESTRouteRegistry`. `Register`
+  each route with its permission, then wrap your router with the middleware's
+  `RESTMiddleware(routes, router)` method. A request whose method has no
   registered entry on a registered path is refused. A path you did not register
   needs an authenticated caller but no permission, so register every route.
 
@@ -475,7 +483,8 @@ your certificate, and that it has a role.
 
 **You renewed a certificate and got locked out.** Renewal with the *same key*
 keeps the same binding. If you generated a new key, add a binding for it
-(`POST /users/{id}/cert-bindings`) or issue against the original key. Bindings
+(`qrdb users cert-binding add <id> --cert <pem>`, or
+`POST /users/{id}/cert-bindings`) or issue against the original key. Bindings
 are additive, so the safe order for a key rotation is: enrol the new key first,
 then retire the old certificate. Done that way there is no window where you
 cannot log in.
@@ -483,8 +492,9 @@ cannot log in.
 **A private key was exposed and you need it to stop working.** Withdraw its
 binding:
 
-```
-DELETE /users/{id}/cert-bindings/{thumbprint}
+```bash
+qrdb users cert-binding list <id>                    # find the key's thumbprint
+qrdb users cert-binding remove <id> -- <thumbprint>  # DELETE /users/{id}/cert-bindings/{thumbprint}; '--' since a thumbprint can begin with '-'
 ```
 
 Revoking the certificate is **not** enough on its own. A binding is over the

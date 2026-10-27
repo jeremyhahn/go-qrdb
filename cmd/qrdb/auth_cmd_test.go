@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -68,6 +69,12 @@ func (m *mockAuthTransport) CreateUser(ctx context.Context, req *transport.Creat
 }
 func (m *mockAuthTransport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
 	return m.users.GetUser(ctx, id)
+}
+func (m *mockAuthTransport) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	return m.users.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
+}
+func (m *mockAuthTransport) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	return m.users.RemoveCertBinding(ctx, userID, thumbprint)
 }
 func (m *mockAuthTransport) UpdateUser(ctx context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
 	return m.users.UpdateUser(ctx, req)
@@ -209,6 +216,42 @@ func (m *mockUserClient) GetUser(_ context.Context, id uint64) (*transport.User,
 		return nil, &transport.UserNotFoundError{ID: id}
 	}
 	return u, nil
+}
+
+// AddCertBinding enrols a canonical SPKI binding, idempotently for an
+// identical thumbprint, as the server does.
+func (m *mockUserClient) AddCertBinding(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	u, ok := m.users[userID]
+	if !ok {
+		return nil, &transport.UserNotFoundError{ID: userID}
+	}
+	for _, b := range u.CertBindings {
+		if b.Thumbprint == thumbprint {
+			return u, nil
+		}
+	}
+	b := transport.CertBinding{Thumbprint: thumbprint, Kind: "spki"}
+	if notAfterUnix > 0 {
+		b.NotAfter = time.Unix(notAfterUnix, 0).UTC().Format(time.RFC3339)
+	}
+	u.CertBindings = append(u.CertBindings, b)
+	return u, nil
+}
+
+// RemoveCertBinding withdraws one binding and, as the server does, refuses a
+// thumbprint the user does not hold.
+func (m *mockUserClient) RemoveCertBinding(_ context.Context, userID uint64, thumbprint string) (*transport.User, error) {
+	u, ok := m.users[userID]
+	if !ok {
+		return nil, &transport.UserNotFoundError{ID: userID}
+	}
+	for i, b := range u.CertBindings {
+		if b.Thumbprint == thumbprint {
+			u.CertBindings = append(u.CertBindings[:i], u.CertBindings[i+1:]...)
+			return u, nil
+		}
+	}
+	return nil, &user.CertBindingNotFoundError{UserID: userID, Thumbprint: thumbprint}
 }
 
 func (m *mockUserClient) UpdateUser(_ context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {

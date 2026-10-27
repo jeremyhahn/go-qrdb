@@ -93,6 +93,7 @@ type Server struct {
 	indexSvc          index.IndexServicer
 	tsSvc             timeseries.TimeSeriesServicer
 	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
 	embeddingSvc      service.EmbeddingServicer
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
@@ -485,6 +486,11 @@ func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) { s.vectorSvc = svc }
 }
 
+// WithLogService sets the verifiable-log service served over the Unix socket.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) { s.logSvc = svc }
+}
+
 // WithEmbedding configures the Unix socket server with a text embedding service.
 func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
 	return func(s *Server) { s.embeddingSvc = svc }
@@ -783,6 +789,9 @@ func (s *Server) Start() error {
 	}
 	if s.vectorSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterVector(s.vectorSvc))
+	}
+	if s.logSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterLogService(s.logSvc))
 	}
 	if s.embeddingSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterEmbedding(s.embeddingSvc))

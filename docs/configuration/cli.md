@@ -1,6 +1,6 @@
 # Configuration — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 Configuration is a **daemon** concern. `qrdbd` reads it; the `qrdb` client has
@@ -74,6 +74,25 @@ config: unknown key "storage.cach_size" in /etc/qrdb/qrdb.yaml:14
 | `--dns-domain` | `discovery.dns_domain` |
 | `--auth-enabled` | `auth.enabled` |
 | `--debug-raft` | *(forces `logging.level: debug`)* |
+| `--advertise-host` | `server.advertise_host` |
+| `--tls-client-auth` | `tls.client_auth` |
+| `--enable-quic` | `protocols.quic` |
+| `--quic-port` | `server.quic_port` |
+| `--enable-mcp` | `protocols.mcp` |
+| `--mcp-port` | `mcp.port` |
+| `--mcp-endpoint` | `mcp.endpoint` |
+| `--enable-unix` | `protocols.unix` |
+| `--unix-socket-path` | `unix.socket_path` |
+| `--multicast-group` | `discovery.multicast_group` |
+| `--dns-service` | `discovery.dns_service` |
+| `--dns-proto` | `discovery.dns_proto` |
+| `--cluster-trust-domain` | `auth.cluster_trust_domain` |
+
+The table covers the general flags; the feature-specific flags listed below
+map in their own folders.
+
+`qrdbd` exits `0` on success and `1` on any error, which it prints to stderr;
+a configuration that fails to load or validate is one such error.
 
 `buildHostConfig` (`cmd/qrdbd/start.go`) sets only `MTLSConfig` on the
 go-quicraft `TransportConfig` it builds for the Raft host transport; every
@@ -103,7 +122,7 @@ Every `qrdbd start` flag that configures the Raft layer, with the `raft.*` key
 and environment variable that set the same value. Every `raft.*` key takes
 `QRDB_RAFT_<KEY>` (`raft.lease_read` → `QRDB_RAFT_LEASE_READ`); like any
 environment override it is read only with `--config`. [user.md](user.md#raft-settings)
-covers the same settings from the YAML side.
+has an example `raft:` section.
 
 Two defaults depend on whether `--config` is given. Without it, `--listen` is
 `0.0.0.0:63001` and `--peers` is empty. With it, an unset `raft.listen_address`

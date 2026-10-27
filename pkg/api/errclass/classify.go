@@ -133,6 +133,7 @@ var rules = slices.Concat(
 	dominantRules,
 	dataPlaneRules,
 	vectorRules,
+	vlogRules,
 	collectionRules,
 	importRules,
 	restoreRules,

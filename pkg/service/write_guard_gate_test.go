@@ -35,6 +35,8 @@ type gatedHost struct {
 	asked   []featuregate.Feature
 }
 
+var _ AdminHost = (*gatedHost)(nil)
+
 func (h *gatedHost) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
 	h.asked = append(h.asked, feature)
 	return h.enabled[shardID]
@@ -140,6 +142,8 @@ type gateBackedHost struct {
 	*mockHost
 	gate *featuregate.Gate
 }
+
+var _ AdminHost = (*gateBackedHost)(nil)
 
 func (h *gateBackedHost) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
 	return h.gate.Enabled(shardID, feature)

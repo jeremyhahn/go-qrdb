@@ -1,6 +1,6 @@
 # Trust Bootstrap — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability matrix
@@ -51,6 +51,15 @@ operator's out-of-band file copy for that verification.
 ## `GET /v1/config/initialized`
 
 Reports whether the system has completed bootstrap. Public, unconditional.
+Always 200 with a JSON body:
+
+```json
+{"initialized": true}
+```
+
+`initialized` is `false` when the barrier has no initialization time, and also
+when the server has no barrier service or reading the barrier status fails:
+the route never answers an error.
 
 ## Status and error mapping
 

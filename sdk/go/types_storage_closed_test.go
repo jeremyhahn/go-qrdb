@@ -40,8 +40,8 @@ func TestIsStorageClosedCoversEveryClosedProducer(t *testing.T) {
 	closed := map[string]error{
 		"storage ClosedError": &StorageClosedError{},
 		"storage sentinel":    ErrStorageClosed,
-		"wrapped in OpError":  &StorageOpError{Op: "set", Err: &StorageClosedError{}},
-		"wrapped in Batch":    &StorageBatchError{Op: "commit", Err: &StorageClosedError{}},
+		"wrapped in OpError":  &storage.OpError{Op: "set", Err: &StorageClosedError{}},
+		"wrapped in Batch":    &storage.BatchError{Op: "commit", Err: &StorageClosedError{}},
 		"local backend":       &backend.BackendClosedError{},
 	}
 	for name, err := range closed {
@@ -65,7 +65,7 @@ func TestIsStorageClosedRejectsOtherClosures(t *testing.T) {
 		"client closed":  &ClientClosedError{},
 		"key not found":  storage.ErrKeyNotFound,
 		"unrelated":      errors.New("disk on fire"),
-		"wrapped unrel.": &StorageOpError{Op: "set", Err: errors.New("disk on fire")},
+		"wrapped unrel.": &storage.OpError{Op: "set", Err: errors.New("disk on fire")},
 	}
 	for name, err := range others {
 		t.Run(name, func(t *testing.T) {

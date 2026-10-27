@@ -2038,6 +2038,26 @@ func TestWithVector_Applied(t *testing.T) {
 	}
 }
 
+// logServiceStub is a LogService the option tests only compare by identity.
+type logServiceStub struct{ service.LogService }
+
+func TestWithLogService_Applied(t *testing.T) {
+	svc := &logServiceStub{}
+	var opts serverOptions
+	WithLogService(svc)(&opts)
+	if opts.logSvc != svc {
+		t.Error("expected logSvc to be set")
+	}
+}
+
+func TestWithLogService_Nil(t *testing.T) {
+	opts := serverOptions{logSvc: &logServiceStub{}}
+	WithLogService(nil)(&opts)
+	if opts.logSvc != nil {
+		t.Error("expected logSvc to be cleared")
+	}
+}
+
 func TestWithDatabaseService_Applied(t *testing.T) {
 	svc := &stubDatabaseService{}
 	var opts serverOptions

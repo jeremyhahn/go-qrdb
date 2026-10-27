@@ -60,7 +60,7 @@ func (e *P256KeyFileSizeError) Error() string {
 // staged in. The hex form is as sensitive as the key, so it never lives in an
 // ordinary heap slice here; p256proto's persistence API takes the enclave
 // itself for the same reason.
-func newHexEnclave() (*enclave.MemoryEnclave, error) {
+func newHexEnclave() (enclave.ByteAccess, error) {
 	alloc, err := enclave.ProcessAllocator()
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func newHexEnclave() (*enclave.MemoryEnclave, error) {
 // and a refused page release keeps the enclave on the allocator's ledger for
 // the shutdown sweep to retry, so a key load or generation has nothing further
 // to do about it.
-func destroyHexEnclave(e *enclave.MemoryEnclave) {
+func destroyHexEnclave(e enclave.ByteAccess) {
 	secure.LogRelease("clusterenroll P-256 key encoding buffer", e.Destroy())
 }
 

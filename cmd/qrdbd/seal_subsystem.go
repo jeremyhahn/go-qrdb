@@ -302,6 +302,14 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		return nil, &SealStorageError{Err: pinErr}
 	}
 
+	// Unseal last, once VolumeLifecycle and BarrierRegistry have registered
+	// their OnUnsealed observers, so a boot-time unseal runs them in the same
+	// order an operator's unseal call does.
+	if err := unsealNoneBarrier(sigCtx, sealBarrier); err != nil {
+		_ = sealStore.Close()
+		return nil, err
+	}
+
 	slog.Info("seal subsystem initialized",
 		slog.String("strategy", f.sealConfig.Strategy),
 		slog.String("data_dir", sealDataDir))
@@ -316,6 +324,26 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		PINBackend:        pinBackend,
 		SealDataDir:       sealDataDir,
 	}, nil
+}
+
+// unsealNoneBarrier opens a barrier whose persisted root key names the none
+// strategy. A none barrier holds no secret, so nothing an operator supplies
+// can be checked against it: docs/seal/README.md states that such a node
+// unseals its barrier on startup, and a restarted none node would otherwise
+// wait in the sealed window for an empty unseal call. The barrier is
+// self-describing, so the persisted strategy decides, not the configured one:
+// after an enable-encryption the config still names none while the root key
+// is keyed, and that barrier stays sealed. An uninitialized barrier is left
+// alone; its first boot is the operator's init.
+func unsealNoneBarrier(ctx context.Context, barrier *seal.StorageBarrier) error {
+	if !barrier.IsSealed() || barrier.PersistedStrategy(ctx) != seal.StrategyNone {
+		return nil
+	}
+	if err := barrier.Unseal(ctx, seal.Credentials{}); err != nil && !errors.Is(err, seal.ErrAlreadyUnsealed) {
+		return &SealBarrierError{Err: err}
+	}
+	slog.Info("none barrier unsealed at boot")
+	return nil
 }
 
 // ceremonyCAFromBundle builds the CeremonyCA used to sign Security

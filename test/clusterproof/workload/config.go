@@ -62,8 +62,15 @@ type Config struct {
 	Duration Duration `json:"duration,omitempty"`
 	// OpsPerClient bounds each client's operation count; zero is unbounded.
 	OpsPerClient int `json:"ops_per_client,omitempty"`
-	// RedialBackoff is the pause after a failed dial before the next.
+	// RedialBackoff is the first pause after a failed dial or a failed
+	// operation. Each further failure in a row doubles it, up to MaxBackoff,
+	// and each pause is jittered; an operation that succeeds resets it.
 	RedialBackoff Duration `json:"redial_backoff,omitempty"`
+	// MaxBackoff caps the pause RedialBackoff grows to; zero means
+	// DefaultMaxBackoff, or RedialBackoff when that is larger. It bounds how
+	// often a client retries a node that stays down, and so the history it
+	// records.
+	MaxBackoff Duration `json:"max_backoff,omitempty"`
 }
 
 // Credentials name the client's TLS files. CAFile alone verifies the server;
@@ -92,6 +99,7 @@ const (
 	DefaultKeys          = 16
 	DefaultOpTimeout     = 5 * time.Second
 	DefaultRedialBackoff = 250 * time.Millisecond
+	DefaultMaxBackoff    = 4 * time.Second
 )
 
 // Duration is a time.Duration that reads and writes as a Go duration string
@@ -163,6 +171,9 @@ func (c *Config) Normalize() error {
 	if c.RedialBackoff == 0 {
 		c.RedialBackoff = Duration(DefaultRedialBackoff)
 	}
+	if c.MaxBackoff == 0 {
+		c.MaxBackoff = Duration(c.backoffLimit())
+	}
 	if c.KeyPrefix == "" {
 		var b [8]byte
 		if _, err := rand.Read(b[:]); err != nil {
@@ -202,10 +213,21 @@ func (c Config) Validate() error {
 		return &ConfigError{Field: "ops_per_client", Reason: "must not be negative"}
 	case c.RedialBackoff <= 0:
 		return &ConfigError{Field: "redial_backoff", Reason: "must be positive"}
+	case c.MaxBackoff < 0, c.MaxBackoff > 0 && c.MaxBackoff < c.RedialBackoff:
+		return &ConfigError{Field: "max_backoff", Reason: "must not be less than redial_backoff"}
 	case (c.Credentials.CertFile == "") != (c.Credentials.KeyFile == ""):
 		return &ConfigError{Field: "credentials", Reason: "cert_file and key_file go together"}
 	case c.Credentials.CertFile != "" && c.Credentials.CAFile == "":
 		return &ConfigError{Field: "credentials", Reason: "a client certificate needs ca_file to verify the server"}
 	}
 	return nil
+}
+
+// backoffLimit is the cap a client's backoff grows to: MaxBackoff, or when it
+// is zero the larger of DefaultMaxBackoff and RedialBackoff.
+func (c Config) backoffLimit() time.Duration {
+	if c.MaxBackoff == 0 {
+		return max(DefaultMaxBackoff, time.Duration(c.RedialBackoff))
+	}
+	return time.Duration(c.MaxBackoff)
 }

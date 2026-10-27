@@ -35,6 +35,8 @@ type barrierInitGatedHost struct {
 	guarded bool
 }
 
+var _ service.Host = (*barrierInitGatedHost)(nil)
+
 func (h barrierInitGatedHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool {
 	return f == featuregate.GuardedWrites && h.guarded
 }

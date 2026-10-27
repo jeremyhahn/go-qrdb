@@ -21,8 +21,7 @@ import (
 
 // auth.mtls_binding_policy (go-qrdb#517). The config layer only carries the
 // string; auth.ParseMTLSBindingPolicy resolves it at the boot. These pin that
-// an omitted key stays empty (which resolves to "enrolled", the historical
-// behaviour) and that an operator's value reaches the struct.
+// an omitted key stays empty (which resolves to "required", the default) and that an operator's value reaches the struct.
 
 func TestLoad_MTLSBindingPolicyOmittedIsEmpty(t *testing.T) {
 	path := writeTemp(t, validYAML+`
@@ -34,7 +33,7 @@ auth:
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Auth.MTLSBindingPolicy != "" {
-		t.Fatalf("Auth.MTLSBindingPolicy = %q, want empty (the enrolled default)", cfg.Auth.MTLSBindingPolicy)
+		t.Fatalf("Auth.MTLSBindingPolicy = %q, want empty (the required default)", cfg.Auth.MTLSBindingPolicy)
 	}
 }
 

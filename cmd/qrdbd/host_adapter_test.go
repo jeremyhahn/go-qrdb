@@ -81,7 +81,7 @@ func (m *mockQuicraftHost) SyncGetShardMembership(ctx context.Context, shardID u
 	return &quicraft.Membership{ConfigChangeID: 0}, nil
 }
 
-func (m *mockQuicraftHost) GetShardMembership(shardID uint64) (*quicraft.Membership, error) {
+func (m *mockQuicraftHost) ShardMembership(shardID uint64) (*quicraft.Membership, error) {
 	if m.syncGetShardMembershipFn != nil {
 		return m.syncGetShardMembershipFn(context.Background(), shardID)
 	}
@@ -102,9 +102,9 @@ func (m *mockQuicraftHost) IsShardJoining(shardID uint64) bool {
 	return false
 }
 
-// GetLeaderID reports a known leader: these tests never exercise the
+// LeaderID reports a known leader: these tests never exercise the
 // adapter's leader wait.
-func (m *mockQuicraftHost) GetLeaderID(uint64) (uint64, bool, error) {
+func (m *mockQuicraftHost) LeaderID(uint64) (uint64, bool, error) {
 	return 1, true, nil
 }
 

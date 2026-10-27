@@ -256,7 +256,7 @@ func leaderAmong(t *testing.T, nodes []*Node, replicas []formationReplica) bool 
 		if !ok {
 			t.Fatalf("node host is %T, want *quicraft.Host", n.host)
 		}
-		id, known, err := host.GetLeaderID(shard.ShardKV)
+		id, known, err := host.LeaderID(shard.ShardKV)
 		if err != nil || !known || (leader != 0 && id != leader) {
 			return false
 		}

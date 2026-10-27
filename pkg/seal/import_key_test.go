@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // --- Helpers -----------------------------------------------------------------
@@ -82,6 +84,7 @@ func validSealedBlob(t *testing.T) []byte {
 		Epoch:       1,
 		Salt:        validSalt(),
 		KnownEpochs: []uint64{1},
+		HKDFVersion: quicraftseal.HKDFV2,
 		Ciphertext:  []byte("placeholder"),
 	}
 	blob, err := json.Marshal(sealed)

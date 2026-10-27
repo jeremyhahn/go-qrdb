@@ -1,6 +1,6 @@
 # Certificate Authority — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb ca` — post-init Certificate Authority operations. It is
@@ -147,9 +147,9 @@ tree is complete; do not read their names as descriptions of what they return.
 
 Revoke a certificate by serial number.
 
-| Flag | Type |
-|---|---|
-| `--serial` | string |
+| Flag | Type | Meaning |
+|---|---|---|
+| `--serial` | string | the certificate's serial number; required |
 
 ```bash
 qrdb ca revoke --serial 3f2a9c...

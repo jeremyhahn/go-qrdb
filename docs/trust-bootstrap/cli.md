@@ -1,6 +1,6 @@
 # Trust Bootstrap — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb bootstrap` — trust bootstrap for a **fresh client**
@@ -20,7 +20,7 @@ establishing CA trust to a remote node.
 |---|---|
 | `qrdb bootstrap auto` | pick the strongest available trust mode automatically |
 | `qrdb bootstrap dane` | DANE TLSA pinning (RFC 6698) |
-| `qrdb bootstrap noise` | Noise XK out-of-band trust handshake |
+| `qrdb bootstrap noise` | Noise NK out-of-band trust handshake |
 | `qrdb bootstrap spki` | SPKI SHA-256 pin |
 | `qrdb bootstrap direct` | direct CA bundle copy (operator-supplied trust root) |
 
@@ -32,7 +32,11 @@ qrdb bootstrap auto
 qrdb bootstrap spki
 ```
 
-Both exit non-zero with the pending-backend error.
+Every verb prints nothing on stdout, writes this line to stderr and exits `1`:
+
+```text
+bootstrap <mode> is owned by xkms; invoke via xkmsctl bootstrap <mode> or platformctl bootstrap <mode>
+```
 
 ## What works
 

@@ -333,7 +333,7 @@ func TestStandaloneHost(t *testing.T) {
 		want bool
 	}{
 		"standalone": {host: newStandaloneHost(), want: true},
-		"raft":       {host: raftAddrHost{Host: newStandaloneHost(), addr: "10.0.0.1:7000"}},
+		"raft":       {host: raftAddrHost{AdminHost: newStandaloneHost(), addr: "10.0.0.1:7000"}},
 		"no host":    {},
 	}
 	for name, tt := range tests {

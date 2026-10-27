@@ -31,8 +31,8 @@ const leaderHandoffPoll = 50 * time.Millisecond
 // leaderHandoffHost is the slice of the Raft host handOffLeadership drives.
 type leaderHandoffHost interface {
 	leaderIDSource
-	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
-	GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
+	ShardMembership(shardID uint64) (*quicraft.Membership, error)
+	ShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
 	RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error
 }
 
@@ -51,15 +51,15 @@ var _ leaderHandoffHost = (*quicraft.Host)(nil)
 // host either way, so a handoff that does not complete costs only the
 // election it was meant to spare.
 func handOffLeadership(ctx context.Context, host leaderHandoffHost, shardID, replicaID uint64) error {
-	if leaderID, ok, err := host.GetLeaderID(shardID); err != nil || !ok || leaderID != replicaID {
+	if leaderID, ok, err := host.LeaderID(shardID); err != nil || !ok || leaderID != replicaID {
 		return nil
 	}
-	m, err := host.GetShardMembership(shardID)
+	m, err := host.ShardMembership(shardID)
 	if err != nil {
 		return err
 	}
 	var progress []quicraft.ReplicaProgress
-	if info, ierr := host.GetShardInfo(shardID); ierr == nil && info != nil {
+	if info, ierr := host.ShardInfo(shardID); ierr == nil && info != nil {
 		progress = info.Replicas
 	}
 	target := handoffTarget(m.Nodes, progress, replicaID)
@@ -74,7 +74,7 @@ func handOffLeadership(ctx context.Context, host leaderHandoffHost, shardID, rep
 	poll := time.NewTicker(leaderHandoffPoll)
 	defer poll.Stop()
 	for {
-		if leaderID, ok, err := host.GetLeaderID(shardID); err == nil && ok && leaderID != replicaID {
+		if leaderID, ok, err := host.LeaderID(shardID); err == nil && ok && leaderID != replicaID {
 			return nil
 		}
 		select {

@@ -30,7 +30,7 @@ import (
 // binary-wide doubles (installTestSecureLifecycle); this layers a further,
 // per-test override on top so an individual test can inject a failure
 // without disturbing every other test that shares the process.
-func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (*secure.Allocator, error), setAlloc func(*secure.Allocator) error, processAlloc func() (*secure.Allocator, error), wipe func(context.Context) (int, error)) {
+func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (secure.Allocator, error), setAlloc func(secure.Allocator) error, processAlloc func() (secure.Allocator, error), wipe func(context.Context) (int, error)) {
 	t.Helper()
 	prevNew, prevSet, prevProcess, prevWipe := newSecureAllocator, setSecureAllocator, processSecureAllocator, wipeSecureMemory
 	if newAlloc != nil {
@@ -55,7 +55,7 @@ func swapSecureLifecycle(t *testing.T, newAlloc func(int64) (*secure.Allocator, 
 // the rejected figure.
 func TestRunStart_SecureMemoryBudgetRejected(t *testing.T) {
 	sentinel := errors.New("budget exceeds RLIMIT_MEMLOCK")
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(int64) (secure.Allocator, error) {
 		return nil, sentinel
 	}, nil, nil, nil)
 
@@ -78,7 +78,7 @@ func TestRunStart_SecureMemoryBudgetRejected(t *testing.T) {
 // did not ask for (go-qrdb#114 review, round 2).
 func TestRunStart_SecureMemoryBudgetNegativeRejected(t *testing.T) {
 	called := false
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(int64) (secure.Allocator, error) {
 		called = true
 		return nil, nil
 	}, nil, nil, nil)
@@ -101,7 +101,7 @@ func TestRunStart_SecureMemoryBudgetNegativeRejected(t *testing.T) {
 // smaller effective budget than configured (go-qrdb#114 review, round 2).
 func TestRunStart_SecureMemoryBudgetOverflowRejected(t *testing.T) {
 	called := false
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(int64) (secure.Allocator, error) {
 		called = true
 		return nil, nil
 	}, nil, nil, nil)
@@ -126,7 +126,7 @@ func TestRunStart_SecureMemoryBudgetOverflowRejected(t *testing.T) {
 // directly relies on.
 func TestRunStart_SecureMemoryBudgetDefaultsWhenUnconfigured(t *testing.T) {
 	var gotBudget int64 = -1
-	swapSecureLifecycle(t, func(maxBytes int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(maxBytes int64) (secure.Allocator, error) {
 		gotBudget = maxBytes
 		return nil, errStopEarly // stop runStart here; only the budget matters
 	}, nil, nil, nil)
@@ -157,9 +157,9 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledIsNotFatal(t *testing.T) 
 		t.Fatalf("enclave.NewAllocator: %v", ierr)
 	}
 	swapSecureLifecycle(t,
-		func(int64) (*secure.Allocator, error) { return nil, nil },
-		func(*secure.Allocator) error { return secure.ErrAllocatorInstalled },
-		func() (*secure.Allocator, error) { return installed, nil },
+		func(int64) (secure.Allocator, error) { return nil, nil },
+		func(secure.Allocator) error { return secure.ErrAllocatorInstalled },
+		func() (secure.Allocator, error) { return installed, nil },
 		func(context.Context) (int, error) { return 0, nil },
 	)
 
@@ -182,9 +182,9 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledMismatchIsFatal(t *testin
 		t.Fatalf("enclave.NewAllocator: %v", ierr)
 	}
 	swapSecureLifecycle(t,
-		func(int64) (*secure.Allocator, error) { return nil, nil },
-		func(*secure.Allocator) error { return secure.ErrAllocatorInstalled },
-		func() (*secure.Allocator, error) { return installed, nil },
+		func(int64) (secure.Allocator, error) { return nil, nil },
+		func(secure.Allocator) error { return secure.ErrAllocatorInstalled },
+		func() (secure.Allocator, error) { return installed, nil },
 		nil,
 	)
 
@@ -210,8 +210,8 @@ func TestRunStart_SecureMemoryAllocatorAlreadyInstalledMismatchIsFatal(t *testin
 func TestRunStart_SecureMemorySetAllocatorOtherErrorIsFatal(t *testing.T) {
 	sentinel := errors.New("set allocator: refused")
 	swapSecureLifecycle(t,
-		func(int64) (*secure.Allocator, error) { return nil, nil },
-		func(*secure.Allocator) error { return sentinel },
+		func(int64) (secure.Allocator, error) { return nil, nil },
+		func(secure.Allocator) error { return sentinel },
 		nil,
 		nil,
 	)

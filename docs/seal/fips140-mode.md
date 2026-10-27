@@ -1,6 +1,6 @@
 # FIPS 140-3 Mode (`GODEBUG=fips140=only`)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -22,17 +22,17 @@ product; where the gate sits and why is in [Arming the gate](#arming-the-gate).
 ci.yml's `fips` job (`FIPS 140-3`) runs in the full tier — every push to
 `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` — in
 the one toolchain image `docker-build` produces, and executes the full unit
-suite of **both modules** under:
+suite of **both modules**, `make test` and `make test-sdk`, as parallel matrix
+legs, one per name in the Makefile's `FIPS_LEGS` (#1230). Each leg runs:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only go build ./...
-GOFIPS140=latest GODEBUG=fips140=only make test
-GOFIPS140=latest GODEBUG=fips140=only make test-sdk
+GOFIPS140=latest GODEBUG=fips140=only make test-fips-leg FIPS_LEG=<leg>
 ```
 
 The `go build ./...` line runs in the **root module only**: the job has no
 build step for `sdk/go`. The SDK is compiled under the FIPS module only as far
-as `make test-sdk` compiles it — `go test ./...` in `sdk/go`, which builds every
+as its legs compile it — `go test ./...` in `sdk/go`, which builds every
 package it visits, with the test build tags. Whatever is claimed about the SDK
 below is a claim about that step, not about a `go build`.
 
@@ -49,25 +49,88 @@ prohibited cryptography and the job still reports green. `only` is the setting a
 FedRAMP / PCI DSS v4 / HIPAA gate has to run (handbook
 `software/conventions/configuration.md` §5).
 
-The job scope is deliberately identical to the ordinary gate — the same
-`make test` **and `make test-sdk`** targets with the same build tags. A FIPS job
-over a subset of the suite does not tell you the product is FIPS-clean.
+The job scope is deliberately identical to the ordinary gate — the packages of
+`make test` **and `make test-sdk`** with the same build tags. A FIPS job over a
+subset of the suite does not tell you the product is FIPS-clean.
 
-**`make test-sdk` is required.** `sdk/go` is a separate Go module, so
-`make test` (`./pkg/... ./cmd/... ./test/buildgates/...`) does not reach a
+**`make test-sdk`'s packages are required.** `sdk/go` is a separate Go module,
+so `make test` (`./pkg/... ./cmd/... ./test/buildgates/...`) does not reach a
 single line of it: every transport, `sdk/go/node`, the driver, the DAO layer
-and the conformance matrix run only under `make test-sdk`.
+and the conformance matrix run only in the SDK's legs.
 
-The sdk step runs even when the root suite fails (`if: always()`), so a red
-root module still yields an SDK measurement. Either module failing fails the
-job.
+### The legs
 
-The job is in `ci-gate`'s `needs`, so a red `fips` turns CI Gate red; see
-[Arming the gate](#arming-the-gate).
+One run of both suites took 69.9 minutes, the longest job of the full tier, and
+set the time to a green main and to every tag. The legs run side by side, each
+aimed under 30 minutes and under its own limit, at most 45 minutes (ruling
+221(5)), with go test's per-package budget 5 minutes inside the limit.
+`make -s print-fips-legs` prints them, and
+`make -s print-fips-leg-packages FIPS_LEG=<leg>` prints a leg's packages.
 
-To reproduce a CI failure locally, prefix the same commands:
+The split is from measured wall times, run 68401 (the first seven-leg run), not
+from package counts. A leg takes about its slowest package plus 3 to 4 minutes
+of build and setup, so a package that runs long sits in a leg alone. A pattern
+without `/...` names one package, which is how `seal` holds `pkg/seal` while
+its subpackages run in `api-keys`:
+
+| Leg | Module | Packages | Slowest package (run 68401) | Expected | Limit |
+|---|---|---|---|---|---|
+| `tenant-lifecycle` | root | `pkg/tenant`'s `TenantService`, `CreateTenant`, `StoreResolver`, `DeleteTenant` and `UndoCreate` tests | 200 tests, 13.8 min locally | ~23.5 min | 30 min |
+| `tenant` | root | the rest of `pkg/tenant` | 528 tests, 13.6 min locally | ~23 min | 30 min |
+| `seal-barrier` | root | `pkg/seal`'s `Barrier`, `StorageBarrier`, `ChangePassword`, `SealStore` and `TenantBarrier` tests | 260 tests, 9.4 min locally | ~18 min | 30 min |
+| `seal` | root | the rest of `pkg/seal` | 436 tests, 9.1 min locally | ~18 min | 30 min |
+| `server-raft` | root | `pkg/server`'s `Raft` and `ReattachRaft` tests | 11.3 min locally | ~16.5 min | 25 min |
+| `server` | root | the rest of `pkg/server` | 11.6 min locally | ~17 min | 25 min |
+| `auth` | root | `pkg/server/lifecycle`, `pkg/auth`, `cmd` | `pkg/server/lifecycle` 10.9 min | ~15 min | 25 min |
+| `service` | root | `pkg/service`, `pkg/database`, `pkg/statemachine`, `pkg/engine`, `pkg/dao`, `pkg/store` | `pkg/service` 11.6 min | ~16 min | 25 min |
+| `api-keys` | root | `pkg/api`; `pkg/seal`'s subpackages, `pkg/ceremony`, `pkg/credentials`, `pkg/firstboot`, `pkg/pin`, `pkg/clusterseal`, `pkg/barrierinit`, `pkg/authfactors`, `pkg/keywrap`, `pkg/dek`, `pkg/sql` | `pkg/credentials` 3.4 min | ~10 min | 20 min |
+| `rest` | root | `test-clusterproof`, then every package of `make test` no root leg above names | `test/buildgates` 6.1 min | 18.2 min (measured) | 30 min |
+| `sdk-transport` | `sdk/go` | `transport` | `transport/embedded/internal/scopegen` 13.3 min | 18.3 min (measured) | 30 min |
+| `sdk` | `sdk/go` | every package of `make test-sdk` `sdk-transport` does not name | `sdk/go/node` 12.4 min | 17.4 min (measured) | 30 min |
+
+**A package too slow for a leg alone is split by test name.** `pkg/tenant`
+(38.6 minutes in run 68401) and `pkg/seal` (32.9 minutes) are each one package
+over 30 minutes, so no assignment of packages to legs brings them under, and
+`pkg/server` (25.7 minutes) left its leg no headroom. Their cost is the mode's
+KDF spread over hundreds of tests, not one test: the same packages run in 6.0
+(`pkg/seal`) and 7.0 (`pkg/tenant`) minutes without FIPS mode, where the
+software strategy's KDF is Argon2id rather than PBKDF2 at 600,000 iterations.
+The one outlier, a race test that changed a password on the production KDF
+(195 seconds), now uses the cheap test parameters. Each package's tests run
+one after another, so splitting them by name over two legs halves the time.
+
+A split package's first leg selects tests with `go test -run`
+(`FIPS_RUN_<leg>` in the Makefile) and its second runs everything else with
+`-skip` built from the first's pattern, so a new test runs in the second leg
+until a pattern names it. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints
+a leg's patterns. A split leg's expected time is its tests' local time, scaled
+by the package's measured ratio of CI to local time, plus setup; the other legs
+carry their run 68401 times.
+
+The two remainder legs mean a new package always runs, in `rest` or `sdk`,
+until a leg names it. Each leg's "Package results and slowest tests" step
+prints every package's time, so a leg nearing its limit shows which package to
+move; the fix is to move a pattern between `FIPS_LEG_<leg>` lists in the
+Makefile, and its limit in ci.yml's matrix, never to drop one.
+`test/buildgates/fips_legs_test.go` fails when a package of either suite is in
+no leg or in two, when a leg is empty, when ci.yml's matrix is not
+`FIPS_LEGS`, and when a leg has no limit of its own, one over 45 minutes, or a
+per-package budget other than its limit less 5 minutes. A package may be in
+two legs only when both select by name, and
+`test/buildgates/fips_split_test.go` then fails when a top-level test of the
+package runs in no leg or in two.
+
+Every leg runs to the end when another fails (`fail-fast: false`), so a red
+root leg still yields an SDK measurement. Any leg failing fails the job.
+
+The job is in `ci-gate`'s `needs`, and its result is every leg's, so a red leg
+turns CI Gate red; see [Arming the gate](#arming-the-gate).
+
+To reproduce a CI failure locally, prefix the same commands — the failing leg
+alone, or both whole suites:
 
 ```
+GOFIPS140=latest GODEBUG=fips140=only make test-fips-leg FIPS_LEG=<leg>
 GOFIPS140=latest GODEBUG=fips140=only make test
 GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
@@ -526,7 +589,7 @@ gate red.
 
 **Why the full tier and not every pull request.** The job rebuilds the tree
 against the FIPS module and reruns both unit suites under `-race`, so it costs
-what `image`'s unit stages cost again, on top of them. A pull request's
+what the unit-suite jobs cost again, on top of them. A pull request's
 pipeline is held to one hour and already runs those suites once without the
 FIPS module; a second pass does not fit. The full tier runs on every push to
 `main` and every `workflow_dispatch`, and a pull request labelled `ci:full`

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // bootstrap.go implements the canonical "bootstrap" client-side TOFU
-// command group per docs/08-bootstrap-auth-architecture.md §6.
+// command group per docs/trust-bootstrap/cli.md.
 //
 // "init" is server-side first-touch ceremony; "bootstrap" establishes
 // CA trust to a remote node from a fresh client. The two are distinct
@@ -28,7 +28,7 @@ import (
 //
 // auto    Pick the strongest available trust mode automatically.
 // dane    DANE TLSA pinning.
-// noise   Noise XK out-of-band trust establishment.
+// noise   Noise NK out-of-band trust establishment.
 // spki    SPKI SHA-256 pin.
 // direct  Direct CA bundle copy (operator-supplied trust root).
 //
@@ -43,14 +43,14 @@ node. Distinct from "init" which is server-side first-touch.
 
   auto    Pick the strongest available trust mode automatically
   dane    DANE TLSA pinning (RFC 6698)
-  noise   Noise XK out-of-band trust handshake
+  noise   Noise NK out-of-band trust handshake
   spki    SPKI SHA-256 pin
   direct  Direct CA bundle copy (operator-supplied trust root)`,
 	}
 
 	cmd.AddCommand(newBootstrapModeCmd("auto", "Auto-pick the strongest available trust mode"))
 	cmd.AddCommand(newBootstrapModeCmd("dane", "DANE TLSA pinning"))
-	cmd.AddCommand(newBootstrapModeCmd("noise", "Noise XK out-of-band trust handshake"))
+	cmd.AddCommand(newBootstrapModeCmd("noise", "Noise NK out-of-band trust handshake"))
 	cmd.AddCommand(newBootstrapModeCmd("spki", "SPKI SHA-256 pin"))
 	cmd.AddCommand(newBootstrapModeCmd("direct", "Direct CA bundle copy"))
 	return cmd

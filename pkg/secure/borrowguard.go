@@ -24,7 +24,7 @@ import (
 // The borrow guard turns a failure mode this package cannot always report
 // into one a test can catch.
 //
-// Each enclave.MemoryEnclave carries its own read/write lock, and a Buffer's
+// Each memory enclave carries its own read/write lock, and a Buffer's
 // borrow (WithBytes, Size) holds that lock for reading. The one way to deadlock
 // on it is the hazard every sync.RWMutex has: the goroutine holding a Buffer's
 // borrow reenters THAT Buffer — Destroy needs the lock for writing, and a

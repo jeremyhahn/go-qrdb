@@ -21,7 +21,7 @@ import (
 // ShardMembershipReader reads a shard's committed membership from local
 // state. *quicraft.Host satisfies it.
 type ShardMembershipReader interface {
-	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
+	ShardMembership(shardID uint64) (*quicraft.Membership, error)
 }
 
 // HostMembership adapts a quicraft host to MembershipSource. Voters and
@@ -36,7 +36,7 @@ type hostMembership struct {
 }
 
 func (m hostMembership) GroupMembership(shardID uint64) (GroupMembership, error) {
-	ms, err := m.h.GetShardMembership(shardID)
+	ms, err := m.h.ShardMembership(shardID)
 	if err != nil {
 		return GroupMembership{}, err
 	}

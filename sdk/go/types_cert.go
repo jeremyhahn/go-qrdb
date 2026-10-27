@@ -18,7 +18,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
 // Certificate revocation is enforced on the authentication path of every
@@ -86,12 +85,6 @@ type ClientCertSource = clienttrust.CertSource
 // rotated CA is trusted without waiting for the pool's cache to expire.
 // (Aliases pkg/clienttrust.InvalidationSource.)
 type ClientCertInvalidationSource = clienttrust.InvalidationSource
-
-// CertProviderConflictError is returned when a node is built with both
-// node.WithCertProvider and node.WithCertKeyProviderFactory: the factory keys
-// the built-in login CA the provider replaces, so the pair has no meaning.
-// (Aliases pkg/server/lifecycle.CertProviderConflictError.)
-type CertProviderConflictError = lifecycle.CertProviderConflictError
 
 // EncodePKCS12 bundles a certificate, its private key and the CA certificate
 // into a passphrase-protected PKCS#12 archive, for importing an issued

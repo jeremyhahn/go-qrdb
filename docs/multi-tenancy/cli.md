@@ -1,6 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
@@ -393,6 +393,6 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation
 
-No CLI verb reads or sets an isolation policy. A FIPS 140-3 build raises the
+No CLI verb reads or sets an isolation policy. A node running in FIPS 140-3 mode raises the
 cluster floor to `strict` when the node starts. Design:
 [architecture.md](architecture.md#strict-tenant-isolation--design).

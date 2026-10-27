@@ -53,12 +53,12 @@ yet. It is the server half of the `direct` mode, and it is real.
   parity even though nothing here executes.
 - **One route, one owner, two possible sources.** The bundle comes from
   qrdb's cluster CA (`server.WithCABootstrap`, which qrdbd sets) or from the
-  embedding host (`server.WithBootstrapCABundle` / `sdk.WithBootstrapCABundle`,
+  embedding host (`server.WithBootstrapCABundle` / `sdkserver.WithBootstrapCABundle`,
   a `func(ctx) ([]byte, error)` read per request). go-xkms's xkmsd owns
   first-contact trust and uses the latter. The host supplies data, not a
   route, as for `/health`. Either way only CERTIFICATE blocks are served.
   Configuring both refuses startup with `*rest.CABootstrapConflictError`
-  (`sdk.CABootstrapConflictError`); qrdb never picks one.
+  (`sdkserver.CABootstrapConflictError`); qrdb never picks one.
 - **`/v1/ca/bootstrap` does not exist unless configured.** Unconfigured, the
   path is not even claimed, so a host serving its own bundle there does not
   collide with it. An unconfigured deployment returns 404 rather than an empty or self-signed bundle.

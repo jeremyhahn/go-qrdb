@@ -16,6 +16,7 @@ package errclass
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -23,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -51,6 +53,33 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 	}
 	if got := Classify(want); got != Aborted {
 		t.Fatalf("Classify(lost race) = %v, want Aborted", got)
+	}
+}
+
+// TestRefusal_vlog checks each verifiable-log refusal a client rebuilds typed
+// carries its reason and metadata through a wrap, and keeps its class.
+func TestRefusal_vlog(t *testing.T) {
+	id := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "certs"}
+	cases := []struct {
+		err    error
+		reason string
+		class  Class
+	}{
+		{&vlog.LogExistsError{ID: id}, vlog.ReasonLogExists, AlreadyExists},
+		{&vlog.CheckpointExistsError{Size: 5}, vlog.ReasonCheckpointExists, AlreadyExists},
+		{&vlog.ExpireNotAllowedError{ID: id}, vlog.ReasonExpireNotAllowed, FailedPrecondition},
+	}
+	for _, c := range cases {
+		reason, md, ok := Refusal(&wrappedError{c.err})
+		if !ok || reason != c.reason {
+			t.Fatalf("Refusal(%T) = %q, %v; want %q, true", c.err, reason, ok, c.reason)
+		}
+		if got := transport.RefusalError(reason, md); !reflect.DeepEqual(got, c.err) {
+			t.Fatalf("Refusal(%T) rebuilds %#v, want %#v", c.err, got, c.err)
+		}
+		if got := Classify(c.err); got != c.class {
+			t.Fatalf("Classify(%T) = %v, want %v", c.err, got, c.class)
+		}
 	}
 }
 

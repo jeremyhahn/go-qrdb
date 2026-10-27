@@ -359,9 +359,10 @@ says sealed and whether the node is initialized: health and `ceremony status`
 answer `barrier sealed` too, and a held or cut-off node refuses
 `barrier status` as well. Unseal with the
 strategy you initialized with: `qrdb barrier unseal --passphrase` for a
-passphrase barrier, or `qrdb barrier quorum submit` from M holders for a
-Shamir one (a passphrase unseal of a Shamir barrier is refused with an error
-that says so). On a node held by a cluster seal, `qrdb barrier cluster-unseal`
+passphrase barrier, `qrdb barrier unseal` with no passphrase for a `none` one
+sealed by hand (a `none` node unseals itself at every start), or
+`qrdb barrier quorum submit` from M holders for a Shamir one (a passphrase
+unseal of a Shamir barrier is refused with an error that says so). On a node held by a cluster seal, `qrdb barrier cluster-unseal`
 clears the record.
 
 **"no sealing strategy specified".** More than one strategy is registered (typically

@@ -1,6 +1,7 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 One server hosting six transports, with one authorization decision behind all of
 them, and a seam for higher layers to add capabilities without forking it.
@@ -192,8 +193,14 @@ neither owns a verb neither registered. See
   re-registers the generated services on a connect server and calls each
   method handler with a nil gRPC interceptor, and the handler's peer carries no
   TLS state, so the one interceptor chain is skipped and the client
-  certificate is lost. The framing is small and specified, so it is
+  certificate is lost (vanguard v0.5.0, whose registrar takes no options:
+  interceptors belong to the connect server, a second chain). The framing is small and specified, so it is
   implemented in `pkg/api/grpcweb` over the gRPC server's own handler instead.
+  Both behaviours are a reproducible probe, `test/vanguardprobe` (a module of
+  its own, outside every qrdb build): `make check-vanguard-probe` is the check
+  run at each vanguard release, and fails, naming the replacement of
+  `pkg/api/grpcweb`, the day a release keeps the interceptor or carries the
+  peer's TLS state ([engineering.md](engineering.md#test-strategy)).
 - **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
   terminating TLS loses the caller's certificate at the node, the identity every
   authorization decision starts from.
@@ -268,7 +275,7 @@ neither owns a verb neither registered. See
 | gRPC-Web framing over the gRPC server's handler | `pkg/api/grpcweb` | go-qrdb |
 | Per-(tenant, database) service resolution | `pkg/service` (`service.Registry`) | go-qrdb |
 | Node composition entry points | `sdk/go/node` | go-qrdb |
-| SDK Tier 2 aliases | `sdk/go/types_server.go` | go-qrdb |
+| SDK Tier 2 aliases | `sdk/go/server/server.go` | go-qrdb |
 | Capability modules | — | **go-xkms, go-quicbaas, go-trusted-platform** |
 
 ### Where the transports bind
@@ -481,8 +488,10 @@ transport is bound by go-quicraft itself and advertised to peers, so
 is refused with `*cluster.RaftPortZeroError` — wrapped in a `*node.ConfigError`
 by the SDK node, and returned directly by `qrdbd start` for `--raft-address` /
 `--listen`, before any directory is created. Without a pre-bound listener, a **zero** admin or gRPC
-port on the SDK node still selects the fixed default (63001 / 63002), not a
-kernel-assigned port.
+port on the SDK node still selects the SDK node's fixed default (63001 / 63002), not a
+kernel-assigned port. Those SDK defaults differ from the daemon's configuration
+defaults (REST 63002, gRPC 63003, QUIC 63004, `config.DefaultConfig`): the SDK
+node's gRPC default is the daemon's REST port.
 
 ## Trust boundaries
 

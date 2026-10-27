@@ -90,17 +90,17 @@ func TestHandleParse_SequenceDDLRefusedBeforeCatalogWhenTenantSuspended(t *testi
 	}
 
 	adm.suspended.Store(true)
-	_, err := h.HandleParse(ctx, wire.Query{Query: "CREATE SEQUENCE orders_seq"})
+	_, err := h.HandleParse(ctx, wire.Query{Query: "CREATE SEQUENCE orders_seq", SimpleQuery: true})
 	requireTenantNotActive(t, err)
 	adm.suspended.Store(false)
-	_, err = h.HandleParse(ctx, wire.Query{Query: "CREATE SEQUENCE orders_seq"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "CREATE SEQUENCE orders_seq", SimpleQuery: true})
 	require.NoError(t, err, "a refused CREATE SEQUENCE created the sequence")
 	got, err := nextval()
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, got)
 
 	adm.suspended.Store(true)
-	_, err = h.HandleParse(ctx, wire.Query{Query: "DROP SEQUENCE orders_seq"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "DROP SEQUENCE orders_seq", SimpleQuery: true})
 	requireTenantNotActive(t, err)
 	adm.suspended.Store(false)
 	got, err = nextval()
@@ -118,14 +118,14 @@ func TestHandleParse_DropTableCascadeRefusedBeforeSideEffectWhenTenantSuspended(
 		"CREATE TABLE pets (id BIGINT PRIMARY KEY, owner_id BIGINT, " +
 			"CONSTRAINT fk_pets_owner FOREIGN KEY (owner_id) REFERENCES people (id))",
 	} {
-		_, err := h.HandleParse(ctx, wire.Query{Query: q})
+		_, err := h.HandleParse(ctx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, q)
 	}
 	catalog := h.sqlEngine.Analyzer.Catalog
 	require.Len(t, declaredForeignKeys(t, h.buildSQLContext(ctx), catalog, "qrdb", "pets"), 1)
 
 	adm.suspended.Store(true)
-	_, err := h.HandleParse(ctx, wire.Query{Query: "DROP TABLE people CASCADE"})
+	_, err := h.HandleParse(ctx, wire.Query{Query: "DROP TABLE people CASCADE", SimpleQuery: true})
 	requireTenantNotActive(t, err)
 
 	adm.suspended.Store(false)

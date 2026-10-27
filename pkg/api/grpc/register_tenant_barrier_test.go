@@ -49,7 +49,7 @@ func identityInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, 
 }
 
 // dialRegisteredServer serves a *grpc.Server built only through
-// RegisterService, the function sdk.RegisterGRPCService aliases, over an
+// RegisterService, the function sdk/go/server.RegisterGRPCService aliases, over an
 // in-memory listener and returns a TenantBarrierService client to it.
 func dialRegisteredServer(t *testing.T, opts ...RegisterOption) pb.TenantBarrierServiceClient {
 	t.Helper()

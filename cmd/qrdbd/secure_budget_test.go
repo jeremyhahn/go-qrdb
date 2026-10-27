@@ -183,7 +183,7 @@ func TestResolveSecureMemoryBudget_ExplicitIsUsedAsGiven(t *testing.T) {
 // An explicit budget within the host limit installs exactly that figure.
 func TestRunStart_ExplicitSecureMemoryBudgetWithinLimitInstallsIt(t *testing.T) {
 	var got int64 = -1
-	swapSecureLifecycle(t, func(maxBytes int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(maxBytes int64) (secure.Allocator, error) {
 		got = maxBytes
 		return nil, errStopEarly
 	}, nil, nil, nil)
@@ -198,7 +198,7 @@ func TestRunStart_ExplicitSecureMemoryBudgetWithinLimitInstallsIt(t *testing.T) 
 // typed error that names the limit and how to raise it.
 func TestRunStart_ExplicitSecureMemoryBudgetOverLimitNamesTheRemedy(t *testing.T) {
 	limit := secure.LockedMemoryLimit{Bytes: 8 << 20, Bounded: true, Source: secure.LimitRLimit}
-	swapSecureLifecycle(t, func(maxBytes int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(maxBytes int64) (secure.Allocator, error) {
 		return nil, &secure.RLimitError{Requested: maxBytes, Limit: limit}
 	}, nil, nil, nil)
 
@@ -227,7 +227,7 @@ func TestRunStart_ExplicitSecureMemoryBudgetOverLimitNamesTheRemedy(t *testing.T
 func TestRunStart_UnconfiguredSecureMemoryBudgetIsDerived(t *testing.T) {
 	presentLockedMemoryLimit(t, secure.LockedMemoryLimit{Bytes: 8 << 20, Bounded: true, Source: secure.LimitRLimit}, nil)
 	var got int64 = -1
-	swapSecureLifecycle(t, func(maxBytes int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(maxBytes int64) (secure.Allocator, error) {
 		got = maxBytes
 		return nil, errStopEarly
 	}, nil, nil, nil)

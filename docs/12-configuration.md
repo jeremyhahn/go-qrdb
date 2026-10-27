@@ -265,7 +265,7 @@ submitting a CSR to an admitted member for signing (`join_addr`..`join_token_env
 | `noise_key`   | string | `""` | `--bootstrap-noise-key`  | Hex Curve25519 public key of the Noise server named by `noise_addr` |
 | `p256_key`    | string | `""` | `--bootstrap-p256-key`   | Hex uncompressed P-256 public key (65 bytes) of the same server's FIPS-approved P-256 suite |
 | `noise_addr`  | string | `""` | `--bootstrap-noise-addr` | `host:port` of the bootstrap server to fetch from, over either suite |
-| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port of the trust-anchor listener (Noise NK and P-256) every admitted, unsealed member runs (see [Network ports](clustering/user.md#network-ports)) |
+| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port of the trust-anchor listener (Noise NK and P-256) every admitted, unsealed member runs when qrdbd manages TLS, never with `--tls-*-file` (see [Network ports](clustering/user.md#network-ports)) |
 | `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for this node's trust-anchor listener |
 | `spki_pin`    | string | `""` | `--bootstrap-spki-pin`   | Hex SHA-256 SPKI pin of the bootstrap server's TLS certificate |
 | `dane_dns`    | string | `""` | `--bootstrap-dane-dns`   | DNS server for DANE TLSA lookup |

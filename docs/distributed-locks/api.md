@@ -1,6 +1,6 @@
 # Distributed Locks — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -78,8 +78,8 @@ REST `GET /lock/status` takes the lock as the required `key` query parameter.
 
 `LockListResponse`: `{ "locks": [LockInfo, ...] }`. REST `GET /lock/list` takes
 an optional `prefix` query parameter. The enumeration is confined to the
-caller's own `(tenant, database)` scope; an empty prefix means "every lock I
-hold in this scope", never "every lock on this node".
+caller's own `(tenant, database)` scope; an empty prefix means "every lock in
+this scope", never "every lock on this node".
 
 ## Status and error mapping
 
@@ -96,7 +96,7 @@ hold in this scope", never "every lock on this node".
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
 | Unknown tenant / unknown database | 404 | `NOT_FOUND` |
 | Isolation backend not wired for the tenant | 503 | `UNAVAILABLE` |
-| A backend that keeps no leases (standalone file/objstore), or a database on a dedicated non-raft store | 501 | `UNIMPLEMENTED` |
+| A database on a dedicated non-raft store | 501 | `UNIMPLEMENTED` |
 
 No failure path returns a `LockInfo`. A caller that gets a lock got the lock.
 

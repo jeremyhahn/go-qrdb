@@ -30,7 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -78,13 +78,13 @@ func bootstrapGet(t *testing.T, pool *x509.CertPool, addr string, h3 bool) (int,
 }
 
 // TestBootstrapCABundle_HostBundleServedOnEveryBootstrapTransport: a host's
-// bundle supplied through sdk.WithBootstrapCABundle is what an unauthenticated
+// bundle supplied through sdkserver.WithBootstrapCABundle is what an unauthenticated
 // client fetches over REST and over HTTP/3. qrdb owns the route; the host
 // supplies only the data.
 func TestBootstrapCABundle_HostBundleServedOnEveryBootstrapTransport(t *testing.T) {
 	hostCA, err := qrdbdharness.NewCA(t.TempDir())
 	require.NoError(t, err)
-	addr, pool, err := bootstrapNode(t, sdk.WithBootstrapCABundle(func(context.Context) ([]byte, error) {
+	addr, pool, err := bootstrapNode(t, sdkserver.WithBootstrapCABundle(func(context.Context) ([]byte, error) {
 		return hostCA.CertPEM, nil
 	}))
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestBootstrapCABundle_ConflictIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = bootstrapNode(t,
 		server.WithCABootstrap(clusterCA.CertPEM),
-		sdk.WithBootstrapCABundle(func(context.Context) ([]byte, error) { return clusterCA.CertPEM, nil }))
-	var conflict *sdk.CABootstrapConflictError
-	require.True(t, errors.As(err, &conflict), "err = %T (%v), want *sdk.CABootstrapConflictError", err, err)
+		sdkserver.WithBootstrapCABundle(func(context.Context) ([]byte, error) { return clusterCA.CertPEM, nil }))
+	var conflict *sdkserver.CABootstrapConflictError
+	require.True(t, errors.As(err, &conflict), "err = %T (%v), want *sdkserver.CABootstrapConflictError", err, err)
 }

@@ -1,6 +1,6 @@
 # Distributed Locks — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -103,8 +103,8 @@ configured, which is the registry-less composition.
 - **A scope that cannot serve a lock is refused, not degraded.** The accessor
   returns `service.CapabilityUnsupportedError` when the resolved bundle lacks
   any of transaction, lease, watch or MVCC — a database on a dedicated non-raft
-  store. Mode `standalone` serves locks like raft mode; on its file or objstore
-  backend the lease grant underneath is refused with the same error.
+  store. Mode `standalone` serves locks like raft mode, on every storage
+  backend.
 
 ## Error semantics
 

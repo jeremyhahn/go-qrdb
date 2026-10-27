@@ -153,7 +153,7 @@ func TestCLIMultiProtocolRebalanceStatsKnownShard(t *testing.T) {
 
 // TestCLIMultiProtocolRebalanceStatsUnknownShard tests "rebalance stats"
 // against a shard ID that was never loaded on the host. Per
-// go-quicraft's Host.GetLeaderID (see TestGetLeaderID_ShardNotFound in
+// go-quicraft's Host.LeaderID (see TestGetLeaderID_ShardNotFound in
 // go-quicraft/pkg/host_test.go), an unknown shard ID returns
 // ErrShardNotFound, which RebalanceService.GetShardStats wraps in a typed
 // ShardStatsError. This is the well-defined, code-verified error path for

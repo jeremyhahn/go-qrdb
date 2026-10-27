@@ -44,6 +44,7 @@ var reservedTestKeys = map[string][]byte{
 	"lease table": []byte(lease.TablePrefix + "l/x"),
 	"audit table": []byte(vlog.TablePrefix + "h/acme"),
 	"named log":   []byte(vlog.LogTablePrefix + "acme/app/ledger/h"),
+	"log key":     []byte(vlog.LogTablePrefix + "acme/app/ledger/k/\x00\x00\x00\x01"),
 	"node-local":  []byte("\x00__quicraft_last_applied__"),
 }
 
