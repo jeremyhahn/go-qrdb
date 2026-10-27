@@ -377,14 +377,14 @@ func claimMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key string, li
 	for attempt := 0; attempt < markerClaimAttempts; attempt++ {
 		stored, err := kv.PutIfAbsent(ctx, key, live)
 		if err != nil {
-			return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+			return releaseClaim(ctx, kv, tenantID, db, key, live, err)
 		}
 		if stored {
 			return nil
 		}
 		swapped, err := kv.CompareAndSwap(ctx, key, dropFenceTombstone, live)
 		if err != nil {
-			return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
+			return releaseClaim(ctx, kv, tenantID, db, key, live, err)
 		}
 		if swapped {
 			return nil
@@ -404,6 +404,25 @@ func claimMarker(ctx context.Context, kv ReclaimKV, tenantID, db, key string, li
 		}
 	}
 	return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: &MarkerContendedError{Key: key}}
+}
+
+// releaseClaim reports a guarded write of live to key that failed with an
+// unknown outcome. A propose that timed out may still be applied, and a
+// marker left holding live after the caller has rolled its create back
+// names an incarnation no catalog entry holds: every later create of the
+// name would be refused as existing elsewhere. So the claim is released
+// first, back to the tombstone and only from live, under a context detached
+// from the caller's (which has typically just expired). Log order makes the
+// release safe: it is proposed after the claim, so a claim that lands lands
+// first and is swapped out, and a claim that never lands leaves the release
+// a no-op. The tombstone is the fenced state a later create claims from.
+func releaseClaim(ctx context.Context, kv ReclaimKV, tenantID, db, key string, live []byte, err error) error {
+	rbCtx, cancel := database.DropRollbackContext(ctx)
+	defer cancel()
+	if _, releaseErr := kv.CompareAndSwap(rbCtx, key, live, dropFenceTombstone); releaseErr != nil {
+		err = &MarkerReleaseError{Key: key, Err: err, ReleaseErr: releaseErr}
+	}
+	return &DropFenceError{TenantID: tenantID, Database: db, Op: "mark live", Err: err}
 }
 
 // clearMarker removes key when it holds the tombstone; an absent marker is

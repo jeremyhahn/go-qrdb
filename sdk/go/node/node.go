@@ -144,6 +144,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -309,6 +310,14 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithHeadSignerProvider replaces the software head-signing key of every
+// verifiable log with a composer's vlog.HeadSignerProvider, typically one
+// that keeps the key on a device or in a KMS and never exports it.
+// Equivalent to server.WithHeadSignerProvider; forwarded in both boot paths.
+func WithHeadSignerProvider(p vlog.HeadSignerProvider) NodeOption {
+	return func(o *nodeOptions) { o.headSignerProvider = p }
+}
+
 // WithInvitationRedeemLimiter replaces the built-in token bucket that
 // throttles invitation redemption. Equivalent to
 // server.WithInvitationRedeemLimiter; the caller closes it.
@@ -333,6 +342,7 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 		server.WithClock(n.clock),
 		server.WithStorageFactory(n.storageFactory),
 		server.WithDEKProvider(n.dekProvider),
+		server.WithHeadSignerProvider(n.headSignerProvider),
 		server.WithInvitationRedeemLimiter(n.invitationRedeemLimiter),
 		server.WithHolderActLimiter(n.holderActLimiter),
 		server.WithCertKeyProviderFactory(n.certKeyProviderFactory),
@@ -355,7 +365,7 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 // server.WithCertKeyProviderFactory; forwarded in both boot paths. Mutually
 // exclusive with WithCertProvider, which replaces the provider this factory
 // configures: a node given both fails to build
-// (*sdk.CertProviderConflictError).
+// (*sdkserver.CertProviderConflictError).
 func WithCertKeyProviderFactory(f cakey.ProviderFactory) NodeOption {
 	return func(o *nodeOptions) { o.certKeyProviderFactory = f }
 }
@@ -436,8 +446,9 @@ type nodeOptions struct {
 	// before calling NewStandaloneNode / NewClusteredNode.
 	sealStrategy seal.SealingStrategy
 
-	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter,
-	// holderActLimiter, certKeyProviderFactory and certProvider are
+	// backupSink, storageFactory, dekProvider, headSignerProvider,
+	// invitationRedeemLimiter, holderActLimiter, certKeyProviderFactory and
+	// certProvider are
 	// composition seams; clock is another. Each is nil unless a composer set
 	// it, and nil keeps the software default. mergeSeamOptions folds them
 	// into the server options.
@@ -445,6 +456,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
+	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
 	certKeyProviderFactory  cakey.ProviderFactory
@@ -938,6 +950,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.StrategyRegistry = crypto.StrategyRegistry
 	infra.BarrierKeyProvider = crypto.BarrierKeyProvider
 	infra.DEKProvider = crypto.DEKProvider
+	infra.HeadSignerProvider = crypto.HeadSignerProvider
 	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
 	infra.HolderActLimiter = crypto.HolderActLimiter
 	// The login CA is built inside BuildServices, so its seams are forwarded
@@ -2041,7 +2054,7 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 		defer n.bgWG.Done()
 		lr.RunExpiry(ctx, lease.DefaultExpiryInterval,
 			func() bool {
-				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				leaderID, ok, err := host.LeaderID(shard.ShardKV)
 				return err == nil && ok && leaderID == replicaID
 			},
 			leaseSvc.Revoke,
@@ -2078,7 +2091,7 @@ func (n *Node) startReclaimSweep(host *quicraft.Host, sweeper *service.ReclaimSw
 		defer n.bgWG.Done()
 		sweeper.Run(ctx, service.DefaultReclaimInterval,
 			func() bool {
-				leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+				leaderID, ok, err := host.LeaderID(shard.ShardKV)
 				return err == nil && ok && leaderID == replicaID
 			},
 			n.logger,
@@ -4352,6 +4365,7 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		embedded.WithVectorService(svcNode.Vector),
 		embedded.WithEmbeddingService(svcNode.Embedding),
 		embedded.WithRAGService(svcNode.RAG),
+		embedded.WithLogService(svcNode.Log),
 		embedded.WithDatabaseService(svcNode.Database),
 		// Wired unconditionally, matching every service above: svcNode.Backup
 		// is itself constructed unconditionally (BuildServices). Without
@@ -4666,6 +4680,7 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 		server.WithCollectionService(svcNode.Collection),
 		server.WithDatabaseService(svcNode.Database),
 		server.WithVector(svcNode.Vector),
+		server.WithLogService(svcNode.Log),
 	}
 	// The transaction/CAS family is composed in BOTH modes. A standalone node
 	// is engine-direct and single-process, so a compare-and-swap there is
@@ -5053,6 +5068,17 @@ func buildClusteredRaftConfigs(
 
 		identities, err := cluster.ResolveMemberIdentities(
 			splitMemberIdentities(cfg.Raft.MemberIdentities), shardCfg.ReplicaID, identityCertPEM(mtls))
+		if err != nil {
+			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
+				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
+		}
+		shardCfg.MemberIdentities = identities
+	} else if self := identityCertPEM(mtls); len(self) > 0 {
+		// A transport-less host checks no identity, but the membership it
+		// founds is the one every replica later added to the shard authorizes
+		// it by: seed its own identity, or the first member added refuses it
+		// as missing_identity. It has no other member to name.
+		identities, err := cluster.ResolveMemberIdentities(nil, shardCfg.ReplicaID, self)
 		if err != nil {
 			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
 				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}

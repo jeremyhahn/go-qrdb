@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // This file is a consumer of the SDK: it imports sdk/go and the standard
@@ -96,14 +97,14 @@ func consumerGate(t *testing.T) (http.Handler, *consumerAuthorizer, *atomic.Bool
 			Kind:       sdk.CertBindingSPKIThumbprint,
 		}},
 	}}
-	opts := []sdk.AuthMiddlewareOption{
-		sdk.WithAuthMiddlewareAuthenticator(sdk.NewMTLSAuthenticator()),
-		sdk.WithAuthMiddlewareUserService(users),
-		sdk.WithAuthMiddlewareRoleResolver(consumerRoles{}),
+	opts := []sdkserver.AuthMiddlewareOption{
+		sdkserver.WithAuthMiddlewareAuthenticator(sdk.NewMTLSAuthenticator()),
+		sdkserver.WithAuthMiddlewareUserService(users),
+		sdkserver.WithAuthMiddlewareRoleResolver(consumerRoles{}),
 	}
-	mw := sdk.NewAuthMiddleware(authorizer, opts...)
+	mw := sdkserver.NewAuthMiddleware(authorizer, opts...)
 
-	routes := sdk.NewRESTRouteRegistry()
+	routes := sdkserver.NewRESTRouteRegistry()
 	routes.Register(http.MethodGet, consumerRoute, sdk.PermissionUsersRead)
 
 	reached := &atomic.Bool{}

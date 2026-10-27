@@ -1,6 +1,6 @@
 # Barrier and Seal — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 The barrier is the at-rest encryption boundary. Everything persistent passes
@@ -81,14 +81,14 @@ type StrategyFactory func() (SealingStrategy, error)
 - `StrategyPassphrase` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
 - `StrategyNone` — built via `NewNoneStrategy()`.
 
-`StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the daemon's init command can supply; the daemon constructs it inline at init time.
+`StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the daemon's configuration can supply; `NewSystemStrategyRegistry` (`pkg/seal/system_strategy.go`) adds it, with the configured threshold and total, to the registry the system barrier uses.
 
 ### Hardware injection — `WithStrategyRegistry`
 
 Higher layers add hardware strategies on top by handing qrdb's server constructor a registry through `WithStrategyRegistry`:
 
 ```go
-// pkg/server/server.go:1133-1135
+// pkg/server/server.go:1168-1170
 func WithStrategyRegistry(reg seal.StrategyRegistry) ServerOption {
     return func(o *serverOptions) { o.strategyRegistry = reg }
 }
@@ -180,7 +180,7 @@ provider to say so. An unregistered name is refused with
 `*seal.StrategyNotRegisteredError`, which names what is registered; a factory's
 error reaches the caller unchanged.
 
-**Injection.** `server.WithBarrierKeyProvider(p)` (also `sdk.WithBarrierKeyProvider`).
+**Injection.** `server.WithBarrierKeyProvider(p)` (also `sdkserver.WithBarrierKeyProvider`).
 The tenant service is built in `lifecycle.BuildServices`, before `server.New`
 runs, so the SDK node builders resolve the option through
 `server.ResolveCryptoOptions` and forward it into
@@ -841,7 +841,8 @@ delivery that fails refuses the request.
 **The first admin's account is completed once, by the owner's call.** The
 barrier-ready step that creates the pending first admin's roles, account and
 certificate binding runs on the node that took the owner's init, as the owner,
-on a 15-second clock of its own rather than the request's deadline: the writes
+within bounds of its own (`bootstrap.AdminCompletionBounds`: a 2-minute
+budget, 10 seconds per attempt) rather than the request's deadline: the writes
 it makes are replicated, and a Raft election in a freshly created group can
 use most of a request's deadline. A node that initialised its key from the
 statement does not run it — it has no caller to run it as; a later status read
@@ -944,9 +945,18 @@ that serves it:
 
 Shipping one node's key to the others
 (`clusterkeys.Sender.DistributeTenantKey`) gives every replica the same key,
-which the binding rules below forbid.
+which the binding rules below forbid. It is nevertheless the current path for
+a tenant barrier sealed with any strategy other than `none`, `passphrase` or
+`shamir`: the database service calls it when it invites replicas for a tenant
+without auto-unseal (`pkg/service/database_service.go`, `inviteReplicas`), and
+the sender skips those three strategies (`pkg/clusterkeys/sender.go`,
+`ownKeyOnEveryNode`).
 
 ### Binding rules
+
+The rules state the target design. `DistributeTenantKey` stays the path for
+strategies other than `none`, `passphrase` and `shamir` until it is replaced,
+and until then those strategies do not meet the first two rules.
 
 - **No key transport.**
   - Root keys are never pushed or transported, and there is no single key for
@@ -972,7 +982,7 @@ which the binding rules below forbid.
   - No backward-compatibility code: pre-release tenants are re-created.
   - Replaced surfaces are deleted.
 - **No hand-rolled crypto.**
-- **Barrier rulings.**
+- **Barrier invariants.**
   - An isolated tenant's keys are independent of the system seal posture.
   - The multiplexed WAL is always built.
   - A multi-replica raft database's barrier is a per-node barrier.
@@ -1458,29 +1468,35 @@ the shape of the go-enclave interface it would carry.
 
 ### go-enclave bindings
 
-go-enclave v0.8.0-alpha exports interfaces only for providers
-(`KeyProtector`, `RootUnsealer`, `HealthReporter`); go-qrdb implements none of
-them. Every operation go-qrdb performs on protected memory goes through a
-concrete type, because no interface exists for it yet:
+go-enclave v0.10.0-alpha exports the protected-memory types themselves as
+interfaces: `Sealed` (material encrypted at rest in memory), `ByteAccess` (a
+`Handle` whose bytes are readable inside a borrow) and `Allocator` (a budgeted
+`Backend`). go-qrdb binds to those interfaces at every site and still
+implements none of them; the only implementations it uses are go-enclave's own,
+and its provider interfaces (`KeyProtector`, `RootUnsealer`, `HealthReporter`)
+are likewise unimplemented here:
 
-| Site | Concrete binding | Operations used |
+| Site | Interface binding | Operations used |
 |---|---|---|
-| `pkg/secure/buffer.go:56` | `Buffer.enc *enclave.MemoryEnclave` | `WithBytes`, `Size`, `Destroy` |
-| `pkg/secure/buffer.go:134` | `processAllocator() (*enclave.Allocator, error)` | `NewSized` |
-| `pkg/secure/secret.go:49` | `Secret.enclave atomic.Pointer[enclave.SealedEnclave]` | `Open`, `Destroy` |
-| `pkg/secure/secret.go:80` | `newSealed = enclave.NewSealed` (returns `*enclave.SealedEnclave`) | construction |
-| `pkg/secure/secret.go:150` | `var sealed *enclave.SealedEnclave` | construction |
-| `pkg/secure/secret.go:262` | `copyFrozenToWritable(frozen *enclave.MemoryEnclave)` | `WithBytes`, `Destroy` |
-| `sdk/go/secure/secure.go:226` | `type Allocator = enclave.Allocator` | re-export |
-| `pkg/seal/shamir.go:161` | `combineProtected = shamir.CombineProtected` (returns `*enclave.MemoryEnclave`, go-quicraft) | `WithBytes`, `Destroy` |
-| `pkg/seal/strategy.go:78` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Destroy` |
-| `pkg/clustermig/credentials.go:146` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
-| `pkg/seal/sealtest/sealtest.go:48`, `:79` | go-quicraft `Credentials.Secret *enclave.SealedEnclave` | `Open` |
+| `pkg/secure/buffer.go:55` | `Buffer.enc enclave.ByteAccess` | `WithBytes`, `Size`, `Destroy` |
+| `pkg/secure/buffer.go:142` | `processAllocator() (enclave.Allocator, error)` | `NewSized` |
+| `pkg/secure/secret.go:50` | `Secret.enclave atomic.Pointer[enclave.Sealed]` | `OpenIn`, `Destroy` |
+| `pkg/secure/secret.go:81` | `newSealed = enclave.NewSealed` (returns `enclave.Sealed`) | construction |
+| `pkg/secure/secret.go:151` | `var sealed enclave.Sealed` | construction |
+| `pkg/secure/secret.go:271` | `copyFrozenToWritable(frozen enclave.ByteAccess)` | `WithBytes`, `Destroy` |
+| `sdk/go/secure/secure.go:225` | `type Allocator = enclave.Allocator` | re-export |
+| `pkg/seal/shamir.go:161` | `combineProtected = shamir.CombineProtected` (returns `enclave.ByteAccess`, go-quicraft) | `WithBytes`, `Destroy` |
+| `pkg/seal/strategy.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Destroy` |
+| `pkg/clustermig/credentials.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Open` |
+| `pkg/seal/sealtest/sealtest.go` | go-quicraft `Credentials.Secret enclave.Sealed` | `Open` |
 
-`pkg/clusterkeys`, `pkg/keydelivery` and `pkg/secure` also call the free
-function `enclave.Wipe`, which is not a type binding. The last four rows name
-types that go-quicraft's exported API returns, so they convert when
-go-quicraft binds to the same interface.
+`Secret.Open` opens into the allocator's backend through `Sealed.OpenIn`, which
+returns a `Handle`; a backend whose handles do not expose their bytes fails the
+open with go-enclave's `*enclave.CapabilityError` for `CapabilityBytes` rather
+than returning a handle `secure.Buffer` cannot read. `pkg/clusterkeys`,
+`pkg/keydelivery` and `pkg/secure` also call the free function `enclave.Wipe`,
+which is not a type binding. The last four rows name types that go-quicraft's
+exported API returns; go-quicraft v0.24.2-alpha binds to the same interfaces.
 
 ### Follow-on set
 

@@ -220,7 +220,7 @@ func DiscoverLockedMemoryLimit() (LockedMemoryLimit, error) {
 // locked-memory budget every Buffer allocation and every Secret.Open admits
 // against. Sealing (NewSecret, NewSecretFromBuffer's internal seal) is NOT
 // admitted against it — go-enclave has no budgeted seal path as of
-// v0.6.0-alpha, so that allocation is unbounded. It is a one-time cost per
+// v0.10.0-alpha, so that allocation is unbounded. It is a one-time cost per
 // value rather than a per-request one, unlike Open, which is why go-enclave
 // scoped the gap that way; see pkg/secure.Secret's documentation.
 type Allocator = enclave.Allocator
@@ -323,7 +323,7 @@ func HardenProcess(logger *slog.Logger) (ProcessHardening, error) {
 // RLIMIT_MEMLOCK ceiling at construction rather than at the first allocation
 // under load. This is the usual way to build the budget SetAllocator
 // installs.
-func NewAllocatorWithinRLimit(maxBytes int64) (*Allocator, error) {
+func NewAllocatorWithinRLimit(maxBytes int64) (Allocator, error) {
 	return enclave.NewAllocatorWithinRLimit(maxBytes)
 }
 
@@ -338,21 +338,21 @@ func NewAllocatorWithinRLimit(maxBytes int64) (*Allocator, error) {
 // allocator already exists, including the default that a library's first
 // ProcessAllocator call installs lazily. Library code in this repository
 // never calls it; see pkg/secure's package documentation.
-func SetAllocator(a *Allocator) error { return enclave.SetAllocator(a) }
+func SetAllocator(a Allocator) error { return enclave.SetAllocator(a) }
 
 // ProcessAllocator returns the process-wide locked-memory budget SetAllocator
 // installed, or a default sized to the discovered RLIMIT_MEMLOCK ceiling if
 // nothing was installed. This is what pkg/secure's own constructors call;
 // it is re-exported so a caller that wants to allocate go-enclave memory
 // directly, outside a Buffer or Secret, admits against the same budget.
-func ProcessAllocator() (*Allocator, error) { return enclave.ProcessAllocator() }
+func ProcessAllocator() (Allocator, error) { return enclave.ProcessAllocator() }
 
 // WipeAll destroys every live locked-memory enclave the process has
 // allocated through go-enclave — every outstanding Buffer, every plaintext a
 // Secret.Open call has transiently produced, and any SDK consumer's own
 // enclave — wiping and unmapping their pages.
 //
-// A Secret's SEALED form is not one of those pages: a SealedEnclave's
+// A Secret's SEALED form is not one of those pages: an enclave.Sealed value's
 // ciphertext and wrapped-key blob live on the ordinary (unlocked) heap by
 // design, so this call does not zero them directly. What it does instead is
 // destroy the process Sealer's own key material — itself a locked-memory

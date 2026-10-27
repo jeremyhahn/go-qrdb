@@ -44,6 +44,7 @@ func TestIsNodeLocalKey_ReplicatedTablesAreNeverNodeLocal(t *testing.T) {
 		{"an audit-table head record is replicated, not node-local", []byte(vlog.TablePrefix + "h/acme"), false},
 		{"an audit-table event record is replicated, not node-local", []byte(vlog.TablePrefix + "e/acme/1"), false},
 		{"a named-log head record is replicated, not node-local", []byte(vlog.LogTablePrefix + "acme/app/ledger/h"), false},
+		{"a named-log signing key is replicated, not node-local", []byte(vlog.LogTablePrefix + "acme/app/ledger/k/\x00\x00\x00\x01"), false},
 		{"a named-log tree node is replicated, not node-local", []byte(vlog.LogTablePrefix + "acme/app/ledger/n/\x00/\x00\x00\x00\x00\x00\x00\x00\x01"), false},
 		{"an import-staging chunk is replicated, not node-local", importstage.ChunkKey("sess", 3), false},
 		{"an import-staging session record is replicated, not node-local", importstage.MetaKey("sess"), false},

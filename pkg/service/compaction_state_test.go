@@ -203,7 +203,9 @@ type leaderHost struct {
 	err    error
 }
 
-func (h *leaderHost) GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
+var _ AdminHost = (*leaderHost)(nil)
+
+func (h *leaderHost) ShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
 	if h.err != nil {
 		return nil, h.err
 	}

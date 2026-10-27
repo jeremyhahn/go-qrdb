@@ -1,7 +1,7 @@
 # Databases — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > This document has two layers, and each section says which layer it is in.
@@ -272,13 +272,14 @@ The shipped drop reclaims a keyspace inside a shared store, dependents first
 and the catalog record last (below, "What a drop reclaims"). With a store per
 database, a drop is:
 
-1. **Fence** — write the database's fence key through the binding's host.
-   Every write to the database is a guarded command carrying "fence key absent",
-   so a write proposed before the fence and applied after it is refused on every
+1. **Fence** — set the database's fence marker (`service.DropFenceKey`) to a
+   tombstone through the binding's host. Every write to the database is a
+   guarded command carrying "the fence marker holds my incarnation"
+   (`service.DropFenceGuard`), so a write proposed before the fence and applied after it is refused on every
    replica, from the same log. The guard applies to every engine's writes,
    vector and time series included, and to local bindings exactly as to raft
    ones, because both apply through the same engine. The fence is behind the
-   cluster feature gate (rule 6): a drop in a group whose members do not all
+   cluster feature gate: a drop in a group whose members do not all
    support it is refused with a typed error, never run unfenced.
 2. **Destroy the store** — stop and purge the Raft group on every replica, or
    close and remove the local store's directory or object prefix, and remove
@@ -723,8 +724,7 @@ Three things are deliberately **not** reclaimed:
   every transport's key surface is namespaced and no caller can compose the bare
   key, and nothing deletes them. A deployment that has them exports and re-imports
   them per tenant; see
-  [collections/engineering.md](../collections/engineering.md) "Upgrading across
-  the tenant-namespace change".
+  [collections/engineering.md](../collections/engineering.md#tenant-less-collection-keys).
 
 **The reclamation reads through an unfiltered enumeration**, not the
 user-facing one. Several of the shapes above are in the internal key
@@ -915,11 +915,12 @@ The engine half of the log and the replicated audit chain share one mechanism
 | `vlog.Chain` | `pkg/vlog/log.go`, `pkg/vlog/named.go` | The per-state-machine registry: an in-memory head per audit tenant (`headState{seq, lo, digest}`) and per named log (`vlog.LogID{TenantID, Database, Log}`), restored from storage, updated only in Apply. `Create`, `AppendEntries`, `Checkpoint` and `ExpireBodies` are the named-log mutations; the Merkle tree comes from `github.com/transparency-dev/merkle` (`compact`, `rfc6962`, `proof`). |
 | `audit.Chain` | `pkg/audit/chain.go` | The audit trail over a `vlog.Chain` (`audit.ChainOn`). `Append` assigns the next sequence and a linear SHA-256 digest (`digest = SHA-256(prev ‖ event JSON)`, `PrevHash` embedded in the event); `Prune` drops a retired prefix; `Query` and `Verify` read. |
 | The tables | `pkg/vlog/table.go` | Two reserved raw-keyspace tables: `TablePrefix = "\x00qrdb.audit/"`, with `h/<tenant>` head records and `e/<tenant>/<seq>` event records, and `LogTablePrefix = "\x00qrdb.vlog/"` for named logs. `vlog.IsTableKey` keeps both out of KV `Range` and watch. |
-| The opcodes | `pkg/protocol/audit.go`, `pkg/protocol/vlog.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. `OpVerifiableLog` (82) with sub-types `VerifiableLogSubtypeCreate`, `…Append`, `…Checkpoint` and `…ExpireBodies`, built by the `EncodeVerifiableLog*` functions. |
-| The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`) and `featuregate.VerifiableLog` (`"verifiable-log"`). |
+| The opcodes | `pkg/protocol/audit.go`, `pkg/protocol/vlog.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. `OpVerifiableLog` (82) with sub-types `VerifiableLogSubtypeCreate`, `…Append`, `…Checkpoint`, `…ExpireBodies` and `…RotateKey`, built by the `EncodeVerifiableLog*` functions. |
+| The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`), `featuregate.VerifiableLog` (`"verifiable-log"`) and `featuregate.VerifiableLogKeys` (`"verifiable-log-keys"`, the head-signing-key wire: the keyed `Create` body and `RotateKey`). |
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
-| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. Nothing proposes `OpVerifiableLog` yet. |
+| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. |
+| Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardLogResolver` — the audit resolver's routing, which also refuses a barrier tenant with `BarrierTenantLogNotSupportedError` (§3) — refuses a barrier-enabled database, looked up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass, with `BarrierDatabaseLogNotSupportedError` (§3), refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
 ### Design
@@ -957,10 +958,17 @@ fields.
 
 | Sub-type | Body | Apply does |
 |---|---|---|
-| `Create` | log name, `vlog.Descriptor` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`) | Refuses a name that exists; stages the descriptor record and an empty head. |
+| `Create` | log name, `[descLen:4][vlog.Descriptor JSON]` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`, `Keys`), then one key record | Refuses a name that exists; stages the descriptor record, the sealed key record if present, and an empty head. |
 | `Append` | one entry, or a bounded batch of entries | Assigns each entry the next index, stages the entry, its leaf hash and every tree node the append completes, and the new head (§4). Returns the first assigned index. |
 | `Checkpoint` | tree size, root hash, signed checkpoint bytes | Checks that the size is no larger than the log's size and that the root is the tree's root at that size (§5); stages the checkpoint record. |
 | `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) or by the audit retention scheduler. Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
+| `RotateKey` | log name, `[keyLen:4][vlog.HeadKey JSON]`, then one key record | Appends the next key version to the descriptor; stages its sealed key record if present. |
+
+A key record is one presence byte: `0` for none (a provider that keeps the key
+outside go-qrdb), or `1` followed by `[version:4][PKCS#8 bytes]`. Nothing may
+follow an absent record. This is the only `Create` encoding: the raw-JSON body
+of v0.51.0-alpha to v0.55.0-alpha was proposed by no service or transport in
+any release, so no committed log carries it and no decoder reads it.
 
 There is no sub-type that updates or deletes an entry, and no per-log delete:
 a log dies with its database, through the drop and keyspace reclaim every
@@ -995,6 +1003,32 @@ advertises it.
   replica applies both identically.
 - After activation (every node advertises it), the gate is permanent, as for
   every gate: a binary without the log refuses to start.
+- **The head-signing-key wire has its own gate**, `featuregate.VerifiableLogKeys`
+  (`"verifiable-log-keys"`). A replica that carries only `verifiable-log`
+  refuses the keyed `Create` body and `RotateKey`, so its peers would create or
+  re-key a log without it. The service refuses `CreateLog` and `RotateKey` with
+  `LogFeatureNotActiveError` naming `verifiable-log-keys` until it is active on
+  the group, and checks it before asking the `vlog.HeadSignerProvider` for a
+  key, so a refused write mints none. Append, checkpoint and expiry need only
+  `verifiable-log`.
+
+**Isolation.** Every log is applied into the log registry of the system shard,
+which the system barrier protects. A barrier-isolated tenant's entries and its
+sealed private signing key would therefore stay readable while the tenant's own
+barrier is sealed, so the log service routes through
+`service.NewSystemShardLogResolver`, which refuses such a tenant with
+`BarrierTenantLogNotSupportedError` before any key is created or any command
+proposed. A barrier-enabled database inside a tenant that is not
+barrier-isolated is the same case one level down: before it routes any log
+call, read or write, the log service looks the database up in the node's
+database registry and refuses it with `BarrierDatabaseLogNotSupportedError`
+whether its barrier is sealed or not, since an unsealed barrier would protect
+nothing the log registry holds. A database the registry has no record of is
+served, as a tenant without metadata is; a lookup that fails refuses the call.
+Both refusals are classed `Unimplemented` by `pkg/api/errclass`, so every
+transport answers them alike. A volume or raft tenant is refused with
+`DedicatedTenantAuditNotSupportedError`, as for the audit chain. Prefix tenants
+and the system tenant are served.
 
 `OpAuditAppend`'s apply stays in both dispatch tables. Its entries are in
 existing Raft logs and snapshots, and a replica replaying them must apply them
@@ -1054,9 +1088,10 @@ possibly in a device, and apply must be a pure function of committed bytes.
    a log (on demand — §9, decision 4).
 2. The service reads the head through the group (size *n*, root *r*), builds
    the checkpoint body for (origin, *n*, *r*) as a C2SP checkpoint (§9, decision 2), and asks the sign-head seam (§6) for the owner's signature.
-3. The service verifies the returned signature against the log's registered
-   verifier key, then proposes `OpVerifiableLog`/`Checkpoint` with *n*, *r* and
-   the signed bytes.
+3. The service renders the signed note (`vlog.RenderCheckpoint`), verifies it
+   against the public key the descriptor records for the current key version
+   (`Descriptor.VerifyCheckpoint`), then proposes `OpVerifiableLog`/`Checkpoint` with *n*, *r* and
+   the note's bytes.
 4. Apply checks *n* ≤ size and that *r* is the tree's root at *n*, computed from
    the stored perfect nodes covering `[0, n)` read through the current call's
    staged nodes. It does **not** verify the signature: signature verification
@@ -1066,22 +1101,62 @@ possibly in a device, and apply must be a pure function of committed bytes.
 5. The checkpoint is appended as a record (`c/<size>`), append-only. Reading the
    latest checkpoint, or the one at a size, is the `head` operation.
 
+**The checkpoint format** is a C2SP signed note
+(`docs/reference/c2sp-signed-note.md`) whose text is a C2SP tlog-checkpoint
+(`docs/reference/c2sp-tlog-checkpoint.md`), both at the C2SP commit the
+reference index pins:
+
+```
+db.example.com/acme/certs
+9
+CsUYapGGPo4dkMgIAUqom/Xajj7h2fB2MPA3j2jxq2I=
+
+— acme/ledger/certs <base64(key hash || signature)>
+```
+
+The text is the origin, the decimal tree size and the base64 root hash, each
+on its own line; a blank line follows, then one signature line: an em dash
+(U+2014), the key name the signer reports (`HeadSigner.Name`; the software
+provider's is the log's `tenant/database/log`), and the base64 of the 4-byte
+big-endian key hash followed by the signature over the text. The key hash is
+the signed-note key ID for the signature type: for Ed25519 (type `0x01`), the
+first four bytes of SHA-256(key name || `0x0A` || `0x01` || public key); for
+ECDSA P-256 (type `0x02`), of SHA-256 of the public key's PKIX DER. A
+verifier (`vlog.VerifyCheckpoint`, `Descriptor.VerifyCheckpoint`) refuses any
+note the two specifications do not admit, ignores signature lines from keys it
+does not know, and fails a note whose line from a known key does not verify.
+`Descriptor.VerifyCheckpoint` tries every recorded key version, so a
+checkpoint signed before a rotation verifies under the version that signed it,
+and reports that version. There is no other checkpoint form.
+
 A checkpoint is not a leaf of the tree it describes: a head that entered its own
 tree would describe a tree it had already made stale. The record is beside the
 tree, append-only, in the same table and the same snapshot.
 
-**Key rotation** is a descriptor change through the same opcode: the
-descriptor's verifier keys are an append-only list, and a checkpoint names the
-key that signed it. Which key signs, and when keys rotate, is the owner's
-policy.
+**Key rotation** is a descriptor change through the same opcode (RotateKey,
+sub-type 5): the descriptor's head keys are an append-only list numbered from
+version 1, the last is current, and a signed head names the key version that
+signed it, so a head signed before a rotation still verifies. Which key signs,
+and when keys rotate, is the owner's policy. Rotation asks the provider for
+the next version's key through the same seam as create (§6) and appends it in
+one proposal; a rotation that names any version but the next is refused as a
+conflict. The software provider's rotation also writes its `k/<version+1>`
+record in that proposal. It is served as `LogService.RotateKey` on every
+transport (`POST /vlog/key/rotate`, `VlogRotateKey`, `vlog.RotateKey`,
+`qrdb_vlog_rotate_key`; [api.md](api.md), "Verifiable logs"), gated on
+`vlog:sign_head` like signing a head: rotating the key is a use of it, so an
+Operator rotates and an Admin does not.
 
 #### 6. The sign-head seam
 
-In `pkg/vlog` (§9, decision 7). `HeadSigner` has the shape of
+In `pkg/vlog/signing.go` (§9, decision 7). `HeadSigner` has the shape of
 `golang.org/x/mod/sumdb/note`'s `Signer` (`Name`, `KeyHash`, `Sign`, in that
-module's `sumdb/note/note.go`) with a context added, so a signer of any
-signature type plugs into the note library unchanged: the signer, not go-qrdb,
-owns the signature type and its encoding.
+module's `sumdb/note/note.go`) with a context added, plus the key version, the
+signature type and the public key a signed head is checked against. The
+signature types are the two RFC 9162 registers (section 10.2.2): Ed25519, the
+default, and ECDSA P-256 with SHA-256 (ASN.1 DER). A signed head carries its
+signature type and key version; a key of any other type is refused with
+`UnsupportedKeyTypeError`.
 
 ```go
 // HeadSigner signs a log's checkpoints with the log owner's key.
@@ -1090,43 +1165,84 @@ type HeadSigner interface {
 	Name() string
 	// KeyHash is the key hash the signature line carries.
 	KeyHash() uint32
+	// KeyVersion is the version of the key that signs.
+	KeyVersion() uint32
+	// SignatureType is the RFC 9162 signature type Sign produces.
+	SignatureType() SignatureType
+	// Public is the key a signed head verifies against.
+	Public() crypto.PublicKey
 	// Sign returns the signature over msg, the checkpoint body, in the
 	// signer's signature type.
 	Sign(ctx context.Context, msg []byte) ([]byte, error)
 }
 
-// HeadSignerProvider returns the signer for one log's owner key.
+// HeadSignerProvider owns a log's head-signing keys: it creates each
+// version and returns the signer for one.
 type HeadSignerProvider interface {
+	CreateKey(ctx context.Context, req CreateKeyRequest) (CreatedKey, error)
 	HeadSigner(ctx context.Context, req HeadSignerRequest) (HeadSigner, error)
 }
 
-// HeadSignerRequest names the log and the owner's key for it.
+// CreateKeyRequest names the log, the signature type and the version of
+// the key a provider creates.
+type CreateKeyRequest struct {
+	TenantID, Database, Log string
+	Type                    SignatureType
+	Version                 uint32
+}
+
+// CreatedKey is the provider's answer: its reference to the key, the
+// public key and -- from the software provider only -- the sealed record.
+type CreatedKey struct {
+	Ref    string
+	Public crypto.PublicKey
+	Record *SigningKey
+}
+
+// HeadSignerRequest names the log and one version of its key.
 type HeadSignerRequest struct {
-	TenantID string
-	Database string
-	Log      string
-	// KeyRef is the owner's opaque reference to its key, recorded in the
-	// descriptor at create. go-qrdb never interprets it.
-	KeyRef string
+	TenantID, Database, Log string
+	KeyRef                  string // as CreateKey returned it
+	KeyVersion              uint32 // which the signer reports
 }
 ```
 
+The descriptor records each version as a `HeadKey`: its version, the
+provider's reference and its public key (PKIX DER). `Descriptor.VerifyHead`
+checks a signed head against the key of the version it names, and
+`Descriptor.VerifyCheckpoint` a checkpoint against the version whose key hash
+its signature line carries, so a head from
+a key go-qrdb never holds verifies the same way as one from the software key.
+The service checks the provider's answer (`CreatedKey.HeadKey`: a supported
+type, the requested version, a reference, a record that is the same key)
+before anything is proposed, and checks every head it signs before recording
+it.
+
 - **Injection:** `WithHeadSignerProvider(p HeadSignerProvider) ServerOption` in
-  `pkg/server/seam_options.go`, beside `WithDEKProvider`, composed through
-  `sdk/go/node` like the other seams. Nil keeps the software provider.
-- **The software provider go-qrdb ships** generates one Ed25519 key per log at
-  create (`crypto/ed25519` over `crypto/rand`, the standard library's validated
-  module), seals the private key with the tenant's DEK through `dek.Provider`
-  (`pkg/dek/provider.go`), with the additional data binding tenant, database,
-  log and key version, and stores it as a record in the tenant's resolved store:
-  replicated, under the tenant's barrier, and fails closed when the tenant is
-  sealed. Its public key is the descriptor's verifier key. Any node can sign; the
-  key never leaves the server.
-- **What go-xkms implements:** a `HeadSignerProvider` that resolves `KeyRef` to
-  its KMS or hardware key, and for its transparency log returns a signer over
-  the CA's key (the same `crypto.Signer` source `pkg/cakey.Provider` exposes),
-  in the signature type the [open question](#open-questions) settles for a
-  non-Ed25519 key. go-quicbaas composes go-xkms's provider; it does not
+  `pkg/server/seam_options.go`, beside `WithDEKProvider`, surfaced by
+  `ResolveCryptoOptions` as `CryptoOptions.HeadSignerProvider`, carried in
+  `lifecycle.Infra.HeadSignerProvider`, and passed by `sdk/go/node`'s
+  `WithHeadSignerProvider`; `sdk/go` re-exports the types (`types_vlog.go`)
+  and `sdk/go/server` the option, so the lean `sdk/go` root links no server.
+  It follows the `WithDEKProvider` and `WithBarrierKeyProvider` seams. Nil
+  keeps the software provider, which is the default.
+- **The software provider go-qrdb ships** (`SoftwareHeadSignerProvider`)
+  creates a key at create and at each rotation (`crypto/ed25519` or
+  `crypto/ecdsa` P-256 over `crypto/rand`, the standard library's validated
+  module). It returns the key as a PKCS #8 record, `k/<version>` under the
+  log's prefix, which the service writes in the same Raft proposal as the
+  descriptor, so a create or rotation either lands with its key or not at all;
+  its reference is the decimal version. The record is sealed at rest by the
+  same barrier as the log's other records (§8), travels in the snapshot, and
+  is outside KV `Range` like the rest of the table. Any node can sign; the key
+  never leaves the server. The service never generates a key itself.
+- **A provider that keeps its keys outside go-qrdb** returns no record, and no
+  key record is written: the descriptor holds its reference and public key
+  only.
+- **What go-xkms implements:** a `HeadSignerProvider` over its KMS or hardware
+  keys, and for its transparency log one that returns a signer over the CA's
+  key (the same `crypto.Signer` source `pkg/cakey.Provider` exposes), as an
+  ECDSA P-256 signer. go-quicbaas composes go-xkms's provider; it does not
   implement one.
 
 #### 7. The audit trail as one log instance
@@ -1167,7 +1283,9 @@ the upgrade moves no data.
 - **Barrier.** The tenant's (or the database's) barrier encrypts the records at
   rest, below apply, as it does for every other record. Apply therefore hashes
   the entry as appended.
-- **DEK.** The DEK seals the software signer's key. A caller that wants entries
+- **The signing key.** The software signer's `k/<version>` record is one of
+  the log's records, so the same barrier seals it at rest; there is no second
+  key layer. A caller that wants entries
   the platform cannot read encrypts them with `DEKService` before appending; the
   leaf then commits to the ciphertext, which is the caller's choice and the
   standard shape for a confidential transparency log.
@@ -1197,8 +1315,9 @@ Each choice is kept with the alternatives not taken and the reason each lost.
    its `sumdb/note/note.go`); that is the software provider's type. Not taken: an
    RFC 6962 `SignedTreeHead` structure (binary, not witnessable by the note
    ecosystem, superseded by RFC 9162) and a go-qrdb format (nothing would verify
-   it). **The signature type for a non-Ed25519 owner key is still open**, to
-   agree with go-xkms ([Open questions](#open-questions)).
+   it). A non-Ed25519 owner key signs ECDSA P-256 with SHA-256, the other
+   RFC 9162 type and signed-note type `0x02`
+   ([Open questions](#open-questions), ruled (b)).
 3. **Hashing at apply** (§4): the tree is always current and atomic with the
    entry, with one proposal per append and about two SHA-256 and two record
    writes per entry. Not taken: an integrator proposing tree hashes after commit
@@ -1212,7 +1331,9 @@ Each choice is kept with the alternatives not taken and the reason each lost.
 5. **A build tag on the service and the transports:** `WITH_QRDB_VLOG ?= 1`,
    tag `qrdb_vlog`, like `WITH_QRDB_TS` and `WITH_QRDB_VECTOR`. Off removes the
    named-log service, its transport handlers, the SDK surface and the CLI, and
-   `admin capabilities` omits `vlog`. The engine core, the opcode's apply and the
+   `admin capabilities` omits `vlog`. The software HeadSigner provider
+   (`pkg/vlog/signing_software.go`) is behind the tag too; without it the stub
+   refuses every signer with `vlog.NotCompiledError`, an absent capability. The engine core, the opcode's apply and the
    audit instance are never tagged: the audit trail depends on them, and a
    replica must apply what its group commits whatever its build, so a binary
    built without the tag still advertises the gate.
@@ -1240,9 +1361,8 @@ Each choice is kept with the alternatives not taken and the reason each lost.
 What [What already exists](#what-already-exists) lists is in the code. Each
 remaining step leaves the tree green:
 
-1. The log service (`pkg/service/vlog_service.go`), composed in
-   `pkg/server/lifecycle/lifecycle.go`; the sign-head seam and its software
-   provider (§6); the transports, SDK and CLI ([Surface](#surface)); the
+1. The log service's composition in `pkg/server/lifecycle/lifecycle.go`; the
+   transports, SDK and CLI ([Surface](#surface)); the
    `vlog:*` permissions ([Authorization](#authorization)).
 2. The audit switch (§7): `ReplicatedLogger.Emit` proposes to the audit
    instance through the log service once `featuregate.VerifiableLog` is enabled
@@ -1260,7 +1380,7 @@ mutations are `vlog.Chain` methods called in apply: `Create`, `AppendEntries`,
 `Checkpoint` (the apply half of sign-head) and `ExpireBodies`. The reads take a
 `storage.Reader`: `ReadHead` (a `vlog.Head`: the current size and root, the
 lowest unexpired index and the latest checkpoint), `Get`, `Inclusion`,
-`Consistency` and `ReadCheckpoint`; the state machines answer them as
+`Consistency`, `ReadCheckpoint` and `List` (the logs in one database); the state machines answer them as
 `vlog.Request` values.
 
 #### Service layer
@@ -1312,17 +1432,22 @@ vector namespace.
 
 #### SDK
 
-`sdk/go/transport` gains the request and response types and a `LogProvider`
-interface each transport implements; `sdk/go` gains `Client.Vlog()` (nil when
-the transport does not implement it, as `Client.Audit()` is) and a verification
-helper that checks an inclusion or consistency proof and a checkpoint's
-signature against a verifier key, with the same library the server uses.
+`sdk/go/transport` defines `VlogClient`, the ten log methods over the
+`sdk/go/transport/vlogwire` request and result shapes, and every transport implements
+it: embedded (over the log service `embedded.WithLogService` supplies), gRPC,
+the Unix socket, REST, QUIC and MCP. `sdk/go`'s `Client.Vlog()` returns it
+through the same capability lookup as the other optional services. A missing
+log is `vlog.LogNotFoundError` on every transport. The SDK carries no proof
+verification helper: a caller checks proofs and checkpoints with any RFC 9162
+and C2SP signed-note verifier, as the integration suite does with
+`transparency-dev/merkle`.
 
 #### CLI
 
-`qrdb vlog create|list|append|get|prove-inclusion|prove-consistency|head|sign-head|expire`,
-on every transport, with `--database` like the vector commands; `prove-*` and
-`head` take `--verify` with a verifier key to check the answer client-side.
+`qrdb vlog create|list|append|get|prove-inclusion|prove-consistency|head|sign-head|rotate-key|expire`,
+over every protocol the CLI speaks, in the database the root `--database` flag
+names, printing text, or the `vlogwire` shapes with `--output json|yaml`. The
+CLI does not verify proofs itself.
 
 #### Authorization
 
@@ -1352,12 +1477,19 @@ the tenant's data, which is Admin's. A cross-tenant request is refused by
 
 ### Open questions
 
-[§9](#9-design-choices) settles the other choices. One remains, the half of
-the checkpoint choice to agree with go-xkms.
+[§9](#9-design-choices) settles the other choices. The one below is ruled and
+kept for its record.
 
 1. **The signed-note signature type for a non-Ed25519 owner key** — ECDSA
    P-256 at least, the CA key go-xkms's transparency log signs with.
-   *To agree with go-xkms and record in both pages.*
+   *Ruled (b), restricted to RFC 9162's types:* a head is signed Ed25519 (the
+   default) or ECDSA P-256 with SHA-256, and carries its signature type and
+   key version; any other key type is refused (§6). Rotation appends
+   `k/<version+1>` in one proposal (§5). c2sp.org/signed-note, at the
+   revision [docs/reference](../reference/README.md) pins, assigns ECDSA
+   signature type `0x02` and defines its key ID as the first four bytes of the
+   SHA-256 of the DER SPKI public key, without the key name; an Ed25519 key ID
+   is type `0x01`'s hash over the name, a newline, `0x01` and the key.
    *Context:* the checkpoint is a C2SP signed-note (§9, decision 2), and
    `golang.org/x/mod/sumdb/note` defines only the Ed25519 type. Because the seam
    leaves the signature type and its encoding to the signer (§6), go-qrdb's
@@ -1621,6 +1753,6 @@ flag and the protobuf field number is reserved either way.
 - **Chosen: A.** Its deletion half is in the code: a `pkg/server` scheduler
   proposes a feature-gated `protocol.OpTSApplyRetention` command per metric per
   tick; see
-  [../time-series/architecture.md#retention-enforcement-od-16-a](../time-series/architecture.md#retention-enforcement-od-16-a).
+  [../time-series/architecture.md#retention-enforcement](../time-series/architecture.md#retention-enforcement).
   Downsampling, and applying it through the database's binding, wait on the
   storage binding.

@@ -19,6 +19,7 @@ package main
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -26,16 +27,23 @@ import (
 // Compile-time interface satisfaction checks
 // ---------------------------------------------------------------------------
 
-// Verify that *hostAdapter satisfies the service.Host interface at compile
-// time. This ensures that any future additions to service.Host that are not
-// implemented on hostAdapter will cause a build failure rather than a
+// Verify that *hostAdapter satisfies both halves of a node host, the data
+// host (service.Host) and the Raft-admin host (raftadmin.Host), at compile
+// time. This ensures that any future additions to either interface that are
+// not implemented on hostAdapter will cause a build failure rather than a
 // runtime panic.
-var _ service.Host = (*hostAdapter)(nil)
+var (
+	_ service.Host   = (*hostAdapter)(nil)
+	_ raftadmin.Host = (*hostAdapter)(nil)
+)
 
-// Verify that *bootstrapHostAdapter satisfies the service.Host interface at
-// compile time. bootstrapHostAdapter embeds hostAdapter and overrides
-// SyncRead, so it must also satisfy the full contract.
-var _ service.Host = (*bootstrapHostAdapter)(nil)
+// Verify that *bootstrapHostAdapter satisfies both halves at compile time.
+// bootstrapHostAdapter embeds hostAdapter and overrides SyncRead, so it must
+// also satisfy the full contract.
+var (
+	_ service.Host   = (*bootstrapHostAdapter)(nil)
+	_ raftadmin.Host = (*bootstrapHostAdapter)(nil)
+)
 
 // ---------------------------------------------------------------------------
 // hostAdapter interface satisfaction tests

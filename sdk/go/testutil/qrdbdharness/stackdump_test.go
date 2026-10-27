@@ -26,19 +26,63 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
+
+// helperReadyTimeout bounds how long a helper may take to write its first
+// line. Under GODEBUG=fips140=only with -race, the first crypto/rand read in
+// package init seeds the DRBG from the jitter entropy source, which takes
+// seconds on a loaded runner.
+const helperReadyTimeout = 30 * time.Second
 
 // lockedBuffer is a bytes.Buffer safe for exec's copy goroutine to write
 // while a test reads it.
 type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	grew chan struct{} // signalled, without blocking, after every Write
 }
 
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	n, err := b.buf.Write(p)
+	select {
+	case b.grewLocked() <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+// grewLocked returns the channel Write signals, creating it on first use.
+// b.mu must be held. Its one-slot buffer keeps a Write that lands between a
+// waiter's check and its receive from being lost.
+func (b *lockedBuffer) grewLocked() chan struct{} {
+	if b.grew == nil {
+		b.grew = make(chan struct{}, 1)
+	}
+	return b.grew
+}
+
+// waitFor blocks until the buffer holds needle, and fails the test if it does
+// not within limit.
+func (b *lockedBuffer) waitFor(t *testing.T, needle string, limit time.Duration) {
+	t.Helper()
+	deadline := time.After(limit)
+	for {
+		b.mu.Lock()
+		found := strings.Contains(b.buf.String(), needle)
+		grew := b.grewLocked()
+		b.mu.Unlock()
+		if found {
+			return
+		}
+		select {
+		case <-grew:
+		case <-deadline:
+			t.Fatalf("helper did not write %q within %v; output:\n%s", needle, limit, b.String())
+		}
+	}
 }
 
 func (b *lockedBuffer) String() string {
@@ -76,7 +120,12 @@ func healthURL(port int) string {
 func TestWaitForHTTPOKDumpsStalledDaemon(t *testing.T) {
 	port := reservePort(t)
 	var out lockedBuffer
-	daemon := startPortHelper(t, "sleep", port, &out)
+	// The booting helper writes its line from runHelper, so once the line is
+	// in the output the helper is past package init and runHelper is on the
+	// stack the dump must show. Without the wait, a SIGQUIT sent during a
+	// slow init dumps only init's frames.
+	daemon := startPortHelper(t, "booting", port, &out)
+	out.waitFor(t, "booting\n", helperReadyTimeout)
 
 	err := WaitForHTTPOK(healthURL(port), nil, nil, shortTimeout)
 	var timeoutErr *TimeoutError

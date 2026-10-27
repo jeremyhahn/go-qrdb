@@ -21,12 +21,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// identityHost is a service.Host compared by identity only; no method of it
+// identityHost is a service.AdminHost compared by identity only; no method of it
 // is called.
 type identityHost struct {
-	service.Host
+	service.AdminHost
 	name string
 }
+
+var _ service.AdminHost = (*identityHost)(nil)
 
 // replicaHostsAdmin records the TenantReplicaHosts the server binds.
 type replicaHostsAdmin struct {
@@ -43,7 +45,7 @@ func TestTenantHostRegistry_StartedHostsListsBuiltHostsOnly(t *testing.T) {
 	reg.hosts["no-adapter"] = &tenantHost{tenantID: "no-adapter"}
 
 	got := reg.StartedHosts()
-	if len(got) != 1 || got["acme"] != service.Host(acme) {
+	if len(got) != 1 || got["acme"] != service.AdminHost(acme) {
 		t.Fatalf("StartedHosts = %v, want only acme's adapter", got)
 	}
 	if len(reg.hosts) != 2 {

@@ -387,6 +387,7 @@ QUICRAFT_ROOT ?= $(shell cd .. && pwd)/go-quicraft
 # Optional feature flags (1 = enabled, 0 = disabled)
 WITH_QRDB_TS     ?= 1
 WITH_QRDB_VECTOR ?= 1
+WITH_QRDB_VLOG   ?= 1
 WITH_QRDB_SQL    ?= 1
 WITH_QRDB_MYSQL  ?= 1
 WITH_QRDB_PGSQL  ?= 1
@@ -472,6 +473,9 @@ ifeq ($(WITH_QRDB_TS),1)
 endif
 ifeq ($(WITH_QRDB_VECTOR),1)
   BUILD_TAGS += qrdb_vector
+endif
+ifeq ($(WITH_QRDB_VLOG),1)
+  BUILD_TAGS += qrdb_vlog
 endif
 ifeq ($(WITH_QRDB_SQL),1)
   BUILD_TAGS += qrdb_sql
@@ -803,9 +807,113 @@ check-public-proto:
 # developer running the advertised unit-test entrypoint is told about a
 # repository defect at the same moment CI would tell them -- the same reasoning
 # that put check-publication-bound into `_ci`.
+TEST_PKGS := ./pkg/... ./cmd/... ./test/buildgates/...
+
 .PHONY: test
 test: test-clusterproof
-	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/... ./test/buildgates/...
+	$(GOTEST) $(TAG_FLAG) $(TEST_PKGS)
+
+# FIPS 140-3 legs (#1230). CI's `fips` job runs `make test` and `make
+# test-sdk` under GOFIPS140=latest GODEBUG=fips140=only
+# (docs/seal/fips140-mode.md) as parallel matrix legs, one per name in
+# FIPS_LEGS, each `make test-fips-leg FIPS_LEG=<leg>`. Together the legs are
+# exactly the two suites, each package in one leg:
+#
+#   - a FIPS_LEG_<leg> leg runs the packages its patterns match: FIPS_ROOT_LEGS
+#     in the root module, FIPS_SDK_LEGS in $(SDK_DIR);
+#   - `rest` runs every package of TEST_PKGS no root leg names, after
+#     test-clusterproof, as `make test` does;
+#   - `sdk` runs every package of $(SDK_DIR) no SDK leg names.
+#
+# The two remainder legs mean a new package always runs: it lands in `rest` or
+# `sdk` until a leg names it. The legs are split by measured wall time (run
+# 68401, docs/seal/fips140-mode.md), not by package count: a leg takes about
+# its slowest package plus 3 to 4 minutes of build and setup, so the slowest
+# packages sit alone. A pattern without `/...` names one package, so a leg can
+# hold it alone while its subpackages run elsewhere.
+#
+# A package too slow for a leg on its own is split by test name (#1234): each
+# of its legs names the one package, FIPS_RUN_<leg> selects a leg's top-level
+# tests (go test -run), and the package's last leg skips what the others
+# select (FIPS_SKIP_<leg> = $(call fips-skip,<legs>), go test -skip), so a new
+# test runs there until a FIPS_RUN_ names it. pkg/tenant (38.6 min), pkg/seal
+# (32.9 min, PBKDF2 at 600,000 iterations under FIPS) and pkg/server (25.7
+# min, split for headroom) are split in two.
+# test/buildgates/fips_legs_test.go fails when a package is in two legs or in
+# none (a split package's legs all select by name), when a leg is empty, and
+# when ci.yml's matrix is not FIPS_LEGS; fips_split_test.go fails when a test
+# of a split package runs in no leg or in two. `make -s print-fips-legs`
+# prints the legs, print-fips-leg-filter a leg's -run and -skip.
+fips-skip = $(subst $(space),|,$(strip $(foreach l,$(1),$(FIPS_RUN_$(l)))))
+FIPS_LEG_tenant-lifecycle := ./pkg/tenant
+FIPS_RUN_tenant-lifecycle := ^Test(TenantService|CreateTenant|StoreResolver|DeleteTenant|UndoCreate)
+FIPS_LEG_tenant        := ./pkg/tenant
+FIPS_SKIP_tenant        = $(call fips-skip,tenant-lifecycle)
+FIPS_LEG_seal-barrier  := ./pkg/seal
+FIPS_RUN_seal-barrier  := ^Test(Barrier|StorageBarrier|ChangePassword|SealStore|TenantBarrier)
+FIPS_LEG_seal          := ./pkg/seal
+FIPS_SKIP_seal          = $(call fips-skip,seal-barrier)
+FIPS_LEG_server-raft   := ./pkg/server
+FIPS_RUN_server-raft   := ^Test(Raft|ReattachRaft)
+FIPS_LEG_server        := ./pkg/server
+FIPS_SKIP_server        = $(call fips-skip,server-raft)
+FIPS_LEG_auth          := ./pkg/server/lifecycle/... ./pkg/auth/... ./cmd/...
+FIPS_LEG_service       := ./pkg/service/... ./pkg/database/... ./pkg/statemachine/... ./pkg/engine/... \
+                          ./pkg/dao/... ./pkg/store/...
+FIPS_LEG_api-keys      := ./pkg/api/... ./pkg/seal/encfs/... ./pkg/seal/kdf/... ./pkg/seal/sealtest/... \
+                          ./pkg/ceremony/... ./pkg/credentials/... ./pkg/firstboot/... ./pkg/pin/... \
+                          ./pkg/clusterseal/... ./pkg/barrierinit/... ./pkg/authfactors/... \
+                          ./pkg/keywrap/... ./pkg/dek/... ./pkg/sql/...
+FIPS_LEG_sdk-transport := ./transport/...
+FIPS_ROOT_LEGS := tenant-lifecycle tenant seal-barrier seal server-raft server auth service api-keys
+FIPS_SDK_LEGS  := sdk-transport
+FIPS_LEGS      := $(FIPS_ROOT_LEGS) rest $(FIPS_SDK_LEGS) sdk
+
+FIPS_LEG_DIR = $(if $(filter $(FIPS_LEG),$(FIPS_SDK_LEGS) sdk),$(SDK_DIR),.)
+FIPS_LEG_CHECK = case " $(FIPS_LEGS) " in *" $(FIPS_LEG) "*) ;; \
+	*) echo "FIPS_LEG must be one of: $(FIPS_LEGS)" >&2; exit 2 ;; esac
+
+# FIPS_LEG_FILTER is the leg's test selection, as go test flags.
+FIPS_LEG_FILTER = $(if $(FIPS_RUN_$(FIPS_LEG)),-run '$(FIPS_RUN_$(FIPS_LEG))') \
+	$(if $(FIPS_SKIP_$(FIPS_LEG)),-skip '$(FIPS_SKIP_$(FIPS_LEG))')
+
+# print-fips-leg-filter prints the -run and -skip patterns FIPS_LEG passes to
+# go test, empty for a leg that runs whole packages.
+.PHONY: print-fips-leg-filter
+print-fips-leg-filter:
+	@$(FIPS_LEG_CHECK)
+	@printf 'run=%s\nskip=%s\n' '$(FIPS_RUN_$(FIPS_LEG))' '$(FIPS_SKIP_$(FIPS_LEG))'
+
+.PHONY: print-fips-legs
+print-fips-legs:
+	@printf '%s\n' $(FIPS_LEGS)
+
+# print-test-pkgs prints the package patterns `make test` runs.
+.PHONY: print-test-pkgs
+print-test-pkgs:
+	@printf '%s\n' $(TEST_PKGS)
+
+# print-fips-leg-packages prints the import paths FIPS_LEG runs. A remainder
+# leg is its suite minus every package the other legs of its module name.
+.PHONY: print-fips-leg-packages
+print-fips-leg-packages:
+	@$(FIPS_LEG_CHECK)
+	@cd $(FIPS_LEG_DIR) && case "$(FIPS_LEG)" in \
+	rest) all=$$($(GO) list $(TAG_FLAG) $(TEST_PKGS)) && \
+		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_ROOT_LEGS),$(FIPS_LEG_$(l)))) && \
+		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
+	sdk) all=$$($(GO) list $(TAG_FLAG) ./...) && \
+		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_SDK_LEGS),$(FIPS_LEG_$(l)))) && \
+		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
+	*) $(GO) list $(TAG_FLAG) $(FIPS_LEG_$(FIPS_LEG)) ;; \
+	esac
+
+.PHONY: test-fips-leg
+test-fips-leg:
+	@$(FIPS_LEG_CHECK)
+	$(if $(filter rest,$(FIPS_LEG)),$(MAKE) --no-print-directory test-clusterproof)
+	pkgs=$$($(MAKE) -s --no-print-directory print-fips-leg-packages FIPS_LEG=$(FIPS_LEG)) && \
+		cd $(FIPS_LEG_DIR) && $(GOTEST) $(TAG_FLAG) $(FIPS_LEG_FILTER) $$pkgs
 
 # The cluster proof harness's own unit tests (#669): the history format, the
 # acknowledged-write ledger, the porcupine linearizability check and the
@@ -818,6 +926,18 @@ test: test-clusterproof
 .PHONY: test-clusterproof
 test-clusterproof:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof" ./...
+
+# The vanguard blocker probe (#1151): pkg/api/grpcweb stays hand-rolled while
+# connectrpc.com/vanguard's vanguardgrpc runs a service outside the grpc.Server
+# interceptor chain and hands its handler a peer with no TLS state
+# (docs/api-server/architecture.md). test/vanguardprobe asserts both of the
+# pinned release and fails, naming #1151 step 3, the day a release no longer
+# has them; run this at every vanguard release. It is a module of its own so
+# vanguard never enters the database's module graph, and it is not part of
+# `make test` or of CI's unit stage.
+.PHONY: check-vanguard-probe
+check-vanguard-probe:
+	cd test/vanguardprobe && $(GO) test -count=1 ./...
 
 # The cluster proof itself (#669): `make cluster-proof` soaks a running cluster
 # under a seeded schedule of faults and writes an evidence bundle;
@@ -1321,7 +1441,8 @@ integration-image:
 # (./test/integration). IT_FEATURE=<feature>
 # narrows it to that feature's features.mk selection, exactly what
 # `make integration-test-<feature>` runs on the host; CI's integration-features
-# legs are `make integration-test IT_FEATURE=<feature>`. A feature that selects
+# shards run `make integration-test IT_FEATURE=<feature>` for each feature in
+# their list, through integration-test-features below. A feature that selects
 # nothing says so and passes, as integration-test-<feature> does, before any
 # image is built. The Docker-based
 # test/integration/api stack needs a daemon the hardened service does not
@@ -1420,8 +1541,8 @@ integration-down-%:
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
 #
-# CI does not run this stage as one job: it runs the same tests one feature per
-# job, `make integration-test-<feature>` in ci.yml's integration-features
+# CI does not run this stage as one job: it runs the same tests in shards of
+# features, `make integration-test-features` in ci.yml's integration-features
 # matrix (see INT_FEATURES). This target is the whole suite in one container,
 # for a local run.
 #
@@ -1573,15 +1694,16 @@ integration-test-local:
 INT_FEATURE_TAGS = $(LINT_TAGS),integration
 
 # INT_FEATURES is every feature whose features.mk entry maps at least one
-# file, sorted: the legs of CI's integration-features job, one job per feature,
-# each running `make integration-test-<feature>` under its own limit. An empty
-# entry is not a leg; it would run zero tests and pass.
+# file, sorted: the features CI's integration-features job runs, each in
+# exactly one of its shards (`make integration-test-features`). An empty entry
+# is not a feature here; it would run zero tests and pass.
 #
 # Gitea cannot expand a matrix computed at run time (handbook devops.md §1),
-# so ci.yml spells this list literally and
-# test/buildgates/feature_jobs_gate_test.go fails when the two differ. After
-# adding or emptying an entry, paste `make -s print-integration-features`
-# into the job's `feature:` list; the gate's failure message prints the line.
+# so ci.yml spells each shard's list literally and
+# test/buildgates/feature_jobs_gate_test.go fails when their union differs
+# from this one, or names a feature twice. After adding an entry, put the
+# feature in the `features:` of the shard with the least expected time; the
+# gate's failure message names the feature and the fix.
 INT_FEATURES = $(sort $(subst _,-,$(patsubst INTTEST_%,%,$(foreach v,$(filter INTTEST_%,$(.VARIABLES)),$(if $(strip $($(v))),$(v))))))
 
 .PHONY: print-integration-features
@@ -1590,8 +1712,8 @@ print-integration-features:
 
 # integration-test-feature is the one recipe behind every per-feature target:
 # `make integration-test-feature FEATURE=<docs folder name>`. The
-# `integration-test-%` pattern rule below dispatches to it, and so does CI's
-# integration-features job through that rule. An explicit
+# `integration-test-%` pattern rule below dispatches to it, and so does integration-test-features, below, on a host.
+# An explicit
 # integration-test-<feature> rule would shadow the pattern rule (make prefers
 # the explicit recipe); test/buildgates/feature_target_shadow_test.go refuses
 # one, and test/buildgates/feature_integration_coverage_test.go fails if a
@@ -1631,6 +1753,50 @@ integration-test-feature:
 .PHONY: integration-test-%
 integration-test-%:
 	@$(MAKE) -s -C $(CURDIR) integration-test-feature FEATURE=$*
+
+# integration-test-features runs every feature in IT_FEATURES, one after
+# another, with `make -k` semantics: a failing feature does not stop the rest,
+# each prints a PASS or FAIL line with its seconds as it ends, the summary
+# repeats them all and names every failing feature, and the target fails if
+# any did. A name that is not one of INT_FEATURES (`make -s
+# print-integration-features`) is a FAIL, not a silent zero-test pass.
+#
+# IT_FEATURES_IN says where each feature runs, through the map below:
+#   host   `make integration-test-feature FEATURE=<f>`, the selection
+#          `make integration-test-<f>` runs (the default);
+#   image  `make integration-test IT_FEATURE=<f>`, in the hardened integration
+#          image, under IT_PROJECT -- CI's integration-features shards.
+# The integration image has no make, so the loop runs here and each feature
+# is its own `compose run` in it; the image is built and held once per shard,
+# by the first feature's docker-build-it, and every later one reuses it.
+IT_FEATURES    ?=
+IT_FEATURES_IN ?= host
+it_features_goal.host  = integration-test-feature FEATURE
+it_features_goal.image = integration-test IT_FEATURE
+
+.PHONY: integration-test-features
+integration-test-features:
+	@test -n "$(strip $(IT_FEATURES))" || { echo "integration-test-features: IT_FEATURES=\"<feature> ...\" is required"; exit 2; }
+	@test -n "$(it_features_goal.$(IT_FEATURES_IN))" || { echo "integration-test-features: IT_FEATURES_IN=$(IT_FEATURES_IN); want host or image"; exit 2; }
+	@summary=''; failed=''; \
+	for f in $(IT_FEATURES); do \
+		start=$$(date +%s); \
+		case ' $(INT_FEATURES) ' in \
+		*" $$f "*) rc=0; $(MAKE) -s -C $(CURDIR) $(it_features_goal.$(IT_FEATURES_IN))=$$f || rc=$$?;; \
+		*) echo "==> integration-test-features: $$f is not a feature with integration tests (make -s print-integration-features)"; rc=2;; \
+		esac; \
+		secs=$$(( $$(date +%s) - start )); \
+		if [ $$rc -eq 0 ]; then res=PASS; else res=FAIL; failed="$$failed $$f"; fi; \
+		echo "==> integration-test-features: $$res $$f $${secs}s"; \
+		summary="$$summary  $$res $$f $${secs}s\n"; \
+	done; \
+	echo "==> integration-test-features summary ($(IT_FEATURES_IN)):"; \
+	printf '%b' "$$summary"; \
+	if [ -n "$$failed" ]; then \
+		echo "==> integration-test-features: FAILED:$$failed"; \
+		exit 1; \
+	fi; \
+	echo "==> integration-test-features: all $(words $(IT_FEATURES)) passed"
 
 # ============================================================================
 # Benchmarks (always run in devcontainer)
@@ -1728,7 +1894,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -2520,9 +2686,13 @@ check-no-alias-language:
 
 # A lean standalone embedder -- sdk/go/node on the file backend, the embedded
 # transport and an entity DAO (sdk/go/examples/leanstandalone) -- must not
-# compile features it does not use: the Raft host, PebbleDB, the network API
-# servers, clustering, vectors, time series, metrics, MCP, chi, gin or the
-# object store (#627). The gate reads the example's `go list -deps` graph and
+# compile features it does not use: go-quicraft's Raft engine, PebbleDB, the
+# network API servers, clustering, vectors, time series, metrics, MCP, chi, gin
+# or the object store (#627). Ruling 193 narrowed two entries: on the
+# go-quicraft side only the engine is forbidden -- the NodeHost package
+# go-quicraft/pkg itself and the pkg/internal/... beneath it -- so the seal,
+# Shamir and other leaf packages stay allowed; on the pkg/api side only its
+# subpackages are, so the root's contract types stay allowed. The gate reads the example's `go list -deps` graph and
 # compares every import edge into those packages with the ratchet table in
 # test/buildgates/lean_standalone_test.go: a new edge fails, and so does a
 # listed edge that no longer occurs, so the table only shrinks toward empty.
@@ -3794,7 +3964,7 @@ DEVCONTAINER_DIR     := build/docker/devcontainer
 DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-	test/performance/qrdb test/performance/tikv
+	test/performance/qrdb test/performance/tikv test/vanguardprobe
 TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
@@ -4182,7 +4352,7 @@ coverage-vector-quantization: | _cover-dir ## Generate quantization coverage rep
 
 # ============================================================================
 # Shared k-means (pkg/vector/kmeans) -- consumed by pkg/vector/ivf and
-# pkg/vector/quantization; see docs/vectors/engineering.md.
+# pkg/vector/quantization; see the package doc in pkg/vector/kmeans/doc.go.
 # ============================================================================
 
 .PHONY: test-vector-kmeans
@@ -4316,6 +4486,7 @@ help:
 	@echo "Feature flags (default: enabled):"
 	@echo "  WITH_QRDB_TS=0         Disable time-series support"
 	@echo "  WITH_QRDB_VECTOR=0     Disable vector support"
+	@echo "  WITH_QRDB_VLOG=0       Disable verifiable-log head signing"
 	@echo "  WITH_QRDB_MYSQL=0      Disable MySQL wire protocol support"
 	@echo "  WITH_QRDB_PGSQL=0      Disable PostgreSQL wire protocol support"
 	@echo "  WITH_QRDB_ETCD=0       Disable etcd wire protocol support"
@@ -4337,6 +4508,7 @@ help:
 	@echo ""
 	@echo "Integration Tests (devcontainer with qrdbd + all protocols):"
 	@echo "  integration-test           The CI stage: every self-spawned suite in the integration image (IT_FEATURE=<f> for one)"
+	@echo "  integration-test-features  Each feature in IT_FEATURES=\"<f> ...\", past a failing one (IT_FEATURES_IN=host|image)"
 	@echo "  integration-test-docker    The Docker api suites: auth, standalone and cluster stacks"
 	@echo "  integration-test-api       The standalone multi-protocol suite (integration-test-standalone)"
 	@echo "  integration-test-gpu       Run GPU-accelerated integration tests"

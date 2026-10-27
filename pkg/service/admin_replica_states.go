@@ -60,7 +60,7 @@ func (s *AdminService) ReplicaStates(ctx context.Context, shardID uint64) (*Repl
 	if !ok {
 		return nil, &ReplicaStateUnsupportedError{}
 	}
-	info := s.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	replicas := make([]ReplicaState, 0, len(info.ShardInfoList))
 	for _, si := range info.ShardInfoList {
 		if si.IsWitness || (shardID != 0 && si.ShardID != shardID) {

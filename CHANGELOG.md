@@ -11,6 +11,292 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+- **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
+  WAL fsync stall keeps its leadership and term, so linearizable reads and
+  admin requests are not failed by an election the stall caused; writes wait
+  for a quorum's fsyncs as before. It is go-quicraft v0.24.2-alpha's
+  heartbeat-under-fsync, on in every build with no knob, and the stall shows in
+  `quicraft_logdb_fsync_latency_seconds`. `pkg/service`'s
+  `TestFsyncStall_LeaderKeepsLeadershipThroughFollowerWALStall` proves it on
+  three in-process hosts, waiting for each follower's own stalled-fsync
+  observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
+  `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
+- **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+
+- **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
+  (#912): the ten `Vlog*` gRPC methods, `/vlog/*` REST routes, `vlog.*` QUIC
+  methods and `qrdb_vlog_*` MCP tools create and list logs, append, read
+  entries, prove inclusion and consistency (RFC 9162), read and sign the head
+  (a C2SP signed-note checkpoint), rotate the head-signing key and expire
+  entry bodies, under the `vlog:*`
+  permissions, in the caller's tenant and the request's database; no
+  request names a tenant, on any transport. Every call naming a barrier-isolated
+  tenant or a barrier-enabled database, sealed or not, is refused as
+  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
+  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
+  system barrier, not theirs, so `service.LogServiceConfig` requires the
+  node's database registry as `Databases`. They are
+  served while the node has a log service (`server.WithLogService`, wired by
+  `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
+  `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal
+  carries its `pkg/api/errclass` class on every transport. Key rotation is
+  gated on `vlog:sign_head`, so an Operator rotates and an Admin does not; a
+  checkpoint signed before a rotation still verifies under the key it names
+  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
+- **Verifiable logs from the SDK and the CLI** (#912): `Client.Vlog()` returns
+  a `transport.VlogClient` on every transport (embedded, gRPC, the Unix socket,
+  REST, QUIC and MCP), with embedded serving the log service
+  `embedded.WithLogService` supplies; appending to, signing or expiring a log
+  that does not exist is the typed `vlog.LogNotFoundError` on every one. The
+  `qrdb vlog` commands (`create`, `list`, `append`, `get`, `prove-inclusion`,
+  `prove-consistency`, `head`, `sign-head`, `rotate-key`, `expire`) drive it
+  over any protocol, in the database the root `--database` flag names
+  ([docs/databases/user.md](docs/databases/user.md), "Keep a verifiable log").
+
+### Changed
+
+- **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
+  sign-head returns and records are the tlog-checkpoint text (origin, tree
+  size, base64 root) and one signed-note signature line carrying the key name
+  and the 4-byte key hash, not a JSON signed head. `vlog.RenderCheckpoint`,
+  `vlog.ParseCheckpoint`, `vlog.VerifyCheckpoint` and
+  `Descriptor.VerifyCheckpoint` replace `SignedHead.Encode` and
+  `DecodeSignedHead`, which are gone; a checkpoint signed before a rotation
+  verifies under the key version whose hash it carries
+  ([docs/databases/architecture.md](docs/databases/architecture.md)).
+
+### Fixed
+
+- **The verifiable log's three remaining refusals are typed on every
+  transport** (#912): a second create of a log, a second sign-head at a tree
+  size that already has a checkpoint, and expiry on a log created without
+  `allow_expire_bodies` reached a client as a bare class and message. They
+  now carry the structured-refusal reasons `VLOG_LOG_EXISTS`,
+  `VLOG_CHECKPOINT_EXISTS` and `VLOG_EXPIRE_NOT_ALLOWED` over REST, gRPC,
+  QUIC, MCP and the Unix socket, and every SDK transport, embedded included,
+  rebuilds them as `*vlog.LogExistsError`, `*vlog.CheckpointExistsError` and
+  `*vlog.ExpireNotAllowedError`, so `errors.As` matches them
+  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
+- **A database create whose mark-live propose times out no longer leaves an orphaned drop-fence incarnation.** A claim of the marker that timed out at the caller could still commit after the create rolled back, so the marker named an incarnation no catalog entry held and every retry of the create was refused as existing elsewhere. `UnfenceDatabaseKeyspace` now releases an unknown-outcome claim back to the tombstone under a detached context, so the create returns the documented retryable 503 and the fence and catalog agree; a release that fails too is `*service.MarkerReleaseError`, which unwraps to the timeout.
+
+### Changed
+
+- **`qrdb users cert-binding add|list|remove`** (#671). The CLI had no verb
+  for enrolling a certificate binding, though the default
+  `auth.mtls_binding_policy: required` refuses a certificate until one is
+  enrolled. `add` takes the base64url SHA-256 SPKI thumbprint, or a PEM
+  certificate through `--cert`, which also sets the expiry by default
+  (`--not-after` overrides it). An expiry at or before the Unix epoch, from
+  either, is refused: the wire reads a non-positive expiry as "never
+  expires", which only an omitted expiry may mean. `remove` withdraws one binding, and `list`
+  prints the user's bindings. They map to `AddCertBinding` and
+  `RemoveCertBinding`, and work on REST, gRPC, QUIC, Unix and MCP
+  (`docs/identity-rbac/cli.md`).
+
+- CI: the `fips` job's legs are rebalanced from the measured wall times of run 68401 (#1230, ruling 221(5)): nine legs, `tenant`, `seal`, `server`, `auth`, `service`, `api-keys`, `rest`, `sdk-transport` and `sdk`, with `pkg/tenant`, `pkg/seal` and `pkg/server` each in a leg alone. Each leg has its own `timeout-minutes` from its matrix entry, its expected time with headroom and at most 45, and go test's per-package budget is that limit less 5 minutes; `test/buildgates/fips_legs_test.go` enforces both. **The `tenant` (about 42 minutes) and `seal` (about 36.5 minutes) legs stay over 30 minutes until #1234 splits those packages**; every other leg is expected under 30 (docs/seal/fips140-mode.md, "The legs").
+- CI: the `fips` job splits `pkg/tenant`, `pkg/seal` and `pkg/server` by test name, each over two legs, so every leg is expected under 30 minutes and `server` under 25 (#1234, ruling 221(5)): twelve legs, with `tenant-lifecycle`, `seal-barrier` and `server-raft` selecting tests by the Makefile's `FIPS_RUN_<leg>` (`go test -run`) and `tenant`, `seal` and `server` skipping what those select (`-skip`). The limits are 30 minutes for the tenant and seal legs and 25 for the server legs. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints a leg's patterns, and the new `test/buildgates/fips_split_test.go` fails when a top-level test of a split package runs in no leg or in two. `TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace` uses the cheap test KDF, which brings it from 195 seconds to under 8 under FIPS mode.
+- The rationale for ci.yml's nightly `schedule:` (ci.yml, nightly.yml,
+  AGENTS.md, docs/release/architecture.md, docs/release/engineering.md,
+  test/buildgates/ci_tiers_test.go)
+  now cites ruling 135 and Company Agent ruling 216(1). The in-template Gitea
+  schedule trigger is the one scheduler, and the owner ruling of 2026-10-11 and
+  m433 forbid host cron, timers and watchers. The text no longer calls the
+  restore a reversal of those rulings, and the gate's error message no longer
+  tells the reader to dispatch from a coordinator loop.
+- CI: a draft pull request runs no CI. Every job skips on `pull_request.draft` and CI Gate fails on a draft; a PR leaving draft starts its run with an empty commit or a merge of main (ci-standard §10 (f), ruling 214).
+- CI: ci.yml carries ci-template v1.27.0's nightly `schedule:` trigger again (cron `0 4 * * *`), so the full and nightly tiers, soak included, run on main each night; `test/buildgates/ci_tiers_test.go` allows a schedule in ci.yml and automerge.yml alone. This reverses the 2026-10-11 owner ruling and Company Agent m433 on Software's order DS-3913 (m1378 (2)).
+
+- **CI adopts ci-template v1.28.0 (ruling 220(3)):** `make deps-check` is a lint-class gate on the PR tier (ruling 219(3)). It moves from the full-tier `image` steps to the `lint` job, after `make lint`, and runs on every event, a docs-only pull request included, so a module behind its dependency floor fails the pull request rather than `main` after the merge.
+- **CI adopts ci-template v1.27.0 (ruling 211):** `make coverage` and the `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` suites are five parallel code-tier jobs instead of serial `image` steps, and the linux/arm64 release cross-build (plain and FIPS) runs on the full tier only, like `fips`.
+- docs: apply the spec-review findings for api-server to collections (#658)
+- **Feature documentation, replica-forwarding through watch, matches the code**
+  (#658): the spec-review findings are applied — statements the code does not
+  bear out are corrected or removed, content owned by another feature moves to
+  its owner (the `kvstore.KVStore` surface to key-value, DAO aggregations and
+  secret entity fields to the query-planner and entity-SQL companions), the
+  CLI pages gain per-verb examples and exit status, and code comments citing the
+  deleted `docs/08-bootstrap-auth-architecture.md` point at the feature folders.
+- docs: apply the spec-review findings for configuration to identity-rbac (#658)
+- docs: apply the spec-review findings for key-value to release (#658)
+
+### Fixed
+
+- **`qrdb users cert-binding add|remove` document `--` before a thumbprint**
+  (#671). A thumbprint is base64url (RFC 8705 `x5t#S256`), so about one in 64
+  begins with `-` and the CLI read it as a flag (`unknown shorthand flag`).
+  The help text and `docs/identity-rbac/cli.md` now say to put every flag
+  first and the thumbprint after `--`, which ends option parsing (POSIX
+  Utility Syntax Guideline 10), and the CLI tests enrol and withdraw a fixed
+  `-`-leading thumbprint that way on every transport.
+- **The bootstrap log names the strategy the system barrier is sealed under**
+  (#671). It used to log the configured strategy, so a barrier initialized
+  under `none` was logged as `strategy=passphrase` on a boot whose
+  configuration named passphrase. The `system bootstrap complete` record now
+  takes the barrier's active strategy, and adds `configured_strategy` when the
+  configuration disagrees.
+- **`service.Host` is split into a data host and a Raft-admin host** (#627,
+  slice A). `service.Host` keeps the eleven methods the data services call
+  (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,
+  `ProposeWithMode`, `StaleRead`, `ReadWithConsistency`, `FollowerRead`,
+  `LeaderID`, `Close`) and no go-quicraft engine type in its method set. The
+  fourteen membership, snapshot, shard-lifecycle, leadership-transfer, drain
+  and introspection methods move to the new `pkg/raftadmin` package as
+  `raftadmin.Host`. `service.AdminHost` composes the two, and is what
+  `NewAdminService`, `NewRebalanceService`, `NewHostShardSnapshotProvider`,
+  `lifecycle.Infra.Host` and `TenantReplicaHosts.StartedHosts` take;
+  `NewHostTopologyProvider` takes a `raftadmin.Host`. There is no alias for
+  the old 25-method interface: an embedder that passed a host to those
+  constructors passes the same value, and a test double that embedded
+  `service.Host` to reach admin methods embeds `service.AdminHost`.
+- **Breaking: the server, storage, engine and discovery re-exports leave the
+  `sdk/go` root for subpackages** (#627, slice B). A caller of the root alone
+  (`*sdk.Client`, the closed-store error, the MCP error codes) no longer links
+  `pkg/server`, `pkg/server/lifecycle`, `pkg/apimodule` or any protocol server
+  beneath `pkg/api`; under `BUILD_TAGS` it linked 21 of those packages before.
+  `make check-lean-standalone` now also runs `TestLeanStandaloneRootLinksNoServer`
+  over the new `sdk/go/examples/leanroot` fixture, under the lean tag set and
+  under `BUILD_TAGS`, so they cannot come back. There is no alias in the root;
+  change the import and the package qualifier:
+
+  | Symbols | Old import | New import |
+  |---|---|---|
+  | Server options and module registry (`ServerOption`, `With*` server options, `WithAuditLogger`, `ServiceModule`, `BaseModule`, `Module*`, `RESTRouteRegistry`, `AuthMiddleware`, `LifecycleNode`, `LifecycleInfra`, `BuildSealServicesOnly`, `CertProviderConflictError`, `CABootstrapConflictError`) | `sdk/go` | `sdk/go/server` |
+  | Sealed-window listener and allowlists (`SealedWindow*`, `ServeSealedWindow`, `NewSealedWindowHandler`, `*SealedWindowAllowlist`) | `sdk/go` | `sdk/go/server` |
+  | gRPC registration (`RegisterGRPCService`, `GRPCRegisterOption`, `GRPCWebConfig`, `DefaultGRPC*`) | `sdk/go` | `sdk/go/server` |
+  | Storage backends (`Storage`, `Storage*` types and errors, `NewMemoryStorage`, `NewFileStorage`, `NewPebbleStorage`, `NewObjStoreStorage`, `PebbleConfig`, `GuardedStorage`) | `sdk/go` | `sdk/go/storage` |
+  | Time series (`TimeSeries*`, `NewTimeSeriesStorage*`) | `sdk/go` | `sdk/go/timeseries` |
+  | Vector storage (`Vector*`, `NewPebbleVectorStorage`, `PebbleVectorStorage`) | `sdk/go` | `sdk/go/vector` |
+  | Vector indexes (`FlatIndex`, `HNSW*`, `IVF*`, `ErrGPUNotCompiled`) | `sdk/go` | `sdk/go/vector` |
+  | State machines (`SM*`, `KVStateMachine`, `FastStateMachine`, `*Backend` state-machine backends, `With*` state-machine options) | `sdk/go` | `sdk/go/statemachine` |
+  | Local backend (`LocalBackend`, `NewLocalBackend`, `SimpleStateMachine`, `SMAdapter`, `Backend*Error`) | `sdk/go` | `sdk/go/backend` |
+  | Discovery (`Discovery*`, `BuildDiscovery`, `NewDiscoveryManager`, `Peer`) | `sdk/go` | `sdk/go/cluster` |
+
+  The closed-store error (`ErrStorageClosed`, `StorageClosedError`,
+  `IsStorageClosed`) stays in the root: every transport returns it. So do the
+  cluster, feature-gate and membership methods on `*sdk.Client`
+  (`cluster.go`, `featuregate.go`, `membership.go`), which are client API and
+  not re-exports. What still links the root to the cluster engine is
+  `pkg/service`, `pkg/config` → `pkg/cluster` and `pkg/seal` →
+  `pkg/storage/pebble`.
+
+  `NewTimeSeriesStorageWithDir` and `NewTimeSeriesStorageWithEncryptor` now
+  return `*timeseries.TimeSeriesDirStorage` (#1207). They used to return the
+  bare `*timeseries.Storage` over a Pebble database they opened and never
+  exposed: no caller could reach the `TimeSeriesBatch` every write takes, and
+  `Close` left the database open. `TimeSeriesDirStorage` embeds the store and
+  adds `Batch`, over the database it owns, and a `Close` that closes both.
+  Each new subpackage (`sdk/go/server`, `sdk/go/storage`,
+  `sdk/go/timeseries`, `sdk/go/vector`) carries its own behavioural tests and
+  meets the 91% coverage floor on its own.
+
+### Fixed
+
+- `make security` passes on main again: gosec's G204 at
+  `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
+  repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
+- `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
+  helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
+  and reading under one `os.Root` opened on the directory, not by a waiver.
+- A distributed Shamir share that reaches its time-to-live (`CeremonyConfig.ShareTTL`) has its enclave destroyed before the store reports it expired. The expiry timer used to drop the share from the store's index and mark it expired, release the lock, and only then destroy the enclave, so for that window `Exists`, `Expired` and `Claim` reported a wiped share whose plaintext could still be opened. The destroy now runs under the store's lock, ahead of the index update.
+
+## [0.57.0-alpha] - 2026-10-26
+
+### Changed
+
+- **`service.Host` is split into a data host and a Raft-admin host** (#627,
+  slice A). `service.Host` keeps the eleven methods the data services call
+  (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,
+  `ProposeWithMode`, `StaleRead`, `ReadWithConsistency`, `FollowerRead`,
+  `LeaderID`, `Close`) and no go-quicraft engine type in its method set. The
+  fourteen membership, snapshot, shard-lifecycle, leadership-transfer, drain
+  and introspection methods move to the new `pkg/raftadmin` package as
+  `raftadmin.Host`. `service.AdminHost` composes the two, and is what
+  `NewAdminService`, `NewRebalanceService`, `NewHostShardSnapshotProvider`,
+  `lifecycle.Infra.Host` and `TenantReplicaHosts.StartedHosts` take;
+  `NewHostTopologyProvider` takes a `raftadmin.Host`. There is no alias for
+  the old 25-method interface: an embedder that passed a host to those
+  constructors passes the same value, and a test double that embedded
+  `service.Host` to reach admin methods embeds `service.AdminHost`. A lease
+  `TimeToLive` a follower refuses on a host that implements `service.Host`
+  alone still names the leader's replica ID, with an empty leader address,
+  since such a host cannot report the shard's membership.
+- **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
+  v0.7.0-alpha and go-objstore v0.7.0-alpha in the root, SDK, GORM
+  conformance and cluster-proof modules** (#944); go-quicraft/test/performance
+  moves to v0.24.2-alpha in the two performance modules. Every call site
+  adopts the upstream renames, with no alias left behind:
+  - go-quicraft's `Host` accessors lost their `Get` prefix (`LeaderID`,
+    `LeaderIDAndTerm`, `ShardInfo`, `ShardMembership`, `NodeHostInfo`,
+    `LogRange`, `LogReader`, `NewSession`, `NewSessionWithOwner`,
+    `NoOPSession`), and so did every go-qrdb interface that mirrors them
+    (`cluster`, `featuregate`, `backend/raft`, `service`, `server`, `qrdbd`).
+  - `DiagRaftState` returns a `quicraft.RaftStateDiag`; the encryption
+    replication-progress probe reads its `Committed` field.
+  - go-enclave's protected-memory types are interfaces: `pkg/secure` holds an
+    `enclave.ByteAccess`, an `enclave.Sealed` and an `enclave.Allocator`, and
+    `Secret.Open` opens through `Sealed.OpenIn`, failing with
+    `*enclave.CapabilityError` for a backend whose handles expose no bytes.
+    `sdk/go/secure.SetAllocator`, `ProcessAllocator` and
+    `NewAllocatorWithinRLimit` take and return `secure.Allocator` by value
+    rather than `*secure.Allocator`.
+  - go-quicraft removed `shamir.Share`; `sdk/go`'s `ShamirShare` alias is
+    replaced by `ShamirProtectedShare` (`shamir.ProtectedShare`).
+  - go-objstore's `factory.NewStorage` takes a `common.Credentials` of
+    go-enclave handles. The objstore storage engine passes none, so a cloud
+    provider authenticates through its SDK's default credential chain, and a
+    credential key in the engine's `settings` (`accessKey`, `secretKey`,
+    `accountKey` and the like) now fails the open with go-objstore's
+    `*common.CredentialSettingError`.
+- **The lean-standalone import gate forbids only go-quicraft's Raft engine and
+  the `pkg/api` subpackages** (#627, ruling 193). On the go-quicraft side the
+  gate forbids only the NodeHost package (`go-quicraft/pkg`) and its
+  `pkg/internal/...` engine. The seal and Shamir primitives, and the other
+  public leaf packages, no longer count as violations. On the `pkg/api` side
+  the gate forbids only the subpackages, so the root's contract types are
+  allowed. The 31 ratchet entries those edges held are deleted, and every
+  edge into the engine stays listed. `make check-lean-standalone` proves each
+  narrowed rule against a synthetic forbidden edge.
+- **`qrdb barrier unseal` no longer requires `--passphrase`** (#671). Omitted,
+  it sends an empty secret, which unseals a `none` barrier sealed by hand; a
+  passphrase barrier refuses it.
+
+### Fixed
+
+- **A `none` node unseals its barrier itself after a restart** (#671). qrdbd
+  waited in the sealed window for an empty unseal call, against
+  `docs/seal/README.md` and `docs/cluster-verification`. A barrier whose
+  persisted root key names `none` is now unsealed at boot. One migrated to a
+  keyed strategy, or not yet initialized, is left sealed.
+- **The clusterproof workload backs off after a failed operation** (#671).
+  A client retried a refusing or timing-out node in a tight loop, flooding
+  the history and the linearizability checker. Every failed dial or
+  operation is now followed by an exponential, equal-jittered pause from
+  `redial_backoff` up to the new `max_backoff` (default `4s`), reset by a
+  success. Over gRPC the status code classifies the outcome:
+  `InvalidArgument`, `Unauthenticated`, `PermissionDenied` and
+  `ResourceExhausted` fail a write; `Unavailable` leaves it indeterminate,
+  because gRPC also returns it for a connection that broke after the request
+  was sent, and drops the connection so a redial that records nothing gates
+  the next operation.
+
+### Fixed
+
+- **A one-node cluster founded under qrdbd-managed TLS can grow** (#671).
+  Before this fix, a founder with itself as its only peer ran without a Raft
+  transport and seeded no member identity, not even its own. Restarting it
+  with a second peer and running `admin member add` then committed a
+  membership with no identity for replica 1. The new member refused every
+  heartbeat and vote from the founder as `missing_identity`, so no leader was
+  elected. A transportless founder now seeds its own identity from the
+  certificate it holds, in both `qrdbd` and the SDK node. A cluster founded
+  before this fix keeps the membership it committed and has to be founded
+  again to grow. `docs/clustering/user.md` gives the procedure for growing a
+  one-node cluster.
+
+## [0.56.0-alpha] - 2026-10-26
+
 ### Removed
 
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
@@ -67,6 +353,13 @@ are not reconstructed here — their history is in the git log.
   `*grpc.Server` now serves the tenant quorum and holder-claim RPCs, and the
   Unix socket server registers the service through the same option instead of
   a separate call.
+- **The vanguard blocker is a reproducible probe** (#1151): `make
+  check-vanguard-probe` runs `test/vanguardprobe`, a module of its own, which
+  asserts that `connectrpc.com/vanguard` v0.5.0's `vanguardgrpc` hands a
+  method handler a nil gRPC interceptor and a peer with no TLS state, the
+  reasons `pkg/api/grpcweb` stays hand-rolled. It fails, naming the
+  replacement, the day a vanguard release no longer does either; run it at
+  each release. It is not part of `make test` and no qrdb build links it.
 - **`sdk/go` resolves the verified client chain of a connection the node's
   trust pool admitted** (#1181). The dynamic client-auth trust pool remaps a
   verifying `ClientAuth` mode to a non-verifying one and verifies the peer
@@ -78,6 +371,17 @@ are not reconstructed here — their history is in the git log.
   builds it and after `Close`). A handler mounted on a node listener calls
   `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
   `PeerCertificates[0]` or building a verifier of its own.
+
+### Fixed
+
+- **A failed gRPC `Exists` names itself, and MCP collection results carry
+  document IDs as strings**: the `sdk/go/transport/grpc` client's `Exists`
+  returned its `RequestError` with `Method` `"Get"`; it now reports
+  `"Exists"`, and a `NotFound` is still `false`. The `id` in the results of
+  `qrdb_collection_insert`, `qrdb_collection_get`, `qrdb_collection_update`
+  and `qrdb_collection_list_documents` is a decimal string, as the `id`
+  argument already is, and the `sdk/go/transport/mcp` client refuses a JSON
+  number there. An empty document page is `[]` rather than `null`.
 
 ## [0.55.0-alpha] - 2026-10-24
 

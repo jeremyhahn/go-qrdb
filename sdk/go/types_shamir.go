@@ -20,9 +20,9 @@ import "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 // Shamir secret sharing types
 // ---------------------------------------------------------------------------
 
-// ShamirShare represents a single piece of a secret split using Shamir's
-// Secret Sharing scheme.
-type ShamirShare = shamir.Share
+// ShamirProtectedShare represents a single piece of a secret split using
+// Shamir's Secret Sharing scheme, its value held in protected memory.
+type ShamirProtectedShare = shamir.ProtectedShare
 
 // ---------------------------------------------------------------------------
 // Shamir error types

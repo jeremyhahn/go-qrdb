@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -169,15 +169,15 @@ func checkCertBinding(ctx context.Context, u *user.User, method authMethod, poli
 func checkUnresolvedCertLogin(ctx context.Context, identity *auth.Identity, method authMethod, policy auth.MTLSBindingPolicy) error
 ```
 
-It admits in exactly three cases and refuses otherwise:
+It decides by these rules, in order:
 
 | Case | Result | Why |
 |---|---|---|
+| method is not cert-bound (`certBoundMethods`) | admit | a forwarded on-behalf assertion and a capability module's session token present no certificate of the SUBJECT's — the connection's certificate is the forwarder's |
 | `len(u.CertBindings) == 0`, policy `enrolled` | admit | an empty set states no restriction, the same statement an empty `AuthMethods` makes; requiring a binding of every account locks out every account nobody enrolled |
 | `len(u.CertBindings) == 0`, policy `required`, cert-bound method | **refuse** | `*CertBindingRequiredError{AccountResolved: true}` — the fleet said every certificate login proves possession |
-| method is not cert-bound (`certBoundMethods`) | admit | a forwarded on-behalf assertion and a capability module's session token present no certificate of the SUBJECT's — the connection's certificate is the forwarder's |
-| `u.MatchesCert(cert)` | admit | possession proved by the handshake |
 | enrolled, cert-bound method, no readable peer certificate | **refuse** | the account has enrolled certificates and this request produced none to compare |
+| `u.MatchesCert(cert)` | admit | possession proved by the handshake |
 | enrolled, cert-bound method, thumbprint matches nothing | **refuse** | `*CertBindingNotPermittedError` |
 
 ### Binding writes — `pkg/user/store.go`
@@ -1046,11 +1046,11 @@ tenant outright on a create, list or name lookup is refused by
 (`PermissionDenied`). A system-tenant caller is routed into the tenant it
 names (the known gap in [architecture.md](architecture.md)). An operation
 whose handler acts on a tenant the request names re-checks at the handler, in
-that tenant: the per-tenant barrier operations (`AuthorizeTenantTarget`), a
-tenant's own record, quotas and entitlements, certificate issuance and
-revocation (`AuthorizeCertTenant`, `AuthorizeCertRevoke`), audit queries
-(`AuthorizeAuditQuery`), and enabling encryption
-(`AuthorizeBarrierEnableEncryption`).
+that tenant: the per-tenant barrier operations and enabling encryption
+(`AuthorizeTenant`), a tenant's own record, quotas and entitlements
+(`AuthorizeTenantTarget`), and certificate issuance and revocation
+(`AuthorizeCertTenant`, `AuthorizeCertRevoke`). An audit query is confined to
+the caller's tenant by `tenant.ConfineAuditFilter` on every transport.
 
 **The embedded tenant-administration surface calls the network transports'
 helpers.** `GetTenant`, `ListTenants`, `UpdateTenant`, `DeleteTenant`,

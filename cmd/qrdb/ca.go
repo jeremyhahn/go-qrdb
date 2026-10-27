@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // ca.go implements the canonical "ca" command group per
-// docs/08-bootstrap-auth-architecture.md §6 ("certs" group renamed to
+// docs/certificate-authority/cli.md ("certs" group renamed to
 // "ca"). The command is the canonical post-init CA surface and
 // re-uses the existing certs subcommand handlers via SDK delegation.
 package main
@@ -46,7 +46,7 @@ func newCACmd() *cobra.Command {
 		Long: `Post-init Certificate Authority operations.
 
 The ca command group is the canonical surface for CA management per
-docs/08-bootstrap-auth-architecture.md §6. It replaces the legacy
+docs/certificate-authority/cli.md. It replaces the legacy
 "certs" group. Subcommands:
 
   info           Alias for "list": list issued certificates (CA-only

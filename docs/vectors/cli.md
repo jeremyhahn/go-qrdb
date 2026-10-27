@@ -1,7 +1,7 @@
 # Vector Database — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -10,7 +10,8 @@
 > [../databases/architecture.md](../databases/architecture.md).
 
 Command group: `qrdb vector`, with a `namespace` subgroup. **Present only in
-builds carrying the `qrdb_vector` tag** (`make build WITH_QRDB_VECTOR=1`);
+builds carrying the `qrdb_vector` tag**, which `make build` includes by
+default (`WITH_QRDB_VECTOR=0` removes it);
 confirm with `qrdb admin capabilities`.
 
 All verbs accept the root persistent flags documented in

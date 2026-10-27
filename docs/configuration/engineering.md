@@ -1,6 +1,7 @@
 # Configuration — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
+> Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
 
@@ -100,7 +101,7 @@ flags alone.
 |---|---|
 | `mode: standalone` with `raft.join` or multi-member `raft.peers` | validation error — `requires mode: raft` (`mvcc`/`watch`/`lease.enabled` are valid in both modes) |
 | A wire protocol enabled without its build tag | boot-time error **naming the tag** (`ValidateCapabilities`) |
-| MySQL or PostgreSQL enabled with TLS or auth disabled | refused |
+| `protocols.mysql` or `protocols.postgresql` with `tls.enabled` or `auth.enabled` false | `*ValidationError` on `tls.enabled` or `auth.enabled` from `Validate`; the node does not start |
 | etcd enabled on a database | any backend serves etcd |
 | Objstore as `raft.sm_storage` | refused — snapshot/backup tier only |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | refused |
@@ -109,60 +110,11 @@ flags alone.
 | `raft.shard_id` at or above `shard.UserMin` (1000) in raft mode | validation error -- the node's own group sits below the user range, whose IDs the cluster issues to databases |
 | `observability.slow_sync_threshold` not in (0, 1m] or malformed (default `1s`) | `*ValidationError` on that field, from `Validate` and again from `ApplySlowSyncThreshold` on both boot paths. It is an observation threshold for the stall signal only, NOT a durability knob: quicraft keeps per-entry fsync with no tunable |
 
-## Environment variables
+## Environment variables and flags
 
-Viper-bound, equivalent to their flags:
-
-| Variable | Equivalent |
-|---|---|
-| `QRDB_SO_PIN` | `--so-pin` |
-| `QRDB_USER_PIN` | `--user-pin` |
-| `QRDB_BARRIER_STRATEGY` | `--barrier-strategy` |
-| `QRDB_PASSPHRASE` | `--passphrase` |
-| `QRDB_SHARES` | `--shares` |
-| `QRDB_THRESHOLD` | `--threshold` |
-| `QRDB_HOSTNAME` | `--hostname` |
-| `QRDB_SANS` | `--sans` |
-| `QRDB_SEAL_SHARE_TTL` | `seal.share_ttl` |
-| `QRDB_OBSERVABILITY_SLOW_SYNC_THRESHOLD` | `observability.slow_sync_threshold` |
-
-## CLI flag to YAML mapping
-
-| Flag                            | YAML key                           |
-|---------------------------------|------------------------------------|
-| `--config`                      | N/A (specifies the YAML file path) |
-| `--admin-port`                  | `server.admin_port`                |
-| `--grpc-port`                   | `server.grpc_port`                 |
-| `--enable-rest`                 | `protocols.rest`                   |
-| `--enable-grpc`                 | `protocols.grpc`                   |
-| `--data-dir`                    | `raft.data_dir`                    |
-| `--deployment-id`               | `raft.deployment_id`               |
-| `--shard-id`                    | `raft.shard_id`                    |
-| `--replica-id`                  | `raft.replica_id`                  |
-| `--raft-address`                | `raft.raft_address`                |
-| `--listen`                      | `raft.listen_address`              |
-| `--peers`                       | `raft.peers`                       |
-| `--join`                        | `raft.join`                        |
-| `--snapshot-entries`            | `raft.snapshot_entries`            |
-| `--compaction-overhead`         | `raft.compaction_overhead`         |
-| `--max-in-mem-log-size`         | `raft.max_in_mem_log_size`         |
-| `--max-total-in-mem-log-size`   | `raft.max_total_in_mem_log_size`   |
-| `--member-identities`           | `raft.member_identities`           |
-| `--sm`                          | `raft.sm_type` (`pebble` default; every registered type starts — see `../run-modes/architecture.md`) |
-| `--sm-backend`                  | `raft.sm_backend`                  |
-| `--sm-storage`                  | `raft.sm_storage`                  |
-| `--lease-read`                  | `raft.lease_read`                  |
-| `--check-quorum`                | `raft.check_quorum`                |
-| `--tls-ca-file`                 | `tls.ca_file`                      |
-| `--tls-cert-file`               | `tls.cert_file`                    |
-| `--tls-key-file`                | `tls.key_file`                     |
-| `--log-level`                   | `logging.level`                    |
-| `--log-format`                  | `logging.format`                   |
-| `--discovery`                   | `discovery.method`                 |
-| `--multicast-secret`            | `discovery.multicast_secret`       |
-| `--dns-domain`                  | `discovery.dns_domain`             |
-| `--debug-raft`                  | N/A (forces `logging.level: debug`)|
-| `--auth-enabled`                | `auth.enabled`                     |
+The environment variables and the flag-to-YAML mapping are in
+[cli.md](cli.md#environment-variables) and
+[cli.md](cli.md#flag-to-yaml-mapping).
 
 Each Raft flag's type, default and bounds are in [cli.md](cli.md#raft-flags).
 

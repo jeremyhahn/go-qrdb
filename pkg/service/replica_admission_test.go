@@ -172,6 +172,8 @@ type admittingHost struct {
 	addCalls int
 }
 
+var _ AdminHost = (*admittingHost)(nil)
+
 func (h *admittingHost) AdmitReplica(_ uint64, raftAddr string) error {
 	h.asked = raftAddr
 	return h.err

@@ -1,6 +1,7 @@
 # Release — User guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 <!--
 Copyright 2026 Jeremy Hahn
@@ -114,6 +115,10 @@ re-running the command is the whole recovery. The most common refusals:
 | `carries no SSH signature` | the `VERSION` commit on `main` is unsigned |
 | `VERSION on HEAD names X, not Y` | the VERSION/CHANGELOG bump is not merged; merge it, then release |
 | `is not what ... main holds` | the commit being released is not exactly the remote's `main` |
+| `releases are cut from main` | the checkout is not on the `main` branch |
+| `working tree not clean` | the checkout has uncommitted or untracked changes |
+| `is coming from the ENVIRONMENT` | a release variable came from the environment (`make -e`); pass it on the command line |
+| `fetches from [...] but pushes to [...]` | the remote's fetch and push URLs differ; point both at the same place |
 
 ## When the Release workflow refuses
 

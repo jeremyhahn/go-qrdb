@@ -65,6 +65,9 @@ func registerCryptoUseDuties() {
 	RegisterDuty(DutyCryptoUse,
 		// Asymmetric and symmetric primitives over caller-supplied input.
 		KeysSign, KeysVerify, KeysEncrypt, KeysDecrypt,
+		// Signing a verifiable log's head is a use of the owner's key, so
+		// it sits beside keys:sign and stays off the Security Officer.
+		VlogSignHead,
 		// Key transport and key agreement / derivation. Wrapping and
 		// unwrapping move key material under another key, and derivation
 		// (KDF / ECDH) produces new key material from existing key material;

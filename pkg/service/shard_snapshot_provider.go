@@ -131,7 +131,7 @@ type OnlineShardRestorer interface {
 // ExportSnapshot (including the epoch/barrier metadata needed for at-rest
 // encrypted shards); RestoreShard feeds them back through ImportSnapshot.
 type hostShardSnapshotProvider struct {
-	host         Host
+	host         AdminHost
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 
@@ -178,7 +178,7 @@ func WithShardRestarter(r ShardRestarter) HostShardSnapshotProviderOption {
 // NewHostShardSnapshotProvider returns a ShardSnapshotProvider backed by the
 // given Raft host. It is the production provider wired into BackupService by
 // lifecycle.BuildServices when a snapshot-capable (clustered) host is present.
-func NewHostShardSnapshotProvider(host Host, opts ...HostShardSnapshotProviderOption) ShardSnapshotProvider {
+func NewHostShardSnapshotProvider(host AdminHost, opts ...HostShardSnapshotProviderOption) ShardSnapshotProvider {
 	p := &hostShardSnapshotProvider{
 		host:         host,
 		pollInterval: defaultSnapshotPollInterval,
@@ -192,7 +192,7 @@ func NewHostShardSnapshotProvider(host Host, opts ...HostShardSnapshotProviderOp
 
 // AvailableShards returns the IDs of every shard currently loaded on the host.
 func (p *hostShardSnapshotProvider) AvailableShards(_ context.Context) ([]uint64, error) {
-	info := p.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := p.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info == nil {
 		return nil, nil
 	}

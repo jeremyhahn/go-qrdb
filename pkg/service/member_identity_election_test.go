@@ -38,7 +38,7 @@ type newLeaderHost struct {
 	reads    atomic.Int64
 }
 
-func (h *newLeaderHost) GetLeaderID(uint64) (uint64, bool, error) { return 1, true, nil }
+func (h *newLeaderHost) LeaderID(uint64) (uint64, bool, error) { return 1, true, nil }
 
 func (h *newLeaderHost) SyncGetShardMembership(context.Context, uint64) (*quicraft.Membership, error) {
 	if h.reads.Add(1) <= h.notReady {
@@ -52,6 +52,8 @@ func (h *newLeaderHost) SyncGetShardMembership(context.Context, uint64) (*quicra
 // transport-less host resolves no identities at all. The membership read is
 // the adapter's.
 type transportAdapter struct{ *raftbackend.HostAdapter }
+
+var _ AdminHost = (*transportAdapter)(nil)
 
 func (transportAdapter) NodeIdentity() string { return identityOne }
 

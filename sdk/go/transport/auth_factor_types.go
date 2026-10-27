@@ -26,7 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 //
 // These types model the user-facing 1-to-many AuthFactor relationship per
-// docs/08-bootstrap-auth-architecture.md §5e. They are deliberately distinct
+// docs/auth-factors/architecture.md. They are deliberately distinct
 // from the ceremony-style EnrollFactorRequest/Response defined in
 // authfactor_types.go which model the challenge / verify enrolment flow used
 // during custodian unseal ceremonies. The user-side API exposes Add, List,
@@ -277,7 +277,7 @@ type AuthFactorLoginResponse struct {
 // UserAuthFactorClient is the user-side auth-factor surface exposed by every
 // QRDB transport. It mirrors the server-side service.UserAuthFactorServicer
 // interface and is the single SDK entry point for the operations called out
-// in docs/08-bootstrap-auth-architecture.md §5e.
+// in docs/auth-factors/architecture.md.
 type UserAuthFactorClient interface {
 	// AddAuthFactor persists a new factor for a user.
 	AddAuthFactor(ctx context.Context, req *AuthFactorAddRequest) (*AuthFactorAddResponse, error)

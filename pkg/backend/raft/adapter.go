@@ -43,9 +43,9 @@ type QuicraftHost interface {
 	StaleRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 	FollowerRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
 	SyncGetShardMembership(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
-	// GetShardMembership returns the shard membership from local in-memory state
+	// ShardMembership returns the shard membership from local in-memory state
 	// without a linearizable ReadIndex round-trip. Suitable for health checks.
-	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
+	ShardMembership(shardID uint64) (*quicraft.Membership, error)
 	RequestSnapshot(ctx context.Context, shardID uint64, opt quicraft.SnapshotOption) (*quicraft.RequestState, error)
 	// IsShardJoining reports whether shardID is still in its join bootstrap
 	// window: started locally with join=true and not yet given its first
@@ -53,9 +53,9 @@ type QuicraftHost interface {
 	// dynamically added replica from ReplicaStateObserver to
 	// ReplicaStateObserverReady once it has caught up.
 	IsShardJoining(shardID uint64) bool
-	// GetLeaderID returns the shard's current leader replica ID and whether
+	// LeaderID returns the shard's current leader replica ID and whether
 	// a leader is known. Read by the leader wait (see throughElection).
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // HostAdapter wraps a QuicraftHost to satisfy the service.Host interface.
@@ -163,7 +163,7 @@ func (a *HostAdapter) FeatureEnabled(shardID uint64, feature featuregate.Feature
 // NewWithInner creates a HostAdapter backed by any QuicraftHost. Useful
 // for testing: pass a mock instead of a real *quicraft.Host. The embedded
 // *quicraft.Host is set to nil; callers must not invoke methods promoted
-// from the nil host (e.g. Close, GetLeaderID) without providing a
+// from the nil host (e.g. Close, LeaderID) without providing a
 // concrete *quicraft.Host.
 func NewWithInner(host *quicraft.Host, inner QuicraftHost) *HostAdapter {
 	return &HostAdapter{Host: host, inner: inner, leaderWait: defaultLeaderWaitTimeout}
@@ -264,12 +264,12 @@ func (a *HostAdapter) RequestSnapshot(ctx context.Context, shardID uint64) (*qui
 }
 
 // GetShardRaftState returns the config change index and current term for
-// a shard. Uses the non-linearizable GetShardMembership to avoid blocking
+// a shard. Uses the non-linearizable ShardMembership to avoid blocking
 // on a ReadIndex round-trip — callers like the health-check handler only
 // need to confirm the shard is loaded and has a known leader, not a
 // strongly consistent membership view.
 func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint64, term uint64, err error) {
-	membership, err := a.inner.GetShardMembership(shardID)
+	membership, err := a.inner.ShardMembership(shardID)
 	if err != nil {
 		return 0, 0, err
 	}

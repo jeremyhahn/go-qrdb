@@ -42,7 +42,7 @@ type SymmetricEncrypter = quicraftseal.SymmetricEncrypter
 type StorageBackend = quicraftseal.StorageBackend
 
 // Credentials holds authentication material for seal/unseal operations. The
-// secret is protected memory — a *enclave.SealedEnclave, not a []byte — so a
+// secret is protected memory — an enclave.Sealed, not a []byte — so a
 // caller cannot hand the barrier a passphrase that also lives on the heap.
 // Build one with NewCredentials; the zero value means "no credentials
 // supplied", which is what strategies that ignore credentials take.
@@ -75,6 +75,9 @@ var NewCredentials = quicraftseal.NewCredentials
 // error. It is nil-safe and idempotent, like the Destroy it wraps, and a zero
 // Credentials is a no-op.
 func DestroyCredentials(creds Credentials) {
+	if creds.Secret == nil {
+		return
+	}
 	secure.LogRelease("seal credentials", creds.Secret.Destroy())
 }
 

@@ -42,7 +42,7 @@ const (
 // leaderReporter is the part of *quicraft.Host the leader wait reads: whether
 // this node currently knows a leader for a shard.
 type leaderReporter interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // LeaderWaitError is returned when go-quicraft refused a request because this
@@ -176,7 +176,7 @@ func holdWhileRefused[T any](ctx context.Context, h leaderReporter, shardID uint
 
 		// A shard this host cannot report on is left to op, which names
 		// the failure; only a definite "no leader yet" keeps waiting.
-		if _, known, lerr := h.GetLeaderID(shardID); lerr == nil && !known {
+		if _, known, lerr := h.LeaderID(shardID); lerr == nil && !known {
 			continue
 		}
 		v, err = op()

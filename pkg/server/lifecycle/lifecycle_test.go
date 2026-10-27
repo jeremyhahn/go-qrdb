@@ -484,7 +484,7 @@ func buildRoutedIAMNode(t *testing.T) (*lifecycle.Node, *seal.BarrierRegistry) {
 }
 
 // buildRoutedIAMNodeOn is buildRoutedIAMNode over a caller-supplied host.
-func buildRoutedIAMNodeOn(t *testing.T, host service.Host) (*lifecycle.Node, *seal.BarrierRegistry) {
+func buildRoutedIAMNodeOn(t *testing.T, host service.AdminHost) (*lifecycle.Node, *seal.BarrierRegistry) {
 	t.Helper()
 
 	hub := watch.NewHub()
@@ -595,6 +595,8 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 type unactivatedHost struct {
 	*backend.LocalBackend
 }
+
+var _ service.AdminHost = unactivatedHost{}
 
 func (unactivatedHost) FeatureEnabled(uint64, featuregate.Feature) bool { return false }
 

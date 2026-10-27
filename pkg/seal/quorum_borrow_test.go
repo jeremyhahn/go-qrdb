@@ -82,7 +82,7 @@ func recordCombinedKey(t *testing.T) func() *byte {
 		addr *byte
 	)
 	prev := combineProtected
-	combineProtected = func(shares []*shamir.ProtectedShare) (*enclave.MemoryEnclave, error) {
+	combineProtected = func(shares []*shamir.ProtectedShare) (enclave.ByteAccess, error) {
 		enc, err := prev(shares)
 		if err != nil {
 			return nil, err

@@ -35,7 +35,7 @@ const featureGateRetryInterval = 200 * time.Millisecond
 
 // leaderReporter is the slice of the host startFeatureGate polls.
 type leaderReporter interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // startFeatureGate brings the node's feature gate up in the background: once
@@ -60,7 +60,7 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 	go func() {
 		defer n.featureWG.Done()
 		for ctx.Err() == nil {
-			if _, ok, err := host.GetLeaderID(shard.ShardKV); err == nil && ok {
+			if _, ok, err := host.LeaderID(shard.ShardKV); err == nil && ok {
 				// The attempt's deadline bounds the start's reads, which a
 				// leader not yet committed in its term drops unanswered.
 				actx, cancel := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)

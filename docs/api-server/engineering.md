@@ -1,6 +1,7 @@
 # Unified API Server — Engineering Contract
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-24
+> Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
 
@@ -71,7 +72,10 @@ secret, err := n.Client().Credentials().CredentialRetrieveBuffer(svcCtx, "ca-sta
   actor `qrdb-service:<name>`, action `auth.authorize` and the permission as
   the resource.
 
-`sdk/go/types_server.go` — the Tier 2 alias file:
+`sdk/go/server/server.go` (package `server`, imported as
+`github.com/jeremyhahn/go-qrdb/sdk/go/server`) — the Tier 2 alias file. It
+lives outside the `sdk/go` root so that importing the root's config, entity,
+seal and error types links no server (#627):
 
 ```go
 type ServerOption = qrdbserver.ServerOption
@@ -121,6 +125,35 @@ A module does not use these to report a failure: its MCP tool returns an error
 and the server's outermost `errorCodeMiddleware` renders the envelope, exactly
 as for a built-in tool (`TestModuleTool_ErrorsCarryTheClassifiedEnvelope`).
 
+`sdk/go/server/mcp.go` — the combined MCP server, the one `startMCP` in
+`pkg/server` builds for a regular listener: `mcp.NewServer` over the KV and
+admin services, with every tool an option adds and, under
+`WithSealedWindowProbe` and `WithSealedWindowDispatch`, the sealed-window
+tools behind the same `/mcp` endpoint. An embedder builds, starts and stops
+it from `sdk/go` alone:
+
+```go
+type MCPServer                = mcpapi.Server   // Start, Addr, Stop
+type MCPServerOption          = mcpapi.ServerOption
+type MCPTLSNotConfiguredError = mcpapi.TLSNotConfiguredError
+
+var NewMCPServer                      = mcpapi.NewServer
+var WithMCPServerTLS                  = mcpapi.WithTLS
+var WithMCPServerListener             = mcpapi.WithListener
+var WithMCPServerMaxConnections       = mcpapi.WithMaxConnections
+var WithMCPServerMaxBodyBytes         = mcpapi.WithMaxBodyBytes
+var WithMCPServerMaxConnsPerPeer      = mcpapi.WithMaxConnsPerPeer
+var WithMCPServerAuthMiddleware       = mcpapi.WithAuthMiddleware
+var WithMCPServerSealedWindowProbe    = mcpapi.WithSealedWindowProbe
+var WithMCPServerSealedWindowDispatch = mcpapi.WithSealedWindowDispatch
+```
+
+The per-service tool options (`WithMVCC`, `WithBarrierService` and the rest)
+are not re-exported yet: a node started through `sdk/go/node` serves this
+server with every service it composes wired in.
+`TestNewMCPServer_ServesToolsOverListener` drives `tools/list`, `qrdb_put`
+and `qrdb_get` over a caller-bound HTTPS listener.
+
 ## `ServiceModule`
 
 ```go
@@ -156,7 +189,7 @@ certificate to its user account and a refusal is byte-identical to a `Handle`
 route's (`TestRESTMiddleware_OptionalRoute_InvalidCredentialRejectedAsOnHandle`).
 A credential that authenticates is treated as on an authenticated-only route:
 no permission is checked, and a holder identity is still refused. HTTP/3
-serves the same router and middleware. `sdk.NewModuleHTTPRegistrar` takes the
+serves the same router and middleware. `sdkserver.NewModuleHTTPRegistrar` takes the
 optional registration function as its fourth argument.
 
 `RegisterQUIC` takes the identical `grpc.ServiceRegistrar` type `RegisterGRPC`
@@ -266,11 +299,12 @@ request.
 - **`PublicGRPCMethods()` bypasses both authentication and authorization** for
   the named methods, symmetric with `HandlePublic`. **A malformed method name is
   rejected at registration**, so a typo fails startup loudly rather than
-  silently leaving the method auth-gated. **QUIC has no unauthenticated-method
-  path at all** (every frame requires a verified mTLS client certificate), so
-  a declared-public method with no `(qrdb.v1.permission)` option is skipped —
-  logged, not fatal — by the QUIC projection rather than tripping its
-  default-deny assertion; it stays reachable on gRPC/unix as declared.
+  silently leaving the method auth-gated. **The native QUIC projection reads
+  the same list**: a declared-public method registered through `RegisterQUIC`
+  is served to a caller with no client certificate (the listener verifies a
+  certificate if given), so one declaration is the public set on gRPC, unix
+  and QUIC. As on gRPC, the declaration wins over a `(qrdb.v1.permission)`
+  option the method also carries.
 - **`ModuleAuthFallback` may establish identity, never authority.** A returned
   identity is finalized and authorized by the host's single enrichment and
   authorizer path: **roles come from the store, never from the token**, and the
@@ -434,8 +468,8 @@ The `server.grpc_web` block is `config.GRPCWebConfig`, the same three fields
 with their YAML keys; `pkg/config` imports no API package, so `pkg/server`
 converts the block to `grpcweb.Config`. `qrdbd start` copies it into the server
 configuration (`applyConfigToFlags`, `buildServerConfig`); it has no flag.
-`server.WithGRPCWeb(cfg config.GRPCWebConfig)` (SDK `sdk.WithGRPCWeb`,
-`sdk.GRPCWebConfig`) replaces the block for an embedded node. `pkg/server` hands
+`server.WithGRPCWeb(cfg config.GRPCWebConfig)` (SDK `sdkserver.WithGRPCWeb`,
+`sdkserver.GRPCWebConfig`) replaces the block for an embedded node. `pkg/server` hands
 `rest.WithGRPCWeb(cfg, backend)` a backend that is the gRPC listener's own
 `*grpc.Server`, published by `startGRPC` through an atomic pointer: REST starts
 first, so a call before that, or after the gRPC server stops, is answered
@@ -620,6 +654,19 @@ replaces it for an embedded node. See [gRPC-Web](#grpc-web) above.
   Design goals, HTTP/2 related behavior (no stream-id, no go-away), Retries,
   Keep-alive, Bidi-streaming, Versioning and Browser-specific features state
   nothing a server does, and have no test.
+- **The vanguard blocker probe.** `test/vanguardprobe`, a module of its own so
+  that `connectrpc.com/vanguard` never enters the database's module graph, holds
+  the reason `pkg/api/grpcweb` is not vanguard
+  ([architecture.md](architecture.md#alternatives-rejected)) to the pinned
+  release, over loopback TLS with an in-memory client certificate and a
+  `grpc.Server` control for each claim. `TestVanguardSkipsInterceptor`: a
+  service registered through `vanguardgrpc` receives a nil interceptor, so a
+  unary interceptor runs zero times. `TestVanguardDropsPeerTLS`: the handler's
+  `peer.FromContext` carries no `credentials.TLSInfo` with the client
+  certificate. Run `make check-vanguard-probe` at each vanguard release; a
+  failure, `vanguard now keeps the interceptor` or `vanguard now carries peer
+  TLS`, means the blocker is gone and the replacement is due. It is not part of
+  `make test` or CI's unit stage.
 
 ## Observability
 

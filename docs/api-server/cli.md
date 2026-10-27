@@ -1,6 +1,7 @@
 # Unified API Server — CLI
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 **No `qrdb` verb group.** The unified server is hosting infrastructure: it is
 configured on the daemon and observed through `admin`, not driven by a client
@@ -67,11 +68,13 @@ missing — see [../run-modes/cli.md](../run-modes/cli.md).
 There is no CLI for this. Modules are Go code registered at composition:
 
 ```go
-node, err := node.NewStandaloneNode(ctx, cfg, []server.ServerOption{
-	sdk.WithModule(myModule),
-	sdk.WithStrategyRegistry(reg),
-	sdk.WithPINBackend(backend),
-	sdk.WithCeremonyCA(ca),
+import sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
+
+node, err := node.NewStandaloneNode(ctx, cfg, []sdkserver.ServerOption{
+	sdkserver.WithModule(myModule),
+	sdkserver.WithStrategyRegistry(reg),
+	sdkserver.WithPINBackend(backend),
+	sdkserver.WithCeremonyCA(ca),
 })
 ```
 

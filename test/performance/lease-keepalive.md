@@ -14,7 +14,13 @@ checkpoint records the remaining TTL of long leases for the next leader (see [le
 `TestRaft_LeaseKeepAliveLatencyTail` (`sdk/go/lease_keepalive_latency_test.go`)
 boots a real single-replica raft group on real disk, acquires one lease, then
 times 64 `Renew` calls separated by a fixed cadence. It fails when p90/median is
-3x or more.
+3x or more and the p90 is also above a floor of a tenth of the node's raft tick
+(2.5 ms at the transport-less 25 ms tick). Under the floor, a high ratio is
+scheduler jitter on a loaded host: a CI runner in FIPS 140-3 mode measured
+4.75x on a 1.3 ms p90 with nothing on the renewal path waiting. The log-fsync
+tail this test was written for sits above it (the "Before" writer rows below:
+p90 3.2–3.4 ms), as does any wait on a tick-paced step. `TestLeaseKeepAliveTail_Waits`
+checks the rule against those distributions.
 
 Contention is applied from outside the test:
 

@@ -339,11 +339,11 @@ func (c *allTransportsCluster) stop(t *testing.T, i int) {
 }
 
 // restart starts node i again, after stop, with the arguments it first
-// started with, and unseals it. Its log keeps what it logged before the stop.
+// started with, and waits for it to unseal itself. Its log keeps what it logged before the stop.
 func (c *allTransportsCluster) restart(t *testing.T, i int) {
 	t.Helper()
 	c.cmds[i] = startNode(t, c.bin, c.args[i], fmt.Sprintf("[node%d] ", i+1), c.logs[i])
-	unsealNodes(t, c.ca, c.adminPorts[i])
+	waitForNodesSelfUnsealed(t, c.ca, c.adminPorts[i])
 	waitForHealthy(t, c.dataDirs[i], 60*time.Second)
 	waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)
 }
@@ -933,7 +933,7 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 
 	// Phase 5: Unseal the restarted nodes and wait for all of them to become
 	// healthy.
-	unsealNodes(t, ca, adminPorts...)
+	waitForNodesSelfUnsealed(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
@@ -1086,7 +1086,7 @@ func TestCluster_WriteAfterRestart(t *testing.T) {
 		startNode(t, bin, args, fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 
-	unsealNodes(t, ca, adminPorts...)
+	waitForNodesSelfUnsealed(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}
@@ -1229,7 +1229,7 @@ func TestCluster_ForwardedWriteSurvivesRestart(t *testing.T) {
 	for i := range 3 {
 		startNode(t, bin, nodeArgs(i), fmt.Sprintf("[node%d-R2] ", i+1))
 	}
-	unsealNodes(t, ca, adminPorts...)
+	waitForNodesSelfUnsealed(t, ca, adminPorts...)
 	for i := range 3 {
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
 	}

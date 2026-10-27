@@ -1,6 +1,6 @@
 # Query Planner & Fluent Query API
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 ## 1. Overview
@@ -346,6 +346,55 @@ These are useful when:
 Prefer `Find().Where()` in application code. The explicit methods are
 fully supported but require you to know index names and selectivity —
 responsibilities the fluent API handles for you.
+
+## DAO aggregations
+
+The fluent query API can aggregate as well as filter. Aggregation runs on top of
+whatever plan the planner chose, so it inherits index selection.
+
+```go
+result, err := orderDAO.Find(ctx).
+	GroupBy("CustomerID").
+	Aggregate(dao.Count(), dao.Sum("Amount"), dao.Avg("Amount"),
+		dao.Min("Amount"), dao.Max("Amount"))
+```
+
+| Constructor | Result alias | Result type |
+|---|---|---|
+| `dao.Count()` | `count` | `int64` |
+| `dao.Sum(field)` | `sum_{field}` | `float64` |
+| `dao.Avg(field)` | `avg_{field}` | `float64` |
+| `dao.Min(field)` | `min_{field}` | `float64` |
+| `dao.Max(field)` | `max_{field}` | `float64` |
+
+```go
+type AggregateResult struct{ Groups []GroupResult }
+type GroupResult struct {
+	Key    interface{}            // group key value; nil when no GroupBy
+	Values map[string]interface{} // alias -> computed value
+}
+```
+
+**Without `GroupBy`, every matching entity is one group**, so the result is
+`Groups[0]`.
+
+Execution is two-phase: the base query runs under the planner's chosen index,
+then matching entities stream through in-memory accumulators. **Memory is
+proportional to the number of groups, not the number of entities** — 10,000
+unread messages across 50 conversations allocates 50 accumulators.
+
+Aggregation limitations:
+
+- Values are `float64` except `Count`, which is `int64`. **Integer precision is
+  lost above 2^53.**
+- **`GroupBy` supports a single field only.** Multi-field grouping does not
+  exist.
+- Results are unsorted; sort in application code.
+- All matching entities are loaded before grouping, so a wide query is bounded
+  only by its `Where` filters.
+
+Time-series aggregation is a different mechanism with its own functions and
+bucketing — see [time-series/engineering.md](time-series/engineering.md).
 
 ## Cross-References
 

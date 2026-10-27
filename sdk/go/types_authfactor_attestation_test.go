@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
 )
 
 // newSDKUserAuthFactorService builds the production user auth-factor service
@@ -26,7 +28,7 @@ import (
 func newSDKUserAuthFactorService(t *testing.T) UserAuthFactorServicer {
 	t.Helper()
 	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{
-		KV: NewBackendKVService(NewStandaloneBackend(NewMemoryStorage())),
+		KV: NewBackendKVService(NewStandaloneBackend(sdkstorage.NewMemoryStorage())),
 	})
 	if err != nil {
 		t.Fatalf("NewUserAuthFactorService: %v", err)

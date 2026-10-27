@@ -70,6 +70,8 @@ type gatedHost struct {
 	proposals [][]byte
 }
 
+var _ service.AdminHost = (*gatedHost)(nil)
+
 // holdNextGuardedProposal arms the gate for the next guarded proposal.
 func (h *gatedHost) holdNextGuardedProposal() *proposalGate {
 	g := &proposalGate{proposed: make(chan []byte, 1), release: make(chan struct{})}

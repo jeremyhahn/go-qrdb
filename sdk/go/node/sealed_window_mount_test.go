@@ -43,7 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // sealedHost is a host that runs its own listeners and mounts qrdb's sealed
@@ -77,10 +77,10 @@ func newSealedHost(t *testing.T, strategy string) *sealedHost {
 	core, ok := service.CeremonyServiceCore(svc.Ceremony)
 	require.True(t, ok)
 	core.SetCA(testCeremonyCA(t))
-	probe := sdk.NewSealedWindowListenerProbe(n.barrier.Load(), svc.Ceremony)
+	probe := sdkserver.NewSealedWindowListenerProbe(n.barrier.Load(), svc.Ceremony)
 
 	mux := http.NewServeMux()
-	sealed := sdk.NewSealedWindowHandler(svc.Barrier, svc.Ceremony, svc.Credential, probe)
+	sealed := sdkserver.NewSealedWindowHandler(svc.Barrier, svc.Ceremony, svc.Credential, probe)
 	for _, prefix := range []string{"/v1/barrier/", "/v1/ceremony/", "/health"} {
 		mux.Handle(prefix, sealed)
 	}
@@ -89,7 +89,7 @@ func newSealedHost(t *testing.T, strategy string) *sealedHost {
 	t.Cleanup(restSrv.Close)
 
 	mcpSrv := mcpserver.NewMCPServer("host", "1")
-	mcpSrv.AddTools(sdk.SealedWindowMCPTools(svc.Barrier, svc.Ceremony, svc.Credential, probe)...)
+	mcpSrv.AddTools(sdkserver.SealedWindowMCPTools(svc.Barrier, svc.Ceremony, svc.Credential, probe)...)
 	mcpSrv.AddTool(mcp.NewTool("host_own"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("host"), nil
 	})
@@ -252,7 +252,7 @@ func TestSealedWindowMount_MCPToolsAreTheSealedAllowlist(t *testing.T) {
 		if name == "host_own" {
 			continue
 		}
-		_, allowlisted := sdk.MCPSealedWindowAllowlist[name]
+		_, allowlisted := sdkserver.MCPSealedWindowAllowlist[name]
 		require.True(t, allowlisted, "exported tool %s is not on the sealed allowlist", name)
 	}
 

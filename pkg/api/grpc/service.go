@@ -290,6 +290,7 @@ type qrdbServiceServer struct {
 	indexSvc      index.IndexServicer
 	tsSvc         timeseries.TimeSeriesServicer
 	vectorSvc     service.VectorServicer
+	logSvc        service.LogService
 	embeddingSvc  service.EmbeddingServicer
 	ragSvc        service.RAGServicer
 	databaseSvc   service.DatabaseServicer

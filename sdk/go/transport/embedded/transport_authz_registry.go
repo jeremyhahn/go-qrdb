@@ -178,6 +178,19 @@ var operationPermissions = map[string]permission.Permission{
 	"RAGDeleteDocument": permission.RAGDeleteDocument,
 	"RAGListDocuments":  permission.RAGListDocuments,
 
+	// Verifiable log: the permissions the QUIC dispatch table names. Rotating
+	// a key is a signing-authority action, gated as signing a head is.
+	"VlogCreate":           permission.VlogCreate,
+	"VlogList":             permission.VlogList,
+	"VlogAppend":           permission.VlogAppend,
+	"VlogGet":              permission.VlogGet,
+	"VlogProveInclusion":   permission.VlogProof,
+	"VlogProveConsistency": permission.VlogProof,
+	"VlogHead":             permission.VlogHead,
+	"VlogSignHead":         permission.VlogSignHead,
+	"VlogRotateKey":        permission.VlogSignHead,
+	"VlogExpireBodies":     permission.VlogExpire,
+
 	// Embedding
 	"Embed":               permission.EmbeddingEmbed,
 	"BatchEmbed":          permission.EmbeddingEmbed,

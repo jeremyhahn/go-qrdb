@@ -87,7 +87,7 @@ func (m *mockQuicraftHost) SyncGetShardMembership(ctx context.Context, shardID u
 	return &quicraft.Membership{ConfigChangeID: 42}, nil
 }
 
-func (m *mockQuicraftHost) GetShardMembership(shardID uint64) (*quicraft.Membership, error) {
+func (m *mockQuicraftHost) ShardMembership(shardID uint64) (*quicraft.Membership, error) {
 	if m.getShardMembershipFn != nil {
 		return m.getShardMembershipFn(shardID)
 	}
@@ -108,7 +108,7 @@ func (m *mockQuicraftHost) IsShardJoining(shardID uint64) bool {
 	return false
 }
 
-func (m *mockQuicraftHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (m *mockQuicraftHost) LeaderID(shardID uint64) (uint64, bool, error) {
 	if m.getLeaderIDFn != nil {
 		return m.getLeaderIDFn(shardID)
 	}
@@ -261,7 +261,7 @@ func TestHostAdapter_RequestSnapshot(t *testing.T) {
 
 func TestHostAdapter_GetShardRaftState(t *testing.T) {
 	t.Run("success returns config change id", func(t *testing.T) {
-		// GetShardRaftState reads via the non-blocking GetShardMembership
+		// GetShardRaftState reads via the non-blocking ShardMembership
 		// (local in-memory state), not the ReadIndex-blocking Sync variant.
 		mock := &mockQuicraftHost{
 			getShardMembershipFn: func(_ uint64) (*quicraft.Membership, error) {

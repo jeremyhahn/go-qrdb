@@ -203,9 +203,18 @@ const RollingMigration Feature = "rolling-migration"
 // does (docs/multi-tenancy/architecture.md).
 const TenantUndo Feature = "tenant-undo"
 
+// VerifiableLogKeys is the head-signing-key wire of protocol.OpVerifiableLog:
+// the Create body that frames the descriptor and the log's sealed key record,
+// and the RotateKey sub-type. A replica that implements only VerifiableLog
+// refuses both, and its peers would create or re-key the log without it, so
+// neither is proposed until every replica of the group can apply them. Its
+// apply carries no build tag, so every binary that carries it advertises it.
+// See docs/databases/architecture.md.
+const VerifiableLogKeys Feature = "verifiable-log-keys"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo}
+var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}
 
 // Supported returns the features this binary implements.
 func Supported() []Feature {

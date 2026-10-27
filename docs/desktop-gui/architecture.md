@@ -1,6 +1,6 @@
 # Desktop GUI — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** The GUI exists only in builds carrying `desktop`
@@ -145,8 +145,8 @@ barrier --> [none | passphrase]   --> admin --> applying --> complete
   endpoints exist, so the GUI cannot do anything a CLI user with the same
   certificate could not.
 - **An embedded connection runs the server in process**, which means the
-  operator's machine holds the data directory and the barrier. Treat a desktop
-  deployment as a single-node server, because it is one.
+  operator's machine holds the data directory and the barrier. The embedded
+  server may run alone or join a Raft cluster.
 - Views are **capability-gated**: what the frontend shows follows
   `admin capabilities`, not a hardcoded list.
 
