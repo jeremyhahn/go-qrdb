@@ -91,7 +91,20 @@ are not reconstructed here — their history is in the git log.
   transport, with short keys, keys objstore stores under a hashed name, and one
   reused key. go-qrdb's read plane already answered not-found in every cell;
   the read failure #1163 reported is not raised by go-qrdb or go-objstore.
+### Added
+- **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
+- **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+
 ### Changed
+
+- The rationale for ci.yml's nightly `schedule:` (ci.yml, nightly.yml,
+  AGENTS.md, docs/release/architecture.md, docs/release/engineering.md,
+  test/buildgates/ci_tiers_test.go)
+  now cites ruling 135 and Company Agent ruling 216(1). The in-template Gitea
+  schedule trigger is the one scheduler, and the owner ruling of 2026-10-11 and
+  m433 forbid host cron, timers and watchers. The text no longer calls the
+  restore a reversal of those rulings, and the gate's error message no longer
+  tells the reader to dispatch from a coordinator loop.
 - CI: a draft pull request runs no CI. Every job skips on `pull_request.draft` and CI Gate fails on a draft; a PR leaving draft starts its run with an empty commit or a merge of main (ci-standard §10 (f), ruling 214).
 - CI: ci.yml carries ci-template v1.27.0's nightly `schedule:` trigger again (cron `0 4 * * *`), so the full and nightly tiers, soak included, run on main each night; `test/buildgates/ci_tiers_test.go` allows a schedule in ci.yml and automerge.yml alone. This reverses the 2026-10-11 owner ruling and Company Agent m433 on Software's order DS-3913 (m1378 (2)).
 
@@ -150,6 +163,15 @@ are not reconstructed here — their history is in the git log.
   Each new subpackage (`sdk/go/server`, `sdk/go/storage`,
   `sdk/go/timeseries`, `sdk/go/vector`) carries its own behavioural tests and
   meets the 91% coverage floor on its own.
+
+### Fixed
+
+- `make security` passes on main again: gosec's G204 at
+  `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
+  repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
+- `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
+  helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
+  and reading under one `os.Root` opened on the directory, not by a waiver.
 
 ## [0.57.0-alpha] - 2026-10-26
 

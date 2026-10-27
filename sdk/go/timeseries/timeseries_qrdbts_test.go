@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -71,15 +70,22 @@ func queryValue(t *testing.T, ts *sdkts.TimeSeriesDirStorage) float64 {
 	return got[0].Value
 }
 
-// filesContain reports whether any regular file under dir holds needle.
+// filesContain reports whether any regular file under dir holds needle. The
+// walk and every read resolve under one os.Root opened on dir (G122), so a
+// path retargeted mid-walk cannot lead a read outside it.
 func filesContain(t *testing.T, dir string, needle []byte) bool {
 	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open root %s: %v", dir, err)
+	}
+	defer func() { _ = root.Close() }()
 	found := false
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || found {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}

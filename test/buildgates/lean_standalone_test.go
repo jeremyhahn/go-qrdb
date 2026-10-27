@@ -283,7 +283,7 @@ func leanStandaloneDeps(t *testing.T) []listedPackage {
 func sdkModuleDeps(t *testing.T, tags, pkg string) []listedPackage {
 	t.Helper()
 	args := []string{"list", "-deps", "-json=ImportPath,Imports,Standard", "-tags", tags, pkg}
-	cmd := exec.Command("go", args...)
+	cmd := exec.Command("go", args...) // #nosec G204 -- fixed subcommand; tags are this package's constant or the Makefile's BUILD_TAGS, pkg a fixture constant
 	cmd.Dir = filepath.Join(repoRoot(t), "sdk", "go")
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out

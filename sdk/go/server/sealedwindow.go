@@ -139,6 +139,13 @@ var MCPSealedWindowAllowlist = mcpapi.SealedWindowAllowlist
 // extensions without mutating the shared package var).
 var SealedWindowRESTAllowlist = sealedwindow.RESTAllowlist
 
+// SealedWindowRESTEntryMatches reports whether one REST allowlist entry
+// admits a request: an optional "METHOD " qualifier, then an exact path, a
+// prefix ending in "/", or a pattern with "{name}" segments. It is the
+// matcher the REST sealed-window gate applies, so an embedder testing an
+// extended allowlist matches entries exactly as the gate does.
+var SealedWindowRESTEntryMatches = sealedwindow.RESTEntryMatches
+
 // SealedWindowMiddleware returns an http middleware that 503s every
 // request not on the allowlist while the supplied barrier probe reports
 // sealed. Pass nil for the allowlist to use the canonical REST list.
