@@ -170,6 +170,19 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] the SO lost the so role to a refused revocation", proto.name)
 			}
 
+			// The SO cannot make the Admin an SO either: no principal holds
+			// both roles under strict separation.
+			if out, err := runQRDB(t, pt.cli, pt.soConn, "roles", "assign", "--user", pt.adminUser, "--role", pt.soRole); err == nil {
+				t.Fatalf("[%s] strict separation: the SO granted the so role to the Admin: %s", proto.name, out)
+			}
+			if pt.holdsSO(t, pt.adminUser) {
+				t.Fatalf("[%s] the Admin account holds the so role after the SO's refused grant", proto.name)
+			}
+
+			// roles:create and the built-in role reconcile are SO-exclusive.
+			pt.soExclusiveOps(t, "admin", pt.adminConn, true)
+			pt.soExclusiveOps(t, "so", pt.soConn, false)
+
 			// Control: the SO grants and revokes the so role.
 			uma := pt.createUser(t, pt.id+"-uma")
 			if out, err := runQRDB(t, pt.cli, pt.soConn, "roles", "assign", "--user", uma, "--role", pt.soRole); err != nil {
@@ -211,7 +224,38 @@ func TestSeparationPosture_CLI_StandardAdminHoldingSO_PerProtocol(t *testing.T) 
 			if pt.holdsSO(t, uma) {
 				t.Fatalf("[%s] %s holds the so role after the revocation", proto.name, uma)
 			}
+			pt.soExclusiveOps(t, "admin", pt.adminConn, false)
 		})
+	}
+}
+
+// soExclusiveOps runs the SO-exclusive role operations, roles create and
+// roles reconcile, as the caller conn names, and asserts each is refused as a
+// permission denial (refused) or succeeds.
+func (pt *postureTenant) soExclusiveOps(t *testing.T, caller string, conn []string, refused bool) {
+	t.Helper()
+	ops := map[string][]string{
+		"roles create":    {"roles", "create", "--name", pt.id + "-" + caller + "-auditor", "--permissions", "kv:get", "--tenant-id", pt.id},
+		"roles reconcile": {"roles", "reconcile", "--tenant", pt.id},
+	}
+	for name, args := range ops {
+		out, err := runQRDB(t, pt.cli, conn, args...)
+		if !refused {
+			if err != nil {
+				t.Fatalf("[%s] %s as %s: %v\noutput: %s", pt.proto.name, name, caller, err, out)
+			}
+			continue
+		}
+		if err == nil {
+			t.Fatalf("[%s] strict separation: %s ran as %s: %s", pt.proto.name, name, caller, out)
+		}
+		lower := strings.ToLower(out)
+		if !strings.Contains(lower, "separation of duties") &&
+			!strings.Contains(lower, "so role required") &&
+			!strings.Contains(lower, "permission denied") &&
+			!strings.Contains(lower, "forbidden") {
+			t.Fatalf("[%s] %s as %s must be refused as a permission denial, got: %s", pt.proto.name, name, caller, out)
+		}
 	}
 }
 
