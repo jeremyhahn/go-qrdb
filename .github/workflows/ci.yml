@@ -1,5 +1,5 @@
-# ci-template: v1.27.0 — canonical CI for all first-party Go repos.
-# go-qrdb deviations from v1.27.0, one line each (the CUSTOMIZE block below
+# ci-template: v1.28.0 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.28.0, one line each (the CUSTOMIZE block below
 # gives each one's reason):
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
 #   - a docker-build job builds both images once; the others take its output
@@ -11,6 +11,13 @@
 #   - a fips job runs both unit suites under FIPS 140-3 mode, full tier
 #   - test-typescript is a job of its own
 #   - no revert-red-main.yml beside this file
+# v1.28.0, adopted here (ruling 220(3), DS-4015): `make deps-check` is a
+# lint-class gate on the PR tier (ruling 219(3)) and runs wherever `make lint`
+# runs, a docs-only PR included. The template's image job runs lint, so it
+# drops the step's CI_FULL_TIER condition there; here lint is its own job
+# (#1046) and the image job skips on a docs-only PR, so the step moves from
+# the image job to the lint job, after `make lint`, on every event, with
+# IN_IMAGE_NETWORK=bridge for the module proxy. CI Gate's lines do not change.
 # v1.27.0, adopted here (ruling 211, CA m1355): the lint-gates job runs
 # `make -k lint-gates` in parallel with the lint job's `make lint` (DS-3603,
 # DS-3609; m1192 (6) item 27, m1207 (1)); it was adopted alone first. The
@@ -48,7 +55,8 @@
 # two tiers. A pull request runs the PR tier only: lint (with
 # assert-build-tags and arch-gates), build, and the unit suite under -race
 # (`make coverage`, so unit test and race are one step). Integration, Soak,
-# security, deps-check and trivy image do not run on a PR. The full tier runs
+# security, deps-check and trivy image do not run on a PR (v1.28 puts
+# deps-check on the PR tier). The full tier runs
 # on main after every merge (push), nightly (a new `schedule:` trigger), on
 # workflow_dispatch, and on a PR labelled ci:full (kept as the opt-in). A new
 # `soak` job loops the integration suite in the integration image for
@@ -73,7 +81,7 @@
 # container's cgroup cpu.max and gives the stage container that --cpus, with
 # GOMAXPROCS and GOFLAGS=-p from it; golangci-lint follows the quota. No
 # number is hardcoded. No job changes.
-# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.27.0, and why.
+# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.28.0, and why.
 #   - No revert-red-main.yml beside this file: not adopted here.
 #   - The integration image is held by the job's IT_HOLD container (#813, run
 #     57540), not the template's `<prefix>lease-` steps, and named in the
@@ -430,7 +438,7 @@ jobs:
   # `if: needs.changes.outputs.docs_only != 'true'` and lists changes in
   # needs; CI Gate excuses its skip only when DOCS_ONLY is true. A docs-only
   # PR runs changes, docker-build (the toolchain image alone), lint (make
-  # lint and make lint-gates), arch-gates (make check-public-releasable
+  # lint and make deps-check), lint-gates (make lint-gates), arch-gates (make check-public-releasable
   # alone) and CI Gate; image and test-typescript, the code tier, are
   # skipped.
   changes:
@@ -572,8 +580,10 @@ jobs:
   # bridge) for the vulnerability databases and the module proxy.
   #
   # v1.23: lint, assert-build-tags, build and coverage are the PR tier and run
-  # on every event. security, deps-check and trivy image are full tier only
+  # on every event. security and trivy image are full tier only
   # (env.CI_FULL_TIER): main after every merge, dispatch, ci:full.
+  # v1.28: deps-check is a lint-class gate on the PR tier and runs on every
+  # event (ruling 219(3)); here it is a lint job step (#1046).
   #
   # v1.22: every stage mounts the build and golangci-lint cache volumes, and a
   # bridge stage the module cache volume, from the runner's Docker host
@@ -594,9 +604,9 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
   # template's one image job (m601 (a)). The stages run in two jobs side by
-  # side, lint (make lint, make lint-sweeps) and image (the
+  # side, lint (make lint, make deps-check, make lint-sweeps) and image (the
   # tag assertion, build, the release cross-build, the unit suites, security,
-  # deps-check, trivy image), in the one toolchain image docker-build built,
+  # trivy image), in the one toolchain image docker-build built,
   # each with its own limit: together they outlast one job's 90 minutes on a
   # loaded runner, where lint with lint-sweeps takes most of an hour and
   # coverage about half of one.
@@ -606,7 +616,7 @@ jobs:
   # nor releases a hold.
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer image [lint, lint-sweeps]
+    name: Devcontainer image [lint, deps-check, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
     timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
@@ -674,6 +684,19 @@ jobs:
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      # Fails when a library, first-party or third-party, is behind its latest
+      # release without devops.md §9's documented reason (ci-standard.md §1).
+      # v1.28: a lint-class gate of seconds on the PR tier, every event, a
+      # docs-only PR included (ruling 219(3)); it was full tier only from v1.23.
+      # CUSTOMIZE (go-qrdb, #1046): the template runs it in the image job,
+      # which runs lint there; here it follows `make lint` in the lint job.
+      # It reads go.mod and the module proxy only, no build output.
+      - name: make deps-check
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
       # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
@@ -786,7 +809,7 @@ jobs:
         run: rm -f "$RUNNER_TEMP/gomodauth.env"
 
   image:
-    name: Devcontainer image [build, test, security, deps-check, trivy image]
+    name: Devcontainer image [build, test, security, trivy image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     # CUSTOMIZE (go-qrdb, #1046): the code tier (DS-3160), so a docs-only PR,
     # which builds nothing, skips it; lint, above, is that PR's stage job.
@@ -794,7 +817,7 @@ jobs:
     # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
     # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security, deps-check and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
+    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
@@ -906,14 +929,6 @@ jobs:
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-
-      # Fails when a library, first-party or third-party, is behind its latest
-      # release without devops.md §9's documented reason (ci-standard.md §1).
-      - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # The integration image is gated before any push to either registry
       # (devops.md §8): --ignore-unfixed (v1.19) and --skip-dirs /opt/go/mod

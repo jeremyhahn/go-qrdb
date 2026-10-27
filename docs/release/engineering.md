@@ -171,11 +171,13 @@ The `docker-build` job, in the PR tier, builds both stages (`make docker-build`;
 `make -s toolchain-image` prints the toolchain tag) and passes both image
 names to the jobs after it as job outputs. Eight stage jobs need it and run the
 stages side by side in the one toolchain image: `lint`, in the PR tier
-(`make lint` and, on a push to `main` and a dispatch, `make lint-sweeps`),
+(`make lint`, `make deps-check`, a lint-class gate on the PR tier from
+ci-template v1.28.0, and, on a push to `main` and a dispatch,
+`make lint-sweeps`),
 `lint-gates`, in the PR tier (`make lint-gates`, its own job from
 ci-template v1.27.0), `image`, in the code tier (the build-tag assertion and
 the builds and, in the full tier, the linux/arm64 release cross-build,
-security, deps-check and the trivy image scan), and the five unit-suite
+security and the trivy image scan), and the five unit-suite
 jobs, in the code tier: `coverage` (`make coverage`), `test-clusterproof`,
 `coverage-fts`, `test-tags` and `test-sdk`, one suite each (ruling 211). The
 ci-template runs the stages but lint-gates in one image job; this repository
@@ -195,7 +197,7 @@ holds the job's CPU bound: the job container's cgroup
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
 number. The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
-or under `docs/`), `lint` runs lint and `lint-gates` the lint gates, both succeed, and
+or under `docs/`), `lint` runs lint and deps-check and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with the unit-suite jobs and `test-typescript`, the code
 tier. On such a run
 `docker-build` builds the toolchain image alone and outputs an empty
@@ -211,7 +213,7 @@ network: the container joins the network namespace of a holder container that
 has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
 marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
 discovery tests join their group as they do on a host and nothing leaves the
-namespace. `make security` and `make deps-check`, full tier only, run on the bridge network, because
+namespace. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
 
@@ -266,6 +268,10 @@ reported with its age and does not fail the check, since no one could yet have
 adopted it; one seven or more days old fails, and one whose time cannot be read
 is treated as old. A module whose lookup fails, offline or without credentials,
 fails the check: the question was not answered.
+CI runs it in the `lint` job after `make lint` on every run, a docs-only pull
+request included (ci-template v1.28.0, ruling 219(3)): it needs no build
+output, only `go.mod` and the module proxy, so a module behind its floor fails
+the pull request rather than `main` after the merge.
 `scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint-gates` job) proves
 each branch with a fake `go`, and the publish time with the real one over a
 `file://` proxy.

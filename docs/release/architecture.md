@@ -185,9 +185,9 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage`), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, `test-typescript` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security, deps-check and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3) |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
@@ -215,7 +215,7 @@ The full-tier jobs wait on the image build, not on the checks:
 which builds the devcontainer images in about two minutes, and
 `test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
 `image` and the five unit-suite jobs, which need `docker-build` too and run,
-side by side in those images, the lint stages (`lint`), the repository gates
+side by side in those images, the lint stages and `make deps-check` (`lint`), the repository gates
 (`lint-gates`), the build and, in the full tier, the arm64 cross-build and
 the security stages (`image`), and one unit suite each (`coverage`,
 `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`), so the long
@@ -262,7 +262,11 @@ A pull request whose every changed file is markdown or under `docs/`
 `changes`, `docker-build`, `lint`, `lint-gates`, `arch-gates` and `ci-gate`.
 `docker-build` builds the toolchain image alone: no job of a docs-only run
 uses the integration image, so it builds none and takes no hold on one.
-`lint` runs `make lint`, and `lint-gates` runs `make lint-gates`.
+`lint` runs `make lint` and then `make deps-check`, which reads `go.mod` and
+the module proxy and needs no build output (ci-template v1.28.0 made it a
+lint-class gate on the PR tier, ruling 219(3), so a module behind its
+dependency floor fails the pull request, not `main` after the merge), and
+`lint-gates` runs `make lint-gates`.
 `arch-gates` runs `make check-public-releasable`, which scans the whole
 tracked tree, docs included, and skips its two code-only steps (the
 go-objstore import check and the compose-target check). Those jobs still
@@ -303,9 +307,9 @@ on `workflow_dispatch`, and is dispatched by hand each night.
 `lint`, `lint-gates`, `image` and the unit-suite jobs run every stage of the
 handbook CI standard (`ci-standard.md`) in the one image built from
 `build/docker/devcontainer/Dockerfile` at the commit under test: `lint` the
-lint and, on `main` and a dispatch, the lint sweeps; `lint-gates` the lint
-gates; `image` the server and headless CLI build and, in the full tier, the
-linux/arm64 release cross-build, security and deps-check in its `toolchain`
+lint, deps-check and, on `main` and a dispatch, the lint sweeps; `lint-gates`
+the lint gates; `image` the server and headless CLI build and, in the full
+tier, the linux/arm64 release cross-build and security in its `toolchain`
 stage, then `trivy image` over its `integration` stage; `coverage`,
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` one unit
 suite each. Each stage container is bounded to the job's
