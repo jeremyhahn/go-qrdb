@@ -69,6 +69,26 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Every node logs a feature activation, whichever path learns of it**: a
+  node that adopted an activation from its replica's applied record, or from
+  a linearizable refresh, enabled the feature without logging
+  `feature gate: feature activation observed`, and then never logged it.
+  Only `activate`'s own write logged it. A follower whose forward to the
+  leader timed out was the usual case. The gate now logs each feature once
+  per node, at the moment it is first enabled. The integration suites that
+  wait for a node's activation (barrier-seal's cluster enable-encryption
+  tests among them) timed out on such a node.
+
+- **A user create whose handle claim times out and then commits no longer
+  leaves the handle orphaned**: a create returned the claim's error before
+  registering the claim for its rollback. A proposal that timed out after
+  submission ("it may still commit") then committed a username or email
+  index entry naming a user that was never written. Every later create of
+  that name answered 409, and the lookup answered 404. A create now
+  registers each claim it attempts, and the rollback's release is guarded on
+  the freshly generated id, so it removes a claim that landed and nothing
+  else.
+
 - **The verifiable log's three remaining refusals are typed on every
   transport** (#912): a second create of a log, a second sign-head at a tree
   size that already has a checkpoint, and expiry on a log created without

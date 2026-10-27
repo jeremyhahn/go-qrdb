@@ -353,38 +353,35 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	// call already claimed. Claiming the sentinel first would turn every
 	// idempotent re-run of the system-user create into a hard failure instead
 	// of the recognized already-exists response callers rely on.
-	takenName, cerr := s.claimHandle(ctx, usernameKey, idBytes)
+	takenName, cerr := s.claimNewHandle(ctx, usernameKey, idBytes, &claimed)
 	if cerr != nil {
 		return nil, &StoreError{Op: "create", Detail: "claim username index", Err: cerr}
 	}
 	if takenName {
 		return nil, &UsernameExistsError{Username: req.Username, TenantID: tenantID}
 	}
-	claimed = append(claimed, usernameKey)
 
 	// The username claim just succeeded, so this is unambiguously a NEW
 	// record — not a race with, and not a retry of, any existing one. Only
 	// now does a second system-user attempt need to be refused.
 	if req.System {
-		takenSystem, serr := s.claimHandle(ctx, keySystemSentinel, idBytes)
+		takenSystem, serr := s.claimNewHandle(ctx, keySystemSentinel, idBytes, &claimed)
 		if serr != nil {
 			return nil, &StoreError{Op: "create", Detail: "claim system sentinel", Err: serr}
 		}
 		if takenSystem {
 			return nil, &SystemUserAlreadyExistsError{ExistingID: s.existingSystemUserID(ctx)}
 		}
-		claimed = append(claimed, keySystemSentinel)
 	}
 
 	if emailKey != "" {
-		takenEmail, eerr := s.claimHandle(ctx, emailKey, idBytes)
+		takenEmail, eerr := s.claimNewHandle(ctx, emailKey, idBytes, &claimed)
 		if eerr != nil {
 			return nil, &StoreError{Op: "create", Detail: "claim email index", Err: eerr}
 		}
 		if takenEmail {
 			return nil, &EmailExistsError{Email: email, TenantID: tenantID}
 		}
-		claimed = append(claimed, emailKey)
 	}
 
 	now := time.Now().UTC()
@@ -2567,6 +2564,22 @@ func (s *kvUserStore) claimHandle(ctx context.Context, key string, idBytes []byt
 		return false, perr
 	}
 	return !stored, nil
+}
+
+// claimNewHandle claims key for idBytes, a user id the calling create has
+// just generated, and records the key in claimed for that create's rollback.
+// It records the key even when the claim fails: a proposal that timed out
+// after it was submitted may still commit, and a claim that lands with no
+// record behind it makes the handle answer "already exists" forever. Nothing
+// else can hold a freshly generated id, so the rollback's guarded release
+// removes the claim if it landed and nothing if it did not. A store that
+// cannot claim at all is the one failure that is not recorded.
+func (s *kvUserStore) claimNewHandle(ctx context.Context, key string, idBytes []byte, claimed *[]string) (taken bool, err error) {
+	taken, err = s.claimHandle(ctx, key, idBytes)
+	if (err == nil && !taken) || (err != nil && !errors.Is(err, ErrStoreNotAtomic)) {
+		*claimed = append(*claimed, key)
+	}
+	return taken, err
 }
 
 // releaseClaims gives back handle keys this call reserved but did not commit.
