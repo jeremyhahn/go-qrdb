@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -775,5 +776,38 @@ func TestPhysicalToLogicalSize(t *testing.T) {
 		if !c.wantErr && got != c.want {
 			t.Errorf("payload=%d got=%d want=%d", c.payload, got, c.want)
 		}
+	}
+}
+
+// TestPhysicalToLogicalSize_TypedErrors pins each invalid framing to its
+// typed error and a message that names the offending length.
+func TestPhysicalToLogicalSize_TypedErrors(t *testing.T) {
+	_, err := physicalToLogicalSize(-7)
+	var neg *NegativePayloadLengthError
+	if !errors.As(err, &neg) || neg.Length != -7 {
+		t.Fatalf("payload=-7 err = %v, want *NegativePayloadLengthError{Length: -7}", err)
+	}
+	if want := "encfs: payload length is negative (-7)"; err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+
+	short := int64(BlockOverhead) - 1
+	_, err = physicalToLogicalSize(int64(CiphertextBlockSize) + short)
+	var trailing *TrailingBlockTooShortError
+	if !errors.As(err, &trailing) || trailing.Bytes != short {
+		t.Fatalf("short trailing block err = %v, want *TrailingBlockTooShortError{Bytes: %d}", err, short)
+	}
+	if want := fmt.Sprintf("encfs: trailing block too short (%d bytes)", short); err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestFlushBlockSizeError_Message checks the refusal flushFullBlockLocked
+// returns for a mis-sized tail names both sizes.
+func TestFlushBlockSizeError_Message(t *testing.T) {
+	err := error(&FlushBlockSizeError{Expected: BlockSize, Got: BlockSize - 1})
+	want := fmt.Sprintf("encfs: flushFullBlock expected %d bytes, got %d", BlockSize, BlockSize-1)
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
 	}
 }

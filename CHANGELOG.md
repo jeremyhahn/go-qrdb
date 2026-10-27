@@ -69,6 +69,19 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A sealed at-rest barrier ends a `PebbleStorage` flush, durable write or
+  compaction with a typed error** (#1155): with encryption at rest, a barrier
+  sealed under an open store had Pebble retry a refused flush forever and
+  panic when it could not create its next WAL file. `encfs.FS.BarrierSealed`
+  reports whether the barrier keying it is sealed; `PebbleStorage` checks it
+  before every flush, durable write and compaction and returns a
+  `*pebble.SealedError` wrapping `ErrBarrierSealed`, and `pebble.Open` is the
+  one place a database opens under the seal watch, for the storage layer and
+  the state machines alike. `Node.Close` now closes the data-plane store before
+  it seals the node's barriers. A seal that lands between the check and Pebble
+  creating its next WAL file is not covered; that is the seal-quiesce row in
+  [docs/SPEC.md](docs/SPEC.md).
+
 - **The verifiable log's three remaining refusals are typed on every
   transport** (#912): a second create of a log, a second sign-head at a tree
   size that already has a checkpoint, and expiry on a log created without
