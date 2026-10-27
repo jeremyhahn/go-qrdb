@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -850,6 +851,64 @@ func TestLeaseService_TimeToLive_FollowerWithoutALeader(t *testing.T) {
 				t.Fatalf("LeaderAddress = %q, want empty", nle.LeaderAddress)
 			}
 		})
+	}
+}
+
+// dataOnlyHost satisfies service.Host and nothing more: it has no
+// SyncGetShardMembership, so it is not a raftadmin.Host. It answers the two
+// calls a stale TimeToLive makes; every other Host method is the embedded nil
+// interface and panics if called, failing the test loudly.
+type dataOnlyHost struct {
+	Host
+	syncReadFn    func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	getLeaderIDFn func(shardID uint64) (uint64, bool, error)
+}
+
+var _ Host = (*dataOnlyHost)(nil)
+
+func (h *dataOnlyHost) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
+	return h.syncReadFn(ctx, shardID, query)
+}
+
+func (h *dataOnlyHost) LeaderID(shardID uint64) (uint64, bool, error) {
+	return h.getLeaderIDFn(shardID)
+}
+
+// TestLeaseService_TimeToLive_DataOnlyHostNamesTheLeaderWithoutAddress pins
+// the refusal on an embedder's host that implements service.Host alone: the
+// service still refuses a follower's stale TTL with the leader's replica ID
+// and the replica's view of the lease, and leaves the address empty because
+// such a host cannot report the shard's membership.
+func TestLeaseService_TimeToLive_DataOnlyHostNamesTheLeaderWithoutAddress(t *testing.T) {
+	held := &Lease{ID: 7, TTL: 10, GrantedTTL: 10, RemainingTTL: 2}
+	var host Host = &dataOnlyHost{
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.StaleTTLError{Lease: held}
+		},
+		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
+			if shardID != 3 {
+				t.Fatalf("LeaderID asked about shard %d, want 3", shardID)
+			}
+			return 2, true, nil
+		},
+	}
+	if _, ok := host.(raftadmin.Host); ok {
+		t.Fatal("dataOnlyHost implements raftadmin.Host; the test would not reach the data-only branch")
+	}
+
+	l, err := NewLeaseService(host, 3).TimeToLive(context.Background(), 7)
+	if l != nil {
+		t.Fatalf("follower answered a remaining TTL: %+v", l)
+	}
+	var stale *LeaseTTLNotLeaderError
+	if !errors.As(err, &stale) {
+		t.Fatalf("error = %T: %v, want *LeaseTTLNotLeaderError", err, err)
+	}
+	if stale.Lease != held {
+		t.Fatalf("refusal lease = %+v, want the replica's view %+v", stale.Lease, held)
+	}
+	if stale.ShardID != 3 || stale.LeaderID != 2 || stale.LeaderAddress != "" {
+		t.Fatalf("not-leader = %+v, want shard 3 leader 2 with no address", stale.NotLeaderError)
 	}
 }
 

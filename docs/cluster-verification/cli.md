@@ -1,6 +1,6 @@
 # Cluster Verification — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -178,10 +178,11 @@ clusterproof clock-rate -not-kernel "$HARNESS_BOOT_ID" -ppm 0
 
 Runs this feature's in-CI tests on a self-spawned three-node cluster, with
 no Docker and no remote hosts: leader then follower SIGKILL under load,
-leader partition, and lease reads through a leader that loses its followers.
-It runs `TestClusterFault_SIGKILLUnderLoad`,
-`TestClusterFault_PartitionIsolatesLeader` and
-`TestClusterFault_LeaseReadAfterLeaderChange`.
+leader partition, lease reads through a leader that loses its followers, and
+the ports a node binds. It runs `TestClusterFault_SIGKILLUnderLoad`,
+`TestClusterFault_PartitionIsolatesLeader`,
+`TestClusterFault_LeaseReadAfterLeaderChange` and
+`TestClusterPorts_PinnedSetIsExactlyWhatQrdbdBinds`.
 
 The SIGKILL test runs once per seal type a three-node cluster can be
 initialized under, as the subtests `none` and `passphrase`

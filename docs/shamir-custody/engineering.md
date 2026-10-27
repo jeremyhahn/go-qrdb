@@ -218,7 +218,9 @@ holders, the unclaimed envelopes and the pending challenges.
   `dhkem-x25519`, `mlkem768-x25519`; HKDF-SHA256/384 and AES-256-GCM.
 - Held as `secure.Secret` (go-enclave sealed) per holder, with a timer that
   wipes it at `CeremonyConfig.ShareTTL` (default `ceremony.DefaultShareTTL`,
-  24h). Never persisted.
+  24h). The timer destroys the enclave before the share leaves the store's
+  index, under the same lock, so a share the store reports expired can never
+  still be opened. Never persisted.
 - Claimed once: `claim/begin` issues a 32-byte nonce (5-minute TTL) to a caller
   whose verified client certificate is the enrolled one; `claim/complete` checks
   the thumbprint again, verifies the certificate key's signature over the

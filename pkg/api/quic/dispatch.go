@@ -52,8 +52,9 @@ func (s *Server) handleIf(enabled bool, method string, perm permission.Permissio
 
 // handlePublicIf registers a method served WITHOUT authentication or
 // authorization (QUICMethodRegistry.RegisterPublic), attaching the handler
-// only when enabled, like handleIf. Public methods are a curated built-in
-// set, never a module declaration.
+// only when enabled, like handleIf. A built-in public method is a curated
+// constant (invitation.Redeem); a module's public method is the one it
+// declares through apimodule.GRPCPublicMethodLister (moduleGRPCRegistrar).
 func (s *Server) handlePublicIf(enabled bool, method string, h methodHandler) {
 	s.methodPerms.RegisterPublic(method)
 	if !enabled {

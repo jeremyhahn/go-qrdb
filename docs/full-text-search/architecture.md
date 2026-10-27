@@ -1,6 +1,6 @@
 # Full-Text Search — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** This feature exists only in builds carrying the
@@ -66,6 +66,9 @@ secondary indexes in one storage engine:
 fts:{indexName}:term:{token}:{entityKey}{uint32BE(len)}  ->  uint32BE(position)
 fts:{indexName}:doc:{entityKey}                          ->  uint32BE(termCount)
 ```
+
+`termCount` counts the document's token occurrences after analysis, repeats
+included, not its distinct terms.
 
 ## Tokenization rules
 

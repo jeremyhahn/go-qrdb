@@ -1,6 +1,6 @@
 # Barrier and Seal — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb barrier`. **This is the canonical barrier surface shared by
@@ -98,12 +98,18 @@ qrdb barrier init-shamir --threshold 3 --total 5
 Unseal using the master passphrase supplied at `init`. A Shamir barrier refuses
 it: M holders unseal it with `qrdb barrier quorum submit --op unseal`.
 
+A `none` barrier holds no secret. Its node unseals it at every start, so it
+needs no unseal after a restart; one sealed by hand with `barrier seal` is
+unsealed with no `--passphrase`. A passphrase barrier refuses an unseal without
+one.
+
 | Flag | Type | Required |
 |---|---|---|
-| `--passphrase` | string | yes |
+| `--passphrase` | string | for a passphrase barrier; omitted for `none` |
 
 ```bash
-qrdb barrier unseal --passphrase '<passphrase>'
+qrdb barrier unseal --passphrase '<passphrase>'   # passphrase barrier
+qrdb barrier unseal                               # none barrier
 ```
 
 ## `qrdb barrier seal`
@@ -246,7 +252,9 @@ nothing; a standalone node never refuses it. See
 
 ## Parity
 
-Every verb here has a `CommandDefinition` in the integration parity suite. Note
-that the cluster-scope encryption migration test lives in the cluster stage
-(`make integration-test-cluster`). CI runs it as the `barrier-seal` leg of the
-`integration-features` job (`.github/workflows/ci.yml`), required by `ci-gate`.
+The verbs are exercised end to end by `test/integration/barrier_cli_test.go`
+and `test/integration/barrier_permutations_cli_test.go`. The cluster-scope
+encryption migration test (`test/integration/cluster_enable_encryption_test.go`)
+runs under `make integration-test-barrier-seal`. CI runs them in the
+`integration-features` shard whose feature list includes `barrier-seal`
+(`.github/workflows/ci.yml`), required by `ci-gate`.

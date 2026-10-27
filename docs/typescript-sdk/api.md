@@ -1,6 +1,6 @@
 # TypeScript SDK — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability Matrix
@@ -22,8 +22,13 @@ desktop mode and the REST client otherwise.
 `isDesktop(): boolean` reports whether the Wails runtime is present.
 
 `Client` is the service facade exported from `interfaces.ts`. Request and
-response DTOs are exported from `types.ts`. Error classes are exported from
-`errors.ts`.
+response DTOs are exported from `types.ts`; their shapes are the server's, as
+documented in each feature's `api.md`. Error classes are exported from
+`errors.ts`; how a server status maps to each is the table in
+[engineering.md](engineering.md#error-semantics).
+
+The SDK enforces no `scp` permission itself: every call is authorized by the
+server it reaches, as the identity the client authenticated as.
 
 ## Authentication
 

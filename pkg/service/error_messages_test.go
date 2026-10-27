@@ -86,6 +86,7 @@ func TestErrorMessages_UnwrapCause(t *testing.T) {
 		"AdminRebindBindError":   &AdminRebindBindError{Cause: cause},
 		"SQLExecutionError":      &SQLExecutionError{Err: cause},
 		"notStoredError":         &notStoredError{err: cause},
+		"MarkerReleaseError":     &MarkerReleaseError{Key: "k", Err: cause, ReleaseErr: errors.New("release")},
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {

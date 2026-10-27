@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,6 +112,117 @@ func TestSealedShareStore_ExpiryWipesAndReportsExpired(t *testing.T) {
 	_, err := store.Claim(context.Background(), "alice")
 	assert.ErrorIs(t, err, ErrShareExpired)
 	assert.False(t, store.Claimed("alice"), "an expired share was never claimed")
+}
+
+// manualTimers stands in for a store's time.AfterFunc: it records each
+// share's expiry callback instead of arming a wall-clock timer, so a test
+// fires an expiry itself, at the moment it chooses.
+type manualTimers struct {
+	mu    sync.Mutex
+	fires []func()
+}
+
+func (m *manualTimers) afterFunc(_ time.Duration, f func()) *time.Timer {
+	m.mu.Lock()
+	m.fires = append(m.fires, f)
+	m.mu.Unlock()
+	t := time.NewTimer(time.Hour)
+	t.Stop()
+	return t
+}
+
+func (m *manualTimers) fire(t *testing.T, i int) func() {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.Greater(t, len(m.fires), i, "no expiry timer was armed for share %d", i)
+	return m.fires[i]
+}
+
+func newManualShareStore() (*sealedShareStore, *manualTimers) {
+	timers := &manualTimers{}
+	store := newSealedShareStore(DefaultShareTTL)
+	store.afterFunc = timers.afterFunc
+	return store, timers
+}
+
+func TestSealedShareStore_FiredExpiryDestroysTheEnclave(t *testing.T) {
+	store, timers := newManualShareStore()
+	defer store.DestroyAll()
+
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`share`)))
+	held := heldFor(store, "alice")
+	require.NotNil(t, held)
+
+	timers.fire(t, 0)()
+
+	assert.True(t, store.Expired("alice"))
+	assert.False(t, store.Exists("alice"))
+	assertDestroyed(t, held.secret, "a fired expiry must destroy the enclave")
+	_, err := store.Claim(context.Background(), "alice")
+	assert.ErrorIs(t, err, ErrShareExpired)
+}
+
+func TestSealedShareStore_FiredExpiryForAReplacedShareIsInert(t *testing.T) {
+	store, timers := newManualShareStore()
+	defer store.DestroyAll()
+
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`first`)))
+	require.NoError(t, store.Store(context.Background(), "alice", []byte(`second`)))
+	current := heldFor(store, "alice")
+
+	timers.fire(t, 0)()
+
+	assert.False(t, store.Expired("alice"), "the replaced share's timer must not expire its successor")
+	assert.True(t, current.secret.IsAlive())
+	got, err := store.Claim(context.Background(), "alice")
+	require.NoError(t, err)
+	assert.Equal(t, []byte(`second`), got)
+}
+
+// TestSealedShareStore_ExpiryIsNeverObservableBeforeTheDestroy fires each
+// expiry on its own goroutine while the test contends for the store's lock,
+// and checks, inside one critical section, that a share the store reports
+// expired no longer holds its enclave. A destroy run after the lock is
+// released is caught in that window.
+func TestSealedShareStore_ExpiryIsNeverObservableBeforeTheDestroy(t *testing.T) {
+	const shares = 64
+	store, timers := newManualShareStore()
+	defer store.DestroyAll()
+
+	held := make([]*heldShare, shares)
+	for i := range shares {
+		name := fmt.Sprintf("holder-%d", i)
+		require.NoError(t, store.Store(context.Background(), name, []byte(`share`)))
+		held[i] = heldFor(store, name)
+	}
+
+	for i := range shares {
+		name := fmt.Sprintf("holder-%d", i)
+		expire := timers.fire(t, i)
+		fired := make(chan struct{})
+		go func() {
+			defer close(fired)
+			expire()
+		}()
+		for {
+			store.mu.Lock()
+			expired := store.expired[name]
+			alive := held[i].secret.IsAlive()
+			store.mu.Unlock()
+			if expired {
+				assert.False(t, alive, "%s was observable as expired while its enclave was alive", name)
+				break
+			}
+			select {
+			case <-fired:
+				require.True(t, store.Expired(name), "a fired expiry must mark %s expired", name)
+			default:
+			}
+		}
+		<-fired
+		assertDestroyed(t, held[i].secret, "expiry must destroy the enclave")
+	}
 }
 
 // TestSealedShareStore_ExpiryIsNotNotFound distinguishes a share that expired

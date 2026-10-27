@@ -14,7 +14,7 @@
 
 // errors_canonical.go declares typed errors used by the canonical CLI
 // surface (init / barrier / ceremony / ca / bootstrap / credential /
-// auth) per docs/08-bootstrap-auth-architecture.md §6.
+// auth) documented in each feature's docs/<feature>/cli.md.
 package main
 
 // PendingBootstrapBackendError is emitted by "bootstrap" subcommand

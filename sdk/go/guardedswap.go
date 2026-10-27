@@ -57,7 +57,7 @@ const (
 	// re-run, or a transition another writer has already made.
 	SwapDone
 
-	// SwapLose stops without writing and reports ErrSwapLost. Use it when
+	// SwapLose stops without writing and reports SwapLostError. Use it when
 	// another writer has won something this caller cannot take back: a claim
 	// on a monotonic mark, a lease held by a higher generation.
 	SwapLose
@@ -83,7 +83,7 @@ type GuardedSwapRequest struct {
 	Decide Decide
 
 	// MaxAttempts bounds how many times the guard may be refused before
-	// GuardedSwap gives up with ErrSwapContended. Zero means
+	// GuardedSwap gives up with SwapContendedError. Zero means
 	// DefaultSwapAttempts; a NEGATIVE value is a SwapConfigError rather than a
 	// silent default, because it means the caller computed the bound wrongly
 	// and hiding that would leave an invalid configuration looking valid.
@@ -149,9 +149,9 @@ type GuardedSwapResult struct {
 // ModRevision (see GuardOnValue).
 //
 // It fails CLOSED in both directions. Reaching MaxAttempts returns
-// ErrSwapContended, and a guard that is refused without the record moving
-// returns ErrSwapStalled — neither reports the write as done, and neither spins
-// forever. See ErrSwapStalled for why "refused but unchanged" is treated as a
+// SwapContendedError, and a guard that is refused without the record moving
+// returns SwapStalledError — neither reports the write as done, and neither spins
+// forever. See SwapStalledError for why "refused but unchanged" is treated as a
 // fault rather than retried.
 func GuardedSwap(
 	ctx context.Context,

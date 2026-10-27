@@ -1006,6 +1006,62 @@ func TestBarrierCLI_RestartPersistence(t *testing.T) {
 	}
 }
 
+// TestBarrierCLI_NoneRestartUnsealsItself proves the contract in
+// docs/seal/README.md and docs/cluster-verification/architecture.md: a node
+// whose barrier is `none` holds no secret, so after a restart it opens its own
+// barrier and serves with no unseal call. It also proves `qrdb barrier unseal`
+// needs no --passphrase for a none barrier that was sealed by hand.
+func TestBarrierCLI_NoneRestartUnsealsItself(t *testing.T) {
+	binary := buildBinary(t)
+	cli := buildCLIBinary(t)
+
+	configPath := writeSealConfig(t, "none", 0, 0)
+	dataDir := t.TempDir()
+	raftPorts := allocatePorts(t, 1)
+	tcpPorts := allocateTCPPorts(t, 2)
+
+	node := startSealNode(t, binary, dataDir, configPath, raftPorts[0], tcpPorts[0], tcpPorts[1])
+	waitForBarrierReachable(t, cli, node.noAuthFlags(), 60*time.Second)
+	node.initSystem(t, cli, "--barrier-strategy", "none")
+	node.waitForFullBoot(t)
+	flags := node.adminFlags()
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"kv", "put", "none-restart-key", "none-restart-value")...); err != nil {
+		t.Fatalf("kv put: %v\nstderr: %s", err, stderr)
+	}
+
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
+		t.Fatalf("barrier seal: %v\nstderr: %s", err, stderr)
+	}
+	if !barrierStatus(t, cli, flags).Sealed {
+		t.Fatal("expected the barrier to be sealed after barrier seal")
+	}
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "barrier", "unseal")...); err != nil {
+		t.Fatalf("barrier unseal of a none barrier without --passphrase: %v\nstderr: %s", err, stderr)
+	}
+	if barrierStatus(t, cli, flags).Sealed {
+		t.Fatal("expected the none barrier to be unsealed by an unseal with no passphrase")
+	}
+
+	stopSealNode(t, node)
+	node = restartSealNode(t, binary, configPath, node, raftPorts[0], tcpPorts[1])
+	flags = node.adminFlags()
+
+	// No unseal call: the node must reach full boot on its own.
+	node.waitForFullBoot(t)
+	if barrierStatus(t, cli, flags).Sealed {
+		t.Fatal("expected a none barrier to unseal itself at restart")
+	}
+	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", "none-restart-key")...)
+	if err != nil {
+		t.Fatalf("kv get after restart: %v\nstderr: %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "none-restart-value") {
+		t.Fatalf("kv get after restart: expected surviving value, got: %s", stdout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Flow 4: officer revoke and quorum begin
 // ---------------------------------------------------------------------------

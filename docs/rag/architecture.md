@@ -1,6 +1,6 @@
 # RAG — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -74,7 +74,7 @@ live.
 | `RAGServicer`, chunkers, ingest and query flows | `pkg/rag`, `pkg/service/rag_service.go` | go-qrdb |
 | Embedding generation | `pkg/service/embedding_service.go` — see [../embeddings/](../embeddings/) | go-qrdb |
 | Vector storage and k-NN | `pkg/vector` — see [../vectors/](../vectors/) | go-qrdb |
-| Chunk text and metadata storage | `pkg/kv` — see [../key-value/](../key-value/) | go-qrdb |
+| Chunk text and metadata storage | `service.ScopedRAGStore` (`pkg/service/rag_scope.go`) over the database's KV store — see [../key-value/](../key-value/) | go-qrdb |
 | Orchestration, fusion, generation | — | **the services layer**, not qrdb |
 | SDK surface | `sdk/go/transport` (`RAGClient`) | go-qrdb |
 
@@ -92,8 +92,9 @@ live.
   Every record the pipeline reads or writes -- chunk text, document metadata
   and vectors -- is resolved through the node's per-(tenant, database) service
   registry for the request's tenant and database scope (`X-QRDB-Database`,
-  `x-qrdb-database`, or the QUIC/MCP database argument; `system` when none is
-  given), exactly as a data-plane request is (`service.RAGBinding`). So:
+  `x-qrdb-database`, the QUIC database field, or the optional MCP `database`
+  argument, which every MCP tool accepts but no `qrdb_rag_*` tool schema
+  declares; `system` when none is given), exactly as a data-plane request is (`service.RAGBinding`). So:
   - a **sealed database** -- or a sealed tenant barrier -- refuses ingest,
     query, list and delete;
   - a database the caller **does not have** (unknown, or another tenant's) is

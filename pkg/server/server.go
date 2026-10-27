@@ -1130,7 +1130,7 @@ func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
 }
 
 // WithUserAuthFactorService configures the user-side N-factor service (M14,
-// docs/08-bootstrap-auth-architecture.md §5e) across all protocol servers
+// docs/auth-factors/architecture.md) across all protocol servers
 // that support it (REST, gRPC, QUIC, MCP, Unix). This is the service the SDK
 // client's UserAuthFactors() accessor talks to (Add / List / Get / Remove /
 // Rotate / Relabel / Login) and is distinct from WithAuthFactorService (the

@@ -1,6 +1,6 @@
 # Desktop GUI — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 **The GUI adds no server API.** That is the design: both of its transports reach
@@ -11,7 +11,7 @@ the same surfaces every other client uses.
 | Capability | REST | gRPC / Unix | QUIC | MCP | Embedded | `scp` permission |
 |---|---|---|---|---|---|---|
 | Everything the GUI does (browser path) | the ordinary REST API **+ CORS** | — | — | — | — | the same permissions as any REST client |
-| Everything the GUI does (desktop path) | — | — | — | — | Wails IPC → Go bindings → `sdk/go` → embedded server | the same permissions |
+| Everything the GUI does (desktop path) | — | — | — | — | Wails IPC → Go bindings → `sdk/go` → the embedded server, or a remote `qrdbd`, per the connection profile | the same permissions |
 | A GUI-only endpoint | **none exists** | — | — | — | — | n/a |
 
 **There is deliberately no privileged GUI surface.** A GUI user can do exactly
@@ -24,7 +24,7 @@ can reach it.
 
 | Path | Chain |
 |---|---|
-| Desktop | Svelte → `@qrdb/sdk` `WailsClient` → Wails IPC → Go bindings (`cmd/qrdb/bindings_*.go`) → `sdk/go` → embedded `qrdbd` |
+| Desktop | Svelte → `@qrdb/sdk` `WailsClient` → Wails IPC → Go bindings (`cmd/qrdb/bindings_*.go`) → `sdk/go` → the embedded `qrdbd`, or a remote `qrdbd`, per the connection profile |
 | Browser | Svelte → `@qrdb/sdk` `RestClient` → `fetch()` + JSON → `pkg/api/rest` (+ CORS) → `qrdbd` |
 
 `getClient()` auto-detects the runtime and returns the right one. Frontend code
@@ -49,7 +49,7 @@ The identity shown in the GUI header is the client certificate's Subject CN.
 
 Views follow the server's reported capabilities
 (`GET /capabilities`, permission `admin:capabilities` — see
-[../api-server/api.md](../api-server/api.md)). A
+[../configuration/api.md](../configuration/api.md#capability-profile-response)). A
 capability the server does not have produces no view, rather than a view that
 errors on use.
 

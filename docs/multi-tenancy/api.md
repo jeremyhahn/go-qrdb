@@ -1,6 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Two gRPC services: tenant lifecycle and governance on
@@ -352,10 +352,10 @@ both directions**: it reclaims the tenant's data AND retires the id.
   so.
 - It **refuses while the tenant still owns databases**, naming them. Drop them
   first.
-- It **destroys the tenant's data encryption key** before anything else.
-- It **records the id as deleted.** A later `POST /v1/tenants` with the same id
-  is refused with 409, permanently. There is no release, no retention window
-  and no force flag.
+- It **records the id as deleted** and removes the tenant's metadata. A later
+  `POST /v1/tenants` with the same id is refused with 409, permanently. There
+  is no release, no retention window and no force flag.
+- It **destroys the tenant's barrier**, and with it the tenant's keys.
 - It **reclaims the tenant's keyspace** synchronously before returning.
 
 Re-issuing a delete that failed part-way is the supported remedy and is safe:

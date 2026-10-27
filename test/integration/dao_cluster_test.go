@@ -126,7 +126,7 @@ func (c *daoCluster) kill(t *testing.T, i int) {
 
 // restart relaunches node i with its original args and data directory --
 // so it rejoins the SAME Raft group with its persisted log and snapshots
-// -- then unseals its barrier, which persists sealed across a restart.
+// -- then waits for its none barrier, which the node unseals itself at boot.
 func (c *daoCluster) restart(t *testing.T, i int) {
 	t.Helper()
 	n := c.nodes[i]
@@ -137,7 +137,7 @@ func (c *daoCluster) restart(t *testing.T, i int) {
 	})
 
 	waitForBarrierStatusReachable(t, c.ca, n.adminPort, 90*time.Second)
-	unsealOnlyBarrier(t, c.ca, n.adminPort)
+	waitForSelfUnsealed(t, c.ca, n.adminPort)
 	waitForHealthy(t, n.dataDir, 60*time.Second)
 	waitForAdmin(t, c.ca.Pool, n.adminPort, 90*time.Second)
 }

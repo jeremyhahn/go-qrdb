@@ -1,6 +1,6 @@
 # Identity and RBAC — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 Three command groups: `qrdb users`, `qrdb roles` and `qrdb abac policy`.
@@ -110,6 +110,37 @@ transport.
 A token is single-use: a second `qrdb enroll` with the same token gets the
 same opaque refusal an unknown or expired token gets, by design (see
 [user.md](user.md#inviting-somebody-instead)).
+
+### `qrdb users cert-binding add|list|remove`
+
+Enrols, lists and withdraws the mTLS certificate bindings of a user — the
+CLI form of `POST /users/{id}/cert-bindings` and
+`DELETE /users/{id}/cert-bindings/{thumbprint}`
+([api.md](api.md#withdrawing-a-binding)), on every CLI transport. Under the
+default `auth.mtls_binding_policy: required` a certificate authenticates as an
+account only once its SPKI thumbprint is enrolled on it, so `add` is how an
+operator admits a new certificate.
+
+| Verb | Arguments | Flags | Meaning |
+|---|---|---|---|
+| `add` | `<user-id> [thumbprint]` | `--cert <pem>`, `--not-after <rfc3339>` | enrol a key, by its base64url SHA-256 SPKI thumbprint or by the PEM certificate given to `--cert` (exactly one of the two). With `--cert` the expiry defaults to the certificate's; `--not-after` overrides it. Without either the binding never expires. An expiry at or before the Unix epoch, from either, is refused rather than sent, since the wire reads a non-positive expiry as "never expires". Re-enrolling an identical binding is a no-op |
+| `list` | `<user-id>` | — | the user's bindings, expired ones included |
+| `remove` | `<user-id> <thumbprint>` | — | withdraw one binding; every certificate for that key stops authenticating as the account. A thumbprint the user does not hold is refused |
+
+Each verb prints the user's bindings as they now stand (`THUMBPRINT`, `KIND`,
+`NOT_AFTER`; a JSON or YAML array under `--output`).
+
+A thumbprint is base64url (RFC 8705 `x5t#S256`), so about one in 64 begins
+with `-`, which the CLI would otherwise read as a flag. Put every flag first
+and the thumbprint after `--`, which ends option parsing (POSIX Utility Syntax
+Guideline 10); doing so always is safe, and scripts should.
+
+```bash
+qrdb users cert-binding add 1f2e... --cert alice.pem
+qrdb users cert-binding add 1f2e... --not-after 2030-01-02T03:04:05Z -- -mfgDIAA4OnmhPXEgQ0d46rNYBLntyNnLUbId3NJ_eg
+qrdb users cert-binding list 1f2e...
+qrdb users cert-binding remove 1f2e... -- 3q2-7w...   # enrol the replacement first
+```
 
 ### `qrdb users get <id>` / `delete <id>` / `enable <id>` / `disable <id>` / `suspend <id>` / `unsuspend <id>`
 
@@ -458,16 +489,9 @@ grants the application gives it, so no `roles assign` is involved.
 
 ## A complete enrolment
 
-Run as an Admin of `acme`. The account comes first; `ca issue` binds the
-certificate to it.
-
-```bash
-qrdb users create --username alice --email alice@acme.com --tenant-id acme
-qrdb ca issue --username alice --out ./alice
-ROLE=$(qrdb roles get-by-name operator --tenant-id acme --output json | jq -r .id)
-USER=$(qrdb users list --tenant-id acme --output json | jq -r '.users[] | select(.username=="alice") | .id')
-qrdb roles assign --user "$USER" --role "$ROLE"
-```
+The whole flow, create the account, issue its certificate and assign a role,
+is [user.md](user.md#enrolling-somebody-end-to-end), "Enrolling somebody, end
+to end".
 
 ## Parity
 

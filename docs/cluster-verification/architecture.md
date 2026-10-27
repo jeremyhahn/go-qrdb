@@ -1,6 +1,6 @@
 # Cluster Verification — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -155,6 +155,7 @@ is not decided.
 | Soak | `test/clusterproof/soak` | runs the workload and the nemesis for the configured duration, heals, runs the checks, writes the evidence bundle, and re-checks a bundle |
 | Container mode | `test/clusterproof/container` | reads the node inventory, starts each node's `qrdbd` container from the release image with a static bootstrap, takes each node through first boot, and checks the result as BOOT-01 |
 | In-CI fault tests | `test/integration/cluster_crash_test.go`, `cluster_partition_test.go`, `cluster_lease_test.go` | short, self-spawned SIGKILL, partition and lease-read tests that run on every CI build; SIGKILL runs once per seal type as subtests |
+| In-CI ports test | `test/integration/cluster_ports_test.go` | checks that the pinned port set is exactly what `qrdbd` binds |
 
 `test/clusterproof/` is a Go module of its own, and every file in it is behind
 the `clusterproof` build tag, so it compiles only when asked for and never

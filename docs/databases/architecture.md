@@ -1,7 +1,7 @@
 # Databases — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > This document has two layers, and each section says which layer it is in.
@@ -724,8 +724,7 @@ Three things are deliberately **not** reclaimed:
   every transport's key surface is namespaced and no caller can compose the bare
   key, and nothing deletes them. A deployment that has them exports and re-imports
   them per tenant; see
-  [collections/engineering.md](../collections/engineering.md) "Upgrading across
-  the tenant-namespace change".
+  [collections/engineering.md](../collections/engineering.md#tenant-less-collection-keys).
 
 **The reclamation reads through an unfiltered enumeration**, not the
 user-facing one. Several of the shapes above are in the internal key
@@ -1622,6 +1621,6 @@ flag and the protobuf field number is reserved either way.
 - **Chosen: A.** Its deletion half is in the code: a `pkg/server` scheduler
   proposes a feature-gated `protocol.OpTSApplyRetention` command per metric per
   tick; see
-  [../time-series/architecture.md#retention-enforcement-od-16-a](../time-series/architecture.md#retention-enforcement-od-16-a).
+  [../time-series/architecture.md#retention-enforcement](../time-series/architecture.md#retention-enforcement).
   Downsampling, and applying it through the database's binding, wait on the
   storage binding.

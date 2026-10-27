@@ -1,7 +1,7 @@
 # Databases — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-22
+> Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Coming change" sections describe the multi-model database design in
@@ -238,9 +238,9 @@ database.** Scaling works only on a `--backend raft` database created with
 `--cluster-mode distributed`; any other database has no replicas to change.
 
 **A lease or lock call, or a transaction naming a lease or comparing a
-revision, is refused as "unsupported".** On a standalone node the file and
-objstore backends keep no leases. Use pebble or memory; see
-[../run-modes/user.md](../run-modes/user.md).
+revision, is refused as "unsupported".** The database lives on a dedicated
+non-raft store, which has no lease service. Use a database on the default
+store; see [../run-modes/user.md](../run-modes/user.md).
 
 **"database not found" on a data-plane call.** Databases are never created
 implicitly, so a typo in `--database` is an error rather than a new, empty

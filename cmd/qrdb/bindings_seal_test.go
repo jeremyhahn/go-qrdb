@@ -41,9 +41,6 @@ func newSealTestBinding(t *testing.T, svc service.BarrierServicer) *SealBinding 
 	return NewSealBinding(testLogger(t), nil, conn)
 }
 
-// errBarrierTest is a sentinel error returned by mock barrier functions.
-var errBarrierTest = errors.New("barrier test failure")
-
 // ---------------------------------------------------------------------------
 // NewSealBinding constructor
 // ---------------------------------------------------------------------------

@@ -128,6 +128,11 @@ func TestClusteredNode_EncryptingBarrierKeepsKVOutOfTheWAL(t *testing.T) {
 			if err != nil || !bytes.Equal(got, value) {
 				t.Fatalf("Get = %q, %v", got, err)
 			}
+			// Scan the files the closed node leaves behind, not a live
+			// WAL whose segments may be rotated or removed mid-scan.
+			if err := n.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
 			if found := walContains(t, cfg.Raft.DataDir, value); found != c.wantFound {
 				t.Fatalf("plaintext value in WAL = %v, want %v", found, c.wantFound)
 			}
@@ -188,6 +193,16 @@ func TestClusteredNode_ThreeSealedReplicasFormAndKeepKVOutOfTheWAL(t *testing.T)
 		if err != nil || !bytes.Equal(got, value) {
 			t.Fatalf("replica %d read %q, %v", replicas[i].id, got, err)
 		}
+	}
+	// Scan the files the closed replicas leave behind, not live WALs whose
+	// segments may be rotated or removed mid-scan. Close's error is not
+	// asserted: once the first replicas are gone the last loses quorum and
+	// its member-record retraction fails, but Close records that and still
+	// closes the Raft host and its WAL.
+	for _, n := range nodes {
+		_ = n.Close()
+	}
+	for i := range nodes {
 		if walContains(t, cfgs[i].Raft.DataDir, value) {
 			t.Fatalf("replica %d's WAL holds the value in plaintext", replicas[i].id)
 		}

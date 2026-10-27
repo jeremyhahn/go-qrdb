@@ -1,12 +1,7 @@
 # Time Series — Architecture
 
-> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
->
-> "Target" sections describe the time-series half of the multi-model database
-> program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_ts`
 > (`WITH_QRDB_TS=1`). `qrdb admin capabilities` reports `timeSeries` when it is
@@ -87,14 +82,7 @@ That triple is what makes retention a downsampling policy rather than a delete
 policy: a metric can keep a year at hourly resolution instead of keeping nothing.
 
 **The `duration_ns` half is enforced; `resolution_ns` downsampling
-is not.** `TSSetRetention` persists the policy and `TSGetRetention` returns
-it. A leader-driven scheduler in `pkg/server` (`retention_scheduler.go`)
-sweeps each store every `DefaultRetentionInterval` (one minute) and proposes
-one `protocol.OpTSApplyRetention` command per metric with a policy, deleting
-points older than `duration_ns` deterministically on every replica
-(`timeseries.Storage.ApplyRetention`). No code downsamples an expired
-point into one `resolution_ns` bucket; that half, and the per-database
-binding below, are target work. See "Retention enforcement" below.
+is not.** See "Retention enforcement" below.
 
 ## Current state
 
@@ -114,46 +102,33 @@ binding below, are target work. See "Retention enforcement" below.
   distinguished by a `<tenant>/<db>/` prefix on the metric name. The tag index
   (`idx:tag:`) carries no metric, so no database owns it and a database drop
   cannot reclaim it.
-- **Retention deletion is enforced; downsampling is not.** A leader-driven
-  scheduler in `pkg/server` proposes a bounded `protocol.OpTSApplyRetention` command per
-  metric per tick; see "Retention enforcement" below.
 
-## Target design — time series as an engine of the database binding
+## Time series in the database's storage
 
-Time series is an engine of the database, stored in the database's
-[storage binding](../databases/architecture.md#the-storage-binding) like every
-other engine.
+**Shipped.**
 
-- **Over the storage interface — shipped.** `pkg/timeseries` reads
-  through `storage.Reader` and writes into the apply `storage.Batch`. It
-  does not import Pebble. Points, the metric index and the tag index
-  commit with the entry that wrote them, or not at all. Retention records
-  (`SetRetentionPolicy`) are likewise batch-staged; only the per-database
-  *binding* below — a store of the database's own rather than the shared
-  store — remains target work.
-- **Every backend — shipped for memory, file, pebble and objstore; raft
-  remains target**, pending the per-database binding below. On
-  objstore a range query is an ordered object listing, so it is correct and
-  slower; that is the cost of the backend the database chose.
-- **Replicated with the database.** On a raft binding every write is proposed to
-  the database's Raft group and carries the database's drop fence, like every
-  other write.
-- **Tenant scoped by construction.** The store belongs to one database of one
-  tenant and is encrypted under the binding's encryptor, so metric names carry
-  no database prefix and the tag index belongs to the database. A drop destroys
-  the store and everything in it, the tag index included.
-- **Key layout unchanged inside the store** — `ts:`, `idx:metric:`,
-  `idx:tag:`, `retention:` — minus the `<tenant>/<db>/` metric prefix, which a
-  store of one's own does not need. The encoding and the `AggFunc` numbering
-  remain wire and disk format.
+- **Over the storage interface.** `pkg/timeseries` reads through
+  `storage.Reader` and writes into the apply `storage.Batch`. It does not
+  import Pebble. Points, the metric index, the tag index and retention records
+  (`SetRetentionPolicy`) commit with the entry that wrote them, or not at all.
+- **Every backend MVCCEngine composes over**: memory, file, pebble and
+  objstore. On objstore a range query is an ordered object listing, so it is
+  correct and slower.
+- **Retention deletion**, described in "Retention enforcement" below.
 
-### Retention enforcement (OD-16 A)
+**Not yet built.**
 
-> **Status: the deletion half is implemented** (`ApplyRetention` takes
-> the caller's `storage.Batch` and works identically on every backend).
-> Downsampling, and a universal per-database drop fence on the command
-> itself — which depends on the per-database binding, not yet shipped —
-> remain target work.
+- **The per-database raft binding.** Time series is not yet stored in a
+  [storage binding](../databases/architecture.md#the-storage-binding) of the
+  database's own, proposed to the database's Raft group under its drop fence.
+  In such a store metric names would carry no `<tenant>/<db>/` prefix, the tag
+  index would belong to the database, and a drop would destroy both; the key
+  layout (`ts:`, `idx:metric:`, `idx:tag:`, `retention:`) and the `AggFunc`
+  numbering stay as they are.
+- **Downsampling** to `resolution_ns`.
+- **A per-command, engine-level drop fence** on the retention command.
+
+### Retention enforcement
 
 A retention sweep changes stored data, so it must be the same on every replica.
 It is therefore a command, not a background delete:
@@ -161,17 +136,18 @@ It is therefore a command, not a background delete:
 - A leader-driven scheduler (`pkg/server`'s `retentionScheduler`, the same
   per-tick, leader-gated pattern as the lease-expiry sweeper and the
   compaction scheduler) runs on every node and acts on the stores it leads
-  or holds alone. Each tick it lists a store's written metrics and, for each
-  with a policy, computes `cutoff_ns` from its own clock
-  (`now - duration_ns`) and proposes one `protocol.OpTSApplyRetention`
-  command (metric, cutoff) through the store's `TimeSeriesServicer`
-  (`ApplyRetention`).
+  or holds alone. Every `DefaultRetentionInterval` (one minute) it lists a
+  store's written metrics and, for each with a policy, computes `cutoff_ns`
+  from its own clock (`now - duration_ns`) and proposes one
+  `protocol.OpTSApplyRetention` command (metric, cutoff) through the store's
+  `TimeSeriesServicer` (`ApplyRetention`).
 - The engine applies it deterministically from `cutoff_ns` alone: points
-  older than `cutoff_ns` are deleted (`timeseries.Storage.ApplyRetention`).
+  older than `cutoff_ns` are deleted (`timeseries.Storage.ApplyRetention`,
+  into the caller's `storage.Batch`, identically on every backend).
   Replicas never consult their own clocks. **Downsampling is not
   implemented** — a policy with a `resolution_ns` still has its expired
   points deleted outright, not replaced by one bucketed point; the policy's
-  `aggregation` is read back by `TSGetRetention` but nothing computes it yet.
+  `aggregation` is read back by `TSGetRetention` but nothing computes it.
 - The command is behind the cluster feature gate
   (`featuregate.TimeSeriesRetention`): the scheduler's `ApplyRetention` call
   is refused with `*featuregate.NotActiveError` until every member of the
@@ -182,8 +158,7 @@ It is therefore a command, not a background delete:
   database's drop fence, because it is proposed through that database's
   namespaced `TimeSeriesServicer` view like every other write of that
   database's; a dedicated per-database raft shard or a per-tenant volume
-  host needs no such guard; the target's own per-command, engine-level
-  fence remains unimplemented.
+  host needs no such guard.
 
 ### Alternatives rejected
 
@@ -202,9 +177,8 @@ It is therefore a command, not a background delete:
   Setting retention is destructive over time and is a distinct grant from
   writing.
 - Points are encrypted at rest under the store's encryptor and fail closed
-  when that barrier is sealed. Shipped, the store is the shared system store or
-  a volume or raft tenant's store; target, it is the database's binding, under
-  the tenant's key.
+  when that barrier is sealed. The store is the shared system store or a volume
+  or raft tenant's store; the per-database binding is not yet built.
 
 ## What this feature deliberately does not do
 

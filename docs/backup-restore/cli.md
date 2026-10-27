@@ -1,9 +1,9 @@
 # Backup and Restore — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
-Command group: `qrdb backup` — create, list, inspect, verify, delete and restore
+Command group: `qrdb backup` — create, list, get, verify, delete and restore
 backups. All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
 
@@ -122,7 +122,7 @@ because it overwrites shard state** — it is not implied by any of the others.
 
 `make integration-test-backup-restore` runs the self-spawned CLI suites
 (`test/integration/backup_cli_test.go`, `test/integration/backup_restore_test.go`);
-CI runs them as the `backup-restore` leg of the `integration-features` job
-(`.github/workflows/ci.yml`), required by `ci-gate`. The Docker suite's
+CI runs them in the `integration-features` shard whose feature list includes
+`backup-restore` (`.github/workflows/ci.yml`), required by `ci-gate`. The Docker suite's
 `test/integration/api/cli_backup_test.go` runs under
 `make integration-test-standalone`.

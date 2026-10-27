@@ -1,7 +1,7 @@
 # Vector Database — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > Sections headed **Target** are the vector half of the multi-model database
@@ -9,7 +9,8 @@
 > [../databases/engineering.md](../databases/engineering.md). They are approved and not implemented. OD-n refers to the ruled decisions in
 > [../databases/architecture.md](../databases/architecture.md).
 
-> **Build-tag gated: `qrdb_vector`** (`WITH_QRDB_VECTOR=1`). GPU paths add
+> **Build-tag gated: `qrdb_vector`** (`WITH_QRDB_VECTOR=1`, the default;
+> `WITH_QRDB_VECTOR=0` removes it). GPU paths add
 > `gpu`. Without the tag the CLI verb group and the transport handlers are
 > compiled out and `pkg/capabilities` does not register `vector`.
 
@@ -139,302 +140,24 @@ Namespace geometry is per namespace, not global. Build flags:
 tag and the GPU index paths (`pkg/vector/gpu`, with a remote index service
 defined by `pkg/vector/gpu/remote/proto/vector_index.proto`).
 
-### IVF clustering is randomly initialised, and `Config.Seed` makes it reproducible
+### IVF clustering and `Config.Seed`
 
-`ivf.Config.Seed` fixes the randomness k-means uses to choose its initial
-centroids, for both `kmeans++` and `random` initialisation.
+- **IVF clustering is randomly initialised.** k-means chooses its initial
+  centroids at random, for both `kmeans++` and `random` initialisation, and
+  `ivf.Config.Seed` zero, the default, seeds that choice from the clock.
+  Target: a namespace in a database binding never uses the clock seed; the
+  engine derives it from the namespace and its training generation (see
+  "Target: determinism" below).
+- **A nonzero `Config.Seed` makes clustering reproducible**: the same seed and
+  the same vectors give the same centroids.
+- **A test that asserts on the clustering must set a seed**: where the
+  centroids land, which vectors share a cluster, which vector a search returns
+  first. An assertion on an invariant that holds for every initialisation
+  needs none.
 
-- **Zero — the default — seeds from the clock**, and that is the production
-  setting for a caller of the package. A fixed seed across a fleet would have
-  every node make the same unlucky choice on the same data; the randomness is
-  doing real work.
-- **Target: a namespace in a database binding never uses the clock seed.** The
-  engine derives the seed from the namespace and its training generation, so
-  every replica trains the same centroids from the same records (see "Target:
-  determinism" below). Different namespaces still get different draws, which is
-  the property the clock seed was protecting.
-- **A nonzero value makes clustering reproducible** for the same input. Use it
-  when a result must be repeatable — a benchmark, or a test measuring recall
-  against a threshold.
-
-The reproducibility is over the **initialisation**, not over everything: the
-same seed and the same vectors give the same centroids, but a different vector
-set will not.
-
-It matters more than it looks. `Train` clusters **once**, and every subsequent
-query searches that one centroid set — so recall is a property of the
-clustering, and a measurement taken without fixing the seed is one draw from a
-distribution however many queries it averages.
-
-### A test that asserts on the clustering must set a seed
-
-An unseeded test of a randomised algorithm is a gate that flips a coin on every
-run. `TestKMeans_Cluster` asserts that three centroids on twelve planted points
-end up more than 1.0 apart; measured over 60,000 seeds on that dataset, **28
-land in a local minimum where two centroids collapse to within 1.0** — about 1
-in 2,143.
-
-The rule is about the assertion, not the test. Asserting an **invariant** —
-that an error came back, that the centroid slice has the requested length, that
-every assignment is in range — is safe unseeded, because it holds for every
-initialisation. Asserting an **outcome** — where the centroids landed, which
-vectors share a cluster, which vector a search returns first — needs a seed,
-because it is a property of the one clustering that draw happened to find.
-
-### The empty-cluster repair reads stale counts, and that is load-bearing
-
-`Cluster` hands `handleEmptyClusters` the assignments and cluster sizes the
-refinement loop left behind. On the `!changed` exit those describe the centroids
-being returned. On the other two exits — convergence by centroid movement, and
-the iteration bound — the update step replaced the centroids after the counts
-were measured, so they describe the previous set.
-
-That reads like a defect with an obvious correction. Measured over 60,000
-seeds:
-
-| Config | Runs with stale counts | Degenerate as shipped | Degenerate if recomputed |
-|---|---|---|---|
-| `maxIter=100, conv=1e-4, kmeans++` | 0 | 28 | 28 |
-| `maxIter=2, conv=0, random` | 2,162 | 16,356 | 17,394 |
-
-The first row is the shipped configuration and it cannot discriminate: all
-60,000 runs take the `!changed` exit, where the counts are already consistent,
-so recomputing is a no-op there. The second row forces the other exits, and
-recomputing is **worse by 1,038 runs in 60,000**.
-
-The reason is that a fresh recount finds no empty cluster at all — 1,894 drops
-to 0 — so the repair stops firing, and a zero-size cluster is returned holding
-the all-zero vector `recomputeCentroids` leaves for a cluster it could not
-average. That is a centroid at the origin no vector chose, which then attracts
-every query near the origin for the life of the index. The stale counts are what
-let the repair run.
-
-So the inconsistency stays, deliberately. It is pinned by
-`TestKMeans_Cluster_EmptyClusterRepairIsLoadBearing`, which goes red on exactly
-that origin centroid if the recompute is added.
-
-### k-means++ initialisation is O(n·k·d), and always returns exactly k centroids
-
-Both k-means++ implementations in this package family —
-`ivf.KMeans.initializeKMeansPlusPlus` and `quantization.kmeansCluster`'s
-initialisation — pick each of the k centroids in O(n·d) by maintaining a
-running per-vector minimum distance to the nearest centroid chosen so far, and
-updating it with **one pass against only the newly-added centroid** each time
-a centroid is chosen. Total cost is O(n·k·d).
-
-That is not the obvious way to write it. The obvious way recomputes each
-vector's minimum distance from scratch, rescanning every previously-chosen
-centroid, which is O(n·k²·d): choosing the k-th centroid re-derives every
-minimum already found while choosing the first k-1. At `DefaultConfig`'s 256
-centroids over 1000 training vectors that is ~32.6 million distance
-evaluations instead of ~256 thousand — a 128x difference. Under the race
-detector's per-memory-access instrumentation the from-scratch form takes over
-a minute per call, enough to cross testing's 10-minute alarm in a `-count=3`
-run and kill the test binary before it writes `pkg/vector/ivf`'s coverage
-profile.
-
-**Both implementations always return exactly k centroids, for any input that
-passes their own upfront validation** (non-empty, and at least k vectors).
-That includes every degenerate case: all points identical, or fewer distinct
-positions than k. The naive way to handle "every remaining point already
-coincides with a chosen centroid" is to scan for one that does not — but with
-fewer distinct points than k, that scan can come up empty, and skipping the
-append on that iteration returns a centroid slice **shorter than k**. That
-silently violates an invariant `recomputeCentroids` (ivf) and the refinement
-loop (PQ) both assume: they size their per-centroid working arrays to k
-unconditionally. Both therefore draw uniformly at random
-instead of scanning for an "unchosen" point when every remaining distance is
-zero. `TestKMeans_Cluster_FewerDistinctPointsThanK` asserts this directly on
-`initializeKMeansPlusPlus`'s own return value, not merely on `Cluster()`'s:
-`Cluster()`'s first call to `recomputeCentroids` always allocates a full
-k-length slice regardless of how many centroids initialisation actually
-produced, which hides a short initializer result from any assertion made
-only at the `Cluster()` level.
-
-**The duplicate centroid this uniform draw can produce is repaired by a
-mechanism both refinement loops share:
-`pkg/vector/kmeans.RepairEmptyClusters`.** ivf's `handleEmptyClusters` (see
-above) is a one-line call into it; PQ's `kmeansCluster` makes the same call at
-the same point in its own refinement loop — after the loop, using whatever
-`assignments`/`counts` it left behind, exactly as ivf's own call does. It takes vectors, assignments,
-per-cluster sizes, centroids and a `func(a, b []float32) float32` distance
-callback — needing no true metric, since it only ever compares outputs to
-find a maximum. The two callers do not even agree on what that callback
-computes: PQ passes `l2Squared`, its own hardcoded squared distance, while
-ivf passes `km.distanceFunc` — the index's **configured** metric (`L2`,
-`Cosine`, or the signed `DotProduct`), raw and unsquared, whichever one
-`Config.DistanceMetric` selected. `RepairEmptyClusters` is written to that
-looser contract on purpose: it only ever compares two calls' outputs to each
-other, never assumes a particular scale, sign, or squaring, and has no
-imports of its own besides the standard library, so nothing importing it can
-create a cycle back to either caller.
-
-The repair moves the single farthest displaceable point into each empty
-cluster, in turn, so a duplicate centroid is transient rather than permanent
-for both implementations, **provided the training data actually contains
-enough distinct positions to fill every cluster**.
-
-**The donor search considers EVERY cluster with more than one member, not
-only the largest one.** Restricting the search to the single largest cluster
-misses donors: a cluster can be large
-in COUNT while every one of its points sits exactly on its own centroid (a
-mass of exact duplicates), in which case every distance in it is zero and the
-largest cluster has nothing usable to donate — even though a SMALLER cluster
-elsewhere holds a point that is genuinely far from its own centroid and would
-happily fill the empty one. A largest-cluster-only search picks the large,
-degenerate one, finds no usable donor, and gives up without ever looking
-elsewhere.
-`TestRepairEmptyClusters_LargestClusterIsDegenerate` (`pkg/vector/kmeans`)
-and `TestKMeans_HandleEmptyClusters_LargestClusterIsDegenerate`
-(`pkg/vector/ivf`) both pin this exact shape — a large duplicate-cored
-cluster beside a smaller but genuinely spread one.
-
-**The donor search also does not assume distFunc is non-negative.** It seeds
-its running maximum from the first eligible candidate rather than a fixed
-zero, and compares candidates only against each other. A fixed-zero seed would
-reject real donors: `ivf.KMeans`'s own call passes its
-signed `DistanceFunc` (`DotProductDistance`, where a MORE NEGATIVE value is
-CLOSER — see below), and a cluster whose points are all reasonably close can
-have every one of its raw distances negative, in which case a
-zero-seeded threshold rejects every candidate and reports no donor even
-though a real one exists. `TestRepairEmptyClusters_SignedDistanceFunction`
-pins this with a synthetic signed distance function.
-
-A vector whose value is **identical to its own centroid is excluded from the
-donor search** rather than rejected after it. Moving such a vector could only
-duplicate a value that already exists, so it is never a candidate, and a
-genuinely displaceable vector elsewhere still wins even when an identical one
-would score as "farthest" (which a signed metric such as `DotProductDistance`
-can produce). A cluster is therefore left exactly as it was found (no
-reassignment, no size change) only when no eligible candidate remains: every
-splittable cluster consists of vectors identical to their own centroid (the
-totally-degenerate case), every candidate distance was NaN, or no cluster has
-more than one member. `TestRepairEmptyClusters_IdenticalCandidateDoesNotBlockAnotherDonor`
-pins the exclusion under a signed metric;
-`TestRepairEmptyClusters_YieldsKDistinctCentroidsWhereDataAllows` pins the
-achievable case (k distinct centroids when the data has them); and
-`TestRepairEmptyClusters_CannotExceedTheDistinctPointsAvailable` pins the
-boundary, asserting assignments and cluster sizes are left completely
-untouched when the data has only one distinct position.
-
-**A candidate distance that is NaN is skipped outright, and one that is
-±Inf is clamped to a finite sentinel, the same way `clampedMin` protects
-ivf and PQ's own initialisation from the identical overflow (see above).**
-ivf's configurable distance functions can produce either: `Cosine` returns
-NaN for large-but-finite input (dividing one float32 overflow by another is
-Inf/Inf), and `DotProductDistance` can overflow to a clean `+Inf` or `-Inf`.
-A NaN candidate cannot be meaningfully compared as farther or nearer than
-anything — IEEE 754 makes both `x > NaN` and `NaN > x` false — so accepting
-one as the running maximum poisons every later
-comparison and the search silently keeps the first candidate scanned
-instead of the true farthest one, regardless of scale.
-`TestRepairEmptyClusters_SkipsNaNCandidates` reproduces this with
-`Cosine({1e20, 0}, {5e19, 0})` — perfectly finite input.
-Clamping cannot change the ORDER of candidates (-Inf < any finite value <
-+Inf either way); what it changes is ties. A clamped `+Inf` ties with, rather
-than beats, an earlier `+MaxFloat32` candidate, and a clamped `-Inf` ties with
-a later `-MaxFloat32`. `TestRepairEmptyClusters_ClampTiesInfinityWithTheFiniteBound`
-and `TestRepairEmptyClusters_ClampTiesNegativeInfinityWithTheFiniteBound` pin
-exactly those ties, and each fails if its clamp branch is removed;
-`TestRepairEmptyClusters_ClampsInfiniteCandidates` additionally checks that no
-literal infinity reaches a centroid.
-
-`quantization`'s own suite additionally pins the specific call site PQ's
-`kmeansCluster` uses —
-`TestKMeansCluster_RepairsEmptyClustersWiredWithL2Squared` calls
-`kmeans.RepairEmptyClusters` directly with PQ's exact arguments, and
-`TestKMeansCluster_RepairsEmptyClusterThroughRealRefinement` calls the real
-production function containing PQ's call site
-(`refineAndRepair`) with hand-picked initial centroids chosen to force an
-empty cluster deterministically — since k-means++ initialization is
-specifically designed to avoid leaving an empty cluster behind in the first
-place (an exhaustive seed search across several adversarial datasets, over
-50,000 seeds through `kmeansCluster`'s own public entry point, found none),
-which is consistent with ivf's own measurement of its analogous `kmeans++`
-configuration elsewhere in this document: 0 degenerate runs in 60,000 seeds,
-against thousands for `random` initialization, which PQ does not offer.
-
-**The running minimum must compare the metric's raw (unsquared) output,
-never its square, before taking the minimum.** `DistanceMetric` is not always
-non-negative — `DotProductDistance` returns a signed value where a MORE
-NEGATIVE number is CLOSER (see its doc comment) — so `min(d)²` and `min(d²)`
-disagree whenever a signed metric is in play: for candidate distances -10 and
-3, the correct nearest-centroid distance is -10 (giving sampling weight 100),
-but comparing squares first picks 3 as nearer (3²=9 < (-10)²=100) and assigns
-a weight of 9 instead, silently changing the k-means++ selection distribution
-for every signed metric. `ivf.KMeans` tracks the raw minimum and squares it
-only once, when forming the sampling weight; `quantization.kmeansCluster`
-does not have this hazard because it hardcodes `l2Squared`, which is already
-non-negative. `TestKMeans_InitializeKMeansPlusPlus_SignedMetricWeights` pins
-the raw-then-square ordering against an independent from-scratch reference
-implementation over 2,000 seeds using `DotProductDistance`.
-
-**The running minimum is clamped against overflow and NaN, not assigned
-directly.** Both implementations track it through a small `clampedMin(current,
-candidate)` helper — sentinel-initialised to `math.MaxFloat32` and only ever
-lowered by `<`, the same idiom `findNearestCentroid` uses — so a distance
-computation that overflows float32, or that produces `NaN`, can never replace
-a smaller (or the sentinel) value and propagate into the weighted-sampling
-sum. An unconditional assignment would let a single overflowing pair make one
-point's sampling weight `+Inf`; multiplying that into a random draw that
-happens to land on exactly zero produces `NaN`, against which every
-subsequent `>=` comparison is false, silently defaulting selection to the
-last-scanned vector instead of an actual weighted choice.
-
-`ivf.KMeans`'s `clampedMin` clamps BOTH `+Inf` and `-Inf` (as well as `NaN`)
-to a finite bound (`±math.MaxFloat32`) before ever comparing a candidate —
-not `+Inf` alone. `DotProductDistance`'s raw output is signed (a MORE
-NEGATIVE value is CLOSER), and its own float32 accumulation can overflow to
-`-Inf` from perfectly finite, merely large-magnitude and well-aligned input
-just as validly as it can overflow to `+Inf` from anti-aligned input. An
-unclamped `-Inf` compares less than every finite value — including the
-sentinel — so it would be accepted as a legitimately closer point rather than
-recognised as the overflow artifact it is, and squaring it back into a weight
-reproduces exactly the `+Inf` failure the clamp exists to prevent.
-`quantization.kmeansCluster`'s `clampedMin` only needs the `+Inf`/NaN side:
-its distance function, `l2Squared`, is unsigned by construction and cannot
-overflow negative. `TestClampedMin_OverflowAndNaN` (in both `pkg/vector/ivf`
-and `pkg/vector/quantization`) pins each package's `clampedMin` directly and
-deterministically; `TestKMeans_DotProductOverflow_ClampedToFiniteWeight` and
-`TestKMeans_InitializeKMeansPlusPlus_DotProductOverflow` exercise the ivf
-`-Inf` case specifically, through the real `DotProduct` function rather than
-a synthetic `-Inf` literal; `TestKMeansPlusPlusInit_OverflowDistanceClamped`
-runs PQ's initializer against vectors whose pairwise distance genuinely
-overflows float32, comparing it seed-for-seed against an unclamped reference
-oracle to confirm the two select identical centroids on ordinary input and
-diverge once the overflow is real.
-
-**Squaring the clamped minimum is a second, independent overflow hazard in
-`ivf.KMeans`, and clamping alone does not close it.** `clampedMin` only
-prevents an already-non-finite DISTANCE from replacing a smaller one; it does
-nothing to stop the SQUARING of a large-but-finite value — including its own
-sentinel, `math.MaxFloat32` — from overflowing float32's ~3.4e38 range on its
-own (`math.MaxFloat32 * math.MaxFloat32` computed in float32 is itself
-`+Inf`). The k-means++ sampling weight is therefore computed by
-`squaredWeight`, which squares in float64 (headroom to ~1.16e77, against a
-~1.8e308 ceiling) rather than float32.
-`TestSquaredWeight_LargeFiniteDistanceNoOverflow` pins this directly: values
-that overflow when squared in plain float32 arithmetic do not overflow
-through `squaredWeight`. `quantization.kmeansCluster` has no equivalent
-second step: `l2Squared` is already the squared distance in one step, so
-there is no separate "square the clamped minimum" operation to protect.
-
-### `KMeansDimensionMismatchError` guards `KMeans.Cluster` called directly
-
-`ivf.Index.Train` validates every training vector's length against the
-index's configured dimensionality before it ever calls `KMeans.Cluster`, so
-callers going through the `Index` interface get `IVFDimensionMismatchError`
-and never reach k-means++ with mismatched input. `KMeans.Cluster` is exported
-in its own right, though, and a caller invoking it directly with a mismatched
-vector would otherwise feed the distance functions' `math.MaxFloat32`
-length-mismatch sentinel into k-means++'s weighted-sampling sum, where
-squaring it overflows float32 to `+Inf` — exactly the overflow hazard the
-clamping above exists to contain, but from a cause worth refusing outright
-instead. `Cluster` therefore validates every vector's dimensionality itself
-before initialising centroids and returns the typed
-`api.KMeansDimensionMismatchError` (mirroring `IVFDimensionMismatchError`'s
-shape: index, got, expected) rather than relying on the clamp to make a bad
-input merely harmless.
+The k-means internals behind this (initialisation cost, overflow clamping,
+empty-cluster repair, dimension validation) are documented in the package
+docs of `pkg/vector/ivf` and `pkg/vector/kmeans`.
 
 ## Persistence
 

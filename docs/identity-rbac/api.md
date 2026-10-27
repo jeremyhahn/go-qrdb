@@ -1,6 +1,6 @@
 # Identity and RBAC — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -51,7 +51,7 @@ token exactly once:
 {
   "id": "3",
   "token": "a94e3f1b...",
-  "expiresAt": "2026-10-07T12:00:00Z",
+  "expiresAt": "<RFC 3339 time>",
   "userID": "9",
   "username": "bob",
   "tenantID": "acme",
@@ -870,7 +870,7 @@ of its own, and the listing never contains one.
 | An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
 | Invite or redeem request missing a required field | 400 | `INVALID_ARGUMENT` |
 | Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
-| Re-inviting an account that already holds a credential or is not pending | 412 | `FAILED_PRECONDITION` |
+| Re-inviting an account that already holds a credential or is not pending | 409 | `FAILED_PRECONDITION` |
 
 ## Pagination
 

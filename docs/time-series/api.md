@@ -1,12 +1,7 @@
 # Time Series — API
 
-> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
->
-> "Target" sections describe the time-series half of the multi-model database
-> program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column. Every capability
@@ -78,18 +73,9 @@ Response `TSAggResult` carries `timestamp_ns`, `value` and `count` per bucket.
 { "duration_ns": 2592000000000000, "resolution_ns": 3600000000000, "aggregation": 1 }
 ```
 
-`duration_ns` is how long points are kept; `resolution_ns` and `aggregation`
-are intended to make retention a downsampling policy rather than a delete
-horizon. **`duration_ns` is enforced by a leader-driven sweep every
-`DefaultRetentionInterval` (one minute); `resolution_ns`/`aggregation`
-downsampling is stored and returned but not applied** — see
-[engineering.md](engineering.md).
-
-**Target:** no request or response changes. Every capability is served for
-every database on every backend that `MVCCEngine` composes over — memory,
-file, pebble and objstore, shipped — and answers as not configured only where
-time-series support was not compiled in (`WITH_QRDB_TS`). A dedicated
-per-database raft binding remains target work.
+`duration_ns` is how long points are kept. Only `duration_ns` is enforced;
+`resolution_ns` and `aggregation` are stored and returned but not applied —
+see [architecture.md](architecture.md#retention-enforcement).
 
 `TSDeleteRequest`: `metric`, optional `tags`, optional `start_ns`/`end_ns`.
 **With no range, the whole series is deleted.**
@@ -114,8 +100,8 @@ fields as query parameters. `qrdb_ts_set_retention_policy` takes
 
 ## Ranges and units
 
-Every timestamp field is **nanoseconds**, except where the MCP row above
-says seconds. Every range is closed: `[start_ns, end_ns]`, both ends
+Every timestamp field is **nanoseconds**, except the `duration_seconds` and
+`resolution_seconds` fields of MCP `qrdb_ts_set_retention_policy`. Every range is closed: `[start_ns, end_ns]`, both ends
 included.
 
 ## Pagination
@@ -137,7 +123,7 @@ Aggregate results are bounded by the bucket count.
 | Unknown metric on query | 200 with an empty result | `OK` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
-| Built without `qrdb_ts` | 404 (route not registered) | `UNIMPLEMENTED` |
+| Built without `qrdb_ts` | 501 — `ServiceNotImplementedError` | `UNIMPLEMENTED` |
 | Write reaching a state machine with no time-series store | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError` |
 | Point refused by the store on its merits (empty metric, zero timestamp, bad batch point) | 400 | `INVALID_ARGUMENT` — `service.CommandRejectedError` |
 | Time-series store closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |

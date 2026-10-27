@@ -563,6 +563,21 @@ A range delete removes every key in `[start, end)` in one Raft entry:
     `CompareAndDelete(tombstone)`. `Manager.Create` returns the
     already-exists refusal unwrapped, so every transport maps it as a
     conflict.
+  - **A claim whose outcome is unknown is released.** When the
+    `PutIfAbsent` or `CompareAndSwap` that claims the marker fails — a
+    propose that timed out may still be applied after the create has
+    rolled back — `UnfenceDatabaseKeyspace` proposes
+    `CompareAndSwap(incarnation -> tombstone)` under a context detached
+    from the expired one (`database.DropRollbackContext`) before it
+    returns. The release is ordered after the claim in the log, so a claim
+    that lands is swapped back to the fenced tombstone and one that never
+    lands leaves the release a no-op; either way the marker and the
+    catalog agree that no database exists, and the retried create claims
+    the tombstone. A release that fails too is
+    `*service.MarkerReleaseError`, which unwraps to the claim's failure
+    (so a timeout stays a retryable 503) and names both errors; the marker
+    may then hold the orphaned incarnation until a drop of the name fences
+    it.
   - **A dropped name is re-created only through the store.** The node
     records each drop under `<data-dir>/dropped/<name>`; a manager with no
     reclaimer refuses such a name with `*database.ReclaimerRequiredError`,

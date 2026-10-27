@@ -803,9 +803,113 @@ check-public-proto:
 # developer running the advertised unit-test entrypoint is told about a
 # repository defect at the same moment CI would tell them -- the same reasoning
 # that put check-publication-bound into `_ci`.
+TEST_PKGS := ./pkg/... ./cmd/... ./test/buildgates/...
+
 .PHONY: test
 test: test-clusterproof
-	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/... ./test/buildgates/...
+	$(GOTEST) $(TAG_FLAG) $(TEST_PKGS)
+
+# FIPS 140-3 legs (#1230). CI's `fips` job runs `make test` and `make
+# test-sdk` under GOFIPS140=latest GODEBUG=fips140=only
+# (docs/seal/fips140-mode.md) as parallel matrix legs, one per name in
+# FIPS_LEGS, each `make test-fips-leg FIPS_LEG=<leg>`. Together the legs are
+# exactly the two suites, each package in one leg:
+#
+#   - a FIPS_LEG_<leg> leg runs the packages its patterns match: FIPS_ROOT_LEGS
+#     in the root module, FIPS_SDK_LEGS in $(SDK_DIR);
+#   - `rest` runs every package of TEST_PKGS no root leg names, after
+#     test-clusterproof, as `make test` does;
+#   - `sdk` runs every package of $(SDK_DIR) no SDK leg names.
+#
+# The two remainder legs mean a new package always runs: it lands in `rest` or
+# `sdk` until a leg names it. The legs are split by measured wall time (run
+# 68401, docs/seal/fips140-mode.md), not by package count: a leg takes about
+# its slowest package plus 3 to 4 minutes of build and setup, so the slowest
+# packages sit alone. A pattern without `/...` names one package, so a leg can
+# hold it alone while its subpackages run elsewhere.
+#
+# A package too slow for a leg on its own is split by test name (#1234): each
+# of its legs names the one package, FIPS_RUN_<leg> selects a leg's top-level
+# tests (go test -run), and the package's last leg skips what the others
+# select (FIPS_SKIP_<leg> = $(call fips-skip,<legs>), go test -skip), so a new
+# test runs there until a FIPS_RUN_ names it. pkg/tenant (38.6 min), pkg/seal
+# (32.9 min, PBKDF2 at 600,000 iterations under FIPS) and pkg/server (25.7
+# min, split for headroom) are split in two.
+# test/buildgates/fips_legs_test.go fails when a package is in two legs or in
+# none (a split package's legs all select by name), when a leg is empty, and
+# when ci.yml's matrix is not FIPS_LEGS; fips_split_test.go fails when a test
+# of a split package runs in no leg or in two. `make -s print-fips-legs`
+# prints the legs, print-fips-leg-filter a leg's -run and -skip.
+fips-skip = $(subst $(space),|,$(strip $(foreach l,$(1),$(FIPS_RUN_$(l)))))
+FIPS_LEG_tenant-lifecycle := ./pkg/tenant
+FIPS_RUN_tenant-lifecycle := ^Test(TenantService|CreateTenant|StoreResolver|DeleteTenant|UndoCreate)
+FIPS_LEG_tenant        := ./pkg/tenant
+FIPS_SKIP_tenant        = $(call fips-skip,tenant-lifecycle)
+FIPS_LEG_seal-barrier  := ./pkg/seal
+FIPS_RUN_seal-barrier  := ^Test(Barrier|StorageBarrier|ChangePassword|SealStore|TenantBarrier)
+FIPS_LEG_seal          := ./pkg/seal
+FIPS_SKIP_seal          = $(call fips-skip,seal-barrier)
+FIPS_LEG_server-raft   := ./pkg/server
+FIPS_RUN_server-raft   := ^Test(Raft|ReattachRaft)
+FIPS_LEG_server        := ./pkg/server
+FIPS_SKIP_server        = $(call fips-skip,server-raft)
+FIPS_LEG_auth          := ./pkg/server/lifecycle/... ./pkg/auth/... ./cmd/...
+FIPS_LEG_service       := ./pkg/service/... ./pkg/database/... ./pkg/statemachine/... ./pkg/engine/... \
+                          ./pkg/dao/... ./pkg/store/...
+FIPS_LEG_api-keys      := ./pkg/api/... ./pkg/seal/encfs/... ./pkg/seal/kdf/... ./pkg/seal/sealtest/... \
+                          ./pkg/ceremony/... ./pkg/credentials/... ./pkg/firstboot/... ./pkg/pin/... \
+                          ./pkg/clusterseal/... ./pkg/barrierinit/... ./pkg/authfactors/... \
+                          ./pkg/keywrap/... ./pkg/dek/... ./pkg/sql/...
+FIPS_LEG_sdk-transport := ./transport/...
+FIPS_ROOT_LEGS := tenant-lifecycle tenant seal-barrier seal server-raft server auth service api-keys
+FIPS_SDK_LEGS  := sdk-transport
+FIPS_LEGS      := $(FIPS_ROOT_LEGS) rest $(FIPS_SDK_LEGS) sdk
+
+FIPS_LEG_DIR = $(if $(filter $(FIPS_LEG),$(FIPS_SDK_LEGS) sdk),$(SDK_DIR),.)
+FIPS_LEG_CHECK = case " $(FIPS_LEGS) " in *" $(FIPS_LEG) "*) ;; \
+	*) echo "FIPS_LEG must be one of: $(FIPS_LEGS)" >&2; exit 2 ;; esac
+
+# FIPS_LEG_FILTER is the leg's test selection, as go test flags.
+FIPS_LEG_FILTER = $(if $(FIPS_RUN_$(FIPS_LEG)),-run '$(FIPS_RUN_$(FIPS_LEG))') \
+	$(if $(FIPS_SKIP_$(FIPS_LEG)),-skip '$(FIPS_SKIP_$(FIPS_LEG))')
+
+# print-fips-leg-filter prints the -run and -skip patterns FIPS_LEG passes to
+# go test, empty for a leg that runs whole packages.
+.PHONY: print-fips-leg-filter
+print-fips-leg-filter:
+	@$(FIPS_LEG_CHECK)
+	@printf 'run=%s\nskip=%s\n' '$(FIPS_RUN_$(FIPS_LEG))' '$(FIPS_SKIP_$(FIPS_LEG))'
+
+.PHONY: print-fips-legs
+print-fips-legs:
+	@printf '%s\n' $(FIPS_LEGS)
+
+# print-test-pkgs prints the package patterns `make test` runs.
+.PHONY: print-test-pkgs
+print-test-pkgs:
+	@printf '%s\n' $(TEST_PKGS)
+
+# print-fips-leg-packages prints the import paths FIPS_LEG runs. A remainder
+# leg is its suite minus every package the other legs of its module name.
+.PHONY: print-fips-leg-packages
+print-fips-leg-packages:
+	@$(FIPS_LEG_CHECK)
+	@cd $(FIPS_LEG_DIR) && case "$(FIPS_LEG)" in \
+	rest) all=$$($(GO) list $(TAG_FLAG) $(TEST_PKGS)) && \
+		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_ROOT_LEGS),$(FIPS_LEG_$(l)))) && \
+		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
+	sdk) all=$$($(GO) list $(TAG_FLAG) ./...) && \
+		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_SDK_LEGS),$(FIPS_LEG_$(l)))) && \
+		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
+	*) $(GO) list $(TAG_FLAG) $(FIPS_LEG_$(FIPS_LEG)) ;; \
+	esac
+
+.PHONY: test-fips-leg
+test-fips-leg:
+	@$(FIPS_LEG_CHECK)
+	$(if $(filter rest,$(FIPS_LEG)),$(MAKE) --no-print-directory test-clusterproof)
+	pkgs=$$($(MAKE) -s --no-print-directory print-fips-leg-packages FIPS_LEG=$(FIPS_LEG)) && \
+		cd $(FIPS_LEG_DIR) && $(GOTEST) $(TAG_FLAG) $(FIPS_LEG_FILTER) $$pkgs
 
 # The cluster proof harness's own unit tests (#669): the history format, the
 # acknowledged-write ledger, the porcupine linearizability check and the
@@ -4244,7 +4348,7 @@ coverage-vector-quantization: | _cover-dir ## Generate quantization coverage rep
 
 # ============================================================================
 # Shared k-means (pkg/vector/kmeans) -- consumed by pkg/vector/ivf and
-# pkg/vector/quantization; see docs/vectors/engineering.md.
+# pkg/vector/quantization; see the package doc in pkg/vector/kmeans/doc.go.
 # ============================================================================
 
 .PHONY: test-vector-kmeans

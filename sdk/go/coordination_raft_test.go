@@ -553,6 +553,25 @@ func assertTruncateReclaimed(t *testing.T, dbReg *server.DatabaseServiceRegistry
 // even came due. This test holds across several renewal cycles and fails the
 // moment Done closes early; the expiry half then proves the confirming recheck
 // did not cost the loss signal itself.
+//
+// Reading a failure: the message says which of two things happened.
+//
+//   - "... within the 2s TTL, so the lease should still have been held": the
+//     deadline had not passed and renewal failed anyway. A real lease defect.
+//   - "THE ENVIRONMENT COULD NOT VALIDATE the sub-TTL renewal property": every
+//     attempt overran the TTL before a renewal landed, so the assertion never
+//     ran. Either the host could not schedule a 1.5s cadence inside a 2s
+//     deadline, or a renewal-path regression makes acknowledgements miss the
+//     local deadline; this test cannot tell them apart. If a quiet host still
+//     gets no clean window, suspect the regression. That is why the path fails
+//     rather than skips: this is the only end-to-end coverage of the property.
+//
+// The deadline is dated from when the previous confirmation was sent
+// (heldUntil advances by sent.Add(d) in coordination.go), so expiry is decided
+// by the previous renew's round trip plus the sleep plus this renew's round
+// trip, not by the sleep alone. The timing is not widened: a 2s TTL renewed at
+// 1.5s is the cadence that produces the ~0.999s remainder the whole-second
+// truncation rounds to zero, which is the defect this test exists to catch.
 func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 	coord, _ := bootRaftNode(t)
 

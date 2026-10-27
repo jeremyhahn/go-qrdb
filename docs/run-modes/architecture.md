@@ -1,6 +1,6 @@
 # Run Modes — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -137,7 +137,7 @@ or `memory`. The file backend is durable: atomic temp-file+rename+fsync writes a
 commit journal replayed at open (`pkg/storage/file/journal.go`), plus the
 `storage.Syncer` seam. Its layout maps each key to a record named by a hash
 of the key — see
-[storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+[storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout).
 Keep `sm_storage` identical across a shard's replicas. Objstore is a
 snapshot/backup tier and is refused
 as a hot apply path by config validation. Every other state

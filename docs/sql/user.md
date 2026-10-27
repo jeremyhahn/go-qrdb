@@ -1,6 +1,6 @@
 # SQL — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 You can talk to the store with `mysql`, `psql`, a `database/sql` program, GORM,
@@ -104,8 +104,8 @@ and the transaction carries on with its earlier statements intact. Outside a
 transaction a statement on a relational table is its own transaction: all of
 its rows commit, or none do.
 
-**Re-create tables from v0.20.0 through v0.21.0.** A relational table created
-by one of those releases is refused with **MySQL error 1459** (SQLSTATE 55000
+**Re-create tables in the pre-generation key layout.** A relational table
+written under the pre-generation key layout is refused with **MySQL error 1459** (SQLSTATE 55000
 on the PostgreSQL wire): its data was written under a key layout this version
 does not read, and there is no migration. `DROP TABLE` it, `CREATE TABLE` it
 again, and reload its rows from your own source of truth.
