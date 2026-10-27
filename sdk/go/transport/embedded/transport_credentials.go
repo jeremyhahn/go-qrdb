@@ -63,7 +63,10 @@ func (t *Transport) CredentialStrategy(ctx context.Context) (*transport.Credenti
 	if t.credentialSvc == nil {
 		return nil, &NilServiceError{Service: "CredentialServicer"}
 	}
-	strategy := t.credentialSvc.CredentialStrategy()
+	strategy, err := t.credentialSvc.CredentialStrategy(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return &transport.CredentialStrategyResponse{
 		Strategy: strategy,
 	}, nil

@@ -136,7 +136,11 @@ func (m *coverageCredentialService) CredentialSubmit(ctx context.Context, name s
 	}
 	return nil
 }
-func (m *coverageCredentialService) CredentialStrategy() string {
+func (m *coverageCredentialService) CredentialStrategy(context.Context) (string, error) {
+	return m.credentialStrategy(), nil
+}
+
+func (m *coverageCredentialService) credentialStrategy() string {
 	if m.strategyFn != nil {
 		return m.strategyFn()
 	}
