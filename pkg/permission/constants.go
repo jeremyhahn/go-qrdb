@@ -1368,29 +1368,11 @@ var categories = []Category{
 	},
 }
 
-// credentialPermissions returns every named-credential permission. Each tenant
-// has its own named-credential store: the system tenant's is the node-wide
-// store, every other tenant's lives under its own barrier
-// (service.CredentialService resolves the store from the caller's tenant). The
-// permissions are therefore ScopeSelf: an identity exercises them in its own
-// tenant, against its own store, and a grant in one tenant never reaches
-// another tenant's (or the platform's) credential material.
-func credentialPermissions() []Permission {
-	return []Permission{
-		CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
-		CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion,
-		CredentialsListVersions, CredentialsStore, CredentialsRetrieve,
-	}
-}
-
 func init() {
 	// Register all permissions from all categories into the global registry.
 	for _, cat := range categories {
 		Register(cat.Permissions...)
 	}
-	// Every tenant has its own named-credential store; a credential permission
-	// acts on the identity's own tenant's store only.
-	RegisterScope(ScopeSelf, credentialPermissions()...)
 	// The cert-binding PAIR is declared ScopeSelf here, beside its
 	// definitions, rather than in self_scope.go with the rest: it was the
 	// first pair declared deliberately, back when LookupScope still answered

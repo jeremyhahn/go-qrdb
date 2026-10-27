@@ -20,9 +20,10 @@ import "testing"
 // permissions are self-scope: a tenant identity exercises them in its own
 // tenant against its own store, and none of them reaches across tenants.
 func TestCredentialsPermissions_AreSelfScope(t *testing.T) {
-	perms := credentialPermissions()
-	if len(perms) != 10 {
-		t.Fatalf("credentialPermissions() has %d permissions, want the 10 verbs", len(perms))
+	perms := []Permission{
+		CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
+		CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion,
+		CredentialsListVersions, CredentialsStore, CredentialsRetrieve,
 	}
 	for _, p := range perms {
 		t.Run(string(p), func(t *testing.T) {
@@ -33,5 +34,23 @@ func TestCredentialsPermissions_AreSelfScope(t *testing.T) {
 				t.Errorf("IsCrossScope(%q) = true, want false", p)
 			}
 		})
+	}
+}
+
+// The credentials:* scope is declared in self_scope.go with the rest of the
+// self-scoped permissions, not in an init of its own.
+func TestCredentialsPermissions_DeclaredInSelfScopedList(t *testing.T) {
+	declared := make(map[Permission]bool)
+	for _, p := range selfScopedPermissions() {
+		declared[p] = true
+	}
+	for _, p := range []Permission{
+		CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
+		CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion,
+		CredentialsListVersions, CredentialsStore, CredentialsRetrieve,
+	} {
+		if !declared[p] {
+			t.Errorf("selfScopedPermissions() does not declare %q", p)
+		}
 	}
 }
