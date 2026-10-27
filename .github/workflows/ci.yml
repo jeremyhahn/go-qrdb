@@ -368,10 +368,11 @@ on:
                                         # only retry when a run was never
                                         # created (see v1.3 correction above)
   # v1.23: main's full tier nightly as well as after every merge. Scheduled
-  # runs are on the default branch. Restored on Software's typed order DS-3913
-  # (Company Agent m1378 (2)), reversing the owner ruling of 2026-10-11 and
-  # Company Agent m433 ("no workflow runs on a cron"), which kept this
-  # trigger out. test/buildgates/ci_tiers_test.go allows a `schedule:` here
+  # runs are on the default branch. Restored under Company Agent ruling 216(1)
+  # (Software's typed order DS-3913): ruling 135 makes this in-template Gitea
+  # schedule trigger the one scheduler, and the owner ruling of 2026-10-11 and
+  # Company Agent m433 forbid host cron, timers and watchers, not this
+  # trigger. test/buildgates/ci_tiers_test.go allows a `schedule:` here
   # and in automerge.yml alone.
   schedule:
     - cron: '0 4 * * *'
@@ -1612,7 +1613,7 @@ jobs:
   # it `nightly`. It replaces nothing in batch.yml, whose soak stays a dispatch.
   #
   # The soak runs on the nightly schedule and on workflow_dispatch, as the
-  # template's; DS-3913 (m1378 (2)) restored the schedule that m433 removed.
+  # template's; the schedule is the one scheduler (ruling 135, ruling 216(1)).
   # CUSTOMIZE (go-qrdb): the iteration is one feature's suite, SOAK_FEATURE, not the whole suite: the
   # whole suite is forty legs of up to 45 minutes run in parallel, and one
   # iteration of it would not fit the job's limit. clustering runs real

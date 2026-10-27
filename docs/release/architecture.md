@@ -293,9 +293,10 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 
 `ci.yml` runs on ci-template v1.27.0's nightly `schedule:` (cron
 `0 4 * * *`), which selects the full and nightly tiers on main, soak included.
-It was restored on Software's typed order DS-3913 (Company Agent m1378 (2)),
-reversing the owner ruling of 2026-10-11 and Company Agent m433 that no
-workflow runs on a cron. `automerge.yml` is the only other workflow with a
+It was restored under Company Agent ruling 216(1) (Software's typed order
+DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
+scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid
+host cron, timers and watchers, not this trigger. `automerge.yml` is the only other workflow with a
 `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
 on `workflow_dispatch`, and is dispatched by hand each night.
 

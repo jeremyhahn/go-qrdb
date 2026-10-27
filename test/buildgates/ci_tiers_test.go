@@ -19,7 +19,8 @@ package buildgates
 // every event; the full tier runs on every event but a pull request, and on a
 // pull request labelled `ci:full` (ci-template v1.23's CI_FULL_TIER); the
 // nightly tier runs on schedule and workflow_dispatch only (v1.24); ci.yml's
-// schedule was restored by DS-3913 (m1378 (2)), reversing m433. CI Gate
+// schedule is the one scheduler (ruling 135, restored under ruling 216(1));
+// m433 forbids host cron and timers, not this trigger. CI Gate
 // stays the one required check, and it passes a skipped job only when the job
 // is tagged `full` or `nightly` and the run did not select that tier. The code
 // tier (DS-3160) runs on every event but a docs-only pull request, and the gate
@@ -47,8 +48,9 @@ package buildgates
 //   - any other pull_request workflow without the ref-keyed concurrency group
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
 //     v1.22.1), or any workflow but ci.yml and automerge.yml regaining a
-//     `schedule:` (owner ruling 2026-10-11: no workflow runs on a cron;
-//     amended for ci.yml's nightly by DS-3913, Company Agent m1378 (2)).
+//     `schedule:` (ruling 135: ci.yml's in-template trigger is the one
+//     scheduler, restored under Company Agent ruling 216(1); the owner ruling
+//     of 2026-10-11 and m433 forbid host cron and timers).
 //
 // The gate's own shell is executed, not read: TestCIGateScriptHonoursTheTiers
 // runs ci-gate's step under bash with each combination of results.
@@ -132,9 +134,10 @@ const (
 )
 
 // scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
-// ci-template v1.27.0's nightly cron, restored on Software's typed order
-// DS-3913 (Company Agent m1378 (2)), which reverses the owner ruling of
-// 2026-10-11 and m433 for that file alone. automerge.yml is under owner hold
+// ci-template v1.27.0's nightly cron, the one scheduler under ruling 135,
+// restored under Company Agent ruling 216(1) (Software DS-3913); the owner
+// ruling of 2026-10-11 and m433 forbid host cron and timers, not this
+// trigger. automerge.yml is under owner hold
 // and out of #674's scope.
 var scheduleAllowed = map[string]bool{
 	ciWorkflowName:  true,
@@ -856,13 +859,13 @@ type workflowFile struct {
 }
 
 // workflowTriggerProblems checks one workflow file against devops.md §9b and
-// the no-schedule ruling.
+// the schedule rule (rulings 135 and 216(1)).
 func workflowTriggerProblems(name string, wf workflowFile) []string {
 	var problems []string
 	triggers := onTriggers(wf.On)
 	if slices.Contains(triggers, "schedule") && !scheduleAllowed[name] {
-		problems = append(problems, name+" runs on `schedule:`: only ci.yml's nightly runs on a cron (owner ruling "+
-			"2026-10-11, amended by DS-3913); keep workflow_dispatch and let the coordinator's nightly dispatch it")
+		problems = append(problems, name+" runs on `schedule:`: only ci.yml's in-template nightly is a scheduler (rulings "+
+			"135 and 216(1)); keep workflow_dispatch and dispatch it by hand")
 	}
 	if !slices.Contains(triggers, "pull_request") {
 		return problems
@@ -956,7 +959,7 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
 		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
-	// DS-3913: ci.yml carries v1.27.0's nightly cron; any other workflow's
+	// Ruling 216(1): ci.yml carries v1.27.0's nightly cron; any other workflow's
 	// schedule still reddens (the "schedule" case below).
 	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n", 1)
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciScheduled)); len(p) != 0 {
