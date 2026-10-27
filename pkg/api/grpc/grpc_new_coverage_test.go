@@ -102,7 +102,11 @@ type coverageGRPCCredentialService struct{}
 func (c *coverageGRPCCredentialService) CredentialSubmit(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (c *coverageGRPCCredentialService) CredentialStrategy() string { return "manual" }
+func (c *coverageGRPCCredentialService) CredentialStrategy(context.Context) (string, error) {
+	return c.credentialStrategy(), nil
+}
+
+func (c *coverageGRPCCredentialService) credentialStrategy() string { return "manual" }
 func (c *coverageGRPCCredentialService) CredentialDelete(_ context.Context, _ string) error {
 	return nil
 }

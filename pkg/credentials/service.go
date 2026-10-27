@@ -114,6 +114,16 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 	return s, nil
 }
 
+// ForBarrier returns a barrier-strategy CredentialService over barrier that
+// shares s's logger and audit logger. It is how a tenant's named-credential
+// store is derived from the node-wide one: the same versioned rotation API,
+// persisted in the tenant barrier's own storage and encrypted under that
+// barrier's key. It returns ErrNilBarrier when barrier is nil.
+func (s *CredentialService) ForBarrier(barrier *seal.StorageBarrier) (*CredentialService, error) {
+	return NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, s.logger,
+		WithAuditLogger(s.auditLogger()))
+}
+
 // SetAuditLogger attaches (or replaces) the compliance audit logger after
 // construction. It exists for wiring paths where the service is built before
 // the daemon's compliance logger is available (e.g. the seal subsystem). A

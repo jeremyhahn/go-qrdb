@@ -48,12 +48,15 @@ func (s *Server) handleCredentialSubmit(ctx context.Context, payload []byte) ([]
 
 // handleCredentialStrategy returns the active credential management
 // strategy name as reported by the credential service.
-func (s *Server) handleCredentialStrategy(_ context.Context, _ []byte) ([]byte, error) {
+func (s *Server) handleCredentialStrategy(ctx context.Context, _ []byte) ([]byte, error) {
 	if s.credentialSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "credential"}
 	}
 
-	strategy := s.credentialSvc.CredentialStrategy()
+	strategy, err := s.credentialSvc.CredentialStrategy(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := proto.Marshal(&pb.CredentialStrategyResponse{
 		Strategy: strategy,

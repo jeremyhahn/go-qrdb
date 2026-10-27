@@ -163,8 +163,11 @@ func toolCredentialStrategy() mcp.Tool {
 // handleCredentialStrategy returns a tool handler that delegates to
 // svc.CredentialStrategy.
 func handleCredentialStrategy(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
-	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		strategy := svc.CredentialStrategy()
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		strategy, err := svc.CredentialStrategy(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_strategy", Err: err}
+		}
 
 		result := struct {
 			Strategy string `json:"strategy"`

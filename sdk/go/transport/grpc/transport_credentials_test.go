@@ -80,7 +80,11 @@ func (f *fakeCredentialServicer) CredentialDelete(ctx context.Context, name stri
 	}
 	return nil
 }
-func (f *fakeCredentialServicer) CredentialStrategy() string {
+func (f *fakeCredentialServicer) CredentialStrategy(context.Context) (string, error) {
+	return f.credentialStrategy(), nil
+}
+
+func (f *fakeCredentialServicer) credentialStrategy() string {
 	if f.strategyFn != nil {
 		return f.strategyFn()
 	}
