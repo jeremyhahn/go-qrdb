@@ -89,3 +89,58 @@ func TestRegisterGRPCService_WithoutTenantBarrierService_Unimplemented(t *testin
 		t.Fatalf("Seal code = %s; want Unimplemented (err %v)", got, err)
 	}
 }
+
+// signedInitTenantSvc answers both halves of a signed tenant barrier init,
+// named through the SDK's re-exported service types alone.
+type signedInitTenantSvc struct {
+	sdk.ServiceTenantServicer
+	signature atomic.Pointer[[]byte]
+}
+
+func (s *signedInitTenantSvc) TenantBarrierInitBegin(_ context.Context, req *sdk.ServiceTenantBarrierInitBeginRequest) (*sdk.ServiceTenantBarrierInitBeginResult, error) {
+	return &sdk.ServiceTenantBarrierInitBeginResult{TenantID: req.TenantID, Strategy: "none", Reference: []byte("ref"), Statement: req.SignerPublicKey}, nil
+}
+
+func (s *signedInitTenantSvc) TenantBarrierInitComplete(_ context.Context, req *sdk.ServiceTenantBarrierInitCompleteRequest) (*sdk.ServiceTenantBarrierInitResult, error) {
+	if string(req.Reference) != "ref" {
+		return nil, &sdk.ServiceTenantSignedInitError{TenantID: req.TenantID, Reason: sdk.ServiceTenantSignedInitUnknown}
+	}
+	s.signature.Store(&req.Signature)
+	return &sdk.ServiceTenantBarrierInitResult{TenantID: req.TenantID, Strategy: "none"}, nil
+}
+
+// An embedder that registers the TenantBarrierService serves the two-phase
+// signed init with no further wiring.
+func TestRegisterGRPCService_WithTenantBarrierService_ServesSignedInit(t *testing.T) {
+	svc := &signedInitTenantSvc{}
+	client := dialSDKRegisteredServer(t,
+		WithRegisterTenantBarrierService(svc),
+		WithRegisterAuthMiddleware(nil))
+
+	begun, err := client.SignedInitBegin(context.Background(), &pb.TenantBarrierSignedInitBeginRequest{TenantId: "acme", Strategy: "none", PublicKey: []byte("spki")})
+	if err != nil {
+		t.Fatalf("SignedInitBegin: %v", err)
+	}
+	if string(begun.GetStatement()) != "spki" || string(begun.GetReference()) != "ref" {
+		t.Fatalf("begin response = %v", begun)
+	}
+	if _, err := client.SignedInitComplete(context.Background(), &pb.TenantBarrierSignedInitCompleteRequest{TenantId: "acme", Reference: begun.GetReference(), Signature: []byte("sig")}); err != nil {
+		t.Fatalf("SignedInitComplete: %v", err)
+	}
+	if got := svc.signature.Load(); got == nil || string(*got) != "sig" {
+		t.Fatalf("completed signature = %v; want sig", got)
+	}
+	_, err = client.SignedInitComplete(context.Background(), &pb.TenantBarrierSignedInitCompleteRequest{TenantId: "acme", Reference: []byte("other"), Signature: []byte("sig")})
+	if status.Code(err) == codes.OK {
+		t.Fatal("an unknown reference must be refused")
+	}
+}
+
+func TestRegisterGRPCService_WithoutTenantBarrierService_SignedInitUnimplemented(t *testing.T) {
+	client := dialSDKRegisteredServer(t)
+
+	_, err := client.SignedInitBegin(context.Background(), &pb.TenantBarrierSignedInitBeginRequest{TenantId: "acme", PublicKey: []byte("spki")})
+	if got := status.Code(err); got != codes.Unimplemented {
+		t.Fatalf("SignedInitBegin code = %s; want Unimplemented (err %v)", got, err)
+	}
+}
