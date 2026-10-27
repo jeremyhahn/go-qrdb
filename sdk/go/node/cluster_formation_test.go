@@ -561,19 +561,39 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	// live advertisement of its own (featuregate.Gate.AdmitReplica). Each
 	// subtest runs against that settled contract, never against a race with
 	// the founders' advertisements.
+	//
+	// The refusal alone does not show the leader has seen every founder: the
+	// gate refuses as soon as it adopts an activation another founder
+	// committed, which can precede the founder advertisements in its own
+	// view. A subtest that names a founder's address (the identity conflict
+	// on replica 2) needs that founder admitted, so the wait observes both.
 	const unadvertised = "127.0.0.1:9"
 	gate := nodes[leader-1].featureGate
 	if gate == nil {
 		t.Fatal("the leader gates no features")
 	}
+	// unsettled reports what the leader's gate has yet to see, or "" once
+	// it refuses the unadvertised address and admits every founder.
+	unsettled := func() string {
+		var unsupported *featuregate.UnsupportedReplicaError
+		if err := gate.AdmitReplica(shard.ShardKV, unadvertised); !errors.As(err, &unsupported) {
+			return "admitted a replica on " + unadvertised + ", which advertises nothing"
+		}
+		for _, f := range founders {
+			if err := gate.AdmitReplica(shard.ShardKV, f.addr); err != nil {
+				return err.Error()
+			}
+		}
+		return ""
+	}
 	deadline := time.Now().Add(clusterFormationBudget)
 	for {
-		var unsupported *featuregate.UnsupportedReplicaError
-		if errors.As(gate.AdmitReplica(shard.ShardKV, unadvertised), &unsupported) {
+		pending := unsettled()
+		if pending == "" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the leader's gate never refused a replica on %s, which advertises nothing", unadvertised)
+			t.Fatalf("the leader's gate never settled on the founders' advertisements: %s", pending)
 		}
 		time.Sleep(clusterPollInterval)
 	}
