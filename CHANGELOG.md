@@ -310,6 +310,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **`cert.DefaultCertProvider.WatchForDeletions` returns a `done` channel**
+  beside its error, closed once both eviction watchers have returned, and nil
+  when the provider has no watch service. `lifecycle.WatchCertProviderEvictions`
+  waits on it as the node's own work, so `Node.Stop` cancels the Key B
+  eviction watchers and waits for them before it closes anything they read
+  through; before, they outlived the node. `sdk/go/node`'s `Close` likewise
+  waits for the cluster seal monitor rather than only canceling it.
+  `replicaforward.Start` also returns a `done` channel that closes once its
+  watches have returned, and `sdk/go/node`'s `Close` waits for it before it
+  closes the host the watches read through.
+
 - **Tenant creation refuses an ID that cannot be a SPIFFE trust domain**
   (#1150). A tenant ID is the trust domain of its principals'
   `spiffe://<tenant>/<kind>/<name>` IDs, so `OnboardTenant`, on every transport
