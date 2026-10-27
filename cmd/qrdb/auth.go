@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // auth.go implements the canonical "auth" command group per
-// docs/08-bootstrap-auth-architecture.md §6. The command group exposes
+// docs/auth-factors/cli.md. The command group exposes
 // login and N-factor management (list / add / remove / rotate /
 // relabel) wired against the qrdb SDK user-side AuthFactor service
 // (M14, accessed via Client.UserAuthFactors()).
@@ -36,7 +36,7 @@ import (
 )
 
 // validFactorTypes is the canonical --type set for "auth factor add"
-// per docs/08-bootstrap-auth-architecture.md §5e.
+// per docs/auth-factors/architecture.md.
 var validFactorTypes = map[string]struct{}{
 	"mtls":  {},
 	"fido2": {},
@@ -44,7 +44,7 @@ var validFactorTypes = map[string]struct{}{
 }
 
 // validAuthMethods is the canonical --method set for "auth login" per
-// docs/08-bootstrap-auth-architecture.md §5e.
+// docs/auth-factors/architecture.md.
 var validAuthMethods = map[string]struct{}{
 	"mtls":  {},
 	"fido2": {},
@@ -208,7 +208,7 @@ func newAuthCmd() *cobra.Command {
   factor relabel        Relabel an enrolled factor
 
 The factor subcommands implement the N-factor model documented in
-docs/08-bootstrap-auth-architecture.md §5e and delegate to the qrdb
+docs/auth-factors/architecture.md and delegate to the qrdb
 SDK user-side AuthFactor service (M14).`,
 	}
 

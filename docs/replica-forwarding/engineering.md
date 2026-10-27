@@ -1,7 +1,7 @@
 # Replica Forwarding — Engineering
 
 > **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-06
+> Scope: go-qrdb · Last verified: 2026-10-26
 
 ## Exported surface
 
@@ -145,6 +145,8 @@ func WithEmbeddedCaller(cert tls.Certificate) NodeOption
 type ReplicaForwarder interface {
 	Forward(ctx context.Context, caller *auth.Identity, method, database string, payload []byte,
 		refusal *placement.NotAReplicaError) (status uint16, body []byte, forwarded bool)
+	ForwardToLeader(ctx context.Context, caller *auth.Identity, method, database string, payload []byte,
+		leaderAddr string) (status uint16, body []byte, forwarded bool)
 }
 func WithReplicaForwarding(forwarder ReplicaForwarder, caller auth.Authenticator) Option
 

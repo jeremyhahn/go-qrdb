@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestClassify_DatabaseBarrierRequestRefusals pins the per-database barrier
@@ -45,6 +46,21 @@ func TestClassify_DatabaseBarrierRequestRefusals(t *testing.T) {
 	for _, tc := range cases {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("Classify(%T) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+// TestClassify_BarrierLogRefusals pins that a verifiable-log call refused for
+// a barrier tenant or a barrier database is Unimplemented on every transport:
+// the log registry sits under the system barrier, so the deployment does not
+// serve logs there (go-qrdb#912).
+func TestClassify_BarrierLogRefusals(t *testing.T) {
+	for _, err := range []error{
+		&service.BarrierTenantLogNotSupportedError{TenantID: "acme"},
+		&service.BarrierDatabaseLogNotSupportedError{TenantID: "acme", Database: "secure"},
+	} {
+		if got := Classify(err); got != Unimplemented {
+			t.Errorf("Classify(%T) = %v, want %v", err, got, Unimplemented)
 		}
 	}
 }

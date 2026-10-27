@@ -374,6 +374,174 @@ func testUsersSuspendOverProtocol(t *testing.T, node *multiProtoNode, proto mult
 	}
 }
 
+// TestUsers_CLI_CertBinding_PerProtocol drives `qrdb users cert-binding
+// add|list|remove` over every CLI transport: under the default
+// auth.mtls_binding_policy ("required") a certificate authenticates as the
+// account once the verb enrols it, and stops once the verb withdraws it.
+func TestUsers_CLI_CertBinding_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testUsersCertBindingOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testUsersCertBindingOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	base := fmt.Sprintf("ucb-%s-%d", proto.name, time.Now().UnixNano())
+
+	out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "create",
+		"--name", base+"-role",
+		"--permissions", "users:read",
+	)
+	if err != nil {
+		t.Fatalf("[%s] roles create (fixture): %v\noutput: %s", proto.name, err, out)
+	}
+	var role roleCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &role); jerr != nil {
+		t.Fatalf("[%s] decode roles create JSON (fixture): %v\noutput: %s", proto.name, jerr, out)
+	}
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create",
+		"--username", base,
+		"--email", base+"@example.com",
+		"--roles", role.ID,
+	)
+	if err != nil {
+		t.Fatalf("[%s] users create: %v\noutput: %s", proto.name, err, out)
+	}
+	var created userCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &created); jerr != nil || created.ID == 0 {
+		t.Fatalf("[%s] decode users create JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	userID := strconv.FormatUint(created.ID, 10)
+
+	first := node.ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(base, tenantid.System))
+	second := node.ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(base, tenantid.System))
+	asUser := func(kp *qrdbdharness.KeyPair) (string, error) {
+		conn := tenantCLIArgsForProto(node, proto, kp.CertPath, kp.KeyPath)
+		return runQRDB(t, node.cli, conn, "--output", "json", "users", "get", userID)
+	}
+	bindings := func(step string, args ...string) []transport.CertBinding {
+		t.Helper()
+		out, err := runCLIProto(t, node, proto, append([]string{"--output", "json", "users", "cert-binding"}, args...)...)
+		if err != nil {
+			t.Fatalf("[%s] %s: users cert-binding %v: %v\noutput: %s", proto.name, step, args, err, out)
+		}
+		var got []transport.CertBinding
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("[%s] %s: decode bindings JSON: %v\noutput: %s", proto.name, step, jerr, out)
+		}
+		return got
+	}
+	holds := func(got []transport.CertBinding, thumbprint string) bool {
+		for _, b := range got {
+			if b.Thumbprint == thumbprint {
+				return true
+			}
+		}
+		return false
+	}
+
+	// --- before enrolment the required policy refuses the certificate -----
+	if out, err := asUser(first); err == nil {
+		t.Fatalf("[%s] request with an unenrolled certificate succeeded: %s", proto.name, out)
+	}
+	if got := bindings("list-empty", "list", userID); len(got) != 0 {
+		t.Fatalf("[%s] bindings before enrolment = %+v, want none", proto.name, got)
+	}
+
+	// --- add --cert: thumbprint and expiry come from the certificate ------
+	thumbprintOf := func(kp *qrdbdharness.KeyPair) string {
+		t.Helper()
+		tp, terr := user.ComputeSPKIThumbprintFromCertPEM(kp.CertPEM)
+		if terr != nil {
+			t.Fatalf("[%s] thumbprint of %s: %v", proto.name, kp.CertPath, terr)
+		}
+		return tp
+	}
+	firstTP := thumbprintOf(first)
+	got := bindings("add-cert", "add", userID, "--cert", first.CertPath)
+	if !holds(got, firstTP) {
+		t.Fatalf("[%s] add --cert: bindings %+v lack %s", proto.name, got, firstTP)
+	}
+	if out, err := asUser(first); err != nil {
+		t.Fatalf("[%s] request with the enrolled certificate: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// --- add by thumbprint, then list shows both ---------------------------
+	secondTP := thumbprintOf(second)
+	// A base64url thumbprint can begin with '-' (about one in 64 do), so
+	// every call that passes one positionally puts it after '--'.
+	bindings("add-thumbprint", "add", userID,
+		"--not-after", time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "--", secondTP)
+	got = bindings("list", "list", userID)
+	if !holds(got, firstTP) || !holds(got, secondTP) {
+		t.Fatalf("[%s] list: bindings %+v, want %s and %s", proto.name, got, firstTP, secondTP)
+	}
+
+	// --- an expiry at or before the epoch is refused, not made permanent ---
+	expiryOf := func(got []transport.CertBinding, thumbprint string) string {
+		for _, b := range got {
+			if b.Thumbprint == thumbprint {
+				return b.NotAfter
+			}
+		}
+		return ""
+	}
+	secondExpiry := expiryOf(got, secondTP)
+	for _, date := range []string{"1970-01-01T00:00:00Z", "1969-07-20T20:17:40Z"} {
+		out, err := runCLIProto(t, node, proto, "users", "cert-binding", "add", userID, "--not-after", date, "--", secondTP)
+		if err == nil || !strings.Contains(out, "after the Unix epoch") {
+			t.Fatalf("[%s] add --not-after %s: want the epoch refusal, got err=%v output: %s", proto.name, date, err, out)
+		}
+	}
+	if got := expiryOf(bindings("list-after-epoch", "list", userID), secondTP); got == "" || got != secondExpiry {
+		t.Fatalf("[%s] refused epoch expiry changed the binding's expiry: %q, want %q", proto.name, got, secondExpiry)
+	}
+
+	// --- remove: the withdrawn key stops authenticating, the other keeps ---
+	got = bindings("remove", "remove", userID, "--", firstTP)
+	if holds(got, firstTP) || !holds(got, secondTP) {
+		t.Fatalf("[%s] remove: bindings %+v, want only %s", proto.name, got, secondTP)
+	}
+	if out, err := asUser(first); err == nil {
+		t.Fatalf("[%s] request with the withdrawn certificate succeeded: %s", proto.name, out)
+	}
+	if out, err := asUser(second); err != nil {
+		t.Fatalf("[%s] request with the still-enrolled certificate: %v\noutput: %s", proto.name, err, out)
+	}
+
+	// --- remove of a thumbprint the user does not hold is refused ----------
+	if out, err := runCLIProto(t, node, proto, "users", "cert-binding", "remove", userID, "--", firstTP); err == nil {
+		t.Fatalf("[%s] remove of a withdrawn thumbprint should fail, got: %s", proto.name, out)
+	}
+
+	// --- a thumbprint beginning with '-' round-trips after '--' -----------
+	const dashTP = "-mfgDIAA4OnmhPXEgQ0d46rNYBLntyNnLUbId3NJ_eg"
+	if got := bindings("add-dash", "add", userID, "--", dashTP); !holds(got, dashTP) {
+		t.Fatalf("[%s] add -- %s: bindings %+v lack it", proto.name, dashTP, got)
+	}
+	if got := bindings("list-dash", "list", userID); !holds(got, dashTP) || !holds(got, secondTP) {
+		t.Fatalf("[%s] list: bindings %+v, want %s and %s", proto.name, got, dashTP, secondTP)
+	}
+	if got := bindings("remove-dash", "remove", userID, "--", dashTP); holds(got, dashTP) || !holds(got, secondTP) {
+		t.Fatalf("[%s] remove -- %s: bindings %+v, want only %s", proto.name, dashTP, got, secondTP)
+	}
+
+	if out, err := runCLIProto(t, node, proto, "users", "delete", userID); err != nil {
+		t.Fatalf("[%s] users delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
+		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+}
+
 // refusalBound is how long a refused request may take on any transport: far
 // below the CLI's --timeout, so a client that waits out its bound on a
 // refusal, rather than returning it, fails here.

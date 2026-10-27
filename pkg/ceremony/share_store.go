@@ -42,6 +42,10 @@ type sealedShareStore struct {
 	shares  map[string]*heldShare
 	claimed map[string]bool
 	expired map[string]bool
+
+	// afterFunc arms a share's expiry timer: time.AfterFunc, replaced only by
+	// tests that fire an expiry at a moment they choose.
+	afterFunc func(time.Duration, func()) *time.Timer
 }
 
 // heldShare is one sealed share and the timer that wipes it at its deadline.
@@ -57,10 +61,11 @@ func newSealedShareStore(ttl time.Duration) *sealedShareStore {
 		ttl = DefaultShareTTL
 	}
 	return &sealedShareStore{
-		ttl:     ttl,
-		shares:  make(map[string]*heldShare),
-		claimed: make(map[string]bool),
-		expired: make(map[string]bool),
+		ttl:       ttl,
+		shares:    make(map[string]*heldShare),
+		claimed:   make(map[string]bool),
+		expired:   make(map[string]bool),
+		afterFunc: time.AfterFunc,
 	}
 }
 
@@ -88,7 +93,7 @@ func (s *sealedShareStore) Store(ctx context.Context, username string, shareJSON
 		prior.secret.Destroy()
 	}
 	held := &heldShare{secret: sec}
-	held.timer = time.AfterFunc(s.ttl, func() { s.expire(username, held) })
+	held.timer = s.afterFunc(s.ttl, func() { s.expire(username, held) })
 	s.shares[username] = held
 	delete(s.expired, username)
 	return nil
@@ -97,16 +102,22 @@ func (s *sealedShareStore) Store(ctx context.Context, username string, shareJSON
 // expire wipes held if it is still the share held for username. A timer that
 // fires after its share was claimed or replaced finds a different entry (or
 // none) and does nothing.
+//
+// The enclave is destroyed under the store's lock, before the entry leaves the
+// index and is marked expired: once Exists, Expired or Claim can observe the
+// expiry, the share's plaintext is already gone. Destroying after unlocking
+// would leave a window in which the store reports the share wiped while its
+// enclave still opens. Destroy is an atomic swap that never calls back into
+// the store, so holding the lock across it is safe, as Claim and DestroyAll do.
 func (s *sealedShareStore) expire(username string, held *heldShare) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.shares[username] != held {
-		s.mu.Unlock()
 		return
 	}
+	held.secret.Destroy()
 	delete(s.shares, username)
 	s.expired[username] = true
-	s.mu.Unlock()
-	held.secret.Destroy()
 }
 
 // Claim retrieves and returns a copy of the share bytes for the given

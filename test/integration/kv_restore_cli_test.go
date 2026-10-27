@@ -616,8 +616,32 @@ func startAsyncKVRestore(t *testing.T, node *multiProtoNode, proto multiProtocol
 func testKVRestoreConflictExitCodeOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 
+	// The racer's write is ordered after the plan by an event, but whether it
+	// beats the restore's last compare-and-swap is a race against n-1 Raft
+	// round trips, which a loaded host can lose. A lost race is a scenario
+	// that did not happen, not a defect, so it is staged again under a fresh
+	// prefix; a defect fails the attempt that shows it.
+	const attempts = 5
+	for attempt := 1; ; attempt++ {
+		lost := kvRestoreConflictAttempt(t, node, proto, fmt.Sprintf("kvrestore-race/%s/%d/", proto.name, attempt))
+		if lost == "" {
+			return
+		}
+		if attempt == attempts {
+			t.Fatalf("[%s] the racer lost the race on all %d attempts; last: %s", proto.name, attempts, lost)
+		}
+		t.Logf("[%s] attempt %d: %s; staging the race again", proto.name, attempt, lost)
+	}
+}
+
+// kvRestoreConflictAttempt stages one race under racePrefix and asserts the
+// conflict contract. It returns "" when the race was staged and the contract
+// held, or a description when the racer lost the race, so no conflict could
+// arise; any defect fails the test.
+func kvRestoreConflictAttempt(t *testing.T, node *multiProtoNode, proto multiProtocol, racePrefix string) string {
+	t.Helper()
+
 	const n = 40
-	racePrefix := fmt.Sprintf("kvrestore-race/%s/", proto.name)
 
 	keys := make([]string, n)
 	for i := range keys {
@@ -670,14 +694,13 @@ func testKVRestoreConflictExitCodeOverProtocol(t *testing.T, node *multiProtoNod
 		}
 		switch {
 		case !race.wrote:
-			t.Fatalf("[%s] kv restore exited 0 before the racer saw %s restored, so %s was never raced (stdout: %s, stderr: %s)",
-				proto.name, keys[0], raceKey, out, errOut)
+			return fmt.Sprintf("kv restore exited 0 before the racer saw %s restored, so %s was never raced", keys[0], raceKey)
 		case strings.TrimSpace(got) == wantRestored:
 			t.Fatalf("[%s] kv restore exited 0 and %s holds the restored value %q: the restore overwrote a write that committed after its plan (stdout: %s, stderr: %s)",
 				proto.name, raceKey, wantRestored, out, errOut)
 		default:
-			t.Fatalf("[%s] kv restore exited 0 and the racer's write to %s landed after the restore applied it (holds %q), not inside the plan-to-apply window (stdout: %s, stderr: %s)",
-				proto.name, raceKey, strings.TrimSpace(got), out, errOut)
+			return fmt.Sprintf("the racer's write to %s landed after the restore applied it (holds %q), not inside the plan-to-apply window",
+				raceKey, strings.TrimSpace(got))
 		}
 	}
 	if !strings.Contains(errOut, "unrestored due to conflicts") && !strings.Contains(errOut, "retry with --force") {
@@ -733,6 +756,7 @@ func testKVRestoreConflictExitCodeOverProtocol(t *testing.T, node *multiProtoNod
 	if err != nil || strings.TrimSpace(got) != wantRestored {
 		t.Fatalf("[%s] kv get %s after --force restore = %q, err=%v, want %q", proto.name, raceKey, got, err, wantRestored)
 	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

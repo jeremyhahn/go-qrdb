@@ -1,6 +1,6 @@
 # Transactions and Batch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -287,7 +287,8 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Compare does not hold | `Succeeded: false`, `FailureOps` applied, no error | n/a — this is a result |
-| Malformed request (unknown op type, missing key) | invalid-argument | yes |
+| Unmapped op type on a typed transport (gRPC, Unix, QUIC) | invalid-argument | yes |
+| Unknown op type, compare target or compare result on REST | falls back to put, version and equal; nothing is refused — see [api.md](api.md) | no |
 | Empty key in a compare or an op | refused before proposal (`service.InvalidKeyError` inside `EncodeRequestError`, invalid-argument); a state machine that receives one anyway refuses it as an application result and keeps applying | **yes** |
 | Create- or mod-revision compare on any `sm_type` but `mvcc` | refused, nothing evaluated or written | **yes** |
 | Lease-bearing op on a `pkg/statemachine` `sm_type` (`memory`, `standard`, `concurrent`, `fast`, `disk`, `highperf`) | the key is bound to the lease in the same commit; a lease the state machine does not hold refuses the whole transaction or batch with lease-not-found, nothing written | **yes** |
@@ -299,7 +300,7 @@ Typed errors throughout; `fmt.Errorf` is not used.
 | `ImportAppend`/`ImportCommit`/`ImportAbort` naming an unknown or expired session | refused (`*ImportSessionNotFoundError`) | **yes** |
 | `ImportAppend`/`ImportCommit`/`ImportAbort` from a different (tenant, identity) than `ImportBegin` recorded | refused (`*ImportSessionOwnerError`) | **yes** |
 | A session's staged bytes, chunk count, or its tenant's concurrent session count would exceed its configured quota | refused (`*ImportQuotaExceededError`) | **yes** |
-| A staging command (`protocol.OpImportStage`) reaches an engine that keeps no leases: the plain KV engine of a standalone node on the `file` or `objstore` backend, or any engine built without a lessor | refused as an unsupported capability (`ServiceNotConfiguredError` naming `lease`) in the apply result, nothing staged; apply keeps advancing. On those backends `ImportBegin`'s own lease grant is refused first | **yes** |
+| A staging command (`protocol.OpImportStage`) reaches an engine built without a lessor | refused as an unsupported capability (`ServiceNotConfiguredError` naming `lease`) in the apply result, nothing staged; apply keeps advancing. On such an engine `ImportBegin`'s own lease grant is refused first | **yes** |
 | `ImportCommit` carries more encoded ops than one Raft proposal admits (`maxImportProposalBytes`, 8 MiB) and `--transactional` is set | refused before anything is proposed (`*ImportProposalTooLargeError`); all-or-nothing has no multi-proposal path, so this is the hard ceiling on a transactional import's size | **yes** |
 | A chunked (non-transactional) import's Raft proposal for one chunk suffers an outcome-unknown fault (`errors.Is(err, service.ErrOutcomeUnknown)` — the entry may or may not have committed) | the WHOLE `ImportCommit` call fails; no later chunk is attempted, and the session is NOT revoked, so the caller can retry `ImportCommit` — never downgraded to a per-row failure in either mode, because the chunk is not provably "nothing stored" | **yes** |
 | Same, but the chunk's proposal commits and is refused ON ITS MERITS (a result-level `AppError` — `checkResultError`'s path, provably nothing stored) | that chunk's rows are recorded failed; later chunks are still attempted (non-transactional) or the whole commit is refused (transactional) | **yes** |

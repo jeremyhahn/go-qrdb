@@ -98,6 +98,8 @@ Peer-only rules. Allow these from the other two voters only:
 
 - UDP 63001: Raft.
 - TCP 63006: enrollment. Open it also to a new node while that node joins.
+  Bound only when qrdbd manages TLS; a cluster run on `--tls-*-file`
+  certificates binds neither 63006 nor 63007.
 - TCP 63007: needed only when `cluster_join.enabled` is set, and only from a
   joining node.
 - UDP 63777: needed only with `--discovery multicast`, on the voters' segment.

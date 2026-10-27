@@ -1,6 +1,6 @@
 # RAG — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -141,7 +141,7 @@ Chunk parameters by strategy:
 |---|---|---|---|
 | `fixed` | window in characters (512) | characters repeated between windows (50) | a trailing window below this merges into the previous one (100) |
 | `sentence` | cap: sentences are packed up to it; a longer sentence is split into fixed windows | applies only when a sentence is split | applies only when a sentence is split |
-| `paragraph` | cap: a longer paragraph is split into fixed windows | applies only when a paragraph is split | paragraphs below this merge with the next |
+| `paragraph` | cap: a longer paragraph is split into fixed windows | applies only when a paragraph is split | consecutive paragraphs below this accumulate until the block reaches it; a short final block joins the previous chunk |
 
 **`max_document_size: 0` means unlimited.** A deployment taking untrusted input
 should set it.
@@ -192,11 +192,21 @@ corpus, not a migration.
 
 ## Test strategy
 
-- **Unit**: each chunking strategy (boundary behaviour, overlap, `chunk_min_size`
-  merging), ingest chunk counting, query ordering by score, metadata filter
-  pass-through, delete chunk accounting, list pagination.
-- **The embedding provider is stubbed** — RAG tests must not need a model.
-- **Error tests** per function.
+- **Chunkers** (`pkg/rag/chunker`): `fixed_test.go`, `sentence_test.go` and
+  `paragraph_test.go` pin each strategy's boundaries, overlap and
+  `chunk_min_size` merging as the table above states.
+- **Pipeline** (`pkg/rag`): `ingest_test.go`, `reingest_test.go` and
+  `retriever_test.go` pin chunk counting and the size limit, re-ingest
+  removing a shorter document's surplus chunks, and retrieval with its
+  metadata filter and default top-k, against a stub embedder: no RAG test
+  needs a model.
+- **Service** (`pkg/service`): `rag_service_test.go` pins delete removing
+  chunks before the record and keeping the record when a chunk removal fails,
+  list pagination and the closed service; `rag_scope_test.go`,
+  `rag_scope_store_test.go` and `rag_tenant_test.go` pin that every record
+  resolves per call to the request's (tenant, database), and that an unbound
+  binding, a call with no tenant, a sealed database and another tenant's
+  database are refused.
 - **Integration**: `TestRAG_CLI_PerProtocol` (`make integration-test-rag`)
   drives every `qrdb rag` verb over REST, gRPC, QUIC, MCP and the Unix socket
   against a node with no embedding provider: flag validation and the
@@ -211,3 +221,4 @@ corpus, not a migration.
 - `RAGListDocumentsResponse.Total` is the corpus size.
 - Every RAG call's authorization decision is audited (`auth.authorize`, success
   or denied); see [../audit/](../audit/).
+- The RAG pipeline emits no log events and no metrics of its own.

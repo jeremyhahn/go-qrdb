@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // init.go implements the canonical root-level "init" command per
-// docs/08-bootstrap-auth-architecture.md §6. The command bootstraps the
+// docs/ceremony/cli.md. The command bootstraps the
 // barrier, the CA and the built-in roles in a single call, delegating to the
 // qrdb CeremonyService over the SDK transport. The bootstrap admin's
 // certificate is resolved in that SAME call (CSR-sign, bring-your-own, or
@@ -36,7 +36,7 @@ import (
 )
 
 // validBarrierStrategies is the set of supported --barrier-strategy values
-// per docs/08-bootstrap-auth-architecture.md §2.
+// per docs/barrier-seal/architecture.md.
 var validBarrierStrategies = map[string]struct{}{
 	"none":       {},
 	"passphrase": {},

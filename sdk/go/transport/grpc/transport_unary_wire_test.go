@@ -800,14 +800,49 @@ func TestGRPC_UnaryServerError_IsARequestErrorNamingTheMethod(t *testing.T) {
 			if !errors.As(err, &re) {
 				t.Fatalf("%s = %v, want a RequestError", name, err)
 			}
-			want := name
-			if name == "Exists" {
-				want = "Get" // Exists is a Get that reads NotFound as false.
-			}
-			if re.Method != want || re.StatusCode != int(codes.Internal) {
-				t.Fatalf("%s RequestError = {Method: %q, StatusCode: %d}, want {%q, %d}", name, re.Method, re.StatusCode, want, codes.Internal)
+			if re.Method != name || re.StatusCode != int(codes.Internal) {
+				t.Fatalf("%s RequestError = {Method: %q, StatusCode: %d}, want {%q, %d}", name, re.Method, re.StatusCode, name, codes.Internal)
 			}
 		})
+	}
+}
+
+// TestGRPC_ExistsFailure_NamesExists pins that Exists, which is a Get RPC
+// that reads NotFound as false, reports any other failure under its own name
+// rather than as Get, whatever the status code and read options.
+func TestGRPC_ExistsFailure_NamesExists(t *testing.T) {
+	for _, code := range []codes.Code{codes.Unavailable, codes.PermissionDenied} {
+		tr := connectWireServer(t, status.Error(code, "refused"))
+		for _, opts := range [][]transport.ReadOption{nil, {transport.WithConsistency(transport.ConsistencyFollower)}} {
+			exists, err := tr.Exists(context.Background(), "k", opts...)
+			var re *transport.RequestError
+			if !errors.As(err, &re) || re.Method != "Exists" || re.StatusCode != int(code) {
+				t.Fatalf("Exists on %s = (%v, %v), want a RequestError {Method: \"Exists\", StatusCode: %d}", code, exists, err, code)
+			}
+			if exists {
+				t.Fatalf("Exists on %s reported true alongside an error", code)
+			}
+		}
+	}
+}
+
+// TestGRPC_ExistsNotFound_IsFalseAndGetStaysGet pins the two sides of the
+// shared RPC: NotFound is Exists's false, not an error, while Get on the same
+// server still reports the miss under Get.
+func TestGRPC_ExistsNotFound_IsFalseAndGetStaysGet(t *testing.T) {
+	tr := connectWireServer(t, status.Error(codes.NotFound, "no such key"))
+	exists, err := tr.Exists(context.Background(), "k")
+	if err != nil || exists {
+		t.Fatalf("Exists on NotFound = (%v, %v), want (false, nil)", exists, err)
+	}
+	if _, err := tr.Get(context.Background(), "k"); err == nil {
+		t.Fatal("Get on NotFound returned no error")
+	}
+	tr = connectWireServer(t, status.Error(codes.Internal, "boom"))
+	_, err = tr.Get(context.Background(), "k")
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "Get" {
+		t.Fatalf("Get failure = %v, want a RequestError naming Get", err)
 	}
 }
 

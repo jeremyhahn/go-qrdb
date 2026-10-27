@@ -33,6 +33,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
 // Not forwarded -- a stream, which a non-replica refuses: ImportFile.
@@ -651,4 +652,84 @@ func (s *forwardingScope) UpdateDocument(ctx context.Context, a1 transport.Updat
 		return remote.UpdateDocument(ctx, a1)
 	}
 	return err
+}
+
+func (s *forwardingScope) VlogAppend(ctx context.Context, a1 *vlogwire.AppendRequest) (*vlogwire.AppendResult, error) {
+	r0, err := s.Transport.VlogAppend(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogAppend(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogCreate(ctx context.Context, a1 *vlogwire.CreateRequest) (*vlogwire.CreateResult, error) {
+	r0, err := s.Transport.VlogCreate(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogCreate(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogExpireBodies(ctx context.Context, a1 *vlogwire.ExpireRequest) (*vlogwire.ExpireResult, error) {
+	r0, err := s.Transport.VlogExpireBodies(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogExpireBodies(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogGet(ctx context.Context, a1 *vlogwire.GetRequest) (*vlogwire.GetResult, error) {
+	r0, err := s.Transport.VlogGet(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogGet(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogHead(ctx context.Context, a1 *vlogwire.LogRequest) (*vlogwire.Head, error) {
+	r0, err := s.Transport.VlogHead(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogHead(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogList(ctx context.Context, a1 *vlogwire.ListRequest) (*vlogwire.ListResult, error) {
+	r0, err := s.Transport.VlogList(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogList(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogProveConsistency(ctx context.Context, a1 *vlogwire.ConsistencyRequest) (*vlogwire.ConsistencyProof, error) {
+	r0, err := s.Transport.VlogProveConsistency(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogProveConsistency(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogProveInclusion(ctx context.Context, a1 *vlogwire.InclusionRequest) (*vlogwire.InclusionProof, error) {
+	r0, err := s.Transport.VlogProveInclusion(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogProveInclusion(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogRotateKey(ctx context.Context, a1 *vlogwire.RotateKeyRequest) (*vlogwire.RotateKeyResult, error) {
+	r0, err := s.Transport.VlogRotateKey(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogRotateKey(ctx, a1)
+	}
+	return r0, err
+}
+
+func (s *forwardingScope) VlogSignHead(ctx context.Context, a1 *vlogwire.LogRequest) (*vlogwire.SignHeadResult, error) {
+	r0, err := s.Transport.VlogSignHead(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.VlogSignHead(ctx, a1)
+	}
+	return r0, err
 }

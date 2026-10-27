@@ -596,7 +596,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	}
 
 	cmd.Flags().StringVar(&f.configFile, "config", "", "Path to YAML configuration file")
-	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft, standard database operations only)")
+	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft; the whole data plane on one node, without the cluster, backup, rebalance or etcd families)")
 	cmd.Flags().StringVar(&f.host, "host", qrdbconfig.DefaultServerHost, "Bind host for all API listeners ("+strings.Join(compiledProtocolListeners(), ", ")+"); maps to server.host / QRDB_SERVER_HOST")
 	cmd.Flags().StringVar(&f.listen, "listen", "0.0.0.0:63001", "Listen address (host:port)")
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
@@ -2908,6 +2908,9 @@ func runStart(f *startFlags) (err error) {
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
 			}
+			if svcNode.Log != nil {
+				serverOpts = append(serverOpts, server.WithLogService(svcNode.Log))
+			}
 			if svcNode.Policy != nil {
 				serverOpts = append(serverOpts, server.WithPolicyService(svcNode.Policy))
 			}
@@ -3493,17 +3496,9 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 	// host with a transport admits a member by its identity and by nothing
 	// else (go-qrdb#556), and the local entry comes from this node's own
 	// certificate.
-	var memberIdentities map[uint64]string
-	if !isSingleNode(f) {
-		var selfCert []byte
-		if mtlsCfg != nil {
-			selfCert = mtlsCfg.Cert
-		}
-		ids, err := cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
-		if err != nil {
-			return nil, err
-		}
-		memberIdentities = ids
+	memberIdentities, err := resolveMemberIdentities(f, bundle)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build host configuration.
@@ -4040,6 +4035,29 @@ func raftAddrToNodeIDMap(peers []string) map[string]string {
 // always assume multi-node.
 func isSingleNode(f *startFlags) bool {
 	return cluster.IsSingleNode(f.clusterOptions())
+}
+
+// resolveMemberIdentities returns the node identities this node seeds into the
+// membership it founds, keyed by replica ID. The local entry is derived from
+// the certificate the node holds, whether or not it runs a Raft transport: a
+// single node runs none and checks no identity, but the membership it commits
+// is the one every replica later admitted to the shard authorizes it by, and
+// a founder committed with no identity is refused as missing_identity by the
+// first member it adds. A multi-node member also takes every other replica's
+// identity from --member-identities; a single node has no other member to
+// name, so it seeds its own alone.
+func resolveMemberIdentities(f *startFlags, bundle *TLSBundle) (map[uint64]string, error) {
+	var selfCert []byte
+	if bundle != nil {
+		selfCert = bundle.CertPEM
+	}
+	if isSingleNode(f) {
+		if len(selfCert) == 0 {
+			return nil, nil
+		}
+		return cluster.ResolveMemberIdentities(nil, f.replicaID, selfCert)
+	}
+	return cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
 }
 
 // ---------------------------------------------------------------------------

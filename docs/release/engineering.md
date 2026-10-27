@@ -1,6 +1,6 @@
 # Release — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -94,6 +94,8 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `code`, `full` or `nightly`; a `code` job carries exactly `if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and `ci-gate`'s DOCS_ONLY is `${{ needs.changes.outputs.docs_only }}`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no code, full-tier or nightly job, and a code job needs no full-tier or nightly job; every `integration*` job (and a job named `trivy`) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run). Every tier's jobs are pinned by name (`prTierJobs`: `changes`, `lint`, `lint-gates`, `arch-gates`; `codeTierJobs`: `test-typescript`, `image`, `coverage`, `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`; `fullTierJobs`: `integration-standalone`, `integration-features`, `fips`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, a `nightly` job outside a schedule or dispatch run or a `code` job when DOCS_ONLY is `true`, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml`'s group on `main` carries the event and the commit, with a literal `cancel-in-progress: true` (no `main` run cancels another; an expression, a `main` group that carries the event only, or a ref-keyed group reddens it); every other workflow on pull_request has the ref-keyed group with `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `ci.yml` (its in-template nightly cron, the one scheduler under rulings 135 and 216(1)) and `automerge.yml` has a `schedule:`. Each rule has a fixture mutation that must redden it |
 | `test/buildgates/no_deprecated_test.go` (`TestNoLegacyOrDeprecatedAliasLanguage` alone is `make check-no-alias-language`, in `make lint-gates`) | no Go source, proto, CLI command or `docs/*.md` file carries a deprecated declaration, a redirect stub or legacy-alias language. The `docs/` scan is in `make lint-gates` as well as `make test` because a docs-only pull request runs lint and skips the unit suite |
 | `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: every ci.yml job is in `credentialJobs` or in `unmaskedJobs` (`changes`, which prints only file names, and `ci-gate`, which prints only job results); in every job of `credentialJobs` (`docker-build`, `lint`, `lint-gates`, `image`, `coverage`, `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`, `test-typescript`, `arch-gates`, `integration-standalone`, `integration-features`, `fips`, `soak`) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/fips_legs_test.go` | the `fips` job's parallel legs are exactly `make test` and `make test-sdk` (#1230): every package `go list` finds under `make -s print-test-pkgs` and in `sdk/go` is printed by `make -s print-fips-leg-packages` for exactly one leg of `make -s print-fips-legs`, no leg is empty or runs a package outside both suites, and ci.yml's `fips` matrix is one literal `include:` list naming every leg once, each with its own `minutes` limit over 5 and at most 45 (ruling 221(5)), with `timeout-minutes: ${{ matrix.minutes }}`, `fail-fast: false` and one step running `make test-fips-leg FIPS_LEG='$FIPS_LEG'` from `${{ matrix.leg }}` with `GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m` from `${{ matrix.minutes }}`; a package may be in two legs only when both select tests by name; discovery floors on the leg and package counts, and a fixture mutation for each rule |
+| `test/buildgates/fips_split_test.go` | a package the `fips` job splits by test name (#1234) runs each of its top-level tests in exactly one of its legs: every `Test`, `Fuzz` and `Example` function `go list` and `go/parser` find in the package's test files under `make -s print-build-tags` is selected by the `-run` and `-skip` patterns `make -s print-fips-leg-filter` prints for exactly one leg, each split leg names one package, and every pattern compiles and holds no `/`, quote, comma or space; discovery floors on the split-package and test counts, and a case for each rule |
 
 ## Test tooling this feature folder also owns
 
@@ -251,14 +253,15 @@ credentials reach such a build as they do `docker-build`'s, in a
 registry token is on none of these steps.
 
 Eleven jobs consume the images, each before its first stage: `lint`, in the
-PR tier (`make lint` and, on a push to `main` and a dispatch,
+PR tier (`make lint`, `make deps-check`, a lint-class gate on the PR tier
+from ci-template v1.28.0, and, on a push to `main` and a dispatch,
 `make lint-sweeps`), `lint-gates`, in the PR tier (`make lint-gates`, its own
 job from ci-template v1.27.0), the five unit-suite jobs, in the code tier,
 one suite each (ruling 211): `coverage` (`make coverage`),
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, and `fips`,
 which take the toolchain image; `image`, in the code tier (the build-tag
 assertion, the builds and, in the full tier, the linux/arm64 release
-cross-build, security, deps-check and the trivy image scan), which takes the
+cross-build, security and the trivy image scan), which takes the
 toolchain image and, in the full tier, the integration image; the
 `integration-features` legs, which take the integration image; and the soak,
 which runs on a `workflow_dispatch` or the nightly `schedule:`, never on a
@@ -287,7 +290,7 @@ holds the job's CPU bound: the job container's cgroup
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
 number. The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
-or under `docs/`), `lint` runs lint and `lint-gates` the lint gates, both succeed, and
+or under `docs/`), `lint` runs lint and deps-check and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with the unit-suite jobs and `test-typescript`, the code
 tier. On such a run, a
 pull request and so the local path, `docker-build` builds the toolchain image
@@ -303,7 +306,7 @@ network: the container joins the network namespace of a holder container that
 has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
 marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
 discovery tests join their group as they do on a host and nothing leaves the
-namespace. `make security` and `make deps-check`, full tier only, run on the bridge network, because
+namespace. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
 
@@ -359,6 +362,10 @@ reported with its age and does not fail the check, since no one could yet have
 adopted it; one seven or more days old fails, and one whose time cannot be read
 is treated as old. A module whose lookup fails, offline or without credentials,
 fails the check: the question was not answered.
+CI runs it in the `lint` job after `make lint` on every run, a docs-only pull
+request included (ci-template v1.28.0, ruling 219(3)): it needs no build
+output, only `go.mod` and the module proxy, so a module behind its floor fails
+the pull request rather than `main` after the merge.
 `scripts/deps-check_test.sh` (`make test-deps-check`, in CI's `lint-gates` job) proves
 each branch with a fake `go`, and the publish time with the real one over a
 `file://` proxy.
@@ -580,6 +587,36 @@ Raft timing is not part of any budget. qrdbd takes no election, heartbeat or
 tick setting from configuration: the values are code defaults
 (`pkg/cluster/raft_tuning.go` and go-quicraft's), so CI cannot select a slower
 profile.
+
+### FIPS 140-3 legs
+
+The `fips` job's legs (#1230) are balanced from the measured wall times of
+run 68401, the first run of the seven-leg split, whose legs took: `api` 7.3
+minutes, `sdk` 17.4, `rest` 18.2, `sdk-transport` 18.3, `server` 30.2, `seal`
+36.5 and `service` 42.8. A leg's time was its slowest package plus 3 to 4
+minutes of build and setup, so the three legs over 30 minutes were each one
+package: `pkg/tenant` (38.6 minutes, in `service`), `pkg/seal` (32.9) and
+`pkg/server` (25.7). Each now runs in a leg of its own (`tenant`, `seal`,
+`server`), and the rest of their old legs went to `auth`, `service` and
+`api-keys`; the table with each leg's packages, slowest package, expected time
+and limit is docs/seal/fips140-mode.md, "The legs". Each leg's
+`timeout-minutes` is its matrix entry's `minutes`, its expected time with room
+for a loaded runner and at most 45, and go test's per-package budget is that
+less 5 minutes, so a runaway package is named before the leg is killed.
+No assignment of whole packages brought `pkg/tenant` and `pkg/seal` under 30
+minutes, and `pkg/server` left its leg no headroom, so each is split by test
+name over two legs (#1234): `tenant-lifecycle` and `tenant`, `seal-barrier`
+and `seal`, `server-raft` and `server`. The first leg of each selects tests
+with `go test -run` (the Makefile's `FIPS_RUN_<leg>`), the second skips what
+the first selects (`FIPS_SKIP_<leg>`, `-skip`), so a new test runs in the
+second until a pattern names it, and `test/buildgates/fips_split_test.go`
+fails when a top-level test of a split package runs in no leg or in two. The
+packages' tests run one after another and their cost is the FIPS KDF spread
+over hundreds of tests (6.0 and 7.0 minutes without FIPS mode for `pkg/seal`
+and `pkg/tenant`, 22 and 27.5 under it on one 80-core host), so a name split
+halves a leg's time; the one outlier, a 195-second race test on the
+production KDF, now uses the cheap test parameters. Rebalance from each leg's "Package results and slowest tests"
+step when a leg's measured time drifts toward its limit.
 
 ### Cluster stage, locally
 

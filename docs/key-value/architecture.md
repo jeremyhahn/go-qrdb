@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -22,7 +22,7 @@ transports that admit requests to it:
         service.KVServicer            request semantics,
               |                       consistency selection, scope resolution
               v
-        state machine                 pebble | memory | mvcc  (raft.sm_type)
+        state machine                 any registered type  (raft.sm_type, --sm)
               |                       replicated through Raft when clustered
               v
         storage backend               pebble | file | memory | objstore  (storage.backend)

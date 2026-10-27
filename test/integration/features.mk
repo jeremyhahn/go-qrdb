@@ -92,7 +92,7 @@ INTTEST_barrier_seal        := barrier_cli_test.go barrier_permutations_cli_test
 INTTEST_ceremony            := officer_ceremony_cli_test.go ceremony_forwarding_test.go ceremony_follower_forward_test.go
 INTTEST_certificate_authority := ca_cli_test.go ca_delegate_cli_test.go clusterca_test.go cluster_ca_anchor_spof_test.go
 INTTEST_capabilities        := cli_multiprotocol_test.go
-INTTEST_clustering          := admin_test.go admin_cluster_cli_test.go admin_state_hash_cli_test.go cluster_test.go drain_test.go rebalance_cli_test.go join_request_cli_test.go join_token_cli_test.go join_p256_cli_test.go leader_transfer_cli_test.go member_record_test.go dynamic_membership_pebble_test.go
+INTTEST_clustering          := admin_test.go admin_cluster_cli_test.go admin_state_hash_cli_test.go cluster_test.go drain_test.go rebalance_cli_test.go join_request_cli_test.go join_token_cli_test.go join_p256_cli_test.go leader_transfer_cli_test.go member_record_test.go dynamic_membership_pebble_test.go cluster_founder_grow_cli_test.go
 # cluster-verification: the in-CI leader SIGKILL-under-load, leader
 # partition and lease-read-after-leader-change tests. The soak itself
 # (`make cluster-proof`) is not this harness and is never selected here.
@@ -103,7 +103,7 @@ INTTEST_configuration       :=
 # conformance coverage also lives in sdk/go/conformance/coordination_parity_test.go.
 INTTEST_coordination        := coordination_sdk_test.go
 INTTEST_credentials         := credential_cli_test.go
-INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_lifecycle_cli_test.go multidb_scope_test.go dao_cluster_test.go
+INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_lifecycle_cli_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go
 INTTEST_deployment          :=
 INTTEST_desktop_gui         :=
 INTTEST_distributed_locks   := lock_cli_test.go

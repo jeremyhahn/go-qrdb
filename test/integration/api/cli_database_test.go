@@ -31,7 +31,7 @@ func TestCLIMultiProtocolDatabaseLifecycle(t *testing.T) {
 			})
 
 			// Step 1: Create a database.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName)
+			stdout, stderr, err := createDatabaseRetryingDeadline(t, cfg, proto, dbName)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -75,6 +75,31 @@ func TestCLIMultiProtocolDatabaseLifecycle(t *testing.T) {
 			t.Logf("[%s] database lifecycle passed for: %s", proto, dbName)
 		})
 	}
+}
+
+// createDeadlineAttempts bounds how often createDatabaseRetryingDeadline
+// re-issues a create the server answered with its create deadline.
+const createDeadlineAttempts = 3
+
+// createDatabaseRetryingDeadline runs `database create name` and follows the
+// documented contract for a create that did not finish within the server's
+// create deadline (service.DatabaseCreateTimeoutError, UNAVAILABLE): the
+// server rolled everything back, so the same create is re-issued. Only that
+// answer is retried, a bounded number of times; any other failure, including
+// a retry refused because the first attempt left the name behind, is
+// returned as it is.
+func createDatabaseRetryingDeadline(t *testing.T, cfg *TestConfig, proto ProtocolType, name string) (string, string, error) {
+	t.Helper()
+	var stdout, stderr string
+	var err error
+	for attempt := 1; attempt <= createDeadlineAttempts; attempt++ {
+		stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "create", name)
+		if err == nil || !strings.Contains(stderr, "not finished within") {
+			return stdout, stderr, err
+		}
+		t.Logf("[%s] create attempt %d met the server's create deadline, retrying: %s", proto, attempt, stderr)
+	}
+	return stdout, stderr, err
 }
 
 // TestCLIMultiProtocolDatabaseCreateEngineFlagRefused pins OD-13 (ruled A):

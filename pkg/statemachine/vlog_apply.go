@@ -31,9 +31,12 @@ type vlogApplyFunc func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenan
 
 var vlogApplyFuncs = map[byte]vlogApplyFunc{
 	protocol.VerifiableLogSubtypeCreate: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
-		id, desc, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
+		id, desc, key, err := protocol.DecodeVerifiableLogCreate(tenantID, body)
 		if err != nil {
 			return 0, err
+		}
+		if key != nil {
+			return 0, logs.CreateWithKey(w, id, desc, *key)
 		}
 		return 0, logs.Create(w, id, desc)
 	},
@@ -59,6 +62,39 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		expired, err := logs.ExpireBodies(w, id, cutoff)
 		return uint64(expired), err
 	},
+	protocol.VerifiableLogSubtypeRotateKey: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, next, record, err := protocol.DecodeVerifiableLogRotateKey(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(next.Version), logs.RotateKey(r, w, id, next, record)
+	},
+}
+
+// vlogRefusals recognise the vlog errors a command is refused with that the
+// log service answers with their typed error, each by its log-refusal reason
+// and the tree size it names. Every other refusal takes RefusalResult's
+// generic kind.
+var vlogRefusals = []func(err error) (reason protocol.LogRefusalReason, size uint64, ok bool){
+	func(err error) (protocol.LogRefusalReason, uint64, bool) {
+		_, ok := errors.AsType[*vlog.LogNotFoundError](err)
+		return protocol.LogRefusalNotFound, 0, ok
+	},
+	func(err error) (protocol.LogRefusalReason, uint64, bool) {
+		_, ok := errors.AsType[*vlog.LogExistsError](err)
+		return protocol.LogRefusalExists, 0, ok
+	},
+	func(err error) (protocol.LogRefusalReason, uint64, bool) {
+		e, ok := errors.AsType[*vlog.CheckpointExistsError](err)
+		if !ok {
+			return 0, 0, false
+		}
+		return protocol.LogRefusalCheckpointExists, e.Size, true
+	},
+	func(err error) (protocol.LogRefusalReason, uint64, bool) {
+		_, ok := errors.AsType[*vlog.ExpireNotAllowedError](err)
+		return protocol.LogRefusalExpireNotAllowed, 0, ok
+	},
 }
 
 // ApplyVerifiableLog applies one committed OpVerifiableLog payload to logs,
@@ -77,7 +113,10 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 //   - Everything else -- a malformed sub-type body, a missing or existing
 //     log, an out-of-range or mismatched checkpoint, a state machine built
 //     without a registry -- is a deterministic consequence of the committed
-//     bytes that every replica reaches alike, answered with RefusalResult.
+//     bytes that every replica reaches alike, answered as a refusal: one of
+//     vlogRefusals under its protocol.EncodeLogRefusal reason, so the log
+//     service answers it with its typed vlog error, and any other with
+//     RefusalResult.
 func ApplyVerifiableLog(logs *vlog.Chain, r storage.Reader, w vlog.Writer, payload []byte) (sm.Result, error) {
 	subtype, tenantID, body, err := protocol.DecodeVerifiableLogCommand(payload)
 	if err != nil {
@@ -94,6 +133,13 @@ func ApplyVerifiableLog(logs *vlog.Chain, r storage.Reader, w vlog.Writer, paylo
 	if err != nil {
 		if isLogTableFault(err) {
 			return sm.Result{}, err
+		}
+		// A refusal the log service answers with its typed vlog error carries
+		// its own marker, so the type survives the proposal (go-qrdb#912).
+		for _, refusal := range vlogRefusals {
+			if reason, size, ok := refusal(err); ok {
+				return sm.Result{Data: protocol.EncodeLogRefusal(reason, size, err.Error())}, nil
+			}
 		}
 		return RefusalResult(err), nil
 	}

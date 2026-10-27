@@ -1,7 +1,7 @@
 # Multi-Tenancy — Architecture
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED and partly
-> built; each part names what is not built) · Scope: go-qrdb · Last verified: 2026-10-21
+> built; each part names what is not built) · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
@@ -1643,9 +1643,10 @@ Open question: SNI as the passthrough routing input.
   holding `index:query` on its own tenant never sees another tenant's key
   names. See
   [../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate).
-- **Per-node KEK independence** protects each node's at-rest copy of a
-  tenant key; the tenant root key itself is shared by the tenant's replicas
-  (see *Per-node-independent key design*).
+- **Per-node keys**: each serving replica of a `none`, `passphrase` or
+  `shamir` tenant barrier initializes its own key, so no two replicas share
+  one; a barrier of any other self-managed strategy is shipped to followers as
+  the owner-sealed blob (see *Per-node-independent key design*).
 - **Provisioning-governance permissions are distinct**:
   `tenants:set_isolation`, `tenants:set_entitlements`,
   `databases:create_raft`, `databases:create_volume`.

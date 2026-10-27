@@ -19,22 +19,29 @@
 // against, with no second permission declaration. It also covers the
 // default-deny half: a module method whose descriptor carries no permission
 // option must fail server construction loudly rather than become reachable
-// unauthorized.
+// unauthorized -- unless the module declares it public
+// (apimodule.GRPCPublicMethodLister), in which case it is served to a caller
+// with no client certificate, as on gRPC and unix.
 
 package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
 // grpcModule is a minimal apimodule.ServiceModule stand-in for a capability
@@ -228,32 +235,71 @@ func TestModuleStreamingMethodIsNotProjected(t *testing.T) {
 	}
 }
 
-// TestModuleDeclaredPublicMethodWithoutPermissionIsSkippedNotPanicked covers
-// the projection's public-method carve-out: QUIC has no unauthenticated
-// dispatch path (unlike gRPC/unix, which bypass auth entirely for a method
-// declared via apimodule.GRPCPublicMethodLister), so a module's public
-// method with no (qrdb.v1.permission) proto option must not trip the
-// default-deny panic -- it is simply left unreachable over QUIC, logged, so
-// the module's OTHER, permissioned methods still project successfully.
-func TestModuleDeclaredPublicMethodWithoutPermissionIsSkippedNotPanicked(t *testing.T) {
-	const publicMethod = "/testmodule.v1.WidgetService/Version"
+// widgetVersionMethod is the full method of widgetModule's public verb.
+const widgetVersionMethod = "/testmodule.v1.WidgetService/Version"
 
-	module := &grpcModule{
+// widgetModule builds a grpcModule whose WidgetService carries Version, which
+// it declares public through apimodule.GRPCPublicMethodLister and which has
+// no (qrdb.v1.permission) option, beside the permissioned Put of
+// putProjectionDesc. versionCalled flips when Version's handler runs.
+func widgetModule(versionCalled, putCalled *atomic.Bool) []apimodule.ServiceModule {
+	version := &grpcModule{
 		impl:          struct{}{},
-		publicMethods: []string{publicMethod},
+		publicMethods: []string{widgetVersionMethod},
 		desc: &grpc.ServiceDesc{
 			ServiceName: "testmodule.v1.WidgetService",
 			HandlerType: (*any)(nil),
 			Methods: []grpc.MethodDesc{
 				{
 					MethodName: "Version",
-					Handler: func(_ any, _ context.Context, _ func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-						return nil, nil
+					Handler: func(_ any, _ context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+						if err := dec(&emptypb.Empty{}); err != nil {
+							return nil, err
+						}
+						versionCalled.Store(true)
+						return &emptypb.Empty{}, nil
 					},
 				},
 			},
 		},
 	}
+	put := &grpcModule{desc: putProjectionDesc(putCalled), impl: struct{}{}}
+	return []apimodule.ServiceModule{version, put}
+}
+
+// TestModuleDeclaredPublicMethodIsRegisteredPublic covers the projection's
+// public branch: a method the module declares through
+// apimodule.GRPCPublicMethodLister is in the frame dispatch map and is
+// registered public -- not permission-mapped -- so the default-deny startup
+// assertion passes although the method carries no permission option.
+func TestModuleDeclaredPublicMethodIsRegisteredPublic(t *testing.T) {
+	var versionCalled, putCalled atomic.Bool
+	bundle := generateIntegrationTLS(t)
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
+		WithTLS(bundle.serverCfg),
+		WithServiceModules(widgetModule(&versionCalled, &putCalled)),
+	)
+	t.Cleanup(srv.Stop)
+
+	if _, ok := srv.handlers[widgetVersionMethod]; !ok {
+		t.Fatal("a declared-public module method must be registered in the frame dispatch map")
+	}
+	if !srv.methodPerms.IsPublic(widgetVersionMethod) {
+		t.Fatal("a declared-public module method must be registered public")
+	}
+	if srv.methodPerms.IsPublic("/qrdb.v1.QRDBService/Put") {
+		t.Fatal("a module method the module does not declare public must not be registered public")
+	}
+}
+
+// TestModuleDeclaredPublicWinsOverPermissionOption pins the gRPC rule on
+// QUIC: a method declared public is served public even when its descriptor
+// also carries a (qrdb.v1.permission) option, exactly as gRPC's
+// RegisterPublicGRPCMethods lets the declaration win.
+func TestModuleDeclaredPublicWinsOverPermissionOption(t *testing.T) {
+	const putMethod = "/qrdb.v1.QRDBService/Put"
+	var called atomic.Bool
+	module := &grpcModule{desc: putProjectionDesc(&called), impl: struct{}{}, publicMethods: []string{putMethod}}
 
 	bundle := generateIntegrationTLS(t)
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0",
@@ -262,10 +308,106 @@ func TestModuleDeclaredPublicMethodWithoutPermissionIsSkippedNotPanicked(t *test
 	)
 	t.Cleanup(srv.Stop)
 
-	if _, ok := srv.handlers[publicMethod]; ok {
-		t.Fatal("a declared-public method with no permission option must not be registered in the frame dispatch map")
+	if !srv.methodPerms.IsPublic(putMethod) {
+		t.Fatal("the module's public declaration must win over the method's permission option")
 	}
-	if srv.methodPerms.Covered(publicMethod) {
-		t.Fatal("a declared-public method with no permission option must not gain a permission registration either")
+	if _, ok := srv.handlers[putMethod]; !ok {
+		t.Fatal("the declared-public method must be dispatchable")
+	}
+}
+
+// certlessMatrixEnv starts an mTLS-authenticating server that, like qrdbd
+// with auth enabled, accepts a connection without a client certificate
+// (VerifyClientCertIfGiven), and returns a dial env for a client with the
+// certificate and one without it.
+func certlessMatrixEnv(t *testing.T, opts ...ServerOption) (withCert, withoutCert *integrationEnv) {
+	t.Helper()
+	bundle := generateMutualTLS(t)
+	serverCfg := bundle.serverCfg.Clone()
+	serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
+	bundle.serverCfg = serverCfg
+
+	mw := authmw.New(
+		&noopAuthorizer{},
+		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
+		authmw.WithAuthenticator(auth.NewMTLSAuthenticator()),
+		authmw.WithMTLSBindingPolicy(auth.MTLSBindingEnrolled),
+	)
+	withCert = startMutualTLSServer(t, &mockKVService{}, &mockAdminService{}, bundle,
+		append([]ServerOption{WithAuthMiddleware(mw)}, opts...)...)
+
+	certless := bundle.clientCfg.Clone()
+	certless.Certificates = nil
+	withoutCert = &integrationEnv{srv: withCert.srv, clientCfg: certless}
+	return withCert, withoutCert
+}
+
+// TestIntegration_CertlessCaller_ReachesOnlyPublicMethods is the QUIC half of
+// the public-operation matrix: a caller with no client certificate reaches
+// the module's declared-public verb, and every other operation -- the
+// built-in kv.Put and the module's permissioned Put -- answers
+// StatusUnauthenticated, the typed refusal REST and gRPC return.
+func TestIntegration_CertlessCaller_ReachesOnlyPublicMethods(t *testing.T) {
+	var versionCalled, putCalled atomic.Bool
+	_, env := certlessMatrixEnv(t, WithServiceModules(widgetModule(&versionCalled, &putCalled)))
+	conn := env.dialServer(t)
+
+	empty, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("marshal Empty: %v", err)
+	}
+	if _, status, _ := roundTrip(t, conn, widgetVersionMethod, 1, empty); status != wire.StatusOK {
+		t.Fatalf("public module method status = %d, want StatusOK (%d)", status, wire.StatusOK)
+	}
+	if !versionCalled.Load() {
+		t.Fatal("the public module method's handler was never invoked")
+	}
+
+	put, err := proto.Marshal(&pb.PutRequest{Key: "k", Value: []byte("v")})
+	if err != nil {
+		t.Fatalf("marshal PutRequest: %v", err)
+	}
+	for id, method := range map[uint64]string{2: "kv.Put", 3: "/qrdb.v1.QRDBService/Put"} {
+		if _, status, _ := roundTrip(t, conn, method, id, put); status != wire.StatusUnauthenticated {
+			t.Errorf("%s status = %d, want StatusUnauthenticated (%d)", method, status, wire.StatusUnauthenticated)
+		}
+	}
+	if putCalled.Load() {
+		t.Fatal("a certless caller reached the module's permissioned handler")
+	}
+}
+
+// TestIntegration_CertifiedCaller_ReachesEveryMethod is the matrix's control:
+// on the same server a caller presenting its client certificate reaches the
+// public verb and the authenticated ones alike.
+func TestIntegration_CertifiedCaller_ReachesEveryMethod(t *testing.T) {
+	var versionCalled, putCalled atomic.Bool
+	env, _ := certlessMatrixEnv(t, WithServiceModules(widgetModule(&versionCalled, &putCalled)))
+	conn := env.dialServer(t)
+
+	empty, err := proto.Marshal(&emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("marshal Empty: %v", err)
+	}
+	put, err := proto.Marshal(&pb.PutRequest{Key: "k", Value: []byte("v")})
+	if err != nil {
+		t.Fatalf("marshal PutRequest: %v", err)
+	}
+	frames := []struct {
+		id      uint64
+		method  string
+		payload []byte
+	}{
+		{1, widgetVersionMethod, empty},
+		{2, "kv.Put", put},
+		{3, "/qrdb.v1.QRDBService/Put", put},
+	}
+	for _, f := range frames {
+		if _, status, _ := roundTrip(t, conn, f.method, f.id, f.payload); status != wire.StatusOK {
+			t.Errorf("%s status = %d, want StatusOK (%d)", f.method, status, wire.StatusOK)
+		}
+	}
+	if !versionCalled.Load() || !putCalled.Load() {
+		t.Fatalf("module handlers reached: Version=%v Put=%v, want both", versionCalled.Load(), putCalled.Load())
 	}
 }

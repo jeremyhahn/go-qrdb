@@ -339,7 +339,7 @@ func handleCollectionInsert(svc service.CollectionServicer) mcpserver.ToolHandle
 			return nil, &ToolError{Tool: "qrdb_collection_insert", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(documentIDResult{ID: resp.ID})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_insert", Err: jsonErr}
 		}
@@ -397,7 +397,7 @@ func handleCollectionGet(svc service.CollectionServicer) mcpserver.ToolHandlerFu
 			return nil, &ToolError{Tool: "qrdb_collection_get", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(documentResultOf(resp))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_get", Err: jsonErr}
 		}
@@ -469,7 +469,7 @@ func handleCollectionUpdate(svc service.CollectionServicer) mcpserver.ToolHandle
 			return nil, &ToolError{Tool: "qrdb_collection_update", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(documentIDResult{ID: resp.ID})
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_update", Err: jsonErr}
 		}
@@ -588,7 +588,7 @@ func handleCollectionListDocuments(svc service.CollectionServicer) mcpserver.Too
 			return nil, &ToolError{Tool: "qrdb_collection_list_documents", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(resp)
+		data, jsonErr := json.Marshal(documentListResultOf(resp))
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_collection_list_documents", Err: jsonErr}
 		}
@@ -672,6 +672,48 @@ func collectionInfoResultOf(info *service.CollectionInfo) collectionInfoResult {
 		CreatedAt:     info.CreatedAt,
 		State:         info.State,
 		StateSince:    info.StateSince,
+	}
+}
+
+// documentIDResult is the result of qrdb_collection_insert and
+// qrdb_collection_update. The ID is a decimal string, as the id argument of
+// the get, update and delete tools is: a document ID is a uint64, the default
+// unix_nano IDs exceed 2^53, and a JSON number is read as a float64 by most
+// MCP clients, which rounds it to a different document.
+type documentIDResult struct {
+	ID uint64 `json:"id,string"`
+}
+
+// documentResult is one document as qrdb_collection_get and
+// qrdb_collection_list_documents return it, its ID a decimal string for the
+// reason documentIDResult gives.
+type documentResult struct {
+	ID       uint64                 `json:"id,string"`
+	Document map[string]interface{} `json:"document"`
+}
+
+// documentListResult is the result of qrdb_collection_list_documents.
+type documentListResult struct {
+	Documents     []documentResult `json:"documents"`
+	NextPageToken string           `json:"next_page_token,omitempty"`
+	TotalCount    int64            `json:"total_count"`
+}
+
+// documentResultOf converts a service document to its tool result.
+func documentResultOf(doc *service.GetDocumentResponse) documentResult {
+	return documentResult{ID: doc.ID, Document: doc.Document}
+}
+
+// documentListResultOf converts a service document page to its tool result.
+func documentListResultOf(page *service.ListDocumentsResponse) documentListResult {
+	docs := make([]documentResult, len(page.Documents))
+	for i := range page.Documents {
+		docs[i] = documentResultOf(&page.Documents[i])
+	}
+	return documentListResult{
+		Documents:     docs,
+		NextPageToken: page.NextPageToken,
+		TotalCount:    page.TotalCount,
 	}
 }
 

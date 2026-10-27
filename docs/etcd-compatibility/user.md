@@ -1,9 +1,7 @@
 # etcd Compatibility — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
-
-Test reference: `make integration-test-etcd-compatibility`; coverage row: `test/integration/COVERAGE.md` `[etcd-compatibility](../../docs/etcd-compatibility/)`.
 
 Point `etcdctl`, a `clientv3` program, or `kube-apiserver` at a qrdb database
 and it works as an etcd v3 endpoint.
@@ -63,7 +61,8 @@ The `kube-apiserver` client certificate's role needs `kv:range`, `kv:put`,
 `lease:*` permissions, and must belong to the tenant that owns the database. The daemon's `raft.sm_type` must be `mvcc` — Kubernetes depends on
 revisions, watches, leases and transactions. On a state machine without MVCC
 revision history (the default `pebble`) the etcd server refuses to start
-(`etcd.RevisionHistoryRequiredError`), and a put that reached one would be
+with "etcd: the etcd API requires a state machine with MVCC revision history
+(raft.sm_type: mvcc)", and a put that reached one would be
 refused with `FAILED_PRECONDITION` rather than answered with revision 0.
 
 **Run more than one etcd cluster.** Create a second database with etcd enabled.

@@ -1,6 +1,6 @@
 # RAG — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -100,10 +100,8 @@ by `top_k` and are not paginated.
 
 ## Scope note
 
-This API stops at ranked results. Query rewriting, result fusion (BM25, hybrid,
-RRF), context assembly and LLM generation are the services layer's
-responsibility and have no endpoint here — see
-[architecture.md](architecture.md).
+This API stops at ranked results; see
+[what this feature deliberately does not do](architecture.md#what-this-feature-deliberately-does-not-do).
 
 ## Versioning
 

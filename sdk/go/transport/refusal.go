@@ -14,7 +14,10 @@
 
 package transport
 
-import "github.com/jeremyhahn/go-qrdb/pkg/auth"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+)
 
 // refusalErrors rebuilds, per structured-refusal reason, the typed error a
 // server refused with. Every transport carries the reason and its metadata
@@ -28,6 +31,15 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
+	},
+	vlog.ReasonLogExists: func(md map[string]string) error {
+		return vlog.LogExistsFromMetadata(md)
+	},
+	vlog.ReasonCheckpointExists: func(md map[string]string) error {
+		return vlog.CheckpointExistsFromMetadata(md)
+	},
+	vlog.ReasonExpireNotAllowed: func(md map[string]string) error {
+		return vlog.ExpireNotAllowedFromMetadata(md)
 	},
 }
 

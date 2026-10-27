@@ -1,6 +1,6 @@
 # Transactions and Batch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -110,6 +110,9 @@ Response is empty on success (`204`).
 | Unknown or expired session | 404 | `NOT_FOUND` |
 | Caller is not the session's (tenant, identity) | 403 | `PERMISSION_DENIED` |
 | A session's byte, chunk-count, or per-tenant concurrency quota is exceeded | 429 | `RESOURCE_EXHAUSTED` |
+| A `--transactional` import commit fails (`ImportTransactionAbortedError`) | 409 | `ABORTED` |
+| An import proposal or an expanded archive exceeds its bound (`ImportProposalTooLargeError`, `ImportArchiveExpandedTooLargeError`) | 413 | `RESOURCE_EXHAUSTED` |
+| An import session's stored state is corrupt (`ImportSessionCorruptError`) | 500 | `INTERNAL` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |

@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -755,8 +755,9 @@ polling `barrier status` to completion and then issuing the tenant request
 would — must not be refused or misrouted because of it. Both reads retry
 through `whenReadIndexReady` (`pkg/server/tenant_residue.go`), the same
 helper the tenant-reconcile and list-tenants paths use and `ImportCommit`'s
-`syncReadRetrying` mirrors: only `quicraft.ErrReadIndexNotReady` is retried,
-up to a 15-second deadline, every other error returns immediately.
+`syncReadRetrying` mirrors: only `quicraft.ErrReadIndexNotReady` and an
+attempt that hits `StartupReadAttemptTimeout` (`pkg/server/startup_read.go`)
+are retried, up to a 15-second deadline, every other error returns immediately.
 
 ### In a cluster, every node supplies its own credential
 
@@ -1690,7 +1691,7 @@ keyed by the tenant that owns the barrier -- the system tenant for the system
 barrier, the tenant for a tenant barrier, the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
-details reach the trail (`domain`, `op`, `strategy`, `threshold`, `from`,
+details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`, `from`,
 `to`, `rolled_back`, `submitted`, `required`, and the holder record
 conflict's `scope`, `username`, `cached_cert`); no key material is among
 them, and any other detail is dropped. The records are post-hoc: a trail

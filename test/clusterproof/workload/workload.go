@@ -53,6 +53,9 @@ type Workload struct {
 	classify Classifier
 	keys     []string
 	kinds    []weightedKind
+	// sleep takes a client's backoff pause; tests replace sleepContext with
+	// a recording fake so no test waits on a real timer.
+	sleep func(context.Context, time.Duration)
 
 	outcomes     map[history.Outcome]*atomic.Uint64
 	dialFailures atomic.Uint64
@@ -99,6 +102,7 @@ func New(cfg Config, dial Dialer, rec *history.Recorder, opts ...Option) (*Workl
 		dial:     dial,
 		rec:      rec,
 		classify: DefaultClassifier,
+		sleep:    sleepContext,
 		keys:     make([]string, cfg.Keys),
 		outcomes: map[history.Outcome]*atomic.Uint64{
 			history.OutcomeOK:            new(atomic.Uint64),
@@ -201,6 +205,7 @@ type client struct {
 	conn     Conn
 	seq      uint64
 	known    map[string]observed
+	pause    *backoff
 }
 
 func (w *Workload) newClient(id int) *client {
@@ -211,11 +216,15 @@ func (w *Workload) newClient(id int) *client {
 		rng:      rand.New(rand.NewPCG(w.cfg.Seed, uint64(id))),
 		endpoint: id % len(w.cfg.Endpoints),
 		known:    make(map[string]observed),
+		// The jitter draws from its own stream, so the operation sequence
+		// stays the one Seed names however often a client fails.
+		pause: newBackoff(time.Duration(w.cfg.RedialBackoff), w.cfg.backoffLimit(),
+			rand.New(rand.NewPCG(w.cfg.Seed, ^uint64(id))), w.sleep),
 	}
 }
 
 // ops maps each kind to the client method that performs it.
-var ops = map[history.Kind]func(*client, context.Context, string){
+var ops = map[history.Kind]func(*client, context.Context, string) history.Outcome{
 	history.KindPut:    (*client).put,
 	history.KindGet:    (*client).get,
 	history.KindDelete: (*client).del,
@@ -233,7 +242,12 @@ func (c *client) run(ctx context.Context) {
 			continue
 		}
 		key := c.w.keys[c.rng.IntN(len(c.w.keys))]
-		ops[c.pick()](c, ctx, key)
+		// Every failed operation is followed by a pause, so a node that
+		// refuses or times out is retried at a bounded rate, not in a loop
+		// that floods the history.
+		if ops[c.pick()](c, ctx, key) != history.OutcomeOK {
+			c.backoff(ctx)
+		}
 		n++
 	}
 }
@@ -300,75 +314,84 @@ func (c *client) finish(p history.Pending, kind history.Kind, out *history.Outpu
 	}
 	c.log.Return(p, outcome, out, recorded)
 	c.w.outcomes[outcome].Add(1)
+	if outcome == history.OutcomeOK {
+		c.pause.reset()
+	}
 	if connectionLost(err) {
 		c.drop()
 	}
 	return outcome
 }
 
-func (c *client) put(ctx context.Context, key string) {
+func (c *client) put(ctx context.Context, key string) history.Outcome {
 	v := c.nextValue()
 	octx, cancel := c.opContext(ctx)
 	defer cancel()
 	p := c.log.Call(history.KindPut, key, &history.Input{Value: v})
 	err := c.conn.Put(octx, key, []byte(v))
-	if c.finish(p, history.KindPut, nil, err) == history.OutcomeOK {
+	outcome := c.finish(p, history.KindPut, nil, err)
+	if outcome == history.OutcomeOK {
 		c.known[key] = observed{value: v, present: true}
-		return
+		return outcome
 	}
 	delete(c.known, key)
+	return outcome
 }
 
-func (c *client) get(ctx context.Context, key string) {
+func (c *client) get(ctx context.Context, key string) history.Outcome {
 	octx, cancel := c.opContext(ctx)
 	defer cancel()
-	c.read(octx, key)
+	return c.read(octx, key)
 }
 
 // read performs one recorded get and reports whether it was answered.
-func (c *client) read(ctx context.Context, key string) bool {
+func (c *client) read(ctx context.Context, key string) history.Outcome {
 	p := c.log.Call(history.KindGet, key, nil)
 	b, err := c.conn.Get(ctx, key)
 	out := &history.Output{Found: err == nil, Value: string(b)}
-	if c.finish(p, history.KindGet, out, err) != history.OutcomeOK {
+	outcome := c.finish(p, history.KindGet, out, err)
+	if outcome != history.OutcomeOK {
 		delete(c.known, key)
-		return false
+		return outcome
 	}
 	c.known[key] = observed{value: out.Value, present: out.Found}
-	return true
+	return outcome
 }
 
-func (c *client) del(ctx context.Context, key string) {
+func (c *client) del(ctx context.Context, key string) history.Outcome {
 	octx, cancel := c.opContext(ctx)
 	defer cancel()
 	p := c.log.Call(history.KindDelete, key, nil)
 	err := c.conn.Delete(octx, key)
-	if c.finish(p, history.KindDelete, nil, err) == history.OutcomeOK {
+	outcome := c.finish(p, history.KindDelete, nil, err)
+	if outcome == history.OutcomeOK {
 		c.known[key] = observed{}
-		return
+		return outcome
 	}
 	delete(c.known, key)
+	return outcome
 }
 
 // cas swaps the key from the value this client last saw to a fresh one. An
 // absent key stays absent under compare-and-swap, so with no present value to
 // expect the client reads the key instead, and learns one.
-func (c *client) cas(ctx context.Context, key string) {
+func (c *client) cas(ctx context.Context, key string) history.Outcome {
 	exp, ok := c.known[key]
 	if !ok || !exp.present {
-		c.get(ctx, key)
-		return
+		return c.get(ctx, key)
 	}
 	v := c.nextValue()
 	octx, cancel := c.opContext(ctx)
 	defer cancel()
 	p := c.log.Call(history.KindCAS, key, &history.Input{Value: v, Expected: exp.value})
 	swapped, err := c.conn.CompareAndSwap(octx, key, []byte(exp.value), []byte(v))
-	if c.finish(p, history.KindCAS, &history.Output{Swapped: swapped}, err) == history.OutcomeOK && swapped {
+	outcome := c.finish(p, history.KindCAS, &history.Output{Swapped: swapped}, err)
+	if outcome == history.OutcomeOK && swapped {
 		c.known[key] = observed{value: v, present: true}
-		return
+		return outcome
 	}
 	delete(c.known, key)
+	return outcome
 }
 
 // readUntilAnswered reads key, trying each endpoint in turn, until a read is
@@ -379,7 +402,7 @@ func (c *client) readUntilAnswered(ctx context.Context, key string) bool {
 			continue
 		}
 		octx, cancel := c.opContext(ctx)
-		answered := c.read(octx, key)
+		answered := c.read(octx, key) == history.OutcomeOK
 		cancel()
 		if answered {
 			return true
@@ -391,12 +414,5 @@ func (c *client) readUntilAnswered(ctx context.Context, key string) bool {
 	return false
 }
 
-// backoff waits RedialBackoff or until ctx ends.
-func (c *client) backoff(ctx context.Context) {
-	t := time.NewTimer(time.Duration(c.w.cfg.RedialBackoff))
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-	case <-t.C:
-	}
-}
+// backoff waits out the client's next pause, or until ctx ends.
+func (c *client) backoff(ctx context.Context) { c.pause.wait(ctx) }

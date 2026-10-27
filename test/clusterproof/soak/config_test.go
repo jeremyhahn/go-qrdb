@@ -188,6 +188,51 @@ func TestLoadOptionsKillUnderNoneNeedsNoUnseal(t *testing.T) {
 	}
 }
 
+// countingNode is a node that can be killed, restarted and unsealed, and
+// counts each restart and unseal its heal asks for.
+type countingNode struct {
+	fakeTarget
+	restarts, unseals int
+}
+
+var _ nemesis.Unsealer = (*countingNode)(nil)
+
+func (*countingNode) Signal(context.Context, syscall.Signal) error { return nil }
+func (n *countingNode) Restart(context.Context) error              { n.restarts++; return nil }
+func (n *countingNode) Unseal(context.Context) error               { n.unseals++; return nil }
+
+// TestLoadOptionsKillHealMatchesTheSeal proves the restart path follows the
+// seal type on a node that could do either: a none node is restarted and left
+// to unseal itself, a keyed one is restarted and then unsealed through the
+// template.
+func TestLoadOptionsKillHealMatchesTheSeal(t *testing.T) {
+	for seal, sealed := range sealTypes {
+		t.Run(seal, func(t *testing.T) {
+			o, err := LoadOptions(envOf(map[string]string{
+				EnvSeal: seal, EnvNodes: nodesEnv, EnvNemesis: "kill", EnvDuration: "1m", EnvTargets: writeFile(t, "t.json", targetsJSON),
+			}), now)
+			if err != nil {
+				t.Fatalf("LoadOptions: %v", err)
+			}
+			n := &countingNode{fakeTarget: fakeTarget{"n1"}}
+			kill := o.Nemeses["kill"]
+			if err := kill.Inject(context.Background(), []nemesis.Target{n}); err != nil {
+				t.Fatalf("Inject: %v", err)
+			}
+			if err := kill.Heal(context.Background()); err != nil {
+				t.Fatalf("Heal: %v", err)
+			}
+			want := 0
+			if sealed {
+				want = 1
+			}
+			if n.restarts != 1 || n.unseals != want {
+				t.Fatalf("restarts %d, unseals %d; want 1, %d", n.restarts, n.unseals, want)
+			}
+		})
+	}
+}
+
 func TestLoadOptionsRefuses(t *testing.T) {
 	targets := func(t *testing.T, edit func(string) string) string {
 		return writeFile(t, "targets.json", edit(targetsJSON))

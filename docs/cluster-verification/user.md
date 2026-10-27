@@ -49,9 +49,11 @@ had not caught up, the run exits `2` rather than passing.
 - A client credential with read and write access to one database used only
   for the proof. The workload writes and overwrites keys freely. Give it to
   the harness in a workload file (`PROOF_WORKLOAD`). The same credential reads
-  every node's replica states, so it must be a `system`-tenant identity that
-  also holds `admin:replica_state`; grant that through a custom role rather
-  than using an Owner credential ([api.md](api.md#permissions)).
+  every node's replica states and peers, so it must be a `system`-tenant
+  identity that also holds `admin:replica_state` and `admin:peers`, with its
+  certificate's key enrolled on the account; grant the permissions through a
+  custom role rather than using an Owner credential
+  ([api.md](api.md#permissions) lists them and the steps).
 - A targets file (`PROOF_TARGETS`) saying how to reach each node: a command
   that runs a fault command in the node's namespaces, one that signals its
   server, and one that starts it again
