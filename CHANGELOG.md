@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.58.0-alpha] - 2026-10-27
+
 ### Added
 - **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
   WAL fsync stall keeps its leadership and term, so linearizable reads and
