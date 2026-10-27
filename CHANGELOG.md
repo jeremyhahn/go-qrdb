@@ -58,6 +58,20 @@ are not reconstructed here — their history is in the git log.
   total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
   drives the check through `make` over profiles above and below the floor.
 
+### Changed
+
+- **Compliance mode runs the SO-exclusive role operations only as a separate
+  Security Officer** (#1128). Under strict separation of duties
+  (`auth.separation_of_duties`, forced on by FIPS 140-3 mode) no account holds
+  the `so` role together with its tenant's `admin` role: a role write leaving
+  an account holding both is refused with `SORoleConflictError` (403 /
+  `PermissionDenied`). `roles create` and `roles reconcile` run only as the
+  target tenant's own SO that does not hold `admin`, on REST, gRPC, QUIC, MCP
+  and the embedded transport; the tenant Admin is refused with
+  `SORoleRequiredError`, and an account left holding both from the standard
+  posture with `SORoleConflictError`. In the standard posture an Admin may
+  hold `so` and runs both operations as before.
+
 ### Added
 
 - **The separation-of-duties posture is readable and its changes are

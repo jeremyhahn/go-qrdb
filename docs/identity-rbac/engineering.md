@@ -1007,6 +1007,24 @@ conditional on those bytes, so a Security Officer grant that lands after the
 gate is either seen by the guard (`SORoleRequiredError`) or fails the write
 (`ConcurrentUpdateError`); it is never overwritten.
 
+The same posture forbids one account holding `so` together with the Admin role
+of its tenant (the `system` Admin for a `system`-tenant account; owner ruling
+132). `authorizeSORoleChange`, which the gates and `SORoleGuard` share, refuses
+any role change that leaves the target holding both with
+`SORoleConflictError{TenantID}`, whoever the caller, and judges the caller of
+an `so` grant or revocation through `requireSeparateSO`: the caller must be of
+the target tenant, hold its `so` role (`holdsSO`) and not its Admin role
+(`holdsAdmin`), or the change is refused with `SORoleRequiredError` or
+`SORoleConflictError`. `AuthMiddleware.AuthorizeSOExclusive(ctx, tenantID, op)`
+applies `requireSeparateSO` to the two SO-exclusive operations, `CreateRole`
+and `ReconcileBuiltInRoles`, after `tenant.EffectiveTenant` resolves the
+tenant they act on; the REST and QUIC handlers, the gRPC service, the MCP role
+tools and the embedded transport each call it after their permission check
+and before the role service. It returns nil outside strict separation, where
+`roles:create` alone decides. `SORoleConflictError` classifies as
+`AuthFailureUnauthorized` (403 / `PermissionDenied`); a role store that cannot
+answer `holdsAdmin` is `SORoleUnresolvedError` (503), never an admission.
+
 The resolved posture is recorded and its changes are audited.
 `wiring.RecordSeparationPosture` compares the posture
 `ResolveStrictSeparation` gives with the replicated system record

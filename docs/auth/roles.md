@@ -273,6 +273,14 @@ Enforcement is **dual-layer**, and both layers are structural:
 1. **Registration time** -- `permission.RegisterRoleGrant` panics if the `so` role is granted a cryptographic permission (`SoDViolationError`), a permission whose separated duty nobody declared (`UndeclaredDutyError`), or a whole-segment wildcard (`WildcardGrantError`). The invariant cannot be violated by adding a bad grant, and cannot be side-stepped by adding an unclassified one -- from qrdb or from a higher layer through the `sdk/go` re-export.
 2. **Request time** -- the RBAC deny-list (`soDeniedActions` + `soDeniedCryptoVerbs` in `pkg/auth/rbac/rbac.go`) rejects the request before permissions are resolved, so a grant that reached a role by another path (a hand-authored custom role named `so`, or a role store written by an earlier build) is still denied. The two mechanisms are independent implementations -- the request-time one classifies the `resource:action` itself and never consults the duty registry -- and a test proves they agree in both directions.
 
+### SO and Admin Are Separate Principals Under Strict Separation (FIPS 140-3 AS10.03)
+
+Under strict separation of duties (`auth.separation_of_duties`, always on in a FIPS build) the Security Officer and the Admin are different accounts. No account holds the `so` role together with the `admin` role of its tenant (the `system` Admin for a `system`-tenant account): a role write that would leave an account holding both is refused with `SORoleConflictError` (403), whoever makes it. Creating a role (`roles:create`) and reconciling the built-in roles, which share that permission, run only as a separate SO of the tenant they act on: the tenant Admin holds `roles:create` and is refused with `SORoleRequiredError`, and an account still holding both roles from the standard posture is refused with `SORoleConflictError`. Only the tenant's own separate SO grants or revokes `so`.
+
+In the standard posture an Admin may hold `so`, and creates roles and reconciles the built-in ones with `roles:create` alone.
+
+**Enforcement:** request time, in the role-assignment gate of `pkg/auth/middleware` (`authorizeSORoleChange`, re-judged by `SORoleGuard` against the record the write commits over) and `AuthMiddleware.AuthorizeSOExclusive`, called by every transport's role-create and reconcile handler.
+
 ### Share Holders Have No RBAC Access (FIPS 140-3 AS10.06)
 
 A key custodian is a share holder, not an RBAC principal. RBAC refuses a holder identity everything: it cannot view keys, certificates, audit logs, users or tenants, and its only acts — claiming its envelope and submitting its share to a quorum — are identity-gated. This limits the attack surface of compromised custodian credentials. A custodian compromise:

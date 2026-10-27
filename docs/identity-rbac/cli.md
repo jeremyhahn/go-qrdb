@@ -219,6 +219,12 @@ qrdb roles create --name readonly --tenant-id acme \
 Permission strings are validated against the registry; an unregistered one is
 refused.
 
+Requires `roles:create`. Under strict separation of duties
+(`auth.separation_of_duties`, always on in FIPS 140-3 mode) it additionally
+runs only as a separate Security Officer of the tenant: the tenant Admin is
+refused with 403 `SO role required`, and an account holding both `so` and
+`admin` with 403 `separation of duties: ...`. Over every transport.
+
 ### `qrdb roles get <id>` / `get-by-name <name>` / `delete <id>`
 
 ```bash
@@ -262,6 +268,11 @@ qrdb roles unassign --user 1f2e... --role "$ROLE"
 
 **Both flags take IDs, not names.** This is the most common mistake in this
 group.
+
+Under strict separation of duties only the tenant's own Security Officer
+grants or revokes the `so` role, and no account may hold `so` together with
+its tenant's `admin` role: an `assign` that would leave a user holding both is
+refused with 403 `separation of duties: ...`.
 
 ### Granting device onboarding alone
 
@@ -344,8 +355,12 @@ that build keeps the old set and its administrators get a 403 on the new verb
 with nothing explaining it.
 
 Requires `roles:create` — the same grant as seeding, because reconciliation is
-seeding applied to an existing tenant. A tenant's built-in Admin holds it, so
-the tenant's own Admin reconciles the tenant without taking another role.
+seeding applied to an existing tenant. In the standard posture a tenant's
+built-in Admin holds it, so the tenant's own Admin reconciles the tenant
+without taking another role. Under strict separation of duties the reconcile,
+like `roles create`, runs only as a separate Security Officer of the tenant:
+the tenant Admin is refused with 403 `SO role required`, and the tenant's SO,
+which holds `roles:create` and not `admin`, reconciles it.
 
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
