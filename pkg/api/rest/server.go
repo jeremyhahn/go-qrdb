@@ -2297,6 +2297,12 @@ func (s *Server) registerRoutes() {
 	// the call.
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/complete", permission.IdentityGated, s.handleTenantByID)
+	// barrier/signed-init/{begin,complete} are IdentityGated for the same
+	// reason; the handlers authorize as a plain init does, and the signed
+	// statement anchored to the tenant's first admin is the proof of
+	// possession (handleTenantBarrierSignedInitBegin).
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/signed-init/begin", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/signed-init/complete", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)

@@ -213,6 +213,8 @@ var expectedToolPerms = map[string]permission.Permission{
 	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and QUIC.
 	"qrdb_tenant_barrier_init_begin":             permission.IdentityGated,
 	"qrdb_tenant_barrier_init_complete":          permission.IdentityGated,
+	"qrdb_tenant_barrier_signed_init_begin":      permission.IdentityGated,
+	"qrdb_tenant_barrier_signed_init_complete":   permission.IdentityGated,
 	"qrdb_tenant_barrier_unseal":                 permission.IdentityGated,
 	"qrdb_tenant_barrier_seal":                   permission.TenantBarrierSeal,
 	"qrdb_tenant_barrier_status":                 permission.IdentityGated,

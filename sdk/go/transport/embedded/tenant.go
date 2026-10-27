@@ -593,6 +593,98 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	})
 }
 
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node and the single-use reference that redeems it.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	ctx, err := t.admit(ctx, "TenantBarrierSignedInitBegin")
+	if err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &transport.NilRequestError{}}
+	}
+	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
+	var roster *tenant.TenantBarrierShamirRoster
+	if len(req.Officers) > 0 {
+		roster = &tenant.TenantBarrierShamirRoster{
+			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+			Policy:   seal.FactorPolicy(req.Policy),
+		}
+	}
+	begun, err := t.tenantSvc.TenantBarrierInitBegin(ctx, &tenant.TenantBarrierInitBeginRequest{
+		TenantID:        req.TenantID,
+		Strategy:        seal.StrategyID(req.Strategy),
+		KeyRef:          req.KeyRef,
+		Threshold:       req.Threshold,
+		Shares:          req.Shares,
+		Roster:          roster,
+		SignerPublicKey: req.PublicKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierSignedInitBeginResponse{
+		TenantID:    begun.TenantID,
+		Strategy:    begun.Strategy,
+		Reference:   begun.Reference,
+		Statement:   begun.Statement,
+		ExpiresAt:   begun.ExpiresAt,
+		Threshold:   begun.Threshold,
+		TotalShares: begun.TotalShares,
+		ShareCount:  begun.ShareCount,
+		Holders:     holderwire.TenantBarrierHoldersTo(begun.Holders),
+	}, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	ctx, err := t.admit(ctx, "TenantBarrierSignedInitComplete")
+	if err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &transport.NilRequestError{}}
+	}
+	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
+	result, err := t.tenantSvc.TenantBarrierInitComplete(ctx, &tenant.TenantBarrierInitCompleteRequest{
+		TenantID:   req.TenantID,
+		Reference:  req.Reference,
+		Signature:  req.Signature,
+		Passphrase: req.Passphrase,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       result.TenantID,
+		Strategy:       result.Strategy,
+		ShareCount:     result.ShareCount,
+		Threshold:      result.Threshold,
+		TotalShares:    result.TotalShares,
+		Holders:        holderwire.TenantBarrierHoldersTo(result.Holders),
+		Roster:         result.Roster,
+		UnsealKeyCheck: result.UnsealKeyCheck,
+		AdminPending:   result.AdminPending,
+	}, nil
+}
+
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to
 // the TenantServicer.
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {

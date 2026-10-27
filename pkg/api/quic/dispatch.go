@@ -437,6 +437,8 @@ func (s *Server) buildHandlers() {
 	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and MCP.
 	s.handleIf(tenantOn, "tenant.BarrierInitBegin", permission.IdentityGated, s.handleTenantBarrierInitBegin)
 	s.handleIf(tenantOn, "tenant.BarrierInitComplete", permission.IdentityGated, s.handleTenantBarrierInit)
+	s.handleIf(tenantOn, "tenant.BarrierSignedInitBegin", permission.IdentityGated, s.handleTenantBarrierSignedInitBegin)
+	s.handleIf(tenantOn, "tenant.BarrierSignedInitComplete", permission.IdentityGated, s.handleTenantBarrierSignedInitComplete)
 	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.IdentityGated, s.handleTenantBarrierUnseal)
 	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
 	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.IdentityGated, s.handleTenantBarrierStatus)

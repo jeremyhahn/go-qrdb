@@ -384,6 +384,8 @@ func (s *Server) handleReconcileDeletedTenants(w http.ResponseWriter, r *http.Re
 //   - POST   /v1/tenants/{id}/quotas                                         -> set tenant quotas
 //   - POST   /v1/tenants/{id}/barrier/init/begin                             -> tenant barrier init nonce
 //   - POST   /v1/tenants/{id}/barrier/init/complete                          -> initialize tenant barrier
+//   - POST   /v1/tenants/{id}/barrier/signed-init/begin                      -> tenant barrier init statement to sign
+//   - POST   /v1/tenants/{id}/barrier/signed-init/complete                   -> initialize under the signed statement
 //   - POST   /v1/tenants/{id}/barrier/unseal                                 -> unseal tenant barrier
 //   - POST   /v1/tenants/{id}/barrier/seal                                   -> seal tenant barrier
 //   - GET    /v1/tenants/{id}/barrier/status                                 -> tenant barrier status
@@ -432,6 +434,14 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if id, found := strings.CutSuffix(suffix, "/barrier/init/complete"); found && id != "" {
 			s.handleTenantBarrierInit(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/signed-init/begin"); found && id != "" {
+			s.handleTenantBarrierSignedInitBegin(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/signed-init/complete"); found && id != "" {
+			s.handleTenantBarrierSignedInitComplete(w, r, id)
 			return
 		}
 		if id, found := strings.CutSuffix(suffix, "/barrier/unseal"); found && id != "" {
@@ -829,29 +839,40 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	writeTenantBarrierInitResult(w, result)
+}
 
-	// INV-1: share bytes are never included in initialization responses.
-	// Security Officers retrieve their shares via the per-tenant claim
-	// handshake. Return share_count so callers know enrollment succeeded,
-	// and the Shamir split's roster and check value, which the owner signs
-	// between the two requests of a Shamir init, and admin_pending when the
-	// committed init's first admin waits on the tenant's home group.
+// writeTenantBarrierInitResult writes a committed tenant barrier init's
+// response, the plain init's and the signed init's alike.
+func writeTenantBarrierInitResult(w http.ResponseWriter, result *tenant.TenantBarrierInitResult) {
 	if result != nil && (result.ShareCount > 0 || len(result.UnsealKeyCheck) > 0 || result.AdminPending) {
-		writeJSON(w, map[string]interface{}{
-			"tenant_id":        result.TenantID,
-			"strategy":         result.Strategy,
-			"threshold":        result.Threshold,
-			"total_shares":     result.TotalShares,
-			"share_count":      result.ShareCount,
-			"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
-			"roster":           result.Roster,
-			"unseal_key_check": result.UnsealKeyCheck,
-			"admin_pending":    result.AdminPending,
-		})
+		writeJSON(w, tenantBarrierInitBody(result))
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// tenantBarrierInitBody is a committed tenant barrier init's response body.
+//
+// INV-1: share bytes are never included in initialization responses.
+// Security Officers retrieve their shares via the per-tenant claim
+// handshake. It carries share_count so callers know enrollment succeeded,
+// and the Shamir split's roster and check value, which the owner signs
+// between the two requests of a Shamir init, and admin_pending when the
+// committed init's first admin waits on the tenant's home group.
+func tenantBarrierInitBody(result *tenant.TenantBarrierInitResult) map[string]any {
+	return map[string]any{
+		"tenant_id":        result.TenantID,
+		"strategy":         result.Strategy,
+		"threshold":        result.Threshold,
+		"total_shares":     result.TotalShares,
+		"share_count":      result.ShareCount,
+		"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
+		"roster":           result.Roster,
+		"unseal_key_check": result.UnsealKeyCheck,
+		"admin_pending":    result.AdminPending,
+	}
 }
 
 // handleTenantBarrierUnseal handles POST /v1/tenants/{id}/barrier/unseal --

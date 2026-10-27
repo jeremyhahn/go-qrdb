@@ -567,6 +567,48 @@ func (t *Transport) tenantBarrierInitRound(ctx context.Context, client *http.Cli
 	}, nil
 }
 
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node. Maps to
+// POST /v1/tenants/{id}/barrier/signed-init/begin.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &emptyTenantIDError{}}
+	}
+	var resp transport.TenantBarrierSignedInitBeginResponse
+	if err := t.tenantHolderPost(ctx, "TenantBarrierSignedInitBegin", req.TenantID, "/signed-init/begin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it. Maps to
+// POST /v1/tenants/{id}/barrier/signed-init/complete.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &emptyTenantIDError{}}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var wire restTenantBarrierInitResponse
+	if err := t.tenantHolderPost(ctx, "TenantBarrierSignedInitComplete", req.TenantID, "/signed-init/complete", req, &wire); err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       wire.TenantID,
+		Strategy:       wire.Strategy,
+		ShareCount:     wire.ShareCount,
+		Threshold:      wire.Threshold,
+		TotalShares:    wire.TotalShares,
+		Holders:        wire.Holders,
+		Roster:         wire.Roster,
+		UnsealKeyCheck: wire.UnsealKeyCheck,
+		AdminPending:   wire.AdminPending,
+	}, nil
+}
+
 // TenantBarrierUnseal unseals a per-tenant barrier.
 // Maps to POST /v1/tenants/{id}/barrier/unseal.
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {

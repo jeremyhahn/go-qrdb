@@ -286,6 +286,13 @@ func (r *TenantBarrierInitRequest) barrierSecret() BarrierSecretKind {
 	return secretIf(len(r.Passphrase) > 0, BarrierSecretPassphrase)
 }
 
+func (r *TenantBarrierSignedInitCompleteRequest) barrierSecret() BarrierSecretKind {
+	if r == nil {
+		return ""
+	}
+	return secretIf(len(r.Passphrase) > 0, BarrierSecretPassphrase)
+}
+
 func (r *TenantBarrierUnsealRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""

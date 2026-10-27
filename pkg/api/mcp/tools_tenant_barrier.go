@@ -53,7 +53,10 @@ type tenantBarrierAuthorizers struct {
 	Op        tenantScopeAuthorizer
 	InitBegin func(ctx context.Context, tenantID string) (*initproof.Challenge, error)
 	Init      func(ctx context.Context, tenantID string, proof *authmw.TenantBarrierInitProof) error
-	Sealed    tenantScopeAuthorizer
+	// SignedInit authorizes either half of a two-phase signed init: as Init,
+	// without the connection-bound proof the signed statement replaces.
+	SignedInit func(ctx context.Context, tenantID string) error
+	Sealed     tenantScopeAuthorizer
 }
 
 // tenantBarrierTools returns the MCP tool registrations for per-tenant
@@ -68,6 +71,8 @@ func tenantBarrierTools(svc tenant.TenantServicer, authz tenantBarrierAuthorizer
 	tools := []serverTool{
 		{Tool: toolTenantBarrierInitBegin(), Perm: permission.IdentityGated, Handler: handleTenantBarrierInitBegin(authz.InitBegin)},
 		{Tool: toolTenantBarrierInit(), Perm: permission.IdentityGated, Handler: handleTenantBarrierInit(svc, authz.Init)},
+		{Tool: toolTenantBarrierSignedInitBegin(), Perm: permission.IdentityGated, Handler: handleTenantBarrierSignedInitBegin(svc, authz.SignedInit)},
+		{Tool: toolTenantBarrierSignedInitComplete(), Perm: permission.IdentityGated, Handler: handleTenantBarrierSignedInitComplete(svc, authz.SignedInit)},
 		{Tool: toolTenantBarrierUnseal(), Perm: permission.IdentityGated, Handler: handleTenantBarrierUnseal(svc, authz.Sealed)},
 		{Tool: toolTenantBarrierSeal(), Perm: permission.TenantBarrierSeal, Handler: handleTenantBarrierSeal(svc, authorize)},
 		{Tool: toolTenantBarrierStatus(), Perm: permission.IdentityGated, Handler: handleTenantBarrierStatus(svc, authz.Sealed)},
@@ -269,23 +274,28 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 		// Security Officers claim their individual share via the SO claim flow.
 		// A Shamir split's roster and check value are returned, base64, for
 		// the owner to sign between the two requests of a Shamir init.
-		resp := map[string]any{
-			"tenant_id":        result.TenantID,
-			"strategy":         result.Strategy,
-			"threshold":        result.Threshold,
-			"total_shares":     result.TotalShares,
-			"share_count":      result.ShareCount,
-			"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
-			"roster":           result.Roster,
-			"unseal_key_check": result.UnsealKeyCheck,
-			"admin_pending":    result.AdminPending,
-		}
-		data, jsonErr := json.Marshal(resp)
-		if jsonErr != nil {
-			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: jsonErr}
-		}
-		return mcp.NewToolResultText(string(data)), nil
+		return tenantBarrierInitToolResult("qrdb_tenant_barrier_init_complete", result)
 	}
+}
+
+// tenantBarrierInitToolResult renders an initialized barrier as tool's text
+// result. INV-1/INV-11: it carries no share bytes.
+func tenantBarrierInitToolResult(tool string, result *tenant.TenantBarrierInitResult) (*mcp.CallToolResult, error) {
+	data, err := json.Marshal(map[string]any{
+		"tenant_id":        result.TenantID,
+		"strategy":         result.Strategy,
+		"threshold":        result.Threshold,
+		"total_shares":     result.TotalShares,
+		"share_count":      result.ShareCount,
+		"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
+		"roster":           result.Roster,
+		"unseal_key_check": result.UnsealKeyCheck,
+		"admin_pending":    result.AdminPending,
+	})
+	if err != nil {
+		return nil, &ToolError{Tool: tool, Err: err}
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // ---------------------------------------------------------------------------

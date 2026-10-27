@@ -326,6 +326,8 @@ var quicMethodExclusions = map[string]string{
 	"role.Update":                        "target-resolved",
 	"tenant.BarrierInitBegin":            "identity-gated",
 	"tenant.BarrierInitComplete":         "identity-gated",
+	"tenant.BarrierSignedInitBegin":      "identity-gated",
+	"tenant.BarrierSignedInitComplete":   "identity-gated",
 	"tenant.BarrierOfficerList":          "target-resolved",
 	"tenant.BarrierOfficerRegister":      "target-resolved",
 	"tenant.BarrierOfficerRevoke":        "target-resolved",

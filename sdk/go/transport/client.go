@@ -1178,6 +1178,18 @@ type TenantClient interface {
 	// counts the shares sealed to officers.
 	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
 
+	// TenantBarrierSignedInitBegin is the first half of a two-phase signed
+	// init, for a first admin whose key signs away from the connection: it
+	// returns the barrier's init statement naming req.PublicKey and a
+	// single-use reference. Sign the statement, then call
+	// TenantBarrierSignedInitComplete before the reference lapses.
+	TenantBarrierSignedInitBegin(ctx context.Context, req *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error)
+
+	// TenantBarrierSignedInitComplete redeems a begun statement with the
+	// detached signature over it and initializes the barrier under the
+	// signed statement.
+	TenantBarrierSignedInitComplete(ctx context.Context, req *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error)
+
 	// TenantBarrierUnseal unseals a per-tenant barrier using a single key.
 	TenantBarrierUnseal(ctx context.Context, req *TenantBarrierUnsealRequest) error
 

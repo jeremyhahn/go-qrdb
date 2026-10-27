@@ -1321,8 +1321,8 @@ func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantBarrierTools(svc, allowAllTenantBarrierAuthz())
 	// init begin/complete, unseal, seal, status + the eight share-holder tools.
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 tools, got %d", len(tools))
+	if len(tools) != 15 {
+		t.Fatalf("expected 15 tools, got %d", len(tools))
 	}
 }
 
