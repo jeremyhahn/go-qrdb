@@ -65,7 +65,8 @@
 # per repo, trust class and daemon host, kept across jobs. CI_CACHE_CLASS
 # (default pr) is `main` only for a push to main, so a pull request never
 # writes a cache that main's build reads. A new volume's root is given to
-# IN_IMAGE_UID by a helper container holding CHOWN and nothing else.
+# IN_IMAGE_UID by a helper container holding CHOWN and nothing else, run only
+# once the stage's container is created (DS-3998, below).
 # scripts/trim-ci-caches.sh bounds their size. CI_CACHE=off mounts none (v1).
 #
 # v3 (ci-template v1.22.2, Company Agent m641 item 2 and m646 item 3): the
@@ -147,10 +148,6 @@ cmd="$*"
 modcache=/home/dev/gomodcache # CUSTOMIZE (go-qrdb): the CI_CACHE=off copy (below)
 if [ "$cache" = on ]; then
   vols="${prefix}cache-${class}"
-  docker run --rm --network none --cap-drop ALL --cap-add CHOWN \
-    --security-opt no-new-privileges:true --user 0:0 \
-    -v "$vols-gobuild:/c/gobuild" -v "$vols-golangci:/c/golangci" -v "$vols-gomod:/c/gomod" \
-    "$image" sh -c "for d in /c/*; do [ \"\$(stat -c %u:%g \"\$d\")\" = $uid:$uid ] || chown $uid:$uid \"\$d\"; done" >/dev/null
   args+=(
     -v "$vols-gobuild:/cache/gobuild" --env GOCACHE=/cache/gobuild
     -v "$vols-golangci:/cache/golangci" --env GOLANGCI_LINT_CACHE=/cache/golangci
@@ -192,6 +189,20 @@ fi
 # CUSTOMIZE (go-qrdb) end.
 
 docker create "${args[@]}" "$image" sh -c "$cmd" >/dev/null
+# DS-3998 (ruling 108): the volume roots go to the run's uid only after the
+# create, while the stage's container holds the volumes. Another job's
+# scripts/trim-ci-caches.sh removes a cache volume no container holds, so a
+# chown done before the create can be lost: the create then makes a new,
+# root-owned volume, and the stage cannot write it (run 68164, job 317602:
+# "mkdir /cache/gomod/cache: permission denied" after job 317749 trimmed
+# cache-main-gomod 1-2 s earlier). Docker refuses to remove a volume that a
+# created container names, and the trim keeps it as in use.
+if [ "$cache" = on ]; then
+  docker run --rm --network none --cap-drop ALL --cap-add CHOWN \
+    --security-opt no-new-privileges:true --user 0:0 \
+    -v "$vols-gobuild:/c/gobuild" -v "$vols-golangci:/c/golangci" -v "$vols-gomod:/c/gomod" \
+    "$image" sh -c "for d in /c/*; do [ \"\$(stat -c %u:%g \"\$d\")\" = $uid:$uid ] || chown $uid:$uid \"\$d\"; done" >/dev/null
+fi
 tar -C "$PWD" --owner="$uid" --group="$uid" --numeric-owner -cf - . |
   docker cp -a - "$name:/src"
 docker start -a "$name"
