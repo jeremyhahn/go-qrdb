@@ -15,6 +15,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"maps"
@@ -663,11 +664,18 @@ func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *tr
 	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
 		return nil, err
 	}
+	// The caller's passphrase is borrowed, as for TenantBarrierInit: a copy,
+	// not the caller's bytes, moves into protected memory and is wiped.
+	passphrase, err := tenant.NewSignedInitPassphrase(bytes.Clone(req.Passphrase))
+	if err != nil {
+		return nil, err
+	}
+	defer passphrase.Destroy()
 	result, err := t.tenantSvc.TenantBarrierInitComplete(ctx, &tenant.TenantBarrierInitCompleteRequest{
 		TenantID:   req.TenantID,
 		Reference:  req.Reference,
 		Signature:  req.Signature,
-		Passphrase: req.Passphrase,
+		Passphrase: passphrase,
 	})
 	if err != nil {
 		return nil, err

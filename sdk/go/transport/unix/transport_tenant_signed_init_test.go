@@ -44,7 +44,7 @@ func (s *signedInitServicer) TenantBarrierInitBegin(_ context.Context, req *tena
 
 func (s *signedInitServicer) TenantBarrierInitComplete(_ context.Context, req *tenantpkg.TenantBarrierInitCompleteRequest) (*tenantpkg.TenantBarrierInitResult, error) {
 	s.complete = req
-	s.passphrase = string(req.Passphrase)
+	_ = req.Passphrase.WithBytes(func(p []byte) error { s.passphrase = string(p); return nil })
 	if string(req.Signature) != "sig" {
 		return nil, &tenantpkg.SignedInitError{TenantID: req.TenantID, Reason: tenantpkg.SignedInitUnknown}
 	}

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const (
@@ -97,9 +98,22 @@ type TenantBarrierInitCompleteRequest struct {
 	// Signature is the detached signature over
 	// TenantBarrierInitBeginResult.Statement.
 	Signature []byte
-	// Passphrase is the passphrase strategy's credential, borrowed for the
-	// call; nil for every other strategy.
-	Passphrase []byte
+	// Passphrase is the passphrase strategy's credential in protected
+	// memory, borrowed for the call: the caller owns and destroys it. Nil
+	// for every other strategy.
+	Passphrase *secure.Buffer
+}
+
+// NewSignedInitPassphrase moves a transport's decoded passphrase into
+// protected memory for TenantBarrierInitCompleteRequest.Passphrase, wiping p
+// whether or not it succeeds. An empty p, the request of every strategy but
+// passphrase, yields a nil Buffer. The caller owns the result and destroys it;
+// Destroy is safe on nil.
+func NewSignedInitPassphrase(p []byte) (*secure.Buffer, error) {
+	if len(p) == 0 {
+		return nil, nil
+	}
+	return secure.NewBufferFromBytes(p)
 }
 
 // SignedInitReason names why a statement reference was refused. The values
@@ -358,5 +372,14 @@ func (s *TenantService) TenantBarrierInitComplete(ctx context.Context, req *Tena
 	if e.prepared != nil {
 		opts = append(opts, WithPreparedShamir(e.prepared.Roster, e.prepared.UnsealKeyCheck))
 	}
-	return s.TenantBarrierInitWithStrategy(ctx, req.TenantID, req.Passphrase, e.threshold, e.shares, e.strategy, nil, opts...)
+	if req.Passphrase == nil {
+		return s.TenantBarrierInitWithStrategy(ctx, req.TenantID, nil, e.threshold, e.shares, e.strategy, nil, opts...)
+	}
+	var result *TenantBarrierInitResult
+	err = req.Passphrase.WithBytes(func(passphrase []byte) error {
+		var initErr error
+		result, initErr = s.TenantBarrierInitWithStrategy(ctx, req.TenantID, passphrase, e.threshold, e.shares, e.strategy, nil, opts...)
+		return initErr
+	})
+	return result, err
 }

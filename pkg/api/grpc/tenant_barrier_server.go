@@ -268,8 +268,12 @@ func (s *tenantBarrierServer) SignedInitComplete(ctx context.Context, req *pb.Te
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
 	}
 	// The decoded credential is this handler's to own and to destroy, as in
-	// InitComplete.
-	defer secure.Wipe(req.GetPassphrase())
+	// InitComplete: it moves into protected memory at once.
+	passphrase, err := tenantpkg.NewSignedInitPassphrase(req.GetPassphrase())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	defer passphrase.Destroy()
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
@@ -280,7 +284,7 @@ func (s *tenantBarrierServer) SignedInitComplete(ctx context.Context, req *pb.Te
 		TenantID:   req.GetTenantId(),
 		Reference:  req.GetReference(),
 		Signature:  req.GetSignature(),
-		Passphrase: req.GetPassphrase(),
+		Passphrase: passphrase,
 	})
 	if err != nil {
 		return nil, mapServiceError(err)

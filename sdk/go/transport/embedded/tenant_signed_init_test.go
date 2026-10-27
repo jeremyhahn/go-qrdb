@@ -36,6 +36,7 @@ type signedInitRecorder struct {
 	mockTenantService
 	begin    *tenant.TenantBarrierInitBeginRequest
 	complete *tenant.TenantBarrierInitCompleteRequest
+	seen     []byte
 	err      error
 }
 
@@ -58,6 +59,7 @@ func (r *signedInitRecorder) TenantBarrierInitBegin(_ context.Context, req *tena
 
 func (r *signedInitRecorder) TenantBarrierInitComplete(_ context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
 	r.complete = req
+	_ = req.Passphrase.WithBytes(func(p []byte) error { r.seen = bytes.Clone(p); return nil })
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -106,17 +108,23 @@ func TestTenantBarrierSignedInitBegin_NoOfficersSendsNoRoster(t *testing.T) {
 func TestTenantBarrierSignedInitComplete_MapsTheRequestAndResult(t *testing.T) {
 	svc := &signedInitRecorder{}
 	tr := newExtTransport(t, WithTenantService(svc))
+	passphrase := []byte("pass")
 	got, err := tr.TenantBarrierSignedInitComplete(context.Background(), &transport.TenantBarrierSignedInitCompleteRequest{
 		TenantID:   "acme",
 		Reference:  []byte("ref"),
 		Signature:  []byte("sig"),
-		Passphrase: []byte("pass"),
+		Passphrase: passphrase,
 	})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	c := svc.complete
-	if c.TenantID != "acme" || !bytes.Equal(c.Reference, []byte("ref")) || !bytes.Equal(c.Signature, []byte("sig")) || !bytes.Equal(c.Passphrase, []byte("pass")) {
+	if c.TenantID != "acme" || !bytes.Equal(c.Reference, []byte("ref")) || !bytes.Equal(c.Signature, []byte("sig")) || !bytes.Equal(svc.seen, []byte("pass")) {
+		t.Fatalf("service request = %+v", c)
+	}
+	// The caller's passphrase is borrowed: left as it was, while the
+	// protected copy the service saw is destroyed once the call returns.
+	if !bytes.Equal(passphrase, []byte("pass")) || c.Passphrase.IsAlive() {
 		t.Fatalf("service request = %+v", c)
 	}
 	if got.TenantID != "acme" || got.Strategy != "passphrase" || !got.AdminPending {

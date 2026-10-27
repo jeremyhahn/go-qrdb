@@ -80,13 +80,42 @@ func TestTenantBarrierInitSigned_PassphraseIsTheDefaultStrategy(t *testing.T) {
 	if begun.Strategy != string(seal.StrategyPassphrase) {
 		t.Fatalf("strategy = %q, want passphrase", begun.Strategy)
 	}
+	passphrase, err := NewSignedInitPassphrase([]byte("correct horse battery"))
+	if err != nil {
+		t.Fatalf("NewSignedInitPassphrase: %v", err)
+	}
+	defer passphrase.Destroy()
 	if _, err := svc.TenantBarrierInitComplete(context.Background(), &TenantBarrierInitCompleteRequest{
-		TenantID: "acme", Reference: begun.Reference, Signature: signDouble(begun.Statement), Passphrase: []byte("correct horse battery"),
+		TenantID: "acme", Reference: begun.Reference, Signature: signDouble(begun.Statement), Passphrase: passphrase,
 	}); err != nil {
 		t.Fatalf("TenantBarrierInitComplete: %v", err)
 	}
 	if !initialized(t, svc, "acme") {
 		t.Fatal("the barrier was not initialized")
+	}
+}
+
+func TestNewSignedInitPassphrase_EmptyIsNil(t *testing.T) {
+	for _, p := range [][]byte{nil, {}} {
+		buf, err := NewSignedInitPassphrase(p)
+		if err != nil || buf != nil {
+			t.Fatalf("NewSignedInitPassphrase(%q) = %v, %v; want nil, nil", p, buf, err)
+		}
+	}
+}
+
+func TestNewSignedInitPassphrase_MovesIntoProtectedMemoryAndWipes(t *testing.T) {
+	p := []byte("correct horse battery")
+	buf, err := NewSignedInitPassphrase(p)
+	if err != nil {
+		t.Fatalf("NewSignedInitPassphrase: %v", err)
+	}
+	defer buf.Destroy()
+	if !bytes.Equal(p, make([]byte, len(p))) {
+		t.Fatalf("source %q not wiped", p)
+	}
+	if ok, err := buf.EqualBytes([]byte("correct horse battery")); err != nil || !ok {
+		t.Fatalf("buffer holds the wrong value: equal=%v err=%v", ok, err)
 	}
 }
 

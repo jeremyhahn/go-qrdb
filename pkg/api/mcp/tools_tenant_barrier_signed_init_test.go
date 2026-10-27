@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -35,7 +36,8 @@ type signedInitRecorder struct {
 	*mockTenantService
 	begin       *tenant.TenantBarrierInitBeginRequest
 	complete    *tenant.TenantBarrierInitCompleteRequest
-	passphrase  []byte
+	passphrase  *secure.Buffer
+	seen        []byte
 	completeErr error
 }
 
@@ -54,6 +56,7 @@ func (r *signedInitRecorder) TenantBarrierInitBegin(_ context.Context, req *tena
 func (r *signedInitRecorder) TenantBarrierInitComplete(_ context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
 	r.complete = req
 	r.passphrase = req.Passphrase
+	_ = req.Passphrase.WithBytes(func(p []byte) error { r.seen = bytes.Clone(p); return nil })
 	if r.completeErr != nil {
 		return nil, r.completeErr
 	}
@@ -124,8 +127,8 @@ func TestHandleTenantBarrierSignedInitComplete_MapsArgumentsAndWipesPassphrase(t
 	if string(svc.complete.Reference) != "ref" || string(svc.complete.Signature) != "sig" {
 		t.Fatalf("service request = %+v", svc.complete)
 	}
-	if len(svc.passphrase) == 0 || !bytes.Equal(svc.passphrase, make([]byte, len(svc.passphrase))) {
-		t.Fatalf("passphrase %q not wiped", svc.passphrase)
+	if string(svc.seen) != "secret-passphrase" || svc.passphrase == nil || svc.passphrase.IsAlive() {
+		t.Fatalf("passphrase %q not passed in protected memory and destroyed", svc.seen)
 	}
 	var resp map[string]any
 	if err := json.Unmarshal([]byte(resultText(t, result)), &resp); err != nil || resp["strategy"] != "passphrase" {

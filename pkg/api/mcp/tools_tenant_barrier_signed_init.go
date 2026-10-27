@@ -23,7 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -164,8 +163,11 @@ func handleTenantBarrierSignedInitComplete(svc tenant.TenantServicer, authorize 
 		if err := authorize(ctx, tenantID); err != nil {
 			return authzToolError(err), nil
 		}
-		passphrase := secretArg(req, "passphrase")
-		defer secure.Wipe(passphrase)
+		passphrase, err := tenant.NewSignedInitPassphrase(secretArg(req, "passphrase"))
+		if err != nil {
+			return nil, &ToolError{Tool: toolNameTenantBarrierSignedInitComplete, Err: err}
+		}
+		defer passphrase.Destroy()
 		result, err := svc.TenantBarrierInitComplete(ctx, &tenant.TenantBarrierInitCompleteRequest{
 			TenantID:   tenantID,
 			Reference:  reference,

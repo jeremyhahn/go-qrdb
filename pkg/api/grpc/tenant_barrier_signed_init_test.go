@@ -99,12 +99,14 @@ func TestTenantBarrier_SignedInitBegin_ServiceErrors(t *testing.T) {
 // client.
 func TestTenantBarrier_SignedInitComplete_MapsRequest(t *testing.T) {
 	var got tenantpkg.TenantBarrierInitCompleteRequest
+	var passphrase []byte
 	svc := newMockTenantService()
 	svc.signedCompleteFn = func(_ context.Context, req *tenantpkg.TenantBarrierInitCompleteRequest) (*tenantpkg.TenantBarrierInitResult, error) {
 		got = tenantpkg.TenantBarrierInitCompleteRequest{
 			TenantID: req.TenantID, Reference: bytes.Clone(req.Reference),
-			Signature: bytes.Clone(req.Signature), Passphrase: bytes.Clone(req.Passphrase),
+			Signature: bytes.Clone(req.Signature), Passphrase: req.Passphrase,
 		}
+		_ = req.Passphrase.WithBytes(func(p []byte) error { passphrase = bytes.Clone(p); return nil })
 		return &tenantpkg.TenantBarrierInitResult{TenantID: req.TenantID, Strategy: "passphrase"}, nil
 	}
 	resp, err := pb.NewTenantBarrierServiceClient(connect(t, svc)).SignedInitComplete(context.Background(), &pb.TenantBarrierSignedInitCompleteRequest{
@@ -113,7 +115,7 @@ func TestTenantBarrier_SignedInitComplete_MapsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignedInitComplete: %v", err)
 	}
-	if got.TenantID != "acme" || string(got.Reference) != "ref" || string(got.Signature) != "sig" || string(got.Passphrase) != "pw" {
+	if got.TenantID != "acme" || string(got.Reference) != "ref" || string(got.Signature) != "sig" || string(passphrase) != "pw" || got.Passphrase.IsAlive() {
 		t.Fatalf("service request = %+v", got)
 	}
 	if resp.GetTenantId() != "acme" || resp.GetStrategy() != "passphrase" {

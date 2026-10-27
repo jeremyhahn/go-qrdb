@@ -21,7 +21,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -97,8 +96,13 @@ func (s *Server) handleTenantBarrierSignedInitComplete(w http.ResponseWriter, r 
 		return
 	}
 	// The decoded credential is this handler's to own and to destroy, as in
-	// handleTenantBarrierInit.
-	defer secure.Wipe(req.Passphrase)
+	// handleTenantBarrierInit: it moves into protected memory at once.
+	passphrase, err := tenant.NewSignedInitPassphrase(req.Passphrase)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	defer passphrase.Destroy()
 	ctx := r.Context()
 	if err := s.authorizeTenantBarrierSignedInit(ctx, id); err != nil {
 		writeAuthzErrorJSON(w, err)
@@ -108,7 +112,7 @@ func (s *Server) handleTenantBarrierSignedInitComplete(w http.ResponseWriter, r 
 		TenantID:   id,
 		Reference:  req.Reference,
 		Signature:  req.Signature,
-		Passphrase: req.Passphrase,
+		Passphrase: passphrase,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
