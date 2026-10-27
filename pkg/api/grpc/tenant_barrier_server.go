@@ -204,21 +204,115 @@ func (s *tenantBarrierServer) InitComplete(ctx context.Context, req *pb.TenantBa
 		return nil, mapServiceError(err)
 	}
 
-	out := &pb.TenantBarrierInitResponse{TenantId: req.GetTenantId(), Strategy: req.GetStrategy()}
-	if result != nil {
-		out = &pb.TenantBarrierInitResponse{
-			TenantId:       result.TenantID,
-			Strategy:       result.Strategy,
-			Threshold:      int32(result.Threshold),   //nolint:gosec
-			TotalShares:    int32(result.TotalShares), //nolint:gosec
-			ShareCount:     int32(result.ShareCount),  //nolint:gosec
-			Holders:        holderpb.TenantBarrierHoldersToPB(result.Holders),
-			Roster:         result.Roster,
-			UnsealKeyCheck: result.UnsealKeyCheck,
-			AdminPending:   result.AdminPending,
-		}
+	out := tenantBarrierInitResponse(req.GetTenantId(), result)
+	if result == nil {
+		out.Strategy = req.GetStrategy()
 	}
 	return out, nil
+}
+
+// SignedInitBegin prepares the tenant barrier's init statement for a first
+// admin who signs it away from this connection. Its authorization is
+// AuthorizeTenantBarrierInit's: RBAC, or the tenant's trust-on-first-init
+// window. No channel-bound nonce is asked for: SignedInitComplete admits only
+// a statement the tenant's anchored first admin signed, which is the proof of
+// possession InitComplete's nonce stands in for.
+func (s *tenantBarrierServer) SignedInitBegin(ctx context.Context, req *pb.TenantBarrierSignedInitBeginRequest) (*pb.TenantBarrierSignedInitBeginResponse, error) {
+	if s.svc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
+	}
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierSignedInit(ctx, req.GetTenantId()); err != nil {
+		return nil, authzError(err)
+	}
+	var roster *tenantpkg.TenantBarrierShamirRoster
+	if len(req.GetOfficers()) > 0 {
+		officers, err := holderpb.TenantBarrierRosterFromPB(req.GetOfficers())
+		if err != nil {
+			return nil, mapServiceError(err)
+		}
+		roster = &tenantpkg.TenantBarrierShamirRoster{Officers: officers, Policy: seal.FactorPolicy(req.GetPolicy())}
+	}
+	begun, err := s.svc.TenantBarrierInitBegin(ctx, &tenantpkg.TenantBarrierInitBeginRequest{
+		TenantID:        req.GetTenantId(),
+		Strategy:        seal.StrategyID(req.GetStrategy()),
+		KeyRef:          req.GetKeyRef(),
+		Threshold:       int(req.GetThreshold()),
+		Shares:          int(req.GetShares()),
+		Roster:          roster,
+		SignerPublicKey: req.GetPublicKey(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.TenantBarrierSignedInitBeginResponse{
+		TenantId:    begun.TenantID,
+		Strategy:    begun.Strategy,
+		Reference:   begun.Reference,
+		Statement:   begun.Statement,
+		Expires:     begun.ExpiresAt.Unix(),
+		Threshold:   int32(begun.Threshold),   //nolint:gosec
+		TotalShares: int32(begun.TotalShares), //nolint:gosec
+		ShareCount:  int32(begun.ShareCount),  //nolint:gosec
+		Holders:     holderpb.TenantBarrierHoldersToPB(begun.Holders),
+	}, nil
+}
+
+// SignedInitComplete redeems SignedInitBegin's reference with the first
+// admin's detached signature and initializes the barrier under the
+// statement. Authorized as SignedInitBegin.
+func (s *tenantBarrierServer) SignedInitComplete(ctx context.Context, req *pb.TenantBarrierSignedInitCompleteRequest) (*pb.TenantBarrierInitResponse, error) {
+	if s.svc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant barrier"})
+	}
+	// The decoded credential is this handler's to own and to destroy, as in
+	// InitComplete.
+	defer secure.Wipe(req.GetPassphrase())
+	if req.GetTenantId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
+	if err := s.authorizeTenantBarrierSignedInit(ctx, req.GetTenantId()); err != nil {
+		return nil, authzError(err)
+	}
+	result, err := s.svc.TenantBarrierInitComplete(ctx, &tenantpkg.TenantBarrierInitCompleteRequest{
+		TenantID:   req.GetTenantId(),
+		Reference:  req.GetReference(),
+		Signature:  req.GetSignature(),
+		Passphrase: req.GetPassphrase(),
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return tenantBarrierInitResponse(req.GetTenantId(), result), nil
+}
+
+// authorizeTenantBarrierSignedInit authorizes either half of a signed init.
+func (s *tenantBarrierServer) authorizeTenantBarrierSignedInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.svc)
+}
+
+// tenantBarrierInitResponse is result on the wire; a nil result reports
+// tenantID alone.
+func tenantBarrierInitResponse(tenantID string, result *tenantpkg.TenantBarrierInitResult) *pb.TenantBarrierInitResponse {
+	if result == nil {
+		return &pb.TenantBarrierInitResponse{TenantId: tenantID}
+	}
+	return &pb.TenantBarrierInitResponse{
+		TenantId:       result.TenantID,
+		Strategy:       result.Strategy,
+		Threshold:      int32(result.Threshold),   //nolint:gosec
+		TotalShares:    int32(result.TotalShares), //nolint:gosec
+		ShareCount:     int32(result.ShareCount),  //nolint:gosec
+		Holders:        holderpb.TenantBarrierHoldersToPB(result.Holders),
+		Roster:         result.Roster,
+		UnsealKeyCheck: result.UnsealKeyCheck,
+		AdminPending:   result.AdminPending,
+	}
 }
 
 // Unseal unseals a per-tenant barrier using a single key (passphrase strategy).
