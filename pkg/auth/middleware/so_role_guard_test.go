@@ -154,7 +154,7 @@ func TestSORoleChange_CallerBindings(t *testing.T) {
 	acmeUser := func(roleIDs ...string) *userTenantFixture {
 		return &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: roleIDs}}
 	}
-	boundSO := boundCaller([]string{f.admin}, auth.RoleBinding{RoleID: f.so, TenantID: "acme"})
+	boundSO := boundCaller(nil, auth.RoleBinding{RoleID: f.so, TenantID: "acme"})
 	foreignSO := role.SystemRoleID("globex", role.RoleNameSO)
 	foreignBound := boundCaller([]string{f.admin},
 		auth.RoleBinding{RoleID: f.so, TenantID: "globex"},

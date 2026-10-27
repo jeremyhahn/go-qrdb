@@ -373,6 +373,9 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesCreate); err != nil {
 		return nil, err
 	}
+	if err := t.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "create role"); err != nil {
+		return nil, err
+	}
 	perms := stringsToPermissions(req.Permissions)
 	rl, err := t.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.ID,

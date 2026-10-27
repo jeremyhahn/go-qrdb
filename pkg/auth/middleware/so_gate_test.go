@@ -97,6 +97,7 @@ func TestSOGate_ErrorsClassifyAsEveryTransportMapsThem(t *testing.T) {
 	}{
 		{&SOFactorError{Reason: SOReasonPINRequired}, AuthFailureUnauthenticated, http.StatusUnauthorized, codes.Unauthenticated},
 		{&SORoleRequiredError{}, AuthFailureUnauthorized, http.StatusForbidden, codes.PermissionDenied},
+		{&SORoleConflictError{TenantID: "acme"}, AuthFailureUnauthorized, http.StatusForbidden, codes.PermissionDenied},
 		{&SORoleUnresolvedError{Err: errors.New("store down")}, AuthFailureUnavailable, http.StatusServiceUnavailable, codes.Unavailable},
 		{&SOPINUnavailableError{Err: errors.New("sealer wiped")}, AuthFailureUnavailable, http.StatusServiceUnavailable, codes.Unavailable},
 	}

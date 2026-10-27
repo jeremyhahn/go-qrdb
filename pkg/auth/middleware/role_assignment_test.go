@@ -593,7 +593,12 @@ func TestAuthorizeSORoleChange(t *testing.T) {
 		{name: "admin revokes SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantErrorAs[*SORoleRequiredError]},
 		{name: "admin changes other roles of an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.userRole, f.so}, check: wantNoError},
 		{name: "admin grants a non-SO role", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.userRole}, check: wantNoError},
-		{name: "tenant SO grants SO", mw: f.mw, ctx: f.caller(f.admin, f.so), after: []string{f.so}, check: wantNoError},
+		{name: "tenant SO grants SO", mw: f.mw, ctx: f.caller(f.so), after: []string{f.so}, check: wantNoError},
+		{name: "SO holding admin grants SO", mw: f.mw, ctx: f.caller(f.admin, f.so), after: []string{f.so}, check: wantErrorAs[*SORoleConflictError]},
+		{name: "tenant SO grants SO to an admin", mw: f.mw, ctx: f.caller(f.so), before: []string{f.admin}, after: []string{f.admin, f.so}, check: wantErrorAs[*SORoleConflictError]},
+		{name: "admin granted to an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so, f.admin}, check: wantErrorAs[*SORoleConflictError]},
+		{name: "SO revoked from an admin", mw: f.mw, ctx: f.caller(f.so), before: []string{f.admin, f.so}, after: []string{f.admin}, check: wantNoError},
+		{name: "standard: SO granted to an admin", mw: standard, ctx: f.caller(f.admin), before: []string{f.admin}, after: []string{f.admin, f.so}, check: wantNoError},
 		{name: "tenant SO revokes SO", mw: f.mw, ctx: f.caller(f.so), before: []string{f.so}, check: wantNoError},
 		{name: "system SO grants the tenant's SO", mw: f.mw, ctx: sysSO, after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
 		{name: "another tenant's SO role is not this tenant's", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.sysSO}, check: wantNoError},
@@ -613,6 +618,42 @@ func TestAuthorizeSORoleChange(t *testing.T) {
 	}
 }
 
+// TestAuthorizeSOExclusive pins the compliance-mode gate on the SO-exclusive
+// operations, roles:create and the built-in role reconcile: under strict
+// separation only a separate SO principal of the target tenant runs them, and
+// in the standard posture the gate admits every caller.
+func TestAuthorizeSOExclusive(t *testing.T) {
+	f := newSORoleFixture(t)
+	sysSO := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "system-so", TenantID: tenantid.System, Roles: []string{f.sysSO}})
+	unresolvable := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}), WithStrictSeparation(true))
+	standard := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(f.roles))
+	tests := []struct {
+		name      string
+		mw        *AuthMiddleware
+		ctx       context.Context
+		requested string
+		check     func(t *testing.T, err error)
+	}{
+		{name: "separate SO", mw: f.mw, ctx: f.caller(f.so), check: wantNoError},
+		{name: "separate SO names its tenant", mw: f.mw, ctx: f.caller(f.so), requested: "acme", check: wantNoError},
+		{name: "tenant admin", mw: f.mw, ctx: f.caller(f.admin), check: wantErrorAs[*SORoleRequiredError]},
+		{name: "SO holding admin", mw: f.mw, ctx: f.caller(f.admin, f.so), check: wantErrorAs[*SORoleConflictError]},
+		{name: "plain user", mw: f.mw, ctx: f.caller(f.userRole), check: wantErrorAs[*SORoleRequiredError]},
+		{name: "system SO on a tenant", mw: f.mw, ctx: sysSO, requested: "acme", check: wantErrorAs[*tenant.CrossTenantDeniedError]},
+		{name: "system SO on the system tenant", mw: f.mw, ctx: sysSO, check: wantNoError},
+		{name: "no identity", mw: f.mw, ctx: tenant.WithTenantID(context.Background(), "acme"), check: wantErrorAs[*SORoleRequiredError]},
+		{name: "unresolvable SO role", mw: unresolvable, ctx: f.caller(f.so), check: wantErrorAs[*SORoleUnresolvedError]},
+		{name: "no RBAC", ctx: f.caller(f.admin), check: wantNoError},
+		{name: "standard: tenant admin", mw: standard, ctx: f.caller(f.admin), check: wantNoError},
+		{name: "standard: SO holding admin", mw: standard, ctx: f.caller(f.admin, f.so), check: wantNoError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.mw.AuthorizeSOExclusive(tt.ctx, tt.requested, "create role"))
+		})
+	}
+}
+
 // TestSORoleGate_EveryRoleWrite drives the SO gate through each exported
 // role-assignment gate, with the role sets each one derives from the record
 // and the request: AssignRole appends, UnassignRole removes from RoleIDs
@@ -620,7 +661,7 @@ func TestAuthorizeSORoleChange(t *testing.T) {
 // CreateUser starts from nothing.
 func TestSORoleGate_EveryRoleWrite(t *testing.T) {
 	f := newSORoleFixture(t)
-	admin, so := f.caller(f.admin), f.caller(f.admin, f.so)
+	admin, so := f.caller(f.admin), f.caller(f.so)
 	acmeUser := func(roleIDs []string, bindings ...user.RoleBinding) *userTenantFixture {
 		return &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: roleIDs, RoleBindings: bindings}}
 	}

@@ -43,6 +43,9 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.RolesCreate); err != nil {
 		return nil, err
 	}
+	if err := t.authMW.AuthorizeSOExclusive(ctx, tenantID, "reconcile built-in roles"); err != nil {
+		return nil, err
+	}
 
 	report, err := t.roleSvc.ReconcileBuiltInRoles(ctx, tenantID)
 	if err != nil {

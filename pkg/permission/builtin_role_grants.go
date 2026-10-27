@@ -60,11 +60,14 @@ func registerSOGrants() {
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Role management (roles:delete is SO-exclusive; the tenant Admin
-		// also creates and updates roles in its own tenant). roles:assign
+		// also creates and updates roles in its own tenant, except under
+		// strict separation, where roles:create and the built-in role
+		// reconcile run only as a separate SO principal). roles:assign
 		// and roles:unassign are shared with the Admin, but only the
 		// tenant's own SO grants or revokes the SO role itself: the
 		// role-assignment gate in pkg/auth/middleware refuses that change
-		// to every other caller with SORoleRequiredError.
+		// to every other caller with SORoleRequiredError, and refuses an
+		// SO that also holds the admin role with SORoleConflictError.
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,

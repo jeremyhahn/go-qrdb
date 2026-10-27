@@ -336,7 +336,9 @@ func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool, opts ...authmw.Optio
 		}
 	}
 	if callerIsSO {
-		seed(authtest.BindingTenantAdminID, role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin), so)
+		// Under strict separation the SO is a separate principal: it
+		// holds the so role and not the admin role.
+		seed(authtest.BindingTenantAdminID, so)
 	}
 	if aliceIsSO {
 		seed(authtest.UserInBindingTenant, so)
