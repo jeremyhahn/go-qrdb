@@ -359,6 +359,51 @@ func TestGet_CorruptAndUnreadable(t *testing.T) {
 	}
 }
 
+func TestList_NamesTheDatabasesLogsOnly(t *testing.T) {
+	c, stg := mustCreate(t, false)
+	mustAppend(t, c, stg, 0, 3)
+	others := []LogID{
+		{TenantID: testLog.TenantID, Database: testLog.Database, Log: "a-first"},
+		{TenantID: testLog.TenantID, Database: testLog.Database + "x", Log: "other-db"},
+		{TenantID: testLog.TenantID + "x", Database: testLog.Database, Log: "other-tenant"},
+	}
+	for _, id := range others {
+		if err := c.Create(stg, id, testDescriptor(false)); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+	got, err := Read(stg, ListRequest{TenantID: testLog.TenantID, Database: testLog.Database})
+	if err != nil {
+		t.Fatalf("Read(ListRequest): %v", err)
+	}
+	want := []LogID{others[0], testLog}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("List = %v, want %v", got, want)
+	}
+	empty, err := List(stg, testLog.TenantID, "none")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("List of an empty database = %v, %v", empty, err)
+	}
+}
+
+func TestList_Refusals(t *testing.T) {
+	var ine *InvalidLogNameError
+	for _, scope := range [][2]string{{"a/b", "db"}, {"acme", ""}, {"acme", "d/b"}} {
+		if _, err := List(memory.NewStorage(), scope[0], scope[1]); !errors.As(err, &ine) {
+			t.Fatalf("List(%q, %q) = %v, want *InvalidLogNameError", scope[0], scope[1], err)
+		}
+	}
+	var tre *TableReadError
+	if _, err := List(errReader{errStorageFault}, "acme", "db"); !errors.As(err, &tre) {
+		t.Fatalf("List over a failing reader = %v, want *TableReadError", err)
+	}
+	stg := memoryStorageWithRawKey(t, []byte(LogTablePrefix+"acme/db/no-terminator"), []byte("x"))
+	var cte *CorruptTableError
+	if _, err := List(stg, "acme", "db"); !errors.As(err, &cte) {
+		t.Fatalf("List over a stray key = %v, want *CorruptTableError", err)
+	}
+}
+
 // entryIterFailReader fails every iterator and serves point reads.
 type entryIterFailReader struct {
 	storage.Reader

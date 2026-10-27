@@ -1,6 +1,6 @@
 # Distributed Locks — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -164,9 +164,9 @@ when the server stops is still held by the same holder afterwards; its TTL
 resumes from the lease's last checkpoint, or is a full TTL when it has none,
 and a holder that died with the process loses the lock when that runs out. See [../leases/engineering.md](../leases/engineering.md#persistence).
 
-**The storage engine bounds it.** A standalone node on the file or objstore
-backend keeps no leases, so every lock verb there is refused with a typed
-capability error rather than serving a lock nothing could expire.
+**The store bounds it.** A database on a dedicated non-raft store has no lease
+service, so every lock verb there is refused with a typed capability error
+rather than serving a lock nothing could expire.
 
 ## What this feature deliberately does not do
 

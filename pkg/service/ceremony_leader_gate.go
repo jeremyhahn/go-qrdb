@@ -26,7 +26,7 @@ import (
 // on, and the current leader's Raft address when it is not.
 //
 // hostLeaderChecker (cmd/qrdbd) is the production implementation, over
-// service.Host.GetLeaderID / GetNodeHostInfo -- the same primitives every
+// service.Host.LeaderID / NodeHostInfo -- the same primitives every
 // other NotLeaderError-reporting service in this package already uses.
 type LeaderChecker interface {
 	// IsLeader reports leadership and, when false, the current leader's
@@ -104,7 +104,7 @@ func (s *CeremonyServiceWithLeaderGate) CeremonyInitialize(ctx context.Context, 
 // shares this ONE implementation, so a retried `qrdb init` is judged
 // identically regardless of which composer is running it.
 type HostLeaderChecker struct {
-	// Host answers GetLeaderID for ShardID.
+	// Host answers LeaderID for ShardID.
 	Host Host
 	// ShardID is the shard ceremony-initialize's durable pending-admin-cert
 	// record lives on.
@@ -121,7 +121,7 @@ type HostLeaderChecker struct {
 
 // IsLeader implements LeaderChecker.
 func (c HostLeaderChecker) IsLeader() (isLeader bool, leaderAddr string, err error) {
-	leaderID, hasLeader, err := c.Host.GetLeaderID(c.ShardID)
+	leaderID, hasLeader, err := c.Host.LeaderID(c.ShardID)
 	if err != nil {
 		return false, "", err
 	}

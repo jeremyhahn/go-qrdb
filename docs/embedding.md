@@ -50,6 +50,13 @@ operation. With auth disabled there is no middleware and the embedded
 transport admits every call, as a network transport run with
 `--auth-enabled=false` does.
 
+**A handler on a node listener verifies a client certificate through the
+node.** `n.IssuerVerifier()` returns the node's dynamic client-auth trust pool,
+the one its mTLS authenticator verifies against, and
+`sdk.ResolveVerifiedChains(ctx, state, verifier)` returns the chain it verified,
+which a connection the pool admitted does not carry in `VerifiedChains`
+(`docs/identity-rbac/api.md`).
+
 **The service handles (`n.Services()`, `n.AdminService()`) are a fully
 trusted, in-process surface with no authorization of their own.** Every
 transport, embedded included, enforces permissions in its own handler or
@@ -287,7 +294,7 @@ injected separately, through `node.WithCertKeyProviderFactory` (one key per
 tenant). An embedder that runs its own login CA instead -- one that publishes
 CRLs and answers OCSP, say -- replaces it whole with `node.WithCertProvider`;
 the two are mutually exclusive, and a node given both fails to build with
-`*sdk.CertProviderConflictError`. See
+`*sdkserver.CertProviderConflictError`. See
 [certificate-authority/architecture.md](certificate-authority/architecture.md#injection).
 
 #### Tenant defaults
@@ -455,13 +462,13 @@ in-process with no data loss. See
 
 ## Exported HostAdapter
 
-`pkg/backend/raft.HostAdapter` wraps `*quicraft.Host` to satisfy `service.Host`. Embedders that build their own quicraft host (e.g. for custom shard topologies) can use it directly:
+`pkg/backend/raft.HostAdapter` wraps `*quicraft.Host` to satisfy `service.Host` (the data host) and `raftadmin.Host` (the Raft-admin host), together `service.AdminHost`. Embedders that build their own quicraft host (e.g. for custom shard topologies) can use it directly:
 
 ```go
 import raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 
 adapter := raftbackend.New(myQuicraftHost)
-// adapter satisfies service.Host and can be passed to lifecycle.BuildServices
+// adapter satisfies service.AdminHost and can be passed to lifecycle.BuildServices
 ```
 
 A `BootstrapAdapter` is also exported for the pre-ReadIndex bootstrap phase:

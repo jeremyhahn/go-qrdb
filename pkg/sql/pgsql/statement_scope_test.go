@@ -46,7 +46,7 @@ func TestPGWire_StatementResolvesEachTableOnce(t *testing.T) {
 	require.NoError(t, err)
 	run := func(q string) {
 		t.Helper()
-		_, err := h.HandleParse(ctx, wire.Query{Query: q})
+		_, err := h.HandleParse(ctx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, q)
 	}
 
@@ -73,10 +73,10 @@ func TestPGWire_PrepareResolvesEachTableOnce(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 
-	_, err = h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))", SimpleQuery: true})
 	require.NoError(t, err)
 	counting.Reset()
-	_, err = h.HandleParse(ctx, wire.Query{Query: "SELECT body FROM notes WHERE id = $1"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "SELECT body FROM notes WHERE id = $1", SimpleQuery: true})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), counting.Gets(), "describing a statement reads its table's definition once")
 }
@@ -127,27 +127,27 @@ func newScopeHandler(t *testing.T) (*ParseHandler, context.Context, *provider.QR
 // statement writes nothing.
 func TestPGWire_StatementWhileACommandIsOpenIsRefused(t *testing.T) {
 	h, ctx, sess := newScopeHandler(t)
-	_, err := h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))"})
+	_, err := h.HandleParse(ctx, wire.Query{Query: "CREATE TABLE notes (id BIGINT PRIMARY KEY, body VARCHAR(64))", SimpleQuery: true})
 	require.NoError(t, err)
 
 	require.NoError(t, sess.CommandBegin())
 	var inProgress *provider.CommandInProgressError
 
-	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id, body) VALUES (1, 'a')"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id, body) VALUES (1, 'a')", SimpleQuery: true})
 	require.ErrorAs(t, err, &inProgress, "a statement executed at Parse")
 
 	const query = "SELECT body FROM notes WHERE id = $1"
-	_, err = h.HandleParse(ctx, wire.Query{Query: query})
+	_, err = h.HandleParse(ctx, wire.Query{Query: query, SimpleQuery: true})
 	require.ErrorAs(t, err, &inProgress, "a parameterized statement's describe")
 
 	translated, err := h.translator.Translate(query)
 	require.NoError(t, err)
-	err = h.executeDeferredCallback(ctx, &mockDataWriter{}, nil, query, translated, nil, nil, nil)
+	err = h.executeDeferredCallback(ctx, &mockDataWriter{}, nil, query, translated, nil, nil, nil, statementScope{})
 	require.ErrorAs(t, err, &inProgress, "a parameterized statement's execution")
 	sess.CommandEnd()
 
 	rows := &mockDataWriter{}
-	require.NoError(t, h.executeDeferredCallback(ctx, rows, nil, "SELECT * FROM notes", "SELECT * FROM notes", nil, nil, nil))
+	require.NoError(t, h.executeDeferredCallback(ctx, rows, nil, "SELECT * FROM notes", "SELECT * FROM notes", nil, nil, nil, statementScope{}))
 	assert.Zero(t, rows.rowCount, "the refused INSERT wrote nothing")
 }
 
@@ -168,17 +168,69 @@ func TestPGWire_SequenceDDL(t *testing.T) {
 	}
 
 	for _, q := range []string{"CREATE SEQUENCE orders_seq", "ALTER SEQUENCE orders_seq AS bigint"} {
-		_, err := h.HandleParse(ctx, wire.Query{Query: q})
+		_, err := h.HandleParse(ctx, wire.Query{Query: q, SimpleQuery: true})
 		require.NoError(t, err, q)
 	}
 	assert.EqualValues(t, 1, nextval())
 	assert.EqualValues(t, 2, nextval())
 
-	_, err := h.HandleParse(ctx, wire.Query{Query: "DROP SEQUENCE IF EXISTS orders_seq"})
+	_, err := h.HandleParse(ctx, wire.Query{Query: "DROP SEQUENCE IF EXISTS orders_seq", SimpleQuery: true})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, nextval(), "a dropped sequence starts again at 1")
 
-	handled, err := h.handleSequenceDDL(h.buildSQLContext(ctx), "no_such_db", "DROP SEQUENCE orders_seq")
-	assert.True(t, handled)
-	require.Error(t, err, "DROP SEQUENCE in a database that does not exist")
+	require.Error(t, h.resetSequence(h.buildSQLContext(ctx), "no_such_db", "orders_seq"),
+		"DROP SEQUENCE in a database that does not exist")
+}
+
+// TestSequenceDDLEffect pins what Parse hands to Execute: only DROP SEQUENCE
+// has an effect, and building it resets nothing until it runs.
+func TestSequenceDDLEffect(t *testing.T) {
+	h, ctx, _ := newScopeHandler(t)
+	nextval := func() any {
+		t.Helper()
+		sqlCtx := h.buildSQLContext(ctx)
+		_, iter, _, err := h.sqlEngine.Query(sqlCtx, "SELECT NEXTVAL('orders_seq')")
+		require.NoError(t, err)
+		row, err := iter.Next(sqlCtx)
+		require.NoError(t, err)
+		require.NoError(t, iter.Close(sqlCtx))
+		return row[0]
+	}
+
+	_, ok := h.sequenceDDL("SELECT 1")
+	assert.False(t, ok, "a statement that is not sequence DDL is not served here")
+
+	for _, q := range []string{"CREATE SEQUENCE orders_seq", "ALTER SEQUENCE orders_seq AS bigint"} {
+		effect, ok := h.sequenceDDL(q)
+		assert.True(t, ok, q)
+		assert.Nil(t, effect, "%s has no effect: a sequence starts at 1 on first use", q)
+	}
+	assert.EqualValues(t, 1, nextval())
+
+	effect, ok := h.sequenceDDL(`DROP SEQUENCE IF EXISTS "orders_seq"`)
+	require.True(t, ok)
+	require.NotNil(t, effect)
+	assert.EqualValues(t, 2, nextval(), "building the effect resets nothing")
+
+	sqlCtx := h.buildSQLContext(ctx)
+	require.NoError(t, effect(sqlCtx))
+	assert.EqualValues(t, 1, nextval(), "running it does")
+	require.NoError(t, effect(sqlCtx))
+	assert.EqualValues(t, 1, nextval(), "and does again on every run")
+}
+
+// TestStatementScopeApply covers the nil-safe run of a statement's effect.
+func TestStatementScopeApply(t *testing.T) {
+	sqlCtx := sql.NewContext(t.Context())
+	require.NoError(t, statementScope{}.apply(sqlCtx), "a statement with no effect runs nothing")
+
+	runs := 0
+	refused := errors.New("refused")
+	scope := statementScope{effect: func(*sql.Context) error {
+		runs++
+		return refused
+	}}
+	require.ErrorIs(t, scope.apply(sqlCtx), refused)
+	require.ErrorIs(t, scope.apply(sqlCtx), refused)
+	assert.Equal(t, 2, runs, "the effect runs once per apply")
 }

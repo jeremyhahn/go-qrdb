@@ -34,11 +34,12 @@
 # those suites as integration-features, one job per feature; none of them is
 # a job here, so the watch list below has nothing to add.
 
-# NO SCHEDULE (go-qrdb#674; owner ruling 2026-10-11, handbook sdlc.md §5a): no
-# workflow runs on a cron. "Nightly" is the coordinator's nightly loop, which
-# dispatches this workflow together with a workflow_dispatch of ci.yml (the
-# full tier). The `0 3 * * *` trigger that ran here until then is gone; the
-# "scheduled runs" counted above are the runs it made before then.
+# NO SCHEDULE HERE (go-qrdb#674; handbook sdlc.md §5a): this workflow runs on
+# `workflow_dispatch` alone and is dispatched by hand; no host cron, timer or
+# watcher dispatches it (owner ruling 2026-10-11, Company Agent m433). The one
+# scheduler is ci.yml's in-template `schedule:` (ruling 135, restored under
+# Company Agent ruling 216(1)). The `0 3 * * *` trigger that once ran here is
+# gone; the "scheduled runs" counted above are the runs it made.
 
 name: Nightly
 

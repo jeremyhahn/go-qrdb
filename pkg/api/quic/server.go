@@ -74,6 +74,7 @@ type Server struct {
 	indexSvc          index.IndexServicer
 	tsSvc             timeseries.TimeSeriesServicer
 	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
@@ -386,6 +387,12 @@ func WithTimeSeries(svc timeseries.TimeSeriesServicer) ServerOption {
 // WithVector configures the QUIC server with a vector service.
 func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) { s.vectorSvc = svc }
+}
+
+// WithLogService configures the QUIC server with the verifiable-log
+// service. The vlog.* methods are served only when it is set.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) { s.logSvc = svc }
 }
 
 // WithUserService configures the QUIC server with a user management service.
@@ -1146,9 +1153,9 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	}
 	if !awaiting {
 		// Auth: authenticate and authorize if middleware is configured. A
-		// method declared with RegisterPublic (invitation.Redeem) skips both
-		// -- the redeemer holds no credential yet, and the token itself is
-		// the authority -- exactly as REST's RESTRoutePublic and gRPC's
+		// method declared with RegisterPublic (invitation.Redeem, and a
+		// module's GRPCPublicMethodLister methods) skips both -- its caller
+		// holds no credential yet -- exactly as REST's RESTRoutePublic and gRPC's
 		// RegisterPublicGRPCMethods already skip auth for their own public
 		// routes.
 		if !sealedPath && s.authMW != nil && !s.methodPerms.IsPublic(method) {

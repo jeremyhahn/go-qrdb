@@ -33,7 +33,7 @@ import (
 // a fresh key is generated here and written to --out beside the certificate.
 //
 // The "certs" command group itself was removed (renamed to "ca" per
-// docs/08-bootstrap-auth-architecture.md §6, and the orphaned "certs"
+// docs/certificate-authority/cli.md, and the orphaned "certs"
 // aggregator deleted outright per the no-backward-compatibility ruling); this
 // builder, and the enroll/csr/export/revoke/list builders below it, remain
 // the canonical implementation newCACmd wraps.

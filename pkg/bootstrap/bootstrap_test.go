@@ -1976,7 +1976,7 @@ func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
 type retainingStrategy struct {
 	seal.SealingStrategy
 	tb       testing.TB
-	retained *enclave.SealedEnclave
+	retained enclave.Sealed
 	sawBytes int
 }
 
@@ -1992,7 +1992,7 @@ func (r *retainingStrategy) SealRootKey(ctx context.Context, rootKey []byte, cre
 // assertDestroyed fails unless the retained credential enclave is dead. A nil
 // enclave is a failure too: it means the strategy was never handed a
 // credential, so the test would be proving nothing.
-func assertDestroyed(t *testing.T, what string, e *enclave.SealedEnclave) {
+func assertDestroyed(t *testing.T, what string, e enclave.Sealed) {
 	t.Helper()
 	if e == nil {
 		t.Fatalf("%s: the strategy was never handed a credential; this test proves nothing", what)

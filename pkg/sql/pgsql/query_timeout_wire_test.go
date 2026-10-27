@@ -36,17 +36,24 @@ import (
 // and returns a connection that speaks mode.
 func timeoutPGConn(t *testing.T, timeout time.Duration, mode pgx.QueryExecMode) *pgx.Conn {
 	t.Helper()
+	return pgWireConn(t, &mockKVService{}, mode, WithQueryTimeout(timeout))
+}
+
+// pgWireConn starts a TLS PostgreSQL server over kvSvc, configured by opts,
+// and returns a pgx connection to it as an admitted identity, issuing its
+// queries in mode.
+func pgWireConn(t *testing.T, kvSvc *mockKVService, mode pgx.QueryExecMode, opts ...ServerOption) *pgx.Conn {
+	t.Helper()
 	serverTLS, clientTLS := pgMTLS(t)
 	mw := authmw.New(pgAllowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&pgFixedIdentity{
 		identity: &auth.Identity{Subject: "alice", TenantID: "acme"},
 	}))
-	srv := NewServer(&mockKVService{}, nil, "127.0.0.1:0",
+	srv := NewServer(kvSvc, nil, "127.0.0.1:0", append([]ServerOption{
 		WithDatabaseName("qrdb"),
 		WithTLS(serverTLS),
 		WithAuthMiddleware(mw),
-		WithQueryTimeout(timeout),
 		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
-	)
+	}, opts...)...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -68,9 +75,9 @@ func timeoutPGConn(t *testing.T, timeout time.Duration, mode pgx.QueryExecMode) 
 }
 
 // TestPostgresWire_QueryTimeoutBoundsEveryStatement: sql.query_timeout bounds
-// every statement on the PostgreSQL wire, as on MySQL -- a simple query, an
-// extended-protocol statement executed at Parse (no parameters), and one
-// executed at Bind/Execute through its portal (parameters) -- and a statement
+// every statement on the PostgreSQL wire, as on MySQL -- a simple query and
+// an extended-protocol statement, which executes at Bind/Execute through its
+// portal with or without parameters -- and a statement
 // past it is answered SQLSTATE 57014 (query_canceled), the code PostgreSQL's
 // own statement_timeout raises. A statement inside the timeout is unaffected.
 func TestPostgresWire_QueryTimeoutBoundsEveryStatement(t *testing.T) {
@@ -80,9 +87,9 @@ func TestPostgresWire_QueryTimeoutBoundsEveryStatement(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		"simple query":                {pgx.QueryExecModeSimpleProtocol, "SELECT pg_sleep(5)", nil},
-		"extended, executed at Parse": {pgx.QueryExecModeCacheStatement, "SELECT pg_sleep(5)", nil},
-		"extended, Bind and Execute":  {pgx.QueryExecModeCacheStatement, "SELECT pg_sleep($1)", []any{5}},
+		"simple query":            {pgx.QueryExecModeSimpleProtocol, "SELECT pg_sleep(5)", nil},
+		"extended, no parameters": {pgx.QueryExecModeCacheStatement, "SELECT pg_sleep(5)", nil},
+		"extended, parameters":    {pgx.QueryExecModeCacheStatement, "SELECT pg_sleep($1)", []any{5}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

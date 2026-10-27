@@ -40,20 +40,20 @@ type fakeHandoffHost struct {
 
 var _ leaderHandoffHost = (*fakeHandoffHost)(nil)
 
-func (h *fakeHandoffHost) GetLeaderID(uint64) (uint64, bool, error) {
+func (h *fakeHandoffHost) LeaderID(uint64) (uint64, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.leader, h.leader != 0, h.leaderErr
 }
 
-func (h *fakeHandoffHost) GetShardMembership(uint64) (*quicraft.Membership, error) {
+func (h *fakeHandoffHost) ShardMembership(uint64) (*quicraft.Membership, error) {
 	if h.memberErr != nil {
 		return nil, h.memberErr
 	}
 	return &quicraft.Membership{Nodes: h.voters}, nil
 }
 
-func (h *fakeHandoffHost) GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
+func (h *fakeHandoffHost) ShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
 	return &quicraft.ShardInfo{ShardID: shardID, Replicas: h.progress}, nil
 }
 

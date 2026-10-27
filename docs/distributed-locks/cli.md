@@ -1,6 +1,6 @@
 # Distributed Locks — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb lock` — acquire, release, extend, inspect and list
@@ -15,9 +15,21 @@ as for `qrdb kv`. `qrdb lock acquire deploy --database billing` and
 not being contended when you expect it to be, check that both holders name the
 same database.
 
-Locks work the same in both run modes. A standalone node on the file or
-objstore backend keeps no leases, so every verb here is refused there as
-unsupported: a lock needs the lease that expires it.
+Locks work the same in both run modes, on every storage backend. A database on
+a dedicated non-raft store has no lease service, so every verb here is refused
+there as unsupported: a lock needs the lease that expires it.
+
+## Exit codes and output
+
+Every verb below exits `0` on success and `1` on any error, which it prints to
+stderr: `LockHeldError` from `trylock`, `NotLockHolderError`,
+`LockNotFoundError`, a permission refusal, a timeout or a transport failure.
+
+| Verb | `--output table` (default) | `--output json` / `yaml` |
+|---|---|---|
+| `acquire`, `trylock`, `extend`, `status` | one `Field: value` line per lock field (`Key`, `FencingToken`, `LeaseID`, `HolderID`, `Reentrant`, `AcquireCount`, `TTL`, `AcquiredAt`) | the lock record |
+| `release` | `OK` | `OK` |
+| `list` | a table: `KEY`, `FENCING_TOKEN`, `HOLDER_ID`, `TTL`, `REENTRANT`, `ACQUIRE_COUNT` | `{"locks": [...]}` |
 
 ## `qrdb lock acquire <key>`
 

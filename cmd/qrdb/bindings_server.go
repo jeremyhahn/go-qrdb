@@ -211,7 +211,7 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	// deliver them to subscribers).
 	hub := watch.NewHub()
 
-	var svcHost service.Host
+	var svcHost service.AdminHost
 
 	if cfg.RaftEnabled {
 		host, err := b.startRaftNode(cfg)
@@ -339,6 +339,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	}
 	if svcNode.Database != nil {
 		opts = append(opts, embedded.WithDatabaseService(svcNode.Database))
+	}
+	if svcNode.Log != nil {
+		opts = append(opts, embedded.WithLogService(svcNode.Log))
 	}
 
 	// Collection service uses KV + index from the node.

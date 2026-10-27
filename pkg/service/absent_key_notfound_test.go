@@ -45,6 +45,8 @@ type naLookupHost struct {
 	boxLookup bool
 }
 
+var _ AdminHost = (*naLookupHost)(nil)
+
 func (h *naLookupHost) lookup(query interface{}) (interface{}, error) {
 	key, ok := query.([]byte)
 	if !ok {

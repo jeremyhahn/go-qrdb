@@ -72,9 +72,9 @@ func TestReplicaHost_AddsCommitTheHostIdentity(t *testing.T) {
 			// The leader has applied the change once the add returns; the
 			// local view is read because a linearizable read would need the
 			// new voter, which is never started here.
-			m, err := c.Hosts[0].GetShardMembership(dedicatedAdderShard)
+			m, err := c.Hosts[0].ShardMembership(dedicatedAdderShard)
 			if err != nil {
-				t.Fatalf("GetShardMembership: %v", err)
+				t.Fatalf("ShardMembership: %v", err)
 			}
 			roster := m.Nodes
 			if tc.observer {
@@ -108,9 +108,9 @@ func TestReplicaHost_RefusesAnUnknownHost(t *testing.T) {
 			t.Fatalf("%s = %v, want a *service.MemberIdentityError naming replica 3", name, err)
 		}
 	}
-	m, err := c.Hosts[0].GetShardMembership(dedicatedAdderShard)
+	m, err := c.Hosts[0].ShardMembership(dedicatedAdderShard)
 	if err != nil {
-		t.Fatalf("GetShardMembership: %v", err)
+		t.Fatalf("ShardMembership: %v", err)
 	}
 	if len(m.Nodes)+len(m.Observers) != 1 {
 		t.Fatalf("a refused add must propose nothing: nodes %v, observers %v", m.Nodes, m.Observers)
@@ -137,9 +137,9 @@ func TestReplicaHost_RemoveLeaderAndTransfer(t *testing.T) {
 	if err := adder.RemoveFollowerNode(ctx, dedicatedAdderShard, 2); err != nil {
 		t.Fatalf("RemoveFollowerNode: %v", err)
 	}
-	m, err := c.Hosts[0].GetShardMembership(dedicatedAdderShard)
+	m, err := c.Hosts[0].ShardMembership(dedicatedAdderShard)
 	if err != nil {
-		t.Fatalf("GetShardMembership: %v", err)
+		t.Fatalf("ShardMembership: %v", err)
 	}
 	if _, still := m.Observers[2]; still {
 		t.Fatalf("replica 2 still a member after removal: %v", m.Observers)

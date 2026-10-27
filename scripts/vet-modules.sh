@@ -135,7 +135,9 @@ tags_for() {
 		# green run is "each module typechecks against its own declared
 		# dependencies", not "the repository is consistent with itself".
 		printf 'benchmark\n' ;;
-	"$ROOT"/test/performance/cmd/kvcompare)
+	"$ROOT"/test/performance/cmd/kvcompare|"$ROOT"/test/vanguardprobe)
+		# The vanguard blocker probe (#1151) carries no build tag: it is a
+		# module of its own, which is what keeps it out of every qrdb build.
 		printf -- '-\n' ;;
 	"$ROOT"/test/clusterproof)
 		# The cluster proof harness (#669) is a module of its own so that its

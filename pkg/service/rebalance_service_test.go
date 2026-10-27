@@ -874,7 +874,7 @@ func TestRebalanceService_ExecuteRebalance_RefusalsAreTypedAndLogged(t *testing.
 			logs := rebalanceLog(svc)
 
 			err := svc.(*RebalanceService).moveGenericShard(context.Background(),
-				host.GetNodeHostInfo(quicraft.NodeHostInfoOption{}), tc.move)
+				host.NodeHostInfo(quicraft.NodeHostInfoOption{}), tc.move)
 			if !errors.As(err, tc.wantErr) {
 				t.Fatalf("moveGenericShard = %v, want %T", err, tc.wantErr)
 			}
@@ -900,7 +900,7 @@ func TestRebalanceService_MoveGenericShard_UnreadableMembership(t *testing.T) {
 	host := genericMoveHost()
 	host.membershipErr = errors.New("no leader")
 	svc := NewRebalanceService(host).(*RebalanceService)
-	err := svc.moveGenericShard(context.Background(), host.GetNodeHostInfo(quicraft.NodeHostInfoOption{}),
+	err := svc.moveGenericShard(context.Background(), host.NodeHostInfo(quicraft.NodeHostInfoOption{}),
 		RebalanceMovePlan{ShardID: testGenericShard, FromNode: "node1:9100", ToNode: "node2:9100"})
 	var readErr *cluster.MembershipReadError
 	if !errors.As(err, &readErr) || readErr.ShardID != testGenericShard {

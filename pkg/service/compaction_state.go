@@ -171,7 +171,7 @@ func noTableIsEmpty(err error) error {
 // shardInfoHost is a Host that reports a shard's state -- the quicraft host,
 // and the standalone backend, which leads its only shard.
 type shardInfoHost interface {
-	GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
+	ShardInfo(shardID uint64) (*quicraft.ShardInfo, error)
 }
 
 // LeadsShard implements ShardLeader. A host that cannot report leadership
@@ -182,7 +182,7 @@ func (s *MVCCKVService) LeadsShard() bool {
 	if !ok {
 		return false
 	}
-	info, err := h.GetShardInfo(s.shardID)
+	info, err := h.ShardInfo(s.shardID)
 	return err == nil && info != nil && info.IsLeader
 }
 

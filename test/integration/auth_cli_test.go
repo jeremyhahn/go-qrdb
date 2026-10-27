@@ -26,8 +26,7 @@
 // credential lookup-key resolution, and login RPC -- is qrdb-native (M14,
 // service.NewUserAuthFactorService, exposed via
 // sdk/go/transport.UserAuthFactorClient on every network transport: see
-// cmd/qrdb/auth.go's doc comment and docs/08-bootstrap-auth-architecture.md
-// §5e). qrdb performs no hardware verification itself (that's xkms's job
+// cmd/qrdb/auth.go's doc comment and docs/auth-factors/architecture.md). qrdb performs no hardware verification itself (that's xkms's job
 // before it calls this RPC), but the mTLS factor type needs no hardware step
 // at all: the lookup key is simply SHA-256 of the certificate DER, which
 // this test drives end-to-end exactly as a real mTLS-only caller would.

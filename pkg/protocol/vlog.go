@@ -17,9 +17,14 @@ package protocol
 import (
 	"encoding/binary"
 	"encoding/json"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
+
+// vlog.NotCompiledError is an absent capability, not a fault. The assertion is
+// here because pkg/vlog cannot import this package.
+var _ CapabilityError = (*vlog.NotCompiledError)(nil)
 
 // ---------------------------------------------------------------------------
 // Verifiable log op code
@@ -37,10 +42,17 @@ import (
 // [databaseLen:2 BE][database][logLen:2 BE][log], followed by the
 // sub-type's fields:
 //
-//	Create:       the descriptor, JSON-encoded, to the end of the body
+//	Create:       [descLen:4 BE][descriptor JSON][key record]
 //	Append:       [count:4 BE] then count x [entryLen:4 BE][entry]
 //	Checkpoint:   [size:8 BE][rootLen:2 BE][root][signed checkpoint bytes]
 //	ExpireBodies: [cutoff:8 BE]
+//	RotateKey:    [keyLen:4 BE][vlog.HeadKey JSON][key record]
+//
+// A key record is one presence byte: keyRecordAbsent ends the body, and
+// keyRecordPresent is followed by [keyVersion:4 BE][PKCS#8 key record] to the
+// end of the body. A body of any other shape is refused. Create and RotateKey
+// are behind featuregate.VerifiableLogKeys as well; this is the only Create
+// encoding, and no release proposes another.
 
 const (
 	// OpVerifiableLog is the single opcode behind which every named
@@ -60,17 +72,75 @@ const (
 	// VerifiableLogSubtypeExpireBodies deletes entry bodies below a cutoff
 	// index on a log whose descriptor allows it.
 	VerifiableLogSubtypeExpireBodies byte = 4
+
+	// VerifiableLogSubtypeRotateKey makes a new key the log's current
+	// head-signing key.
+	VerifiableLogSubtypeRotateKey byte = 5
+)
+
+// The presence byte of a Create or RotateKey body's key record.
+const (
+	keyRecordAbsent  byte = 0
+	keyRecordPresent byte = 1
 )
 
 // EncodeVerifiableLogCreate creates an OpVerifiableLog/Create command
 // registering the log id with desc.
 func EncodeVerifiableLogCreate(id vlog.LogID, desc vlog.Descriptor) ([]byte, error) {
-	descJSON, err := json.Marshal(desc)
-	if err != nil {
-		return nil, &InvalidCommandError{Reason: "verifiable log create: descriptor: " + err.Error()}
+	return encodeVerifiableLogCreate(id, desc, nil)
+}
+
+// EncodeVerifiableLogCreateWithKey encodes the creation of a log with its
+// head-signing key, so the key and the log are written by one proposal. The
+// body is the length-prefixed descriptor followed by the key's version and its
+// PKCS#8 bytes.
+func EncodeVerifiableLogCreateWithKey(id vlog.LogID, desc vlog.Descriptor, key vlog.SigningKey) ([]byte, error) {
+	if key.Version == 0 || len(key.PKCS8) == 0 {
+		return nil, &InvalidCommandError{Reason: "verifiable log create: empty signing key"}
 	}
-	return encodeVerifiableLog(VerifiableLogSubtypeCreate, id, len(descJSON), func(buf []byte) []byte {
-		return append(buf, descJSON...)
+	return encodeVerifiableLogCreate(id, desc, &key)
+}
+
+func encodeVerifiableLogCreate(id vlog.LogID, desc vlog.Descriptor, key *vlog.SigningKey) ([]byte, error) {
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeCreate, "verifiable log create: descriptor", id, desc, key)
+}
+
+// EncodeVerifiableLogRotateKey creates an OpVerifiableLog/RotateKey command
+// making next the log's current head-signing key. A non-nil record is the
+// software provider's k/<version> record, written by the same proposal; a
+// provider that keeps its key outside go-qrdb passes nil.
+func EncodeVerifiableLogRotateKey(id vlog.LogID, next vlog.HeadKey, record *vlog.SigningKey) ([]byte, error) {
+	if record != nil && (record.Version == 0 || len(record.PKCS8) == 0) {
+		return nil, &InvalidCommandError{Reason: "verifiable log rotate key: empty signing key"}
+	}
+	return encodeVerifiableLogKeyed(VerifiableLogSubtypeRotateKey, "verifiable log rotate key: key", id, next, record)
+}
+
+// encodeVerifiableLogKeyed frames a sub-type whose fields are a
+// length-prefixed JSON value and, when key is not nil, the key's version and
+// PKCS#8 bytes to the end of the body.
+func encodeVerifiableLogKeyed(subtype byte, what string, id vlog.LogID, v any, key *vlog.SigningKey) ([]byte, error) {
+	value, err := json.Marshal(v)
+	if err != nil {
+		return nil, &InvalidCommandError{Reason: what + ": " + err.Error()}
+	}
+	keySize := 0
+	if key != nil {
+		keySize = 4 + len(key.PKCS8)
+	}
+	fieldsSize, err := addSizes(4, len(value), 1, keySize)
+	if err != nil {
+		return nil, err
+	}
+	return encodeVerifiableLog(subtype, id, fieldsSize, func(buf []byte) []byte {
+		buf = binary.BigEndian.AppendUint32(buf, uint32(len(value)))
+		buf = append(buf, value...)
+		if key == nil {
+			return append(buf, keyRecordAbsent)
+		}
+		buf = append(buf, keyRecordPresent)
+		buf = binary.BigEndian.AppendUint32(buf, key.Version)
+		return append(buf, key.PKCS8...)
 	})
 }
 
@@ -170,16 +240,56 @@ func DecodeVerifiableLogCommand(payload []byte) (subtype byte, tenantID string, 
 }
 
 // DecodeVerifiableLogCreate decodes a Create body of tenantID's command.
-func DecodeVerifiableLogCreate(tenantID string, body []byte) (vlog.LogID, vlog.Descriptor, error) {
+func DecodeVerifiableLogCreate(tenantID string, body []byte) (vlog.LogID, vlog.Descriptor, *vlog.SigningKey, error) {
+	var desc vlog.Descriptor
+	id, key, err := decodeVerifiableLogKeyed(tenantID, body, "verifiable log create: descriptor", &desc)
+	if err != nil {
+		return vlog.LogID{}, vlog.Descriptor{}, nil, err
+	}
+	return id, desc, key, nil
+}
+
+// DecodeVerifiableLogRotateKey decodes a RotateKey body of tenantID's
+// command. The record, when present, aliases body.
+func DecodeVerifiableLogRotateKey(tenantID string, body []byte) (vlog.LogID, vlog.HeadKey, *vlog.SigningKey, error) {
+	var next vlog.HeadKey
+	id, record, err := decodeVerifiableLogKeyed(tenantID, body, "verifiable log rotate key: key", &next)
+	if err != nil {
+		return vlog.LogID{}, vlog.HeadKey{}, nil, err
+	}
+	return id, next, record, nil
+}
+
+// decodeVerifiableLogKeyed decodes the body encodeVerifiableLogKeyed frames:
+// the log's name, the JSON value into v and the optional key record.
+func decodeVerifiableLogKeyed(tenantID string, body []byte, what string, v any) (vlog.LogID, *vlog.SigningKey, error) {
 	id, rest, err := decodeLogName(tenantID, body)
 	if err != nil {
-		return vlog.LogID{}, vlog.Descriptor{}, err
+		return vlog.LogID{}, nil, err
 	}
-	var desc vlog.Descriptor
-	if err := json.Unmarshal(rest, &desc); err != nil {
-		return vlog.LogID{}, vlog.Descriptor{}, &InvalidCommandError{Reason: "verifiable log create: malformed descriptor: " + err.Error()}
+	if len(rest) < 4 || uint64(len(rest)-4) < uint64(binary.BigEndian.Uint32(rest)) {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + " truncated"}
 	}
-	return id, desc, nil
+	vlen := int(binary.BigEndian.Uint32(rest))
+	value, rest := rest[4:4+vlen], rest[4+vlen:]
+	if err := json.Unmarshal(value, v); err != nil {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + " malformed: " + err.Error()}
+	}
+	if len(rest) == 0 {
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": key record truncated"}
+	}
+	presence, rest := rest[0], rest[1:]
+	switch {
+	case presence == keyRecordAbsent && len(rest) == 0:
+		return id, nil, nil
+	case presence == keyRecordAbsent:
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": trailing bytes"}
+	case presence != keyRecordPresent:
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": key record presence " + strconv.Itoa(int(presence))}
+	case len(rest) <= 4:
+		return vlog.LogID{}, nil, &InvalidCommandError{Reason: what + ": signing key truncated"}
+	}
+	return id, &vlog.SigningKey{Version: binary.BigEndian.Uint32(rest), PKCS8: rest[4:len(rest):len(rest)]}, nil
 }
 
 // DecodeVerifiableLogAppend decodes an Append body of tenantID's command.

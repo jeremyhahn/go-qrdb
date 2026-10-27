@@ -211,3 +211,79 @@ type ExpireNotAllowedError struct {
 func (e *ExpireNotAllowedError) Error() string {
 	return "vlog: log " + e.ID.String() + " does not allow expiring entry bodies"
 }
+
+// UnsupportedKeyTypeError is returned for a head-signing key, or a signed
+// head, of a type other than Ed25519 or ECDSA P-256 with SHA-256.
+type UnsupportedKeyTypeError struct {
+	Type string
+}
+
+func (e *UnsupportedKeyTypeError) Error() string {
+	return "vlog: unsupported head-signing key type " + strconv.Quote(e.Type)
+}
+
+// InvalidSigningKeyError is returned for a head-signing key record or key
+// reference that does not decode.
+type InvalidSigningKeyError struct {
+	Reason string
+}
+
+func (e *InvalidSigningKeyError) Error() string {
+	return "vlog: invalid head-signing key: " + e.Reason
+}
+
+// KeyNotFoundError is returned when a log has no signing key at a version.
+type KeyNotFoundError struct {
+	ID      LogID
+	Version uint32
+}
+
+func (e *KeyNotFoundError) Error() string {
+	return "vlog: log " + e.ID.String() + " has no signing key version " + strconv.FormatUint(uint64(e.Version), 10)
+}
+
+// KeyVersionConflictError is returned when a key rotation names a version
+// other than the one after the log's current key: another rotation applied
+// first.
+type KeyVersionConflictError struct {
+	ID LogID
+
+	// Version is the version the rotation named.
+	Version uint32
+
+	// Want is the version the next key must have.
+	Want uint32
+}
+
+func (e *KeyVersionConflictError) Error() string {
+	return "vlog: log " + e.ID.String() + " key rotation to version " + strconv.FormatUint(uint64(e.Version), 10) +
+		", want version " + strconv.FormatUint(uint64(e.Want), 10)
+}
+
+// HeadSignatureError is returned when a signed head does not decode, or its
+// signature does not verify.
+type HeadSignatureError struct {
+	Reason string
+}
+
+func (e *HeadSignatureError) Error() string {
+	return "vlog: signed head: " + e.Reason
+}
+
+// NotCompiledError reports that head signing was not built into this binary:
+// the software HeadSigner a build without qrdb_vlog stubs out refuses with it.
+// Its Capability method makes it a protocol.CapabilityError, an absent
+// capability rather than a fault; pkg/protocol imports this package, so the
+// compile-time assertion is in pkg/protocol/vlog.go.
+type NotCompiledError struct{}
+
+// Error returns the refusal, naming the build tag that enables head signing.
+func (e *NotCompiledError) Error() string {
+	return "vlog: head signing not compiled: build with -tags qrdb_vlog"
+}
+
+// Capability names the absent subsystem, declaring this an application-level
+// refusal rather than a fault. See protocol.CapabilityError.
+func (e *NotCompiledError) Capability() string {
+	return "vlog"
+}

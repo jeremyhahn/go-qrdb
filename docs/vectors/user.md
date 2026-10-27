@@ -1,7 +1,7 @@
 # Vector Database — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -18,7 +18,8 @@ retrieval-and-answer pipeline is [../rag/user.md](../rag/user.md).
 
 ## Prerequisites
 
-- A daemon built with vector support: `make build WITH_QRDB_VECTOR=1`.
+- A daemon built with vector support, which `make build` includes by default
+  (`WITH_QRDB_VECTOR=0` removes it).
   Check with `qrdb admin capabilities` — `vector` must be listed.
 - A reachable server, client certificates, an unsealed barrier, and the
   `vector:*` permissions for what you do.
@@ -167,8 +168,8 @@ space until compaction. Run `vector compact` and poll the operation.
 `rebuild-progress` is the only way to observe it. Without the handle you cannot
 query it.
 
-**`qrdb vector` is not a command.** The binary was built without
-`WITH_QRDB_VECTOR=1`. Confirm with `qrdb admin capabilities`.
+**`qrdb vector` is not a command.** The binary was built with
+`WITH_QRDB_VECTOR=0`. Confirm with `qrdb admin capabilities`.
 
 **Everything returns "unavailable".** Check whether the barrier is sealed
 (`qrdb barrier status`) — vector data is barrier-encrypted and fails closed.

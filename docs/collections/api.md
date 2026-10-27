@@ -29,7 +29,10 @@ The MCP tools `qrdb_collection_get`, `qrdb_collection_update` and
 (`"1792851970612519681"`), never a JSON number. A document ID is a `uint64`,
 and the default `unix_nano` IDs exceed 2^53, past which a JSON number read as a
 float64 no longer names the document. A JSON number, a malformed string or `"0"`
-is refused with a tool error before the service is reached.
+is refused with a tool error before the service is reached. The results of
+`qrdb_collection_insert`, `qrdb_collection_get`, `qrdb_collection_update` and
+`qrdb_collection_list_documents` carry the `id` the same way, as a decimal
+string.
 
 The MySQL and PostgreSQL wire protocols expose a collection as a table in the
 connected database, alongside relational tables. They are not a tenth row above

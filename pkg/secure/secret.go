@@ -22,7 +22,7 @@ import (
 )
 
 // Secret holds long-lived sensitive material at rest, encrypted inside a
-// go-enclave SealedEnclave (AES-256-GCM under the process Sealer). The
+// go-enclave Sealed (AES-256-GCM under the process Sealer). The
 // plaintext is only materialized transiently via Open, which returns a
 // Buffer the caller is responsible for destroying.
 //
@@ -38,15 +38,17 @@ import (
 //
 // This type used to wrap memguard.Enclave, sealed with NaCl secretbox and
 // opened through a process-wide purge lock. It now wraps
-// enclave.SealedEnclave: sealing is AES-256-GCM, opening is admitted against
+// enclave.Sealed: sealing is AES-256-GCM, opening is admitted against
 // the same process-wide locked-memory budget every Buffer uses
 // (enclave.ProcessAllocator), and a failed admission or a failed mlock
 // returns a typed error instead of purging the process.
 type Secret struct {
-	// enclave is an atomic.Pointer[enclave.SealedEnclave]. Using
-	// atomic.Pointer rather than atomic.Value gives lock-free, type-safe swap
-	// + load without boxing. Destroy atomically swaps in nil.
-	enclave atomic.Pointer[enclave.SealedEnclave]
+	// enclave points at the enclave.Sealed interface value holding the
+	// ciphertext. Using atomic.Pointer rather than atomic.Value gives
+	// lock-free, type-safe swap + load, and a nil pointer to mean "no
+	// enclave", which atomic.Value cannot store. Destroy atomically swaps in
+	// nil.
+	enclave atomic.Pointer[enclave.Sealed]
 
 	// empty is true while the explicit live zero-length value NewEmptySecret
 	// returns is alive. go-enclave refuses to seal nothing, so an empty
@@ -98,7 +100,7 @@ func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
 		return nil, err
 	}
 	s := &Secret{}
-	s.enclave.Store(sealed)
+	s.enclave.Store(&sealed)
 	return s, nil
 }
 
@@ -112,7 +114,7 @@ func NewSecret(ctx context.Context, src []byte) (*Secret, error) {
 // intermediate plaintext copy: enclave.NewSealed reads buf's pages inside
 // buf's own go-enclave borrow and wipes them as it takes ownership, and buf is
 // then destroyed. Because nothing here is admitted against the process
-// locked-memory budget (sealing is not, as of go-enclave v0.6.0-alpha), an
+// locked-memory budget (sealing is not, as of go-enclave v0.10.0-alpha), an
 // exhausted budget cannot make this fail.
 //
 // The borrow is held for the whole sealing call, not released after a bare
@@ -142,12 +144,12 @@ func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 		buf.Destroy()
 		return NewEmptySecret(), nil
 	}
-	if buf.enc.Size() == 0 {
+	if buf.hollow() || buf.enc.Size() == 0 {
 		return nil, &NilBufferError{}
 	}
 	defer buf.Destroy()
 
-	var sealed *enclave.SealedEnclave
+	var sealed enclave.Sealed
 	var opened bool
 	withErr := buf.enc.WithBytes(func(plaintext []byte) error {
 		opened = true
@@ -164,7 +166,7 @@ func NewSecretFromBuffer(ctx context.Context, buf *Buffer) (*Secret, error) {
 		return nil, withErr
 	}
 	s := &Secret{}
-	s.enclave.Store(sealed)
+	s.enclave.Store(&sealed)
 	return s, nil
 }
 
@@ -200,9 +202,17 @@ func (s *Secret) Open(ctx context.Context) (*Buffer, error) {
 	if err != nil {
 		return nil, &OpenError{Err: err}
 	}
-	frozen, err := sealed.OpenWith(ctx, a)
+	opened, err := (*sealed).OpenIn(ctx, a)
 	if err != nil {
 		return nil, &OpenError{Err: err}
+	}
+	frozen, ok := opened.(enclave.ByteAccess)
+	if !ok {
+		LogRelease("opened enclave", opened.Destroy())
+		return nil, &OpenError{Err: &enclave.CapabilityError{
+			Backend:    opened.Backend().Name(),
+			Capability: enclave.CapabilityBytes,
+		}}
 	}
 	buf, copyErr := copyFrozenToWritable(frozen)
 	if copyErr != nil {
@@ -259,7 +269,7 @@ func (s *Secret) IsAlive() bool {
 // never through the heap. The copy holds BOTH enclaves' borrows for its whole
 // duration — different objects, independent locks — so a concurrent WipeAll
 // cannot unmap either mid-copy.
-func copyFrozenToWritable(frozen *enclave.MemoryEnclave) (*Buffer, error) {
+func copyFrozenToWritable(frozen enclave.ByteAccess) (*Buffer, error) {
 	size := frozen.Size()
 	buf, err := NewBuffer(size)
 	if err != nil {
@@ -292,5 +302,5 @@ func (s *Secret) Destroy() {
 	if sealed == nil {
 		return
 	}
-	LogRelease("sealed secret", sealed.Destroy())
+	LogRelease("sealed secret", (*sealed).Destroy())
 }

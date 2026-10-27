@@ -1,9 +1,11 @@
 # Reference standards
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-17
-> Conflicts with this document are defects. Fix them here first. This index
-> is the only document in this directory with a banner: every other file is a
-> standard's text, copied unmodified, so it carries none.
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-24
+> Conflicts with this document are defects. Fix them here first. Every other
+> file is a standard's text, copied unmodified. A Markdown copy carries a
+> REFERENCE banner and `Last verified:` stamp under its title, naming its
+> source and revision; the text below the banner is the publisher's. A `.txt`
+> copy carries none.
 
 The industry standards go-qrdb implements, one entry per document. Where a
 standard exists the code implements it precisely and designs nothing in its
@@ -31,6 +33,7 @@ has no copy in this directory, for the reason given under the table.
 | link only | HTTP Semantics | RFC 9110 | `pkg/api/rest`, `pkg/auth/middleware`, `sdk/go/transport/rest` (Allow, Retry-After) | https://www.rfc-editor.org/rfc/rfc9110.txt |
 | [rfc9113.txt](rfc9113.txt) | HTTP/2 | RFC 9113 | `pkg/api/rest` | https://www.rfc-editor.org/rfc/rfc9113.txt |
 | [rfc9114.txt](rfc9114.txt) | HTTP/3 | RFC 9114 | `pkg/api/rest` (via quic-go) | https://www.rfc-editor.org/rfc/rfc9114.txt |
+| [rfc9162.txt](rfc9162.txt) | Certificate Transparency Version 2.0 | RFC 9162 | `pkg/vlog` (Merkle tree hashing and proofs, section 2.1; signed heads in Ed25519 or ECDSA P-256 with SHA-256, sections 2.2 and 10.2.2) | https://www.rfc-editor.org/rfc/rfc9162.txt |
 | [rfc9180.txt](rfc9180.txt) | Hybrid Public Key Encryption | RFC 9180 | `pkg/keydelivery` | https://www.rfc-editor.org/rfc/rfc9180.txt |
 | [rfc9449.txt](rfc9449.txt) | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | RFC 9449 | `pkg/auth`, `pkg/auth/middleware`, `sdk/go` | https://www.rfc-editor.org/rfc/rfc9449.txt |
 | [rfc9562.txt](rfc9562.txt) | Universally Unique IDentifiers (UUIDs) | RFC 9562 | `pkg/role` (UUIDv8 over SHA-256, section 5.8) | https://www.rfc-editor.org/rfc/rfc9562.txt |
@@ -43,6 +46,8 @@ has no copy in this directory, for the reason given under the table.
 | link only | Interfaces for Personal Identity Verification | NIST SP 800-73-4 | `sdk/go/authfactor`, `pkg/auth` (PIV factor name only; the PIV implementation lives in go-xkms) | https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-4.pdf |
 | link only | Security Requirements for Cryptographic Modules | FIPS 140-3 | `pkg/clusterenroll`, `pkg/keydelivery`, `pkg/seal/kdf`, `pkg/pin`, `pkg/auth`, `cmd/qrdbd` (FIPS mode, `GODEBUG=fips140=only`) | https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.140-3.pdf |
 | [spiffe-id.md](spiffe-id.md) | The SPIFFE Identity and Verifiable Identity Document (SPIFFE ID) | spiffe/spiffe commit `665a28f3253ecdce59f26f3ef29c0d6408b37c3d` | `pkg/auth/spiffe`, `pkg/cert`, `pkg/config` | https://github.com/spiffe/spiffe/blob/665a28f3253ecdce59f26f3ef29c0d6408b37c3d/standards/SPIFFE-ID.md |
+| [c2sp-signed-note.md](c2sp-signed-note.md) | Note (signed-note): cleartext signed messages | C2SP/C2SP commit `fea9004f73fbec8cf7a8b1936430e2487eb23b55` | `pkg/vlog` (the checkpoint's note format and signature line; key IDs for signature types 0x01 Ed25519 and 0x02 ECDSA) | https://github.com/C2SP/C2SP/blob/fea9004f73fbec8cf7a8b1936430e2487eb23b55/signed-note.md |
+| [c2sp-tlog-checkpoint.md](c2sp-tlog-checkpoint.md) | Transparency Log Checkpoints (tlog-checkpoint) | C2SP/C2SP commit `fea9004f73fbec8cf7a8b1936430e2487eb23b55` | `pkg/vlog` (the checkpoint's note text: origin, tree size and root hash; Ed25519 log signatures) | https://github.com/C2SP/C2SP/blob/fea9004f73fbec8cf7a8b1936430e2487eb23b55/tlog-checkpoint.md |
 | [grpc-http2-protocol.md](grpc-http2-protocol.md) | gRPC over HTTP2 | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-HTTP2.md |
 | [grpc-web-protocol.md](grpc-web-protocol.md) | gRPC Web | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-WEB.md |
 | link only | MySQL Client/Server Protocol | as implemented by go-mysql-server | `pkg/sql/mysql` (via dolthub go-mysql-server and vitess) | https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html |

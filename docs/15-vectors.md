@@ -419,7 +419,7 @@ as stubs whose operations return `ErrGPUNotCompiled`.
 
 The package is not wired into `VectorService`: `CreateNamespaceRequest` has no
 GPU field, and the service builds an HNSW index for every namespace. Outside
-the package, only `sdk/go/types_vector_index.go` imports it.
+the package, only `sdk/go/vector/index.go` (package `sdk/go/vector`) imports it.
 
 ### GPU Index Types
 

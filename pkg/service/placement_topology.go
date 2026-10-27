@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 )
 
 // topologyReportTimeout bounds the load report the topology provider gathers so
@@ -37,7 +38,7 @@ const topologyReportTimeout = 5 * time.Second
 //
 // The provider is read-only and safe for concurrent use.
 type HostTopologyProvider struct {
-	host      Host
+	host      raftadmin.Host
 	rebalance RebalanceServicer
 	timeout   time.Duration
 }
@@ -50,7 +51,7 @@ var _ placement.TopologyProvider = (*HostTopologyProvider)(nil)
 // byte and shard load (the primary scheduler signal); when nil, load falls back
 // to the shard counts derivable from the host's NodeHostInfo. host must be
 // non-nil.
-func NewHostTopologyProvider(host Host, rebalance RebalanceServicer) *HostTopologyProvider {
+func NewHostTopologyProvider(host raftadmin.Host, rebalance RebalanceServicer) *HostTopologyProvider {
 	return &HostTopologyProvider{host: host, rebalance: rebalance, timeout: topologyReportTimeout}
 }
 
@@ -79,7 +80,7 @@ func (p *HostTopologyProvider) Nodes() []placement.NodeLoad {
 	// Roster + shard counts from the host's view. NodeHostInfo.ShardInfoList
 	// enumerates every shard and its members (replicaID -> raft address), so
 	// the union of member addresses is the cluster roster.
-	info := p.host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := p.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info != nil {
 		if info.RaftAddress != "" {
 			ensure(info.RaftAddress)

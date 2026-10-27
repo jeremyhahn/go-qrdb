@@ -2670,15 +2670,14 @@ func bootstrapNodes(t *testing.T, ca *testCA, adminPorts ...int) {
 	})
 }
 
-// unsealNodes unseals restarted "none"-strategy nodes whose barrier state
-// survived the restart, in parallel for the same reason bootstrapNodes is.
-// A restarted node is sealed again and its full server does not start until
-// its barrier is unsealed.
-func unsealNodes(t *testing.T, ca *testCA, adminPorts ...int) {
+// waitForNodesSelfUnsealed waits, in parallel for the same reason
+// bootstrapNodes is, until restarted "none"-strategy nodes whose barrier
+// state survived the restart report their barrier unsealed. Such a node
+// unseals itself at boot (docs/barrier-seal/cli.md), so no unseal is sent.
+func waitForNodesSelfUnsealed(t *testing.T, ca *testCA, adminPorts ...int) {
 	t.Helper()
 	forEachPort(adminPorts, func(port int) {
-		waitForBarrierStatusReachable(t, ca, port, 90*time.Second)
-		unsealOnlyBarrier(t, ca, port)
+		waitForSelfUnsealed(t, ca, port)
 	})
 }
 

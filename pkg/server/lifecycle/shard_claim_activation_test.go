@@ -33,6 +33,8 @@ type gatedHost struct {
 	enabled map[featuregate.Feature]bool
 }
 
+var _ service.Host = (*gatedHost)(nil)
+
 func (h gatedHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool { return h.enabled[f] }
 
 var _ service.FeatureGatedHost = gatedHost{}

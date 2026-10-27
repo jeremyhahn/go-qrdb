@@ -1,6 +1,6 @@
 # Volume Pools — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > The design choices it assumes are in [architecture.md](architecture.md).
@@ -295,11 +295,9 @@ Every error is typed. Each classification below is the row added to
 | `*volume.PoolCapacityExceededError{Pool, Requested, Available}` | a reservation would exceed capacity | `ResourceExhausted` (429) |
 | `*volume.PoolUnavailableError{Pool, NodeID, Err}` | this node cannot open or resolve the pool | `Unavailable` (503); listed as the tenant's refusal |
 | `*volume.InvalidAssignmentPathError{TenantID, Path}` | an assignment path is not one clean component | `Internal` (500): a corrupt record, never caller input |
-| `*volume.MoveInProgressError{TenantID, State}` | a second move, or a delete, during a move | `FailedPrecondition` (409); **Phase 2** |
-| `*volume.MoveError{TenantID, State, NodeID, Err}` | a move step failed; the journal says where | `Internal` (500); **Phase 2** |
 | `*quota.EntitlementError{Feature: "volume_pool:<name>"}` | the tenant is not entitled to the pool | `PermissionDenied` (403), the existing row |
 | `*tenant.PersistedDataRootError` | a record carries a path | the existing `FailedPrecondition` row |
-| `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal (decision D6) | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
+| `*seal.VolumeUnlockError{Pool, Err}` | a tracked `Lockable` volume's `Unlock` failed after unseal | not on the wire directly: surfaces as `PoolUnavailableError`/`pool_unavailable` through the pool's resolution |
 | `*seal.VolumeLockError{Pool, Err}` | a tracked `Lockable` volume's `Lock` failed while sealing | not on the wire: `Internal`-class, logged and audited; the barrier still seals |
 
 **Fail-closed paths.** An unreadable catalog or assignment fails the create, the
@@ -330,7 +328,7 @@ storage:
       path: /mnt/nvme-a       # dir: the directory; luks2: the mount point
       provider: dir           # default dir; must equal the catalog's provider
       options: {}             # provider-specific, e.g. luks2: { device: /dev/nvme1n1 }
-  allow_degraded_volume_boot: false  # decision D10 (2026-10-06); see below
+  allow_degraded_volume_boot: false  # see below
 ```
 
 `storage.allow_degraded_volume_boot` (default `false`) and its CLI
@@ -360,30 +358,19 @@ All in the replicated system namespace, hidden from user list and scan:
 | Key | Value | Written by |
 |---|---|---|
 | `__sys:volumepool/pools/{pool}` | `Pool` (JSON) | `CreatePool`, `UpdatePool`, reservation CAS |
-| `__sys:volumepool/assign/{tenant}` | `Assignment` (JSON) | create (put-if-absent), move commit, delete |
+| `__sys:volumepool/assign/{tenant}` | `Assignment` (JSON) | create (put-if-absent), delete |
 | `__sys:volumepool/nodes/{node}` | `NodeReport` (JSON), lease-bound | `volume.Reporter`, refreshed every `DefaultReportInterval` *(5 s)*; lease TTL `DefaultLeaseTTL` *(15 s)* |
-| `__sys:volumepool/move/{tenant}` | move journal (JSON) | `MoveTenant` and each node's copy step; **Phase 2** |
 
-Removed:
-
-- the round-robin cursor (`__sys:volumepool/` cursor keys and the node-local
-  `PebbleStateStore`);
-- the `slot` field of the interim assignment;
-- pool and slot in the node-local tenant-root record, which keeps only its
-  auto-unseal flag.
-
-**Migration: none** (decision D9). A tenant whose records predate this layout is
-refused, listed with its refusal, and deleted and re-created.
+A tenant whose records predate this layout is refused, listed with its
+refusal, and deleted and re-created.
 
 ## Concurrency
 
 - Reservation and assignment changes are one Raft transaction: a compare on
   the pool record, and a put-if-absent (or delete) on the assignment. A lost CAS is
   re-read and retried a bounded number of times, then reported as
-  `*volume.ReservationConflictError` *(new, `Aborted`)*.
+  `*volume.ReservationConflictError` (`Aborted`).
 - Health reports are owned by their node. No other writer touches them.
-- A move holds the tenant's delete fence, so delete, create-with-same-id and a
-  second move are refused for its duration.
 
 ## Test strategy
 
@@ -402,7 +389,7 @@ refused, listed with its refusal, and deleted and re-created.
   still ends up true and the other tracked pools are still attempted;
   `Track`/`Untrack`/`Tracked` and the duplicate-registration refusal;
 - `pkg/volume`, `pkg/tenant`, `pkg/quota`: records, reservation CAS under
-  concurrent creates (Phase 1, once the catalog lands), entitlement and
+  concurrent creates, entitlement and
   reservation ordering;
 - `pkg/placement`: the pool filter;
 - `pkg/seal` (`BarrierRegistry`): resolution and the inside-root guard, once
@@ -433,8 +420,6 @@ double never returns a `Root()` that is not absolute and clean.
 - a `Lockable` pool: the tenant is refused while the node is sealed, served
   immediately after unseal, and the volume reports locked again (and the
   tenant refused again) after a re-seal;
-- a move: kill a node mid-copy, restart it, and the move completes;
-  **Phase 2**;
 - a symlinked tenant directory pointing outside the pool is refused on delete.
 
 **Transport parity.** Every management verb on all six transports through the
@@ -453,20 +438,19 @@ Log events (structured, `slog`):
 | Event | Level |
 |---|---|
 | `volume: pool opened` (`pool`, `provider`, `root`) | INFO |
-| `volume pool: failed to open volume; pool will not be served on this node` (`pool`, `error`) -- `lifecycle.OpenConfiguredVolumes`, both boot modes; the default (D10) turns this into a fatal `*volume.OpenAtBootError` immediately after, the degraded-boot opt-in does not | ERROR |
+| `volume pool: failed to open volume; pool will not be served on this node` (`pool`, `error`) -- `lifecycle.OpenConfiguredVolumes`, both boot modes; the default turns this into a fatal `*volume.OpenAtBootError` immediately after, the degraded-boot opt-in does not | ERROR |
 | `volume: tenant refused, pool unavailable` (`tenant`, `pool`) | ERROR |
 | `volume: reservation` (`tenant`, `pool`, `bytes`) | INFO |
-| `volume: move state` (`tenant`, `from`, `to`, `state`) | INFO; failures at ERROR; **Phase 2** |
 | `volume: unlocked` / `volume: unlock failed` (`pool`[, `error`]) | INFO / ERROR |
 | `volume: locked` / `volume: lock failed` (`pool`[, `error`]) | INFO / ERROR |
 
 Metrics:
 
-- `qrdb_volume_pool_size_bytes{pool}` *(new, not yet implemented)*
-- `qrdb_volume_pool_free_bytes{pool}` *(new, not yet implemented)*
-- `qrdb_volume_pool_reserved_bytes{pool}` *(new, not yet implemented)*
-- `qrdb_volume_pool_used_bytes{pool}` *(new, not yet implemented)*
-- `qrdb_volume_pool_tenants{pool}` *(new, not yet implemented)*
+- `qrdb_volume_pool_size_bytes{pool}` *(not yet implemented)*
+- `qrdb_volume_pool_free_bytes{pool}` *(not yet implemented)*
+- `qrdb_volume_pool_reserved_bytes{pool}` *(not yet implemented)*
+- `qrdb_volume_pool_used_bytes{pool}` *(not yet implemented)*
+- `qrdb_volume_pool_tenants{pool}` *(not yet implemented)*
 - `qrdb_volume_pool_ready{pool}` (0/1, per node; `pkg/volume.RecordPoolHealth`) --
   **shipped**: 1 only for `StateReady`; set at boot (once per configured
   pool, by `OpenConfiguredVolumes`) and refreshed on every later health
@@ -474,7 +458,7 @@ Metrics:
   pool that later becomes unavailable or locks on re-seal, read 0 for as
   long as the condition lasts. Local to this node -- it needs no lease,
   unlike `NodeReport` (invariant 9).
-- `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume) *(new, not yet implemented)*
+- `qrdb_volume_pool_locked{pool}` (0/1, per node; always 0 for a non-`Lockable` volume) *(not yet implemented)*
 
 Audit: every catalog change, assignment change and move transition (**Phase
 2** for moves) is an audit record naming the operator identity; every

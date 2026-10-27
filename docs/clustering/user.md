@@ -1,6 +1,7 @@
 # Clustering — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 Forming a cluster, watching it, changing its membership, and moving shards
 around when the load goes lopsided.
@@ -60,7 +61,9 @@ A founding node must list every member of the initial cluster; a node started
 with `raft.join: true` must list at least one existing member. Renewing a
 certificate on the same key keeps the identity; a new key changes it.
 
-A single-node cluster has no network transport and needs no identities.
+A single-node cluster has no network transport and needs no identities. It
+still records its own, from the certificate it holds, in the membership it
+founds, so the cluster can grow later (see "Growing a one-node cluster" below).
 
 ### Adding a node: member-side CSR join
 
@@ -223,7 +226,7 @@ never be (re-)admitted, even once its old certificate's lapse would
 otherwise have let it renew:
 
 ```bash
-qrdb admin join-token retire node-7 --reason "decommissioned 2026-10-06"
+qrdb admin join-token retire node-7 --reason "decommissioned"
 # OK
 ```
 
@@ -359,6 +362,24 @@ with `raft.join: true` and the existing members in its
 `raft.member_identities`. Once it is a member, its identity is committed, and
 every later add of a replica on that node — rebalancing, dedicated databases,
 re-adding it — looks it up without you.
+
+**Growing a one-node cluster.** A node started with itself as its only peer
+runs no Raft transport, so nothing can reach it until it has one:
+
+1. Restart the founder with the new node added to its peers
+   (`--peers 1=node1.example.com:63001,2=node2.example.com:63001`). It keeps
+   its data and its certificate, and now listens for Raft traffic.
+2. Mint a join token for the new node's Raft address on the founder:
+   `qrdb admin join-token mint node2.example.com:63001 --ttl 1h`.
+3. Start the new node with the same peers, `--join`, the founder's identity
+   (`--member-identities 1=spki:…`) and the join flags above.
+4. Admit it: `qrdb admin member add node2.example.com:63001 --shard-id 1
+   --replica-id 2 --identity "$(qrdbd node-identity --cert node2-cert.pem)"`.
+
+The founder's own identity is already in the membership it founded, so the new
+member accepts its heartbeats and votes as soon as it is added. A cluster
+founded by a release that did not record it cannot be grown this way; found it
+again.
 
 **`admin member remove` is a Raft reconfiguration only — it does not touch
 the node's member-side CSR join identity.** A node removed this way, that
@@ -560,6 +581,14 @@ release that does; activation cannot be undone. A node embedded in an
 application through the Go SDK cannot refuse to start after it is built:
 it logs the same error, takes no part in the feature, and reports its health
 as `degraded` until it is upgraded.
+
+**Writes stall while reads keep working, and `slow raft WAL fsync` is
+logged.** A follower's disk is slow to fsync its write-ahead log. The leader
+keeps its leadership through the stall, so linearizable reads and admin
+commands go on succeeding and no election is held; a write waits until a
+quorum of nodes has its entry on disk. The warning names the WAL directory, and
+`quicraft_logdb_fsync_latency_seconds` on `/metrics` shows how long each fsync
+took. There is nothing to configure: look at the disk under that directory.
 
 **Bootstrap fails at the quorum check.** Discovery did not find enough peers.
 Check the method's inputs: the `raft.peers` list, the DNS SRV record, the

@@ -59,6 +59,7 @@ remaining gap, listed under [Open gaps](#open-gaps).
 | Database barrier | Resolves its mode through the `StrategyRegistry` first, then the built-in passphrase, empty and shamir modes; anything else is `UnsupportedBarrierStrategyError` | `server.WithStrategyRegistry` (forwarded to `database.WithBarrierStrategyRegistry`) | Y | none |
 | Seal store | `storage.Storage`, opened by the node under `<install-dir>/seal` | none, by design | node-local | see [The seal store](#the-seal-store) |
 | Tenant DEK engine | `dek.Provider`; `dek.Keyring` is the software default | `WithDEKProvider` | Y | none |
+| Verifiable-log head signing (create, rotate, sign) | `vlog.HeadSignerProvider` (`sdk.HeadSignerProvider`): `CreateKey` returns the key's reference and public key, which the descriptor records, and `HeadSigner` signs one key version; the software provider (`vlog.NewSoftwareHeadSignerProvider`, the log's sealed `k/<version>` record) is the default | `WithHeadSignerProvider` on `pkg/server` (re-exported by `sdk/go/server`) and `sdk/go/node`, forwarded through `CryptoOptions` into `Infra` | Y | none. A provider that keeps its keys outside go-qrdb returns no record and none is written; its heads verify against the descriptor's public key |
 | Key wrap (DEK and backup KEK) | `keywrap.Provider`, `keywrap.Registry` | `WithKeyWrapProvider`, `WithKeyWrapRegistry`, `WithKeyDir` | Y | none |
 | Auth factors | `authfactors.FactorRegistry`, `Factor` | `WithFactorRegistry` | Y | none |
 | PIN backend | `pin.PINBackend` | `WithPINBackend` | Y | none |
@@ -116,8 +117,8 @@ remaining gap, listed under [Open gaps](#open-gaps).
   clustered MVCC store (`raft.sm_type` empty, `pebble` or `mvcc`) opens its own
   Pebble database, and it and the state machines that carry their own storage
   refuse the option with `statemachine.ReplicaStorageNotApplicableError`
-  rather than ignore it. `WithStorageFactory` is unchanged and still reaches
-  only the standalone data plane.
+  rather than ignore it. `WithStorageFactory` reaches only the standalone
+  data plane.
 - **`keydelivery.Decrypter`** is the HPKE receive seam. The receiver and
   `ShareEnvelope.Open` open through it, so a device that performs the key
   agreement never exposes the private key. `WithClock` on the receiver anchors

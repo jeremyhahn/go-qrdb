@@ -1,6 +1,7 @@
 # Unified API Server — User Guide
 
 > **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> Conflicts with this document are defects. Fix them here first.
 
 One server, six ways to reach it. Which one you pick is a deployment and
 performance question, not a capability question — the same operations are

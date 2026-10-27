@@ -1,6 +1,7 @@
 # Unified API Server — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 This feature *is* the API surface — it hosts every other feature's capabilities.
 What follows is the shape common to all of them; the capability tables live in
@@ -16,6 +17,9 @@ each feature's own `api.md`.
 | gRPC | HTTP/2 | 63003 | `qrdb.v1.QRDBService` and the auxiliary services |
 | QUIC | method/frame dispatch | 63004 | seventeen wire statuses, one per gRPC code — see [the status vocabulary](#the-quic-status-vocabulary) |
 | MCP | Model Context Protocol over HTTPS | 63005, `/mcp` | tools named `qrdb_*` — seventeen JSON-RPC error codes, one per gRPC code, see [the MCP error vocabulary](#the-mcp-error-vocabulary) |
+
+The ports are the daemon's configuration defaults. An `sdk/go/node` node given a
+zero port uses its own defaults instead: admin (REST) 63001 and gRPC 63002.
 
 **The Unix transport is not a distinct protocol.** It serves the same gRPC wire
 over a domain socket, which is why every feature's `api.md` gives one column for
@@ -155,8 +159,8 @@ servers that do not serve them.
 per-route declaration above confines a module's handler to the REQUEST's own
 identity tenant. A module whose operation legitimately acts on a
 caller-named tenant implements `ModuleTenantTargetAware`
-(`sdk.ModuleTenantTargetAware`) to receive a `TenantTargetAuthorizer`
-(`sdk.TenantTargetAuthorizer`) and calls its `AuthorizeTenantTarget(ctx,
+(`sdkserver.ModuleTenantTargetAware`) to receive a `TenantTargetAuthorizer`
+(`sdkserver.TenantTargetAuthorizer`) and calls its `AuthorizeTenantTarget(ctx,
 tenantID, perm)` from the handler, admitted or refused under the SAME RBAC
 ScopeCross/ScopeSelf rules qrdb's own tenant routes enforce — see
 [../multi-tenancy/api.md](../multi-tenancy/api.md). An embedded/Unix host
@@ -193,7 +197,7 @@ revocation state answers 503 rather than admitting the delivery.
 |---|---|
 | **Tenant** | derived from the authenticated mTLS identity — **never a request field** |
 | **Database** | `X-QRDB-Database` on REST, `x-qrdb-database` metadata on gRPC/Unix (a request header on gRPC-Web), the equivalent field on QUIC/MCP, `Client.DatabaseScoped(name)` embedded |
-| **Consistency** | `consistency` parameter or field: `strong`, `linearizable`, `lease_read`, `eventual` |
+| **Consistency** | `consistency` parameter or field: `strong`, `linearizable`, `lease_read` (alias `leaseread`), `eventual` (alias `stale`), `follower_read` (alias `followerread`) |
 | **Write mode** | request field: `sync`, `wal_durable`, `batched` |
 
 Absent a database, the server's default (`system`) is used.

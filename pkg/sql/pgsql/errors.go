@@ -213,3 +213,16 @@ type QueryTimeoutError struct {
 func (e *QueryTimeoutError) Error() string {
 	return "sql/pgsql: statement exceeded the query timeout of " + e.Timeout.String() + " (sql.query_timeout)"
 }
+
+// MultipleCommandsError is returned when an extended-protocol Parse message
+// carries more than one statement. A prepared statement is one statement, so
+// PostgreSQL refuses the form, and this error is the same refusal: the
+// message and the SQLSTATE it is delivered with (42601, syntax_error) are
+// PostgreSQL's own. The simple query protocol accepts several statements in
+// one message.
+type MultipleCommandsError struct{}
+
+// Error returns PostgreSQL's own wording for this condition.
+func (e *MultipleCommandsError) Error() string {
+	return "cannot insert multiple commands into a prepared statement"
+}

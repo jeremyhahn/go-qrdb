@@ -229,6 +229,12 @@ func TestIntegrationFeatureCoverage_FilesExist(t *testing.T) {
 // only through the dispatch target.
 const dispatchTarget = "integration-test-feature"
 
+// shardTarget runs a list of features, each through dispatchTarget on a host
+// or `make integration-test IT_FEATURE=<f>` in the image (CI's
+// integration-features shards); a feature named like it would be shadowed the
+// same way.
+const shardTarget = "integration-test-features"
+
 // TestIntegrationFeatureCoverage_DispatchCannotCollide proves the dispatch
 // target runs exactly each feature's mapped files: no feature is named like
 // the dispatch target itself, which would make `make integration-test-<f>`
@@ -238,8 +244,10 @@ func TestIntegrationFeatureCoverage_DispatchCannotCollide(t *testing.T) {
 	_, declared := featureMapping(t, root)
 	for v := range declared {
 		name := strings.ReplaceAll(strings.TrimPrefix(v, intTestVarPrefix), "_", "-")
-		if "integration-test-"+name == dispatchTarget {
-			t.Errorf("feature %q would be shadowed by the dispatch target %s", name, dispatchTarget)
+		for _, target := range []string{dispatchTarget, shardTarget} {
+			if "integration-test-"+name == target {
+				t.Errorf("feature %q would be shadowed by the dispatch target %s", name, target)
+			}
 		}
 	}
 }

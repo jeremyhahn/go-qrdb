@@ -28,9 +28,11 @@ package integration_test
 import (
 	"crypto/ecdsa"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -67,7 +69,7 @@ func testTenantBarrierInitShamirRosterThreeNodeOverProtocol(t *testing.T, nodes 
 		"--output", "json", "tenant", "barrier-init",
 		"--id", tenantID, "--strategy", "shamir", "--threshold", "2", "--shares", "2",
 		"--officers", "alice="+csrAlice, "--officers", "bob="+csrBob)
-	out, err := runCLI(t, initNode.cli, initArgs...)
+	out, err := runCLIPastTrustRebuild(t, initNode.cli, initArgs...)
 	if err != nil {
 		t.Fatalf("[%s] tenant barrier-init with inline roster: %v\noutput: %s", proto.name, err, out)
 	}
@@ -127,4 +129,27 @@ func testTenantBarrierInitShamirRosterThreeNodeOverProtocol(t *testing.T, nodes 
 				proto.name, i+1, lastOut)
 		}
 	}
+}
+
+// runCLIPastTrustRebuild runs args and, while the node refuses the caller's
+// certificate because its client trust state was unavailable, runs them again.
+//
+// Tenant create answers once the tenant is committed even when the node's
+// client-trust rebuild did not land (TenantOnboardingService.refreshClientTrust:
+// a failed or kept-across rebuild is logged and the periodic rebuild admits the
+// certificate). Until then the node refuses a certificate chaining to the new
+// tenant's anchors with auth.TrustStateUnavailableError, which errclass maps to
+// Unavailable because a retry may admit it. The refusal is at authentication,
+// before any handler, so the retry repeats nothing. Every other outcome,
+// including a certificate the node definitively does not trust, is returned
+// from the first run that produces it.
+func runCLIPastTrustRebuild(t *testing.T, cli string, args ...string) (string, error) {
+	t.Helper()
+	var out string
+	var err error
+	pollUntil(time.Minute, 250*time.Millisecond, func() bool {
+		out, err = runCLI(t, cli, args...)
+		return err == nil || !strings.Contains(out, (&auth.TrustStateUnavailableError{}).Error())
+	})
+	return out, err
 }

@@ -1,6 +1,6 @@
 # Volume Pools — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 >
 > This folder is the requirements contract for named volume pools.
@@ -65,8 +65,6 @@ The pieces:
   node publishes every pool it maps: size, free, provider state and the
   provider's detail text. When the lease expires, a dead node
   reports nothing rather than stale health.
-  A standalone node on the `file` or `objstore` backend keeps no leases, so it
-  publishes no report.
 - **The volume provider** realizes a pool's mount on one node. qrdb
   ships the plain-directory provider, `dir`. go-xkms registers a LUKS2 provider
   through a `With*` option. A pool names its provider in the catalog, so a pool

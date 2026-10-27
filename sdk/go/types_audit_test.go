@@ -84,12 +84,3 @@ func TestNewAuditFileLogger_EmitQueryRoundTrip(t *testing.T) {
 		t.Fatalf("actor = %q, want bob", got)
 	}
 }
-
-// TestWithAuditLogger_ReturnsServerOption verifies the SDK re-export produces
-// a non-nil ServerOption usable at node construction.
-func TestWithAuditLogger_ReturnsServerOption(t *testing.T) {
-	opt := WithAuditLogger(NewAuditRingBuffer(8))
-	if opt == nil {
-		t.Fatal("WithAuditLogger returned nil ServerOption")
-	}
-}

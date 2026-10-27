@@ -91,7 +91,7 @@ type ReplicaStateHash struct {
 // node, keyed by tenant ID. It never starts one: a tenant whose host is not
 // running here has no replicas here to hash.
 type TenantReplicaHosts interface {
-	StartedHosts() map[string]Host
+	StartedHosts() map[string]AdminHost
 }
 
 // TenantReplicaHostsWiring is implemented by an admin service that hashes
@@ -180,8 +180,8 @@ func shardFilter(shardIDs []uint64) map[uint64]struct{} {
 
 // hostStateHashes hashes every replica of host whose shard want selects (nil
 // selects all), labelling each entry with tenantID.
-func hostStateHashes(ctx context.Context, tenantID string, host Host, want map[uint64]struct{}) []ReplicaStateHash {
-	info := host.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+func hostStateHashes(ctx context.Context, tenantID string, host AdminHost, want map[uint64]struct{}) []ReplicaStateHash {
+	info := host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info == nil {
 		return nil
 	}

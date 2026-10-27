@@ -575,9 +575,9 @@ func testWatchReplayOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 // arguments needed to cleanly SIGTERM and relaunch the SAME daemon against
 // the SAME --data-dir (no wipe, no --restore-backup-id) -- a plain restart,
 // as opposed to backup_restore_test.go's disaster-recovery restore. It uses
-// an unencrypted ("none"-strategy) barrier so restarting only requires a
-// re-unseal (via the shared unsealOnlyBarrier helper in
-// backup_restore_test.go), not re-supplying a passphrase.
+// an unencrypted ("none"-strategy) barrier so a restarted node unseals
+// itself (the shared waitForSelfUnsealed helper in backup_restore_test.go
+// waits for that), with no passphrase to re-supply.
 type watchRestartNode struct {
 	*multiProtoNode
 	bin       string
@@ -668,7 +668,7 @@ func (n *watchRestartNode) restart(t *testing.T, prefix string) {
 	n.proc = startNode(t, n.bin, n.startArgs, prefix)
 
 	waitForBarrierStatusReachable(t, n.ca, n.restPort, 90*time.Second)
-	unsealOnlyBarrier(t, n.ca, n.restPort)
+	waitForSelfUnsealed(t, n.ca, n.restPort)
 	waitForHealthy(t, n.dataDir, 90*time.Second)
 	waitForAdmin(t, n.ca.Pool, n.restPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, n.ca, []int{n.restPort}, 60*time.Second)

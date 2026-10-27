@@ -407,6 +407,33 @@ A range delete removes every key in `[start, end)` in one Raft entry:
   prefix on that error (see [architecture.md](architecture.md), "What a drop
   reclaims").
 
+## Verifiable-log head-signing seam
+
+A verifiable log's head-signing keys come from a composer-supplied
+`vlog.HeadSignerProvider` ([architecture.md](architecture.md), "The sign-head
+seam"); the service never generates a key itself.
+
+| Surface | Contract |
+| --- | --- |
+| `vlog.HeadSignerProvider` | `CreateKey(ctx, CreateKeyRequest) (CreatedKey, error)` creates one key version for one log; `HeadSigner(ctx, HeadSignerRequest) (HeadSigner, error)` returns the signer for one recorded version. |
+| `vlog.CreatedKey` | `Ref`, the provider's reference, recorded in the descriptor; `Public`, the public key, recorded as PKIX DER; `Record`, the sealed `k/<version>` record, set by the software provider only. |
+| `vlog.HeadKey` | One descriptor entry: `Version`, `Ref`, `PublicKey`. `Descriptor.Keys` ascends from version 1; the last is current. |
+| `server.WithHeadSignerProvider` / `node.WithHeadSignerProvider` | Inject the provider. `ResolveCryptoOptions` surfaces it as `CryptoOptions.HeadSignerProvider`, forwarded into `lifecycle.Infra.HeadSignerProvider`, like `WithDEKProvider`. `sdk/go` re-exports the types (`sdk.HeadSignerProvider`, `sdk.HeadKey`, ...) and `sdk/go/server` the option (`sdk/go/server.WithHeadSignerProvider`). |
+| Default | Nil keeps `vlog.NewSoftwareHeadSignerProvider`, which returns the key as the log's sealed record, written in the same proposal as the descriptor (create) or the new key (rotate). |
+
+Invariants:
+
+- A create or rotation lands with its key or not at all: the descriptor entry
+  and, for the software provider, the `k/<version>` record are one proposal.
+- A provider that keeps its key outside go-qrdb returns no record and none is
+  written.
+- The provider's answer is checked before propose (`CreatedKey.HeadKey`: a
+  supported type, the requested version, a reference, a record that is the
+  same key), and every signed head is checked with `Descriptor.VerifyHead`
+  before it is recorded.
+- A rotation names the next version; any other is refused at apply with
+  `KeyVersionConflictError`, a conflict.
+
 ## Invariants
 
 ### Shipped
@@ -563,6 +590,21 @@ A range delete removes every key in `[start, end)` in one Raft entry:
     `CompareAndDelete(tombstone)`. `Manager.Create` returns the
     already-exists refusal unwrapped, so every transport maps it as a
     conflict.
+  - **A claim whose outcome is unknown is released.** When the
+    `PutIfAbsent` or `CompareAndSwap` that claims the marker fails — a
+    propose that timed out may still be applied after the create has
+    rolled back — `UnfenceDatabaseKeyspace` proposes
+    `CompareAndSwap(incarnation -> tombstone)` under a context detached
+    from the expired one (`database.DropRollbackContext`) before it
+    returns. The release is ordered after the claim in the log, so a claim
+    that lands is swapped back to the fenced tombstone and one that never
+    lands leaves the release a no-op; either way the marker and the
+    catalog agree that no database exists, and the retried create claims
+    the tombstone. A release that fails too is
+    `*service.MarkerReleaseError`, which unwraps to the claim's failure
+    (so a timeout stays a retryable 503) and names both errors; the marker
+    may then hold the orphaned incarnation until a drop of the name fences
+    it.
   - **A dropped name is re-created only through the store.** The node
     records each drop under `<data-dir>/dropped/<name>`; a manager with no
     reclaimer refuses such a name with `*database.ReclaimerRequiredError`,

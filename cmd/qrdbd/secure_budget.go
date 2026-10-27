@@ -28,7 +28,7 @@ const (
 	// account for. Every one of these locks pages against the same per-process
 	// ceiling, outside the budget:
 	//
-	//   - sealing a secure.Secret: go-enclave v0.6.0-alpha has no budgeted seal
+	//   - sealing a secure.Secret: go-enclave v0.10.0-alpha has no budgeted seal
 	//     path, and the process Sealer's own key material is locked too;
 	//   - Shamir shares submitted toward an unseal quorum, held in go-quicraft
 	//     ProtectedShare enclaves (go-quicraft#204);

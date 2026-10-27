@@ -47,13 +47,13 @@ func leaderElsewhereRefusal() error {
 }
 
 // electionResolver is a fake leader report: no leader for the first
-// unknownPolls polls of GetLeaderID, then replica 2.
+// unknownPolls polls of LeaderID, then replica 2.
 type electionResolver struct {
 	unknownPolls int64
 	polls        atomic.Int64
 }
 
-func (r *electionResolver) GetLeaderID(uint64) (uint64, bool, error) {
+func (r *electionResolver) LeaderID(uint64) (uint64, bool, error) {
 	if r.polls.Add(1) <= r.unknownPolls {
 		return 0, false, nil
 	}
@@ -77,7 +77,7 @@ func refuseFirst[T any](n int64, calls *atomic.Int64, refusal func() error, ok T
 func electionAdapter(unknownPolls, refusals int64, calls *atomic.Int64) (*HostAdapter, *electionResolver) {
 	r := &electionResolver{unknownPolls: unknownPolls}
 	mock := &mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
 			return refuseFirst(refusals, calls, noLeaderRefusal, sm.Result{Data: cmd})()
 		},
@@ -227,7 +227,7 @@ func TestHostAdapter_SyncPropose_LeaderElsewhereIsNotHeld(t *testing.T) {
 	var calls atomic.Int64
 	r := &electionResolver{}
 	a := newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
 			calls.Add(1)
 			return sm.Result{}, leaderElsewhereRefusal()
@@ -252,7 +252,7 @@ func TestHostAdapter_SyncPropose_MaybeAppliedIsNotHeld(t *testing.T) {
 	var calls atomic.Int64
 	r := &electionResolver{}
 	a := newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
 			calls.Add(1)
 			return sm.Result{}, &quicraft.MaybeAppliedError{Err: noLeaderRefusal()}
@@ -308,7 +308,7 @@ func strandedReadRefusal() error {
 func strandedReadAdapter(refusals int64, calls *atomic.Int64) (*HostAdapter, *electionResolver) {
 	r := &electionResolver{}
 	return newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
 			return refuseFirst[interface{}](refusals, calls, strandedReadRefusal, q)()
 		},
@@ -361,7 +361,7 @@ func TestHostAdapter_SyncPropose_StrandedProposalIsNotReissued(t *testing.T) {
 	var calls atomic.Int64
 	r := &electionResolver{}
 	a := newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
 			calls.Add(1)
 			return sm.Result{}, strandedReadRefusal()
@@ -456,7 +456,7 @@ func notReadyAdapter(refusals int64, calls *atomic.Int64) *HostAdapter {
 	r := &electionResolver{}
 	notReady := func() error { return quicraft.ErrReadIndexNotReady }
 	return newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: r.GetLeaderID,
+		getLeaderIDFn: r.LeaderID,
 		syncReadFn: func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
 			return refuseFirst[interface{}](refusals, calls, notReady, q)()
 		},
@@ -506,7 +506,7 @@ func TestHostAdapter_SyncGetShardMembership_WaitsForNewLeadersFirstCommit(t *tes
 func TestHostAdapter_SyncGetShardMembership_ReissuedWhenALeaderChangeStrandsIt(t *testing.T) {
 	var calls atomic.Int64
 	a := newTestAdapter(&mockQuicraftHost{
-		getLeaderIDFn: (&electionResolver{}).GetLeaderID,
+		getLeaderIDFn: (&electionResolver{}).LeaderID,
 		syncGetShardMembershipFn: func(context.Context, uint64) (*quicraft.Membership, error) {
 			return refuseFirst(1, &calls, strandedReadRefusal, &quicraft.Membership{ConfigChangeID: 7})()
 		},

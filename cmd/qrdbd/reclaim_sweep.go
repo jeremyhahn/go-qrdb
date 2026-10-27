@@ -26,14 +26,14 @@ import (
 // leaderIDSource is the one method the reclaim sweeper's leadership check
 // needs from the Raft host.
 type leaderIDSource interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // systemShardLeader reports whether replicaID currently leads the system
 // shard -- the owner of shared-store reclaim jobs.
 func systemShardLeader(host leaderIDSource, replicaID uint64) func() bool {
 	return func() bool {
-		leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+		leaderID, ok, err := host.LeaderID(shard.ShardKV)
 		return err == nil && ok && leaderID == replicaID
 	}
 }

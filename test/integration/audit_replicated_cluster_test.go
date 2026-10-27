@@ -364,7 +364,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 		startNode(t, bin, buildArgs(i), fmt.Sprintf("[node%d-R2] ", i+1))
 	}
 
-	unsealNodes(t, ca, adminPorts...)
+	waitForNodesSelfUnsealed(t, ca, adminPorts...)
 	for i, dir := range dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
 		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)

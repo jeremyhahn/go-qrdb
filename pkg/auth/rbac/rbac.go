@@ -111,6 +111,11 @@ var soDeniedActions = map[string]map[string]struct{}{
 		// are already caught by the resource-independent verbs below.
 		"rewrap": {},
 	},
+	"vlog": {
+		// Signing a verifiable log's head is a use of the owner's key, the
+		// same duty as keys:sign.
+		"sign_head": {},
+	},
 }
 
 // soDeniedCryptoVerbs is the resource-independent half of the deny-list: action

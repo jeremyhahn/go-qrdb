@@ -79,7 +79,7 @@ func TestNode_CloseWaitsForAnInFlightTrustPoolRefresh(t *testing.T) {
 	pool := clienttrust.New()
 	pool.SetKeyBProvider(src)
 	n := &Node{}
-	n.trustPool = pool
+	n.trustPool.Store(pool)
 	n.startTrustPoolRefresh(pool)
 	<-src.entered
 

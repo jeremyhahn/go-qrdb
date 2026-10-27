@@ -208,8 +208,8 @@ type clusterCoordinatorMigrator struct {
 // current leader: its replica ID, and that replica's address in the locally
 // committed membership. Both answers are local and never block.
 type systemLeaderLocator interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
-	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
+	ShardMembership(shardID uint64) (*quicraft.Membership, error)
 }
 
 // notLeaderRefusal is the coordinator's not-leader refusal as the typed
@@ -223,12 +223,12 @@ func (m *clusterCoordinatorMigrator) notLeaderRefusal() error {
 	if m.leader == nil {
 		return nle
 	}
-	leaderID, ok, err := m.leader.GetLeaderID(m.leaderShard)
+	leaderID, ok, err := m.leader.LeaderID(m.leaderShard)
 	if err != nil || !ok {
 		return nle
 	}
 	nle.LeaderID = leaderID
-	if membership, merr := m.leader.GetShardMembership(m.leaderShard); merr == nil && membership != nil {
+	if membership, merr := m.leader.ShardMembership(m.leaderShard); merr == nil && membership != nil {
 		nle.LeaderAddress = membership.Nodes[leaderID]
 	}
 	return nle

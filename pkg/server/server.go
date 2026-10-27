@@ -69,6 +69,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // SQLProtocolServer is the interface implemented by MySQL and PostgreSQL
@@ -237,6 +238,7 @@ type serverOptions struct {
 	tsSvc              service.TimeSeriesServicer
 	indexSvc           service.IndexServicer
 	vectorSvc          service.VectorServicer
+	logSvc             service.LogService
 	embeddingSvc       service.EmbeddingServicer
 	ragSvc             service.RAGServicer
 	watchSvc           service.WatchServicer
@@ -873,6 +875,13 @@ func WithVector(svc service.VectorServicer) ServerOption {
 	return func(o *serverOptions) { o.vectorSvc = svc }
 }
 
+// WithLogService configures the verifiable-log service for the protocol
+// servers that serve it: gRPC, the Unix socket, REST, QUIC and MCP. A nil
+// service leaves the vlog surface unserved.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(o *serverOptions) { o.logSvc = svc }
+}
+
 // WithEmbedding configures the embedding service for all protocol servers
 // that support text embedding operations.
 func WithEmbedding(svc service.EmbeddingServicer) ServerOption {
@@ -1130,7 +1139,7 @@ func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
 }
 
 // WithUserAuthFactorService configures the user-side N-factor service (M14,
-// docs/08-bootstrap-auth-architecture.md §5e) across all protocol servers
+// docs/auth-factors/architecture.md) across all protocol servers
 // that support it (REST, gRPC, QUIC, MCP, Unix). This is the service the SDK
 // client's UserAuthFactors() accessor talks to (Add / List / Get / Remove /
 // Rotate / Relabel / Login) and is distinct from WithAuthFactorService (the
@@ -1361,6 +1370,7 @@ type CryptoOptions struct {
 	Clock                   clock.Clock
 	StorageFactory          StorageFactory
 	DEKProvider             dek.Provider
+	HeadSignerProvider      vlog.HeadSignerProvider
 	InvitationRedeemLimiter ratelimit.Limiter
 	HolderActLimiter        ratelimit.Limiter
 }
@@ -1399,6 +1409,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		Clock:                   o.clock,
 		StorageFactory:          o.storageFactory,
 		DEKProvider:             o.dekProvider,
+		HeadSignerProvider:      o.headSignerProvider,
 		InvitationRedeemLimiter: o.invitationRedeemLimiter,
 		HolderActLimiter:        o.holderActLimiter,
 	}
@@ -2130,6 +2141,9 @@ func (s *Server) startREST() error {
 	if s.opts.vectorSvc != nil {
 		restOpts = append(restOpts, rest.WithVector(s.opts.vectorSvc))
 	}
+	if s.opts.logSvc != nil {
+		restOpts = append(restOpts, rest.WithLogService(s.opts.logSvc))
+	}
 	if s.opts.embeddingSvc != nil {
 		restOpts = append(restOpts, rest.WithEmbedding(s.opts.embeddingSvc))
 	}
@@ -2489,6 +2503,9 @@ func (s *Server) startGRPC() error {
 	if s.opts.vectorSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithVector(s.opts.vectorSvc))
 	}
+	if s.opts.logSvc != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithLogService(s.opts.logSvc))
+	}
 	if s.opts.embeddingSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithEmbedding(s.opts.embeddingSvc))
 	}
@@ -2626,6 +2643,9 @@ func (s *Server) startQUIC() error {
 	}
 	if s.opts.vectorSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithVector(s.opts.vectorSvc))
+	}
+	if s.opts.logSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithLogService(s.opts.logSvc))
 	}
 	if s.opts.watchSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithWatch(s.listenerWatch()))
@@ -2817,6 +2837,9 @@ func (s *Server) startUnix() error {
 	if s.opts.vectorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithVector(s.opts.vectorSvc))
 	}
+	if s.opts.logSvc != nil {
+		unixOpts = append(unixOpts, unixapi.WithLogService(s.opts.logSvc))
+	}
 	if s.opts.embeddingSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithEmbedding(s.opts.embeddingSvc))
 	}
@@ -2994,6 +3017,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.vectorSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithVector(s.opts.vectorSvc))
+	}
+	if s.opts.logSvc != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithLogService(s.opts.logSvc))
 	}
 	if s.opts.embeddingSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithEmbedding(s.opts.embeddingSvc))

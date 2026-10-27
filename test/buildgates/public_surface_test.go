@@ -40,7 +40,10 @@ package buildgates
 //   - REST: every `s.public(` / `s.publicIf(` call in pkg/api/rest/server.go.
 //   - Native QUIC: every `s.handlePublicIf(` call anywhere under
 //     pkg/api/quic (there is exactly one transport-wide registry,
-//     QUICMethodRegistry, and RegisterPublic is its only way in).
+//     QUICMethodRegistry, and RegisterPublic is its only way in). The one
+//     call whose method is not a constant is the module projection, which
+//     serves what a module declares through PublicGRPCMethods() -- the
+//     source gated under gRPC and unix below.
 //   - MCP: the SEPARATE, public /mcp/enroll server
 //     (pkg/api/mcp.EnrollPath) and the tool(s) it serves -- found by
 //     scanning pkg/api/mcp/tools_invitations.go's newEnrollServer for
@@ -161,6 +164,18 @@ var quicPublicAllowlist = map[string]struct{}{
 	"invitation.Redeem": {}, // the one frame method with no registered permission at all.
 }
 
+// quicModuleProjectionFile and quicModuleProjectionIdent name the one
+// handlePublicIf call whose method is not a constant: the module projection
+// (moduleGRPCRegistrar.RegisterService) registering a method a capability
+// module declares through PublicGRPCMethods() []string. Its source is the
+// gRPC and unix transports' source too, and
+// TestPublicSurface_GRPCAndUnix_ExactAllowlist gates every implementation of
+// it, so this gate pins the call's location rather than a second list.
+const (
+	quicModuleProjectionFile  = "modules.go"
+	quicModuleProjectionIdent = "fullMethod"
+)
+
 // TestPublicSurface_QUIC_ExactAllowlist scans every file under pkg/api/quic
 // for handlePublicIf registrations and asserts the resolved method-name set
 // is exactly quicPublicAllowlist.
@@ -170,17 +185,26 @@ func TestPublicSurface_QUIC_ExactAllowlist(t *testing.T) {
 
 	constants := map[string]string{}
 	var calls []string
+	projections := 0
 	walkGoFilesText(t, quicDir, func(path, src string) {
 		for _, m := range quicMethodConstPattern.FindAllStringSubmatch(src, -1) {
 			constants[m[1]] = m[2]
 		}
 		for _, m := range quicHandlePublicPattern.FindAllStringSubmatch(src, -1) {
+			if m[1] == quicModuleProjectionIdent && filepath.Base(path) == quicModuleProjectionFile {
+				projections++
+				continue
+			}
 			calls = append(calls, m[1])
 		}
 	})
 
 	if len(calls) == 0 {
 		t.Fatal("found no s.handlePublicIf(...) call under pkg/api/quic; the scan likely stopped matching")
+	}
+	if projections != 1 {
+		t.Fatalf("found %d module-projection handlePublicIf(_, %s, _) calls in pkg/api/quic/%s, want exactly 1",
+			projections, quicModuleProjectionIdent, quicModuleProjectionFile)
 	}
 
 	found := map[string]struct{}{}
@@ -291,7 +315,8 @@ var grpcUnixPublicAllowlist = map[string]struct{}{
 }
 
 // TestPublicSurface_GRPCAndUnix_ExactAllowlist asserts two things about gRPC
-// and the Unix socket, which share AuthMiddleware.RegisterPublicGRPCMethods:
+// and the Unix socket, which share AuthMiddleware.RegisterPublicGRPCMethods
+// (and whose module hook the native QUIC projection reads too):
 //
 //  1. No non-test file anywhere in this module implements the capability
 //     module hook PublicGRPCMethods() []string. The day one does, this test

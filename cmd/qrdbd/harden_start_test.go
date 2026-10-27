@@ -79,7 +79,7 @@ func TestStartRunE_HardensBeforeLoadingConfig(t *testing.T) {
 		return 0, refused
 	})
 	allocated := false
-	swapSecureLifecycle(t, func(int64) (*secure.Allocator, error) {
+	swapSecureLifecycle(t, func(int64) (secure.Allocator, error) {
 		allocated = true
 		return nil, errors.New("unreachable")
 	}, nil, nil, nil)

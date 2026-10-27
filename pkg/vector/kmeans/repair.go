@@ -13,12 +13,6 @@
 // 2. Commercial License
 //    Contact licensing@automatethethings.com for commercial licensing options.
 
-// Package kmeans holds k-means clustering logic shared by every ANN index
-// family under pkg/vector that runs its own k-means or k-means++ (currently
-// pkg/vector/ivf and pkg/vector/quantization), so it does not exist to be
-// imported by anything outside pkg/vector. It imports nothing from this
-// repository -- only the standard library -- so nothing importing it can
-// create a cycle back here.
 package kmeans
 
 import "math"

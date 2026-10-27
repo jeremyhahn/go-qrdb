@@ -1,6 +1,6 @@
 # Backup and Restore — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -235,8 +235,8 @@ path.
   `sdk/go/conformance`.
 - **Integration**: `make integration-test-backup-restore` runs
   `test/integration/backup_cli_test.go` and `backup_restore_test.go`. CI runs
-  them as the `backup-restore` leg of the `integration-features` job
-  (`.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier: on
+  them in the `integration-features` shard whose feature list includes
+  `backup-restore` (`.github/workflows/ci.yml`), required by `ci-gate` in CI's full tier: on
   every push to `main`, every dispatch, and every pull request labelled
   `ci:full`.
 
