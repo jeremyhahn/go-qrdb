@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"github.com/spf13/cobra"
 )
 
 // signedInitBeginOutput is what barrier-init-begin prints: the response, with
@@ -62,8 +63,10 @@ func newTenantBarrierInitBeginCmd() *cobra.Command {
 			"PKCS #1 v1.5 over its SHA-256 digest, or pure Ed25519) and redeem the reference\n" +
 			"with `tenant barrier-init-complete` before it expires. --statement-out writes the\n" +
 			"raw statement bytes for the signing tool.\n\n" +
-			"The statement lives on --server's node, so begin and complete go to the same node;\n" +
-			"a barrier served by several nodes is begun and completed on each.",
+			"The statement lives on --server's node, so begin and complete go to the same node.\n" +
+			"One node's completed init is enough under every strategy but passphrase: the other\n" +
+			"serving nodes initialize their own keys from it. A passphrase barrier served by\n" +
+			"several nodes is begun and completed on each, as `tenant barrier-init` does for you.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			roster, err := tenantBarrierRoster(officers, custodians, shares)

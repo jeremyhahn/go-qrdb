@@ -29,10 +29,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
-	"github.com/spf13/cobra"
 )
 
 // signedInitTenantService answers both halves of a signed init and records

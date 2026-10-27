@@ -585,10 +585,6 @@ func initProofSigner(keyFile string) (crypto.Signer, error) {
 	return readSigner(keyFile)
 }
 
-// parseTenantOfficerFlags parses repeatable holder flag values
-// ("username=path/to/csr.pem") of one role into the inline roster's wire
-// shape, reading each named CSR file from disk. flag names the flag for
-// error messages.
 // tenantBarrierRoster is a Shamir init's inline roster from the --officers and
 // --custodians flags, whose combined count must equal shares.
 func tenantBarrierRoster(officers, custodians []string, shares int) ([]transport.OfficerRegisterRequest, error) {
@@ -610,6 +606,10 @@ func tenantBarrierRoster(officers, custodians []string, shares int) ([]transport
 	return roster, nil
 }
 
+// parseTenantOfficerFlags parses repeatable holder flag values
+// ("username=path/to/csr.pem") of one role into the inline roster's wire
+// shape, reading each named CSR file from disk. flag names the flag for
+// error messages.
 func parseTenantOfficerFlags(flag, role string, raw []string) ([]transport.OfficerRegisterRequest, error) {
 	if len(raw) == 0 {
 		return nil, nil
