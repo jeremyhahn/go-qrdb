@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-25
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 One server hosting six transports, with one authorization decision behind all of
@@ -200,7 +200,7 @@ neither owns a verb neither registered. See
   its own, outside every qrdb build): `make check-vanguard-probe` is the check
   run at each vanguard release, and fails, naming the replacement of
   `pkg/api/grpcweb`, the day a release keeps the interceptor or carries the
-  peer's TLS state ([engineering.md](engineering.md#testing)).
+  peer's TLS state ([engineering.md](engineering.md#test-strategy)).
 - **gRPC-Web through an external proxy (Envoy).** Rejected: a second process
   terminating TLS loses the caller's certificate at the node, the identity every
   authorization decision starts from.
@@ -488,8 +488,10 @@ transport is bound by go-quicraft itself and advertised to peers, so
 is refused with `*cluster.RaftPortZeroError` — wrapped in a `*node.ConfigError`
 by the SDK node, and returned directly by `qrdbd start` for `--raft-address` /
 `--listen`, before any directory is created. Without a pre-bound listener, a **zero** admin or gRPC
-port on the SDK node still selects the fixed default (63001 / 63002), not a
-kernel-assigned port.
+port on the SDK node still selects the SDK node's fixed default (63001 / 63002), not a
+kernel-assigned port. Those SDK defaults differ from the daemon's configuration
+defaults (REST 63002, gRPC 63003, QUIC 63004, `config.DefaultConfig`): the SDK
+node's gRPC default is the daemon's REST port.
 
 ## Trust boundaries
 

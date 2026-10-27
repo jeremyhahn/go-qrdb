@@ -1,6 +1,6 @@
 # Key-Value Store — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -62,6 +62,64 @@ calls `service.KVServicer`'s atomic method directly.
 
 The guarded verbs take **no `WriteOption`**. A conditional write must be
 linearizable to mean anything, so it is always synchronous.
+
+#### The `kvstore.KVStore` surface — `sdk/go`
+
+```go
+func (c *Client) KVStore() KVStore   // routes index ops to IndexClient
+
+// Store capability, for consumers that must know before they depend on it.
+// PutIfAbsent (take), CompareAndSwap (edit) and CompareAndDelete (release).
+// Discovered by RUNTIME type assertion, so an implementation missing any one
+// of them fails at run time rather than at build time — widening this
+// interface means implementing it everywhere in the same change.
+type AtomicKVStore = kvstore.AtomicKVStore
+var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
+var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
+
+// The store Client.KVStore() returns satisfies AtomicKVStore: it forwards
+// PutIfAbsent/CompareAndSwap/CompareAndDelete to the transport's
+// GuardedKVClient capability, which every production transport (REST, gRPC,
+// QUIC, Unix, MCP, embedded) carries.
+//
+// CompareAndSwapWithCurrent composes CompareAndSwap with a follow-up Get on
+// a failed compare, so a contended counter (a PIN-lockout attempt count)
+// learns the value it should have compared against without a second,
+// separately-written round trip. The read is NOT part of the same atomic
+// step -- see the function's own doc for the window that leaves open.
+var CompareAndSwapWithCurrent = kvstore.CompareAndSwapWithCurrent
+// func(ctx context.Context, store AtomicKVStore, key string, expected, next []byte) (swapped bool, current []byte, err error)
+
+// FencedCreator is kvstore.FencedCreator's alias, for an embedder holding a
+// kvstore.KVStore it did not get from Client.KVStore() (a custom
+// seal.StorageBackend composition, for one) and needs to assert for the
+// same capability AtomicKVStore above is exported for. It has no
+// wire-level implementation on any sdk/go/transport client, so the
+// type alias does not make the capability newly reachable through
+// Client.KVStore() -- only through a store the caller built or received
+// some other way.
+//
+// kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
+// primitive pkg/dao.UnitOfWork REQUIRES, with no fallback) is different:
+// the store Client.KVStore() returns satisfies it too, by composing
+// the transport's TransactionClient -- see
+// ../transactions/engineering.md#kvstoremultiguardedbatchkvstore-over-clientkvstore.
+type FencedCreator = kvstore.FencedCreator
+
+// An in-process store with real index maintenance and real atomicity, for
+// unit-testing DAO code without booting a node.
+var NewMemoryKVStore = kvstore.NewMemoryKVStore
+type MemoryKVStore = kvstore.MemoryKVStore
+
+// Ask before caching anything keyed by a resolved store. KVStore is an
+// interface, so its dynamic type need not be comparable, and using a
+// non-comparable one as a map or sync.Map key panics on the first operation.
+// A store that cannot be a key is not an error: skip the cache for it.
+//
+// A func, not a var alias: a safety predicate an importer could reassign is
+// not one canonical judgement.
+func UsableAsMapKey(store KVStore) bool
+```
 
 ### Consistency levels — `pkg/consistency`
 

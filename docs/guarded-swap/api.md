@@ -1,6 +1,6 @@
 # Guarded Swap — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Entry point
@@ -26,6 +26,24 @@ type SwapPlane interface {
 
 Two capabilities rather than one because the transaction plane cannot read;
 see [architecture.md](architecture.md).
+
+## Transports and permissions
+
+`GuardedSwap` is a Go SDK helper, not an RPC: no transport carries a guarded
+swap as one call. Each attempt is the two calls below, made on whichever
+transport the `SwapPlane` uses, and the caller's token needs both permissions.
+
+| call | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
+|---|---|---|---|---|---|---|
+| read the record | `GET /kv/{key}?revision=true` | `GetRevision` | `mvcc.GetRevision` | `qrdb_mvcc_get_revision` | `Client.MVCC().GetRevision` | REST: `kv:get`; every other transport: `mvcc:get_revision` |
+| propose the guarded write | `POST /tx` | `Transaction` | `tx.Transaction` | `qrdb_tx_execute` | `Client.Transaction().ExecuteTransaction` | `transaction:execute` |
+
+The read's permission differs on REST. `GET /kv/{key}?revision=true` is the
+`GET /kv/{key}` route, which REST authorizes with `kv:get`; the `revision`
+query parameter changes the response, not the authorization. A REST caller
+granted `mvcc:get_revision` alone is refused with `403` on the read. A token
+meant to work on every transport grants `kv:get`, `mvcc:get_revision` and
+`transaction:execute`.
 
 ## Request
 
@@ -72,6 +90,15 @@ All are matched with `errors.As`. **None is returned when a write landed.**
 | `SwapContendedError` | bound reached, record moved every time | no — genuine contention |
 | `SwapStalledError` | guard refused, record did NOT move | **yes** — the store is not honouring the guard, or does not evaluate the compare target |
 | `SwapConfigError` | unusable request: nil client, no key, nil `Decide`, negative `MaxAttempts`, or an unknown `SwapDecision` | yes — a caller programming error |
+
+These four are built in the SDK and never cross a wire. Any other error is one
+of the two underlying calls failing (a refused permission, a sealed store, an
+unreachable leader), and it is returned unchanged. Its REST status and gRPC
+code are those of the call that failed:
+[../key-value/api.md](../key-value/api.md) "Status and error mapping" for the
+read, [../transactions/api.md](../transactions/api.md) "Status and error
+mapping" for the write. A refused guard is not an error on the wire: the
+transaction answers success with `Succeeded: false`, and the loop re-reads.
 
 ## Raw-byte compare-and-swap
 

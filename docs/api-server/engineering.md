@@ -299,11 +299,12 @@ request.
 - **`PublicGRPCMethods()` bypasses both authentication and authorization** for
   the named methods, symmetric with `HandlePublic`. **A malformed method name is
   rejected at registration**, so a typo fails startup loudly rather than
-  silently leaving the method auth-gated. **QUIC has no unauthenticated-method
-  path at all** (every frame requires a verified mTLS client certificate), so
-  a declared-public method with no `(qrdb.v1.permission)` option is skipped —
-  logged, not fatal — by the QUIC projection rather than tripping its
-  default-deny assertion; it stays reachable on gRPC/unix as declared.
+  silently leaving the method auth-gated. **The native QUIC projection reads
+  the same list**: a declared-public method registered through `RegisterQUIC`
+  is served to a caller with no client certificate (the listener verifies a
+  certificate if given), so one declaration is the public set on gRPC, unix
+  and QUIC. As on gRPC, the declaration wins over a `(qrdb.v1.permission)`
+  option the method also carries.
 - **`ModuleAuthFallback` may establish identity, never authority.** A returned
   identity is finalized and authorized by the host's single enrichment and
   authorizer path: **roles come from the store, never from the token**, and the

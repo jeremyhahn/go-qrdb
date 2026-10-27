@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -53,14 +53,14 @@ a second, unrelated credential bound instead.
   `InvalidAdminEnrollmentModeError`; requesting deferred mode for the system
   tenant is `SystemTenantDeferredEnrollmentError` (system-level enrollment is
   cert-only, always). On an idempotent re-run the preexisting admin is
-  resolved through the optional `AdminUserLookup` seam (satisfied by
+  resolved through the optional `bootstrap.AdminUserLookup` seam (satisfied by
   `user.UserServicer`). EVERY record deferred mode returns — freshly created
   included, since `Users` is an adapter seam that may ignore `Pending` —
   must be truly pending: persisted id, exact tenant and username, the
   tenant-scoped Admin role, a lifecycle of exactly `pending` (an absent,
   unrecognized or any other state is refused), no bound certificate, no
   enrolled factors on the record, and no ACTIVE factor in the canonical
-  auth-factor store (the required `Dependencies.AdminFactors` seam,
+  auth-factor store (the required `bootstrap.Dependencies.AdminFactors` seam,
   `bootstrap.AdminFactorChecker` — the FAIL-CLOSED
   `service.ActiveFactorChecker` contract, implemented by the
   production user auth-factor service over the canonical PRIMARY factor

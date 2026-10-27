@@ -1,6 +1,6 @@
 # Guarded Swap — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Where it lives
@@ -43,6 +43,24 @@ builds the identical guard against the identical record. That is
 Without it the loop spins to `MaxAttempts` and reports *contention*, which sends
 whoever is debugging it to look for competing writers that do not exist.
 
+## Configuration
+
+None. The helper reads no configuration file, flag or environment variable.
+The one tunable is per call: `GuardedSwapRequest.MaxAttempts`, defaulting to
+the `DefaultSwapAttempts` constant (8).
+
+## Persistence
+
+None of its own. The record is the caller's key in the MVCC store, written
+only by the guarded transaction; the helper keeps no state between calls.
+
+## Observability
+
+None of its own: it emits no metric, log line or span. Each attempt is one
+`GetRevision` and one transaction, which the server observes as those calls.
+`GuardedSwapResult.Attempts` and the `Attempts` field of `SwapStalledError` and
+`SwapContendedError` are the caller's view of the retry count.
+
 ## Testing notes — read before adding tests here
 
 **A race test over an in-process fake is vacuous unless the participants are
@@ -76,4 +94,4 @@ transaction and two reads, not 25 transactions.
 
 ## Integration testing
 
-`make integration-test-guarded-swap` runs this feature's self-spawned integration tests: `feature_gate_cluster_test.go`. The per-transport accounting, including every gap, is the `guarded-swap` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).
+`make integration-test-guarded-swap` runs `feature_gate_cluster_test.go`, which drives the feature-gate activation of guarded writes, not `sdk.GuardedSwap`: no integration test calls `GuardedSwap` itself. The helper is covered by the unit tests above, including `guardedswap_service_test.go` against the real services. The per-transport accounting, including every gap, is the `guarded-swap` row of [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).

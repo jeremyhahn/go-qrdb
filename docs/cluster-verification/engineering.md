@@ -62,6 +62,22 @@ runs only under `make cluster-proof-boot`.
   from running many clients. A client keeps its identifier through an
   indeterminate outcome. A client whose connection drops dials again, moving
   to the next node when its own does not answer.
+- **Backoff.** After every failure in a row, a failed dial or an operation
+  that did not return `ok`, a client pauses before its next attempt. The
+  pause's step starts at `redial_backoff`, doubles with each further failure
+  up to `max_backoff`, and the pause is drawn uniformly from the upper half
+  of the step (equal jitter), so clients that failed together do not retry
+  together. A success resets the step. A node that refuses or times out is
+  therefore retried at a bounded rate, and the history grows by at most one
+  operation per pause rather than by a retry loop that floods it and the
+  linearizability checker. The jitter draws from its own seeded stream, so
+  the operation sequence stays the one the seed names.
+- **gRPC `Unavailable`.** A client that receives `Unavailable` closes its
+  connection and dials again, and the redial's health check records nothing
+  in the history. The write that received it stays `indeterminate`: gRPC
+  returns `Unavailable` both for a node it could not reach and for a
+  connection that broke after the request was written, and the client
+  cannot tell the two apart, so the write may have committed.
 - **Placement and transport.** Clients are spread across the nodes in
   `PROOF_NODES` order, so leader forwarding is inside the proof. A run uses
   one transport, `quic`, `grpc` or `rest`; covering all three is three runs.
@@ -88,7 +104,8 @@ with no client credential.
 | `seed` | `PROOF_SEED` | overridden by the run's seed |
 | `op_timeout` | `5s` | an operation still unanswered then is indeterminate |
 | `duration` | `PROOF_DURATION` | must be unset or equal `PROOF_DURATION` |
-| `redial_backoff` | `250ms` | pause before a client redials |
+| `redial_backoff` | `250ms` | first backoff step after a failed dial or operation; must be positive |
+| `max_backoff` | `4s`, or `redial_backoff` if larger | the step the backoff doubles up to; must not be less than `redial_backoff` |
 
 ## The ledger (E1)
 
@@ -617,6 +634,13 @@ No configuration key is added to `qrdbd` for this feature.
   `fail`; a timeout, a cancelled context, or a connection lost after the
   request was sent is `indeterminate`. Unknown errors are `indeterminate` —
   the conservative choice, since it can never produce a false loss.
+- Over gRPC the status code decides. `InvalidArgument`, `Unauthenticated`,
+  `PermissionDenied` and `ResourceExhausted` are the server's statement that
+  a write had no effect, so they are `fail`. Every other code a write meets is
+  `indeterminate`: `Unavailable` because gRPC also returns it for a
+  connection that broke after the request was sent, and `DeadlineExceeded`,
+  `Aborted`, `Unknown` and a sealed node's refusal because the entry may
+  already be committed. A read that errs is `fail` whatever the code.
 - A refused configuration, a run that cannot start, or a bundle that cannot
   be written exits `2` before any verdict. Everything the run itself
   observed — an unhealed fault, a failed inject, an interrupt — is recorded

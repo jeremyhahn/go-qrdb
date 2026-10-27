@@ -1,6 +1,6 @@
 # Backup and Restore — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-backup-restore`; coverage row: `test/integration/COVERAGE.md` `[backup-restore](../../docs/backup-restore/)`.
@@ -183,7 +183,7 @@ operate on shard snapshots and there are none.
 `sm_storage: file`/`BackendFile` restore target open the backup directory
 through the same `file.New` the data plane uses, which accepts only the hashed
 flat layout
-([storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking))
+([storage-engines/architecture.md](../storage-engines/architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout))
 and does not migrate a directory without its format marker. Restore that
 backup with the binary that wrote it. A backup made with
 `sm_storage: pebble`/`BackendPebble`/`BackendMemory` is unaffected.

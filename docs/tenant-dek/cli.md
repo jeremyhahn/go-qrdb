@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb dek` — the caller tenant's data encryption keyring. All
@@ -16,7 +16,9 @@ Ciphertexts and associated data are base64 on the command line.
 
 ## `qrdb dek status`
 
-Show the keyring's versions — never key material. PROVIDER and KEY REF name
+Show the keyring's versions — never key material. STATE is `current` for the
+version new encryptions use, `active` for an older version that still
+decrypts, and `retired` for one that no longer does. PROVIDER and KEY REF name
 the key-wrap KEK that wrapped each version's key, for audit; both are
 empty for a retired version. See
 [key-wrapping/architecture.md](../key-wrapping/architecture.md).

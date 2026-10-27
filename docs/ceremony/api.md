@@ -1,6 +1,6 @@
 # Initialization Ceremony — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -35,7 +35,7 @@ share-claim route of its own.
 
 ```json
 {
-  "so_pin": "…", "user_pin": "…",
+  "so_pin": "…", "user_pin": "…", "credential_seal_strategy": "passphrase",
   "threshold": 3, "policy": "designated",
   "officers": [
     { "username": "alice", "role": "so",        "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----…" },
@@ -83,6 +83,9 @@ until officers reconstruct it from their shares. The MCP tool's `secret`
 argument is the one exception: it is plain text there, not base64, matching
 its `passphrase` argument's convention on the barrier and tenant-barrier
 tools.
+
+**`credential_seal_strategy` names how credentials are sealed at rest.** It
+is optional; the CLI sets it from `qrdb init --barrier-strategy`.
 
 **`admin_csr_pem`, `admin_cert_pem`/`admin_cert_pool_pem`, and
 `admin_generate` select the bootstrap admin's credential path**: CSR-sign,

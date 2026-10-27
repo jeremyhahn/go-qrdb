@@ -1,6 +1,6 @@
 # etcd Compatibility — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 etcd compatibility has **no `qrdb etcd` command group.** It is a per-database
@@ -19,23 +19,31 @@ qrdb database update-etcd k8s --enabled --listen-addr :2379
 qrdb database update-etcd k8s --disabled
 ```
 
-`database create <name>` flags:
+`database create <name>` flags (none is required):
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--etcd` | `false` | Enable etcd protocol on database creation |
-| `--etcd-listen-addr` | `localhost:2379` | etcd gRPC listen address (loopback by default; set `:2379` or a routable address for remote clients) |
-| `--etcd-advertise-urls` | (none) | Advertised client URLs for etcd endpoint discovery |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--etcd` | bool | `false` | Enable etcd protocol on database creation |
+| `--etcd-listen-addr` | string | `localhost:2379` | etcd gRPC listen address (loopback by default; set `:2379` or a routable address for remote clients) |
+| `--etcd-advertise-urls` | string list | (none) | Advertised client URLs for etcd endpoint discovery |
 
-`database update-etcd <name>` flags (`--enabled` and `--disabled` are mutually
-exclusive):
+`database update-etcd <name>` flags (none is required; `--enabled` and
+`--disabled` are mutually exclusive, and a call with neither disables the
+listener, as `--disabled` does):
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--enabled` | `false` | Enable the etcd listener |
-| `--disabled` | `false` | Disable the etcd listener |
-| `--listen-addr` | (none) | etcd gRPC listen address |
-| `--advertise-urls` | (none) | Advertised client URLs |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--enabled` | bool | `false` | Enable the etcd listener |
+| `--disabled` | bool | `false` | Disable the etcd listener |
+| `--listen-addr` | string | (none) | etcd gRPC listen address |
+| `--advertise-urls` | string list | (none) | Advertised client URLs |
+
+Both verbs exit `0` on success and `1` on any error, which they print to
+stderr. On success they print the database: as `Name:`, `Backend:`, `Status:`
+lines with an `Etcd:` block (`Enabled`, `Listen`, `Advertise`) under
+`--output table`, or the database record under `--output json` / `yaml`. The
+command only records the setting: whether the listener starts is decided by
+the server, under the conditions below.
 
 The other `qrdb database` flags apply as normal: any `--backend` serves etcd.
 The node must run in mode `raft` and the daemon's `raft.sm_type` must be

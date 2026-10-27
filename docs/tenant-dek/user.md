@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Encrypt your application's data under your tenant's own key without ever
@@ -61,7 +61,7 @@ ciphertexts are, so the procedure is yours:
    ```
 
 The current version cannot be retired. A ciphertext under a retired version
-answers `dek.ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
+is refused (409 / `FAILED_PRECONDITION`) from then on.
 
 ## What to expect
 
@@ -86,5 +86,5 @@ answers `dek.ErrVersionRetired` (409 / `FAILED_PRECONDITION`) from then on.
 ## Permissions
 
 `dek:encrypt` and `dek:decrypt` for applications (built-in User and Operator
-roles); `dek:rotate`, `dek:rewrap`, `dek:retire` and `dek:status` for key
-administration (built-in Admin role). See [engineering.md](engineering.md#permissions).
+roles); `dek:rewrap` and `dek:status` for the built-in Admin and Operator
+roles; `dek:rotate` and `dek:retire` for the built-in Admin role only. See [engineering.md](engineering.md#permissions).

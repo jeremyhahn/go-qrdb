@@ -235,13 +235,13 @@ func (c *Client) SealStore() transport.SealStoreClient {
 // ceremony-time enrolment surface used by custodian unseal flows.
 //
 // For the user-side N-factor model (User -> []AuthFactor) per
-// docs/08-bootstrap-auth-architecture.md §5e, use UserAuthFactors() instead.
+// docs/auth-factors/architecture.md, use UserAuthFactors() instead.
 func (c *Client) AuthFactors() transport.AuthFactorClient {
 	return capability[transport.AuthFactorClient](c, "AuthFactors")
 }
 
 // UserAuthFactors returns the user-side N-factor client (M14 interface) per
-// docs/08-bootstrap-auth-architecture.md §5e. It is distinct from the
+// docs/auth-factors/architecture.md. It is distinct from the
 // ceremony-time AuthFactors() accessor: the user-side surface models a
 // 1-to-many relationship between Users and AuthFactors and exposes Add /
 // List / Get / Remove / Rotate / Relabel / Login. Hardware verification

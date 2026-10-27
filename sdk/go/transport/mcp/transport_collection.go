@@ -76,12 +76,11 @@ type serverListCollectionsResponse struct {
 
 // serverDocumentResponse mirrors service.GetDocumentResponse -- the shape
 // shared by the qrdb_collection_get and qrdb_collection_list_documents tool
-// results -- for JSON decoding. Unlike transport.DocumentResponse, the
-// server's ID field is a plain JSON number (no ",string" tag), matching
-// what pkg/api/mcp/tools_collection.go actually marshals via
-// json.Marshal(resp) on the raw service type.
+// results -- for JSON decoding. The ID is a decimal string, as the server
+// writes it: a JSON number above 2^53 does not survive a float64 reader, and
+// a number is refused rather than read.
 type serverDocumentResponse struct {
-	ID       uint64                 `json:"id"`
+	ID       uint64                 `json:"id,string"`
 	Document map[string]interface{} `json:"document"`
 }
 
@@ -97,7 +96,7 @@ func serverDocumentResponseToTransport(sd *serverDocumentResponse) *transport.Do
 // serverInsertDocumentResponse mirrors service.InsertDocumentResponse for
 // JSON decoding from the qrdb_collection_insert tool result.
 type serverInsertDocumentResponse struct {
-	ID uint64 `json:"id"`
+	ID uint64 `json:"id,string"`
 }
 
 // serverListDocumentsResponse mirrors service.ListDocumentsResponse for

@@ -4348,7 +4348,7 @@ coverage-vector-quantization: | _cover-dir ## Generate quantization coverage rep
 
 # ============================================================================
 # Shared k-means (pkg/vector/kmeans) -- consumed by pkg/vector/ivf and
-# pkg/vector/quantization; see docs/vectors/engineering.md.
+# pkg/vector/quantization; see the package doc in pkg/vector/kmeans/doc.go.
 # ============================================================================
 
 .PHONY: test-vector-kmeans

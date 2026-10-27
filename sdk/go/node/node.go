@@ -5058,6 +5058,17 @@ func buildClusteredRaftConfigs(
 				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
 		}
 		shardCfg.MemberIdentities = identities
+	} else if self := identityCertPEM(mtls); len(self) > 0 {
+		// A transport-less host checks no identity, but the membership it
+		// founds is the one every replica later added to the shard authorizes
+		// it by: seed its own identity, or the first member added refuses it
+		// as missing_identity. It has no other member to name.
+		identities, err := cluster.ResolveMemberIdentities(nil, shardCfg.ReplicaID, self)
+		if err != nil {
+			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
+				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
+		}
+		shardCfg.MemberIdentities = identities
 	}
 
 	return hostCfg, shardCfg, hostOpts, nil

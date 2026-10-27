@@ -1,6 +1,6 @@
 # Certificate Authority — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -215,6 +215,7 @@ than merely inert.
 | Enrolled certificate authenticates as another account or tenant | 400 | `INVALID_ARGUMENT` — `certenroll.IdentityMismatchError` |
 | Enrolment attempted with no trust anchor registered | 409 | `FAILED_PRECONDITION` — `trustanchor.NoAnchorsError` |
 | Issue or enrol not configured on this node | 501 | `UNIMPLEMENTED` — `service.CertEnrollmentNotConfiguredError` |
+| Revoke or list with no certificate provider on this node | 501 — `ServiceNotImplementedError` | `UNIMPLEMENTED` — `ServiceNotConfiguredError` |
 | Signing failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Target tenant is not the caller's — for every caller, the system tenant included | 403 | `PERMISSION_DENIED` |

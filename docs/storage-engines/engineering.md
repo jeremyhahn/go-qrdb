@@ -1,8 +1,6 @@
 # Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; PROPOSED for the object-storage
-> LSM target design (see "Target design" at the end).**
-> · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -268,20 +266,19 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   `storage.Syncer` seam. That durability is why it is permitted as a hot
   apply path. The layout is an on-disk format with no migration from any
   other; see
-  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout).
   Writes are serialized across processes by an advisory OS lock on
   `.qrdb-file-lock` (`pkg/util/filelock`, a thin wrapper over `flock(2)` /
   `LockFileEx`) plus an in-process mutex; `Exclusive` exposes it for a guarded
   read-check-write; see
-  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout-breaking).
+  [architecture.md](architecture.md#the-file-engine-a-hashed-flat-content-addressed-layout).
   `Delete` removes only the record, never its (fixed, bounded) shard
   directories, for the reason that doc gives: concurrent per-key workers
   (the `fast` state machine's write-through) make pruning them on a
   point-in-time emptiness check a race. The format version is 4
   (`formatVersion`, `pkg/storage/file/file.go`). `New` refuses a non-empty data
   directory lacking a matching format-version marker
-  (`FormatMarkerMissingError`, `FormatVersionMismatchError`; a version-3
-  directory is refused this way), or one whose
+  (`FormatMarkerMissingError`, `FormatVersionMismatchError`), or one whose
   marker records the other at-rest posture (`AtRestMismatchError`). With an
   enabled encryptor every record, the journal and the record-name key
   (`.qrdb-file-names`) are written through the barrier's encrypting file
@@ -322,7 +319,7 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
   written in any other layout is refused, not misread.
   There is no migration. See
-  [architecture.md](architecture.md#the-objstore-engine-encoded-object-names-breaking).
+  [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
   A batch commits through a single journal object (publish, apply, clear;
   `pkg/storage/objstore/journal.go`), replayed at open. A commit that fails
   after it may have published its journal leaves the engine with a pending
@@ -342,92 +339,24 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 
 - **Unit**, per engine, against the same interface conformance suite — an engine
   that passes it is usable everywhere the interface is accepted.
-- **File engine journal**: crash-mid-write replay at open.
-- **File engine at rest** (`pkg/storage/file/encrypted_test.go`): no key or
-  value readable anywhere in an encrypted store's files, a batch-committed
-  record included; a reopen and unseal reading every record back; reads and writes
-  failing with `seal.ErrSealed` while sealed, including on a store reopened
-  sealed; the posture marker refusing the other posture in both directions.
-  End to end through every node composition: the embedded server over
-  `pebble` and `file` (`sdk/go/standalone/server_encfs_test.go`: no
-  plaintext on disk, sealed boot refused, a reseal failing record reads with
-  `seal.ErrSealed` and an unseal restoring them), `lifecycle`
-  (`TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor`), raft
-  replica storage (`TestStorageGenericSMsEncryptStorageUnderTheBarrier`) and a
-  sealed three-node group over `file` replica storage
-  (`TestRaftSMOverFileStorage_SealedLeavesNoPlaintextOnDisk`).
-- **File store re-encryption** (`pkg/database/reencrypt_file_test.go`): every
-  record read back under the new key and none under the old; verify refusing
-  a differing key, value or record count; cancellation as
-  `ReencryptCopyError`. The node migration moving a `file` store
-  (`TestNodeStoreMigration_MovesFileStores`,
-  `TestEncryptionMigration_SystemMovesFileStores`), the SDK provider
-  classifying store directories by backend
-  (`sdk/go/node/migrate_store_dirs_test.go`), and an SDK node on `file`
-  migrating from strategy `none` to a passphrase and reading every record
-  back after a restart
-  (`TestNode_EnableEncryption_SystemNoneToPassphrase_FileBackend`). In raft
-  mode, `qrdbd` naming each state machine's stores by `sm_type` and
-  `sm_storage` (`cmd/qrdbd/system_migrate_stores_test.go`), and a real daemon
-  with `--sm disk --sm-storage file` enabling encryption and serving its data
-  back under the passphrase
-  (`TestEnableEncryption_SystemScope_DiskOverFileStorage` in
-  `test/integration/enable_encryption_test.go`).
-- **File engine on tmpfs**: the file engine's unit tests, the storage parity
-  tests and every file-engine cell of the `sdk/go/conformance` matrix make
-  their directories with `pkg/testutil/memdir`, which creates them under
-  `/dev/shm` on Linux and fails the test if that is not tmpfs, so an fsync
-  returns at once and a test's deadline measures the code, not the runner's
-  disk. `TestFileCells_RunOnTmpfs` asserts every file-engine cell's
-  directories are on tmpfs. Integration tests and the commit benchmarks
-  (`make bench-storage-file`) keep a real disk, since the disk is their
-  subject.
-- **Group commit and parallel record writes** (`pkg/backend/group_commit_test.go`,
-  `pkg/storage/file/parallel_apply_test.go`), driven by a slow fake sync:
-  32 concurrent proposals finish in about one sync time, no proposal is
-  acknowledged before the sync covering it, an `Update` error or panic
-  completes the whole group, a commit's record syncs overlap, a failed
-  record sync is recovered from the journal at reopen, and the last
-  operation on a key wins.
-- **File engine cross-process lock** (`pkg/storage/file/exclusive_test.go`,
-  `pkg/util/filelock`): `Exclusive` blocking another engine's `Set` and batch
-  commit until it returns, and `New` waiting for a writer in flight; the lock
-  and the in-process mutex released on a callback error, a callback panic, a
-  failed lock and a failed unlock; `Close` releasing the lock and idempotent.
-  The proof that the guarantee holds across *processes* is
-  `pkg/database/backend_standalone_multiprocess_test.go`: the test binary
-  re-executes itself as four children that open one `file` database in a temp
-  directory and race forty `CompareAndSwap` increments each on one counter (the
-  final value must equal the increments and no counter value may be won twice)
-  and forty `SaveIfAbsent` rounds (exactly one winner per key). Disabling the
-  lock makes both go red.
-- **File engine hashed layout** (`pkg/storage/file/hashed_layout_test.go`):
-  the format marker refusing an old-layout or mismatched-version directory
-  and accepting a fresh or empty one; a key nested thousands of segments
-  deep applying cleanly; `commitBufferedOps` refusing a batch's invalid op BEFORE
-  writing the commit journal, so the batch leaves neither a journal nor a
-  partial write and the engine reopens cleanly afterward; a seeded property
-  test over random Put/Delete sequences with arbitrary `/` nesting; and a
-  fuzz test (`FuzzEngine_SetGetDeleteRoundTrip`) over arbitrary key/value
-  byte strings through Set/Get/Delete. The property is pinned one layer up,
-  through `Update`, on every storage-generic state machine over both `file`
-  and `pebble` `sm_storage` (`pkg/statemachine/prefix_property_test.go`) and
-  on `pebble`/`mvcc` (`pkg/store/prefix_property_test.go`), at the disk
-  state machine level for two keys where one is a prefix of the other
-  (`pkg/statemachine/disk_prefix_collision_test.go`), and end to end through
-  a real daemon and the CLI, including the deep-key case, in
-  `test/integration/sm_storage_file_test.go`.
-- **Objstore object names** (`pkg/storage/objstore/keys_test.go`,
-  `faults_test.go`): binary and edge-case keys (NUL, `0xff`, invalid UTF-8,
-  `..`, `//`, absolute paths, control characters, the marker's own name)
-  round-tripping through Set/Get/Exists/List/iteration/Delete on the
-  `memory` and `local` providers; key lengths across both name forms up to
-  the 65,535-byte cap, with every direct name checked against go-objstore's
-  own `ValidateKey` and the 255-byte component limit; non-canonical names
-  skipped; corrupt and misplaced hashed records refused; the format marker
-  refusing an unmarked or mismatched store; and provider read, list,
-  exists and delete faults surfacing as themselves.
-- **Error tests** per function, happy path plus error path.
+- **Engine behaviour**: the journal's crash-mid-write replay; the format
+  marker; at-rest encryption (no key or value readable on disk, the sealed
+  error while sealed, the posture marker); re-encryption of a `file` store;
+  group commit; the cross-process lock; arbitrary keys (fuzz and seeded
+  property tests); objstore object-name encoding. Every function has a happy
+  path and an error path.
+- **Parity cells**: the storage parity tests and the `sdk/go/conformance`
+  matrix run every engine through the same cells; the file-engine cells run on
+  tmpfs (`pkg/testutil/memdir`), so a deadline measures the code, not the disk.
+- **Fault-injection seams**: a slow fake sync for group commit, a failing
+  record sync recovered from the journal, failing lock and unlock calls, and
+  provider read, list, exists and delete faults for objstore. The
+  cross-process lock is proven by re-executing the test binary as competing
+  processes over one `file` database.
+- **Integration**: real daemons over `file` and `pebble` replica storage,
+  sealed and unsealed, including enabling encryption from strategy `none`
+  (`make integration-test-storage-engines`). The commit benchmarks
+  (`make bench-storage-file`) keep a real disk.
 
 ## Observability
 
@@ -443,128 +372,7 @@ win however deeply the condition is wrapped, so the wrapper rows
 `GET` meeting a dying node and a `PUT` meeting one are the same fact and get
 the same status.
 
-## Target design: `objstore` as Pebble remote storage
+## Not built
 
-> See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-> for the shape and the decisions this contract assumes. **Nothing below is
-> implemented.**
-
-### Exported surface (target)
-
-`pkg/storage/objstore` stops exporting `Engine`/`Batch`/`Iterator`/`Snapshot`.
-It exports a `remote.Storage` adapter and nothing else that is KV-shaped:
-
-```go
-// NewRemote constructs a Pebble remote.Storage backed by a go-objstore
-// provider. enc is the barrier-driven encrypting wrapper; a nil or
-// disabled encryptor is a no-op, matching pkg/atrest.Encryptor's convention.
-func NewRemote(provider string, settings map[string]string, enc *atrest.Encryptor) (remote.Storage, error)
-
-// Locator builds the remote.Locator for a (provider, prefix) pair qrdb
-// controls; it never embeds a qrdb key.
-func Locator(provider, prefix string) remote.Locator
-```
-
-`pkg/storage/pebble` gains one construction option:
-
-```go
-// WithRemote configures the Engine to keep its SSTables on remote storage
-// reached through store, under locator, using strategy to decide which
-// levels are remote (CreateOnSharedAll for a local binding — every level
-// remote; CreateOnSharedLower is available but not used by phase 1).
-// The local dir passed to pebble.New still roots the WAL, MANIFEST and
-// block cache — WithRemote narrows what the local dir holds, it does
-// not replace it.
-func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
-```
-
-A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`:
-one per owning instance, generated once and persisted as a small local
-marker file beside the WAL/MANIFEST directory — never derived from a qrdb
-key, never shared between instances.
-
-### Invariants (target, additive to the ones above)
-
-- **An `objstore`-backed engine is a `pebble.Engine`.** It is not a second KV
-  implementation: `storage.Storage`, `Batch`, `Iterator`, `Snapshot`, the
-  closed-store contract (`ErrStorageClosed`, the PebbleDB reader gate) all
-  apply unchanged. Anything this document says about the `pebble` engine
-  elsewhere in this file is true of `objstore` too, because it is the same
-  code with one `Option` added.
-- **Segment object names never derive from a qrdb key.** They are Pebble's own
-  `<hash>-<creator-id>-<file-num>.sst` / `.blob` naming
-  (`objstorageprovider/remote_obj_name.go`). A review that finds a qrdb key,
-  tenant id, or database name embedded in an object name sent to go-objstore
-  on this path is a defect.
-- **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
-  `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
-  SSTables; it does **not** reach objects written through
-  `WithRemote`. The adapter encrypts the whole object payload with the same
-  `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
-  `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
-  working encryptor fails closed at open rather than writing plaintext
-  objects.
-- **One prefix, one `CreatorID`, one owning instance — never shared.** A
-  replacement instance (replacement Raft replica, or a reassigned local-binding
-  owner) never reopens a previous instance's prefix; it gets a fresh one. This
-  is a correctness invariant, not a cost optimization: two
-  live Pebble instances writing under one `CreatorID`/prefix would corrupt each
-  other's manifest.
-- **`glacier` and `azurearchive` are refused at construction.** `NewRemote`
-  returns a typed error (`ArchiveTierUnsupportedError`, new) for a provider
-  go-objstore registers only as an `Archiver`, before any attempt to open a
-  Pebble store against it. These stay backup/archive destinations only (see
-  [../backup-restore/architecture.md](../backup-restore/architecture.md)).
-- **No ranged read.** Until go-objstore exposes one, `ReadObject` fetches the
-  whole object once per open and serves `ReadAt` from a local cache keyed by
-  object name. This is a performance limitation of phase 1, stated in the
-  adapter's doc comment.
-
-### Configuration (target)
-
-```yaml
-storage:
-  backend: objstore
-  objstore:
-    provider: s3          # local | memory | s3 | gcs | azure
-    settings:
-      bucket: qrdb-data
-      prefix: "node-a/db-1"   # qrdb-controlled; never a key
-    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, block cache
-    create_on_shared: all    # all | lower | none (default: all for a local binding)
-```
-
-`local_dir` is resolved from the same local volume pool the `pebble` engine
-uses (see [../volume-pools/engineering.md](../volume-pools/engineering.md)) —
-this design adds no second local-path mechanism. `provider`/`settings` reuse
-`storage.objstore` exactly as the node-level config documents them (see "Configuration" above and
-[../databases/architecture.md](../databases/architecture.md#what-stays-node-level)).
-
-### Error semantics (target, additive)
-
-| Condition | Behavior | Fails closed? |
-|---|---|---|
-| `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
-| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, nothing written | **yes** |
-| A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
-| go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (one prefix per instance); if it does, a corruption-class error, not silently served | **yes** |
-| `raft.sm_storage: objstore` before the phase-3 gate accepts it | refused | **yes** |
-
-### Test strategy (target, additive)
-
-- The existing per-engine conformance suite runs over `pebble+remote`
-  (local-provider go-objstore) exactly as it runs over `memory`/`file`/
-  `pebble`.
-- **Encryption round trip**: barrier on, write, restart, read — object bytes
-  on the local-provider backing directory are not the plaintext; barrier off,
-  same round trip, object bytes equal the plaintext, as for `pebble`'s local
-  files.
-- **Provider refusal**: `NewRemote("glacier", ...)` and
-  `NewRemote("azurearchive", ...)` return `ArchiveTierUnsupportedError` before
-  any network call.
-- **Crash safety**: kill `-9` mid-compaction and mid-flush; reopen must
-  succeed with no corruption on `pebble+remote`.
-- **Name hygiene (build gate)**: a test asserting no object name
-  `pkg/storage/objstore` sends to go-objstore's `Put`/`CreateObject`
-  round-trips through anything shaped like a qrdb key — a regression guard for
-  the invariant above.
+`objstore` as Pebble remote storage (an LSM segment layout) is not
+implemented; see [architecture.md](architecture.md#not-built).

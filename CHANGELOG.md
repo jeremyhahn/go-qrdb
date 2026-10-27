@@ -12,10 +12,35 @@ are not reconstructed here — their history is in the git log.
 ## [Unreleased]
 
 ### Added
+- **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
+  WAL fsync stall keeps its leadership and term, so linearizable reads and
+  admin requests are not failed by an election the stall caused; writes wait
+  for a quorum's fsyncs as before. It is go-quicraft v0.24.2-alpha's
+  heartbeat-under-fsync, on in every build with no knob, and the stall shows in
+  `quicraft_logdb_fsync_latency_seconds`. `pkg/service`'s
+  `TestFsyncStall_LeaderKeepsLeadershipThroughFollowerWALStall` proves it on
+  three in-process hosts, waiting for each follower's own stalled-fsync
+  observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
+  `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
 - **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
 - **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
 
+### Fixed
+- **A database create whose mark-live propose times out no longer leaves an orphaned drop-fence incarnation.** A claim of the marker that timed out at the caller could still commit after the create rolled back, so the marker named an incarnation no catalog entry held and every retry of the create was refused as existing elsewhere. `UnfenceDatabaseKeyspace` now releases an unknown-outcome claim back to the tombstone under a detached context, so the create returns the documented retryable 503 and the fence and catalog agree; a release that fails too is `*service.MarkerReleaseError`, which unwraps to the timeout.
+
 ### Changed
+
+- **`qrdb users cert-binding add|list|remove`** (#671). The CLI had no verb
+  for enrolling a certificate binding, though the default
+  `auth.mtls_binding_policy: required` refuses a certificate until one is
+  enrolled. `add` takes the base64url SHA-256 SPKI thumbprint, or a PEM
+  certificate through `--cert`, which also sets the expiry by default
+  (`--not-after` overrides it). An expiry at or before the Unix epoch, from
+  either, is refused: the wire reads a non-positive expiry as "never
+  expires", which only an omitted expiry may mean. `remove` withdraws one binding, and `list`
+  prints the user's bindings. They map to `AddCertBinding` and
+  `RemoveCertBinding`, and work on REST, gRPC, QUIC, Unix and MCP
+  (`docs/identity-rbac/cli.md`).
 
 - CI: the `fips` job's legs are rebalanced from the measured wall times of run 68401 (#1230, ruling 221(5)): nine legs, `tenant`, `seal`, `server`, `auth`, `service`, `api-keys`, `rest`, `sdk-transport` and `sdk`, with `pkg/tenant`, `pkg/seal` and `pkg/server` each in a leg alone. Each leg has its own `timeout-minutes` from its matrix entry, its expected time with headroom and at most 45, and go test's per-package budget is that limit less 5 minutes; `test/buildgates/fips_legs_test.go` enforces both. **The `tenant` (about 42 minutes) and `seal` (about 36.5 minutes) legs stay over 30 minutes until #1234 splits those packages**; every other leg is expected under 30 (docs/seal/fips140-mode.md, "The legs").
 - CI: the `fips` job splits `pkg/tenant`, `pkg/seal` and `pkg/server` by test name, each over two legs, so every leg is expected under 30 minutes and `server` under 25 (#1234, ruling 221(5)): twelve legs, with `tenant-lifecycle`, `seal-barrier` and `server-raft` selecting tests by the Makefile's `FIPS_RUN_<leg>` (`go test -run`) and `tenant`, `seal` and `server` skipping what those select (`-skip`). The limits are 30 minutes for the tenant and seal legs and 25 for the server legs. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints a leg's patterns, and the new `test/buildgates/fips_split_test.go` fails when a top-level test of a split package runs in no leg or in two. `TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace` uses the cheap test KDF, which brings it from 195 seconds to under 8 under FIPS mode.
@@ -32,6 +57,32 @@ are not reconstructed here — their history is in the git log.
 
 - **CI adopts ci-template v1.28.0 (ruling 220(3)):** `make deps-check` is a lint-class gate on the PR tier (ruling 219(3)). It moves from the full-tier `image` steps to the `lint` job, after `make lint`, and runs on every event, a docs-only pull request included, so a module behind its dependency floor fails the pull request rather than `main` after the merge.
 - **CI adopts ci-template v1.27.0 (ruling 211):** `make coverage` and the `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` suites are five parallel code-tier jobs instead of serial `image` steps, and the linux/arm64 release cross-build (plain and FIPS) runs on the full tier only, like `fips`.
+- docs: apply the spec-review findings for api-server to collections (#658)
+- **Feature documentation, replica-forwarding through watch, matches the code**
+  (#658): the spec-review findings are applied — statements the code does not
+  bear out are corrected or removed, content owned by another feature moves to
+  its owner (the `kvstore.KVStore` surface to key-value, DAO aggregations and
+  secret entity fields to the query-planner and entity-SQL companions), the
+  CLI pages gain per-verb examples and exit status, and code comments citing the
+  deleted `docs/08-bootstrap-auth-architecture.md` point at the feature folders.
+- docs: apply the spec-review findings for configuration to identity-rbac (#658)
+- docs: apply the spec-review findings for key-value to release (#658)
+
+### Fixed
+
+- **`qrdb users cert-binding add|remove` document `--` before a thumbprint**
+  (#671). A thumbprint is base64url (RFC 8705 `x5t#S256`), so about one in 64
+  begins with `-` and the CLI read it as a flag (`unknown shorthand flag`).
+  The help text and `docs/identity-rbac/cli.md` now say to put every flag
+  first and the thumbprint after `--`, which ends option parsing (POSIX
+  Utility Syntax Guideline 10), and the CLI tests enrol and withdraw a fixed
+  `-`-leading thumbprint that way on every transport.
+- **The bootstrap log names the strategy the system barrier is sealed under**
+  (#671). It used to log the configured strategy, so a barrier initialized
+  under `none` was logged as `strategy=passphrase` on a boot whose
+  configuration named passphrase. The `system bootstrap complete` record now
+  takes the barrier's active strategy, and adds `configured_strategy` when the
+  configuration disagrees.
 - **`service.Host` is split into a data host and a Raft-admin host** (#627,
   slice A). `service.Host` keeps the eleven methods the data services call
   (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,
@@ -95,11 +146,29 @@ are not reconstructed here — their history is in the git log.
 - `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
   helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
   and reading under one `os.Root` opened on the directory, not by a waiver.
+- A distributed Shamir share that reaches its time-to-live (`CeremonyConfig.ShareTTL`) has its enclave destroyed before the store reports it expired. The expiry timer used to drop the share from the store's index and mark it expired, release the lock, and only then destroy the enclave, so for that window `Exists`, `Expired` and `Claim` reported a wiped share whose plaintext could still be opened. The destroy now runs under the store's lock, ahead of the index update.
 
 ## [0.57.0-alpha] - 2026-10-26
 
 ### Changed
 
+- **`service.Host` is split into a data host and a Raft-admin host** (#627,
+  slice A). `service.Host` keeps the eleven methods the data services call
+  (`ID`, `RaftAddress`, `NodeIdentity`, `SyncPropose`, `SyncRead`,
+  `ProposeWithMode`, `StaleRead`, `ReadWithConsistency`, `FollowerRead`,
+  `LeaderID`, `Close`) and no go-quicraft engine type in its method set. The
+  fourteen membership, snapshot, shard-lifecycle, leadership-transfer, drain
+  and introspection methods move to the new `pkg/raftadmin` package as
+  `raftadmin.Host`. `service.AdminHost` composes the two, and is what
+  `NewAdminService`, `NewRebalanceService`, `NewHostShardSnapshotProvider`,
+  `lifecycle.Infra.Host` and `TenantReplicaHosts.StartedHosts` take;
+  `NewHostTopologyProvider` takes a `raftadmin.Host`. There is no alias for
+  the old 25-method interface: an embedder that passed a host to those
+  constructors passes the same value, and a test double that embedded
+  `service.Host` to reach admin methods embeds `service.AdminHost`. A lease
+  `TimeToLive` a follower refuses on a host that implements `service.Host`
+  alone still names the leader's replica ID, with an empty leader address,
+  since such a host cannot report the shard's membership.
 - **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
   v0.7.0-alpha and go-objstore v0.7.0-alpha in the root, SDK, GORM
   conformance and cluster-proof modules** (#944); go-quicraft/test/performance
@@ -136,6 +205,42 @@ are not reconstructed here — their history is in the git log.
   allowed. The 31 ratchet entries those edges held are deleted, and every
   edge into the engine stays listed. `make check-lean-standalone` proves each
   narrowed rule against a synthetic forbidden edge.
+- **`qrdb barrier unseal` no longer requires `--passphrase`** (#671). Omitted,
+  it sends an empty secret, which unseals a `none` barrier sealed by hand; a
+  passphrase barrier refuses it.
+
+### Fixed
+
+- **A `none` node unseals its barrier itself after a restart** (#671). qrdbd
+  waited in the sealed window for an empty unseal call, against
+  `docs/seal/README.md` and `docs/cluster-verification`. A barrier whose
+  persisted root key names `none` is now unsealed at boot. One migrated to a
+  keyed strategy, or not yet initialized, is left sealed.
+- **The clusterproof workload backs off after a failed operation** (#671).
+  A client retried a refusing or timing-out node in a tight loop, flooding
+  the history and the linearizability checker. Every failed dial or
+  operation is now followed by an exponential, equal-jittered pause from
+  `redial_backoff` up to the new `max_backoff` (default `4s`), reset by a
+  success. Over gRPC the status code classifies the outcome:
+  `InvalidArgument`, `Unauthenticated`, `PermissionDenied` and
+  `ResourceExhausted` fail a write; `Unavailable` leaves it indeterminate,
+  because gRPC also returns it for a connection that broke after the request
+  was sent, and drops the connection so a redial that records nothing gates
+  the next operation.
+
+### Fixed
+
+- **A one-node cluster founded under qrdbd-managed TLS can grow** (#671).
+  Before this fix, a founder with itself as its only peer ran without a Raft
+  transport and seeded no member identity, not even its own. Restarting it
+  with a second peer and running `admin member add` then committed a
+  membership with no identity for replica 1. The new member refused every
+  heartbeat and vote from the founder as `missing_identity`, so no leader was
+  elected. A transportless founder now seeds its own identity from the
+  certificate it holds, in both `qrdbd` and the SDK node. A cluster founded
+  before this fix keeps the membership it committed and has to be founded
+  again to grow. `docs/clustering/user.md` gives the procedure for growing a
+  one-node cluster.
 
 ## [0.56.0-alpha] - 2026-10-26
 
@@ -202,6 +307,17 @@ are not reconstructed here — their history is in the git log.
   builds it and after `Close`). A handler mounted on a node listener calls
   `sdk.ResolveVerifiedChains(ctx, state, verifier)` instead of reading
   `PeerCertificates[0]` or building a verifier of its own.
+
+### Fixed
+
+- **A failed gRPC `Exists` names itself, and MCP collection results carry
+  document IDs as strings**: the `sdk/go/transport/grpc` client's `Exists`
+  returned its `RequestError` with `Method` `"Get"`; it now reports
+  `"Exists"`, and a `NotFound` is still `false`. The `id` in the results of
+  `qrdb_collection_insert`, `qrdb_collection_get`, `qrdb_collection_update`
+  and `qrdb_collection_list_documents` is a decimal string, as the `id`
+  argument already is, and the `sdk/go/transport/mcp` client refuses a JSON
+  number there. An empty document page is `[]` rather than `null`.
 
 ## [0.55.0-alpha] - 2026-10-24
 

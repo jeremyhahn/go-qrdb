@@ -522,10 +522,20 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 			}
 			readings[i] = r
 		}
-		index := readings[0].Replicas[0].AppliedIndex
-		return readings[1].Replicas[0].AppliedIndex == index && readings[2].Replicas[0].AppliedIndex == index
+		return replicaReadingsAgree(readings)
 	}) {
-		t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
+		r0 := readings[0].Replicas[0]
+		for _, r := range readings {
+			if r.Replicas[0].AppliedIndex != r0.AppliedIndex {
+				t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
+			}
+		}
+		for i, r := range readings {
+			if r.Replicas[0].Hash != r0.Hash {
+				t.Fatalf("[%s] shard 1 at applied index %d: node %d hash %016x, node 0 hash %016x; replicas at one index must agree",
+					proto.name, r.Replicas[0].AppliedIndex, i, r.Replicas[0].Hash, r0.Hash)
+			}
+		}
 	}
 
 	// A shard holding the key just written has applied entries and a
@@ -535,13 +545,9 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 	}
 	nodeIDs := map[string]bool{}
 	replicaIDs := map[uint64]bool{}
-	for i, r := range readings {
+	for _, r := range readings {
 		nodeIDs[r.NodeID] = true
 		replicaIDs[r.Replicas[0].ReplicaID] = true
-		if r.Replicas[0].Hash != readings[0].Replicas[0].Hash {
-			t.Fatalf("[%s] shard 1 at applied index %d: node %d hash %016x, node 0 hash %016x; replicas at one index must agree",
-				proto.name, r.Replicas[0].AppliedIndex, i, r.Replicas[0].Hash, readings[0].Replicas[0].Hash)
-		}
 	}
 	if len(nodeIDs) != 3 || len(replicaIDs) != 3 {
 		t.Fatalf("[%s] want 3 distinct nodes and replicas answering, got %+v", proto.name, readings)
@@ -556,6 +562,27 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 			t.Fatalf("[%s] admin replica-states (table): missing %q in output: %s", proto.name, want, tableOut)
 		}
 	}
+}
+
+// replicaReadingsAgree reports whether the three shard-1 readings name one
+// applied index and one state hash.
+//
+// A single reading is not an atomic (index, hash) pair: go-quicraft's
+// Host.StateMachineHash loads the applied index and then hashes the state
+// machine, and on the concurrent and on-disk tiers the hash runs alongside
+// Update while the index advances only after a batch has applied. A replica
+// can therefore report index i with the hash of a later state, so equal
+// indexes with unequal hashes in one round are not yet a divergence. The poll
+// asks again instead: a transient pair resolves on the next reading, while a
+// real divergence never converges and fails the test at its deadline.
+func replicaReadingsAgree(readings [3]adminReplicaStatesDisplay) bool {
+	r0 := readings[0].Replicas[0]
+	for _, r := range readings[1:] {
+		if r.Replicas[0].AppliedIndex != r0.AppliedIndex || r.Replicas[0].Hash != r0.Hash {
+			return false
+		}
+	}
+	return true
 }
 
 // testAdminSnapshotOverProtocol runs `admin snapshot --shard-id 1` against

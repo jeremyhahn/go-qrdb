@@ -1,6 +1,6 @@
 # Run Modes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 The run mode is a **server** property, selected on `qrdbd`. The `qrdb` client
@@ -64,8 +64,13 @@ Build tags are the outermost gate; config cannot enable what the binary lacks,
 and a wire protocol enabled without its tag is a **boot-time error naming the
 tag**.
 
+The `WITH_QRDB_TS`, `WITH_QRDB_VECTOR`, `WITH_QRDB_SQL`, `WITH_QRDB_MYSQL`,
+`WITH_QRDB_PGSQL` and `WITH_QRDB_ETCD` flags default to `1`; set one to `0` to
+drop its feature. `WITH_QRDB_FTS` and `WITH_QRDB_GPU` default to `0`.
+
 ```bash
-make build WITH_QRDB_SQL=1 WITH_QRDB_PGSQL=1 WITH_QRDB_VECTOR=1 WITH_QRDB_TS=1
+make build WITH_QRDB_FTS=1                       # add full-text search
+make build WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0   # drop the SQL wire protocols
 ```
 
 There is deliberately **no `qrdb_raft` tag** — raft is always compiled and the

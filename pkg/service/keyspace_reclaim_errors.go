@@ -207,3 +207,29 @@ type MarkerContendedError struct {
 func (e *MarkerContendedError) Error() string {
 	return "service: the drop-fence marker " + strconv.Quote(e.Key) + " kept changing while it was being claimed"
 }
+
+// MarkerReleaseError reports that a create's claim of a database's fence
+// marker failed with an unknown outcome -- the guarded write may still have
+// been applied -- and that releasing the claim back to the tombstone failed
+// too. The marker may then hold an incarnation no catalog entry names, and a
+// re-create of the name is refused as existing elsewhere until a drop of the
+// name fences it again.
+type MarkerReleaseError struct {
+	Key string
+	// Err is the failure of the claim itself.
+	Err error
+	// ReleaseErr is the failure of the release that followed it.
+	ReleaseErr error
+}
+
+// Error returns a human-readable description of both failures.
+func (e *MarkerReleaseError) Error() string {
+	return "service: claim of the drop-fence marker " + strconv.Quote(e.Key) + " failed: " + e.Err.Error() +
+		"; releasing it failed: " + e.ReleaseErr.Error()
+}
+
+// Unwrap returns the claim's failure, which decides how the create is
+// classified (a propose timeout stays retryable).
+func (e *MarkerReleaseError) Unwrap() error {
+	return e.Err
+}

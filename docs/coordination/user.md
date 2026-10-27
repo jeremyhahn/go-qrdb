@@ -1,6 +1,6 @@
 # Coordination — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -156,16 +156,9 @@ fit inside the TTL is not your sleep — it is:
 measure it on your own cluster rather than assuming it is small.
 
 Renewals also *fail*. What you are really choosing the interval for is **how
-many consecutive failed renewals you can absorb before the key is gone**. With
-a 30-second TTL, a 250 ms round trip and 100 ms of timer slack:
-
-| Renew every | Failed renewals you can absorb | Keepalives per lease lifetime |
-|---|---|---|
-| 15 s | **0** — one dropped renewal loses the key | 2 |
-| 10 s | 1 | 3 |
-| 5 s | 4 | 6 |
-| 3 s | 7 | 10 |
-| 2 s | 11 | 15 |
+many consecutive failed renewals you can absorb before the key is gone**. The
+worked table is in
+[engineering.md](engineering.md#renewal-cadence--the-arithmetic).
 
 **Start at a third of the TTL.** Go shorter when losing the key mid-work is
 expensive; the cost is linear in traffic and each renewal is a consensus round

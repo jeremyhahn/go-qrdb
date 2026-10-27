@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Issuing, enrolling and revoking the client certificates that authenticate every
@@ -98,9 +98,8 @@ import, an OCSP responder, ACME revocation, HSM-backed CA keys. It already
 depends on go-qrdb, so there is no rival datastore anywhere in the stack.
 
 **Two CAs, two populations, and neither should ever answer for the other's
-certificates.** This is recorded here because the duplication looks like
-something to consolidate, and consolidating it would break cluster bootstrap:
-the bootstrap CA would then need the very platform it exists to bring up.
+certificates.** The two are not consolidated: the bootstrap CA must not need
+the platform it exists to bring up.
 
 ### Why there is no CRL and no OCSP here
 
@@ -421,35 +420,11 @@ here cannot be used to impersonate a server.
 
 ### `go-pkcs12` is used in ONE direction: encode
 
-The PKCS#12 dependency is reached from exactly one symbol in this repository,
-and knowing which one is what makes its advisories answerable. Measured over
-every `.go` file in the tree, tests included:
-
-```
-$ grep -rho "pkcs12\.[A-Za-z_0-9]*" $(find . -name '*.go' -not -path './.git/*') | sort | uniq -c
-      1 pkcs12.Modern2023
-```
-
-`pkcs12.Modern2023` is the **encoder**, used only by `EncodePKCS12` in
-`pkg/cert/pkcs12.go`, which only the `qrdb` client calls, locally. There is no `Decode`, `DecodeChain`,
-`DecodeTrustStore` or `ToPEM` anywhere in this repository. **Nothing here ever
-reads a PKCS#12 archive back**, so no attacker-supplied `.p12` bytes reach a
-parser through this code path: the CA writes bundles, and the consumer that
-imports one is somebody else's software.
-
-That matters because the library's advisories are largely about the parsing
-half. `GHSA-mpwr-8vm7-h73f` — "authentication bypass in Decode functions",
-fixed in v0.7.2 — is the worked example: read against a caller that only
-encodes it is **hygiene rather than exposure**. A version scanner (trivy) flags
-the package VERSION; govulncheck stays silent because the affected SYMBOLS are
-not in the call graph. Both are right.
-
-**Re-measure the grep rather than citing this paragraph.** The claim is about
-the call graph as it stands, and the first `DecodeChain` added to a
-truststore-import feature invalidates it silently. The direction of use is a
-property to check, not one to inherit. In particular, a clean `govulncheck` is
-not in general evidence about a `trivy` finding — the call-graph argument above
-is what settles this one, and settles only this one.
+Only `EncodePKCS12` (`pkg/cert/pkcs12.go`, through `pkcs12.Modern2023`) uses
+go-pkcs12, and only the `qrdb` client calls it, locally. Nothing in this
+repository decodes PKCS#12, so no `.p12` bytes reach a parser through this
+code: the library's decode-side advisories are hygiene here, not exposure.
+Adding a decode changes how its advisories apply.
 
 ## Identity mapping
 
@@ -602,6 +577,8 @@ Issue Certificate (barrier unsealed)
   ├─ getCAMaterial() → this tenant's own crypto.Signer + cert, resolved fresh
   ├─ x509.CreateCertificate(CA signs the requester's public key)
   ├─ Persist CertRecord to KVStore
+  └─ Return IssuedCert
+```
 
 ## The CA key provider seam (`pkg/cakey`)
 
@@ -953,8 +930,8 @@ copies of the same logic:
     cluster's Key A as a side effect — every composer instead calls the
     `lifecycle.EstablishClusterCA` once, deliberately, during startup.
   - **The snapshot is rebuilt on every invalidation and every 2 seconds**
-    (`poolCacheTTL`). Scanning and parsing every tenant's CA certificate
-    costs ~20ms at 1,000 tenants; the handshake pays none of it.
+    (`poolCacheTTL`). The handshake pays none of the cost of scanning and
+    parsing every tenant's CA certificate.
     `Invalidate` — fired by the `CertProvider`'s tenant-deletion watch and
     by trust-anchor changes — schedules a rebuild without blocking its
     caller, and any number of invalidations before the rebuild runs
