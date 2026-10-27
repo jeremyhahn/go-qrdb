@@ -127,6 +127,7 @@ of them stub the call locally.
 | Database seal / unseal | `POST /v1/databases/{name}/seal` · `/unseal` | `databases:seal` · `databases:unseal` |
 | Database barrier config | `PATCH /v1/databases/{name}/barrier` | `databases:update` |
 | Tenant barrier init | `POST /v1/tenants/{id}/barrier/init/begin` · `/init/complete`, on one connection, with proof of possession of the first admin's key ([../multi-tenancy/api.md](../multi-tenancy/api.md#barrier-init-proof-of-possession)) | identity-gated |
+| Tenant barrier signed init | `POST /v1/tenants/{id}/barrier/signed-init/begin` · `/signed-init/complete`: the node returns the statement, a key away from the node signs it, and a single-use reference redeems the detached signature ([../multi-tenancy/api.md](../multi-tenancy/api.md#signed-barrier-init-a-first-admins-key-that-signs-elsewhere)) | identity-gated |
 | Tenant barrier status | `GET /v1/tenants/{id}/barrier/status` | identity-gated |
 | Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `tenant_barrier:seal` |
 | Tenant barrier unseal | `POST /v1/tenants/{id}/barrier/unseal` | identity-gated |
@@ -452,7 +453,15 @@ A tenant barrier init carries the owner's signed epoch-1 statement, encoded as
 | Embedded | `Tenants().TenantBarrierInit` signs it from the request's `Signer` and passes it in process |
 
 The Go SDK signs it from `TenantBarrierInitRequest.Signer`
-(`barrierinit.SignTenantInit`); a request without a signer sends none. The
+(`barrierinit.SignTenantInit`); a request without a signer sends none.
+
+A signed init never sends the statement in: `signed-init/begin`
+(`SignedInitBegin`, `tenant.BarrierSignedInitBegin`,
+`qrdb_tenant_barrier_signed_init_begin`) has the node prepare it
+(`barrierinit.Claimer.PrepareTenantInit`) and return the bytes to sign, and
+`signed-init/complete` attaches the detached signature to the statement the
+node kept and claims it through the same init book, so the conditions below
+answer it alike. The
 TypeScript SDK cannot sign and sends none, so it initialises only barriers
 served by one node.
 

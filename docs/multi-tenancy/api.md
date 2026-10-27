@@ -92,6 +92,8 @@ Served by `qrdb.v1.TenantBarrierService`.
 |---|---|---|---|---|---|
 | Init begin (nonce) | `POST /v1/tenants/{id}/barrier/init/begin` | `InitBegin` | `tenant.BarrierInitBegin` | `qrdb_tenant_barrier_init_begin` | **identity-gated** |
 | Init complete | `POST /v1/tenants/{id}/barrier/init/complete` | `InitComplete` | `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_complete` | **identity-gated** |
+| Signed init begin (statement to sign) | `POST /v1/tenants/{id}/barrier/signed-init/begin` | `SignedInitBegin` | `tenant.BarrierSignedInitBegin` | `qrdb_tenant_barrier_signed_init_begin` | **identity-gated** |
+| Signed init complete (detached signature) | `POST /v1/tenants/{id}/barrier/signed-init/complete` | `SignedInitComplete` | `tenant.BarrierSignedInitComplete` | `qrdb_tenant_barrier_signed_init_complete` | **identity-gated** |
 | Status | `GET /v1/tenants/{id}/barrier/status` | `Status` | `tenant.BarrierStatus` | `qrdb_tenant_barrier_status` | **identity-gated** |
 | Unseal | `POST /v1/tenants/{id}/barrier/unseal` | `Unseal` | `tenant.BarrierUnseal` | `qrdb_tenant_barrier_unseal` | **identity-gated** |
 | Seal | `POST /v1/tenants/{id}/barrier/seal` | `Seal` | `tenant.BarrierSeal` | `qrdb_tenant_barrier_seal` | `tenant_barrier:seal` |
@@ -506,6 +508,7 @@ reads or sets the floor or a tenant's policy.
 | Read another tenant's registry entry | `GET /v1/tenants/{id}` | `TenantGet` | `tenant.Get` | `qrdb_tenant_get` | `GetTenant` | own tenant: `tenants:read`; any other: **`tenants:read:cross`** |
 | Delete another tenant | `DELETE /v1/tenants/{id}` | `TenantDelete` | `tenant.Delete` | `qrdb_tenant_delete` | `DeleteTenant` | own tenant: `tenants:delete`; any other: **`tenants:delete:cross`**, audited |
 | Tenant barrier init, as proof of possession of the first admin's key | `POST /v1/tenants/{id}/barrier/init/begin`, `…/init/complete` | `TenantBarrierService.InitBegin`, `InitComplete` | `tenant.BarrierInitBegin`, `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_begin`, `qrdb_tenant_barrier_init_complete` | `Tenants().TenantBarrierInit` (in process: no connection to bind, no proof asked) | **identity-gated by the CSR key**: `complete` carries a signature by the pending first admin's key over the tenant, the `begin` nonce and the connection's TLS 1.3 exporter, and the owner's signed epoch-1 init statement (`init_statement`; see [../barrier-seal/api.md](../barrier-seal/api.md#status-and-error-mapping)), which the node claims before its key and from which every other serving node initialises its own. The SDK sends it to the node it is connected to; `qrdb tenant barrier-init` sends a passphrase init to every serving node `barrier-status` lists |
+| Tenant barrier init, signed by a first admin's key away from the node | `POST /v1/tenants/{id}/barrier/signed-init/begin`, `…/signed-init/complete` | `TenantBarrierService.SignedInitBegin`, `SignedInitComplete` | `tenant.BarrierSignedInitBegin`, `tenant.BarrierSignedInitComplete` | `qrdb_tenant_barrier_signed_init_begin`, `qrdb_tenant_barrier_signed_init_complete` | `Tenants().TenantBarrierSignedInitBegin`, `TenantBarrierSignedInitComplete` | **identity-gated**, as init; `complete` carries a detached signature by the key `begin` named over the statement `begin` returned, redeemed once ([below](#signed-barrier-init-a-first-admins-key-that-signs-elsewhere)) |
 
 #### Barrier init proof of possession
 
@@ -529,6 +532,47 @@ initializes nothing; ask a fresh nonce. The SDK takes a `crypto.Signer` on
 `TenantBarrierInitRequest.Signer`, never key bytes, so a device-held key signs
 in place. A connection that is not TLS 1.3 has no exporter, and `begin` is
 refused.
+
+#### Signed barrier init: a first admin's key that signs elsewhere
+
+When the first admin's key cannot sign over the connection — it is held by an
+HSM, a smart card or another host — the barrier is initialized in two calls
+that carry only the public key and a detached signature:
+
+1. **`signed-init/begin`** (`POST /v1/tenants/{id}/barrier/signed-init/begin`)
+   carries the usual init fields (`strategy`, `key_ref`, `threshold`,
+   `shares`, and for Shamir `officers` and `policy`) plus `public_key`, the
+   signing key's DER SubjectPublicKeyInfo (base64). The node prepares the
+   epoch-1 init statement naming that key as its signer and returns
+   `statement` (the exact bytes to sign), `reference` (single-use, base64) and
+   `expires_at`. The reference lapses after `SignedInitTTL` (five minutes), and
+   a node holds at most `MaxOutstandingSignedInits` (1024) unredeemed
+   statements.
+2. **`signed-init/complete`** (`POST /v1/tenants/{id}/barrier/signed-init/complete`)
+   carries `reference`, `signature` and, for the passphrase strategy,
+   `passphrase`. The signature is ECDSA (ASN.1) or RSA PKCS #1 v1.5 over the
+   statement's SHA-256 digest, or pure Ed25519 over the statement itself.
+
+Every complete attempt spends its reference, whatever the outcome: a refused
+signature needs a new begin. The statement is kept in the memory of the node
+that issued it, so begin and complete go to the same node. Under every strategy
+but passphrase one node's completed init is enough, and the other serving nodes
+initialize their own keys from the claimed record; a passphrase barrier is
+begun and completed on each serving node. The Go SDK exposes the pair as
+`Tenants().TenantBarrierSignedInitBegin` and `TenantBarrierSignedInitComplete`
+on every transport, the CLI as `qrdb tenant barrier-init-begin` (`--public-key`
+takes a PEM `PUBLIC KEY` or `CERTIFICATE`; `--statement-out` writes the raw
+statement for the signing tool) and `qrdb tenant barrier-init-complete`
+(`--reference-hex`, `--sig-file`).
+
+| Condition | REST | gRPC / Unix / QUIC / MCP |
+|---|---|---|
+| Reference unknown, already used, or never issued | 403 | `PERMISSION_DENIED` — `tenant.SignedInitError`, reason `statement reference unknown or already used` |
+| Reference expired | 403 | `PERMISSION_DENIED` — `tenant.SignedInitError`, reason `statement reference expired` |
+| Signature not by the named key, or malformed | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` |
+| `public_key`, `reference` or `signature` missing | 400 | `INVALID_ARGUMENT` — `tenant.SignedInitFieldRequiredError` |
+| Too many unredeemed statements on the node | 429 | `RESOURCE_EXHAUSTED` — `tenant.TooManySignedInitsError` |
+| The node keeps no init book | 409 | `FAILED_PRECONDITION` — `tenant.SignedInitUnsupportedError` |
 
 **Not granted:**
 - a system-tenant identity holds no `ScopeSelf` permission over another
