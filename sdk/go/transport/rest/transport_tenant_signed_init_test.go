@@ -53,7 +53,7 @@ func newSignedInitTestTransport(t *testing.T) (*Transport, *transport.TenantBarr
 			_, _ = w.Write([]byte(`{"error":"signed init refused"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"tenant_id":"` + r.PathValue("id") + `","strategy":"none"}`))
+		_ = json.NewEncoder(w).Encode(map[string]string{"tenant_id": r.PathValue("id"), "strategy": "none"})
 	})
 	httpSrv := httptest.NewServer(mux)
 	t.Cleanup(httpSrv.Close)
