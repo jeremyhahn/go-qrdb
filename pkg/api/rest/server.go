@@ -124,6 +124,7 @@ type Server struct {
 	indexSvc          service.IndexServicer
 	tsSvc             service.TimeSeriesServicer
 	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
 	embeddingSvc      service.EmbeddingServicer
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
@@ -563,6 +564,14 @@ func WithTimeSeries(svc service.TimeSeriesServicer) ServerOption {
 func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) {
 		s.vectorSvc = svc
+	}
+}
+
+// WithLogService attaches the LogService that serves the verifiable-log
+// routes. Without one the routes answer 501.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) {
+		s.logSvc = svc
 	}
 }
 
@@ -2082,6 +2091,18 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/vector/index/stats", permission.VectorGetIndexStats, s.handleVectorGetIndexStats)
 	s.route(http.MethodPost, "/vector/compact", permission.VectorCompact, s.handleVectorCompactNamespace)
 	s.route(http.MethodGet, "/vector/compact/progress", permission.VectorGetCompactProg, s.handleVectorGetCompactionProgress)
+
+	// Verifiable-log routes.
+	s.route(http.MethodPost, "/vlog/log", permission.VlogCreate, s.handleVlogCreate)
+	s.route(http.MethodGet, "/vlog/logs", permission.VlogList, s.handleVlogList)
+	s.route(http.MethodPost, "/vlog/append", permission.VlogAppend, s.handleVlogAppend)
+	s.route(http.MethodGet, "/vlog/entries", permission.VlogGet, s.handleVlogGet)
+	s.route(http.MethodGet, "/vlog/proof/inclusion", permission.VlogProof, s.handleVlogProveInclusion)
+	s.route(http.MethodGet, "/vlog/proof/consistency", permission.VlogProof, s.handleVlogProveConsistency)
+	s.route(http.MethodGet, "/vlog/head", permission.VlogHead, s.handleVlogHead)
+	s.route(http.MethodPost, "/vlog/head/sign", permission.VlogSignHead, s.handleVlogSignHead)
+	s.route(http.MethodPost, "/vlog/key/rotate", permission.VlogSignHead, s.handleVlogRotateKey)
+	s.route(http.MethodPost, "/vlog/expire", permission.VlogExpire, s.handleVlogExpireBodies)
 
 	// Embedding routes.
 	embeddingOn := s.embeddingSvc != nil

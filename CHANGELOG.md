@@ -26,7 +26,60 @@ are not reconstructed here — their history is in the git log.
 - **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
 - **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
 
+- **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
+  (#912): the ten `Vlog*` gRPC methods, `/vlog/*` REST routes, `vlog.*` QUIC
+  methods and `qrdb_vlog_*` MCP tools create and list logs, append, read
+  entries, prove inclusion and consistency (RFC 9162), read and sign the head
+  (a C2SP signed-note checkpoint), rotate the head-signing key and expire
+  entry bodies, under the `vlog:*`
+  permissions, in the caller's tenant and the request's database; no
+  request names a tenant, on any transport. Every call naming a barrier-isolated
+  tenant or a barrier-enabled database, sealed or not, is refused as
+  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
+  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
+  system barrier, not theirs, so `service.LogServiceConfig` requires the
+  node's database registry as `Databases`. They are
+  served while the node has a log service (`server.WithLogService`, wired by
+  `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
+  `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal
+  carries its `pkg/api/errclass` class on every transport. Key rotation is
+  gated on `vlog:sign_head`, so an Operator rotates and an Admin does not; a
+  checkpoint signed before a rotation still verifies under the key it names
+  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
+- **Verifiable logs from the SDK and the CLI** (#912): `Client.Vlog()` returns
+  a `transport.VlogClient` on every transport (embedded, gRPC, the Unix socket,
+  REST, QUIC and MCP), with embedded serving the log service
+  `embedded.WithLogService` supplies; appending to, signing or expiring a log
+  that does not exist is the typed `vlog.LogNotFoundError` on every one. The
+  `qrdb vlog` commands (`create`, `list`, `append`, `get`, `prove-inclusion`,
+  `prove-consistency`, `head`, `sign-head`, `rotate-key`, `expire`) drive it
+  over any protocol, in the database the root `--database` flag names
+  ([docs/databases/user.md](docs/databases/user.md), "Keep a verifiable log").
+
+### Changed
+
+- **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
+  sign-head returns and records are the tlog-checkpoint text (origin, tree
+  size, base64 root) and one signed-note signature line carrying the key name
+  and the 4-byte key hash, not a JSON signed head. `vlog.RenderCheckpoint`,
+  `vlog.ParseCheckpoint`, `vlog.VerifyCheckpoint` and
+  `Descriptor.VerifyCheckpoint` replace `SignedHead.Encode` and
+  `DecodeSignedHead`, which are gone; a checkpoint signed before a rotation
+  verifies under the key version whose hash it carries
+  ([docs/databases/architecture.md](docs/databases/architecture.md)).
+
 ### Fixed
+
+- **The verifiable log's three remaining refusals are typed on every
+  transport** (#912): a second create of a log, a second sign-head at a tree
+  size that already has a checkpoint, and expiry on a log created without
+  `allow_expire_bodies` reached a client as a bare class and message. They
+  now carry the structured-refusal reasons `VLOG_LOG_EXISTS`,
+  `VLOG_CHECKPOINT_EXISTS` and `VLOG_EXPIRE_NOT_ALLOWED` over REST, gRPC,
+  QUIC, MCP and the Unix socket, and every SDK transport, embedded included,
+  rebuilds them as `*vlog.LogExistsError`, `*vlog.CheckpointExistsError` and
+  `*vlog.ExpireNotAllowedError`, so `errors.As` matches them
+  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
 - **A database create whose mark-live propose times out no longer leaves an orphaned drop-fence incarnation.** A claim of the marker that timed out at the caller could still commit after the create rolled back, so the marker named an incarnation no catalog entry held and every retry of the create was refused as existing elsewhere. `UnfenceDatabaseKeyspace` now releases an unknown-outcome claim back to the tombstone under a detached context, so the create returns the documented retryable 503 and the fence and catalog agree; a release that fails too is `*service.MarkerReleaseError`, which unwraps to the timeout.
 
 ### Changed

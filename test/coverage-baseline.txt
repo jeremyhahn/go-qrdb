@@ -15,7 +15,7 @@
 # baseline may RAISE numbers freely. A LOWERED number in review is the one
 # thing to question: it is a package whose coverage fell, being written down as
 # the new normal.
-# build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector raft
+# build-tags: codec_bson codec_json codec_msgpack codec_protobuf codec_yaml qrdb_embedded qrdb_etcd qrdb_mysql qrdb_pgsql qrdb_sql qrdb_ts qrdb_vector qrdb_vlog raft
 github.com/jeremyhahn/go-qrdb/cmd/qrdb 91.22
 github.com/jeremyhahn/go-qrdb/cmd/qrdbd 91.27
 github.com/jeremyhahn/go-qrdb/pkg/api 99.88
@@ -132,7 +132,7 @@ github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer 97.61
 github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer/cmd/secure-analyzer 0.00
 github.com/jeremyhahn/go-qrdb/pkg/server 92.68
 github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle 93.65
-github.com/jeremyhahn/go-qrdb/pkg/service 92.89
+github.com/jeremyhahn/go-qrdb/pkg/service 92.90
 github.com/jeremyhahn/go-qrdb/pkg/service/backupsink 98.59
 github.com/jeremyhahn/go-qrdb/pkg/shard 100.00
 github.com/jeremyhahn/go-qrdb/pkg/sql/catalog 97.29

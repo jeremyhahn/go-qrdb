@@ -25,6 +25,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -70,6 +71,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -392,6 +394,14 @@ type Infra struct {
 	// DEK-engine seam beside it.
 	DEKProvider dek.Provider
 
+	// HeadSignerProvider, when non-nil, creates every verifiable log's
+	// head-signing key and signs its heads. It is the seam a composer fills
+	// with a provider that keeps the key on a device or in a KMS and hands
+	// back only its reference and public key (go-xkms hardware, composed by
+	// go-quicbaas). Nil keeps the software provider over each log's own
+	// sealed k/<version> record.
+	HeadSignerProvider vlog.HeadSignerProvider
+
 	// Clock, when non-nil, is the time source for the node's security time
 	// gates: lease expiry, key-delivery freshness and replay window, the
 	// invitation-redeem and holder-act limiters. Nil is the real clock.
@@ -655,6 +665,12 @@ type Node struct {
 	// tenant's resolved store, so it inherits that store's replication,
 	// barrier encryption, sealed-tenant refusal and teardown.
 	DEK service.DEKServicer
+
+	// Log is the verifiable-log service. It rides the audit resolver, so
+	// it is non-nil whenever the build carries the qrdb_vlog tag, and nil
+	// when it does not. Its head-signing keys come from
+	// Infra.HeadSignerProvider, or the software provider when that is nil.
+	Log service.LogService
 
 	// Policy is the tenant-scoped ABAC policy store. It is non-nil exactly
 	// when StoreResolver is: each policy is a record in its tenant's
@@ -952,6 +968,18 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if bm := dbManager.BarrierManager(); bm != nil && infra.ClusterSealer != nil {
 		bm.SetUnsealGate(databaseUnsealGate(dbManager, infra.ClusterSealer))
 	}
+
+	// The verifiable-log service routes as the audit chain does, but also
+	// refuses a barrier tenant and a barrier database: its log registry and
+	// sealed signing keys sit under the system barrier, not the tenant's or
+	// the database's. A build without the qrdb_vlog tag has no log service,
+	// which is not a boot failure.
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
+	if err != nil {
+		return nil, err
+	}
+	n.Log = logSvc
 
 	// Replicated placement table (Phase 4c) over the shared system KV, plus the
 	// load-aware scheduler over the live cluster topology (host roster +
@@ -1404,6 +1432,19 @@ func infraClock(infra Infra) clock.Clock {
 // buildDEKService builds the tenant DEK service. A non-nil provider is the
 // composer's dek.Provider seam and is served as is; otherwise the software
 // dek.Keyring is built over resolver.
+// buildLogService builds the verifiable-log service over the audit resolver
+// and the node's databases with the composer's head-signer provider; a nil
+// provider is the software default. It returns a nil service and no error when
+// the build does not carry the qrdb_vlog tag.
+func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
+	var notCompiled *vlog.NotCompiledError
+	if errors.As(err, &notCompiled) {
+		return nil, nil
+	}
+	return svc, err
+}
+
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
 	if provider != nil {
 		svc, err := service.NewDEKService(provider)

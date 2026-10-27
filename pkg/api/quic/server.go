@@ -74,6 +74,7 @@ type Server struct {
 	indexSvc          index.IndexServicer
 	tsSvc             timeseries.TimeSeriesServicer
 	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
 	userSvc           user.UserServicer
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
@@ -386,6 +387,12 @@ func WithTimeSeries(svc timeseries.TimeSeriesServicer) ServerOption {
 // WithVector configures the QUIC server with a vector service.
 func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) { s.vectorSvc = svc }
+}
+
+// WithLogService configures the QUIC server with the verifiable-log
+// service. The vlog.* methods are served only when it is set.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) { s.logSvc = svc }
 }
 
 // WithUserService configures the QUIC server with a user management service.

@@ -61,6 +61,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -365,6 +366,39 @@ var vectorRules = []rule{
 	// Strict tenant isolation refuses a request bound to no tenant.
 	as(&service.TenantRequiredError{}, PermissionDenied),
 	as(&service.RAGTenantRequiredError{}, PermissionDenied),
+}
+
+// vlogRules classifies the verifiable-log refusals (pkg/vlog and the
+// LogService). The table read and write faults stay unclassified: they are
+// storage faults, not answers to the request.
+var vlogRules = []rule{
+	as(&vlog.InvalidTenantIDError{}, InvalidArgument),
+	as(&vlog.InvalidLogNameError{}, InvalidArgument),
+	as(&vlog.InvalidDescriptorError{}, InvalidArgument),
+	as(&vlog.AppendBatchError{}, InvalidArgument),
+	as(&vlog.UnsupportedKeyTypeError{}, InvalidArgument),
+	as(&vlog.EmptyCheckpointError{}, InvalidArgument),
+	as(&vlog.LogExistsError{}, AlreadyExists),
+	as(&vlog.CheckpointExistsError{}, AlreadyExists),
+	as(&vlog.LogNotFoundError{}, NotFound),
+	as(&vlog.KeyNotFoundError{}, NotFound),
+	as(&vlog.SizeOutOfRangeError{}, OutOfRange),
+	as(&vlog.IndexOutOfRangeError{}, OutOfRange),
+	// A log whose descriptor forbids expiry, a checkpoint over another root
+	// and an undecodable key record are states of the log, not of the request.
+	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
+	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
+	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
+	// Another rotation applied first: the caller retries against the new key.
+	as(&vlog.KeyVersionConflictError{}, Aborted),
+	as(&vlog.HeadSignatureError{}, Internal),
+	as(&vlog.CorruptTableError{}, DataLoss),
+	as(&vlog.NotCompiledError{}, Unimplemented),
+	as(&service.LogFeatureNotActiveError{}, Unavailable),
+	// A barrier tenant or database keeps its data under its own barrier; the
+	// log registry sits under the system barrier, so neither is served.
+	as(&service.BarrierTenantLogNotSupportedError{}, Unimplemented),
+	as(&service.BarrierDatabaseLogNotSupportedError{}, Unimplemented),
 }
 
 // collectionRules are the document-collection conditions.

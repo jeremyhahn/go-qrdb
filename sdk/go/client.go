@@ -151,6 +151,12 @@ func (c *Client) Vector() transport.VectorClient {
 	return capability[transport.VectorClient](c, "Vector")
 }
 
+// Vlog returns a VlogClient for the verifiable logs of the client's
+// database: create, list, append, read, prove, sign, rotate and expire.
+func (c *Client) Vlog() transport.VlogClient {
+	return capability[transport.VlogClient](c, "Vlog")
+}
+
 // Users returns a UserClient for user management operations.
 func (c *Client) Users() transport.UserClient {
 	return capability[transport.UserClient](c, "Users")

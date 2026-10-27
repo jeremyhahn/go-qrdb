@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 type nopLimiter struct{}
@@ -81,9 +82,40 @@ func TestResolveCryptoOptions_SurfacesTheReplicatedAuditLogger(t *testing.T) {
 
 // TestResolveCryptoOptions_CompositionSeamsAbsentKeepTheDefaults: with no seam
 // set every field is nil, which every consumer reads as the software default.
+// nopHeadSigners is a HeadSignerProvider standing in for a composer's
+// hardware one; the option only carries it.
+type nopHeadSigners struct{ name string }
+
+func (*nopHeadSigners) CreateKey(context.Context, vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
+	return vlog.CreatedKey{}, context.Canceled
+}
+
+func (*nopHeadSigners) HeadSigner(context.Context, vlog.HeadSignerRequest) (vlog.HeadSigner, error) {
+	return nil, context.Canceled
+}
+
+var _ vlog.HeadSignerProvider = (*nopHeadSigners)(nil)
+
+func TestResolveCryptoOptions_SurfacesTheHeadSignerProvider(t *testing.T) {
+	device := &nopHeadSigners{name: "hsm"}
+	if got := ResolveCryptoOptions(WithHeadSignerProvider(device)); got.HeadSignerProvider != device {
+		t.Fatal("the head-signer provider was not surfaced")
+	}
+}
+
+func TestResolveCryptoOptions_LastHeadSignerProviderWins(t *testing.T) {
+	first, second := &nopHeadSigners{name: "a"}, &nopHeadSigners{name: "b"}
+	if got := ResolveCryptoOptions(WithHeadSignerProvider(first), WithHeadSignerProvider(second)); got.HeadSignerProvider != second {
+		t.Fatal("a later WithHeadSignerProvider did not replace the earlier one")
+	}
+	if got := ResolveCryptoOptions(WithHeadSignerProvider(first), WithHeadSignerProvider(nil)); got.HeadSignerProvider != nil {
+		t.Fatal("WithHeadSignerProvider(nil) did not restore the software default")
+	}
+}
+
 func TestResolveCryptoOptions_CompositionSeamsAbsentKeepTheDefaults(t *testing.T) {
 	got := ResolveCryptoOptions()
-	if got.Clock != nil || got.DEKProvider != nil || got.BackupSink != nil ||
+	if got.Clock != nil || got.DEKProvider != nil || got.HeadSignerProvider != nil || got.BackupSink != nil ||
 		got.StorageFactory != nil || got.InvitationRedeemLimiter != nil || got.HolderActLimiter != nil {
 		t.Fatalf("a seam is set with no option given: %+v", got)
 	}

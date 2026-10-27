@@ -340,6 +340,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 	if svcNode.Database != nil {
 		opts = append(opts, embedded.WithDatabaseService(svcNode.Database))
 	}
+	if svcNode.Log != nil {
+		opts = append(opts, embedded.WithLogService(svcNode.Log))
+	}
 
 	// Collection service uses KV + index from the node.
 	opts = append(opts, embedded.WithCollectionService(svcNode.Collection))

@@ -123,6 +123,7 @@ var mcpDataPlanePrefixes = []string{
 	"qrdb_index_",
 	"qrdb_ts_",
 	"qrdb_vector_",
+	"qrdb_vlog_",
 }
 
 // isDataPlaneTool reports whether the named tool targets a data-plane endpoint

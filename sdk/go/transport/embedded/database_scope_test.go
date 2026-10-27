@@ -154,7 +154,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "certEnroll", "invitations", "onboarding",
 		"dbSvc", "barrierSvc", "pinBackend", "holderActLimiter",
 		"dekSvc", "policySvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",
-		"ragSvc", "collectionSvc", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
+		"ragSvc", "collectionSvc", "logSvc", "logDatabase", "sealStoreSvc", "tenantSvc", "volumeSvc", "lockSvc",
 		"authFactorSvc", "auditLogger", "replicatedAudit", "encMigrator", "registry", "rbacAuthz", "authMW", "binder", "userAuthFactorSvc",
 		"loginResolver", "sessionIssuer", "identityHydrator", "loginSessions", "poolManager", "poolStateStore",
 		"nowFunc", "standalone", "sealProbe", "awaitingAdminCredentialProbe", "sealStreams", "forwarding"} {
@@ -191,6 +191,8 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 			}))
 		case reflect.Bool:
 			reflect.NewAt(f.Type(), f.Addr().UnsafePointer()).Elem().SetBool(true)
+		case reflect.String:
+			reflect.NewAt(f.Type(), f.Addr().UnsafePointer()).Elem().SetString(name)
 		case reflect.Interface:
 			// Satisfied by a field-specific stand-in only when one exists;
 			// the non-nil check below is limited to fields that were set.

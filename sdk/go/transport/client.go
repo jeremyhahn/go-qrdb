@@ -1249,6 +1249,7 @@ type Client interface {
 	IndexClient
 	TimeSeriesClient
 	VectorClient
+	VlogClient
 	UserClient
 	RoleClient
 	CertClient

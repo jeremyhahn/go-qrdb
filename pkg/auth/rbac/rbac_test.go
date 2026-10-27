@@ -1571,6 +1571,20 @@ func TestSODenyList_AgreesWithPermissionDutyRegistry(t *testing.T) {
 	}
 }
 
+// TestSODenyList_VlogSignHeadOnly pins the verifiable-log row of the deny-list:
+// signing a head is key use and denied to the SO, while the log's other verbs
+// are not cryptographic and are not on the list.
+func TestSODenyList_VlogSignHeadOnly(t *testing.T) {
+	if !isSODenied("vlog", "sign_head") {
+		t.Error("vlog:sign_head must be denied to the Security Officer")
+	}
+	for _, action := range []string{"create", "list", "append", "get", "proof", "head", "expire"} {
+		if isSODenied("vlog", action) {
+			t.Errorf("vlog:%s is not cryptographic use and must not be on the SO deny-list", action)
+		}
+	}
+}
+
 // TestSODenyList_NotBroaderThanDutyRegistry is the converse: every registered
 // permission this layer denies to the SO must also be classified as
 // cryptographic use by the registration-time guard. A permission denied here but
