@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -130,8 +132,9 @@ func NewCredentialService(c *credentials.CredentialService, opts ...CredentialSe
 // gets a store over its own barrier, built per call because an
 // enable-encryption rekey can swap the tenant's barrier
 // (StorageBarrier.ReopenKeyed) and a cached store would serve the stale one.
-// A tenant whose barrier is not registered is refused with the registry's
-// error; there is no fallback to the node-wide store.
+// A tenant with no dedicated barrier is refused with
+// *CapabilityUnsupportedError and a sealed one with *BarrierSealedError;
+// there is no fallback to the node-wide store.
 func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialService, error) {
 	tenantID := tenant.FromContext(ctx)
 	if tenantid.IsSystem(tenantID) {
@@ -143,8 +146,19 @@ func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialS
 		}
 	}
 	tb, err := s.tenants.GetTenant(tenantID)
+	if errors.Is(err, seal.ErrTenantNotFound) {
+		// A tenant on the shared system barrier has no barrier of its own
+		// to keep a store under, and the node-wide store is the system
+		// tenant's: refuse rather than share it.
+		return nil, &CapabilityUnsupportedError{
+			Message: "credentials: tenant " + strconv.Quote(tenantID) + " has no dedicated barrier to keep a credential store under",
+		}
+	}
 	if err != nil {
 		return nil, err
+	}
+	if tb.IsSealed() {
+		return nil, &BarrierSealedError{TenantID: tenantID}
 	}
 	return s.creds.ForBarrier(tb.Barrier())
 }
