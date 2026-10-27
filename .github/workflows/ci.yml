@@ -1436,14 +1436,57 @@ jobs:
   # in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
   # continue-on-error, add a build tag that skips a package, or narrow the
   # package list.
+  #
+  # The suites run as parallel legs (#1230): one run of both took 69.9 minutes
+  # and set the time to a green main and to every tag. Each leg is
+  # `make test-fips-leg FIPS_LEG=<leg>`; the Makefile's FIPS_LEGS is the one
+  # list of legs, and its two remainder legs put every package no leg names
+  # in `rest` (the root module) or `sdk` (sdk/go), so the legs together are
+  # exactly `make test` and `make test-sdk`, each package once.
+  # test/buildgates/fips_legs_test.go fails when this matrix is not FIPS_LEGS
+  # or a package is in two legs or none. The legs are split by measured cost;
+  # a leg past 30 minutes is rebalanced by moving a package between
+  # FIPS_LEG_<leg> lists, never by narrowing one.
   fips:
-    name: FIPS 140-3
+    name: FIPS 140-3 (${{ matrix.leg }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
-    # The race-enabled suite under fips140=only is what takes the time; 90
-    # minutes holds both modules with each under its 60m package budget.
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # Each leg's limit is its measured time (run 68401) with room for a
+      # loaded runner, at most 45; go test's per-package budget is the limit
+      # less 5 minutes, so a runaway package is named before the leg is
+      # killed. pkg/tenant and pkg/seal each run past 30 minutes alone, and
+      # pkg/server near it, so each is split by test name over two legs
+      # (#1234, docs/seal/fips140-mode.md).
+      matrix:
+        include:
+          - leg: tenant-lifecycle
+            minutes: 30
+          - leg: tenant
+            minutes: 30
+          - leg: seal-barrier
+            minutes: 30
+          - leg: seal
+            minutes: 30
+          - leg: server-raft
+            minutes: 25
+          - leg: server
+            minutes: 25
+          - leg: auth
+            minutes: 25
+          - leg: service
+            minutes: 25
+          - leg: api-keys
+            minutes: 20
+          - leg: rest
+            minutes: 30
+          - leg: sdk-transport
+            minutes: 30
+          - leg: sdk
+            minutes: 30
+    timeout-minutes: ${{ matrix.minutes }}
     env:
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -1491,86 +1534,70 @@ jobs:
       - name: Build all packages against the FIPS module
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV go build ./..."
 
-      # The same targets the unit suites run, with the same build tags. The
-      # scope is deliberately identical: a FIPS job over a subset of the suite
+      # The packages the unit suites run, with the same build tags: this leg's
+      # share of them, and every leg together is the whole of both. The scope
+      # is deliberately identical: a FIPS job over a subset of the suite
       # cannot tell you the product is FIPS-clean.
       #
       # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
       # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
       # iterations, which measured 2.6x on pkg/seal, and pkg/seal has been
-      # killed at exactly 30m (go-qrdb#147). The job ceiling above is 90
-      # minutes, so a 60m package budget cannot outlive the job. This raises a
+      # killed at exactly 30m (go-qrdb#147). The budget is the leg's limit
+      # less 5 minutes (40m on the 45-minute legs), so it cannot outlive the
+      # leg. This raises a
       # runaway guard; it does not skip a package, weaken an assertion or
       # narrow the scope.
       #
       # pipefail matters: without it tee's exit status hides a failing suite.
       - name: Unit tests (race, FIPS 140-only)
+        env:
+          FIPS_LEG: ${{ matrix.leg }}
+          FIPS_LEG_MINUTES: ${{ matrix.minutes }}
         run: |
           set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
-
-      # `sdk/go` IS A SEPARATE GO MODULE (#142): `make test` is
-      # `./pkg/... ./cmd/...` and never reaches the SDK, so without this step
-      # the job is the "FIPS job over a subset of the suite" ruled out above.
-      # `if: always()` is load-bearing: a root-module regression must not stop
-      # the SDK suite from being measured. Both suites run; either failing
-      # fails the job. Its own log file, because the report below parses these
-      # by package and both modules define packages of the same name.
-      - name: Unit tests (race, FIPS 140-only, sdk/go module)
-        if: ${{ always() && env.TOOLCHAIN_IMAGE != '' }}
-        run: |
-          set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-sdk GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test-sdk.log
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-fips-leg FIPS_LEG='$FIPS_LEG' GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
 
       # A per-package timeout panic names whichever test was running when the
       # alarm fired, NOT the test that consumed the budget. This step lists the
-      # package results and the slowest completed tests of both modules, on
-      # success too, so the trend is visible before the cliff. A missing log
-      # is reported: it means that suite never started.
+      # leg's package results, with each package's time, and its slowest
+      # completed tests, on success too, so the trend is visible before the
+      # cliff and a leg nearing 30 minutes shows which package to move. A
+      # missing log is reported: it means the suite never started.
       - name: Package results and slowest tests
         if: always()
         run: |
-          report() { # report <label> <logfile>
-            label="$1"
-            log="$2"
-            echo "######## ${label} ########"
-            if [ ! -f "$log" ]; then
-              echo "no ${log}: this suite never started -- see the step above" >&2
-              echo
-              return 0
-            fi
-            # Captured into variables rather than piped straight to stdout so
-            # the "nothing parsed" case can actually be reported. A `grep ...
-            # | sort || echo fallback` cannot do that: the pipeline's status is
-            # sort's, which is 0 on empty input, so the fallback is unreachable.
-            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
-              "$log" | sort -u || true)
-            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
-              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
-              | sort -rn | head -25 || true)
+          log=fips-test.log
+          if [ ! -f "$log" ]; then
+            echo "no ${log}: this leg's suite never started -- see the step above" >&2
+            exit 0
+          fi
+          # Captured into variables rather than piped straight to stdout so
+          # the "nothing parsed" case can actually be reported. A `grep ...
+          # | sort || echo fallback` cannot do that: the pipeline's status is
+          # sort's, which is 0 on empty input, so the fallback is unreachable.
+          pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+            "$log" | sort -u || true)
+          slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
+            | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+            | sort -rn | head -25 || true)
 
-            echo "== package results =="
-            if [ -n "$pkgs" ]; then
-              echo "$pkgs"
-              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
-            else
-              echo "(no package result lines parsed -- the suite may have died before any package finished)"
-            fi
+          echo "== package results =="
+          if [ -n "$pkgs" ]; then
+            echo "$pkgs"
+            echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+          else
+            echo "(no package result lines parsed -- the suite may have died before any package finished)"
+          fi
 
-            echo
-            echo "== 25 slowest tests that COMPLETED =="
-            echo "A timeout panic names the test holding the alarm, not the one"
-            echo "that spent the budget. These are the candidates that did."
-            if [ -n "$slow" ]; then
-              echo "$slow"
-            else
-              echo "(no completed top-level tests parsed)"
-            fi
-            echo
-          }
-
-          report "root module (./pkg/... ./cmd/...)" fips-test.log
-          report "sdk/go module" fips-test-sdk.log
+          echo
+          echo "== 25 slowest tests that COMPLETED =="
+          echo "A timeout panic names the test holding the alarm, not the one"
+          echo "that spent the budget. These are the candidates that did."
+          if [ -n "$slow" ]; then
+            echo "$slow"
+          else
+            echo "(no completed top-level tests parsed)"
+          fi
 
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's

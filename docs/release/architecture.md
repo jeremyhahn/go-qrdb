@@ -1,6 +1,6 @@
 # Release — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -187,7 +187,7 @@ skips the code tier, and the nightly tier carries the soak:
 |---|---|---|
 | PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage`), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, `test-typescript` |
-| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3) |
+| Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
 
 ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
@@ -241,6 +241,22 @@ reached by any unit test fails it, and `ci-gate` fails with it
 ([seal/fips140-mode.md](../seal/fips140-mode.md)). It reruns both unit suites
 under `-race`, which no pull request's one-hour budget holds, so it is a
 full-tier job.
+
+`fips` is a matrix of parallel legs, each aimed under 30 minutes and under its
+own limit, at most 45 minutes (ruling 221(5)): one run of both suites took 69.9
+minutes and set the time to a green main and to every tag (#1230). Each leg runs
+`make test-fips-leg FIPS_LEG=<leg>`, and the Makefile's `FIPS_LEGS` is the one
+list of them. Named legs run the packages their `FIPS_LEG_<leg>` patterns
+match; the two remainder legs, `rest` (the root module, after
+`test-clusterproof`) and `sdk` (`sdk/go`), run every package no named leg of
+their module takes, so a new package always runs. The legs are split by the
+measured wall times of run 68401 (docs/seal/fips140-mode.md, "The legs"):
+`pkg/tenant` and `pkg/seal` each run alone and stay over 30 minutes until #1234
+splits them within the package. `test/buildgates/fips_legs_test.go` fails when
+a package of either suite is in no leg or in two, when a leg is empty, when the
+matrix is not `FIPS_LEGS`, and when a leg lacks its own limit, exceeds 45
+minutes, or has a per-package budget other than its limit less 5 minutes.
+`ci-gate` needs `fips`, whose result is every leg's: one failed leg fails it.
 
 `make lint-gates` is its own `lint-gates` job (ci-template v1.27.0), in
 parallel with the `lint` job's `make lint` rather than a step after it, so

@@ -124,7 +124,7 @@ type featureWorkflow struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
 		If             string            `yaml:"if"`
-		TimeoutMinutes *int              `yaml:"timeout-minutes"`
+		TimeoutMinutes *string           `yaml:"timeout-minutes"`
 		Env            map[string]string `yaml:"env"`
 		Strategy       struct {
 			FailFast *bool     `yaml:"fail-fast"`
@@ -137,6 +137,15 @@ type featureWorkflow struct {
 			Run  string `yaml:"run"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
+}
+
+// featureLimitInRange reports whether a shard's timeout-minutes is a literal
+// whole number in 1..featureJobLimit. The field is read as a string because
+// another job's limit may be an expression (the fips legs' is
+// `${{ matrix.minutes }}`), which would fail an int decode of the whole file.
+func featureLimitInRange(tm string) bool {
+	n, err := strconv.Atoi(tm)
+	return err == nil && n > 0 && n <= featureJobLimit
 }
 
 // featureShardFix is the fix the gate prints for a feature no shard runs.
@@ -167,8 +176,8 @@ func featureJobProblems(body []byte, want []string) []string {
 	switch tm := job.TimeoutMinutes; {
 	case tm == nil:
 		problems = append(problems, featureJob+" has no timeout-minutes: a shard would get the runner's default, not its own limit")
-	case *tm <= 0 || *tm > featureJobLimit:
-		problems = append(problems, featureJob+"'s timeout-minutes is "+strconv.Itoa(*tm)+
+	case !featureLimitInRange(*tm):
+		problems = append(problems, featureJob+"'s timeout-minutes is "+*tm+
 			"; want 1.."+strconv.Itoa(featureJobLimit)+": about three times a shard's expected time")
 	}
 	if ff := job.Strategy.FailFast; ff == nil || *ff {
