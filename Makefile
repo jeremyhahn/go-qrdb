@@ -387,6 +387,7 @@ QUICRAFT_ROOT ?= $(shell cd .. && pwd)/go-quicraft
 # Optional feature flags (1 = enabled, 0 = disabled)
 WITH_QRDB_TS     ?= 1
 WITH_QRDB_VECTOR ?= 1
+WITH_QRDB_VLOG   ?= 1
 WITH_QRDB_SQL    ?= 1
 WITH_QRDB_MYSQL  ?= 1
 WITH_QRDB_PGSQL  ?= 1
@@ -472,6 +473,9 @@ ifeq ($(WITH_QRDB_TS),1)
 endif
 ifeq ($(WITH_QRDB_VECTOR),1)
   BUILD_TAGS += qrdb_vector
+endif
+ifeq ($(WITH_QRDB_VLOG),1)
+  BUILD_TAGS += qrdb_vlog
 endif
 ifeq ($(WITH_QRDB_SQL),1)
   BUILD_TAGS += qrdb_sql
@@ -1890,7 +1894,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -4482,6 +4486,7 @@ help:
 	@echo "Feature flags (default: enabled):"
 	@echo "  WITH_QRDB_TS=0         Disable time-series support"
 	@echo "  WITH_QRDB_VECTOR=0     Disable vector support"
+	@echo "  WITH_QRDB_VLOG=0       Disable verifiable-log head signing"
 	@echo "  WITH_QRDB_MYSQL=0      Disable MySQL wire protocol support"
 	@echo "  WITH_QRDB_PGSQL=0      Disable PostgreSQL wire protocol support"
 	@echo "  WITH_QRDB_ETCD=0       Disable etcd wire protocol support"

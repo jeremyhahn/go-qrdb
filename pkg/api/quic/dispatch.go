@@ -503,6 +503,19 @@ func (s *Server) buildHandlers() {
 	s.handleIf(s.auditLogger != nil, "audit.VerifyChain", permission.AuditVerify, s.handleAuditVerifyChain)
 	s.handleIf(s.replicatedAudit != nil, "audit.VerifyReplicatedChain", permission.AuditVerifyReplicated, s.handleAuditVerifyReplicatedChain)
 
+	// Verifiable log (docs/databases/architecture.md, "Transports")
+	vlogOn := s.logSvc != nil
+	s.handleIf(vlogOn, "vlog.Create", permission.VlogCreate, s.handleVlogCreate)
+	s.handleIf(vlogOn, "vlog.List", permission.VlogList, s.handleVlogList)
+	s.handleIf(vlogOn, "vlog.Append", permission.VlogAppend, s.handleVlogAppend)
+	s.handleIf(vlogOn, "vlog.Get", permission.VlogGet, s.handleVlogGet)
+	s.handleIf(vlogOn, "vlog.ProveInclusion", permission.VlogProof, s.handleVlogProveInclusion)
+	s.handleIf(vlogOn, "vlog.ProveConsistency", permission.VlogProof, s.handleVlogProveConsistency)
+	s.handleIf(vlogOn, "vlog.Head", permission.VlogHead, s.handleVlogHead)
+	s.handleIf(vlogOn, "vlog.SignHead", permission.VlogSignHead, s.handleVlogSignHead)
+	s.handleIf(vlogOn, "vlog.RotateKey", permission.VlogSignHead, s.handleVlogRotateKey)
+	s.handleIf(vlogOn, "vlog.ExpireBodies", permission.VlogExpire, s.handleVlogExpireBodies)
+
 	// Capability modules (pkg/apimodule.ServiceModule). Registered last so a
 	// module's full-gRPC-method frame key can never shadow a built-in's
 	// dot-separated key; see registerModules.

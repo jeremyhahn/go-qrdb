@@ -552,8 +552,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary

@@ -59,6 +59,8 @@ type SystemShardAuditResolver struct {
 	host      Host
 	shardID   uint64
 	isolation AuditIsolationLookup
+	// refuseBarrier also refuses a barrier tenant; see NewSystemShardLogResolver.
+	refuseBarrier bool
 }
 
 // NewSystemShardAuditResolver returns a resolver that names (host, shardID)
@@ -69,6 +71,17 @@ type SystemShardAuditResolver struct {
 // before firstboot).
 func NewSystemShardAuditResolver(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
 	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation}
+}
+
+// NewSystemShardLogResolver returns the resolver the verifiable-log service
+// routes through: NewSystemShardAuditResolver's, except that a barrier tenant
+// is refused with *BarrierTenantLogNotSupportedError. A log's entries and its
+// sealed head-signing key are applied into the system shard's log registry,
+// which the system barrier protects, not the tenant's: routing a barrier
+// tenant there would keep its private key readable while its own barrier is
+// sealed.
+func NewSystemShardLogResolver(host Host, shardID uint64, isolation AuditIsolationLookup) *SystemShardAuditResolver {
+	return &SystemShardAuditResolver{host: host, shardID: shardID, isolation: isolation, refuseBarrier: true}
 }
 
 // ResolveAuditShard implements AuditShardResolver.
@@ -92,6 +105,11 @@ func (r *SystemShardAuditResolver) ResolveAuditShard(ctx context.Context, tenant
 			TenantID:      routed,
 			IsolationType: string(info.EffectiveIsolationType()),
 		}
+	case tenant.IsolationBarrier:
+		if r.refuseBarrier {
+			return nil, 0, &BarrierTenantLogNotSupportedError{TenantID: routed}
+		}
+		return r.host, r.shardID, nil
 	default:
 		return r.host, r.shardID, nil
 	}

@@ -57,6 +57,10 @@ var WithStrategyRegistry = qrdbserver.WithStrategyRegistry
 // server's tenant barriers resolve each node's sealing strategy through.
 var WithBarrierKeyProvider = qrdbserver.WithBarrierKeyProvider
 
+// WithHeadSignerProvider attaches the HeadSignerProvider the embedded qrdb
+// server's verifiable logs create and sign with their head keys through.
+var WithHeadSignerProvider = qrdbserver.WithHeadSignerProvider
+
 // WithPINBackend attaches a PIN backend to the embedded qrdb server.
 var WithPINBackend = qrdbserver.WithPINBackend
 

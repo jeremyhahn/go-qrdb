@@ -198,6 +198,12 @@ func registerAdminGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// Verifiable logs. Creating a log and expiring entry bodies on the
+		// logs that allow it are configuration of the tenant's data, which is
+		// Admin's. Never vlog:sign_head: signing a head is a use of the
+		// owner's key, which follows keys:sign onto the Operator.
+		VlogCreate, VlogExpire,
+		VlogList, VlogAppend, VlogGet, VlogProof, VlogHead,
 		// Admin service
 		AdminHealth, AdminStatus, AdminPeers,
 		AdminAddMember, AdminRemoveMember,
@@ -310,8 +316,9 @@ func registerAdminGrants() {
 // / governance verbs, which remain Admin-only.
 func registerOperatorGrants() {
 	RegisterRoleGrant(RoleOperator,
-		// Cryptographic operations
-		KeysSign, KeysVerify,
+		// Cryptographic operations. vlog:sign_head signs a verifiable log's
+		// head with the owner's key, so it sits beside keys:sign.
+		KeysSign, VlogSignHead, KeysVerify,
 		KeysEncrypt, KeysDecrypt,
 		KeysList, KeysGet,
 		// Tenant DEK keyring use, plus rewrap and status for rotation runs.
@@ -376,6 +383,9 @@ func registerOperatorGrants() {
 		VectorSearchByID, VectorRebuildIndex,
 		VectorGetRebuildProg, VectorGetIndexStats,
 		VectorCompact, VectorGetCompactProg,
+		// Verifiable logs (vlog:sign_head is with the cryptographic
+		// operations above)
+		VlogList, VlogAppend, VlogGet, VlogProof, VlogHead,
 		// Admin (limited)
 		AdminHealth, AdminStatus,
 		// Audit (read)
@@ -497,6 +507,8 @@ func registerUserGrants() {
 		PasswordsLock, PasswordsUnlock,
 		// System health (all roles can check health)
 		AdminHealth, AdminStatus,
+		// Verifiable logs: append, read and verify
+		VlogList, VlogAppend, VlogGet, VlogProof, VlogHead,
 		// Orchestrator: the consumer slice (17 verbs). End users are CONSUMERS of
 		// the orchestration data plane: they spawn/observe/close their own
 		// sessions, prompt and run inference, submit and track their own tasks
@@ -553,6 +565,8 @@ func registerAuditorGrants() {
 		CeremonyStatus,
 		// Auth factor listing
 		AuthFactorList,
+		// Verifiable logs (read-only: list, read, prove, head)
+		VlogList, VlogGet, VlogProof, VlogHead,
 		// Orchestrator: read-only METADATA slice (11 verbs). Auditors observe the
 		// shape and state of the orchestration data plane — session status/list,
 		// task read/list, job read/list, workflow read, agent read/list, backend

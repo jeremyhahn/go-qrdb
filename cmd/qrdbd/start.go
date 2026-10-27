@@ -2893,6 +2893,9 @@ func runStart(f *startFlags) (err error) {
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
 			}
+			if svcNode.Log != nil {
+				serverOpts = append(serverOpts, server.WithLogService(svcNode.Log))
+			}
 			if svcNode.Policy != nil {
 				serverOpts = append(serverOpts, server.WithPolicyService(svcNode.Policy))
 			}

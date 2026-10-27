@@ -56,6 +56,7 @@ func TestRefusalKind_NamesEverySubsystemRefusal(t *testing.T) {
 		{&vlog.ExpireNotAllowedError{}, protocol.AppErrorInvalid},
 		{&vlog.LogExistsError{}, protocol.AppErrorConflict},
 		{&vlog.CheckpointExistsError{}, protocol.AppErrorConflict},
+		{&vlog.KeyVersionConflictError{}, protocol.AppErrorConflict},
 		{errors.New("pebble: write failed"), protocol.AppErrorFault},
 	} {
 		if got := RefusalKind(fmt.Errorf("apply: %w", tc.err)); got != tc.want {

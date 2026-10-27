@@ -110,6 +110,7 @@ type Server struct {
 	indexSvc          index.IndexServicer
 	tsSvc             timeseries.TimeSeriesServicer
 	vectorSvc         service.VectorServicer
+	logSvc            service.LogService
 	embeddingSvc      service.EmbeddingServicer
 	ragSvc            service.RAGServicer
 	databaseSvc       service.DatabaseServicer
@@ -355,6 +356,13 @@ func WithTimeSeries(svc timeseries.TimeSeriesServicer) ServerOption {
 func WithVector(svc service.VectorServicer) ServerOption {
 	return func(s *Server) {
 		s.vectorSvc = svc
+	}
+}
+
+// WithLogService configures the gRPC server with the verifiable-log service.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) {
+		s.logSvc = svc
 	}
 }
 
@@ -779,6 +787,7 @@ func (s *Server) Start() error {
 		indexSvc:          s.indexSvc,
 		tsSvc:             s.tsSvc,
 		vectorSvc:         s.vectorSvc,
+		logSvc:            s.logSvc,
 		embeddingSvc:      s.embeddingSvc,
 		ragSvc:            s.ragSvc,
 		databaseSvc:       s.databaseSvc,

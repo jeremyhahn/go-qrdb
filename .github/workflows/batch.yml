@@ -77,11 +77,11 @@ permissions:
 env:
   # In lockstep with ci-template's GO_VERSION.
   GO_VERSION: '1.27.2'   # CUSTOMIZE
-  FUZZ_TAGS: 'codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf'  # CUSTOMIZE
-  RACE_TAGS: 'codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf'  # CUSTOMIZE
+  FUZZ_TAGS: 'codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf'  # CUSTOMIZE
+  RACE_TAGS: 'codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf'  # CUSTOMIZE
   RACE_PKGS: './pkg/... ./cmd/... ./test/buildgates/...'  # CUSTOMIZE
   SOAK_CMD: 'make integration-test-cluster INT_PROJECT="qrdb-int-soak-${GITHUB_RUN_ID:-local}"'  # CUSTOMIZE
-  BENCH_PKGS: '-tags=codec_json,raft,qrdb_ts,qrdb_vector,qrdb_sql,qrdb_mysql,qrdb_pgsql,qrdb_etcd,qrdb_embedded,codec_msgpack,codec_yaml,codec_bson,codec_protobuf ./pkg/... ./cmd/...'  # CUSTOMIZE
+  BENCH_PKGS: '-tags=codec_json,raft,qrdb_ts,qrdb_vector,qrdb_vlog,qrdb_sql,qrdb_mysql,qrdb_pgsql,qrdb_etcd,qrdb_embedded,codec_msgpack,codec_yaml,codec_bson,codec_protobuf ./pkg/... ./cmd/...'  # CUSTOMIZE
 
 on:
   workflow_dispatch:

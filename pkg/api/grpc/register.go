@@ -87,6 +87,11 @@ func WithRegisterVector(svc service.VectorServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.vectorSvc = svc }
 }
 
+// WithRegisterLogService attaches a verifiable-log service for the registered gRPC service.
+func WithRegisterLogService(svc service.LogService) RegisterOption {
+	return func(s *qrdbServiceServer) { s.logSvc = svc }
+}
+
 // WithRegisterUserService attaches a user management service for the registered gRPC service.
 func WithRegisterUserService(svc user.UserServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.userSvc = svc }

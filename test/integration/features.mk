@@ -103,7 +103,7 @@ INTTEST_configuration       :=
 # conformance coverage also lives in sdk/go/conformance/coordination_parity_test.go.
 INTTEST_coordination        := coordination_sdk_test.go
 INTTEST_credentials         := credential_cli_test.go
-INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_lifecycle_cli_test.go multidb_scope_test.go dao_cluster_test.go
+INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_lifecycle_cli_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go
 INTTEST_deployment          :=
 INTTEST_desktop_gui         :=
 INTTEST_distributed_locks   := lock_cli_test.go

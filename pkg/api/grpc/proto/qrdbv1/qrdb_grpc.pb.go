@@ -102,6 +102,16 @@ const (
 	QRDBService_VectorGetIndexStats_FullMethodName               = "/qrdb.v1.QRDBService/VectorGetIndexStats"
 	QRDBService_VectorCompactNamespace_FullMethodName            = "/qrdb.v1.QRDBService/VectorCompactNamespace"
 	QRDBService_VectorGetCompactionProgress_FullMethodName       = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
+	QRDBService_VlogCreate_FullMethodName                        = "/qrdb.v1.QRDBService/VlogCreate"
+	QRDBService_VlogList_FullMethodName                          = "/qrdb.v1.QRDBService/VlogList"
+	QRDBService_VlogAppend_FullMethodName                        = "/qrdb.v1.QRDBService/VlogAppend"
+	QRDBService_VlogGet_FullMethodName                           = "/qrdb.v1.QRDBService/VlogGet"
+	QRDBService_VlogProveInclusion_FullMethodName                = "/qrdb.v1.QRDBService/VlogProveInclusion"
+	QRDBService_VlogProveConsistency_FullMethodName              = "/qrdb.v1.QRDBService/VlogProveConsistency"
+	QRDBService_VlogHead_FullMethodName                          = "/qrdb.v1.QRDBService/VlogHead"
+	QRDBService_VlogSignHead_FullMethodName                      = "/qrdb.v1.QRDBService/VlogSignHead"
+	QRDBService_VlogExpireBodies_FullMethodName                  = "/qrdb.v1.QRDBService/VlogExpireBodies"
+	QRDBService_VlogRotateKey_FullMethodName                     = "/qrdb.v1.QRDBService/VlogRotateKey"
 	QRDBService_Health_FullMethodName                            = "/qrdb.v1.QRDBService/Health"
 	QRDBService_Status_FullMethodName                            = "/qrdb.v1.QRDBService/Status"
 	QRDBService_Peers_FullMethodName                             = "/qrdb.v1.QRDBService/Peers"
@@ -449,6 +459,27 @@ type QRDBServiceClient interface {
 	VectorCompactNamespace(ctx context.Context, in *VectorCompactNamespaceRequest, opts ...grpc.CallOption) (*VectorCompactNamespaceResponse, error)
 	// VectorGetCompactionProgress returns the progress of a compaction job.
 	VectorGetCompactionProgress(ctx context.Context, in *VectorGetCompactionProgressRequest, opts ...grpc.CallOption) (*VectorCompactionProgress, error)
+	// VlogCreate creates a verifiable log in the caller's tenant and database.
+	VlogCreate(ctx context.Context, in *VlogCreateRequest, opts ...grpc.CallOption) (*VlogCreateResponse, error)
+	// VlogList lists the verifiable logs in the caller's tenant and database.
+	VlogList(ctx context.Context, in *VlogListRequest, opts ...grpc.CallOption) (*VlogListResponse, error)
+	// VlogAppend appends entries to a verifiable log in one proposal.
+	VlogAppend(ctx context.Context, in *VlogAppendRequest, opts ...grpc.CallOption) (*VlogAppendResponse, error)
+	// VlogGet reads a range of a verifiable log's entries.
+	VlogGet(ctx context.Context, in *VlogGetRequest, opts ...grpc.CallOption) (*VlogGetResponse, error)
+	// VlogProveInclusion returns an RFC 9162 inclusion proof for one leaf.
+	VlogProveInclusion(ctx context.Context, in *VlogProveInclusionRequest, opts ...grpc.CallOption) (*VlogInclusionProof, error)
+	// VlogProveConsistency returns an RFC 9162 consistency proof between two tree sizes.
+	VlogProveConsistency(ctx context.Context, in *VlogProveConsistencyRequest, opts ...grpc.CallOption) (*VlogConsistencyProof, error)
+	// VlogHead returns a verifiable log's current size, root and latest checkpoint.
+	VlogHead(ctx context.Context, in *VlogHeadRequest, opts ...grpc.CallOption) (*VlogHeadResponse, error)
+	// VlogSignHead signs the current head with the log's owner key and records the checkpoint.
+	VlogSignHead(ctx context.Context, in *VlogSignHeadRequest, opts ...grpc.CallOption) (*VlogSignHeadResponse, error)
+	// VlogExpireBodies drops the entry bodies below a cutoff, keeping their leaf hashes.
+	VlogExpireBodies(ctx context.Context, in *VlogExpireBodiesRequest, opts ...grpc.CallOption) (*VlogExpireBodiesResponse, error)
+	// VlogRotateKey makes a new key the one that signs the log's heads; heads
+	// signed under an earlier key still verify against it.
+	VlogRotateKey(ctx context.Context, in *VlogRotateKeyRequest, opts ...grpc.CallOption) (*VlogRotateKeyResponse, error)
 	// Health returns the node health status.
 	Health(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Status returns detailed node status information.
@@ -1614,6 +1645,106 @@ func (c *qRDBServiceClient) VectorGetCompactionProgress(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VectorCompactionProgress)
 	err := c.cc.Invoke(ctx, QRDBService_VectorGetCompactionProgress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogCreate(ctx context.Context, in *VlogCreateRequest, opts ...grpc.CallOption) (*VlogCreateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogCreateResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogCreate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogList(ctx context.Context, in *VlogListRequest, opts ...grpc.CallOption) (*VlogListResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogListResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogList_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogAppend(ctx context.Context, in *VlogAppendRequest, opts ...grpc.CallOption) (*VlogAppendResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogAppendResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogAppend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogGet(ctx context.Context, in *VlogGetRequest, opts ...grpc.CallOption) (*VlogGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogGetResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogProveInclusion(ctx context.Context, in *VlogProveInclusionRequest, opts ...grpc.CallOption) (*VlogInclusionProof, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogInclusionProof)
+	err := c.cc.Invoke(ctx, QRDBService_VlogProveInclusion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogProveConsistency(ctx context.Context, in *VlogProveConsistencyRequest, opts ...grpc.CallOption) (*VlogConsistencyProof, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogConsistencyProof)
+	err := c.cc.Invoke(ctx, QRDBService_VlogProveConsistency_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogHead(ctx context.Context, in *VlogHeadRequest, opts ...grpc.CallOption) (*VlogHeadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogHeadResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogHead_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogSignHead(ctx context.Context, in *VlogSignHeadRequest, opts ...grpc.CallOption) (*VlogSignHeadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogSignHeadResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogSignHead_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogExpireBodies(ctx context.Context, in *VlogExpireBodiesRequest, opts ...grpc.CallOption) (*VlogExpireBodiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogExpireBodiesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogExpireBodies_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VlogRotateKey(ctx context.Context, in *VlogRotateKeyRequest, opts ...grpc.CallOption) (*VlogRotateKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VlogRotateKeyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VlogRotateKey_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3522,6 +3653,27 @@ type QRDBServiceServer interface {
 	VectorCompactNamespace(context.Context, *VectorCompactNamespaceRequest) (*VectorCompactNamespaceResponse, error)
 	// VectorGetCompactionProgress returns the progress of a compaction job.
 	VectorGetCompactionProgress(context.Context, *VectorGetCompactionProgressRequest) (*VectorCompactionProgress, error)
+	// VlogCreate creates a verifiable log in the caller's tenant and database.
+	VlogCreate(context.Context, *VlogCreateRequest) (*VlogCreateResponse, error)
+	// VlogList lists the verifiable logs in the caller's tenant and database.
+	VlogList(context.Context, *VlogListRequest) (*VlogListResponse, error)
+	// VlogAppend appends entries to a verifiable log in one proposal.
+	VlogAppend(context.Context, *VlogAppendRequest) (*VlogAppendResponse, error)
+	// VlogGet reads a range of a verifiable log's entries.
+	VlogGet(context.Context, *VlogGetRequest) (*VlogGetResponse, error)
+	// VlogProveInclusion returns an RFC 9162 inclusion proof for one leaf.
+	VlogProveInclusion(context.Context, *VlogProveInclusionRequest) (*VlogInclusionProof, error)
+	// VlogProveConsistency returns an RFC 9162 consistency proof between two tree sizes.
+	VlogProveConsistency(context.Context, *VlogProveConsistencyRequest) (*VlogConsistencyProof, error)
+	// VlogHead returns a verifiable log's current size, root and latest checkpoint.
+	VlogHead(context.Context, *VlogHeadRequest) (*VlogHeadResponse, error)
+	// VlogSignHead signs the current head with the log's owner key and records the checkpoint.
+	VlogSignHead(context.Context, *VlogSignHeadRequest) (*VlogSignHeadResponse, error)
+	// VlogExpireBodies drops the entry bodies below a cutoff, keeping their leaf hashes.
+	VlogExpireBodies(context.Context, *VlogExpireBodiesRequest) (*VlogExpireBodiesResponse, error)
+	// VlogRotateKey makes a new key the one that signs the log's heads; heads
+	// signed under an earlier key still verify against it.
+	VlogRotateKey(context.Context, *VlogRotateKeyRequest) (*VlogRotateKeyResponse, error)
 	// Health returns the node health status.
 	Health(context.Context, *emptypb.Empty) (*HealthResponse, error)
 	// Status returns detailed node status information.
@@ -4207,6 +4359,36 @@ func (UnimplementedQRDBServiceServer) VectorCompactNamespace(context.Context, *V
 }
 func (UnimplementedQRDBServiceServer) VectorGetCompactionProgress(context.Context, *VectorGetCompactionProgressRequest) (*VectorCompactionProgress, error) {
 	return nil, status.Error(codes.Unimplemented, "method VectorGetCompactionProgress not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogCreate(context.Context, *VlogCreateRequest) (*VlogCreateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogCreate not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogList(context.Context, *VlogListRequest) (*VlogListResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogList not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogAppend(context.Context, *VlogAppendRequest) (*VlogAppendResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogAppend not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogGet(context.Context, *VlogGetRequest) (*VlogGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogGet not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogProveInclusion(context.Context, *VlogProveInclusionRequest) (*VlogInclusionProof, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogProveInclusion not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogProveConsistency(context.Context, *VlogProveConsistencyRequest) (*VlogConsistencyProof, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogProveConsistency not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogHead(context.Context, *VlogHeadRequest) (*VlogHeadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogHead not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogSignHead(context.Context, *VlogSignHeadRequest) (*VlogSignHeadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogSignHead not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogExpireBodies(context.Context, *VlogExpireBodiesRequest) (*VlogExpireBodiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogExpireBodies not implemented")
+}
+func (UnimplementedQRDBServiceServer) VlogRotateKey(context.Context, *VlogRotateKeyRequest) (*VlogRotateKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VlogRotateKey not implemented")
 }
 func (UnimplementedQRDBServiceServer) Health(context.Context, *emptypb.Empty) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -5961,6 +6143,186 @@ func _QRDBService_VectorGetCompactionProgress_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).VectorGetCompactionProgress(ctx, req.(*VectorGetCompactionProgressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogCreate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogCreateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogCreate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogCreate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogCreate(ctx, req.(*VlogCreateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogListRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogList(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogList_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogList(ctx, req.(*VlogListRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogAppend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogAppendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogAppend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogAppend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogAppend(ctx, req.(*VlogAppendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogGet(ctx, req.(*VlogGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogProveInclusion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogProveInclusionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogProveInclusion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogProveInclusion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogProveInclusion(ctx, req.(*VlogProveInclusionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogProveConsistency_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogProveConsistencyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogProveConsistency(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogProveConsistency_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogProveConsistency(ctx, req.(*VlogProveConsistencyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogHead_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogHeadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogHead(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogHead_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogHead(ctx, req.(*VlogHeadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogSignHead_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogSignHeadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogSignHead(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogSignHead_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogSignHead(ctx, req.(*VlogSignHeadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogExpireBodies_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogExpireBodiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogExpireBodies(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogExpireBodies_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogExpireBodies(ctx, req.(*VlogExpireBodiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VlogRotateKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VlogRotateKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VlogRotateKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VlogRotateKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VlogRotateKey(ctx, req.(*VlogRotateKeyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -9353,6 +9715,46 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VectorGetCompactionProgress",
 			Handler:    _QRDBService_VectorGetCompactionProgress_Handler,
+		},
+		{
+			MethodName: "VlogCreate",
+			Handler:    _QRDBService_VlogCreate_Handler,
+		},
+		{
+			MethodName: "VlogList",
+			Handler:    _QRDBService_VlogList_Handler,
+		},
+		{
+			MethodName: "VlogAppend",
+			Handler:    _QRDBService_VlogAppend_Handler,
+		},
+		{
+			MethodName: "VlogGet",
+			Handler:    _QRDBService_VlogGet_Handler,
+		},
+		{
+			MethodName: "VlogProveInclusion",
+			Handler:    _QRDBService_VlogProveInclusion_Handler,
+		},
+		{
+			MethodName: "VlogProveConsistency",
+			Handler:    _QRDBService_VlogProveConsistency_Handler,
+		},
+		{
+			MethodName: "VlogHead",
+			Handler:    _QRDBService_VlogHead_Handler,
+		},
+		{
+			MethodName: "VlogSignHead",
+			Handler:    _QRDBService_VlogSignHead_Handler,
+		},
+		{
+			MethodName: "VlogExpireBodies",
+			Handler:    _QRDBService_VlogExpireBodies_Handler,
+		},
+		{
+			MethodName: "VlogRotateKey",
+			Handler:    _QRDBService_VlogRotateKey_Handler,
 		},
 		{
 			MethodName: "Health",
