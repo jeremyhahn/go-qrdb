@@ -1487,6 +1487,10 @@ type Node struct {
 	// none runs. Written only by the lifecycle-gated boot, teardown and
 	// Close paths.
 	stopTrustPoolRefresh func()
+	// trustPoolRefreshDone is closed when the refresh loop most recently
+	// started by startTrustPoolRefresh has exited; nil before the first
+	// start. Written with stopTrustPoolRefresh, on the same paths.
+	trustPoolRefreshDone <-chan struct{}
 
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
@@ -2158,6 +2162,7 @@ func (n *Node) startTrustPoolRefresh(pool *clienttrust.Pool) {
 		defer close(done)
 		pool.Run(ctx)
 	}()
+	n.trustPoolRefreshDone = done
 	n.stopTrustPoolRefresh = func() {
 		cancel()
 		<-done

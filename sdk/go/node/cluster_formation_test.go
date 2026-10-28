@@ -734,18 +734,28 @@ func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
+	// The guarantee is judged on the state NewClusteredNode returned, with no
+	// retry: every replica already knows a leader, so the read below waits on
+	// no election, and a leader that has not committed in its term refuses it
+	// at once with quicraft.ErrReadIndexNotReady. The read's own round trip is
+	// bounded only by the test's budget: a loaded runner under the race
+	// detector (CI run 70241, a slow fsync) can outrun any tighter clock.
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
 	for i, n := range nodes {
-		if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
+		host := n.host.(*quicraft.Host)
+		if _, known, err := host.LeaderID(shard.ShardKV); err != nil || !known {
+			t.Fatalf("replica %d: no leader known when NewClusteredNode returned (known=%v, err=%v)", replicas[i].id, known, err)
+		}
+		if err := readIndexOnce(ctx, host); err != nil {
 			t.Fatalf("replica %d: first linearizable read after NewClusteredNode returned: %v", replicas[i].id, err)
 		}
 	}
 }
 
 // readIndexOnce issues exactly one linearizable ReadIndex against the system
-// shard and reports its outcome, bounded by firstReadBudget.
-func readIndexOnce(host *quicraft.Host) error {
-	ctx, cancel := context.WithTimeout(context.Background(), firstReadBudget)
-	defer cancel()
+// shard and reports its outcome, bounded by ctx.
+func readIndexOnce(ctx context.Context, host *quicraft.Host) error {
 	rs, err := host.ReadIndex(ctx, shard.ShardKV)
 	if err != nil {
 		return err
@@ -754,12 +764,6 @@ func readIndexOnce(host *quicraft.Host) error {
 	_, err = rs.Result()
 	return err
 }
-
-// firstReadBudget bounds the single probe readIndexOnce issues: a round trip
-// to a healthy leader with headroom for the race detector, and well under the
-// founders' election timeout, so it cannot cover for a missing wait by
-// outlasting an election.
-const firstReadBudget = time.Second
 
 // TestNewClusteredNode_CancelledContextReturnsPromptly: a founder waits for a
 // quorum to elect and commit before NewClusteredNode returns, and that wait
