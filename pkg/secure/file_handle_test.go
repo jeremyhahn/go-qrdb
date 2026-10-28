@@ -109,7 +109,7 @@ func TestReadFileHandle_RefusesGroupOrOtherAccess(t *testing.T) {
 
 func TestReadFileHandle_FailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- owner-only on a directory: the "directory" case must fail as not-regular, not on its mode
 		t.Fatal(err)
 	}
 	cases := map[string]struct {

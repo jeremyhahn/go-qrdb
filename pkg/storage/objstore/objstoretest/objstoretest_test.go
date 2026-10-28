@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore/objstoretest"
 )
@@ -54,7 +55,10 @@ func TestProvider_ReceivesTheReferencedFileContents(t *testing.T) {
 		KeyFile:    writeFile(t, "key", "FAKEACCESSKEYID0000"),
 		SecretFile: writeFile(t, "secret", "fake-secret-access-key"),
 	})
-	assert.Equal(t, []objstoretest.Delivery{{Key: "FAKEACCESSKEYID0000", Secret: "fake-secret-access-key"}}, p.Deliveries())
+	got := p.Deliveries()
+	require.Len(t, got, 1)
+	assert.Equal(t, "FAKEACCESSKEYID0000", got[0].Key)
+	requireSecret(t, "fake-secret-access-key", got[0].Secret)
 }
 
 func TestProvider_ReceivesNothingWithoutAReference(t *testing.T) {
@@ -68,6 +72,26 @@ func TestProvider_DeliveriesIsACopy(t *testing.T) {
 	open(t, p, objstore.CredentialFiles{SecretFile: writeFile(t, "secret", "fake-secret-access-key")})
 	got := p.Deliveries()
 	require.Len(t, got, 1)
-	got[0].Secret = "changed"
-	assert.Equal(t, "fake-secret-access-key", p.Deliveries()[0].Secret)
+	got[0].Secret = nil
+	requireSecret(t, "fake-secret-access-key", p.Deliveries()[0].Secret)
+}
+
+func TestProvider_DestroysTheSecretsWhenTheTestEnds(t *testing.T) {
+	var got []objstoretest.Delivery
+	t.Run("records", func(t *testing.T) {
+		p := objstoretest.NewProvider(t)
+		open(t, p, objstore.CredentialFiles{SecretFile: writeFile(t, "secret", "fake-secret-access-key")})
+		got = p.Deliveries()
+		require.Len(t, got, 1)
+		assert.True(t, got[0].Secret.IsAlive(), "the secret lives while its test runs")
+	})
+	assert.False(t, got[0].Secret.IsAlive(), "the secret is destroyed when its test ends")
+}
+
+func requireSecret(t *testing.T, want string, got *secure.Buffer) {
+	t.Helper()
+	require.NotNil(t, got)
+	ok, err := got.EqualBytes([]byte(want))
+	require.NoError(t, err)
+	assert.True(t, ok, "the recorded secret is the referenced file's contents")
 }

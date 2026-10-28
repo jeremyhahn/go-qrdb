@@ -92,7 +92,8 @@ services:
         - gomodauth
     image: *int-image
     # Listens in the stack's namespace on 63001 udp+tcp (Raft), 63002 (REST),
-    # 63003 (gRPC), 63004 udp (QUIC API) and 63005 (MCP).
+    # 63003 (gRPC), 63004 udp (QUIC API), 63005 (MCP) and 63006 (Noise
+    # bootstrap, bootstrap.noise_port's default).
     network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true
@@ -231,7 +232,7 @@ services:
 
   # Dedicated QRDB server configured with the Shamir M-of-N seal strategy.
   # Runs side by side with the software-seal "qrdbd" server above, in the
-  # same network namespace, on a DISTINCT port set (64001-64005; the shared
+  # same network namespace, on a DISTINCT port set (64001-64006; the shared
   # namespace makes that a requirement), data volume, and unix socket so the
   # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
   # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
@@ -250,7 +251,8 @@ services:
         - gomodauth
     image: *int-image
     # Listens in the stack's namespace on 64001 udp+tcp (Raft), 64002 (REST),
-    # 64003 (gRPC), 64004 udp (QUIC API) and 64005 (MCP).
+    # 64003 (gRPC), 64004 udp (QUIC API), 64005 (MCP) and 64006 (Noise
+    # bootstrap, set in config.test.shamir.yaml: the default is qrdbd's).
     network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true

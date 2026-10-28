@@ -227,7 +227,7 @@ func TestOpenCredentials_FailsClosedNamingTheFile(t *testing.T) {
 
 func TestOpenCredentials_RefusesAWorldReadableFile(t *testing.T) {
 	path := writeCredentialFile(t, "secret", fakeSecret)
-	require.NoError(t, os.Chmod(path, 0o644))
+	require.NoError(t, os.Chmod(path, 0o644)) // #nosec G302 -- world-readable is the fault this test injects: openCredentials must refuse a secret file in that mode
 	_, release, err := openCredentials(CredentialFiles{SecretFile: path})
 	defer release()
 	var modeErr *secure.FileModeError

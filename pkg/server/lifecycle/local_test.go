@@ -30,7 +30,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -295,9 +294,12 @@ func TestNewLocalStorage_ObjstoreOpensWithReferencedCredentials(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stg.Close() })
 
-	want := []objstoretest.Delivery{{Key: "FAKEACCESSKEYID0000", Secret: "fake-secret-access-key"}}
-	if got := provider.Deliveries(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the provider received %+v, want the referenced files' contents %+v", got, want)
+	got := provider.Deliveries()
+	if len(got) != 1 || got[0].Key != "FAKEACCESSKEYID0000" {
+		t.Fatalf("the provider received %+v, want one delivery of the referenced key file", got)
+	}
+	if ok, err := got[0].Secret.EqualBytes([]byte("fake-secret-access-key")); err != nil || !ok {
+		t.Fatalf("the provider's secret is not the referenced secret file's contents (equal=%t, err=%v)", ok, err)
 	}
 }
 

@@ -28,14 +28,17 @@ import (
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	objmemory "github.com/jeremyhahn/go-objstore/pkg/memory"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 )
 
 // Delivery is what one Configure of a Provider received: the contents of the
-// key and secret the credential references named, empty when none was set.
+// key and secret the credential references named. Key is empty and Secret nil
+// when none was set. Secret is a locked copy owned by the Provider, destroyed
+// when the test that created it ends; compare it with Secret.EqualBytes.
 type Delivery struct {
 	Key    string
-	Secret string
+	Secret *secure.Buffer
 }
 
 // Provider is a credential-consuming provider registered with the objstore
@@ -50,13 +53,15 @@ var seq atomic.Uint64
 
 // NewProvider registers a fresh Provider under a unique name, failing tb if
 // the seam refuses the registration. go-objstore's factory has no
-// unregistration, so the name stays served for the life of the test binary.
+// unregistration, so the name stays served for the life of the test binary;
+// the secrets it records are destroyed when tb ends.
 func NewProvider(tb testing.TB) *Provider {
 	tb.Helper()
 	p := &Provider{name: "qrdb-objstoretest-" + strconv.FormatUint(seq.Add(1), 10)}
 	if err := objstore.RegisterProvider(p.name, objstore.ProviderCredentials{Key: true, Secret: true}, p.open); err != nil {
 		tb.Fatalf("objstoretest: register %s: %v", p.name, err)
 	}
+	tb.Cleanup(p.destroy)
 	return p
 }
 
@@ -66,19 +71,38 @@ func (p *Provider) Name() string {
 }
 
 // Deliveries returns what each Configure of the provider received, in order.
+// The slice is a copy; the Secret buffers in it are the Provider's own.
 func (p *Provider) Deliveries() []Delivery {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]Delivery(nil), p.deliveries...)
 }
 
+// destroy releases every secret the provider recorded.
+func (p *Provider) destroy() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.deliveries {
+		d.Secret.Destroy()
+	}
+}
+
 func (p *Provider) open(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
 	var d Delivery
 	if creds.Key != nil || creds.Secret != nil {
 		if err := creds.Open(func(key, secret []byte) error {
-			d = Delivery{Key: string(key), Secret: string(secret)}
+			d.Key = string(key)
+			if len(secret) == 0 {
+				return nil
+			}
+			buf, err := secure.NewBufferFromBytes(secret)
+			if err != nil {
+				return err
+			}
+			d.Secret = buf
 			return nil
 		}); err != nil {
+			d.Secret.Destroy()
 			return nil, err
 		}
 	}
