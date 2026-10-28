@@ -87,6 +87,18 @@ func TestIndex_SealedBarrierRefusesWrites(t *testing.T) {
 			t.Errorf("%s under a sealed barrier = %T; want *SealedError", name, err)
 		}
 	}
+
+	// No refused write landed: the Put added nothing, and neither the
+	// Delete nor the Clear removed the entry written before the seal.
+	if err := barrier.Unseal(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if got, err := idx.Get([]byte("b@example.com")); err != nil || len(got) != 0 {
+		t.Errorf("Get(refused Put's value) = %q, %v; want none", got, err)
+	}
+	if got, err := idx.Get([]byte("a@example.com")); err != nil || len(got) != 1 || string(got[0]) != "k1" {
+		t.Errorf("Get(pre-seal value) = %q, %v; want [k1]", got, err)
+	}
 }
 
 // The watch passed through NewWithConfig is the one checked, and writes
