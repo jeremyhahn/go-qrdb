@@ -1,6 +1,6 @@
 # etcd Compatibility — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 This feature is **not** one of the six qrdb transports. It is a separate,
@@ -112,6 +112,22 @@ etcd's own error semantics are preserved: a compacted revision produces etcd's
 compacted-revision error, a failed `Txn` returns `succeeded: false` rather than
 an error, and an authorization failure surfaces on the RPC rather than at
 connection time.
+
+| Condition | gRPC status |
+|---|---|
+| No client certificate, or one the authenticator chain rejects | `UNAUTHENTICATED` |
+| An RPC with no permission mapping, a caller from another tenant, or a missing permission | `PERMISSION_DENIED` (`etcd: permission denied` for another tenant's caller) |
+| Empty key on `Range`, `Put` or `DeleteRange` | `INVALID_ARGUMENT` (`key is required`) |
+| `Put` on a state machine without MVCC revision history | `FAILED_PRECONDITION` |
+| A revision already compacted, or above the current one | `OUT_OF_RANGE` (etcd's `ErrGRPCCompacted` / `ErrGRPCFutureRev`) |
+| Database sealed, or a feature the database has not activated | `UNAVAILABLE` |
+| Database dropped | `NOT_FOUND` |
+| `Txn` on a database with no transaction service | `UNIMPLEMENTED` |
+| Any other service error | `INTERNAL`, with the operation named |
+
+The qrdb transports carry no etcd RPC, so this API has no row in the
+transport-parity table and no `MISSING` marks: the etcd listener is its only
+surface by design.
 
 ## Versioning
 

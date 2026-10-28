@@ -164,7 +164,7 @@ func (c *restartableCluster) start(t *testing.T, round int) int {
 	if round == 1 {
 		bootstrapNodes(t, c.ca, c.adminPorts...)
 	} else {
-		unsealNodes(t, c.ca, c.adminPorts...)
+		waitForNodesSelfUnsealed(t, c.ca, c.adminPorts...)
 	}
 	for i := range 3 {
 		waitForAdmin(t, c.ca.Pool, c.adminPorts[i], 90*time.Second)

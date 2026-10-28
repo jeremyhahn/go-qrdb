@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Issuing, enrolling and revoking the client certificates that authenticate every
@@ -98,9 +98,8 @@ import, an OCSP responder, ACME revocation, HSM-backed CA keys. It already
 depends on go-qrdb, so there is no rival datastore anywhere in the stack.
 
 **Two CAs, two populations, and neither should ever answer for the other's
-certificates.** This is recorded here because the duplication looks like
-something to consolidate, and consolidating it would break cluster bootstrap:
-the bootstrap CA would then need the very platform it exists to bring up.
+certificates.** The two are not consolidated: the bootstrap CA must not need
+the platform it exists to bring up.
 
 ### Why there is no CRL and no OCSP here
 
@@ -421,35 +420,11 @@ here cannot be used to impersonate a server.
 
 ### `go-pkcs12` is used in ONE direction: encode
 
-The PKCS#12 dependency is reached from exactly one symbol in this repository,
-and knowing which one is what makes its advisories answerable. Measured over
-every `.go` file in the tree, tests included:
-
-```
-$ grep -rho "pkcs12\.[A-Za-z_0-9]*" $(find . -name '*.go' -not -path './.git/*') | sort | uniq -c
-      1 pkcs12.Modern2023
-```
-
-`pkcs12.Modern2023` is the **encoder**, used only by `EncodePKCS12` in
-`pkg/cert/pkcs12.go`, which only the `qrdb` client calls, locally. There is no `Decode`, `DecodeChain`,
-`DecodeTrustStore` or `ToPEM` anywhere in this repository. **Nothing here ever
-reads a PKCS#12 archive back**, so no attacker-supplied `.p12` bytes reach a
-parser through this code path: the CA writes bundles, and the consumer that
-imports one is somebody else's software.
-
-That matters because the library's advisories are largely about the parsing
-half. `GHSA-mpwr-8vm7-h73f` — "authentication bypass in Decode functions",
-fixed in v0.7.2 — is the worked example: read against a caller that only
-encodes it is **hygiene rather than exposure**. A version scanner (trivy) flags
-the package VERSION; govulncheck stays silent because the affected SYMBOLS are
-not in the call graph. Both are right.
-
-**Re-measure the grep rather than citing this paragraph.** The claim is about
-the call graph as it stands, and the first `DecodeChain` added to a
-truststore-import feature invalidates it silently. The direction of use is a
-property to check, not one to inherit. In particular, a clean `govulncheck` is
-not in general evidence about a `trivy` finding — the call-graph argument above
-is what settles this one, and settles only this one.
+Only `EncodePKCS12` (`pkg/cert/pkcs12.go`, through `pkcs12.Modern2023`) uses
+go-pkcs12, and only the `qrdb` client calls it, locally. Nothing in this
+repository decodes PKCS#12, so no `.p12` bytes reach a parser through this
+code: the library's decode-side advisories are hygiene here, not exposure.
+Adding a decode changes how its advisories apply.
 
 ## Identity mapping
 
@@ -467,8 +442,7 @@ A tenant is a SPIFFE trust domain. The mTLS authenticator requires two names
 and requires them to agree: the first Subject OU, and the trust domain of the
 workload SPIFFE URI SAN (`spiffe://<tenant>/<kind>/<name>`, kind `user` or
 `svc`). There is no fallback in either direction. The node's own trust domain,
-`auth.spiffe_trust_domain` (which defaults to `auth.cluster_trust_domain`,
-itself `qrdb.cluster` when unset), is the cluster's: a certificate that names
+`auth.cluster_trust_domain` (`qrdb.cluster` when unset), is the cluster's: a certificate that names
 no tenant is under it, and no tenant may be it. A certificate with the SAN but
 no OU under any other trust domain, with an OU but no SAN, whose OU names the
 cluster trust domain, or whose OU and trust domain name different tenants
@@ -538,7 +512,7 @@ forwarded unsigned — an unsigned forward is authorized as the forwarding node
 
 **The trust domain is validated when configuration loads.** A value that does
 not survive being written into a SPIFFE ID and parsed back (`/`, `?`, `@`,
-whitespace) fails the load with a validation error on `auth.spiffe_trust_domain`
+whitespace) fails the load with a validation error on `auth.cluster_trust_domain`
 rather than making the CA refuse every certificate at issue time.
 
 **Rotation keeps the binding.** A user's binding is over the
@@ -548,8 +522,7 @@ authenticate: it must be re-issued, and the re-issued certificate
 binds the same key.
 
 **The provider and the authenticator must read the same value.** Both come from
-`auth.spiffe_trust_domain`, through the same default to
-`auth.cluster_trust_domain`; a node whose CA minted under one domain while its
+`auth.cluster_trust_domain`, the one trust-domain setting; a node whose CA minted under one domain while its
 authenticator pinned another would refuse every certificate it issued.
 
 The OU line is why issuance acts only on the caller's own tenant: minting a
@@ -604,6 +577,8 @@ Issue Certificate (barrier unsealed)
   ├─ getCAMaterial() → this tenant's own crypto.Signer + cert, resolved fresh
   ├─ x509.CreateCertificate(CA signs the requester's public key)
   ├─ Persist CertRecord to KVStore
+  └─ Return IssuedCert
+```
 
 ## The CA key provider seam (`pkg/cakey`)
 
@@ -955,8 +930,8 @@ copies of the same logic:
     cluster's Key A as a side effect — every composer instead calls the
     `lifecycle.EstablishClusterCA` once, deliberately, during startup.
   - **The snapshot is rebuilt on every invalidation and every 2 seconds**
-    (`poolCacheTTL`). Scanning and parsing every tenant's CA certificate
-    costs ~20ms at 1,000 tenants; the handshake pays none of it.
+    (`poolCacheTTL`). The handshake pays none of the cost of scanning and
+    parsing every tenant's CA certificate.
     `Invalidate` — fired by the `CertProvider`'s tenant-deletion watch and
     by trust-anchor changes — schedules a rebuild without blocking its
     caller, and any number of invalidations before the rebuild runs
@@ -1110,6 +1085,18 @@ actually trusts (see `SetClusterCA`/`SetKeyBProvider` above). A `nil`
 `IssuerVerifier` (a composer with no cluster CA resolved at all) leaves the
 check unenforced on both paths — but that is the ONLY case left
 unenforced, not every case lacking a Key B provider.
+
+A composer's own handler mounted on a node listener reaches the same pool
+through the SDK, never through a verifier it builds itself and never by
+trusting `PeerCertificates[0]`: `node.Node.IssuerVerifier()` returns the
+node's `clienttrust.Pool` as an `sdk.IssuerVerifier`
+(`node.ErrTrustPoolNotWired` before boot builds it and after `Close`), and
+`sdk.ResolveVerifiedChains(ctx, state, verifier)` — `auth.ResolveVerifiedChains`
+re-exported — returns the chain the pool verified for a connection whose
+`VerifiedChains` the `ClientAuth` remap left empty. It refuses with
+`sdk.ErrNoPeerCertificate` (no certificate), `sdk.ErrInvalidClientCertificate`
+(one the pool does not trust) or `*sdk.TrustStateUnavailableError` (refused
+while the pool could not read its trust state; retry).
 
 ## Trust boundaries
 

@@ -183,7 +183,6 @@ type startFlags struct {
 	pgsqlPort             int
 	authEnabled           bool
 	separationOfDuties    bool
-	spiffeTrustDomain     string
 
 	invitationTTL           string
 	invitationRequireKeyPin bool
@@ -397,7 +396,7 @@ type startFlags struct {
 // lifecycle operations. Both *quicraft.Host and test mocks satisfy it.
 type raftNode interface {
 	StartShard(members map[uint64]string, join bool, create sm.CreateFunc, cfg quicraftconfig.Config) error
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 	Close() error
 }
 
@@ -503,17 +502,16 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 	}
 	validateCfg := qrdbconfig.DefaultConfig()
 	validateCfg.Auth.Enabled = qrdbconfig.BoolPtr(f.authEnabled)
-	validateCfg.Auth.SPIFFETrustDomain = f.spiffeTrustDomain
 	validateCfg.Auth.ClusterTrustDomain = f.clusterTrustDomain
 	validateCfg.Seal = f.sealConfig
 	validateCfg.Databases = f.databases
 	if err := validateCfg.Validate(); err != nil {
 		return err
 	}
-	// Resolve the tenant trust domain only once both inputs are final:
-	// --cluster-trust-domain overrides the YAML, and an empty
-	// spiffe_trust_domain takes the cluster one.
-	f.spiffeTrustDomain = validateCfg.Auth.EffectiveSPIFFETrustDomain()
+	// Resolve the trust domain only once its inputs are final:
+	// --cluster-trust-domain overrides the YAML, and an empty value takes
+	// the default, so the CA and the authenticator never see an empty one.
+	f.clusterTrustDomain = validateCfg.Auth.EffectiveClusterTrustDomain()
 	return nil
 }
 
@@ -598,7 +596,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	}
 
 	cmd.Flags().StringVar(&f.configFile, "config", "", "Path to YAML configuration file")
-	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft, standard database operations only)")
+	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft; the whole data plane on one node, without the cluster, backup, rebalance or etcd families)")
 	cmd.Flags().StringVar(&f.host, "host", qrdbconfig.DefaultServerHost, "Bind host for all API listeners ("+strings.Join(compiledProtocolListeners(), ", ")+"); maps to server.host / QRDB_SERVER_HOST")
 	cmd.Flags().StringVar(&f.listen, "listen", "0.0.0.0:63001", "Listen address (host:port)")
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
@@ -871,15 +869,13 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// RBAC posture: config can only raise strictness; a FIPS 140-3 build
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
-	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
 	f.invitationTTL = cfg.Auth.InvitationTTL
 	f.invitationRequireKeyPin = cfg.Auth.InvitationRequireKeyPin
 	f.invitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	f.mtlsBindingPolicy = cfg.Auth.MTLSBindingPolicy
-	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
-	// trust domain above.
+	// ABAC decorator: config-only (no CLI flag).
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
 	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
 	if !cmd.Flags().Changed("cluster-trust-domain") && cfg.Auth.ClusterTrustDomain != "" {
@@ -1748,7 +1744,7 @@ func runStart(f *startFlags) (err error) {
 			// standalone and every raft-only stage below is guarded on it.
 			standalone := f.mode == capabilities.ModeStandalone
 			var host *quicraft.Host
-			var svcHost service.Host
+			var svcHost service.AdminHost
 			var rnode raftNode
 			var nodeCloser io.Closer
 			// featureGate decides when this host's Raft groups may be sent
@@ -2006,7 +2002,7 @@ func runStart(f *startFlags) (err error) {
 				DEKKeyDir:                 f.dekKeyDir,
 				KeyWrapRegistry:           keyWrapInjection.registry,
 				KeyWrapProvider:           keyWrapInjection.provider,
-				SPIFFETrustDomain:         f.spiffeTrustDomain,
+				ClusterTrustDomain:        f.clusterTrustDomain,
 				InvitationTTL:             f.invitationTTL,
 				InvitationRequireKeyPin:   f.invitationRequireKeyPin,
 				InvitationRedeemLimit:     f.invitationRedeemLimit,
@@ -2345,7 +2341,7 @@ func runStart(f *startFlags) (err error) {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, f.dataDir, rnode, complianceAudit, strictSoD, f.clusterTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, bundle.TrustPool(), svcNode.PendingAdmins, firstAdminPins(svcNode.BarrierInit), svcNode.CertTargets, f.revocationCacheTTL, f.auditFailurePolicy, f.mtlsBindingPolicy, awaitingAdminCredentialProbe, svcNode.Watch)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2630,7 +2626,7 @@ func runStart(f *startFlags) (err error) {
 					svcNode.PlacementStore, topology, shard.ShardKV, f.raftAddress)
 				localReplicaID := f.replicaID
 				isLeader := func() bool {
-					id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+					id, ok, lerr := host.LeaderID(shard.ShardKV)
 					return lerr == nil && ok && id == localReplicaID
 				}
 				// A rolling step hands on only once its owner's Raft log has
@@ -2755,7 +2751,7 @@ func runStart(f *startFlags) (err error) {
 				if host != nil {
 					sweepReplicaID := f.replicaID
 					serverOpts = append(serverOpts, server.WithCollectionSweepLeader(func() bool {
-						id, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						id, ok, lerr := host.LeaderID(shard.ShardKV)
 						return lerr == nil && ok && id == sweepReplicaID
 					}))
 				}
@@ -2896,6 +2892,9 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))
+			}
+			if svcNode.Log != nil {
+				serverOpts = append(serverOpts, server.WithLogService(svcNode.Log))
 			}
 			if svcNode.Policy != nil {
 				serverOpts = append(serverOpts, server.WithPolicyService(svcNode.Policy))
@@ -3041,7 +3040,7 @@ func runStart(f *startFlags) (err error) {
 				}
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
-						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
+						leaderID, ok, lerr := host.LeaderID(shard.ShardKV)
 						return lerr == nil && ok && leaderID == f.replicaID
 					},
 					leaseSvc.Revoke,
@@ -3482,17 +3481,9 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle, compl
 	// host with a transport admits a member by its identity and by nothing
 	// else (go-qrdb#556), and the local entry comes from this node's own
 	// certificate.
-	var memberIdentities map[uint64]string
-	if !isSingleNode(f) {
-		var selfCert []byte
-		if mtlsCfg != nil {
-			selfCert = mtlsCfg.Cert
-		}
-		ids, err := cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
-		if err != nil {
-			return nil, err
-		}
-		memberIdentities = ids
+	memberIdentities, err := resolveMemberIdentities(f, bundle)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build host configuration.
@@ -4031,6 +4022,29 @@ func isSingleNode(f *startFlags) bool {
 	return cluster.IsSingleNode(f.clusterOptions())
 }
 
+// resolveMemberIdentities returns the node identities this node seeds into the
+// membership it founds, keyed by replica ID. The local entry is derived from
+// the certificate the node holds, whether or not it runs a Raft transport: a
+// single node runs none and checks no identity, but the membership it commits
+// is the one every replica later admitted to the shard authorizes it by, and
+// a founder committed with no identity is refused as missing_identity by the
+// first member it adds. A multi-node member also takes every other replica's
+// identity from --member-identities; a single node has no other member to
+// name, so it seeds its own alone.
+func resolveMemberIdentities(f *startFlags, bundle *TLSBundle) (map[uint64]string, error) {
+	var selfCert []byte
+	if bundle != nil {
+		selfCert = bundle.CertPEM
+	}
+	if isSingleNode(f) {
+		if len(selfCert) == 0 {
+			return nil, nil
+		}
+		return cluster.ResolveMemberIdentities(nil, f.replicaID, selfCert)
+	}
+	return cluster.ResolveMemberIdentities(f.memberIdentities, f.replicaID, selfCert)
+}
+
 // ---------------------------------------------------------------------------
 // Auth bootstrap
 // ---------------------------------------------------------------------------
@@ -4154,7 +4168,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// before any leader is elected would see NotLeader and could not tell
 	// "no leader yet" apart from "this state machine cannot do this at
 	// all". runFirstBoot waits again once it starts its own sequence; that
-	// second wait is cheap (GetLeaderID is a local, already-known answer
+	// second wait is cheap (LeaderID is a local, already-known answer
 	// once a leader exists) and keeps this function independently correct
 	// rather than relying on ordering against its caller.
 	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
@@ -4427,7 +4441,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, clusterTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, issuerVerifier auth.IssuerVerifier, pendingAdmins middleware.PendingTenantAdmins, pins middleware.FirstAdminPins, certTargets middleware.CertTargetGuard, revocationCacheTTL string, auditFailurePolicy string, mtlsBindingPolicy string, awaitingAdminCredentialProbe *firstboot.AwaitingAdminCredentialProbe, watchSvc firstboot.AdminRecordWatcher) (*authBootstrapResult, error) {
 	_ = node
 	var adminWatchWG sync.WaitGroup
 	// watchCtx is a child of ctx (sigCtx) with its OWN cancel
@@ -4598,7 +4612,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, da
 		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,
-		SPIFFETrustDomain:   spiffeTrustDomain,
+		ClusterTrustDomain:  clusterTrustDomain,
 		Tenants:             mgmt.tenantSvc,
 		ABACEnabled:         abacCfg.Enabled,
 		ABACPolicyDir:       abacCfg.PolicyDir,
@@ -5030,7 +5044,7 @@ func leaderWaitBudget(f *startFlags) time.Duration {
 // *server.ShardLeaderWaitError -- naming the shard, the budget and the time
 // actually spent -- and the next round begins.
 func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
-	if _, ok, err := node.GetLeaderID(shardID); err == nil && ok {
+	if _, ok, err := node.LeaderID(shardID); err == nil && ok {
 		return nil
 	}
 	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",

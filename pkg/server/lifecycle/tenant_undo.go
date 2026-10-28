@@ -55,7 +55,7 @@ func tenantUndoRequired(host service.Host) func() error {
 // membership -- voters, observers and witnesses, the members feature
 // activation counts. A nil host gets nil, which refuses every reuse as
 // pending.
-func undoCleanupRoster(host service.Host) tenant.UndoCleanupRoster {
+func undoCleanupRoster(host service.AdminHost) tenant.UndoCleanupRoster {
 	if host == nil {
 		return nil
 	}

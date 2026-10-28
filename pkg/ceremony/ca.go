@@ -54,7 +54,7 @@ type SignCSROptions struct {
 	Username string
 
 	// TrustDomain is the cluster's SPIFFE trust domain
-	// (auth.spiffe_trust_domain, which defaults to the cluster trust domain).
+	// (auth.cluster_trust_domain).
 	// The certificate's SPIFFE ID SAN is under TenantID's own trust domain;
 	// TrustDomain is the one no tenant may name. Required.
 	TrustDomain string

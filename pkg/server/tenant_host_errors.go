@@ -67,12 +67,12 @@ var ErrTenantShardNoLeader = errors.New("server: tenant shard did not elect a le
 //	MaxGap   the longest interval between two consecutive polls -- the direct
 //	         evidence of descheduling, since a 20ms sleep overruns by
 //	         microseconds on an idle host
-//	ErrCount how many polls GetLeaderID failed on, which separates an
+//	ErrCount how many polls LeaderID failed on, which separates an
 //	         intermittent query failure from a persistent one -- different
 //	         problems, different investigations
-//	FirstErr the first non-nil GetLeaderID error, reported alongside the last
+//	FirstErr the first non-nil LeaderID error, reported alongside the last
 //	         when the two differ
-//	LastErr  the last non-nil error GetLeaderID returned, which the previous
+//	LastErr  the last non-nil error LeaderID returned, which the previous
 //	         implementation discarded
 type ShardLeaderWaitError struct {
 	ShardID  uint64
@@ -120,7 +120,7 @@ func (e *ShardLeaderWaitError) Error() string {
 		} else {
 			b.WriteString("INTERMITTENT -- the other polls answered cleanly with no leader")
 		}
-		b.WriteString(") -- GetLeaderID last failed with: ")
+		b.WriteString(") -- LeaderID last failed with: ")
 		b.WriteString(e.LastErr.Error())
 		if e.FirstErr != nil && e.FirstErr.Error() != e.LastErr.Error() {
 			b.WriteString("; first failure differed: ")

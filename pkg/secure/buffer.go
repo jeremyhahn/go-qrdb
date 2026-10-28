@@ -24,7 +24,7 @@ import (
 )
 
 // Buffer is a short-lived, mlocked, canary-guarded working copy of
-// sensitive bytes. It wraps enclave.MemoryEnclave from go-enclave, the
+// sensitive bytes. It wraps a go-enclave memory enclave (enclave.ByteAccess), the
 // portfolio's protected-memory library (go-qrdb#114, go-qrdb#553).
 //
 // Buffers MUST be destroyed when no longer needed — callers are expected
@@ -50,10 +50,10 @@ import (
 // enclave.ProcessAllocator refuses with enclave.ErrBudgetExhausted before any
 // syscall is made, and one enclave's Destroy affects only its own mapping.
 // Nothing in this package needs to lock across allocations any more; each
-// Buffer's read/write borrow is enclave.MemoryEnclave's own, per-instance
+// Buffer's read/write borrow is its memory enclave's own, per-instance
 // lock.
 type Buffer struct {
-	enc       *enclave.MemoryEnclave
+	enc       enclave.ByteAccess
 	destroyed atomic.Bool
 
 	// empty marks the explicit live zero-length value NewEmptyBuffer
@@ -79,6 +79,14 @@ type Buffer struct {
 // *EmptyBorrowError, as it refuses every empty borrow.
 func NewEmptyBuffer() *Buffer {
 	return &Buffer{empty: true}
+}
+
+// hollow reports whether b is the zero Buffer: no enclave and not the empty
+// value. It holds nothing and reads as destroyed. go-enclave hands out its
+// memory enclaves as the enclave.ByteAccess interface, whose nil value has no
+// methods to call, so every use of enc checks this first.
+func (b *Buffer) hollow() bool {
+	return b.enc == nil && !b.empty
 }
 
 // wrapAllocError translates go-enclave's construction errors into this
@@ -131,7 +139,7 @@ func LogRelease(what string, err error) {
 // installed, the first call lazily installs a default sized to the
 // discovered RLIMIT_MEMLOCK ceiling, so an unconfigured process is still
 // bounded rather than unlimited.
-func processAllocator() (*enclave.Allocator, error) {
+func processAllocator() (enclave.Allocator, error) {
 	return enclave.ProcessAllocator()
 }
 
@@ -166,7 +174,7 @@ func NewBuffer(size int) (*Buffer, error) {
 //
 // # Why this does not use enclave.Allocator.New directly
 //
-// go-enclave's New (and the unadmitted NewMemoryEnclave it shares its move
+// go-enclave's New (and the unadmitted NewMemory it shares its move
 // contract with) FREEZES the resulting pages read-only — deliberate, and a
 // real hardening: a write through a retained slice faults instead of
 // silently corrupting the enclave. But this package's Buffer has always been
@@ -219,7 +227,7 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // that outlives the callback uses CopyOut and wipes the copy when done.
 //
 // fn MUST NOT retain the slice beyond the call, and MUST NOT call this
-// Buffer's own methods reentrantly: enclave.MemoryEnclave's lock is not
+// Buffer's own methods reentrantly: the memory enclave's lock is not
 // reentrant, so a nested WithBytes/Size/Destroy on the SAME buffer from inside
 // its own callback deadlocks. Anything on a DIFFERENT Buffer or Secret —
 // allocating, opening, borrowing, destroying — is safe from inside the
@@ -232,7 +240,7 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // Any error fn returns is passed through unchanged. The empty Buffer
 // NewEmptyBuffer returns calls fn with a zero-length slice.
 func (b *Buffer) WithBytes(fn func([]byte) error) error {
-	if b == nil || fn == nil || b.destroyed.Load() {
+	if b == nil || fn == nil || b.destroyed.Load() || b.hollow() {
 		return &NilBufferError{}
 	}
 	enterBorrow("Buffer.WithBytes", b)
@@ -251,7 +259,7 @@ func (b *Buffer) WithBytes(fn func([]byte) error) error {
 // It is the check Size cannot be: a live empty Buffer and a destroyed one
 // both report a Size of 0.
 func (b *Buffer) IsAlive() bool {
-	if b == nil || b.destroyed.Load() {
+	if b == nil || b.destroyed.Load() || b.hollow() {
 		return false
 	}
 	if b.empty {
@@ -325,7 +333,7 @@ func nilBufferIfGone(err error) error {
 // after Destroy, on a zero-value Buffer, and for the live empty Buffer
 // NewEmptyBuffer returns; IsAlive tells those apart.
 func (b *Buffer) Size() int {
-	if b == nil || b.destroyed.Load() {
+	if b == nil || b.destroyed.Load() || b.enc == nil {
 		return 0
 	}
 	enterBorrow("Buffer.Size", b)
@@ -348,7 +356,7 @@ func (b *Buffer) Destroy() {
 // logged. A failed release never panics; it returns nil for an ordinary
 // release and for a
 // nil or already-destroyed Buffer. Otherwise it returns what
-// enclave.MemoryEnclave.Destroy reported:
+// the memory enclave's Destroy reported:
 //
 //   - enclave.ErrReleasedWithoutWipe: the environment denied the mprotect that
 //     makes a frozen region writable again before wiping it, so the pages were
@@ -364,10 +372,10 @@ func (b *Buffer) Destroy() {
 //
 // go-qrdb's own test suite cannot force any of these: they are exercised only
 // from INSIDE go-enclave's package-internal tests (unexported syscall seams),
-// and reproducing them here would mean widening b.enc from the concrete
-// *enclave.MemoryEnclave to an interface purely to inject a fake (go-qrdb#114
-// review, round 2: tracked as a known gap rather than papered over with a seam
-// that exists for one test).
+// and b.enc, though an enclave.ByteAccess interface since go-enclave
+// v0.9.0-alpha, is always built by go-enclave: a fake injected only to reach
+// these paths would test the fake (go-qrdb#114 review, round 2: tracked as a
+// known gap rather than papered over with a seam that exists for one test).
 //
 // An attempt that does not finish does NOT leave b permanently marked
 // destroyed. The CAS below flips b.destroyed to true before the release runs,
@@ -397,6 +405,10 @@ func (b *Buffer) DestroyErr() error {
 		}
 	}()
 	checkNotBorrowed("Buffer.Destroy", b)
+	if b.enc == nil {
+		completed = true
+		return nil
+	}
 	err := b.enc.Destroy()
 	completed = !errors.Is(err, enclave.ErrLockedMemoryUnavailable)
 	return err

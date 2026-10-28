@@ -43,6 +43,7 @@ func TestClient_CapabilityAccessors_ReturnTheTransport(t *testing.T) {
 		"Lock":            func() any { return c.Lock() },
 		"TimeSeries":      func() any { return c.TimeSeries() },
 		"Vector":          func() any { return c.Vector() },
+		"Vlog":            func() any { return c.Vlog() },
 		"Users":           func() any { return c.Users() },
 		"Roles":           func() any { return c.Roles() },
 		"Certs":           func() any { return c.Certs() },

@@ -116,7 +116,9 @@ matches one non-empty path segment in that place, which is how the claim
 routes (`POST /v1/barrier/officers/{username}/claim/begin` and
 `.../complete`, and their recovery forms) are listed, so that
 `/v1/barrier/officers/revoke` is not admitted; anything else matches exactly
-(`sealedwindow.RESTEntryMatches`). REST additionally allowlists one
+(`sealedwindow.RESTEntryMatches`, re-exported as
+`sdk/go/server.SealedWindowRESTEntryMatches` beside
+`SealedWindowRESTAllowlist`). REST additionally allowlists one
 transport-specific prefix with no transport-neutral verb
 (`sealedwindow.RESTExtra`): `/v1/cluster/`, the cluster peer key transport.
 Its receiver authorizes itself with the node certificate and a placement
@@ -508,16 +510,18 @@ one implementation: qrdb's own boot-time listener is built from the same
 constructors (`rest.NewSealedWindowServer`, `mcp.NewSealedWindowServer`).
 
 ```go
-probe := sdk.NewSealedWindowListenerProbe(barrier, ceremonySvc)
+import sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
+
+probe := sdkserver.NewSealedWindowListenerProbe(barrier, ceremonySvc)
 
 // REST, and HTTP/3 on the same handler.
-sealed := sdk.NewSealedWindowHandler(barrierSvc, ceremonySvc, credentialSvc, probe)
+sealed := sdkserver.NewSealedWindowHandler(barrierSvc, ceremonySvc, credentialSvc, probe)
 mux.Handle("/v1/barrier/", sealed)
 mux.Handle("/v1/ceremony/", sealed)
 mux.Handle("/health", sealed)
 
 // MCP.
-mcpServer.AddTools(sdk.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialSvc, probe)...)
+mcpServer.AddTools(sdkserver.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialSvc, probe)...)
 ```
 
 - **The whole allowlist.** The unseal call -- passphrase unseal, the holder
@@ -531,8 +535,8 @@ mcpServer.AddTools(sdk.SealedWindowMCPTools(barrierSvc, ceremonySvc, credentialS
   refused with the typed `Unavailable`.
 - **One probe for every transport.** Build it once and pass it to the REST
   handler, the MCP tools and the gRPC listener interceptors
-  (`sdk.SealedWindowListenerUnaryInterceptor` and
-  `sdk.SealedWindowListenerStreamInterceptor`). They then share one
+  (`sdkserver.SealedWindowListenerUnaryInterceptor` and
+  `sdkserver.SealedWindowListenerStreamInterceptor`). They then share one
   `Admission`, so a request that unseals the barrier waits for requests already
   admitted on any transport. No request admitted afterwards runs anonymously
   against the unsealed barrier.

@@ -489,6 +489,7 @@ func TestJoinCSR_DualKeyClientSelectsTheRuntimeSuite(t *testing.T) {
 	if suite != wantSuite {
 		t.Fatalf("selectJoinSuite = %#x, want %#x (crypto/fips140.Enabled() = %v)", suite, wantSuite, fips140.Enabled())
 	}
+	t.Logf("crypto/fips140 Enabled=%v Enforced=%v: dual-key joiner selected suite %#x", fips140.Enabled(), fips140.Enforced(), suite)
 
 	if fips140.Enforced() {
 		if _, err := ecdh.X25519().GenerateKey(rand.Reader); err == nil {

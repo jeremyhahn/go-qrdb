@@ -1,7 +1,7 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** (the strict-isolation section is RULED, not yet
-> implemented) · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** (the strict-isolation section is RULED, partly built;
+> it names what is not built) · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -21,7 +21,13 @@ func (c *Client) WithTenant(tenantID string) (transport.KVClient, error)
 
 Server option: `server.WithTenantService(svc tenant.TenantServicer)`. gRPC
 registers `TenantBarrierService` when a tenant servicer is set; the Unix
-socket server takes it through `unix.WithTenantBarrierService`.
+socket server takes it through `unix.WithTenantBarrierService`. A composer
+that builds its own `*grpc.Server` registers it through the SDK's
+`RegisterGRPCService` with `WithRegisterTenantBarrierService(svc)`, which
+registers `qrdb.v1.TenantBarrierService` beside `QRDBService`; its
+tenant-scoped gate is the middleware passed with `WithRegisterAuthMiddleware`,
+and without one the service runs in the no-auth posture. The Unix socket server
+registers it the same way, through that one option.
 
 Tenant creation delegates, on every transport, to one service
 (`pkg/service/tenant_onboarding.go`), wired with
@@ -62,6 +68,18 @@ type TenantAdminCredential struct {
 	AwaitsBarrierInit bool
 }
 ```
+
+Before any write, `OnboardTenant` calls
+`tenant.ValidateTenantIDTrustDomain(req.ID, clusterTrustDomain)`, which
+returns a `*tenant.TenantTrustDomainError` for an ID that
+`spiffe.ValidateTrustDomain` refuses (`Err` is the `*spiffe.TrustDomainError`)
+or that equals the cluster trust domain (`Err` is
+`tenant.ErrTenantIDIsClusterTrustDomain`). `pkg/api/errclass` classifies it as
+invalid input: 400 on REST, `InvalidArgument` on gRPC, and the same class on
+every other transport. The check lives in the service, not a transport, so every
+transport and the CLI refuse the same IDs;
+`TestTenant_CLI_TrustDomainRefusal_PerProtocol` drives the refusal through the
+CLI on each.
 
 `OnboardTenant` calls `bootstrap.ProvisionTenant` with
 `AdminEnrollment: AdminEnrollCert`, `Exclusive: true` and
@@ -489,11 +507,12 @@ type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
   One boundary does it: `sdk/go/transport/embedded`'s RBAC surface REFUSES an
   identity with an empty `TenantID` (`transport.InvalidIdentityError`) rather
   than folding it.
-- **Per-node key wrapping, shared tenant key**: the tenant root key is
-  transported over authenticated mTLS with HPKE and **re-wrapped under each
-  receiving node's own node barrier** (system-managed) or the tenant's strategy
-  (self-managed). The wrapping is per node; the tenant root key is the same on
-  every replica.
+- **No plaintext root key leaves a node**: a `none`, `passphrase` or `shamir`
+  tenant barrier is initialized by every serving node with its own key, and
+  nothing is shipped (`clusterkeys.ownKeyOnEveryNode`). For any other
+  self-managed strategy the leader ships the owner-sealed barrier blob verbatim,
+  HPKE-sealed to the receiving node's verified delivery key over mTLS
+  (`Sender.DistributeTenantKey`). A platform-custody barrier is not shipped.
 - **A tenant seal reaches every replica**, and only the tenant's own
   administrators may issue it — see
   [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
@@ -1229,10 +1248,9 @@ shrink together.
   `isolation_raft_rebalance_test.go`, `isolation_raft_scale_test.go`,
   `isolation_raft_shard_ids_test.go` — run with the feature's other suites. CI runs them in its **full tier** — every push to
   `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` —
-  as the `multi-tenancy` leg of the `integration-features` job
+  in one shard of the `integration-features` job
   (`make integration-test-multi-tenancy`, the files `features.mk` maps to this
-  feature), one of that job's per-feature legs, each under its own 45-minute
-  limit. A plain pull request push runs none of them, so a change to tenant
+  feature), each shard under its own 30-minute limit. A plain pull request push runs none of them, so a change to tenant
   isolation carries `ci:full`. `test/buildgates/feature_jobs_gate_test.go`
   fails when the job's matrix drops a feature that maps a file, when the job's
   `if:` is not exactly the full-tier condition, or when the workflow's
@@ -1249,6 +1267,24 @@ The `Current*` counters of the tenant record's `quota.Quotas` are the live usage
 reconciler corrects `volume` tenants' storage drift on its interval. Tenant
 provisioning, quota and entitlement changes are audited through
 [../audit/](../audit/).
+
+Log events (`pkg/tenant`, each with a `tenant_id` attribute):
+
+- **Lifecycle, `Info`**: `tenant created`, `tenant updated`, `tenant retired`,
+  `tenant deleted`, `tenant quotas updated`, `tenant entitlements updated`,
+  `deleted-tenant reconcile`, `reclaimed deleted tenant directory`.
+- **Barrier, `Info`**: `tenant barrier registered`, `tenant barrier
+  initialized`, `tenant barrier init statement claimed`, `tenant barrier
+  sealed`, `tenant barrier unsealed`, `tenant shamir barrier prepared`,
+  `tenant shamir barrier initialized`, `tenant barrier holder quorum
+  complete`.
+- **Refusals and residue, `Warn` or `Error`**: `tenant refused on this node;
+  its data is not opened` (`Error`), `skipping corrupt tenant metadata`,
+  `deleted-tenant reconcile left a path in place`, the `tenant create lost to
+  a delete` and `tenant create undone` family, and `undone tenant ... left to
+  the next reconcile`.
+
+There are no tenant-specific metrics.
 
 ## Strict isolation — engineering contract (RULED)
 
@@ -1702,11 +1738,20 @@ to 12, in the table after it, are the plan.
   that exporter by the key whose SPKI the pending first admin records. The
   SDK signs with a caller-supplied `crypto.Signer`
   (`transport.ProveTenantBarrierInit`), the seam for device-held keys; the
-  CLI signs with its `--key-file` key. The embedded transport is in process,
+  CLI signs with its `--key-file` key. The verifier half is one type,
+  `middleware.TenantBarrierInitVerifier` (`Begin`, `Complete`, over an
+  `initproof.Book`): `AuthMiddleware` runs it for every transport, holding
+  the proof to the pending first admin's key, and the SDK re-exports it
+  (`sdk.TenantBarrierInitVerifier`, `sdk.NewTenantBarrierInitVerifier`,
+  `sdk.TenantBarrierInitKey`) for a facade that terminates the caller's TLS
+  and so must run the exchange on its own connection; the facade names the
+  expected key through `TenantBarrierInitKey` and authorizes the caller
+  itself. The embedded transport is in process,
   has no connection to bind, and asks no proof. A replayed nonce, a nonce
   from another connection, an expired challenge and a signature by another
   key are each refused with `FirstAdminProofError`
-  (`pkg/auth/middleware/barrier_bootstrap_test.go`, `pkg/initproof`);
+  (`pkg/auth/middleware/barrier_bootstrap_test.go`, `pkg/initproof`,
+  `sdk/go/types_tenant_barrier_init_test.go`);
   `test/integration/tenant_barrier_init_proof_cli_test.go` runs the real CLI
   on every network transport. The pending first-admin record stays in the
   system shard until phase 8.
@@ -1830,7 +1875,7 @@ Each phase's red test is in the plan above. In addition:
 - **Credential verifiers.** A wrong passphrase on a first-contact node is
   refused before any key is sealed.
 
-**Integration (`test/integration/`, the `multi-tenancy` leg of CI's full tier):**
+**Integration (`test/integration/`, `make integration-test-multi-tenancy`, a shard of CI's full-tier `integration-features` job):**
 - **Distinct replica keys.** Every replica's key is distinct, and one
   replica's key does not open another's store.
 - **Snapshot catch-up** works across distinct keys.

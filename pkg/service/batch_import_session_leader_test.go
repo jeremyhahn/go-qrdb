@@ -48,6 +48,8 @@ type alwaysEnabledHost struct {
 	*raftbackend.HostAdapter
 }
 
+var _ AdminHost = (*alwaysEnabledHost)(nil)
+
 func (alwaysEnabledHost) FeatureEnabled(_ uint64, _ featuregate.Feature) bool { return true }
 
 // startImportLeaderClusterShard starts a dedicated shard (distinct from the
@@ -77,7 +79,7 @@ func startImportLeaderClusterShard(t *testing.T, c *raftharness.Cluster, shardID
 // Used both to find the cluster's initial leader (exclude empty) and to
 // confirm a RequestLeaderTransfer actually landed on a DIFFERENT replica.
 //
-// GetLeaderID answers from WHATEVER host is asked, follower included -- it
+// LeaderID answers from WHATEVER host is asked, follower included -- it
 // reports who the asked host believes leads, not that the asked host itself
 // leads -- so the returned index is derived from the reported replica ID,
 // never from which host in the loop happened to answer.
@@ -86,7 +88,7 @@ func waitForLeaderExcept(t *testing.T, hosts []*quicraft.Host, shardID uint64, e
 	deadline := time.Now().Add(raftharness.Bound)
 	for {
 		for _, host := range hosts {
-			if id, known, err := host.GetLeaderID(shardID); err == nil && known && id != 0 && !exclude[id] {
+			if id, known, err := host.LeaderID(shardID); err == nil && known && id != 0 && !exclude[id] {
 				return int(id - 1), id
 			}
 		}

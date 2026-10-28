@@ -25,6 +25,8 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -70,6 +72,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -78,9 +81,10 @@ import (
 // BuildServices: storage backends, Raft host, watch hub, and (when seal is
 // enabled) barrier and registry.
 type Infra struct {
-	// Host is the service.Host implementation (Raft adapter or LocalBackend).
-	// Required.
-	Host service.Host
+	// Host is the node host (Raft adapter or LocalBackend), both its data
+	// host and its Raft-admin host: the node composes the admin, rebalance
+	// and snapshot services over it as well as the data services. Required.
+	Host service.AdminHost
 
 	// NoRevisionHistory declares that the system shard's state machine keeps
 	// no MVCC revision history (see StateMachineKeepsRevisionHistory). The
@@ -222,15 +226,15 @@ type Infra struct {
 	// it. When nil a fresh ceremony service is constructed.
 	CeremonyCoreSvc *ceremony.CeremonyService
 
-	// SPIFFETrustDomain is the node's effective SPIFFE trust domain
-	// (auth.spiffe_trust_domain, defaulting to cluster_trust_domain). The
+	// ClusterTrustDomain is the node's effective SPIFFE trust domain
+	// (auth.cluster_trust_domain, or its default when unset). The
 	// certificate provider (cert.WithTrustDomain), certificate enrollment,
 	// the bootstrap admin and the ceremony (SetTrustDomain) mint every
 	// tenant-principal certificate with the SPIFFE ID SAN under it that
 	// agrees with its OU, so the mTLS authenticator's pinned derivation
 	// resolves the certificates this node issues. It must be the value the
 	// authenticator pins. Empty mints none: every issuer refuses instead.
-	SPIFFETrustDomain string
+	ClusterTrustDomain string
 
 	// CertKeyProviderFactory, when non-nil, replaces Key B's built-in
 	// per-tenant cakey.SoftwareProvider entirely (the CA key provider seam,
@@ -391,6 +395,14 @@ type Infra struct {
 	// DEK-engine seam beside it.
 	DEKProvider dek.Provider
 
+	// HeadSignerProvider, when non-nil, creates every verifiable log's
+	// head-signing key and signs its heads. It is the seam a composer fills
+	// with a provider that keeps the key on a device or in a KMS and hands
+	// back only its reference and public key (go-xkms hardware, composed by
+	// go-quicbaas). Nil keeps the software provider over each log's own
+	// sealed k/<version> record.
+	HeadSignerProvider vlog.HeadSignerProvider
+
 	// Clock, when non-nil, is the time source for the node's security time
 	// gates: lease expiry, key-delivery freshness and replay window, the
 	// invitation-redeem and holder-act limiters. Nil is the real clock.
@@ -508,6 +520,12 @@ type Infra struct {
 	// CA) is unaffected: it is a different trust domain and is built
 	// unconditionally in the same block.
 	NoClusterCAKey bool
+
+	// wrapVectorStorage, when non-nil, wraps the vector storage before the
+	// vector service and the node's closers take it. It is unexported: the
+	// package's own tests use it to hold a background vector job in flight
+	// and observe the shutdown order around it (#1171).
+	wrapVectorStorage func(vectorstorage.Storage) vectorstorage.Storage
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -654,6 +672,12 @@ type Node struct {
 	// tenant's resolved store, so it inherits that store's replication,
 	// barrier encryption, sealed-tenant refusal and teardown.
 	DEK service.DEKServicer
+
+	// Log is the verifiable-log service. It rides the audit resolver, so
+	// it is non-nil whenever the build carries the qrdb_vlog tag, and nil
+	// when it does not. Its head-signing keys come from
+	// Infra.HeadSignerProvider, or the software provider when that is nil.
+	Log service.LogService
 
 	// Policy is the tenant-scoped ABAC policy store. It is non-nil exactly
 	// when StoreResolver is: each policy is a record in its tenant's
@@ -952,6 +976,18 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		bm.SetUnsealGate(databaseUnsealGate(dbManager, infra.ClusterSealer))
 	}
 
+	// The verifiable-log service routes as the audit chain does, but also
+	// refuses a barrier tenant and a barrier database: its log registry and
+	// sealed signing keys sit under the system barrier, not the tenant's or
+	// the database's. A build without the qrdb_vlog tag has no log service,
+	// which is not a boot failure.
+	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
+	if err != nil {
+		return nil, err
+	}
+	n.Log = logSvc
+
 	// Replicated placement table (Phase 4c) over the shared system KV, plus the
 	// load-aware scheduler over the live cluster topology (host roster +
 	// RebalanceService load scoring). These are wired into the DatabaseService
@@ -1086,6 +1122,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		vectorStorage = pebbleVectorStorage
 	}
+	if infra.wrapVectorStorage != nil {
+		vectorStorage = infra.wrapVectorStorage(vectorStorage)
+	}
 	vectorLog := logger.NewAdapter(newMinimalLogger(log))
 	n.addCloser(func() error { return vectorStorage.Close() })
 
@@ -1095,6 +1134,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	)
 	if err != nil {
 		return nil, &VectorServiceError{Err: err}
+	}
+	// Closers run last-added first, so this runs before the vectorStorage
+	// closer above: the service cancels and waits for its async compactions
+	// and index rebuilds before the Pebble DB beneath them closes (#1171).
+	if closer, ok := vectorSvc.(io.Closer); ok {
+		n.addCloser(closer.Close)
 	}
 	n.Vector = vectorSvc
 
@@ -1403,6 +1448,19 @@ func infraClock(infra Infra) clock.Clock {
 // buildDEKService builds the tenant DEK service. A non-nil provider is the
 // composer's dek.Provider seam and is served as is; otherwise the software
 // dek.Keyring is built over resolver.
+// buildLogService builds the verifiable-log service over the audit resolver
+// and the node's databases with the composer's head-signer provider; a nil
+// provider is the software default. It returns a nil service and no error when
+// the build does not carry the qrdb_vlog tag.
+func buildLogService(resolver service.AuditShardResolver, databases service.LogDatabaseLookup, signers vlog.HeadSignerProvider) (service.LogService, error) {
+	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: resolver, Databases: databases, Signers: signers})
+	var notCompiled *vlog.NotCompiledError
+	if errors.As(err, &notCompiled) {
+		return nil, nil
+	}
+	return svc, err
+}
+
 func buildDEKService(provider dek.Provider, resolver tenant.StoreResolver, keyWrapRegistry keywrap.Registry, keyWrapProvider keywrap.Provider, keyDir string) (service.DEKServicer, error) {
 	if provider != nil {
 		svc, err := service.NewDEKService(provider)
@@ -1535,7 +1593,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 			n.CertProv = infra.CertProvider
 		} else {
 			certOpts := []cert.ProviderOption{
-				cert.WithTrustDomain(infra.SPIFFETrustDomain),
+				cert.WithTrustDomain(infra.ClusterTrustDomain),
 				cert.WithNewCAHook(n.ClientTrustChanges.Notify),
 				// certs:revoke has no single caller every transport funnels
 				// through the way certs:issue/certs:enroll go through
@@ -1731,7 +1789,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetCA(infra.CeremonyCA)
 	// Every certificate the ceremony issues names its tenant SPIFFE ID under
 	// this domain, agreeing with its OU (auth.TenantFromClientCert).
-	svc.SetTrustDomain(infra.SPIFFETrustDomain)
+	svc.SetTrustDomain(infra.ClusterTrustDomain)
 	svc.SetFactorRegistry(infra.FactorRegistry)
 	// The SO PIN lockout is installed where the composer chose the backend
 	// (NewSealStorePINBackend, server.WithPINBackend); NewLockoutBackend is
@@ -1776,7 +1834,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
 	n.CertTargets = service.NewCertTargetGuard()
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
-		service.WithEnrollmentTrustDomain(infra.SPIFFETrustDomain),
+		service.WithEnrollmentTrustDomain(infra.ClusterTrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
 	onboardingDeps := service.TenantOnboardingDeps{
@@ -1786,7 +1844,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Certs:       n.CertProv,
 		Anchors:     n.TrustAnchors,
 		Pending:     n.PendingAdmins,
-		TrustDomain: infra.SPIFFETrustDomain,
+		TrustDomain: infra.ClusterTrustDomain,
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
@@ -1813,7 +1871,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	// self-managed one's CSR as system first boot refuses one, so that admin
 	// brings their own certificate.
 	if n.ClusterCAProv != nil {
-		signer, err := clusterCAAdminSigner(n.ClusterCAProv, infra.SPIFFETrustDomain)
+		signer, err := clusterCAAdminSigner(n.ClusterCAProv, infra.ClusterTrustDomain)
 		if err != nil {
 			log.Warn("lifecycle: tenant first-admin CSRs for self-managed isolated tenants will be refused",
 				slog.String("error", err.Error()))
@@ -1860,7 +1918,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 				Anchors:         n.TrustAnchors,
 				Tenants:         n.Tenant,
 				TTL:             ttl,
-				TrustDomain:     infra.SPIFFETrustDomain,
+				TrustDomain:     infra.ClusterTrustDomain,
 				AuditLogger:     infra.AuditLogger,
 				AuditPolicy:     infra.AuditFailurePolicy,
 				RequireKeyPin:   infra.InvitationRequireKeyPin,

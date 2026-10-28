@@ -260,8 +260,8 @@ func (s *CeremonyService) liveDeps() {
 // SetTrustDomain installs the SPIFFE trust domain every certificate the
 // ceremony issues names in its tenant SPIFFE ID SAN (HolderDeps.TrustDomain).
 // It is carried to every tenant and database holder authority built from
-// HolderDeps. The composer passes auth.spiffe_trust_domain, which defaults to
-// the cluster trust domain; until one is set every issuance is refused.
+// HolderDeps. The composer passes auth.cluster_trust_domain (its default when
+// unset); until one is set every issuance is refused.
 func (s *CeremonyService) SetTrustDomain(trustDomain string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

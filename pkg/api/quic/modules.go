@@ -66,16 +66,15 @@ type moduleGRPCRegistrar struct {
 // interceptor's runtime denial of an undeclared method.
 //
 // The one exception is a method the module also declares through
-// apimodule.GRPCPublicMethodLister: on gRPC and unix that bypasses BOTH
-// authentication and authorization, but the native QUIC transport has no
-// unauthenticated-method path at all -- every frame requires a verified mTLS
-// client certificate (see Server.authenticate) with no carve-out even for
-// admin.Health. A public method with no permission option is therefore not a
-// construction bug; it is simply not reachable over QUIC, so it is skipped
-// (logged) rather than failing the default-deny assertion. A public method
-// that DOES carry a permission option is projected normally -- the public
-// declaration only ever widens gRPC/unix reachability, it never narrows
-// QUIC's.
+// apimodule.GRPCPublicMethodLister. It is registered public
+// (handlePublicIf): served with no client certificate, skipping both
+// authentication and authorization, exactly as the gRPC and unix transports
+// serve it after reading the same declaration into
+// AuthMiddleware.RegisterPublicGRPCMethods, and as REST serves a module's
+// HandlePublic route. The declaration wins over a (qrdb.v1.permission) option
+// the method also carries, as it does on gRPC, so a module's public set is
+// one list that every transport reads (docs/api-server/api.md, "Public
+// operations").
 //
 // Streaming methods (desc.Streams) are NOT projected: the native QUIC frame
 // protocol has no generic streaming path (its one streaming operation, KV
@@ -94,13 +93,19 @@ func (r *moduleGRPCRegistrar) RegisterService(desc *grpc.ServiceDesc, impl any) 
 
 	for _, md := range desc.Methods {
 		fullMethod := "/" + desc.ServiceName + "/" + md.MethodName
-		perm, ok := authmw.LookupGRPCFromDescriptor(fullMethod)
-		if !ok && r.declaredPublic(fullMethod) {
-			slog.Warn("quic: module method is declared public but QUIC has no unauthenticated-method path; it is not reachable over QUIC",
-				"method", fullMethod)
+		h := projectGRPCMethod(fullMethod, impl, md)
+		// A method the module declares public is served without
+		// authentication, read from the same GRPCPublicMethodLister the gRPC
+		// and unix transports feed into RegisterPublicGRPCMethods: one
+		// declaration, one public set on every transport. As on gRPC, the
+		// declaration wins over any (qrdb.v1.permission) option the method
+		// also carries.
+		if r.declaredPublic(fullMethod) {
+			r.s.handlePublicIf(true, fullMethod, h)
 			continue
 		}
-		r.s.handle(fullMethod, perm, projectGRPCMethod(fullMethod, impl, md))
+		perm, _ := authmw.LookupGRPCFromDescriptor(fullMethod)
+		r.s.handle(fullMethod, perm, h)
 	}
 }
 

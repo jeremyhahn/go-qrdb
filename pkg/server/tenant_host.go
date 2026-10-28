@@ -56,7 +56,7 @@ type tenantHost struct {
 	tenantID string
 	dataRoot string
 	host     *quicraft.Host
-	adapter  service.Host
+	adapter  service.AdminHost
 	hub      *watch.Hub
 	lessor   *lease.Lessor
 	services *DatabaseServices
@@ -222,7 +222,7 @@ const shardLeaderStarvationFactor = 10
 // LeaderSource is what WaitForShardLeader polls: the current leader of a
 // shard, as a Raft node reports it. *quicraft.Host satisfies it.
 type LeaderSource interface {
-	GetLeaderID(shardID uint64) (uint64, bool, error)
+	LeaderID(shardID uint64) (uint64, bool, error)
 }
 
 // shardLeaderSource is the two things waitForShardServingWithin needs from a
@@ -250,9 +250,9 @@ type quicraftShardSource struct{ host *quicraft.Host }
 
 var _ shardLeaderSource = quicraftShardSource{}
 
-// GetLeaderID reports the shard's leader.
-func (s quicraftShardSource) GetLeaderID(shardID uint64) (uint64, bool, error) {
-	return s.host.GetLeaderID(shardID)
+// LeaderID reports the shard's leader.
+func (s quicraftShardSource) LeaderID(shardID uint64) (uint64, bool, error) {
+	return s.host.LeaderID(shardID)
 }
 
 // ReadReady issues one ReadIndex on shardID and waits for its outcome.
@@ -424,7 +424,7 @@ func waitForShardServingWithin(ctx context.Context, host shardLeaderSource, shar
 // carrying what the poll observed.
 func awaitShardLeader(ctx context.Context, src LeaderSource, shardID uint64, start time.Time, timeout, interval time.Duration, clock shardLeaderClock) error {
 	leader, ok := pollShard(ctx, clock, "shard leader", shardID, start, start.Add(timeout), interval, func() (bool, error) {
-		_, ok, err := src.GetLeaderID(shardID)
+		_, ok, err := src.LeaderID(shardID)
 		return err == nil && ok, err
 	})
 	if ok {

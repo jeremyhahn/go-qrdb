@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -89,6 +90,26 @@ type Descriptor struct {
 
 	// AllowExpireBodies permits ExpireBodies on the log.
 	AllowExpireBodies bool `json:"allow_expire_bodies,omitempty"`
+
+	// Keys are the versions of the key that signs the log's heads, in
+	// version order from FirstKeyVersion; the last is current, and a head
+	// verifies against the key its KeyVersion names. Create records the
+	// first, RotateKey appends the next. A log without keys is not signed
+	// by the service.
+	Keys []HeadKey `json:"keys,omitempty"`
+}
+
+// Key returns the log's key at version.
+func (d Descriptor) Key(version uint32) (HeadKey, bool) {
+	if version == 0 || uint64(version) > uint64(len(d.Keys)) {
+		return HeadKey{}, false
+	}
+	return d.Keys[version-1], true
+}
+
+// CurrentKey returns the key that signs the log's new heads.
+func (d Descriptor) CurrentKey() (HeadKey, bool) {
+	return d.Key(uint32(len(d.Keys)))
 }
 
 // validate refuses a descriptor Create cannot store.
@@ -98,6 +119,14 @@ func (d Descriptor) validate() error {
 	}
 	if d.Hash != HashSHA256 {
 		return &InvalidDescriptorError{Reason: "unsupported hash " + d.Hash}
+	}
+	for i, k := range d.Keys {
+		if k.Version != FirstKeyVersion+uint32(i) {
+			return &InvalidDescriptorError{Reason: "key " + strconv.Itoa(i) + " has version " + KeyRef(k.Version)}
+		}
+		if err := k.validate(); err != nil {
+			return &InvalidDescriptorError{Reason: err.Error()}
+		}
 	}
 	return nil
 }
@@ -268,15 +297,40 @@ func (c *Chain) stagedGet(r storage.Reader) getFunc {
 }
 
 // Create stages a new log's descriptor and empty head into w. It refuses an
-// invalid name or descriptor and a log that already exists.
+// invalid name or descriptor, a descriptor recording more than the first key,
+// and a log that already exists. A key the descriptor records is held by its
+// provider outside go-qrdb; CreateWithKey stores the software provider's.
 func (c *Chain) Create(w Writer, id LogID, desc Descriptor) error {
+	return c.create(w, id, desc, nil)
+}
+
+// CreateWithKey stages a new log as Create does, and its head-signing key as
+// the k/<version> record beside the descriptor, in the same writes: the key
+// and the log exist together or not at all. The descriptor must record
+// exactly that key, which must be Ed25519 or ECDSA P-256.
+func (c *Chain) CreateWithKey(w Writer, id LogID, desc Descriptor, key SigningKey) error {
+	if len(desc.Keys) != 1 {
+		return &InvalidDescriptorError{Reason: "a log created with its key records exactly that key, not " + strconv.Itoa(len(desc.Keys))}
+	}
+	if err := desc.Keys[0].matches(key); err != nil {
+		return err
+	}
+	return c.create(w, id, desc, &key)
+}
+
+// create stages the descriptor, the empty head and, when key is not nil, the
+// signing key.
+func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) error {
 	if err := id.Validate(); err != nil {
 		return err
 	}
 	if err := desc.validate(); err != nil {
 		return err
 	}
-	// A struct of strings, a string slice and a bool always marshals, and
+	if len(desc.Keys) > 1 {
+		return &InvalidDescriptorError{Reason: "a log is created with at most its first key"}
+	}
+	// A struct of strings, slices, integers and a bool always marshals, and
 	// always to the same bytes.
 	body, _ := json.Marshal(desc)
 
@@ -292,7 +346,62 @@ func (c *Chain) Create(w Writer, id LogID, desc Descriptor) error {
 	if err := w.Set(logHeadKey(id), encodeLogHead(0, 0, nil)); err != nil {
 		return &TableWriteError{Err: err}
 	}
+	if key != nil {
+		if err := w.Set(keyKey(id, key.Version), key.PKCS8); err != nil {
+			return &TableWriteError{Err: err}
+		}
+	}
+	c.staged[string(descriptorKey(id))] = body
 	c.logs[id] = logState{allowExpire: desc.AllowExpireBodies}
+	return nil
+}
+
+// RotateKey stages next as id's current head-signing key: the descriptor
+// with next appended and, when record is not nil, the software provider's
+// k/<version> record, in the same writes. next must be the version after the
+// log's current key, so of two rotations racing from the same key the second
+// to apply is refused with *KeyVersionConflictError. Earlier keys stay in the
+// descriptor, and their records in the table, so every head already signed
+// still verifies. The descriptor is read from r through the records the
+// current Update call has staged.
+func (c *Chain) RotateKey(r storage.Reader, w Writer, id LogID, next HeadKey, record *SigningKey) error {
+	if err := id.Validate(); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+	if record != nil {
+		if err := next.matches(*record); err != nil {
+			return err
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.logs[id]; !ok {
+		return &LogNotFoundError{ID: id}
+	}
+	desc, err := readDescriptor(c.stagedGet(r), id)
+	if err != nil {
+		return err
+	}
+	if want := FirstKeyVersion + uint32(len(desc.Keys)); next.Version != want {
+		return &KeyVersionConflictError{ID: id, Version: next.Version, Want: want}
+	}
+	desc.Keys = append(desc.Keys, next)
+	body, _ := json.Marshal(desc)
+	dk := descriptorKey(id)
+	if err := w.Set(dk, body); err != nil {
+		return &TableWriteError{Err: err}
+	}
+	if record != nil {
+		if err := w.Set(keyKey(id, record.Version), record.PKCS8); err != nil {
+			return &TableWriteError{Err: err}
+		}
+	}
+	c.staged[string(dk)] = body
 	return nil
 }
 

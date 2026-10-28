@@ -1,6 +1,6 @@
 # Secondary Indexes and the Query Planner — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -216,15 +216,15 @@ definition produces a real case-insensitive index everywhere, so a lookup
 for `Alpha` over a stored `alpha` matches instead of returning empty with a
 nil error. `MemoryKVStore` honours the flag the same way.
 
-**Open: indexing barrier-encrypted tenant stores.** The `seal` store exists
+**Barrier-encrypted tenant stores maintain no indexes.** The `seal` store exists
 to guarantee that an operator reading the shared store sees only ciphertext. An
 index built above the encryption — the only layer where plaintext exists —
 would place the indexed field value into an index KEY in that same shared
 store, in the clear, defeating the property. A keyed/deterministic index term
 preserves it for exact-match lookups but destroys the ordering that range scans
-need. Choosing between those is a cryptographic design decision, and it is
-deliberately not made in the implementation. Until it is ruled on, the store
-refuses, and a DAO over it answers correctly by full scan.
+need. Neither is implemented: the seal tenant store refuses index registration
+and index queries with `kvstore.ErrIndexUnsupported`, and a DAO over it
+answers correctly by full scan.
 
 ## Numeric indexes and range plans
 

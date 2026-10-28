@@ -1,4 +1,32 @@
-# ci-template: v1.25 — canonical CI for all first-party Go repos.
+# ci-template: v1.28.0 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.28.0, one line each (the CUSTOMIZE block below
+# gives each one's reason):
+#   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
+#   - a docker-build job builds both images once; the others take its output
+#   - lint and image are two jobs, lint-gates a third (#1046)
+#   - the unit suites are five code-tier jobs, not image steps (ruling 211)
+#   - release-cross linux/arm64 runs on the full tier only (ruling 211)
+#   - the integration image is held by IT_HOLD, not the lease steps (#813)
+#   - integration is integration-standalone and integration-features (#674)
+#   - a fips job runs both unit suites under FIPS 140-3 mode, full tier
+#   - test-typescript is a job of its own
+#   - no revert-red-main.yml beside this file
+# v1.28.0, adopted here (ruling 220(3), DS-4015): `make deps-check` is a
+# lint-class gate on the PR tier (ruling 219(3)) and runs wherever `make lint`
+# runs, a docs-only PR included. The template's image job runs lint, so it
+# drops the step's CI_FULL_TIER condition there; here lint is its own job
+# (#1046) and the image job skips on a docs-only PR, so the step moves from
+# the image job to the lint job, after `make lint`, on every event, with
+# IN_IMAGE_NETWORK=bridge for the module proxy. CI Gate's lines do not change.
+# v1.27.0, adopted here (ruling 211, CA m1355): the lint-gates job runs
+# `make -k lint-gates` in parallel with the lint job's `make lint` (DS-3603,
+# DS-3609; m1192 (6) item 27, m1207 (1)); it was adopted alone first. The
+# v1.25.1 to v1.26.2 entries are reconciled here too: v1.25.1 to v1.25.3's
+# lease and image-lock steps are replaced by IT_HOLD (#813), v1.25.4's
+# `pull_request` types were already this file's, v1.26.1's releasability
+# test on a docs-only PR is arch-gates' `make check-public-releasable`, and
+# v1.26.2's per-sha main group was already this file's (DS-3465). The
+# template's changelog is in ../handbook; this header keeps go-qrdb's.
 # v1.25 (Company Agent m857, 2026-10-20): main has one concurrency group per
 # event, so a newer push to main cancels the older in-progress main push run.
 # At 20:00Z go-qrdb had three main-push runs in progress on three commits and
@@ -27,7 +55,8 @@
 # two tiers. A pull request runs the PR tier only: lint (with
 # assert-build-tags and arch-gates), build, and the unit suite under -race
 # (`make coverage`, so unit test and race are one step). Integration, Soak,
-# security, deps-check and trivy image do not run on a PR. The full tier runs
+# security, deps-check and trivy image do not run on a PR (v1.28 puts
+# deps-check on the PR tier). The full tier runs
 # on main after every merge (push), nightly (a new `schedule:` trigger), on
 # workflow_dispatch, and on a PR labelled ci:full (kept as the opt-in). A new
 # `soak` job loops the integration suite in the integration image for
@@ -52,11 +81,7 @@
 # container's cgroup cpu.max and gives the stage container that --cpus, with
 # GOMAXPROCS and GOFLAGS=-p from it; golangci-lint follows the quota. No
 # number is hardcoded. No job changes.
-# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.25, and why.
-#   - No `schedule:` trigger (owner ruling 2026-10-11, Company Agent m433: no
-#     new timers; test/buildgates/ci_tiers_test.go refuses one). The full tier
-#     runs on push to main, workflow_dispatch and a ci:full PR; the nightly
-#     soak runs on workflow_dispatch alone (see `on:` below).
+# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.28.0, and why.
 #   - No revert-red-main.yml beside this file: not adopted here.
 #   - The integration image is held by the job's IT_HOLD container (#813, run
 #     57540), not the template's `<prefix>lease-` steps, and named in the
@@ -64,10 +89,17 @@
 #     per job, not two.
 #   - Integration is two jobs, integration-standalone and the per-feature
 #     integration-features matrix, both full tier.
-#   - On main the concurrency group carries the commit as well as the event
-#     (DS-3465, the go-enclave #247 form), so no main run cancels another;
-#     cancel-in-progress stays v1.25's literal `true` (see the concurrency
-#     block).
+#   - The unit suites are five code-tier jobs (ruling 211, CA m1355):
+#     coverage, test-clusterproof, coverage-fts, test-tags and test-sdk run in
+#     parallel with the image job, not as two serial steps in it.
+#   - `make release-cross PLATFORM=linux/arm64` (plain and FIPS) is a full-tier
+#     step of the image job (ruling 211), and so is the fips job.
+#   - A `code` tier (DS-3160): image, the unit-suite jobs and test-typescript
+#     skip on a docs-only PR by job `if:`, and CI Gate excuses that skip.
+#   - docker-build builds the toolchain and integration images once (DS-3044);
+#     every stage job takes its output, not its own `make docker-build`.
+#   - Dropped: the concurrency deviation (main's group carried the commit,
+#     DS-3465). v1.26.2's group is the same expression, so it is canonical.
 # CUSTOMIZE (go-qrdb) end.
 # v1.22.1 (Company Agent m636 item 2, 2026-10-18, after go-quicbaas main
 # fe167500f was left with no completed run): the concurrency block is
@@ -343,16 +375,18 @@ on:
   workflow_dispatch:                    # re-fire a whole workflow; also the
                                         # only retry when a run was never
                                         # created (see v1.3 correction above)
-  # CUSTOMIZE (go-qrdb, Company Agent m433): no `schedule:`. v1.23's nightly
-  # cron is not adopted: the owner ruled no new timers (2026-10-11), and m433
-  # keeps the nightly run a dispatch, not a cron. Main's full tier runs after
-  # every merge (push), on workflow_dispatch and on a ci:full PR; the
-  # `nightly` soak job runs on workflow_dispatch alone, so the Gate passes
-  # its skip on every other event. test/buildgates/ci_tiers_test.go refuses
-  # a `schedule:` here.
+  # v1.23: main's full tier nightly as well as after every merge. Scheduled
+  # runs are on the default branch. Restored under Company Agent ruling 216(1)
+  # (Software's typed order DS-3913): ruling 135 makes this in-template Gitea
+  # schedule trigger the one scheduler, and the owner ruling of 2026-10-11 and
+  # Company Agent m433 forbid host cron, timers and watchers, not this
+  # trigger. test/buildgates/ci_tiers_test.go allows a `schedule:` here
+  # and in automerge.yml alone.
+  schedule:
+    - cron: '0 4 * * *'
 
-# CUSTOMIZE (go-qrdb, DS-3465): on main the group is the workflow, the event
-# and the commit, so main runs never cancel each other: a push to main leaves
+# v1.26.2 (ruling 145; go-qrdb's since DS-3465): on main the group is the
+# workflow, the event and the commit, so main runs never cancel each other: a push to main leaves
 # the in-progress run of the previous main commit to finish, and every merge
 # keeps a completed run. Every other ref is one group, so a PR's newer run
 # cancels the older. No expression reaches cancel-in-progress: Gitea 1.27.1
@@ -378,10 +412,9 @@ env:
   # CUSTOMIZE (go-qrdb): exactly `make -s print-build-tags`, the default feature
   # set the coverage baseline was measured under (its `# build-tags:` line), in
   # the same order; the Makefile adopts it as BUILD_TAGS when it is set.
-  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
   # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
-  # (here push to main and workflow_dispatch: no schedule, see `on:`), and a
-  # PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
+  # (push to main, schedule, workflow_dispatch), and a PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
   # cannot read env, so each full-tier job repeats this expression. Keep them
   # equal (test/buildgates/ci_tiers_test.go).
   CI_FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
@@ -405,10 +438,11 @@ jobs:
   # `if: needs.changes.outputs.docs_only != 'true'` and lists changes in
   # needs; CI Gate excuses its skip only when DOCS_ONLY is true. A docs-only
   # PR runs changes, docker-build (the toolchain image alone), lint (make
-  # lint and make lint-gates), arch-gates (make check-public-releasable
+  # lint and make deps-check), lint-gates (make lint-gates), arch-gates (make check-public-releasable
   # alone) and CI Gate; image and test-typescript, the code tier, are
   # skipped.
   changes:
+    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Changed files
     runs-on: ubuntu-latest
     outputs:
@@ -463,6 +497,7 @@ jobs:
   # starts, and a reaper in that gap removes a cache-hit image whose last tag
   # is over two hours old.
   docker-build:
+    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes]
@@ -545,8 +580,10 @@ jobs:
   # bridge) for the vulnerability databases and the module proxy.
   #
   # v1.23: lint, assert-build-tags, build and coverage are the PR tier and run
-  # on every event. security, deps-check and trivy image are full tier only
+  # on every event. security and trivy image are full tier only
   # (env.CI_FULL_TIER): main after every merge, dispatch, ci:full.
+  # v1.28: deps-check is a lint-class gate on the PR tier and runs on every
+  # event (ruling 219(3)); here it is a lint job step (#1046).
   #
   # v1.22: every stage mounts the build and golangci-lint cache volumes, and a
   # bridge stage the module cache volume, from the runner's Docker host
@@ -567,29 +604,29 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
   # template's one image job (m601 (a)). The stages run in two jobs side by
-  # side, lint (make lint, make lint-gates, make lint-sweeps) and image (the
+  # side, lint (make lint, make deps-check, make lint-sweeps) and image (the
   # tag assertion, build, the release cross-build, the unit suites, security,
-  # deps-check, trivy image), in the one toolchain image docker-build built,
+  # trivy image), in the one toolchain image docker-build built,
   # each with its own limit: together they outlast one job's 90 minutes on a
   # loaded runner, where lint with lint-sweeps takes most of an hour and
   # coverage about half of one.
-  # lint is the PR tier and is all a docs-only PR runs of the stages; image is
-  # the code tier (DS-3160) and skips there. Only image holds the integration
+  # lint is the PR tier and, with lint-gates (below), is all a docs-only PR
+  # runs of the stages; image is the code tier (DS-3160) and skips there. Only image holds the integration
   # image (IT_HOLD): lint reads the toolchain image alone, so it neither takes
   # nor releases a hold.
   lint:
-    name: Devcontainer image [lint, lint-gates, lint-sweeps]
+    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
+    name: Devcontainer image [lint, deps-check, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
-    timeout-minutes: 75       # CUSTOMIZE (#1046): ~56 lint minutes loaded with lint-sweeps (~12 warm without), with headroom
+    timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # v1.22: the cache volumes' trust class. Only a push to main writes the
       # caches main's build reads; every other event, pull requests included,
-      # gets the `pr` set (ci-standard.md §6). CUSTOMIZE (go-qrdb, m433):
-      # v1.23 adds `schedule` to the `main` class for its nightly cron; this
-      # workflow has no schedule (see `on:`), so push alone writes main's set.
-      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+      # gets the `pr` set (ci-standard.md §6). v1.23: the nightly schedule runs
+      # on main and shares main's set (restored by DS-3913, m1378 (2)).
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -648,24 +685,24 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
-      # CUSTOMIZE (go-qrdb): the repository gates the Lint job ran beside
-      # `make lint` (Makefile LINT_GATES): the script, workflow, generated-code
-      # and module gates, `make vet` over the default tag set, the secure
-      # analyzer's self-test and the sdk/go linters. -k reports every failing
-      # gate in one pass. The network is as it was when this step also ran
-      # vet-tags (make lint-sweeps, below).
-      - name: make lint-gates
+      # Fails when a library, first-party or third-party, is behind its latest
+      # release without devops.md §9's documented reason (ci-standard.md §1).
+      # v1.28: a lint-class gate of seconds on the PR tier, every event, a
+      # docs-only PR included (ruling 219(3)); it was full tier only from v1.23.
+      # CUSTOMIZE (go-qrdb, #1046): the template runs it in the image job,
+      # which runs lint there; here it follows `make lint` in the lint job.
+      # It reads go.mod and the module proxy only, no build output.
+      - name: make deps-check
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         env:
           IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
       # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
       # push to main and on the daily full-tier workflow_dispatch, never on a
       # pull request, which must finish within one hour. release.yml runs both
-      # again before a tag. A network for vet-tags' nested benchmark modules,
-      # as above.
+      # again before a tag. A network for vet-tags' nested benchmark modules.
       - name: make lint-sweeps
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
         env:
@@ -676,16 +713,111 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/gomodauth.env"
 
+  # v1.27.0 (Company Agent m1192 (6), item 27; DS-3609): the repository's
+  # `make lint-gates` (Makefile LINT_GATES: the script, workflow,
+  # generated-code and module gates, `make vet` over the default tag set, the
+  # secure analyzer's self-test and the sdk/go linters) runs in this job, in
+  # parallel with the lint job's `make lint`, not in series after it, so
+  # Lint's wall time is the longer of the two and not their sum. It runs only
+  # when the Makefile (or a tracked *.mk) defines a lint-gates target. A
+  # lint-class check, so it is on the PR tier and runs on a docs-only PR: the
+  # gates read docs/. CUSTOMIZE (go-qrdb, DS-3044): docker-build built the
+  # toolchain image, so this job ensures that tag as the lint job does rather
+  # than running the template's `make docker-build`. Reconciled with
+  # v1.27.0's job (ruling 211): the probe, trim, `make -k lint-gates` and
+  # tear-down steps are the template's; the go-qrdb differences are that
+  # build, the qrdb-ci- reap, IN_IMAGE_NETWORK=bridge (the gates resolve
+  # nested modules through the proxy), and the draft `if:` every job carries (ruling 214).
+  lint-gates:
+    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
+    name: Lint Gates [toolchain image]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE: lint-gates took 6.5 warm minutes on main run 64873; headroom for a cold, loaded runner
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # v1.22: the cache volumes' trust class (as in the lint job).
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1: mask the forge credentials before any other step (as above).
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # A source check on the runner's shell: no make recipe runs here.
+      - name: Does the Makefile define lint-gates?
+        id: probe
+        run: |
+          mapfile -t mk < <(git ls-files -- Makefile '*.mk')
+          if [ "${#mk[@]}" -gt 0 ] && grep -qE '^lint-gates[[:space:]]*:([^=]|$)' "${mk[@]}"; then
+            echo "lint-gates target found"
+            echo "has_target=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "OK: no lint-gates target in the Makefile; nothing to run"
+            echo "has_target=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # CUSTOMIZE (go-qrdb, #813): reaps under qrdb-ci- too (as in the lint job).
+      - name: Reap stale CI stacks
+        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      # CUSTOMIZE (go-qrdb, DS-3044): as in the lint job, build the
+      # content-hashed toolchain tag only when the daemon lacks it.
+      - name: Ensure the toolchain image
+        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      # v1.22: bound this repo's cache volumes (as in the lint job). It never
+      # fails the job and keeps every volume a container mounts.
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      # -k reports every failing gate in one pass. CUSTOMIZE (go-qrdb):
+      # IN_IMAGE_NETWORK is bridge, as the lint job's step had it: the gates'
+      # vet and sdk/go linters resolve nested modules through the proxy.
+      - name: make lint-gates
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
   image:
-    name: Devcontainer image [build, test, security, deps-check, trivy image]
+    name: Devcontainer image [build, test, security, trivy image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     # CUSTOMIZE (go-qrdb, #1046): the code tier (DS-3160), so a docs-only PR,
     # which builds nothing, skips it; lint, above, is that PR's stage job.
-    if: needs.changes.outputs.docs_only != 'true'
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
     # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE (#1046): ~39 warm minutes of build and unit stages (~80 loaded) plus the full-tier scans; the 90 ceiling
+    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
@@ -696,7 +828,7 @@ jobs:
       # job (see the docker-build job).
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-image
       # v1.22: the cache volumes' trust class (see the lint job).
-      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -776,36 +908,16 @@ jobs:
 
       # CUSTOMIZE (go-qrdb): the release publishes linux/arm64 binaries
       # (release.yml), so a change that breaks the arm64 build, plain or FIPS,
-      # fails here on the pull request rather than on the tag. A cgo-free
-      # cross-compile: nothing runs on arm64 and nothing is emulated.
+      # fails on main or a ci:full PR rather than on the tag. A cgo-free
+      # cross-compile: nothing runs on arm64 and nothing is emulated. Full tier
+      # (CI_FULL_TIER, ruling 211): never on a plain pull request.
       - name: make release-cross (linux/arm64, plain and FIPS)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make release-cross PLATFORM=linux/arm64 GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
-      # The test stage (m601 (c)): make coverage runs the whole unit suite with
-      # -race (make test's flags), the PR tier's unit test and race checks in
-      # one run (v1.23), and fails when total coverage is below
-      # COVERAGE_THRESHOLD (testing-guidelines.md), so the suite runs once.
-      # Tags matter here too: without them tag-gated packages are neither
-      # tested nor counted. The integration stage is its own job below.
-      # CUSTOMIZE (go-qrdb, #1046): the bulk run omits make test's -count=1,
-      # so a package unchanged since a passing run on this host's cache
-      # replays that result and its profile, and the subprocess-coverage
-      # packages run beside it, not after it.
-      - name: make coverage (unit tests and the threshold)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"
-
-      # CUSTOMIZE (go-qrdb): the suites `make coverage` does not reach.
-      # test-clusterproof is a separate module under its own tags;
-      # coverage-fts runs pkg/fts's real index under qrdb_fts and ratchets it
-      # against test/coverage-baseline-fts.txt (#610); test-tags RUNS the CLI
-      # suites under the reduced protocol-family rungs; test-sdk is the sdk/go
-      # module's race suite (#132), which `./...` at the root never crosses.
-      # They are unit suites, so the PR tier, and skip on a docs-only PR (v1.24).
-      - name: make test-clusterproof coverage-fts test-tags test-sdk
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-clusterproof coverage-fts test-tags test-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+      # The unit suites (make coverage, test-clusterproof, coverage-fts,
+      # test-tags, test-sdk) are their own jobs below (ruling 211), in
+      # parallel with this one.
 
       # make security: gosec, govulncheck, go mod verify (devops.md §8), with
       # trivy fs per the phase (§8a). The target owns gosec's flags and its
@@ -817,14 +929,6 @@ jobs:
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-
-      # Fails when a library, first-party or third-party, is behind its latest
-      # release without devops.md §9's documented reason (ci-standard.md §1).
-      - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # The integration image is gated before any push to either registry
       # (devops.md §8): --ignore-unfixed (v1.19) and --skip-dirs /opt/go/mod
@@ -853,6 +957,305 @@ jobs:
           rm -f "$RUNNER_TEMP/gomodauth.env" it-image.tar
           make docker-release-it
 
+  # CUSTOMIZE (go-qrdb, ruling 211, CA m1355): the unit suites are five jobs,
+  # in parallel with the image job and with each other; they were two serial
+  # steps of the image job, about 36 of its minutes. Each needs only
+  # docker-build's toolchain image, runs its suite through
+  # scripts/in-toolchain-image.sh exactly as the image job's step did, with
+  # the same cache volumes and trust class, and masks the forge credentials
+  # first. They are the code tier (DS-3160): every event but a docs-only PR.
+  # test-clusterproof, coverage-fts, test-tags and test-sdk are one job each,
+  # not one shared job: no per-suite time is on record (the old step ran all
+  # four under one timer), so none is known to be under two minutes.
+  #
+  # The test stage (m601 (c)): make coverage runs the whole unit suite with
+  # -race (make test's flags), the PR tier's unit test and race checks in
+  # one run (v1.23), and fails when total coverage is below
+  # COVERAGE_THRESHOLD (testing-guidelines.md), so the suite runs once.
+  # Tags matter here too: without them tag-gated packages are neither
+  # tested nor counted. CUSTOMIZE (go-qrdb, #1046): the bulk run omits make
+  # test's -count=1, so a package unchanged since a passing run on this
+  # host's cache replays that result and its profile, and the
+  # subprocess-coverage packages run beside it, not after it.
+  coverage:
+    name: Unit [make coverage]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
+    needs: [changes, docker-build]
+    timeout-minutes: 75       # CUSTOMIZE (ruling 211): the bulk of the ~36 warm minutes the two steps took, doubled for a loaded runner
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      # v1.22: the cache volumes' trust class (as in the lint job).
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      # v1.21.1: mask the forge credentials before any other step (as above).
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      # CUSTOMIZE (go-qrdb, #813): reaps under qrdb-ci- too (as in the lint job).
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      # CUSTOMIZE (go-qrdb, DS-3044): as in the lint-gates job, build the
+      # content-hashed toolchain tag only when the daemon lacks it.
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      # v1.22: bound this repo's cache volumes (as in the lint job).
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      - name: make coverage (unit tests and the threshold)
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage GO_BUILD_TAGS='$GO_BUILD_TAGS' COVERAGE_THRESHOLD=$COVERAGE_THRESHOLD"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # CUSTOMIZE (go-qrdb): the suites `make coverage` does not reach, one job
+  # each, every one shaped as the coverage job. test-clusterproof is a
+  # separate module under its own tags.
+  test-clusterproof:
+    name: Unit [make test-clusterproof]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE (ruling 211): no per-suite time on record; the four suites' share of the ~36 warm minutes, doubled
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      - name: make test-clusterproof
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-clusterproof GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # coverage-fts runs pkg/fts's real index under qrdb_fts and ratchets it
+  # against test/coverage-baseline-fts.txt (#610).
+  coverage-fts:
+    name: Unit [make coverage-fts]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      - name: make coverage-fts
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k coverage-fts GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # test-tags RUNS the CLI suites under the reduced protocol-family rungs.
+  test-tags:
+    name: Unit [make test-tags]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      - name: make test-tags
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-tags GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
+  # test-sdk is the sdk/go module's race suite (#132), which `./...` at the
+  # root never crosses.
+  test-sdk:
+    name: Unit [make test-sdk]
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
+    needs: [changes, docker-build]
+    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    env:
+      CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Reap stale CI stacks
+        run: scripts/reap-stale-ci-stacks.sh "$CI_STACK_PREFIX" && scripts/reap-stale-ci-stacks.sh qrdb-ci-
+
+      - name: Ensure the toolchain image
+        env:
+          BUILT_TOOLCHAIN_IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+        run: |
+          : "${BUILT_TOOLCHAIN_IMAGE:?docker-build output no toolchain image}"
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          if docker image inspect "$BUILT_TOOLCHAIN_IMAGE" >/dev/null 2>&1; then
+            echo "==> $BUILT_TOOLCHAIN_IMAGE is already built on this daemon"
+          else
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IMAGE="$BUILT_TOOLCHAIN_IMAGE"
+          fi
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          echo "TOOLCHAIN_IMAGE=$BUILT_TOOLCHAIN_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Trim the CI caches
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/trim-ci-caches.sh "$CI_STACK_PREFIX" "$TOOLCHAIN_IMAGE"
+
+      - name: make test-sdk
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      - name: Tear down
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gomodauth.env"
+
   # Integration tests run in the integration image (ci-standard.md §2), as a
   # compose stack on the runner host started by `make integration-test`. The
   # stack is named per run under the repo's prefix, the job reaps stale stacks
@@ -868,47 +1271,69 @@ jobs:
   # merge.
   #
   # integration-features runs the self-spawned qrdbdharness suites
-  # (./test/integration: single-node and real 3-node Raft clusters), one leg
-  # per feature (owner ruling 10). Each leg is
-  # `make integration-test IT_FEATURE=<feature>` in the integration image; the
+  # (./test/integration: single-node and real 3-node Raft clusters) in six
+  # shards, each a fixed list of features (owner ruling 10; sharded so a
+  # feature pays the checkout, reap, image build and teardown once per shard,
+  # not once per feature). Each shard is
+  # `make integration-test-features IT_FEATURES_IN=image`, which runs
+  # `make integration-test IT_FEATURE=<feature>` in the integration image for
+  # every feature in its list, goes on past a failing one, prints a PASS/FAIL
+  # line with seconds per feature and fails the shard if any failed; the
   # selection `make integration-test-<feature>` runs on a host
   # (test/integration/features.mk). Every test in these packages is mapped to
-  # some feature (make check-integration-feature-coverage), so the legs
-  # together run the whole suite. Each leg has its own 45-minute limit and
-  # they run in parallel; a leg that does not fit is a finding about that
-  # feature's tests, not a reason to raise the limit. The list is literal
-  # because Gitea cannot expand a matrix computed at run time (devops.md §1).
-  # It is exactly `make -s print-integration-features`:
-  # test/buildgates/feature_jobs_gate_test.go fails on any difference, on a
-  # limit over 45, on fail-fast, on a tier other than the full one, and on a
-  # step that narrows the target. fail-fast is off so one red leg does not
-  # cancel the others' results; CI Gate reads the aggregate result.
+  # some feature (make check-integration-feature-coverage), so the shards
+  # together run the whole suite. The lists are balanced longest-first by the
+  # per-feature job times of main run 65165, about 550 s a shard
+  # (docs/release/engineering.md, "Per-feature integration jobs"); each shard
+  # has its own 30-minute limit, about three times that, and they run in
+  # parallel. The lists are literal because Gitea cannot expand a matrix
+  # computed at run time (devops.md §1). Their union is exactly
+  # `make -s print-integration-features`, each feature once:
+  # test/buildgates/feature_jobs_gate_test.go fails on a missing, duplicated or
+  # unknown feature, on a limit over 30, on fail-fast, on a tier other than the
+  # full one, and on a step that narrows the target. fail-fast is off so one
+  # red shard does not cancel the others' results; CI Gate reads the aggregate
+  # result.
   #
   # The project names are under qrdb-ci- (the gate pins the prefix) and carry
-  # the run, the attempt and the feature, so legs sharing a daemon never share
+  # the run, the attempt and the shard, so shards sharing a daemon never share
   # a stack. The image is the Makefile's content-addressed qrdb-ci-it:<hash>
-  # (`make -s it-image`, #813): every leg of a run on one runner names the
-  # same one, the first leg there builds it and the rest reuse it, and the
+  # (`make -s it-image`, #813): every shard of a run on one runner names the
+  # same one, the first shard there builds it and the rest reuse it, and the
   # reap step, not the teardown, removes it once no run can still need it.
   # The teardown is `make docker-down-it`, not a bare `docker compose down`:
   # test/buildgates/integration_image_tag_test.go keeps every compose call
   # behind a make target. Credentials come from the job environment, which
   # the Makefile's $(stage-gomodauth) stages as the gomodauth BuildKit secret.
   # GOMAXPROCS reaches the spawned processes through the compose service
-  # (#682). The gate holds a leg to exactly the reap, the run and the teardown.
+  # (#682). The gate holds a shard to exactly the reap, the run and the
+  # teardown.
   integration-features:
-    name: Integration (${{ matrix.feature }})
+    name: Integration (shard ${{ matrix.shard }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, arch-gates]
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
-      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.feature }}
+      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+      IT_FEATURES: ${{ matrix.features }}
     strategy:
       fail-fast: false
       matrix:
-        feature: [api-server, audit, auth-factors, backup-restore, barrier-seal, capabilities, ceremony, certificate-authority, cluster-verification, clustering, collections, coordination, credentials, databases, distributed-locks, embeddings, etcd-compatibility, firstboot, guarded-swap, identity-rbac, key-value, key-wrapping, leases, multi-tenancy, rag, replica-forwarding, row-locking, run-modes, secondary-indexes, shamir-custody, sql, storage-engines, tenant-dek, time-series, transactions, trust-anchors, trust-bootstrap, vectors, volume-pools, watch]
+        include:
+          - shard: 1
+            features: audit databases distributed-locks multi-tenancy time-series
+          - shard: 2
+            features: backup-restore capabilities ceremony clustering firstboot tenant-dek
+          - shard: 3
+            features: barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch
+          - shard: 4
+            features: api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools
+          - shard: 5
+            features: cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors
+          - shard: 6
+            features: coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -929,12 +1354,12 @@ jobs:
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
 
-      - name: Integration tests (${{ matrix.feature }})
-        run: make integration-test IT_FEATURE=${{ matrix.feature }} IT_PROJECT="$IT_PROJECT"
+      - name: Integration tests (shard ${{ matrix.shard }})
+        run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT"
 
-      # integration-test downs its own stack; this covers a cancelled leg,
-      # pass, fail or cancel, and keeps the image the other legs reuse.
-      - name: Tear down (${{ matrix.feature }})
+      # integration-test downs its own stack; this covers a cancelled shard,
+      # pass, fail or cancel, and keeps the image the other shards reuse.
+      - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
 
@@ -953,7 +1378,7 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, arch-gates]
     timeout-minutes: 90
     steps:
@@ -1011,18 +1436,61 @@ jobs:
   # in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
   # continue-on-error, add a build tag that skips a package, or narrow the
   # package list.
+  #
+  # The suites run as parallel legs (#1230): one run of both took 69.9 minutes
+  # and set the time to a green main and to every tag. Each leg is
+  # `make test-fips-leg FIPS_LEG=<leg>`; the Makefile's FIPS_LEGS is the one
+  # list of legs, and its two remainder legs put every package no leg names
+  # in `rest` (the root module) or `sdk` (sdk/go), so the legs together are
+  # exactly `make test` and `make test-sdk`, each package once.
+  # test/buildgates/fips_legs_test.go fails when this matrix is not FIPS_LEGS
+  # or a package is in two legs or none. The legs are split by measured cost;
+  # a leg past 30 minutes is rebalanced by moving a package between
+  # FIPS_LEG_<leg> lists, never by narrowing one.
   fips:
-    name: FIPS 140-3
+    name: FIPS 140-3 (${{ matrix.leg }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
-    # The race-enabled suite under fips140=only is what takes the time; 90
-    # minutes holds both modules with each under its 60m package budget.
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # Each leg's limit is its measured time (run 68401) with room for a
+      # loaded runner, at most 45; go test's per-package budget is the limit
+      # less 5 minutes, so a runaway package is named before the leg is
+      # killed. pkg/tenant and pkg/seal each run past 30 minutes alone, and
+      # pkg/server near it, so each is split by test name over two legs
+      # (#1234, docs/seal/fips140-mode.md).
+      matrix:
+        include:
+          - leg: tenant-lifecycle
+            minutes: 30
+          - leg: tenant
+            minutes: 30
+          - leg: seal-barrier
+            minutes: 30
+          - leg: seal
+            minutes: 30
+          - leg: server-raft
+            minutes: 25
+          - leg: server
+            minutes: 25
+          - leg: auth
+            minutes: 25
+          - leg: service
+            minutes: 25
+          - leg: api-keys
+            minutes: 20
+          - leg: rest
+            minutes: 30
+          - leg: sdk-transport
+            minutes: 30
+          - leg: sdk
+            minutes: 30
+    timeout-minutes: ${{ matrix.minutes }}
     env:
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
-      CI_CACHE_CLASS: ${{ github.event_name == 'push' && 'main' || 'pr' }}
+      CI_CACHE_CLASS: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'main' || 'pr' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -1066,86 +1534,70 @@ jobs:
       - name: Build all packages against the FIPS module
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV go build ./..."
 
-      # The same targets the unit suites run, with the same build tags. The
-      # scope is deliberately identical: a FIPS job over a subset of the suite
+      # The packages the unit suites run, with the same build tags: this leg's
+      # share of them, and every leg together is the whole of both. The scope
+      # is deliberately identical: a FIPS job over a subset of the suite
       # cannot tell you the product is FIPS-clean.
       #
       # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
       # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
       # iterations, which measured 2.6x on pkg/seal, and pkg/seal has been
-      # killed at exactly 30m (go-qrdb#147). The job ceiling above is 90
-      # minutes, so a 60m package budget cannot outlive the job. This raises a
+      # killed at exactly 30m (go-qrdb#147). The budget is the leg's limit
+      # less 5 minutes (40m on the 45-minute legs), so it cannot outlive the
+      # leg. This raises a
       # runaway guard; it does not skip a package, weaken an assertion or
       # narrow the scope.
       #
       # pipefail matters: without it tee's exit status hides a failing suite.
       - name: Unit tests (race, FIPS 140-only)
+        env:
+          FIPS_LEG: ${{ matrix.leg }}
+          FIPS_LEG_MINUTES: ${{ matrix.minutes }}
         run: |
           set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
-
-      # `sdk/go` IS A SEPARATE GO MODULE (#142): `make test` is
-      # `./pkg/... ./cmd/...` and never reaches the SDK, so without this step
-      # the job is the "FIPS job over a subset of the suite" ruled out above.
-      # `if: always()` is load-bearing: a root-module regression must not stop
-      # the SDK suite from being measured. Both suites run; either failing
-      # fails the job. Its own log file, because the report below parses these
-      # by package and both modules define packages of the same name.
-      - name: Unit tests (race, FIPS 140-only, sdk/go module)
-        if: ${{ always() && env.TOOLCHAIN_IMAGE != '' }}
-        run: |
-          set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-sdk GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test-sdk.log
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-fips-leg FIPS_LEG='$FIPS_LEG' GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
 
       # A per-package timeout panic names whichever test was running when the
       # alarm fired, NOT the test that consumed the budget. This step lists the
-      # package results and the slowest completed tests of both modules, on
-      # success too, so the trend is visible before the cliff. A missing log
-      # is reported: it means that suite never started.
+      # leg's package results, with each package's time, and its slowest
+      # completed tests, on success too, so the trend is visible before the
+      # cliff and a leg nearing 30 minutes shows which package to move. A
+      # missing log is reported: it means the suite never started.
       - name: Package results and slowest tests
         if: always()
         run: |
-          report() { # report <label> <logfile>
-            label="$1"
-            log="$2"
-            echo "######## ${label} ########"
-            if [ ! -f "$log" ]; then
-              echo "no ${log}: this suite never started -- see the step above" >&2
-              echo
-              return 0
-            fi
-            # Captured into variables rather than piped straight to stdout so
-            # the "nothing parsed" case can actually be reported. A `grep ...
-            # | sort || echo fallback` cannot do that: the pipeline's status is
-            # sort's, which is 0 on empty input, so the fallback is unreachable.
-            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
-              "$log" | sort -u || true)
-            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
-              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
-              | sort -rn | head -25 || true)
+          log=fips-test.log
+          if [ ! -f "$log" ]; then
+            echo "no ${log}: this leg's suite never started -- see the step above" >&2
+            exit 0
+          fi
+          # Captured into variables rather than piped straight to stdout so
+          # the "nothing parsed" case can actually be reported. A `grep ...
+          # | sort || echo fallback` cannot do that: the pipeline's status is
+          # sort's, which is 0 on empty input, so the fallback is unreachable.
+          pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+            "$log" | sort -u || true)
+          slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
+            | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+            | sort -rn | head -25 || true)
 
-            echo "== package results =="
-            if [ -n "$pkgs" ]; then
-              echo "$pkgs"
-              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
-            else
-              echo "(no package result lines parsed -- the suite may have died before any package finished)"
-            fi
+          echo "== package results =="
+          if [ -n "$pkgs" ]; then
+            echo "$pkgs"
+            echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+          else
+            echo "(no package result lines parsed -- the suite may have died before any package finished)"
+          fi
 
-            echo
-            echo "== 25 slowest tests that COMPLETED =="
-            echo "A timeout panic names the test holding the alarm, not the one"
-            echo "that spent the budget. These are the candidates that did."
-            if [ -n "$slow" ]; then
-              echo "$slow"
-            else
-              echo "(no completed top-level tests parsed)"
-            fi
-            echo
-          }
-
-          report "root module (./pkg/... ./cmd/...)" fips-test.log
-          report "sdk/go module" fips-test-sdk.log
+          echo
+          echo "== 25 slowest tests that COMPLETED =="
+          echo "A timeout panic names the test holding the alarm, not the one"
+          echo "that spent the budget. These are the candidates that did."
+          if [ -n "$slow" ]; then
+            echo "$slow"
+          else
+            echo "(no completed top-level tests parsed)"
+          fi
 
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's
@@ -1158,7 +1610,7 @@ jobs:
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
     runs-on: ubuntu-latest
-    if: needs.changes.outputs.docs_only != 'true'
+    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}   # ruling 214
     needs: [changes]
     timeout-minutes: 60
     steps:
@@ -1202,9 +1654,9 @@ jobs:
   # and workflow_dispatch only, off main pushes and off ci:full; the Gate marks
   # it `nightly`. It replaces nothing in batch.yml, whose soak stays a dispatch.
   #
-  # CUSTOMIZE (go-qrdb, Company Agent m433): this workflow has no schedule
-  # trigger (see `on:`), so the soak runs on workflow_dispatch alone. The
-  # iteration is one feature's suite, SOAK_FEATURE, not the whole suite: the
+  # The soak runs on the nightly schedule and on workflow_dispatch, as the
+  # template's; the schedule is the one scheduler (ruling 135, ruling 216(1)).
+  # CUSTOMIZE (go-qrdb): the iteration is one feature's suite, SOAK_FEATURE, not the whole suite: the
   # whole suite is forty legs of up to 45 minutes run in parallel, and one
   # iteration of it would not fit the job's limit. clustering runs real
   # 3-node Raft clusters, the suite most sensitive to load. The image hold is
@@ -1215,7 +1667,7 @@ jobs:
   # $(stage-gomodauth), so there is no credential file.
   soak:
     name: Soak [integration image]
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
     env:
@@ -1288,6 +1740,7 @@ jobs:
   # tracked tree, docs included, so a docs-only PR runs this job; its two
   # code-only steps skip there.
   arch-gates:
+    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Architecture Gates
     runs-on: ubuntu-latest
     needs: [changes]
@@ -1366,14 +1819,22 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, docker-build, lint, image, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
+    needs: [changes, docker-build, lint, lint-gates, image, coverage, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
     steps:
       - name: Fail closed on any non-success
         env:
+          # ruling 214: a draft PR runs no CI, so its gate fails rather than pass on skips.
+          DRAFT: ${{ github.event.pull_request.draft == true }}
           RESULT_CHANGES: ${{ needs.changes.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_LINT: ${{ needs.lint.result }}
+          RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
           RESULT_IMAGE: ${{ needs.image.result }}
+          RESULT_COVERAGE: ${{ needs.coverage.result }}
+          RESULT_TEST_CLUSTERPROOF: ${{ needs.test-clusterproof.result }}
+          RESULT_COVERAGE_FTS: ${{ needs.coverage-fts.result }}
+          RESULT_TEST_TAGS: ${{ needs.test-tags.result }}
+          RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
@@ -1391,6 +1852,10 @@ jobs:
           # pull_request and on ci:full).
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
+          if [ "$DRAFT" = "true" ]; then
+            echo "FAIL draft pull request: no CI runs on a draft. Mark it ready, then push an empty commit to start its run."
+            exit 1
+          fi
           BAD=0
           echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}"
           # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY
@@ -1431,7 +1896,13 @@ jobs:
           check changes "$RESULT_CHANGES" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
+          check lint-gates "$RESULT_LINT_GATES" pr
           check image "$RESULT_IMAGE" code
+          check coverage "$RESULT_COVERAGE" code
+          check test-clusterproof "$RESULT_TEST_CLUSTERPROOF" code
+          check coverage-fts "$RESULT_COVERAGE_FTS" code
+          check test-tags "$RESULT_TEST_TAGS" code
+          check test-sdk "$RESULT_TEST_SDK" code
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check arch-gates "$RESULT_ARCH_GATES" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full

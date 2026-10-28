@@ -87,6 +87,11 @@ func WithRegisterVector(svc service.VectorServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.vectorSvc = svc }
 }
 
+// WithRegisterLogService attaches a verifiable-log service for the registered gRPC service.
+func WithRegisterLogService(svc service.LogService) RegisterOption {
+	return func(s *qrdbServiceServer) { s.logSvc = svc }
+}
+
 // WithRegisterUserService attaches a user management service for the registered gRPC service.
 func WithRegisterUserService(svc user.UserServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.userSvc = svc }
@@ -237,6 +242,21 @@ func WithRegisterTenantService(svc tenant.TenantServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.tenantSvc = svc }
 }
 
+// WithRegisterTenantBarrierService attaches the per-tenant barrier lifecycle
+// service. Like WithRegisterUserAuthFactorService, the service is not
+// dispatched by a QRDBService RPC: RegisterService registers it as the
+// separate qrdb.v1.TenantBarrierService on the same *grpc.Server (see
+// RegisterTenantBarrierService), so a composer that builds its own
+// *grpc.Server (e.g. go-quicbaas) exposes the tenant quorum and holder-claim
+// surface with a single RegisterService call. Its tenant-scoped authorization
+// gate is the middleware supplied by WithRegisterAuthMiddleware; a nil
+// middleware is the no-auth posture, in which the gate is a no-op. The same
+// TenantServicer can also be passed to WithRegisterTenantService: the two
+// expose disjoint methods on disjoint service descriptors.
+func WithRegisterTenantBarrierService(svc tenant.TenantServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.tenantBarrierSvc = svc }
+}
+
 // WithRegisterVolumeService attaches the volume pool management surface
 // (docs/volume-pools/api.md) for the registered gRPC service.
 func WithRegisterVolumeService(svc volume.Service) RegisterOption {
@@ -287,4 +307,9 @@ func RegisterService(srv *grpc.Server, kvSvc service.KVServicer, adminSvc servic
 	// it alongside QRDBService when supplied. RegisterUserAuthFactorService
 	// no-ops on a nil servicer.
 	RegisterUserAuthFactorService(srv, svc.userAuthFactorSvc, svc.userSvc)
+
+	// The per-tenant barrier lifecycle is likewise a separate proto service,
+	// gated by the auth middleware (nil: the no-auth posture).
+	// RegisterTenantBarrierService no-ops on a nil servicer.
+	RegisterTenantBarrierService(srv, svc.tenantBarrierSvc, svc.authMW)
 }

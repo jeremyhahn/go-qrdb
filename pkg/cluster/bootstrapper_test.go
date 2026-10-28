@@ -61,7 +61,7 @@ func (m *mockRaftNode) StartShard(members map[uint64]string, join bool, create s
 	return m.startErr
 }
 
-func (m *mockRaftNode) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (m *mockRaftNode) LeaderID(shardID uint64) (uint64, bool, error) {
 	return m.leaderID, m.hasLeader, m.leaderErr
 }
 

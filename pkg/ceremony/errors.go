@@ -684,3 +684,25 @@ func (e *AdminCredentialRequiresCAError) Error() string {
 	return "ceremony: the " + e.Path + " admin-credential path requires a configured CeremonyCA, " +
 		"which this node has none of (BYO-TLS); use --admin-cert (bring-your-own-certificate) instead"
 }
+
+// ReasonAdminCredentialRequiresCA is the structured-refusal reason every
+// transport carries beside the message of a *AdminCredentialRequiresCAError,
+// so a client rebuilds the typed error without parsing text.
+// #nosec G101 -- structured-refusal reason code, not a credential.
+const ReasonAdminCredentialRequiresCA = "ADMIN_CREDENTIAL_REQUIRES_CA"
+
+// adminCredentialRequiresCAKeyPath is the refusal metadata key of
+// AdminCredentialRequiresCAError.Path.
+const adminCredentialRequiresCAKeyPath = "path"
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *AdminCredentialRequiresCAError) Metadata() map[string]string {
+	return map[string]string{adminCredentialRequiresCAKeyPath: e.Path}
+}
+
+// AdminCredentialRequiresCAFromMetadata rebuilds the error Metadata encoded.
+// The reason, not the metadata, says the path needs a CA, so a missing path
+// key leaves Path empty rather than losing the classification.
+func AdminCredentialRequiresCAFromMetadata(md map[string]string) *AdminCredentialRequiresCAError {
+	return &AdminCredentialRequiresCAError{Path: md[adminCredentialRequiresCAKeyPath]}
+}

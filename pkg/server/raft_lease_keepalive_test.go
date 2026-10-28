@@ -49,9 +49,9 @@ func appliedIndex(t *testing.T, f *RaftBackendFactory, svcs *DatabaseServices, l
 	if _, err := svcs.Lease.TimeToLive(context.Background(), leaseID); err != nil {
 		t.Fatalf("TimeToLive: %v", err)
 	}
-	info, err := f.host.GetShardInfo(svcs.ShardID)
+	info, err := f.host.ShardInfo(svcs.ShardID)
 	if err != nil {
-		t.Fatalf("GetShardInfo(%d): %v", svcs.ShardID, err)
+		t.Fatalf("ShardInfo(%d): %v", svcs.ShardID, err)
 	}
 	return info.LastApplied
 }

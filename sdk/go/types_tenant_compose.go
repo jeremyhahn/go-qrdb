@@ -59,8 +59,8 @@ var WithBarrierAutoUnseal = tenant.WithBarrierAutoUnseal
 // constructor; these aliases let a composing service supply its options
 // (notably a hardware-backed BarrierKeyProvider) through the SDK boundary. The
 // tenant-variant WithBarrierKeyProvider is named WithTenantBarrierKeyProvider
-// to avoid colliding with the embedded-server option WithBarrierKeyProvider
-// (types_server.go).
+// to keep it distinct from the embedded-server option
+// sdk/go/server.WithBarrierKeyProvider.
 // ---------------------------------------------------------------------------
 
 // TenantServiceOption configures optional TenantService dependencies. (Aliases

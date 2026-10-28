@@ -260,3 +260,56 @@ func TestTransport_Connect_UntrustedServerIsNotRetried(t *testing.T) {
 		t.Errorf("Connect error = %v, want no deadline: verification failure is not retried", err)
 	}
 }
+
+// unfiredDeadlineContext is a context whose deadline has passed but whose
+// timer has not fired yet: Err is still nil, the state a stream deadline set
+// from the same instant can leave the caller's bound in.
+type unfiredDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+// Deadline returns the passed deadline.
+func (c unfiredDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+// TestBoundSpent_DeadlinePassedBeforeTimerFires pins that an attempt ending
+// at the bound's deadline counts as cut short by it even before the context's
+// own timer fires, so Connect keeps the earlier attempt's failure.
+func TestBoundSpent_DeadlinePassedBeforeTimerFires(t *testing.T) {
+	ctx := unfiredDeadlineContext{Context: context.Background(), deadline: time.Now()}
+	if ctx.Err() != nil {
+		t.Fatalf("ctx.Err() = %v, want nil (timer not fired)", ctx.Err())
+	}
+	if !boundSpent(ctx) {
+		t.Error("boundSpent = false for a passed deadline, want true")
+	}
+}
+
+// TestBoundSpent_DoneContext pins that a canceled or expired bound is spent.
+func TestBoundSpent_DoneContext(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+
+	for name, ctx := range map[string]context.Context{"canceled": canceled, "expired": expired} {
+		if !boundSpent(ctx) {
+			t.Errorf("%s: boundSpent = false, want true", name)
+		}
+	}
+}
+
+// TestBoundSpent_LiveBound pins that a bound with time left, or no bound at
+// all, is not spent: Connect records such an attempt's failure as the last.
+func TestBoundSpent_LiveBound(t *testing.T) {
+	live, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+
+	for name, ctx := range map[string]context.Context{"live": live, "unbounded": context.Background()} {
+		if boundSpent(ctx) {
+			t.Errorf("%s: boundSpent = true, want false", name)
+		}
+	}
+}

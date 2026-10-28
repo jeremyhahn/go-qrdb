@@ -305,6 +305,16 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/vector/index/stats", permission.VectorGetIndexStats},
 		{"POST", "/vector/compact", permission.VectorCompact},
 		{"GET", "/vector/compact/progress", permission.VectorGetCompactProg},
+		{"POST", "/vlog/log", permission.VlogCreate},
+		{"GET", "/vlog/logs", permission.VlogList},
+		{"POST", "/vlog/append", permission.VlogAppend},
+		{"GET", "/vlog/entries", permission.VlogGet},
+		{"GET", "/vlog/proof/inclusion", permission.VlogProof},
+		{"GET", "/vlog/proof/consistency", permission.VlogProof},
+		{"GET", "/vlog/head", permission.VlogHead},
+		{"POST", "/vlog/head/sign", permission.VlogSignHead},
+		{"POST", "/vlog/key/rotate", permission.VlogSignHead},
+		{"POST", "/vlog/expire", permission.VlogExpire},
 
 		// Embedding + RAG.
 		{"POST", "/v1/embeddings", permission.EmbeddingEmbed},

@@ -1,6 +1,6 @@
 # Document Collections — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -616,8 +616,8 @@ unisolated no matter how well isolated the rest of the bundle is.
 The database appears twice in the physical key — once in the namespace and once
 inside `__col:` — which is redundant and deliberately left alone: removing it
 would change the key format and require moving existing documents, and this
-design moves no keys (see the upgrade note in
-[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)).
+design moves no keys (see
+[engineering.md](engineering.md#tenant-less-collection-keys)).
 
 These compositions legitimately keep a single collection servicer:
 

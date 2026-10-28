@@ -39,20 +39,24 @@ import (
 // ShardID is the shard every service built over a Host addresses.
 const ShardID = 1
 
-// Host is a service.Host backed by a real MVCC state machine.
+// Host is a service.AdminHost backed by a real MVCC state machine: the data
+// host the KV, MVCC, transaction and batch services call, and the Raft-admin
+// host the admin service Admin builds is typed by.
 //
-// service.Host is embedded rather than implemented in full so that any method
-// a test does not exercise panics with a nil-pointer dereference instead of
-// quietly returning a plausible zero value. SyncPropose and SyncRead are the
-// methods the KV, MVCC, transaction and batch services call.
+// service.AdminHost is embedded rather than implemented in full so that any
+// method a test does not exercise panics with a nil-pointer dereference
+// instead of quietly returning a plausible zero value. SyncPropose and
+// SyncRead are the methods the services call.
 type Host struct {
-	service.Host
+	service.AdminHost
 
 	machine *store.MVCCStateMachine
 
 	mu    sync.Mutex
 	index uint64
 }
+
+var _ service.AdminHost = (*Host)(nil)
 
 // dir is the directory the machine opens on its in-memory filesystem. Each
 // Host has a filesystem of its own, so every Host can use the same name.

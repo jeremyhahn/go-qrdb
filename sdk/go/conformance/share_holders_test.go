@@ -527,7 +527,7 @@ func (e *holderE2E) adminClient() transport.BarrierClient {
 			e.t.Fatal(err)
 		}
 		leaf, err := e.ca.SignCSR(ctx, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}), &ceremony.SignCSROptions{
-			TrustDomain:  e.cfg.Auth.EffectiveSPIFFETrustDomain(),
+			TrustDomain:  e.cfg.Auth.EffectiveClusterTrustDomain(),
 			TenantID:     tenantid.System,
 			Username:     "holder-admin",
 			Profile:      "administrator",
@@ -944,7 +944,7 @@ func TestShareHolders_UnregisteredHolderCertRefusedByRoster(t *testing.T) {
 		t.Fatal("mallory's own CSR did not encode")
 	}
 	cert, err := e.ca.SignCSR(boundedCtx(t), []byte(mallory.csrPEM), &ceremony.SignCSROptions{
-		TrustDomain:  e.cfg.Auth.EffectiveSPIFFETrustDomain(),
+		TrustDomain:  e.cfg.Auth.EffectiveClusterTrustDomain(),
 		TenantID:     tenantid.System,
 		Username:     mallory.name,
 		Profile:      "security-officer",

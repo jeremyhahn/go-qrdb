@@ -1,6 +1,6 @@
 # Key Wrapping — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Key wrapping adds no new RPC surface of its own. It changes the request and
@@ -72,9 +72,16 @@ server's configured key directory, for `"software"`).
 
 ## Capability matrix
 
-All six transports carry the same request/response shapes, unchanged from
-the matrix in [backup-restore/api.md](../backup-restore/api.md#capability-matrix)
-— key wrapping adds fields to existing messages, not new verbs.
+Key wrapping adds fields to two existing messages, not new verbs. Every
+transport carries the fields above on these two capabilities:
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | `scp` permission |
+|---|---|---|---|---|---|---|
+| Create | `POST /v1/backups` | `BackupCreate` | `backup.Create` | `qrdb_backup_create` | `BackupClient.CreateBackup` | `backup:create` |
+| Restore | `POST /v1/backups/restore` | `BackupRestore` | `backup.Restore` | `qrdb_backup_restore` | `RestoreBackup` | `backup:restore` |
+
+The other backup capabilities are in the
+[backup-restore matrix](../backup-restore/api.md#capability-matrix).
 
 ## Status and error mapping
 

@@ -1,16 +1,12 @@
 # Time Series — Engineering Contract
 
-> **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
->
-> "Target" sections describe the time-series half of the multi-model database
-> program ([../databases/architecture.md](../databases/architecture.md)); they
-> are approved and not implemented.
 
-> **Build-tag gated: `qrdb_ts`** (`WITH_QRDB_TS=1`). Without it the CLI verb
-> group and transport handlers are compiled out and `pkg/capabilities` does not
-> register `timeSeries`.
+> **Build-tag gated: `qrdb_ts`** (`WITH_QRDB_TS=1`, the default). Without it
+> the CLI verb group and `pkg/timeseries` are compiled out, `pkg/capabilities`
+> does not register `timeSeries`, and the transports, whose handlers are always
+> compiled, answer unimplemented.
 
 ## Exported surface
 
@@ -161,15 +157,8 @@ it as a number. REST and MCP take names and gRPC has its own enum
   just a delete horizon: `duration_ns` bounds age, `resolution_ns` sets
   downsampled resolution, and `aggregation` chooses the function that would
   produce the downsampled value. **`duration_ns` is enforced;
-  `resolution_ns`/`aggregation` are not.** A leader-driven scheduler
-  (`pkg/server`'s `retentionScheduler`) proposes a Raft command
-  (`protocol.OpTSApplyRetention`, gated behind
-  `featuregate.TimeSeriesRetention`) every `DefaultRetentionInterval` (one
-  minute) per metric with a policy, deleting points older than `duration_ns`
-  deterministically on every replica, bounded to
-  `timeseries.MaxRetentionDeletesPerApply` points per command. No point is
-  downsampled; see
-  [architecture.md](architecture.md#retention-enforcement-od-16-a).
+  `resolution_ns`/`aggregation` are not**; see
+  [architecture.md](architecture.md#retention-enforcement).
 - **`TSDeleteSeries` is bounded by its request**: metric, optionally tags,
   optionally a time range. With no range it deletes the whole series.
 - **Time-series keys live under reserved prefixes** (`ts:`, `idx:metric:`,
@@ -184,7 +173,7 @@ it as a number. REST and MCP take names and gRPC has its own enum
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| Built without `qrdb_ts` | capability absent; verbs and handlers unregistered | **yes** |
+| Built without `qrdb_ts` | capability absent; CLI verb group absent; every transport answers unimplemented (REST 501, gRPC `UNIMPLEMENTED`) | **yes** |
 | Unknown metric on query | empty result (a metric is created by writing to it) | n/a |
 | `end_ns < start_ns` | invalid-argument | **yes** |
 | Unknown aggregation function | invalid-argument | **yes** |
@@ -252,10 +241,14 @@ func (s *Storage) Close() error
 Other facts:
 
 - A standalone embedder that wants a directory-backed store uses the SDK
-  (`sdk.NewTimeSeriesStorageWithDir`, and
-  `sdk.NewTimeSeriesStorageWithEncryptor`, which takes an
-  `*atrest.Encryptor`; both in `sdk/go/types_timeseries.go`). The SDK owns
+  (`NewTimeSeriesStorageWithDir`, and
+  `NewTimeSeriesStorageWithEncryptor`, which takes an
+  `*atrest.Encryptor`; both in package
+  `github.com/jeremyhahn/go-qrdb/sdk/go/timeseries`, `sdk/go/timeseries/timeseries.go`). The SDK owns
   Pebble for that one use case; `pkg/timeseries` does not import Pebble.
+  Both return a `*TimeSeriesDirStorage`, which embeds the store and adds
+  `Batch`, the `TimeSeriesBatch` over the database it opened that every
+  write takes, and a `Close` that closes the store and that database.
 - The engine's time-series handlers pass the batch they are given; the
   engine's `WithMVCCTimeSeries(ts *timeseries.Storage)` option takes no Pebble
   handle.
@@ -283,7 +276,7 @@ Shipped:
    `MaxRetentionDeletesPerApply` points
    (`pkg/timeseries.TestStorage_ApplyRetention_BoundsDeletesPerCall`).
 
-Target:
+Not yet tested:
 
 5. **Placement.** On a barrier, volume or raft tenant's database the `ts:` keys
    are found by exact key in that database's own store and not in any other,

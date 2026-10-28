@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -569,12 +569,17 @@ services and to the server, which wraps the node's sealed-window probe with
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
   close it.
-- **Every Pebble database over the barrier's encrypting file system opens
-  under a seal watch.** Pebble panics when the barrier refuses the WAL file a
-  flush or memtable rotation creates, so `pkg/storage/pebble.Open` attaches a
-  `SealWatch` that each write, flush and compaction checks first; a sealed
-  barrier refuses with `*SealedError`, which unwraps to `ErrBarrierSealed`.
-  The watch applies to `PebbleStorage` from `New`, the `pkg/store` state
+- **An encrypted Pebble store refuses work once its barrier seals, with a
+  typed error.** A sealed barrier refuses every file `encfs` would create, and
+  Pebble retries a refused flush at once and forever and panics when it cannot
+  create its next WAL file. Every Pebble database under a barrier opens
+  through `pebble.Open` in `pkg/storage/pebble`, which attaches a `SealWatch`:
+  it logs the first sealed background error of an episode and counts the rest,
+  and its `Flush` and `Check` return a `*SealedError` wrapping
+  `ErrBarrierSealed` instead of waiting. `PebbleStorage` checks before every
+  flush, durable write and compaction, and the state machines' `Sync` flushes
+  through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
+  watch applies to `PebbleStorage` from `New`, the `pkg/store` state
   machines, the stores those machines build over their own database with
   `NewFromDB` and `WithSealWatch` (the MVCC store and the time-series
   auto-commit), the vector store (whose ID allocation refuses before it spends
@@ -584,9 +589,12 @@ services and to the server, which wraps the node's sealed-window probe with
   `pkg/server/lifecycle` (`NewLocalStorage`, used by `qrdbd`, the standalone
   server and the embedded node) returns only the `storage.Storage`, never the
   raw `*pebble.DB` beneath it, so every write to that database passes the
-  watch. Read-only
-  opens and read-only `NewFromDB` views carry no watch. The check and the write
-  are not atomic, so a seal landing between them can still reach the WAL.
+  watch. Read-only opens and read-only `NewFromDB` views carry no watch. The
+  node closes its own data-plane store before it seals its barriers, so a
+  clean `Close` never meets the refusal. The check and Pebble's next file
+  creation are not atomic, so a seal landing between them is still a crash;
+  closing that window is the planned seal-quiesce row in
+  [SPEC.md](../SPEC.md).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -773,8 +781,9 @@ polling `barrier status` to completion and then issuing the tenant request
 would — must not be refused or misrouted because of it. Both reads retry
 through `whenReadIndexReady` (`pkg/server/tenant_residue.go`), the same
 helper the tenant-reconcile and list-tenants paths use and `ImportCommit`'s
-`syncReadRetrying` mirrors: only `quicraft.ErrReadIndexNotReady` is retried,
-up to a 15-second deadline, every other error returns immediately.
+`syncReadRetrying` mirrors: only `quicraft.ErrReadIndexNotReady` and an
+attempt that hits `StartupReadAttemptTimeout` (`pkg/server/startup_read.go`)
+are retried, up to a 15-second deadline, every other error returns immediately.
 
 ### In a cluster, every node supplies its own credential
 
@@ -1491,7 +1500,7 @@ Key material in this repository is held through `pkg/secure`, a facade over a
 process-wide mlocking allocator. Three rules protect that boundary, and they
 are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
 secure-analyzer` runs over **every Go module in the tree** under **every
-combination in the Makefile's `SUPPORTED_TAG_SETS`**: in CI's `image` job on a
+combination in the Makefile's `SUPPORTED_TAG_SETS`**: in CI's `lint` job on a
 push to `main` and on `workflow_dispatch` (`make lint-sweeps`), and in
 `release.yml` before every tag. A pull request runs its self-test,
 `make test-secure-analyzer`, but not the sweep.
@@ -1704,7 +1713,7 @@ keyed by the tenant that owns the barrier -- the system tenant for the system
 barrier, the tenant for a tenant barrier, the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
-details reach the trail (`domain`, `op`, `strategy`, `threshold`, `from`,
+details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`, `from`,
 `to`, `rolled_back`, `submitted`, `required`, and the holder record
 conflict's `scope`, `username`, `cached_cert`); no key material is among
 them, and any other detail is dropped. The records are post-hoc: a trail

@@ -1,6 +1,6 @@
 # Volume Pools — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > Names follow the existing tenant and database surfaces.
@@ -70,7 +70,7 @@ health.
   "nodeReports": [
     { "nodeId": "node-1", "state": "ready",
       "sizeBytes": 3840755982336, "freeBytes": 3700000000000,
-      "detail": "", "reportedAt": "2026-10-04T12:00:00Z" } ] }
+      "detail": "", "reportedAt": "<RFC 3339 time>" } ] }
 
 // CreateVolumePoolRequest
 { "name": "fast", "provider": "dir", "description": "NVMe tier",

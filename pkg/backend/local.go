@@ -83,16 +83,16 @@ func (b *LocalBackend) ShardCount() int {
 	return 1
 }
 
-// GetNodeHostInfo returns an empty NodeHostInfo since there is no Raft
+// NodeHostInfo returns an empty NodeHostInfo since there is no Raft
 // host to report on.
-func (b *LocalBackend) GetNodeHostInfo(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+func (b *LocalBackend) NodeHostInfo(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 	return &quicraft.NodeHostInfo{}
 }
 
-// GetShardInfo reports the LocalBackend's one logical shard. A single process
+// ShardInfo reports the LocalBackend's one logical shard. A single process
 // with no peers leads it: work only a shard's leader may do -- the compaction
 // schedule -- runs here.
-func (b *LocalBackend) GetShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
+func (b *LocalBackend) ShardInfo(shardID uint64) (*quicraft.ShardInfo, error) {
 	return &quicraft.ShardInfo{ShardID: shardID, ReplicaID: 1, LeaderID: 1, IsLeader: true}, nil
 }
 
@@ -220,7 +220,7 @@ func (b *LocalBackend) RequestAddObserverWithIdentity(_ context.Context, _, _ ui
 // SyncGetShardMembership returns ClusterOperationError since LocalBackend
 // has no Raft membership.
 func (b *LocalBackend) SyncGetShardMembership(_ context.Context, _ uint64) (*quicraft.Membership, error) {
-	return nil, &ClusterOperationError{Op: "GetShardMembership"}
+	return nil, &ClusterOperationError{Op: "ShardMembership"}
 }
 
 // NodeIdentity returns "": LocalBackend has no Raft transport.
@@ -269,9 +269,9 @@ func (b *LocalBackend) FollowerRead(ctx context.Context, shardID uint64, query i
 	return b.SyncRead(ctx, shardID, query)
 }
 
-// GetLeaderID always returns (1, true, nil) since the LocalBackend is
+// LeaderID always returns (1, true, nil) since the LocalBackend is
 // always the leader of its single-node "cluster".
-func (b *LocalBackend) GetLeaderID(_ uint64) (uint64, bool, error) {
+func (b *LocalBackend) LeaderID(_ uint64) (uint64, bool, error) {
 	return 1, true, nil
 }
 

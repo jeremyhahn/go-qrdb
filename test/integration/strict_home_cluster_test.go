@@ -40,10 +40,12 @@ package integration_test
 // to probe.
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -205,15 +207,11 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 		waitForNodeToTrustClient(t, client, adminPorts[i], wait)
 		var body []byte
 		var status int
-		deadline := time.Now().Add(wait)
-		for time.Now().Before(deadline) {
+		pollUntil(wait, 250*time.Millisecond, func() bool {
 			body, status = iraftAPIGet(t, client,
 				fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s", adminPorts[i], username))
-			if status == http.StatusOK {
-				break
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
+			return status == http.StatusOK
+		})
 		if status != http.StatusOK {
 			t.Fatalf("%s: node %d: tenant admin GET /users/by-username/%s = %d, want 200; body: %s", run, i+1, username, status, body)
 		}
@@ -263,23 +261,38 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 	lastUser := ""
 	for n := range strictHomeLagUsers {
 		username := fmt.Sprintf("lag-user-%02d", n)
+		email := username + "@" + strictHomeTenantID + ".example.com"
+		// An attempt answered with neither success nor a conflict -- the home
+		// group electing a leader after node 3 left, or a create the server
+		// could not confirm inside its reconcile window -- may still have
+		// committed, and a retry of it then answers 409 for the user this test
+		// made. A 409 therefore stops the retries, and it is success only
+		// after such an ambiguous attempt and once the stored record reads
+		// back as this create's; a 409 on the first attempt is a real conflict.
 		var body []byte
 		var status int
-		deadline := time.Now().Add(60 * time.Second)
-		for time.Now().Before(deadline) {
+		ambiguous := false
+		answered := pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
 			body, status = iraftAPIPost(t, adminClient, fmt.Sprintf("https://127.0.0.1:%d/users", adminPorts[0]),
 				map[string]interface{}{
-					"username": username, "email": username + "@" + strictHomeTenantID + ".example.com",
+					"username": username, "email": email,
 					"tenant_id": strictHomeTenantID, "role_ids": []string{userRole},
 				})
-			if status == http.StatusCreated || status == http.StatusOK {
-				break
+			switch status {
+			case http.StatusCreated, http.StatusOK, http.StatusConflict:
+				return true
 			}
-			// The home group may be electing a new leader after node 3 left.
-			time.Sleep(250 * time.Millisecond)
-		}
-		if status != http.StatusCreated && status != http.StatusOK {
+			ambiguous = true
+			return false
+		})
+		switch {
+		case !answered:
 			t.Fatalf("lag: create %s with node 3 down: status %d, body: %s", username, status, body)
+		case status == http.StatusConflict && !ambiguous:
+			t.Fatalf("lag: create %s with node 3 down: first attempt conflicted: %s", username, body)
+		case status == http.StatusConflict:
+			assertCreatedUser(t, adminClient, adminPorts[0], username, email, strictHomeTenantID, userRole)
+			t.Logf("lag: %s committed on an attempt whose answer was lost; the retry's 409 is that record", username)
 		}
 		lastUser = username
 	}
@@ -324,4 +337,34 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	assertHomeOnEveryNode("R2")
 	assertAuthenticatesEverywhere("R2", raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody))
+}
+
+// assertCreatedUser reads username back through the node on adminPort and
+// fails the test unless the stored record is the one the caller's create
+// asked for: its email, tenant and only role. A create whose retry answered
+// 409 is success only when this holds, since the conflict alone does not say
+// whose record holds the name.
+func assertCreatedUser(t *testing.T, client *http.Client, adminPort int, username, email, tenantID, roleID string) {
+	t.Helper()
+	var body []byte
+	var status int
+	if !pollUntil(30*time.Second, 250*time.Millisecond, func() bool {
+		body, status = iraftAPIGet(t, client,
+			fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s", adminPort, username))
+		return status == http.StatusOK
+	}) {
+		t.Fatalf("read back %s: status %d, body: %s", username, status, body)
+	}
+	var got struct {
+		Username string   `json:"username"`
+		Email    string   `json:"email"`
+		TenantID string   `json:"tenant_id"`
+		RoleIDs  []string `json:"role_ids"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("read back %s: decode: %v; body: %s", username, err, body)
+	}
+	if got.Username != username || got.Email != email || got.TenantID != tenantID || !slices.Equal(got.RoleIDs, []string{roleID}) {
+		t.Fatalf("read back %s: record %+v is not the one created (email %s, tenant %s, role %s)", username, got, email, tenantID, roleID)
+	}
 }

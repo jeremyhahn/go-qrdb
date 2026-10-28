@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -167,10 +168,12 @@ func TestMergeSeamOptions_FoldsNodeOptionsIntoTheServerOptions(t *testing.T) {
 	sink := listingSink{}
 	device := dektest.New()
 	limiter := &recordingLimiter{}
+	signers := &deviceHeadSigners{}
 	o := &nodeOptions{}
 	for _, opt := range []NodeOption{
 		WithClock(fake), WithBackupSink(sink), WithDEKProvider(device),
 		WithInvitationRedeemLimiter(limiter), WithHolderActLimiter(limiter),
+		WithHeadSignerProvider(signers),
 	} {
 		opt(o)
 	}
@@ -179,6 +182,7 @@ func TestMergeSeamOptions_FoldsNodeOptionsIntoTheServerOptions(t *testing.T) {
 	require.Equal(t, fake, got.Clock)
 	require.Equal(t, sink, got.BackupSink)
 	require.Equal(t, device, got.DEKProvider)
+	require.Same(t, signers, got.HeadSignerProvider)
 	require.Equal(t, limiter, got.InvitationRedeemLimiter)
 	require.Equal(t, limiter, got.HolderActLimiter)
 	require.Nil(t, got.StorageFactory)
@@ -197,4 +201,35 @@ func TestWithClock_ReachesTheNode(t *testing.T) {
 	fake := clocktest.New()
 	n := newSeamNode(t, nil, WithClock(fake))
 	require.Same(t, fake, n.clock)
+}
+
+// deviceHeadSigners is a HeadSignerProvider standing in for a go-xkms one;
+// the node only carries it to the server.
+type deviceHeadSigners struct{ calls int }
+
+var _ vlog.HeadSignerProvider = (*deviceHeadSigners)(nil)
+
+func (p *deviceHeadSigners) CreateKey(context.Context, vlog.CreateKeyRequest) (vlog.CreatedKey, error) {
+	p.calls++
+	return vlog.CreatedKey{}, context.Canceled
+}
+
+func (p *deviceHeadSigners) HeadSigner(context.Context, vlog.HeadSignerRequest) (vlog.HeadSigner, error) {
+	p.calls++
+	return nil, context.Canceled
+}
+
+func TestWithHeadSignerProvider_ReachesTheServer(t *testing.T) {
+	signers := &deviceHeadSigners{}
+	o := &nodeOptions{}
+	WithHeadSignerProvider(signers)(o)
+	require.Same(t, signers, o.headSignerProvider)
+	got := server.ResolveCryptoOptions(mergeSeamOptions(*o, nil)...)
+	require.Same(t, signers, got.HeadSignerProvider)
+	require.Zero(t, signers.calls, "carrying the provider must not call it")
+}
+
+func TestWithHeadSignerProvider_AbsentKeepsTheSoftwareProvider(t *testing.T) {
+	got := server.ResolveCryptoOptions(mergeSeamOptions(nodeOptions{}, nil)...)
+	require.Nil(t, got.HeadSignerProvider)
 }

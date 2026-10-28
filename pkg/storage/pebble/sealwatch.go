@@ -151,11 +151,7 @@ func (w *SealWatch) Flush(db *pebble.DB) error {
 	}
 	w.mu.Lock()
 	ep := w.episode
-	err := ep.err()
 	w.mu.Unlock()
-	if err != nil {
-		return err
-	}
 	done, err := db.AsyncFlush()
 	if err != nil {
 		return err

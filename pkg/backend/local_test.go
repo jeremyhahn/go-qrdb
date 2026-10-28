@@ -57,9 +57,9 @@ func TestLocalBackend_LeadsItsShard(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
 	for _, id := range []uint64{1, 7} {
-		info, err := lb.GetShardInfo(id)
+		info, err := lb.ShardInfo(id)
 		if err != nil || info == nil || !info.IsLeader || info.ShardID != id {
-			t.Fatalf("GetShardInfo(%d) = %+v, %v", id, info, err)
+			t.Fatalf("ShardInfo(%d) = %+v, %v", id, info, err)
 		}
 	}
 }
@@ -115,13 +115,13 @@ func TestLocalBackend_ShardCount_AlwaysOne(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetNodeHostInfo tests
+// NodeHostInfo tests
 // ---------------------------------------------------------------------------
 
 func TestLocalBackend_GetNodeHostInfo(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
-	info := lb.GetNodeHostInfo(quicraft.NodeHostInfoOption{})
+	info := lb.NodeHostInfo(quicraft.NodeHostInfoOption{})
 	if info == nil {
 		t.Fatal("expected non-nil NodeHostInfo")
 	}
@@ -130,7 +130,7 @@ func TestLocalBackend_GetNodeHostInfo(t *testing.T) {
 func TestLocalBackend_GetNodeHostInfo_SkipLogInfo(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
-	info := lb.GetNodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
+	info := lb.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 	if info == nil {
 		t.Fatal("expected non-nil NodeHostInfo with SkipLogInfo")
 	}
@@ -574,16 +574,16 @@ func TestLocalBackend_ReadWithConsistency_AllowStale(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetLeaderID tests
+// LeaderID tests
 // ---------------------------------------------------------------------------
 
 func TestLocalBackend_GetLeaderID(t *testing.T) {
 	lb := newTestLocalBackend()
 	defer func() { _ = lb.Close() }()
 
-	id, ok, err := lb.GetLeaderID(1)
+	id, ok, err := lb.LeaderID(1)
 	if err != nil {
-		t.Fatalf("GetLeaderID: %v", err)
+		t.Fatalf("LeaderID: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected leader known")
@@ -599,9 +599,9 @@ func TestLocalBackend_GetLeaderID_AlwaysLeader(t *testing.T) {
 
 	// Any shard ID returns the same result.
 	for _, shardID := range []uint64{1, 42, 999} {
-		id, ok, err := lb.GetLeaderID(shardID)
+		id, ok, err := lb.LeaderID(shardID)
 		if err != nil || !ok || id != 1 {
-			t.Fatalf("GetLeaderID(%d): id=%d ok=%v err=%v", shardID, id, ok, err)
+			t.Fatalf("LeaderID(%d): id=%d ok=%v err=%v", shardID, id, ok, err)
 		}
 	}
 }

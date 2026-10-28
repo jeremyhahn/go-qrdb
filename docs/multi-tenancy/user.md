@@ -1,6 +1,6 @@
 # Multi-Tenancy — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Running several customers on one deployment, with as much separation as each
@@ -24,8 +24,8 @@ its own limits. See [api.md](api.md#who-may-call-what).
 | Mode | What the tenant gets | Cost |
 |---|---|---|
 | `prefix` (default) | its keys prefixed on the shared store | none — **but this is logical separation, not encryption** |
-| `barrier` | its own key over its IAM data, on its own Pebble store | a volume from the pool |
-| `volume` | its own filesystem root and its own Raft host; **everything** encrypted under its key, including the WAL | a volume, a host per tenant |
+| `barrier` | its own key over its IAM data, on its own store | a volume from the pool |
+| `volume` | its own filesystem root and its own consensus log; **everything** encrypted under its key, including that log | a volume per tenant |
 | `raft` | a dedicated Raft group per database, replicated across nodes | volumes, Raft groups, replicas |
 
 **Say `prefix` out loud to anyone who assumes tenants are encrypted apart.**
@@ -148,8 +148,8 @@ that also creates the admin's account. The CLI proves it holds the key: it
 signs a one-time challenge from the node, tied to this TLS connection, with
 the `--key-file` key. The key never leaves your machine. The passphrase, unseal
 key and shares go only over TLS: on a connection without it, the Unix socket
-included, the call is refused with `BarrierSecretRequiresTLSError` before
-anything is sent.
+included, the call is refused before anything is sent, with an error saying
+the secret "is sent only over TLS; this connection is not TLS".
 
 ```bash
 qrdb --cert-file alice/cert.pem --key-file alice/key.pem \
@@ -176,6 +176,27 @@ corrected retry never collides with a half-finished attempt.
 Later officers register and claim through `qrdb tenant barrier-officer ...`,
 mirroring the system barrier's flow with `--tenant-id` added — see
 [../shamir-custody/user.md](../shamir-custody/user.md).
+
+**Serving `barrier-init` from your own service.** A service built on the Go
+SDK that terminates its callers' TLS itself — its own REST, gRPC or MCP
+front end — runs the same two-step proof on its own connection with
+`sdk.TenantBarrierInitVerifier`. `Begin(tenantID, tlsState)` issues the
+one-time challenge, bound to the tenant and that connection;
+`Complete(tenantID, tlsState, proof, key)` checks the caller's signature
+against it, and against the key `key` names (an `sdk.ComputeSPKIThumbprint`
+value), and spends the challenge. A refused proof is
+`*sdk.FirstAdminProofError`, whose `Reason` says which check failed. The
+verifier decides only the proof: authorizing the caller is still the
+service's own job.
+
+```go
+v := sdk.NewTenantBarrierInitVerifier(nil) // one per service, shared by every connection
+c, err := v.Begin(tenantID, r.TLS)          // send c.Nonce to the caller
+// ... the caller signs with transport.ProveTenantBarrierInit ...
+err = v.Complete(tenantID, r.TLS, proof, func() (string, error) {
+	return sdk.ComputeSPKIThumbprint(firstAdminCert), nil
+})
+```
 
 **Self-managed is the default and it is the secure one.** `--barrier-auto-unseal`
 at creation wraps the tenant's key under the *system* barrier so the node can
@@ -223,6 +244,14 @@ been used and deleted. It is retired permanently — pick another name. The
 server cannot tell whether you are the same customer as the one that held the
 name before, and guessing wrong would hand you their data, so it does not
 guess. The message includes when the id was retired.
+
+**"cannot be a SPIFFE trust domain" when creating a tenant.** The tenant ID is
+the trust domain of every certificate in the tenant
+(`spiffe://<tenant>/user/<username>`), so it must be one: lowercase letters,
+digits, `.`, `-` and `_` only. `Acme` is refused; use `acme`. The deployment's
+own trust domain (`auth.cluster_trust_domain`, `qrdb.cluster` unless set) is
+refused too, because a certificate under it names no tenant. Nothing was
+written, so the ID is still free to use once corrected.
 
 **"id system is reserved" when deleting a tenant.** The platform's own tenant
 and the other reserved names (`default`, `custodian`, `security-officer`, anything starting with `_`, anything
@@ -318,7 +347,7 @@ tenant's key auto-unseals is the tenant's own choice, never refused.
 `tenant.isolation_policy` (`strict` or `operator-access`; environment
 `QRDB_TENANT_ISOLATION_POLICY`). It is applied on every start and only ever
 tightens: a value looser than the stored floor is logged and ignored. Left
-unset, nothing is applied. A FIPS 140-3 build raises the floor to `strict`. No
+unset, nothing is applied. A node running in FIPS 140-3 mode raises the floor to `strict`. No
 CLI verb or API endpoint reads or sets a policy.
 
 ```yaml
@@ -326,28 +355,24 @@ tenant:
   isolation_policy: strict
 ```
 
-**The tenant's home store.** Every isolated tenant — `barrier`, `volume` or
-`raft`, under either policy — has a home store of its own. On a cluster it is a
-group with a replica on every node; on a standalone server it is a store under
-the tenant's own barrier. Its users, roles, role bindings, data-key keyring,
-invitations, CA and the certificates its CA issues live there and not in the
-platform's store, and its admin signs in through any node. The tenant's
-custodians, audit trail and database catalog stay in the platform's store. The
-policy decides only what an operator may do, so a tenant may be made strict, or
-the floor raised to `strict`, at any time.
+**An isolated tenant keeps its own identity.** For a `barrier`, `volume` or
+`raft` tenant, under either policy, its users, roles, role bindings, data-key
+keyring, invitations, CA and the certificates its CA issues are kept under the
+tenant's own key, not with the platform's, and its admin signs in through any
+node. The tenant's custodians, audit trail and database catalog stay with the
+platform. The policy decides only what an operator may do, so a tenant may be
+made strict, or the floor raised to `strict`, at any time.
 
-Creating an isolated tenant on a cluster waits for its home group to start, so
-`tenant create` takes longer than for a `prefix` tenant. A node that has just
-joined answers a tenant's requests with a retryable "unavailable" until its
-copy has caught up; clients retry on another node.
+On a cluster, `tenant create` for an isolated tenant takes longer than for a
+`prefix` tenant. A node that has just joined answers a tenant's requests with a
+retryable "unavailable" until it has caught up; clients retry on another node.
 
-**Per-node barrier keys.** Each node serving an isolated tenant initializes its
-own key for the tenant's barrier from a signed init statement; no key is
-carried between nodes. For a `raft` tenant whose key auto-unseals, the platform
-signs the statement, so `qrdb tenant barrier-status` on two nodes shows
-different key fingerprints. A node added to the tenant's group shows the
-barrier as sealed and uninitialized until it has initialized its own key. A
-passphrase `tenant barrier-init` is sent by the CLI to every serving node.
+**Each node has its own barrier key.** Every node serving an isolated tenant
+holds its own key for the tenant's barrier; no key is carried between nodes.
+For a `raft` tenant whose key auto-unseals, `qrdb tenant barrier-status` on two
+nodes shows different key fingerprints. A node added to the tenant shows the
+barrier as sealed and uninitialized until it has its key. A passphrase
+`tenant barrier-init` is sent by the CLI to every serving node.
 
 On a cluster, creating a `barrier`, `volume` or `raft` tenant, or changing a
 tenant to one of those types, is refused as unavailable until every node runs a

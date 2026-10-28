@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -75,6 +76,32 @@ func TestMapGRPCError_userConcurrentUpdateRefusalIsTyped(t *testing.T) {
 	}
 	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != int(codes.Aborted) {
 		t.Fatalf("err = %T, want a RequestError carrying Aborted", got)
+	}
+}
+
+func TestMapGRPCError_adminCredentialRequiresCARefusalIsTyped(t *testing.T) {
+	want := &ceremony.AdminCredentialRequiresCAError{Path: "csr-sign"}
+	st, err := status.New(codes.FailedPrecondition, want.Error()).WithDetails(&errdetails.ErrorInfo{
+		Domain: transport.RefusalDomain, Reason: ceremony.ReasonAdminCredentialRequiresCA, Metadata: want.Metadata(),
+	})
+	if err != nil {
+		t.Fatalf("WithDetails: %v", err)
+	}
+	got := mapGRPCError("CeremonyInitialize", st.Err())
+
+	refusal, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](got)
+	if !ok || *refusal != *want {
+		t.Fatalf("refusal = %+v, want %+v", refusal, want)
+	}
+	if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != int(codes.FailedPrecondition) {
+		t.Fatalf("err = %T, want a RequestError carrying FailedPrecondition", got)
+	}
+}
+
+func TestMapGRPCError_failedPreconditionWithoutRefusalIsNotRequiresCA(t *testing.T) {
+	got := mapGRPCError("CeremonyInitialize", status.Error(codes.FailedPrecondition, "no PIN backend"))
+	if _, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](got); ok {
+		t.Fatalf("err = %v decoded a refusal the status does not carry", got)
 	}
 }
 

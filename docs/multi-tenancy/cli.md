@@ -1,6 +1,6 @@
 # Multi-Tenancy — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb tenant` — create, delete and list tenants, manage their
@@ -20,7 +20,7 @@ Creates a tenant **together with its first admin**, or not at all.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--id` | string | — | required; tenant ID, must be unique |
+| `--id` | string | — | required; tenant ID, must be unique and a SPIFFE trust domain (lowercase letters, digits, `.`, `-`, `_`) other than `auth.cluster_trust_domain` |
 | `--name` | string | — | required; human-readable name |
 | `--isolation-type` | string | `prefix` | `prefix \| barrier \| volume \| raft` |
 | `--pool` | string | the tenant's default pool | for a `volume`/`raft` tenant, place it on this named volume pool instead of its default; the tenant must be entitled to the pool |
@@ -393,6 +393,6 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation
 
-No CLI verb reads or sets an isolation policy. A FIPS 140-3 build raises the
+No CLI verb reads or sets an isolation policy. A node running in FIPS 140-3 mode raises the
 cluster floor to `strict` when the node starts. Design:
 [architecture.md](architecture.md#strict-tenant-isolation--design).

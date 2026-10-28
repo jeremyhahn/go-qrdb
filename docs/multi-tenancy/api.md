@@ -1,6 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Two gRPC services: tenant lifecycle and governance on
@@ -350,10 +350,10 @@ both directions**: it reclaims the tenant's data AND retires the id.
   so.
 - It **refuses while the tenant still owns databases**, naming them. Drop them
   first.
-- It **destroys the tenant's data encryption key** before anything else.
-- It **records the id as deleted.** A later `POST /v1/tenants` with the same id
-  is refused with 409, permanently. There is no release, no retention window
-  and no force flag.
+- It **records the id as deleted** and removes the tenant's metadata. A later
+  `POST /v1/tenants` with the same id is refused with 409, permanently. There
+  is no release, no retention window and no force flag.
+- It **destroys the tenant's barrier**, and with it the tenant's keys.
 - It **reclaims the tenant's keyspace** synchronously before returning.
 
 Re-issuing a delete that failed part-way is the supported remedy and is safe:
@@ -461,6 +461,7 @@ leaks to a caller with no access to the tier.
 | Tenant onboarding not configured on this node | 501 | `UNIMPLEMENTED` |
 | Barrier init by any certificate other than the onboarded admin's | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitCertificateMismatchError` |
 | Barrier init, `auth.mtls_binding_policy: required`, tenant has no onboarded admin | 403 | `PERMISSION_DENIED` — `*middleware.FirstInitNotOnboardedError` |
+| Create with an id that is not a SPIFFE trust domain (anything but lowercase letters, digits, `.`, `-`, `_`), or that equals `auth.cluster_trust_domain` | 400 | `INVALID_ARGUMENT` — `*tenant.TenantTrustDomainError`; nothing written |
 | Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError` |
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |

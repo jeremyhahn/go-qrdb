@@ -271,13 +271,13 @@ func (r *TenantHostRegistry) startedServices() map[string]*DatabaseServices {
 // StartedHosts implements service.TenantReplicaHosts: the Host of every
 // tenant already built on this node, keyed by tenant, without building any.
 // The admin service's replica state hashes read each one.
-func (r *TenantHostRegistry) StartedHosts() map[string]service.Host {
+func (r *TenantHostRegistry) StartedHosts() map[string]service.AdminHost {
 	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make(map[string]service.Host, len(r.hosts))
+	out := make(map[string]service.AdminHost, len(r.hosts))
 	for id, th := range r.hosts {
 		if th.adapter != nil {
 			out[id] = th.adapter

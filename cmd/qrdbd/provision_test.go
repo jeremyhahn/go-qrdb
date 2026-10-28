@@ -268,13 +268,13 @@ func (p failingProvisioner) UpdateSQL(string, *database.SQLConfig) error { retur
 // does once the shard has elected one.
 type electedLeader struct{}
 
-func (electedLeader) GetLeaderID(uint64) (uint64, bool, error) { return 1, true, nil }
+func (electedLeader) LeaderID(uint64) (uint64, bool, error) { return 1, true, nil }
 
 // noLeader reports no known leader, as a node does before its shard's first
 // election.
 type noLeader struct{}
 
-func (noLeader) GetLeaderID(uint64) (uint64, bool, error) { return 0, false, nil }
+func (noLeader) LeaderID(uint64) (uint64, bool, error) { return 0, false, nil }
 
 // Provisioning writes the drop-fence marker through Raft, so it waits for a
 // leader first -- a proposal before any election is refused, not queued --

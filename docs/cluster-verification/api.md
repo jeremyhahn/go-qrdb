@@ -47,14 +47,39 @@ from the image to read each node's member identity
 
 ## Permissions
 
-The soak runs as a client with read and write permission on the one
-database it exercises, read access to cluster status, and
-`admin:replica_state` for E3. That permission is cross-scoped, so the
-credential is a `system`-tenant identity, and no built-in role holds it but
-Owner: grant it through a custom role rather than running the soak as Owner.
-Without it, every node refuses the read and E3 reports `unavailable` with the
-refusal as its reason; it never passes. The soak needs no Security Officer or
+The soak runs as a client holding exactly these permissions:
+
+| Permission | Used by |
+|---|---|
+| `kv:put`, `kv:get`, `kv:delete` | the workload's `put`, `get` and `delete`; `cas` is `CompareAndSwap`, which `kv:put` gates |
+| `admin:health` | every dial's health check |
+| `admin:status`, `admin:peers` | E4's recovery check: every shard has a leader and every node lists the members |
+| `admin:replica_state` | E3's replica state read |
+
+`admin:replica_state` is cross-scoped, so the credential is a `system`-tenant
+identity, and no built-in role holds it but Owner: grant all of them through
+a custom role rather than running the soak as Owner. Without
+`admin:replica_state` every node refuses the read and E3 reports
+`unavailable` with the refusal as its reason; without `admin:peers` E4 fails
+when its recovery bound runs out. The soak needs no Security Officer or
 custodian permission.
+
+The certificate names the account the usual way
+([../identity-rbac/api.md](../identity-rbac/api.md#authentication)): its CN is
+the account's username and its first OU is `system`. Under the default
+`auth.mtls_binding_policy: required` the account must also have the
+certificate's key enrolled, or every node refuses the dial as
+`Unauthenticated`. With the administrator credential:
+
+```sh
+qrdb roles create --name clusterproof --tenant-id system \
+  --permissions "kv:put,kv:get,kv:delete,admin:health,admin:status,admin:peers,admin:replica_state"
+qrdb users create --username proof --without-email-login-key --tenant-id system --roles "$ROLE_ID"
+```
+
+then enrol the proof certificate's SPKI thumbprint with
+`POST /users/{id}/cert-bindings` (`AddCertBinding` on gRPC), which has no
+`qrdb` verb.
 
 BOOT-01 performs first boot, so it holds the Security Officer and user PINs
 for the ceremony. Its client certificate is enrolled as the first

@@ -34,8 +34,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/joinadvertise"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -216,7 +218,7 @@ func agreedLeader(t testing.TB, nodes []*Node) (uint64, bool) {
 		if !ok {
 			t.Fatalf("node host is %T, want *quicraft.Host", n.host)
 		}
-		id, known, err := host.GetLeaderID(shard.ShardKV)
+		id, known, err := host.LeaderID(shard.ShardKV)
 		if err != nil || !known || (leader != 0 && id != leader) {
 			return 0, false
 		}
@@ -554,6 +556,60 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
 	defer cancel()
 
+	// Every founder advertises guarded-writes, so once the leader's gate has
+	// seen their advertisements it refuses a replica on any node without a
+	// live advertisement of its own (featuregate.Gate.AdmitReplica). Each
+	// subtest runs against that settled contract, never against a race with
+	// the founders' advertisements.
+	//
+	// The refusal alone does not show the leader has seen every founder: the
+	// gate refuses as soon as it adopts an activation another founder
+	// committed, which can precede the founder advertisements in its own
+	// view. A subtest that names a founder's address (the identity conflict
+	// on replica 2) needs that founder admitted, so the wait observes both.
+	const unadvertised = "127.0.0.1:9"
+	gate := nodes[leader-1].featureGate
+	if gate == nil {
+		t.Fatal("the leader gates no features")
+	}
+	// unsettled reports what the leader's gate has yet to see, or "" once
+	// it refuses the unadvertised address and admits every founder.
+	unsettled := func() string {
+		var unsupported *featuregate.UnsupportedReplicaError
+		if err := gate.AdmitReplica(shard.ShardKV, unadvertised); !errors.As(err, &unsupported) {
+			return "admitted a replica on " + unadvertised + ", which advertises nothing"
+		}
+		for _, f := range founders {
+			if err := gate.AdmitReplica(shard.ShardKV, f.addr); err != nil {
+				return err.Error()
+			}
+		}
+		return ""
+	}
+	deadline := time.Now().Add(clusterFormationBudget)
+	for {
+		pending := unsettled()
+		if pending == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the leader's gate never settled on the founders' advertisements: %s", pending)
+		}
+		time.Sleep(clusterPollInterval)
+	}
+
+	t.Run("node without a feature advertisement is refused", func(t *testing.T) {
+		identity, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
+		if err != nil {
+			t.Fatalf("MemberIdentityFromPEM: %v", err)
+		}
+		err = admin.AddMember(ctx, shard.ShardKV, 9, unadvertised, identity)
+		var unsupported *featuregate.UnsupportedReplicaError
+		if !errors.As(err, &unsupported) || unsupported.ShardID != shard.ShardKV || unsupported.Address != unadvertised {
+			t.Fatalf("AddMember = %v, want *featuregate.UnsupportedReplicaError for shard %d on %s", err, shard.ShardKV, unadvertised)
+		}
+	})
+
 	t.Run("override contradicting a committed identity is refused", func(t *testing.T) {
 		stranger, err := MemberIdentityFromPEM(replicas[3].cert.CertPEM)
 		if err != nil {
@@ -567,7 +623,8 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	})
 
 	t.Run("new node without an identity is refused", func(t *testing.T) {
-		err := admin.AddMember(ctx, shard.ShardKV, 9, "127.0.0.1:9", "")
+		advertiseJoiner(ctx, t, nodes[leader-1], 9, unadvertised)
+		err := admin.AddMember(ctx, shard.ShardKV, 9, unadvertised, "")
 		var unknown *cluster.MemberIdentityUnknownError
 		if !errors.As(err, &unknown) || unknown.ReplicaID != 9 {
 			t.Fatalf("AddMember = %v, want *cluster.MemberIdentityUnknownError for replica 9", err)
@@ -583,6 +640,7 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("MemberIdentityFromPEM: %v", err)
 		}
+		advertiseJoiner(ctx, t, nodes[leader-1], fourth.id, fourth.addr)
 		if err := admin.AddMember(ctx, shard.ShardKV, fourth.id, fourth.addr, identity); err != nil {
 			t.Fatalf("AddMember(4) with its identity: %v", err)
 		}
@@ -626,6 +684,35 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 			t.Fatalf("committed identity for replica 4 = %q, want %q", m.Identities[fourth.id], identity)
 		}
 	})
+}
+
+// advertiseJoiner publishes, through leader, the feature advertisement a
+// joining node's enrollment publishes (clusterenroll.HandleJoinRequest with
+// joinadvertise.Advertiser, as pkg/server/lifecycle wires it), then waits
+// until the leader's gate admits a replica of the KV shard on addr. The
+// formation tests boot a joiner from operator-supplied mTLS material, not
+// through a join token, so nothing else advertises it before its add.
+func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID uint64, addr string) {
+	t.Helper()
+	svc := leader.svcNode.Load()
+	advertiser := joinadvertise.New(svc.Lease, svc.MVCC)
+	if advertiser == nil {
+		t.Fatal("the leader has no lease or MVCC service to advertise through")
+	}
+	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames()); err != nil {
+		t.Fatalf("AdvertiseJoiner(%d, %s): %v", replicaID, addr, err)
+	}
+	deadline := time.Now().Add(clusterFormationBudget)
+	for {
+		err := leader.featureGate.AdmitReplica(shard.ShardKV, addr)
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the leader's gate never admitted %s after its advertisement: %v", addr, err)
+		}
+		time.Sleep(clusterPollInterval)
+	}
 }
 
 // TestNewClusteredNode_ServesALinearizableReadOnReturn holds the clustered
@@ -677,41 +764,22 @@ const firstReadBudget = time.Second
 // TestNewClusteredNode_CancelledContextReturnsPromptly: a founder waits for a
 // quorum to elect and commit before NewClusteredNode returns, and that wait
 // honours the caller's ctx. One founder of three is started alone -- no quorum
-// can form -- and its ctx is cancelled shortly after: the constructor returns
-// the cancellation well inside the readiness budget instead of holding the
-// caller for all of it.
+// can form -- and its ctx is cancelled once the shard has started, which puts
+// the cancel inside the readiness wait: the constructor returns the
+// cancellation instead of holding the caller for the readiness budget.
+//
+// The cancel is placed by what the boot has done, not by a timer, and the
+// claim is the error, not a duration. Run 69313 timed it -- cancel at 300ms,
+// return within 5s -- and failed at 5.096s: on a contended disk the boot's
+// fsyncs ran past the cancel before the wait began. A wait that ignored ctx
+// would end in its own *ShardLeaderWaitError after the budget and fail this
+// on the error, however fast or slow the host is.
 func TestNewClusteredNode_CancelledContextReturnsPromptly(t *testing.T) {
-	ca, replicas := newFormationReplicas(t, 3)
-	caPEM := mustReadCAPEM(t, ca)
-	members := make(map[uint64]string, len(replicas))
-	for _, r := range replicas {
-		members[r.id] = r.addr
-	}
-	r := replicas[0]
-	cfg := formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas))
-	mtls := &RaftMTLSConfig{CACert: caPEM, Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
-	start := time.Now()
-	n, err := NewClusteredNode(ctx, cfg, members, nil, WithRaftMTLS(mtls))
-	elapsed := time.Since(start)
-	if n != nil {
-		_ = n.Close()
-		t.Fatal("NewClusteredNode returned a node although no quorum could form")
-	}
+	_, err := bootClusteredCancelledAt(t, bootShardDir)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if elapsed > cancelledBootBudget {
-		t.Fatalf("NewClusteredNode returned %s after its ctx was cancelled at 300ms; want within %s", elapsed, cancelledBootBudget)
-	}
 }
-
-// cancelledBootBudget is how long a cancelled clustered boot may take to
-// return: the cancel at 300ms plus one bounded read probe and teardown, far
-// below the 15s readiness budget it would otherwise spend.
-const cancelledBootBudget = 5 * time.Second
 
 // TestClusteredNode_UnsealRetriesAfterACancelledBoot: the clustered boot that
 // Unseal runs honours Unseal's ctx, so a caller that gives up -- here, one

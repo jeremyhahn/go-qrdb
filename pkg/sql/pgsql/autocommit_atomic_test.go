@@ -47,7 +47,7 @@ func TestPGWire_AutocommitStatementIsAtomic(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 	run := func(q string) error {
-		_, err := h.HandleParse(ctx, wire.Query{Query: q})
+		_, err := h.HandleParse(ctx, wire.Query{Query: q, SimpleQuery: true})
 		return err
 	}
 
@@ -105,6 +105,6 @@ func TestPGWire_CommitFailureIsReported(t *testing.T) {
 	ctx, err := newConnectionSessionHandler()(context.Background())
 	require.NoError(t, err)
 
-	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id) VALUES (7)"})
+	_, err = h.HandleParse(ctx, wire.Query{Query: "INSERT INTO notes (id) VALUES (7)", SimpleQuery: true})
 	require.Error(t, err, "the statement's commit lost to a concurrent insert of the same key")
 }

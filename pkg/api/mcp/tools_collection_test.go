@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -671,7 +673,7 @@ func TestHandleCollectionInsertDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.InsertDocumentResponse
+	var resp documentIDResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -799,7 +801,7 @@ func TestHandleCollectionGetDocument_Success(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_get", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -808,7 +810,7 @@ func TestHandleCollectionGetDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.GetDocumentResponse
+	var resp documentResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -821,13 +823,74 @@ func TestHandleCollectionGetDocument_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCollectionDocumentID_AboveFloat64Precision proves an ID past
+// 2^53 reaches the service exactly on get, update and delete: the decimal
+// string is the only form that carries it.
+func TestHandleCollectionDocumentID_AboveFloat64Precision(t *testing.T) {
+	const id = uint64(1792851970612519681) // > 2^53, odd: float64 rounds it
+	var seen []uint64
+	svc := newMockCollectionService()
+	svc.getDocumentFn = func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+		seen = append(seen, req.ID)
+		return &service.GetDocumentResponse{ID: req.ID}, nil
+	}
+	svc.updateDocumentFn = func(_ context.Context, req *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
+		seen = append(seen, req.ID)
+		return &service.UpdateDocumentResponse{}, nil
+	}
+	svc.deleteDocumentFn = func(_ context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+		seen = append(seen, req.ID)
+		return &service.DeleteDocumentResponse{}, nil
+	}
+	args := map[string]any{"database": "mydb", "collection": "users", "id": "1792851970612519681", "document": `{"a":1}`}
+	for tool, handler := range map[string]mcpserver.ToolHandlerFunc{
+		"qrdb_collection_get":    handleCollectionGet(svc),
+		"qrdb_collection_update": handleCollectionUpdate(svc),
+		"qrdb_collection_delete": handleCollectionDelete(svc),
+	} {
+		result, err := handler(context.Background(), buildCallToolRequest(t, tool, args))
+		if err != nil || result.IsError {
+			t.Fatalf("%s: err=%v result=%+v", tool, err, result)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("service saw %d calls, want 3", len(seen))
+	}
+	for _, got := range seen {
+		if got != id {
+			t.Fatalf("service saw id %d, want %d", got, id)
+		}
+	}
+}
+
+// TestHandleCollectionDocumentID_RefusesNonDecimal proves the number form
+// and malformed strings are refused before the service, not misread.
+func TestHandleCollectionDocumentID_RefusesNonDecimal(t *testing.T) {
+	svc := newMockCollectionService()
+	svc.getDocumentFn = func(context.Context, *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+		t.Fatal("a malformed id reached the service")
+		return nil, nil
+	}
+	handler := handleCollectionGet(svc)
+	for _, bad := range []any{"abc", "-1", "1.5", "18446744073709551616", float64(42)} {
+		result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_collection_get",
+			map[string]any{"database": "mydb", "collection": "users", "id": bad}))
+		if err != nil {
+			t.Fatalf("id %v: %v", bad, err)
+		}
+		if !result.IsError {
+			t.Errorf("id %v: accepted, want a tool error", bad)
+		}
+	}
+}
+
 func TestHandleCollectionGetDocument_MissingCollection(t *testing.T) {
 	svc := newMockCollectionService()
 	handler := handleCollectionGet(svc)
 
 	req := buildCallToolRequest(t, "qrdb_collection_get", map[string]any{
 		"database": "mydb",
-		"id":       float64(42),
+		"id":       "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -846,7 +909,7 @@ func TestHandleCollectionGetDocument_MissingDatabase(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_collection_get", map[string]any{
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -873,7 +936,7 @@ func TestHandleCollectionGetDocument_NotFound(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_get", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(999),
+		"id":         "999",
 	})
 
 	_, err := handler(context.Background(), req)
@@ -902,7 +965,7 @@ func TestHandleCollectionGetDocument_InvalidID(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_get", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(0),
+		"id":         "0",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -926,7 +989,7 @@ func TestHandleCollectionUpdateDocument_Success(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 		"document":   `{"name":"Bob","age":25}`,
 	})
 
@@ -936,7 +999,7 @@ func TestHandleCollectionUpdateDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.UpdateDocumentResponse
+	var resp documentIDResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -953,7 +1016,7 @@ func TestHandleCollectionUpdateDocument_MissingDocument(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -992,7 +1055,7 @@ func TestHandleCollectionUpdateDocument_MissingCollection(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"database": "mydb",
-		"id":       float64(42),
+		"id":       "42",
 		"document": `{"name":"Bob"}`,
 	})
 
@@ -1012,7 +1075,7 @@ func TestHandleCollectionUpdateDocument_MissingDatabase(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 		"document":   `{"name":"Bob"}`,
 	})
 
@@ -1033,7 +1096,7 @@ func TestHandleCollectionUpdateDocument_InvalidDocumentJSON(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 		"document":   `{broken json`,
 	})
 
@@ -1061,7 +1124,7 @@ func TestHandleCollectionUpdateDocument_NotFound(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_update", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(999),
+		"id":         "999",
 		"document":   `{"name":"Bob"}`,
 	})
 
@@ -1095,7 +1158,7 @@ func TestHandleCollectionDeleteDocument_Success(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_delete", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -1139,7 +1202,7 @@ func TestHandleCollectionDeleteDocument_MissingCollection(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_collection_delete", map[string]any{
 		"database": "mydb",
-		"id":       float64(42),
+		"id":       "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -1158,7 +1221,7 @@ func TestHandleCollectionDeleteDocument_MissingDatabase(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_collection_delete", map[string]any{
 		"collection": "users",
-		"id":         float64(42),
+		"id":         "42",
 	})
 
 	result, err := handler(context.Background(), req)
@@ -1185,7 +1248,7 @@ func TestHandleCollectionDeleteDocument_NotFound(t *testing.T) {
 	req := buildCallToolRequest(t, "qrdb_collection_delete", map[string]any{
 		"database":   "mydb",
 		"collection": "users",
-		"id":         float64(999),
+		"id":         "999",
 	})
 
 	_, err := handler(context.Background(), req)
@@ -1226,7 +1289,7 @@ func TestHandleCollectionListDocuments_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.ListDocumentsResponse
+	var resp documentListResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -1310,7 +1373,7 @@ func TestHandleCollectionListDocuments_WithPagination(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.ListDocumentsResponse
+	var resp documentListResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}

@@ -455,28 +455,37 @@ func columnNeedsKeyPrefix(schema sql.Schema, name string) bool {
 var dropTableCascadeRe = regexp.MustCompile(
 	`(?i)^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*))*)\s+CASCADE\s*;?\s*$`)
 
-// applyDropTableCascade implements the CASCADE half of PostgreSQL's DROP
-// TABLE: every foreign key on OTHER tables that references a table being
-// dropped is dropped first, so the DROP itself then passes the engine's
-// referenced-by validation.
+// dropTableCascadeEffect implements the CASCADE half of PostgreSQL's DROP
+// TABLE: its effect, run at each execution of the statement, drops every
+// foreign key on OTHER tables that references a table being dropped, so the
+// DROP itself then passes the engine's referenced-by validation. It returns
+// nil for any other statement.
 //
-// It acts by side effect and leaves the statement text untouched -- the
+// The effect acts by side effect and leaves the statement text untouched -- the
 // engine parses the trailing CASCADE fine; it is only the incoming
 // references that made execution refuse. Failures resolving or dropping a
 // constraint are deliberately swallowed: the DROP TABLE that follows will
 // then fail with the engine's own referenced-by error, which is strictly
 // more informative than anything this helper could synthesize.
-func applyDropTableCascade(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw string) {
+func dropTableCascadeEffect(catalog sql.Catalog, raw string) statementEffect {
 	groups := dropTableCascadeRe.FindStringSubmatch(raw)
 	if groups == nil {
-		return
+		return nil
 	}
 
 	dropped := make(map[string]bool)
 	for _, name := range strings.Split(groups[1], ",") {
 		dropped[strings.ToLower(unquoteIdentifier(strings.TrimSpace(name)))] = true
 	}
+	return func(sqlCtx *sql.Context) error {
+		dropForeignKeysTo(sqlCtx, catalog, sqlCtx.GetCurrentDatabase(), dropped)
+		return nil
+	}
+}
 
+// dropForeignKeysTo drops every foreign key of database dbName that aims at
+// one of the dropped tables from a table that is not itself dropped.
+func dropForeignKeysTo(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, dropped map[string]bool) {
 	db, err := catalog.Database(sqlCtx, dbName)
 	if err != nil {
 		return

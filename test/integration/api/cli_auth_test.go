@@ -565,7 +565,7 @@ func TestCLIAuthFactorRelabelValidationErrors(t *testing.T) {
 // TestCLIAuthFactorListJSONOutput verifies "auth factor list --output json"
 // produces output that unmarshals into the documented wire shape
 // ({"factors": [...], "total": N}) with the expected field values, per
-// docs/08-bootstrap-auth-architecture.md §5e.
+// docs/auth-factors/architecture.md.
 func TestCLIAuthFactorListJSONOutput(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)

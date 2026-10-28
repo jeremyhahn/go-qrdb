@@ -1,6 +1,6 @@
 # Embedding Service — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -44,7 +44,7 @@ Response — `EmbedResponse`:
 
 **`embeddings` is positional**: `embeddings[i]` corresponds to `texts[i]`.
 `model` names the model actually used. `cached` distinguishes a cache hit from a
-provider call.
+provider call; only a request that sets `model` can be served from the cache.
 
 `POST /v1/embeddings/batch` — `BatchEmbedRequest` adds `batch_size` (maximum
 texts per provider call; default 256 when unset). The response has no `cached`

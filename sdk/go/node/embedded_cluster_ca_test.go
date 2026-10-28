@@ -148,7 +148,7 @@ func TestEmbeddedNode_InjectedClusterCAKeySignsAndMintsJoinTokens(t *testing.T) 
 	if n.Services().ClusterCAProv != provider {
 		t.Fatal("the node's cluster CA is not the injected provider")
 	}
-	if !n.trustPool.IsClusterCA(ctx, ca.cert) {
+	if !n.trustPool.Load().IsClusterCA(ctx, ca.cert) {
 		t.Fatal("the trust pool's cluster CA is not the injected provider's certificate")
 	}
 

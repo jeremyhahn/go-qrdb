@@ -14,8 +14,8 @@ require (
 	// Moving it to the newest tag is pending the same build.
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
 	// go-quicraft/test/performance: the newest tag, in lockstep with the root
-	// module's go-quicraft (#659).
-	github.com/jeremyhahn/go-quicraft/test/performance v0.22.0-alpha
+	// module's go-quicraft (#944).
+	github.com/jeremyhahn/go-quicraft/test/performance v0.24.2-alpha
 	github.com/quic-go/quic-go v0.64.1
 	google.golang.org/grpc v1.84.0
 )

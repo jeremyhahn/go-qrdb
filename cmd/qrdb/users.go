@@ -46,6 +46,7 @@ func newUsersCmd() *cobra.Command {
 		newUsersSuspendCmd(),
 		newUsersUnsuspendCmd(),
 		newUsersInviteCmd(),
+		newUsersCertBindingCmd(),
 	)
 
 	return cmd

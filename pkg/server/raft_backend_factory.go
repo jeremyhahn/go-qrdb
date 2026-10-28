@@ -223,7 +223,7 @@ type raftDatabaseInfoSource interface {
 type RaftBackendFactory struct {
 	host *quicraft.Host
 	// leaderOf reads a shard's current leader replica. It is the host's
-	// GetLeaderID; LeadsShard reads leadership through it alone.
+	// LeaderID; LeadsShard reads leadership through it alone.
 	leaderOf       func(shardID uint64) (replicaID uint64, known bool, err error)
 	adapter        *raftbackend.HostAdapter
 	featureGate    *featuregate.Gate
@@ -445,7 +445,7 @@ func NewRaftBackendFactory(
 	)
 	if host != nil {
 		adapter = raftbackend.New(host)
-		leaderOf = host.GetLeaderID
+		leaderOf = host.LeaderID
 	}
 	f := &RaftBackendFactory{
 		host:           host,
@@ -1140,7 +1140,7 @@ func (f *RaftBackendFactory) LeadsDatabase(tenantID, db string) bool {
 	if !ok {
 		return false
 	}
-	info, err := f.host.GetShardInfo(rs.shardID)
+	info, err := f.host.ShardInfo(rs.shardID)
 	return err == nil && info != nil && info.IsLeader
 }
 
@@ -1367,7 +1367,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 		localReplicaID := replicaID
 		go rs.lessor.RunExpiry(ctx, lease.DefaultExpiryInterval,
 			func() bool {
-				id, ok, lerr := f.host.GetLeaderID(shardID)
+				id, ok, lerr := f.host.LeaderID(shardID)
 				return lerr == nil && ok && id == localReplicaID
 			},
 			rs.services.Lease.Revoke,

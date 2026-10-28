@@ -16,10 +16,13 @@ package transport
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 func TestRefusalError_factorConditionFailed(t *testing.T) {
@@ -54,6 +57,41 @@ func TestRefusalError_userConcurrentUpdate(t *testing.T) {
 	}
 	if !dberrors.Is(err, dberrors.ErrConflict) || !dberrors.IsRetryable(err) {
 		t.Fatalf("RefusalError() = %v, want a retryable ErrConflict", err)
+	}
+}
+
+func TestRefusalError_adminCredentialRequiresCA(t *testing.T) {
+	for _, path := range []string{"csr-sign", "generate"} {
+		want := &ceremony.AdminCredentialRequiresCAError{Path: path}
+		err := RefusalError(ceremony.ReasonAdminCredentialRequiresCA, want.Metadata())
+		got, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](err)
+		if !ok || *got != *want {
+			t.Fatalf("RefusalError() = %+v, want %+v", got, want)
+		}
+	}
+}
+
+// TestRefusalError_vlog checks every verifiable-log refusal reason rebuilds
+// its typed vlog error, metadata and all (go-qrdb#912).
+func TestRefusalError_vlog(t *testing.T) {
+	id := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "certs"}
+	exists := &vlog.LogExistsError{ID: id}
+	checkpoint := &vlog.CheckpointExistsError{Size: 12}
+	expire := &vlog.ExpireNotAllowedError{ID: id}
+	for reason, want := range map[string]interface {
+		error
+		Metadata() map[string]string
+	}{
+		vlog.ReasonLogExists:        exists,
+		vlog.ReasonCheckpointExists: checkpoint,
+		vlog.ReasonExpireNotAllowed: expire,
+	} {
+		if got := RefusalError(reason, want.Metadata()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("RefusalError(%q) = %#v, want %#v", reason, got, want)
+		}
+		if got := RefusalError(reason, nil); reflect.TypeOf(got) != reflect.TypeOf(want) {
+			t.Fatalf("RefusalError(%q, nil) = %T, want %T", reason, got, want)
+		}
 	}
 }
 

@@ -116,7 +116,7 @@ func runSecretFromBufferRaceChild() {
 	started := make(chan struct{})
 	var observedBefore, observedAfter []byte
 	prevNewSealed := newSealed
-	newSealed = func(ctx context.Context, src []byte) (*enclave.SealedEnclave, error) {
+	newSealed = func(ctx context.Context, src []byte) (enclave.Sealed, error) {
 		observedBefore = append([]byte(nil), src...)
 		close(started)
 		time.Sleep(sealHold)

@@ -413,12 +413,14 @@ func newBarrierUnsealCmd() *cobra.Command {
 		Long: `Unseal the barrier using the master passphrase that was supplied at
 'barrier init' time.
 
-This verb is reserved for the passphrase / single-secret strategy. For
-Shamir M-of-N unseal use 'barrier unseal-shares' with --share or
---shares-file.
+This verb is reserved for the passphrase / single-secret strategy and for
+none. A none barrier holds no secret and opens itself when its node starts;
+should one be sealed, unseal it with no --passphrase. For Shamir M-of-N
+unseal use 'barrier unseal-shares' with --share or --shares-file.
 
-Example:
-  qrdb barrier unseal --passphrase '<passphrase>'`,
+Examples:
+  qrdb barrier unseal --passphrase '<passphrase>'
+  qrdb barrier unseal`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.BarrierUnsealRequest{Secret: secretBytes(passphrase)}
@@ -431,8 +433,7 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVar(&passphrase, "passphrase", "", "Master passphrase")
-	_ = cmd.MarkFlagRequired("passphrase")
+	cmd.Flags().StringVar(&passphrase, "passphrase", "", "Master passphrase (omit for a none barrier)")
 
 	return cmd
 }

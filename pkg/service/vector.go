@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,17 @@ type vectorService struct {
 	rebuildJobs    map[string]*RebuildJobState
 	compactionJobs map[string]*CompactionJobState
 	jobMu          sync.RWMutex
+
+	// bgCtx is the context of the asynchronous jobs (an async compaction
+	// or index rebuild) the service runs on its own behalf after the
+	// request that started them has returned; Close cancels it through
+	// bgCancel and waits on bg until every such job has stopped, so none
+	// of them touches storage its owner closes next. A job is added to bg
+	// only under mu while closed is false (see startBackground), so no Add
+	// races Close's Wait.
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bg       sync.WaitGroup
 
 	// policyReader resolves the cluster-wide isolation floor for
 	// validateTenantCreate (reject create when no tenant is in context).
@@ -341,6 +353,7 @@ func NewVectorService(
 		rebuildJobs:    make(map[string]*RebuildJobState),
 		compactionJobs: make(map[string]*CompactionJobState),
 	}
+	svc.bgCtx, svc.bgCancel = context.WithCancel(context.Background())
 
 	// Apply functional options
 	for _, opt := range opts {
@@ -352,6 +365,7 @@ func NewVectorService(
 
 	// Load existing namespaces and initialize indexes
 	if err := svc.loadNamespaces(); err != nil {
+		svc.bgCancel()
 		return nil, &VectorOperationError{Op: "load namespaces", Err: err}
 	}
 
@@ -361,6 +375,66 @@ func NewVectorService(
 	}).Info("vector service initialized")
 
 	return svc, nil
+}
+
+// The owner of the vector storage closes the service before the storage,
+// through this assertion (pkg/server/lifecycle).
+var _ io.Closer = (*vectorService)(nil)
+
+// Close refuses every later request with VectorServiceClosedError, cancels
+// the asynchronous jobs in flight (async compaction and index rebuild) and
+// returns only once each has stopped, so the caller may close the storage
+// beneath the service afterwards. It does not close the storage, which the
+// service does not own. Every call, including one concurrent with or after
+// the first, returns only once the jobs have stopped; Close is otherwise
+// idempotent.
+func (v *vectorService) Close() error {
+	v.mu.Lock()
+	v.closed = true
+	v.mu.Unlock()
+
+	// Every caller, not only the first, cancels and waits: a concurrent
+	// Close that returned while the first was still draining would let its
+	// caller tear down storage under a running job. Cancellation is
+	// idempotent, and no job is added once closed is set, so concurrent
+	// Waits observe the same drain.
+	v.bgCancel()
+	v.bg.Wait()
+	return nil
+}
+
+// admit runs access, a step that touches storage, under the service's
+// lifecycle read lock, refusing it with VectorServiceClosedError once Close
+// has begun. Holding the read lock across access makes Close wait for the
+// step to finish. An entry point that delegates to another guarded method
+// calls admit only for its own storage step and delegates outside it, so
+// the read lock is never acquired recursively.
+func (v *vectorService) admit(access func() error) error {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.closed {
+		return &VectorServiceClosedError{}
+	}
+	return access()
+}
+
+// startBackground runs job on its own goroutine under the service's
+// background context, which Close cancels and waits for. It refuses with
+// VectorServiceClosedError once Close has begun: the closed check and the
+// Add happen under the same lock Close takes to set closed, so every Add
+// happens before Close's Wait.
+func (v *vectorService) startBackground(job func(ctx context.Context)) error {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.closed {
+		return &VectorServiceClosedError{}
+	}
+	v.bg.Add(1)
+	go func() {
+		defer v.bg.Done()
+		job(v.bgCtx)
+	}()
+	return nil
 }
 
 // initMetrics initializes Prometheus metrics for the vector service.
@@ -1824,6 +1898,13 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 		return nil, err
 	}
 
+	v.mu.RLock()
+	if v.closed {
+		v.mu.RUnlock()
+		return nil, &VectorServiceClosedError{}
+	}
+	v.mu.RUnlock()
+
 	jobID := uuid.New().String()
 	scoped := scopedFromContext(ctx, req.Namespace)
 
@@ -1846,15 +1927,24 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 	v.jobMu.Unlock()
 
 	if req.Async {
-		go func() {
-			if err := v.performIndexRebuild(ctx, jobID, scoped, req.IndexConfig); err != nil {
+		// The rebuild outlives the request, so it runs on the service's
+		// background context rather than ctx, which ends when the request
+		// returns: Close cancels it and waits.
+		err := v.startBackground(func(bgCtx context.Context) {
+			if err := v.performIndexRebuild(bgCtx, jobID, scoped, req.IndexConfig); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"job_id":    jobID,
 					"namespace": req.Namespace,
 					"error":     err,
 				}).Error("background index rebuild failed")
 			}
-		}()
+		})
+		if err != nil {
+			v.jobMu.Lock()
+			delete(v.rebuildJobs, jobID)
+			v.jobMu.Unlock()
+			return nil, err
+		}
 
 		return &RebuildIndexResponse{
 			JobID:                  jobID,
@@ -2058,6 +2148,14 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 
 	offset := 0
 	for {
+		// Close cancels an async rebuild's context; stop between pages
+		// rather than scan storage its owner is about to close.
+		if err := ctx.Err(); err != nil {
+			job.mu.Lock()
+			job.Error = err
+			job.mu.Unlock()
+			return &VectorOperationError{Op: "scan vectors", Err: err}
+		}
 		opts.Offset = offset
 		vecs, err := v.storage.ScanNamespace(ctx, namespace, opts)
 		if err != nil {
@@ -2490,15 +2588,23 @@ func (v *vectorService) CompactNamespace(ctx context.Context, req *CompactNamesp
 	}).Info("starting namespace compaction")
 
 	if req.Async {
-		go func() { // #nosec G118 -- async compaction must outlive request
-			if err := v.performCompaction(context.Background(), operationID, scoped); err != nil {
+		// The compaction outlives the request, so it runs on the service's
+		// background context rather than ctx: Close cancels it and waits.
+		err := v.startBackground(func(bgCtx context.Context) {
+			if err := v.performCompaction(bgCtx, operationID, scoped); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"operation_id": operationID,
 					"namespace":    req.Namespace,
 					"error":        err,
 				}).Error("background compaction failed")
 			}
-		}()
+		})
+		if err != nil {
+			v.jobMu.Lock()
+			delete(v.compactionJobs, operationID)
+			v.jobMu.Unlock()
+			return nil, err
+		}
 
 		return &CompactNamespaceResponse{
 			OperationID: operationID,
@@ -2548,6 +2654,15 @@ func (v *vectorService) performCompaction(ctx context.Context, operationID, name
 		job.CompletedAt = &now
 		job.mu.Unlock()
 	}()
+
+	// Close cancels an async compaction's context; one it cancelled before
+	// the compaction began does not begin.
+	if err := ctx.Err(); err != nil {
+		job.mu.Lock()
+		job.Error = err
+		job.mu.Unlock()
+		return &VectorOperationError{Op: "compaction", Err: err}
+	}
 
 	preStats, _ := v.storage.GetStats(ctx, namespace)
 	var preSizeBytes int64
@@ -2743,7 +2858,13 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	err := v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
+	err := v.admit(func() error {
+		return v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
+	})
+	var closedErr *VectorServiceClosedError
+	if errors.As(err, &closedErr) {
+		return nil, err
+	}
 	if err != nil {
 		deletedCount := 0
 		var failedIDs []uint64
@@ -2800,11 +2921,6 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	namespaceInfo, err := v.storage.GetNamespaceInfo(ctx, scoped)
-	if err != nil {
-		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
-	}
-
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 100
@@ -2824,9 +2940,24 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 		Limit:  limit + 1,
 		Offset: offset,
 	}
-	vectors, err := v.storage.ScanNamespace(ctx, scoped, scanOpts)
+	var (
+		namespaceInfo *vector.NamespaceInfo
+		vectors       []*vector.VectorValue
+	)
+	err := v.admit(func() error {
+		var err error
+		namespaceInfo, err = v.storage.GetNamespaceInfo(ctx, scoped)
+		if err != nil {
+			return vectorStorageError("find namespace", req.Namespace, 0, err)
+		}
+		vectors, err = v.storage.ScanNamespace(ctx, scoped, scanOpts)
+		if err != nil {
+			return vectorStorageError("list vectors", req.Namespace, 0, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, vectorStorageError("list vectors", req.Namespace, 0, err)
+		return nil, err
 	}
 
 	var nextCursor string
@@ -2888,9 +3019,17 @@ func (v *vectorService) UpdateMetadata(ctx context.Context, req *UpdateVectorMet
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	existingVector, err := v.storage.GetVector(ctx, scoped, req.ID)
+	var existingVector *vector.VectorValue
+	err := v.admit(func() error {
+		var err error
+		existingVector, err = v.storage.GetVector(ctx, scoped, req.ID)
+		if err != nil {
+			return vectorStorageError("find vector", req.Namespace, req.ID, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, vectorStorageError("find vector", req.Namespace, req.ID, err)
+		return nil, err
 	}
 
 	var newMetadata map[string]interface{}
@@ -2955,9 +3094,17 @@ func (v *vectorService) SearchByID(ctx context.Context, req *SearchByIDRequest) 
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
-	sourceVector, err := v.storage.GetVector(ctx, scoped, req.ID)
+	var sourceVector *vector.VectorValue
+	err := v.admit(func() error {
+		var err error
+		sourceVector, err = v.storage.GetVector(ctx, scoped, req.ID)
+		if err != nil {
+			return vectorStorageError("find source vector", req.Namespace, req.ID, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, vectorStorageError("find source vector", req.Namespace, req.ID, err)
+		return nil, err
 	}
 
 	k := req.K

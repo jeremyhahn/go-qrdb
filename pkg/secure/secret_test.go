@@ -12,10 +12,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"reflect"
 	"sync"
 	"testing"
-	"unsafe"
+
+	"github.com/jeremyhahn/go-enclave"
 )
 
 func TestNewSecret(t *testing.T) {
@@ -224,63 +224,51 @@ func TestSecret_ZeroValueUnusable(t *testing.T) {
 	sec.Destroy()
 }
 
+// unauthenticatedSealed is an enclave.Sealed whose ciphertext fails
+// authentication: OpenIn returns enclave.ErrSealedAuthentication, the error
+// go-enclave documents for an envelope that does not authenticate. Every
+// other method is the real sealed value's, so Destroy still wipes it.
+type unauthenticatedSealed struct {
+	enclave.Sealed
+}
+
+var _ enclave.Sealed = unauthenticatedSealed{}
+
+func (unauthenticatedSealed) OpenIn(context.Context, enclave.Backend) (enclave.Handle, error) {
+	return nil, enclave.ErrSealedAuthentication
+}
+
 // TestSecret_Open_DecryptionFailure exercises the *OpenError branch of
-// Secret.Open by corrupting the sealed ciphertext inside the underlying
-// enclave.SealedEnclave via reflect+unsafe. This is deliberately limited to
-// test code — no production code is modified. The technique accesses the
-// unexported "sealed" []byte field so that decryption fails
-// authentication, causing Open to return an *OpenError wrapping the
-// underlying go-enclave error.
+// Secret.Open when the sealed value does not authenticate. go-enclave keeps
+// its envelope behind the enclave.Sealed interface, so the failure is
+// produced through that interface rather than by tampering with its
+// unexported fields.
 func TestSecret_Open_DecryptionFailure(t *testing.T) {
-	src := []byte("material-for-corruption-test")
-	sec, err := NewSecret(context.Background(), src)
+	sec, err := NewSecret(context.Background(), []byte("material-for-corruption-test"))
 	if err != nil {
 		t.Fatalf("NewSecret: %v", err)
 	}
 	defer sec.Destroy()
 
-	// Load the enclave pointer and reach into its unexported "sealed" field
-	// to corrupt it so decryption fails deterministically.
 	sealed := sec.enclave.Load()
 	if sealed == nil {
 		t.Fatal("enclave pointer is nil before corruption")
 	}
-	sealedVal := reflect.ValueOf(sealed).Elem()
-	ctField := sealedVal.FieldByName("sealed")
-	if !ctField.IsValid() {
-		// go-enclave's internal field layout changed under this test. That is
-		// a real failure of this test's technique, not a reason to skip: a
-		// skipped test reports green while verifying nothing, which is worse
-		// than reporting the break (AGENTS.md: no skip guards).
-		t.Fatalf("SealedEnclave has no \"sealed\" field; go-enclave's internal " +
-			"layout changed and this test's reflection technique needs updating")
-	}
-	// Use unsafe to obtain a writable reference to the unexported slice.
-	// #nosec G103 -- the test tampers with go-enclave's unexported ciphertext on purpose, to prove Open detects it; the field is checked valid above.
-	ctPtr := (*[]byte)(unsafe.Pointer(ctField.UnsafeAddr()))
-	ct := *ctPtr
-	if len(ct) == 0 {
-		// A non-empty NewSecret input always produces non-empty ciphertext
-		// (plaintext length plus nonce and authentication tag), so this is
-		// the same class of failure as above: the test's assumption about
-		// go-enclave's internals broke, and it must fail loudly rather than
-		// report a skip that looks like a pass in CI.
-		t.Fatal("sealed ciphertext is empty; cannot corrupt a value that isn't there")
-	}
-	// Flip all bytes — the AEAD's authentication tag will fail on decryption.
-	for i := range ct {
-		ct[i] ^= 0xFF
-	}
+	var corrupt enclave.Sealed = unauthenticatedSealed{Sealed: *sealed}
+	sec.enclave.Store(&corrupt)
 
 	buf, err := sec.Open(context.Background())
 	if err == nil || buf != nil {
-		t.Fatalf("expected Open to fail after ciphertext corruption, got buf=%v err=nil", buf)
+		t.Fatalf("expected Open to fail on unauthenticated ciphertext, got buf=%v err=%v", buf, err)
 	}
 	var oe *OpenError
 	if !errors.As(err, &oe) {
 		t.Fatalf("expected *OpenError, got %T: %v", err, err)
 	}
-	if oe.Unwrap() == nil {
-		t.Fatalf("OpenError.Unwrap() must return the underlying go-enclave error")
+	if !errors.Is(oe.Unwrap(), enclave.ErrSealedAuthentication) {
+		t.Fatalf("OpenError.Unwrap() = %v, want the go-enclave ErrSealedAuthentication", oe.Unwrap())
+	}
+	if !sec.IsAlive() {
+		t.Fatal("a failed Open must leave the Secret alive")
 	}
 }

@@ -41,7 +41,7 @@ implementation and a thin pass-through to `credentials.CredentialService`.
 `credentials.CredentialService` has a `[]byte` retrieve method.
 
 `make check-no-deprecated-credential-retrieve`
-(`test/buildgates/no_deprecated_credential_retrieve_test.go`, in CI's `image` job)
+(`test/buildgates/no_deprecated_credential_retrieve_test.go`, in CI's `lint-gates` job)
 fails if any Go file reintroduces a deleted credential retrieval declaration
 that returns `[]byte`, or uses the unambiguous removed store-level selectors.
 The protobuf `QRDBService` methods of the same names are allowed because they

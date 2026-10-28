@@ -58,6 +58,9 @@ func pollNodeAccessors(n *Node, accessors []reflect.Method) int {
 	var seen int
 	for _, m := range accessors {
 		for _, out := range m.Func.Call([]reflect.Value{rv}) {
+			if out.Type() == errorType {
+				continue // a refusal, not a handle
+			}
 			switch out.Kind() {
 			case reflect.Bool:
 				if out.Bool() {
@@ -85,10 +88,14 @@ func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 	rv := reflect.ValueOf(n)
 	for _, m := range accessors {
 		for _, out := range m.Func.Call([]reflect.Value{rv}) {
-			switch out.Kind() {
-			case reflect.Bool:
+			switch {
+			case out.Type() == errorType:
+				// An accessor that reports why it has no handle must say so
+				// after Close, not return a nil handle and a nil error.
+				assert.False(t, out.IsNil(), "%s() must refuse with a typed error after Close", m.Name)
+			case out.Kind() == reflect.Bool:
 				assert.False(t, out.Bool(), "%s() must be false after Close", m.Name)
-			case reflect.Pointer, reflect.Interface:
+			case out.Kind() == reflect.Pointer, out.Kind() == reflect.Interface:
 				assert.True(t, out.IsNil(), "%s() must be nil after Close: a non-nil handle onto a stopped service graph is exactly the stale handle this contract forbids", m.Name)
 			default:
 				t.Fatalf("%s() returns %s, which this assertion does not know how to check; extend it rather than skipping the accessor", m.Name, out.Kind())
@@ -96,6 +103,10 @@ func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 		}
 	}
 }
+
+// errorType is the reflect.Type of the error interface: an accessor's error
+// result is a refusal, not a handle.
+var errorType = reflect.TypeFor[error]()
 
 // TestNode_AccessorsRaceFreeDuringUnseal is the regression test for
 // go-qrdb#176. A node built with a passphrase barrier and no passphrase is

@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -147,6 +147,7 @@ maximum instead of reaching zero.
 |---|---|---|
 | `WatchCompactedError` | the requested start revision has been compacted away | re-read current state, then watch live |
 | `WatchStartRevisionUnsupportedError` | the store keeps no revision history (a raft node whose `raft.sm_type` is not `mvcc`) | drop `StartRevision` and watch live |
+| `CapabilityUnsupportedError` | the serving node has no watch service configured | watch through a node that serves it, or not at all |
 | `WatchCanceledError` | any other cancellation, reason carried verbatim | inspect the reason |
 
 **A refused start revision is validated at open**, before any watcher exists, so
@@ -209,9 +210,9 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
 
 ## Test strategy
 
-- **Unit**: `pkg/watch` event fan-out, per-`EventType` delivery, `PrevKV`
-  population, `classifyWatchReason` for each substring and for an unrecognized
-  reason.
+- **Unit**: `pkg/watch` event fan-out, per-`EventType` delivery and `PrevKV`
+  population; in `sdk/go/transport`, `classifyWatchReason` for each reason
+  prefix and for an unrecognized reason.
 - **Error tests**: compacted revision, unsupported-replay store, permission
   denial, context cancellation.
 - **Integration**: watch parity across transports in the standalone stage;

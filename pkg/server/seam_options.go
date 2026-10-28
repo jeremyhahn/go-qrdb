@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // StorageFactory opens the storage.Storage behind a raft-free (standalone)
@@ -48,6 +49,7 @@ type seamOptions struct {
 	clock                   clock.Clock
 	storageFactory          StorageFactory
 	dekProvider             dek.Provider
+	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
 }
@@ -82,6 +84,17 @@ func WithStorageFactory(f StorageFactory) ServerOption {
 // closes it.
 func WithDEKProvider(p dek.Provider) ServerOption {
 	return func(o *serverOptions) { o.dekProvider = p }
+}
+
+// WithHeadSignerProvider sets the provider that creates, rotates and signs
+// with each verifiable log's head-signing key, in place of the software
+// provider, so a device that holds the keys without exporting them signs the
+// log heads. Such a provider writes no k/<version> key record: the log's
+// descriptor records its key reference and public key. Nil keeps the software
+// provider, which keeps each log's key in its sealed k/<version> record. The
+// provider's owner closes it.
+func WithHeadSignerProvider(p vlog.HeadSignerProvider) ServerOption {
+	return func(o *serverOptions) { o.headSignerProvider = p }
 }
 
 // WithInvitationRedeemLimiter sets the limiter that throttles invitation

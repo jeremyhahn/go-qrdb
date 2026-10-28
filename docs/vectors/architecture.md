@@ -1,7 +1,7 @@
 # Vector Database — Architecture
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-21
+> Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target design" sections are the vector half of the multi-model database
@@ -9,7 +9,7 @@
 > are approved and not implemented. OD-n refers to that document's ruled decisions.
 
 > **Build-tag gated.** Available only in builds carrying `qrdb_vector`
-> (`WITH_QRDB_VECTOR=1`). GPU acceleration adds the `gpu` tag.
+> (`WITH_QRDB_VECTOR=1`, the default; `WITH_QRDB_VECTOR=0` removes it). GPU acceleration adds the `gpu` tag.
 > `qrdb admin capabilities` reports `vector` when it is compiled in.
 
 ## Problem
@@ -41,7 +41,9 @@ Four search modes, deliberately distinct rather than one overloaded call:
 
 Index maintenance is explicit and asynchronous: `RebuildIndex` and
 `CompactNamespace` return immediately and expose progress endpoints
-(`GetRebuildProgress`, `GetCompactionProgress`).
+(`GetRebuildProgress`, `GetCompactionProgress`). The vector service owns
+those background jobs: closing it cancels them and waits for them, and the
+node closes it before the vector storage beneath it.
 
 ### Alternatives rejected
 

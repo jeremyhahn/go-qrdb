@@ -90,6 +90,7 @@ COPY test/performance/cmd/kvcompare/go.mod test/performance/cmd/kvcompare/go.sum
 COPY test/performance/etcd-benchmark/go.mod test/performance/etcd-benchmark/go.sum test/performance/etcd-benchmark/
 COPY test/performance/qrdb/go.mod test/performance/qrdb/go.sum test/performance/qrdb/
 COPY test/performance/tikv/go.mod test/performance/tikv/go.sum test/performance/tikv/
+COPY test/vanguardprobe/go.mod test/vanguardprobe/go.sum test/vanguardprobe/
 
 # Download the module caches in their own layer. Credentials for the project
 # forge arrive as the optional gomodauth BuildKit secret (the Makefile's
@@ -107,14 +108,14 @@ RUN --mount=type=secret,id=gomodauth \
     fi; \
     for m in . sdk/go sdk/go/gorm/conformance test/clusterproof \
         test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-        test/performance/qrdb test/performance/tikv; do \
+        test/performance/qrdb test/performance/tikv test/vanguardprobe; do \
       echo "==> go mod download ($m)"; \
       (cd "$m" && go mod download); \
     done
 RUN set -eu; \
     for m in . sdk/go sdk/go/gorm/conformance test/clusterproof \
         test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-        test/performance/qrdb test/performance/tikv; do \
+        test/performance/qrdb test/performance/tikv test/vanguardprobe; do \
       (cd "$m" && go mod verify); \
     done
 

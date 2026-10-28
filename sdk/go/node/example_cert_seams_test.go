@@ -24,6 +24,7 @@ import (
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
+	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // exampleCA is an embedder's own login CA, the seam node.WithCertProvider
@@ -133,9 +134,9 @@ func TestCertSeams_ConflictIsTheSDKError(t *testing.T) {
 	if n != nil {
 		closeNode()
 	}
-	var conflict *sdk.CertProviderConflictError
+	var conflict *sdkserver.CertProviderConflictError
 	if !errors.As(err, &conflict) {
-		t.Fatalf("both cert seams = %v, want *sdk.CertProviderConflictError", err)
+		t.Fatalf("both cert seams = %v, want *sdkserver.CertProviderConflictError", err)
 	}
 }
 

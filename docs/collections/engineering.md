@@ -1,6 +1,6 @@
 # Document Collections — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -80,8 +80,9 @@ collection reaches every protobuf transport or none of them.
 
 The service-layer counterparts are `service.CollectionInfo`,
 `service.CreateCollectionRequest` and `service.IndexDefinition`, with
-`CreatedAt` and `StateSince` as `time.Time` and one more field the transports
-do not carry: `IndexOwner`, the owner recorded on the collection's indexes.
+`CreatedAt` and `StateSince` as `time.Time` and two fields the transports do
+not carry: `IndexOwner`, the owner recorded on the collection's indexes, and
+`Incarnation`.
 
 `CollectionServicer` also carries `UpsertDocument` — the guarded
 insert-or-replace the SQL surface builds `REPLACE INTO`, `ON DUPLICATE KEY
@@ -308,7 +309,7 @@ and `__collection:{collection}` its data already has, with no migration. All of 
 - **`DropCollection` marks the collection `dropping`, then deletes every
   document, drops every secondary index the collection owns, reclaims the
   collection's replicated `increment` counter, and is irreversible.** The order
-  is mark → documents → indexes → sequence → metadata, and the metadata key is
+  is mark → documents → indexes → index ledger → sequence → metadata, and the metadata key is
   deleted **last** so the operation is retryable at every interruption point —
   see the architecture note. Re-issuing it on a collection already `dropping`
   resumes the teardown. A collection recreated under a dropped name therefore
@@ -569,45 +570,28 @@ every transport, the SQL surface included, is metered.
   collection created with one codec keeps reading with it. Changing the default
   codec does not rewrite existing collections.
 
-### Upgrading across the tenant-namespace change
+### Tenant-less collection keys
 
 **Collection keys that carry no tenant are not visible, and nothing moves
 them.** Such a key is `__col:{database}:{collection}/{id}` with no
 `<tenant>/<database>/` namespace: the database is in it and the tenant is not,
 so nothing in the store, the Raft log or the metadata says which tenant owns
-it. A migration would have to guess a tenant, and the only guess available
-("it all belongs to the system tenant") would hand another tenant's documents
-to the system tenant with a durable write.
+it. The server does not guess one, and no read falls back from a namespace to
+the bare keyspace.
 
-A read-through fallback, where a servicer looks in its namespace and then in
-the bare keyspace, is rejected: it makes the bare keyspace shared by every
-tenant again.
-
-So these keys are **left in place, inert**. Nothing reads them, because every
+These keys stay in place, inert. Nothing reads them, because every
 transport's KV surface is namespaced, so no caller can compose the bare key.
 Nothing deletes them, because the server does not delete data it cannot
 attribute. An operator with such collections exports them with a binary that
 still reads them and re-imports them per tenant.
 
 **"Nothing deletes them" includes `DROP DATABASE` and `DELETE TENANT`.** A drop
-reclaims the namespaced collection keys a collection writes, and must. It does
-not reclaim `__col:{database}:` keys with no tenant: one tenant's drop of a
-database named `X` would destroy every tenant's tenant-less records for a
-database named `X`, and with them the export above.
-`service.LegacyCollectionKeyPrefixes` is the one place that shape is named, and
-it is passed to no reclamation.
-
-**There is no interrupted-migration state, because nothing moves.** A migration
-that rewrote `__col:` keys through Raft would have a half-state that no
-ordering makes safe: moving the metadata first strands a resolvable collection
-with no documents, and moving the documents first strands documents no name
-reaches.
-
-In a deployment whose tenant list holds only the system tenant, every
-tenant-less key belongs to the system tenant, so moving it under
-`system/{database}/` would be a fact rather than a guess. It is not
-implemented: it needs a replicated, restartable, leader-only boot-time job with
-its own interrupted state.
+reclaims the namespaced collection keys a collection writes. It does not
+reclaim `__col:{database}:` keys with no tenant: one tenant's drop of a
+database named `X` would otherwise destroy every tenant's tenant-less records
+for a database named `X`. `service.LegacyCollectionKeyPrefixes`
+(`pkg/service/database_keys.go`) is the one place that shape is named, and it
+is passed to no reclamation.
 
 ## Test strategy
 

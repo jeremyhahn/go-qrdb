@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 One client verb, `qrdb init`, plus the daemon flags that shape what it does.
@@ -116,9 +116,13 @@ cli: auth bootstrap failed at "atomic role/user creation requires an --sm state 
 
 No registered type does. On a follower the check cannot be asked — only the
 leader proposes — so a follower defers to the leader's answer; every replica of
-a shard runs the same state machine. A probe that fails for any other reason
-after the leader wait also stops the start, at step
-`"guarded batch capability probe"`.
+a shard runs the same state machine. Any other probe error after the leader
+wait (a transport failure, for one) is inconclusive, and the start stops on it
+rather than guess:
+
+```text
+cli: auth bootstrap failed at "guarded batch capability probe": <cause>
+```
 
 ## Checking the result
 

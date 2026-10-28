@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -71,6 +72,12 @@ type mockHost struct {
 	closeFn                 func() error
 }
 
+// mockHost is a whole node host: the data host and the Raft-admin host.
+var (
+	_ Host           = (*mockHost)(nil)
+	_ raftadmin.Host = (*mockHost)(nil)
+)
+
 func (m *mockHost) ID() string {
 	if m.idFn != nil {
 		return m.idFn()
@@ -92,7 +99,7 @@ func (m *mockHost) ShardCount() int {
 	return 1
 }
 
-func (m *mockHost) GetNodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+func (m *mockHost) NodeHostInfo(opt quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 	if m.getNodeHostInfoFn != nil {
 		return m.getNodeHostInfoFn(opt)
 	}
@@ -217,7 +224,7 @@ func (m *mockHost) FollowerRead(ctx context.Context, shardID uint64, query inter
 	return nil, nil
 }
 
-func (m *mockHost) GetLeaderID(shardID uint64) (uint64, bool, error) {
+func (m *mockHost) LeaderID(shardID uint64) (uint64, bool, error) {
 	if m.getLeaderIDFn != nil {
 		return m.getLeaderIDFn(shardID)
 	}
@@ -2379,7 +2386,7 @@ func TestAdminService_GetShardState_LeaderIDError(t *testing.T) {
 		t.Error("expected nil response on error")
 	}
 	if err == nil {
-		t.Fatal("expected error from GetLeaderID failure")
+		t.Fatal("expected error from LeaderID failure")
 	}
 
 	var stateErr *ShardStateError

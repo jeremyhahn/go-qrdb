@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -280,9 +280,8 @@ type AuthMiddlewareConfig struct {
 - **Every client certificate carries the tenant's SPIFFE ID SAN**,
   `spiffe://<tenant>/user/<CN>` (a delegation, `spiffe://<tenant>/svc/<principal>`):
   the tenant is the trust domain. `cert.WithTrustDomain` names the cluster
-  trust domain (fed from the effective `auth.spiffe_trust_domain`, which
-  defaults to `auth.cluster_trust_domain`, through
-  `lifecycle.Infra.SPIFFETrustDomain`), and no tenant may be it
+  trust domain (fed from the effective `auth.cluster_trust_domain` through
+  `lifecycle.Infra.ClusterTrustDomain`), and no tenant may be it
   (`auth.TenantPrincipalURIs`). A provider with no valid cluster trust domain
   refuses to issue (`*SPIFFEIdentityError`) before the CA key is touched.
 - **No server-side client key generation.** `IssueClientCert` certifies the
@@ -323,7 +322,7 @@ type AuthMiddlewareConfig struct {
   SANs or public key differ from what was asked (`*ceremony.CertSubjectError`
   naming the field). `auth.HolderProfile` marks officer and custodian
   certificates; `finalizeIdentity` never resolves one against the user store.
-- **`auth.spiffe_trust_domain` is validated at load** with
+- **`auth.cluster_trust_domain` is validated at load** with
   `spiffe.ValidateTrustDomain`, the same round trip. A refusal is a
   `*spiffe.TrustDomainError` carrying the rejected value and unwrapping to
   `ErrTrustDomainEmpty` or `ErrTrustDomainInvalid`.
@@ -331,7 +330,7 @@ type AuthMiddlewareConfig struct {
 - **Serial numbers are 128-bit random**, hex-encoded in `CertRecord.Serial`.
 - **CA validity 10 years, default client validity 1 year**; `TTL: 0` means the
   provider default.
-- **Every mutating operation checks `barrier.IsSealed()` first.** When sealed,
+- **These operations check `barrier.IsSealed()` first.** When sealed,
   `IssueClientCert`, `RevokeCert`, `IsRevoked`, `ListCerts` and `CACertPEMs`
   all return `BarrierSealedError`.
 - **`getCAMaterial()` resolves a `cakey.Provider` and returns its
@@ -470,12 +469,14 @@ enumeration.
 | Revoke certificate | `certs:revoke` |
 | Revoke a serial this node holds no record for (deny-by-serial) | `certs:revoke` **and** `certs:revoke:cross` |
 | List certificates | `certs:list` |
-| Read certificate metadata | `certs:read` |
 
 `certs:revoke:cross` is **cross-scope**: the RBAC authorizer admits it only for
 identities in the system tenant. It is an escalation ON TOP of `certs:revoke`,
 not a substitute for it -- so a caller needs both, and the built-in Admin
 role grants both.
+
+`certs:read` is declared and granted to built-in roles but gates no operation:
+no route, handler or CLI verb reads one certificate's metadata.
 
 Every other permission in the table is **`ScopeSelfStrict`**
 (`pkg/permission/self_strict_scope.go`), and so are `trust_anchors:add`,
@@ -517,8 +518,8 @@ interface is the boundary — go-qrdb never depends on go-xkms directly.**
 ## Persistence
 
 Records are per tenant and keyed by serial; revocation is a separate key so it
-can be checked without loading the record. **Compatibility**: the four storage
-key patterns are the on-disk contract for this feature.
+can be checked without loading the record. **Compatibility**: the key patterns in
+[Storage schema](#storage-schema) are the on-disk contract for this feature.
 
 ## Test strategy
 

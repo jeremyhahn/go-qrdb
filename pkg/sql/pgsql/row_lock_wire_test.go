@@ -60,7 +60,7 @@ func (h *ParseHandler) lockConn(t *testing.T) *pgLockConn {
 }
 
 func (c *pgLockConn) exec(query string) error {
-	_, err := c.h.HandleParse(c.ctx, wire.Query{Query: query})
+	_, err := c.h.HandleParse(c.ctx, wire.Query{Query: query, SimpleQuery: true})
 	return err
 }
 

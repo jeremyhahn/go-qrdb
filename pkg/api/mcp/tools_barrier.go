@@ -101,9 +101,7 @@ func toolBarrierEnableEncryption() mcp.Tool {
 		mcp.WithString("availability",
 			mcp.Description("Availability mode during migration: \"quiesced\" (default) or \"online\"."),
 		),
-		mcp.WithString("passphrase",
-			mcp.Description("Unseal credential for a passphrase target."),
-		),
+		withSecretArg("passphrase", "Unseal credential for a passphrase target."),
 		mcp.WithNumber("shamir_threshold",
 			mcp.Description("Shamir threshold (M) when strategy is \"shamir\"."),
 		),
@@ -162,7 +160,10 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator, authoriz
 		// The passphrase argument is copied into protected memory and the
 		// decoded copy wiped at once — the credential is what the migration
 		// reads from here on.
-		passphrase := secretArg(req, "passphrase")
+		passphrase, err := secretArg(req, "passphrase")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
+		}
 		creds, err := seal.CredentialsFor(ctx, passphrase)
 		secure.Wipe(passphrase)
 		if err != nil {
@@ -250,15 +251,9 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator, authoriz
 func toolBarrierInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_initialize",
 		mcp.WithDescription("Initialize the cryptographic barrier with a secret. The secret is empty for the \"none\" strategy. Optionally supply so_pin and user_pin to provision the PINBackend in the same call."),
-		mcp.WithString("secret",
-			mcp.Description("Secret for barrier initialization (strategy wrapping passphrase). Empty for the \"none\" strategy."),
-		),
-		mcp.WithString("so_pin",
-			mcp.Description("Optional Security Officer PIN routed to the configured pin.PINBackend."),
-		),
-		mcp.WithString("user_pin",
-			mcp.Description("Optional User PIN routed to the configured pin.PINBackend."),
-		),
+		withSecretArg("secret", "Secret for barrier initialization (strategy wrapping passphrase). Empty for the \"none\" strategy."),
+		withSecretArg("so_pin", "Optional Security Officer PIN routed to the configured pin.PINBackend."),
+		withSecretArg("user_pin", "Optional User PIN routed to the configured pin.PINBackend."),
 	)
 }
 
@@ -270,11 +265,16 @@ func toolBarrierInitialize() mcp.Tool {
 // empty-secret guard here would break parity with every other transport.
 func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		secret := secretArg(req, "secret")
+		secret, err := secretArg(req, "secret")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_initialize", Err: err}
+		}
 		defer secure.Wipe(secret)
 
-		soPIN := mcp.ParseString(req, "so_pin", "")
-		userPIN := mcp.ParseString(req, "user_pin", "")
+		soPIN, userPIN, err := initializePINArgs(req)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_initialize", Err: err}
+		}
 		if err := service.ProvisionInitializePINs(ctx, svc, pinBackend, soPIN, userPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_initialize", Err: err}
 		}
@@ -291,10 +291,7 @@ func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBack
 func toolBarrierUnseal() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_unseal",
 		mcp.WithDescription("Unseal the cryptographic barrier with a secret."),
-		mcp.WithString("secret",
-			mcp.Required(),
-			mcp.Description("Secret for barrier unsealing."),
-		),
+		withSecretArg("secret", "Secret for barrier unsealing. Required, in exactly one of its two forms."),
 	)
 }
 
@@ -302,7 +299,10 @@ func toolBarrierUnseal() mcp.Tool {
 // svc.BarrierUnseal.
 func handleBarrierUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		secret := secretArg(req, "secret")
+		secret, err := secretArg(req, "secret")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_unseal", Err: err}
+		}
 		if len(secret) == 0 {
 			return mcp.NewToolResultError("secret is required"), nil
 		}
@@ -322,9 +322,7 @@ func handleBarrierUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 func toolBarrierSeal() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_seal",
 		mcp.WithDescription("Seal the cryptographic barrier, transitioning it to the sealed state."),
-		mcp.WithString("so_pin",
-			mcp.Description("Optional SO PIN verified against the configured pin.PINBackend."),
-		),
+		withSecretArg("so_pin", "Optional SO PIN verified against the configured pin.PINBackend."),
 	)
 }
 
@@ -333,7 +331,10 @@ func toolBarrierSeal() mcp.Tool {
 // non-nil and has a SO PIN set.
 func handleBarrierSeal(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		soPIN := mcp.ParseString(req, "so_pin", "")
+		soPIN, err := pinArg(req, "so_pin")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_seal", Err: err}
+		}
 		if err := pin.RequireSOPIN(ctx, pinBackend, soPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_seal", Err: err}
 		}
@@ -440,12 +441,8 @@ func toolBarrierShamirInitialize() mcp.Tool {
 		mcp.WithString("policy",
 			mcp.Description("Factor policy: designated (default) or any-enrolled."),
 		),
-		mcp.WithString("so_pin",
-			mcp.Description("Optional Security Officer PIN provisioned into the PIN backend."),
-		),
-		mcp.WithString("user_pin",
-			mcp.Description("Optional User PIN provisioned into the PIN backend."),
-		),
+		withSecretArg("so_pin", "Optional Security Officer PIN provisioned into the PIN backend."),
+		withSecretArg("user_pin", "Optional User PIN provisioned into the PIN backend."),
 	)
 }
 
@@ -465,8 +462,10 @@ func handleBarrierShamirInitialize(svc service.BarrierServicer, pinBackend pin.P
 			return mcp.NewToolResultError("total_shares is required and must be positive"), nil
 		}
 
-		soPIN := mcp.ParseString(req, "so_pin", "")
-		userPIN := mcp.ParseString(req, "user_pin", "")
+		soPIN, userPIN, err := initializePINArgs(req)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: err}
+		}
 		if err := service.ProvisionInitializePINs(ctx, svc, pinBackend, soPIN, userPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_shamir_initialize", Err: err}
 		}
@@ -498,9 +497,7 @@ func toolBarrierRecoveryGenerate() mcp.Tool {
 		mcp.WithString("policy",
 			mcp.Description("Factor policy: designated (default) or any-enrolled."),
 		),
-		mcp.WithString("so_pin",
-			mcp.Description("SO PIN verified against the node's PIN backend."),
-		),
+		withSecretArg("so_pin", "SO PIN verified against the node's PIN backend."),
 	)
 }
 
@@ -514,7 +511,10 @@ func handleBarrierRecoveryGenerate(svc service.BarrierServicer, pinBackend pin.P
 			return mcp.NewToolResultError("threshold is required and must be positive"), nil
 		}
 
-		soPIN := mcp.ParseString(req, "so_pin", "")
+		soPIN, err := pinArg(req, "so_pin")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: err}
+		}
 		if err := pin.RequireSOPIN(ctx, pinBackend, soPIN); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_recovery_generate", Err: err}
 		}

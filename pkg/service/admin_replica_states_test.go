@@ -38,6 +38,8 @@ type hashingHost struct {
 	hashFn func(shardID uint64) (hash, appliedIndex uint64, ok bool, err error)
 }
 
+var _ AdminHost = (*hashingHost)(nil)
+
 func (h *hashingHost) StateMachineHash(shardID uint64) (uint64, uint64, bool, error) {
 	return h.hashFn(shardID)
 }
@@ -45,7 +47,7 @@ func (h *hashingHost) StateMachineHash(shardID uint64) (uint64, uint64, bool, er
 var _ StateMachineHasher = (*hashingHost)(nil)
 
 // replicaReader is the AdminService over host, as the transports reach it.
-func replicaReader(host Host) ReplicaStateReader {
+func replicaReader(host AdminHost) ReplicaStateReader {
 	return NewAdminService(host).(ReplicaStateReader)
 }
 

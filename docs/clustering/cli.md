@@ -1,6 +1,7 @@
 # Clustering — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> Conflicts with this document are defects. Fix them here first.
 
 Two command groups: `qrdb admin` (node and shard administration) and
 `qrdb rebalance` (shard distribution). Both accept the root persistent flags
@@ -530,7 +531,7 @@ after removing it from the cluster, or to treat its issued certificate as
 revoked — with:
 
 ```bash
-qrdb admin join-token retire node-7 --reason "decommissioned 2026-10-06"
+qrdb admin join-token retire node-7 --reason "decommissioned"
 ```
 
 ```
@@ -544,7 +545,8 @@ most recent leaf has also lapsed — a removed member cannot re-enrol with
 its old cert or identity by waiting out its certificate's expiry.
 `--reason` is optional, free-text, and carried for audit only. Retiring
 requires permission `cluster:join_identity_retire` (`ScopeCross`,
-platform-only: no built-in role carries it by default, only `Owner`) —
+platform-only: no role grant carries it; only `Owner`, which holds every
+permission) —
 see [api.md](api.md#post-v1clusterjoin-identitiesretire). The verb is
 implemented on all six transports (REST, gRPC, QUIC, Unix, MCP and
 embedded); the CLI above reaches it through whichever transport `qrdb` is
@@ -560,5 +562,5 @@ feature the cluster has activated exits with an error naming the feature; see
 ## Parity
 
 The 3-node behaviour these verbs drive is exercised by `make integration-test-clustering`,
-which runs in CI as the `clustering` leg of the `integration-features` job
-(`.github/workflows/ci.yml`), required by `ci-gate`.
+which runs in CI in the `integration-features` shard whose feature list
+includes `clustering` (`.github/workflows/ci.yml`), required by `ci-gate`.

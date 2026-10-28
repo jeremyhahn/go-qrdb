@@ -1,6 +1,6 @@
 # Trust Bootstrap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 > **Shape only in this repository.** `qrdb bootstrap` exposes the canonical
@@ -22,7 +22,7 @@ Five named modes, from strongest available downward:
 | Mode | Out-of-band channel | What it pins |
 |---|---|---|
 | `dane` | DNSSEC-validated DNS | a TLSA record (RFC 6698) |
-| `noise` | a Noise XK handshake with a pre-shared static key | the server's static key |
+| `noise` | a Noise NK handshake against the server's pre-shared static key | the server's static key |
 | `spki` | an operator-conveyed hash | the SHA-256 of the server's SPKI |
 | `direct` | operator file copy | the CA bundle itself |
 | `auto` | — | picks the strongest of the above that is available |

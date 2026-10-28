@@ -87,8 +87,9 @@ var sequenceDDLRe = regexp.MustCompile(
 	`(?i)^\s*(CREATE|ALTER|DROP)\s+SEQUENCE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?` +
 		`(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)`)
 
-// handleSequenceDDL executes PostgreSQL's CREATE/ALTER/DROP SEQUENCE
-// against qrdb's sequence catalog, reporting whether the statement was one.
+// sequenceDDL serves PostgreSQL's CREATE/ALTER/DROP SEQUENCE from qrdb's
+// sequence catalog, reporting whether the statement was one and returning
+// the effect its execution has, nil when it has none.
 //
 // qrdb sequences materialize on first use and start at 1 (see
 // service.UserSequencer), which collapses the DDL surface: CREATE SEQUENCE
@@ -97,21 +98,26 @@ var sequenceDDLRe = regexp.MustCompile(
 // have no counterpart in a plain uint64 allocator -- while DROP SEQUENCE
 // resets the counter so a re-created sequence starts at 1 again, exactly
 // the observable effect PostgreSQL's drop-and-recreate has.
-func (h *ParseHandler) handleSequenceDDL(sqlCtx *sql.Context, dbName, trimmed string) (handled bool, err error) {
+func (h *ParseHandler) sequenceDDL(trimmed string) (effect statementEffect, ok bool) {
 	groups := sequenceDDLRe.FindStringSubmatch(trimmed)
 	if groups == nil {
-		return false, nil
+		return nil, false
 	}
-	verb := strings.ToUpper(groups[1])
+	if !strings.EqualFold(groups[1], "DROP") {
+		return nil, true
+	}
 	name := unquoteIdentifier(groups[2])
+	return func(sqlCtx *sql.Context) error {
+		return h.resetSequence(sqlCtx, sqlCtx.GetCurrentDatabase(), name)
+	}, true
+}
 
-	if verb != "DROP" {
-		return true, nil
-	}
-
+// resetSequence resets the named sequence of database dbName, so it starts
+// at 1 again.
+func (h *ParseHandler) resetSequence(sqlCtx *sql.Context, dbName, name string) error {
 	db, err := h.sqlEngine.Analyzer.Catalog.Database(sqlCtx, dbName)
 	if err != nil {
-		return true, err
+		return err
 	}
 	resetter, ok := db.(interface {
 		ResetSequence(ctx *sql.Context, name string) error
@@ -119,9 +125,9 @@ func (h *ParseHandler) handleSequenceDDL(sqlCtx *sql.Context, dbName, trimmed st
 	if !ok {
 		// A database without a sequence catalog has nothing to reset;
 		// DROP SEQUENCE on it is as much a no-op as CREATE was.
-		return true, nil
+		return nil
 	}
-	return true, resetter.ResetSequence(sqlCtx, name)
+	return resetter.ResetSequence(sqlCtx, name)
 }
 
 // addIdentityRe matches PostgreSQL's

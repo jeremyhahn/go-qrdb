@@ -1,6 +1,6 @@
 # Key-Value Store — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb kv`. Three top-level aliases exist for the most common
@@ -45,7 +45,7 @@ Retrieve a value by key.
 
 | Flag | Type | Default | Required |
 |---|---|---|---|
-| `--consistency` | string | server default | no — `strong`, `linearizable`, `eventual` |
+| `--consistency` | string | server default | no — `strong`, `linearizable`, `eventual`, `follower` |
 | `--revision` | bool | false | no — include MVCC revision metadata |
 | `--at-revision` | int | none | no — read at a historical revision |
 

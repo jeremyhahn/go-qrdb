@@ -76,7 +76,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 			args["barrier_shares_total"] = req.Barrier.SharesTotal
 		}
 		if req.Barrier.Secret != "" {
-			args["barrier_secret"] = req.Barrier.Secret
+			putStringSecret(args, "barrier_secret", req.Barrier.Secret)
 		}
 	}
 
@@ -282,18 +282,24 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 		return nil, err
 	}
 
+	// The tool reads an absent "enabled" as false, so a nil Barrier is
+	// refused here rather than sent as a request to disable the barrier.
+	b := req.Barrier
+	if b == nil {
+		return nil, &transport.RequestError{Method: "UpdateDatabaseBarrier", Err: &nilRequestError{Method: "UpdateDatabaseBarrier: barrier"}}
+	}
 	args := map[string]any{
 		"name":    req.Name,
-		"enabled": req.Barrier.Enabled,
+		"enabled": b.Enabled,
 	}
-	if req.Barrier.Mode != "" {
-		args["mode"] = req.Barrier.Mode
+	if b.Mode != "" {
+		args["mode"] = b.Mode
 	}
-	if req.Barrier.SharesRequired != 0 {
-		args["shares_required"] = req.Barrier.SharesRequired
+	if b.SharesRequired != 0 {
+		args["shares_required"] = b.SharesRequired
 	}
-	if req.Barrier.SharesTotal != 0 {
-		args["shares_total"] = req.Barrier.SharesTotal
+	if b.SharesTotal != 0 {
+		args["shares_total"] = b.SharesTotal
 	}
 
 	text, err := t.callTool(ctx, "qrdb_database_update_barrier", args)

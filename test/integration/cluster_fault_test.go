@@ -304,8 +304,8 @@ func (c *faultCluster) restart(t *testing.T, i int) {
 	switch c.seal {
 	case faultSealNone:
 		// A none barrier has no credential: the node unseals itself at
-		// boot, and the operator's empty unseal finds it already open.
-		unsealOnlyBarrier(t, c.ca, node.adminPort)
+		// boot, so the heal sends no unseal and only waits for it.
+		waitForSelfUnsealed(t, c.ca, node.adminPort)
 	case faultSealPassphrase:
 		c.requireSealed(t, i)
 		c.unsealPassphrase(t, i)

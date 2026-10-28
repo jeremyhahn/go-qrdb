@@ -83,6 +83,7 @@ type Server struct {
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
 	dekSvc            service.DEKServicer
+	logSvc            service.LogService
 	policySvc         service.PolicyServicer
 	tenantSvc         tenant.TenantServicer
 	volumeSvc         volume.Service
@@ -528,6 +529,14 @@ func WithDEKService(svc service.DEKServicer) ServerOption {
 	}
 }
 
+// WithLogService configures the verifiable-log service. Without it the
+// qrdb_vlog_* tools are not registered.
+func WithLogService(svc service.LogService) ServerOption {
+	return func(s *Server) {
+		s.logSvc = svc
+	}
+}
+
 // WithPolicyService configures the tenant ABAC policy store. Without it the
 // qrdb_abac_policy_* tools are not registered.
 func WithPolicyService(svc service.PolicyServicer) ServerOption {
@@ -897,6 +906,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.dekSvc != nil {
 		s.addTools(dekTools(s.dekSvc)...)
+	}
+	if s.logSvc != nil {
+		s.addTools(vlogTools(s.logSvc)...)
 	}
 	if s.policySvc != nil {
 		s.addTools(policyTools(s.policySvc)...)

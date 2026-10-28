@@ -177,8 +177,8 @@ does not decide where most databases' data lives, and
 
 ### Target: create and info (remaining, unshipped)
 
-`backend` becomes optional; when absent the node's `database_defaults.backend`
-is written into the record (OD-3). `raft.stateStorage` selects a raft
+`backend` becomes optional; when absent the run mode's default (`raft` in raft
+mode, `pebble` in standalone mode) is written into the record (OD-3). `raft.stateStorage` selects a raft
 database's state-machine store (OD-8).
 
 ```json
@@ -231,6 +231,15 @@ policy off. `DatabaseInfo` reports it as `compaction`. On gRPC:
 travels in the **path**, not the body (`json:"-"` on the request struct).
 
 `POST /v1/databases/{name}/unseal` — carries the unseal `secret`.
+
+On MCP, `qrdb_database_unseal`'s `secret` and `qrdb_database_create`'s
+`barrier_secret` each take a text form and a `<name>_b64` form, standard
+base64 that carries any bytes exactly; a call carrying both is refused, and
+so is a value that is not a JSON string, in either form or in
+`static_shared_secret`, `multicast_shared_secret` or `token_value`. The
+convention is the barrier tools' own
+([../barrier-seal/api.md](../barrier-seal/api.md#secret-arguments-over-mcp)).
+The Go SDK's MCP client always sends `<name>_b64`.
 
 `DatabaseRaftConfig` fields: `clusterMode` (`none|local|distributed`),
 `replicaId`, `raftAddress`, `peers`, `localNodeCount`. **There is no
@@ -347,6 +356,131 @@ messages nest it (`DatabaseBarrierOfficerRegisterRequest{database, officer}`).
 Rekey takes `{"threshold", "policy"}` and revocation
 `{"username", "threshold"}`. A client refuses a request that names no database
 with `DatabaseNameRequiredError` before it is sent.
+
+## Verifiable logs
+
+The `LogService` capabilities ([architecture.md](architecture.md),
+"Transports"), one row per capability. The REST, gRPC / Unix, QUIC and MCP
+columns are served while the node has a log service, and none of them
+otherwise; the embedded column is served while the embedded client has one
+(`embedded.WithLogService`). The SDK's `Client.Vlog()` returns a
+`transport.VlogClient` over any of them, and the `qrdb vlog` commands
+([user.md](user.md), "Keep a verifiable log") drive it. Each method is
+authorized by its permission before the service is reached.
+
+| Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | Permission |
+|---|---|---|---|---|---|---|
+| Create log | `POST /vlog/log` | `VlogCreate` | `vlog.Create` | `qrdb_vlog_create` | `CreateLog` | `vlog:create` |
+| List logs | `GET /vlog/logs` | `VlogList` | `vlog.List` | `qrdb_vlog_list` | `ListLogs` | `vlog:list` |
+| Append | `POST /vlog/append` | `VlogAppend` | `vlog.Append` | `qrdb_vlog_append` | `Append` | `vlog:append` |
+| Get entries | `GET /vlog/entries` | `VlogGet` | `vlog.Get` | `qrdb_vlog_get` | `GetEntries` | `vlog:get` |
+| Inclusion proof | `GET /vlog/proof/inclusion` | `VlogProveInclusion` | `vlog.ProveInclusion` | `qrdb_vlog_prove_inclusion` | `ProveInclusion` | `vlog:proof` |
+| Consistency proof | `GET /vlog/proof/consistency` | `VlogProveConsistency` | `vlog.ProveConsistency` | `qrdb_vlog_prove_consistency` | `ProveConsistency` | `vlog:proof` |
+| Head | `GET /vlog/head` | `VlogHead` | `vlog.Head` | `qrdb_vlog_head` | `Head` | `vlog:head` |
+| Sign head | `POST /vlog/head/sign` | `VlogSignHead` | `vlog.SignHead` | `qrdb_vlog_sign_head` | `SignHead` | `vlog:sign_head` |
+| Rotate key | `POST /vlog/key/rotate` | `VlogRotateKey` | `vlog.RotateKey` | `qrdb_vlog_rotate_key` | `RotateKey` | `vlog:sign_head` |
+| Expire bodies | `POST /vlog/expire` | `VlogExpireBodies` | `vlog.ExpireBodies` | `qrdb_vlog_expire_bodies` | `ExpireBodies` | `vlog:expire` |
+
+Rotating the head-signing key is a use of that key, like signing a head, so
+it is gated on `vlog:sign_head`: an Operator rotates, and an Admin is refused.
+A rotation appends the new key to the log's verifier keys and changes no other
+state. Every head signed after it names the new key's version, and a
+checkpoint signed before it still verifies under the key it names.
+
+A log is named in the caller's tenant and the request's database: the
+`X-QRDB-Database` header on REST and the `x-qrdb-database` metadata on gRPC,
+`system` when absent, as for vectors; the QUIC frame's database; the MCP
+session's. No request names a tenant, on any transport: a `tenant_id` in a
+QUIC payload or MCP tool call is ignored. A node built without the verifiable-log feature answers every method 501 /
+`UNIMPLEMENTED`. A follower that is not the group's leader forwards a REST
+request to the leader when leader forwarding is configured.
+
+On REST the writes take a JSON body and the reads a query, named as in the
+QUIC and MCP payloads below. Every response is the `sdk/go/transport/vlogwire` result
+shape QUIC and MCP answer with too, so one decoder reads all three; byte
+fields (an entry, a root, a hash, a signature, a checkpoint, a public key) are
+base64:
+
+| Route | Request |
+|---|---|
+| `GET /vlog/logs` | none; the logs of the request's database |
+| `POST /vlog/log` | `{"log", "origin", "verifier_keys", "allow_expire_bodies", "signing_key_type"}`; `signing_key_type` is `ed25519`, `ecdsa-p256-sha256` or absent for a log with no key |
+| `POST /vlog/append` | `{"log", "entries"}` |
+| `GET /vlog/entries` | `log`, and optional `from` and `limit` |
+| `GET /vlog/proof/inclusion` | `log`, `index`, `size` |
+| `GET /vlog/proof/consistency` | `log`, `size1`, `size2` |
+| `GET /vlog/head` | `log` |
+| `POST /vlog/head/sign` | `{"log"}` |
+| `POST /vlog/key/rotate` | `{"log", "signing_key_type"}`; `signing_key_type` is `ed25519` or `ecdsa-p256-sha256`, and is required |
+| `POST /vlog/expire` | `{"log", "cutoff"}` |
+
+A malformed body is refused 400 with `ReadBodyError`, a missing query
+parameter with `MissingParameterError` and one that is not a decimal unsigned
+integer with `InvalidParameterError`, before the service is reached.
+
+| Condition | REST | gRPC / Unix |
+|---|---|---|
+| Invalid tenant, log name, descriptor, append batch, key type, or an empty checkpoint | 400 | `INVALID_ARGUMENT` |
+| Log or checkpoint already exists | 409 | `ALREADY_EXISTS` |
+| Unknown log or key | 404 | `NOT_FOUND` |
+| Size or index beyond the tree | 416 | `OUT_OF_RANGE` |
+| Expiry on a log that does not allow it, checkpoint root mismatch, invalid signing key | 409 | `FAILED_PRECONDITION` |
+| Key version conflict | 409 | `ABORTED` |
+| Head signature failure | 500 | `INTERNAL` |
+| Corrupt log table | 500 | `DATA_LOSS` |
+| Verifiable logs not compiled in, or no log service on the node | 501 | `UNIMPLEMENTED` |
+| Verifiable-log feature not active on the group | 503 | `UNAVAILABLE` |
+
+Three refusals also carry a structured-refusal reason beside the class, on
+every transport, and every SDK transport rebuilds the typed `pkg/vlog` error
+from it, so a client matches them with `errors.As` rather than the message:
+
+| Refusal | Reason | Metadata | SDK error |
+|---|---|---|---|
+| Creating a log that already exists | `VLOG_LOG_EXISTS` | `tenant_id`, `database`, `log` | `*vlog.LogExistsError` |
+| A second signed head at a tree size | `VLOG_CHECKPOINT_EXISTS` | `size` | `*vlog.CheckpointExistsError` |
+| Expiry on a log created without `allow_expire_bodies` | `VLOG_EXPIRE_NOT_ALLOWED` | `tenant_id`, `database`, `log` | `*vlog.ExpireNotAllowedError` |
+
+A missing or malformed metadata field leaves its field zero; the reason alone
+selects the type.
+
+## Verifiable-log head-signing keys
+
+Creating a verifiable log with a signing key type asks the node's
+`vlog.HeadSignerProvider` for the key; the software provider is the
+default, and a composer passes a hardware or KMS one with
+`WithHeadSignerProvider` ([engineering.md](engineering.md), "Verifiable-log
+head-signing seam"). The answer names the key version, the provider's
+reference and the public key (PKIX DER) a signed head verifies against; the
+private key is never in an answer. A rotation racing another is a conflict.
+
+Both are refused, before the provider is asked, while the
+`verifiable-log-keys` feature is not yet active on every replica of the
+tenant's group (`LogFeatureNotActiveError`), and every log call is refused for
+a barrier-isolated tenant (`BarrierTenantLogNotSupportedError`) and for a
+barrier-enabled database (`BarrierDatabaseLogNotSupportedError`), sealed or
+not: their logs and keys would be stored under the system barrier rather than
+their own ([architecture.md](architecture.md), "Isolation"). Both refusals are
+`Unimplemented` on every transport: `501 Not Implemented` over REST,
+`UNIMPLEMENTED` over gRPC.
+
+## Verifiable-log payloads over QUIC and MCP
+
+A QUIC request payload and an MCP tool's arguments carry the same fields:
+`log`; `origin`, `verifier_keys`,
+`allow_expire_bodies` and `signing_key_type` to create; `entries` to append;
+`from` and `limit` to get; `index` and `size` for an inclusion proof; `size1`
+and `size2` for a consistency proof; `signing_key_type` to rotate the key;
+`cutoff` to expire. QUIC payloads and
+every result are JSON, the result shapes those of `sdk/go/transport/vlogwire`; byte
+fields (entry bodies, hashes, roots, signatures, checkpoints, public keys) are
+standard base64 (RFC 4648). A result carries a head key's version and public
+key, never the provider's key reference. An MCP argument that is missing,
+not an array of strings where one is required, or not base64 is refused as a
+tool error before the service is reached. A log error carries the class
+`pkg/api/errclass` gives it on every transport: an unknown log is `NotFound`, a
+size or index past the tree `OutOfRange`, an expiry on a log that does not
+allow it `FailedPrecondition`.
 
 ## Status and error mapping
 

@@ -227,6 +227,9 @@ Supported transports:
 	if cmd := newVectorCmd(); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	}
+	if cmd := newVlogCmd(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	}
 	rootCmd.AddCommand(newIndexCmd())
 	rootCmd.AddCommand(newDatabaseCmd())
 	rootCmd.AddCommand(newCollectionCmd())

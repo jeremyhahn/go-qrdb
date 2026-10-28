@@ -126,7 +126,7 @@ func (a *replicaHost) RemoveFollowerNode(ctx context.Context, shardID, replicaID
 // shared Raft host. Used by DatabaseService.ScaleForTenant's scale-down
 // replica-selection policy so the current leader is removed last.
 func (a *replicaHost) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
-	return a.host.GetLeaderID(shardID)
+	return a.host.LeaderID(shardID)
 }
 
 // RequestLeaderTransfer calls RequestLeaderTransfer on the shared Raft host.

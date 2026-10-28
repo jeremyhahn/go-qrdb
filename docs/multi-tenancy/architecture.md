@@ -1,7 +1,7 @@
 # Multi-Tenancy — Architecture
 
 > **Status: NORMATIVE** (the strict-isolation section is RULED and partly
-> built; each part names what is not built) · Scope: go-qrdb · Last verified: 2026-10-21
+> built; each part names what is not built) · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
@@ -155,6 +155,22 @@ deadline; keeping it out of the request means a create that committed always
 answers success. A completion that gives up leaves the record for the hook's
 next trigger. The success or failure audit record is written before the
 response, on its own bound rather than the request's.
+
+### The tenant ID is a trust domain
+
+A tenant's principals are `spiffe://<tenant>/<kind>/<name>`: the tenant ID is
+their SPIFFE trust domain verbatim (see
+[identity-rbac/architecture.md](../identity-rbac/architecture.md#identity-mapping)).
+An ID that cannot be one names a tenant no certificate could ever name, so the
+CA could never issue its admin a certificate and the mTLS authenticator could
+never admit one. Creation therefore refuses, before anything is written, an ID
+that does not survive being written into a SPIFFE ID and parsed back unchanged
+(SPIFFE-ID §2.1: lowercase letters, digits, `.`, `-` and `_`; an uppercase
+letter is refused, not folded), and an ID equal to the cluster trust domain
+(`auth.cluster_trust_domain`), under which a certificate names no tenant. The
+refusal is `*tenant.TenantTrustDomainError`, an invalid-input error on every
+transport, and it is enforced in the one create path every transport and the
+CLI share, so no transport can create a tenant another refuses.
 
 ### One unit, with compensation
 
@@ -1504,7 +1520,9 @@ acknowledgements are ordinary metadata writes.
 - **Each node acknowledges as the mark arrives.** The node that ran the undo
   acknowledges at the undo itself. Every node also holds a watch on the
   tombstone prefix, started by `lifecycle.StartNodeWatchers`, the one
-  composition qrdbd and `sdk/go/node` share. A put of an `undone` tombstone
+  composition qrdbd and `sdk/go/node` share. The watch is the node's own
+  work: stopping the node ends it and waits for it, before any store it reads
+  through is closed. A put of an `undone` tombstone
   makes the node clean up that id and acknowledge. The mark is written after
   the tenant's record is deleted, so a node that saw the first tombstone
   write while the record still existed sees the mark after it, and a reuse
@@ -1610,9 +1628,10 @@ Open question: SNI as the passthrough routing input.
   holding `index:query` on its own tenant never sees another tenant's key
   names. See
   [../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate).
-- **Per-node KEK independence** protects each node's at-rest copy of a
-  tenant key; the tenant root key itself is shared by the tenant's replicas
-  (see *Per-node-independent key design*).
+- **Per-node keys**: each serving replica of a `none`, `passphrase` or
+  `shamir` tenant barrier initializes its own key, so no two replicas share
+  one; a barrier of any other self-managed strategy is shipped to followers as
+  the owner-sealed blob (see *Per-node-independent key design*).
 - **Provisioning-governance permissions are distinct**:
   `tenants:set_isolation`, `tenants:set_entitlements`,
   `databases:create_raft`, `databases:create_volume`.

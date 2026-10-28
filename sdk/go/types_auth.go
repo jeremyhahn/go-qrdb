@@ -334,6 +334,31 @@ var WithTLSState = auth.WithTLSState
 // closed.
 var TLSStateFromContext = auth.TLSStateFromContext
 
+// IssuerVerifier verifies a client certificate chain against a node's
+// dynamic client-auth trust pool. node.Node.IssuerVerifier returns the
+// node's own: the pool its mTLS authenticator verifies against.
+// (Aliases pkg/auth.IssuerVerifier.)
+type IssuerVerifier = auth.IssuerVerifier
+
+// ResolveVerifiedChains returns the verified chains of a TLS connection's
+// client certificate. It returns state.VerifiedChains when crypto/tls built
+// them; otherwise it verifies the presented chain through verifier, which a
+// connection the node's trust pool admitted needs, since the pool's Wire
+// leaves VerifiedChains empty. It returns ErrNoPeerCertificate when no
+// certificate was presented, ErrInvalidClientCertificate when verifier does
+// not trust it, and a *TrustStateUnavailableError when verifier could not
+// read its trust state. (Aliases pkg/auth.ResolveVerifiedChains.)
+var ResolveVerifiedChains = auth.ResolveVerifiedChains
+
+// ErrNoPeerCertificate is returned when a client certificate is expected but
+// the TLS connection carries none. (Aliases pkg/auth.ErrNoPeerCertificate.)
+var ErrNoPeerCertificate = auth.ErrNoPeerCertificate
+
+// TrustStateUnavailableError reports a chain refused while the verifier could
+// not read its trust state in full: a refusal the client may retry, not a
+// verdict on the certificate. (Aliases pkg/auth.TrustStateUnavailableError.)
+type TrustStateUnavailableError = auth.TrustStateUnavailableError
+
 // HTTPAuthorizationFromContext returns the caller's raw Authorization value
 // (for example "Bearer eyJ..."), or "" when the request carried none. It is
 // the one credential carrier every network transport fills: REST and MCP from

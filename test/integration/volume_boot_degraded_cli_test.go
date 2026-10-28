@@ -193,11 +193,10 @@ func TestQrdbdStart_DegradedBoot_ServesGoodPoolRefusesBadPool(t *testing.T) {
 	cfg2 := writeTwoPoolTenantConfig(t, fastDir, brokenDirRound2, true)
 	startNode(t, bin, startArgs(cfg2, "--allow-degraded-volume-boot"), "[degraded-boot-r2] ")
 
-	// A fresh process boots sealed again even under strategy "none": the
-	// barrier was already initialized in round 1 (persisted), so round 2
-	// needs only the unseal half of the ceremony, not another initialize.
+	// The none barrier was initialized in round 1 (persisted), so the round
+	// 2 process unseals it itself at boot: no initialize, no unseal.
 	waitForBarrierStatusReachable(t, ca, adminPort, 90*time.Second)
-	unsealOnlyBarrier(t, ca, adminPort)
+	waitForSelfUnsealed(t, ca, adminPort)
 	waitForHealthy(t, dataDir, 60*time.Second)
 	waitForAdmin(t, ca.Pool, adminPort, 90*time.Second)
 

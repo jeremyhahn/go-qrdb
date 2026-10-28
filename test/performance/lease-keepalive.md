@@ -1,6 +1,6 @@
 # Lease keep-alive latency tail
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Explains the lease keep-alive latency work; the benchmark output is the evidence.
 
 A lease keep-alive used to be a replicated log entry, so every renewal waited on
@@ -13,8 +13,13 @@ checkpoint records the remaining TTL of long leases for the next leader (see [le
 
 `TestRaft_LeaseKeepAliveLatencyTail` (`sdk/go/lease_keepalive_latency_test.go`)
 boots a real single-replica raft group on real disk, acquires one lease, then
-times 64 `Renew` calls separated by a fixed cadence. It fails when p90/median is
-3x or more.
+times 64 `Renew` calls separated by a fixed cadence and logs the median, p90
+and max. Its assertion is not on those times: it fails when any renewal went
+through the raft log, counted by the lease service's `LogRenewals`. A
+p90/median bound it used to carry failed on loaded CI runners with nothing on
+the renewal path waiting (4.75x and 12.65x), and passed against the log path
+whenever no other process was syncing the disk (the "Before" no-writer rows
+below, 2.3–2.5x), so the figures here are measurements, not a gate.
 
 Contention is applied from outside the test:
 
@@ -138,4 +143,4 @@ default 100 ms cadence, unpinned, with and without the disk-sync writer above:
 | After | Writer, run 3 | 71 µs | 86 µs | 136 µs | 1.21x |
 
 Figures are from a single development host and vary run to run; the test's
-assertion, not these numbers, is the contract.
+assertion, that no renewal goes through the log, is the contract.
