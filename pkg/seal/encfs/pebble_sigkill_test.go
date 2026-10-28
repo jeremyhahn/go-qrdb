@@ -6,6 +6,12 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
+// The test kills a process with SIGKILL and reads its wait status, which
+// only unix has. Its one helper from elsewhere, bootBarrier, lives in the
+// unconstrained pebble_restart_test.go.
+
+//go:build unix
+
 package encfs_test
 
 import (
@@ -19,7 +25,9 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // helperEnvVar gates TestHelperProcess_Boot1Kill so it only runs the crash
@@ -50,7 +58,7 @@ func TestHelperProcess_Boot1Kill(t *testing.T) {
 
 	barrier1, _ := bootBarrier(t, filepath.Join(root, "seal"))
 
-	fs1 := encfs.New(vfs.Default, barrier1)
+	fs1 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier1) })
 	db, err := pebble.Open(filepath.Join(root, "pebble"), &pebble.Options{FS: fs1})
 	if err != nil {
 		t.Fatalf("helper: pebble.Open: %v", err)
@@ -111,7 +119,7 @@ func TestPebble_SurvivesSIGKILLRestart(t *testing.T) {
 	barrier2, sealStore2 := bootBarrier(t, filepath.Join(root, "seal"))
 	defer func() { _ = sealStore2.Close() }()
 
-	fs2 := encfs.New(vfs.Default, barrier2)
+	fs2 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier2) })
 	db2, err := pebble.Open(filepath.Join(root, "pebble"), &pebble.Options{FS: fs2})
 	if err != nil {
 		t.Fatalf("boot 2: pebble.Open: %v", err)

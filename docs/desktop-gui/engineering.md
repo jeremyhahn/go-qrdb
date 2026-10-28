@@ -222,6 +222,19 @@ request a spec leaves unmocked is refused rather than proxied to whatever
 another job's `qrdbd` serves on the conventional admin port. `reuseExistingServer`
 stays off in CI, so a run never tests against another job's server.
 
+The mocked and DOM tiers serve the UI over **https**, as `qrdbd` serves web
+mode: the REST server that carries the embedded UI binds TLS only, and every
+secret-bearing SDK call refuses an `http` base URL, so a tier served over
+`http` would test an origin production never has and fail its secret-bearing
+specs at the SDK. `playwright.tls.ts` generates a self-signed ECDSA P-256
+certificate for `localhost` and `127.0.0.1` per run, in memory with
+`node:crypto` alone (no dependency, no file written or committed), and hands
+it to the Vite server in `QRDB_VITE_TLS_CERT` and `QRDB_VITE_TLS_KEY`, which
+`vite.config.ts` reads for both `vite` and `vite preview`. The browser accepts
+the certificate only through each tier's `ignoreHTTPSErrors`; no application
+code path changes. The real-backend tier starts no web server and talks to
+`qrdbd` over https directly.
+
 The mocked tier runs against the **production bundle**, the one `build-client`
 embeds. `make test-typescript` builds it (`npm run build`) as its own step
 before Playwright starts, and the config's web server only serves `dist/` with

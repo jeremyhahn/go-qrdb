@@ -942,6 +942,12 @@ type BarrierClient interface {
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(ctx context.Context, req *BarrierUnsealRequest) error
 
+	// BarrierChangePassphrase re-wraps the root key of the unsealed,
+	// passphrase-sealed system barrier under req.Next once req.Current opens
+	// it. A wrong current passphrase is refused as PermissionDenied and
+	// changes nothing; a concurrent root-key write is refused as Aborted.
+	BarrierChangePassphrase(ctx context.Context, req *BarrierChangePassphraseRequest) error
+
 	// BarrierSeal seals the barrier, preventing further data access until
 	// it is unsealed again.
 	BarrierSeal(ctx context.Context) error
@@ -1177,6 +1183,18 @@ type TenantClient interface {
 	// Share material is never returned; for the Shamir strategy the response
 	// counts the shares sealed to officers.
 	TenantBarrierInit(ctx context.Context, req *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
+
+	// TenantBarrierSignedInitBegin is the first half of a two-phase signed
+	// init, for a first admin whose key signs away from the connection: it
+	// returns the barrier's init statement naming req.PublicKey and a
+	// single-use reference. Sign the statement, then call
+	// TenantBarrierSignedInitComplete before the reference lapses.
+	TenantBarrierSignedInitBegin(ctx context.Context, req *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error)
+
+	// TenantBarrierSignedInitComplete redeems a begun statement with the
+	// detached signature over it and initializes the barrier under the
+	// signed statement.
+	TenantBarrierSignedInitComplete(ctx context.Context, req *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error)
 
 	// TenantBarrierUnseal unseals a per-tenant barrier using a single key.
 	TenantBarrierUnseal(ctx context.Context, req *TenantBarrierUnsealRequest) error

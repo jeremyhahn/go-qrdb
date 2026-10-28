@@ -83,7 +83,8 @@ handler.
 A QUIC frame has no header section, so on QUIC the PIN rides in the `so_pin`
 field of the request message of every SO-gated operation
 (`barrier.ShamirInitialize`, `barrier.RekeyStart`, `barrier.RecoveryGenerate`,
-`barrier.RecoveryDelete`, `ceremony.Initialize`, `ceremony.SignCSR`).
+`barrier.RecoveryDelete`, `barrier.ChangePassphrase`, `ceremony.Initialize`,
+`ceremony.SignCSR`).
 `BarrierRecoveryDelete` takes a `BarrierRecoveryDeleteRequest` for this reason. A
 gated QUIC method without a carrier would be refused, never admitted, and a
 test holds every gated method to having one. The embedded transport runs in

@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 )
@@ -296,7 +297,7 @@ func (s *TimeSeriesService) SetRetentionPolicy(ctx context.Context, metric strin
 	return nil
 }
 
-// checkTimeSeriesRetentionEnabled refuses with *featuregate.NotActiveError
+// checkTimeSeriesRetentionEnabled refuses with *feature.NotActiveError
 // until every replica of this shard's group can apply
 // protocol.OpTSApplyRetention: go-quicraft replays a group's committed log
 // to catch up a new member, so an opcode applied under a narrower
@@ -305,14 +306,14 @@ func (s *TimeSeriesService) SetRetentionPolicy(ctx context.Context, metric strin
 func (s *TimeSeriesService) checkTimeSeriesRetentionEnabled() error {
 	gated, ok := s.host.(FeatureGatedHost)
 	if ok && !gated.FeatureEnabled(s.shardID, featuregate.TimeSeriesRetention) {
-		return &featuregate.NotActiveError{Feature: featuregate.TimeSeriesRetention, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.TimeSeriesRetention, ShardID: s.shardID}
 	}
 	return nil
 }
 
 // ApplyRetention deletes points for metric older than cutoff through Raft
 // consensus, so every replica deletes the identical set of points. Refused
-// with *featuregate.NotActiveError until every replica of the group can
+// with *feature.NotActiveError until every replica of the group can
 // apply protocol.OpTSApplyRetention (see checkTimeSeriesRetentionEnabled).
 func (s *TimeSeriesService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
 	if err := s.checkTimeSeriesRetentionEnabled(); err != nil {

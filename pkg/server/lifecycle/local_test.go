@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -42,6 +43,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore/objstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -272,6 +275,65 @@ func TestNewLocalStorage_ObjstoreHonoursAnExplicitPath(t *testing.T) {
 	}
 	if _, err := statDir(filepath.Join(dataDir, "objstore")); err == nil {
 		t.Error("the default path was created even though an explicit one was configured")
+	}
+}
+
+func TestNewLocalStorage_ObjstoreOpensWithReferencedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	keyFile, secretFile := filepath.Join(dir, "key"), filepath.Join(dir, "secret")
+	if err := os.WriteFile(keyFile, []byte("FAKEACCESSKEYID0000"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretFile, []byte("fake-secret-access-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := objstoretest.NewProvider(t)
+	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.ObjstoreConfig{Provider: provider.Name(), Credentials: qrdbconfig.ObjstoreCredentialsConfig{KeyFile: keyFile, SecretFile: secretFile}})
+	if err != nil {
+		t.Fatalf("NewLocalStorage(objstore, credentials): %v", err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+
+	want := []objstoretest.Delivery{{Key: "FAKEACCESSKEYID0000", Secret: "fake-secret-access-key"}}
+	if got := provider.Deliveries(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the provider received %+v, want the referenced files' contents %+v", got, want)
+	}
+}
+
+func TestNewLocalStorage_ObjstoreCredentialFileFailureNamesTheReference(t *testing.T) {
+	provider := objstoretest.NewProvider(t)
+	missing := filepath.Join(t.TempDir(), "absent-secret")
+	_, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.ObjstoreConfig{Provider: provider.Name(), Credentials: qrdbconfig.ObjstoreCredentialsConfig{SecretFile: missing}})
+	var lse *lifecycle.LocalStorageError
+	if !errors.As(err, &lse) || lse.Backend != database.BackendObjstore {
+		t.Fatalf("err = %v, want a *LocalStorageError naming objstore", err)
+	}
+	var fileErr *objstore.CredentialFileError
+	if !errors.As(err, &fileErr) || fileErr.File != missing || fileErr.Credential != objstore.CredentialSecret {
+		t.Fatalf("err = %v, want a *objstore.CredentialFileError naming %q", err, missing)
+	}
+	if got := provider.Deliveries(); len(got) != 0 {
+		t.Fatalf("the provider was opened %d times; a failed credential read must stop the open", len(got))
+	}
+}
+
+// TestNewLocalStorage_ObjstoreRefusesCredentialsTheProviderIgnores pins the
+// memory provider's intentional refusal: it reads no credential, so a
+// reference to one is refused before the file is read, which the missing
+// file proves.
+func TestNewLocalStorage_ObjstoreRefusesCredentialsTheProviderIgnores(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent-secret")
+	_, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.ObjstoreConfig{Provider: "memory", Credentials: qrdbconfig.ObjstoreCredentialsConfig{SecretFile: missing}})
+	var lse *lifecycle.LocalStorageError
+	if !errors.As(err, &lse) || lse.Backend != database.BackendObjstore {
+		t.Fatalf("err = %v, want a *LocalStorageError naming objstore", err)
+	}
+	var ignored *objstore.CredentialIgnoredError
+	if !errors.As(err, &ignored) || ignored.Provider != "memory" || ignored.Credential != objstore.CredentialSecret || ignored.File != missing {
+		t.Fatalf("err = %v, want a *objstore.CredentialIgnoredError naming memory's secret %q", err, missing)
 	}
 }
 

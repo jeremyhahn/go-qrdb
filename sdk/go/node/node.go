@@ -127,6 +127,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -281,7 +282,7 @@ func WithStorageFactory(f server.StorageFactory) NodeOption {
 // file system, which a factory that writes files must route its I/O through
 // so the data stays under the barrier. Each call returns storage owned by that
 // one replica, and the node closes it with the replica.
-type ReplicaStorageFactory func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)
+type ReplicaStorageFactory func(shardID, replicaID uint64, dir string, dataPlaneFS filesys.FS) (storage.Storage, error)
 
 // bindReplicaStorage binds f to the data-plane file system: the encryptor's
 // when the barrier is enabled at the replica's open, nil otherwise.
@@ -290,7 +291,7 @@ func bindReplicaStorage(f ReplicaStorageFactory, encryptor *atrest.Encryptor) st
 		return nil
 	}
 	return func(shardID, replicaID uint64, dir string) (storage.Storage, error) {
-		var dataPlaneFS vfs.FS
+		var dataPlaneFS filesys.FS
 		if encryptor.Enabled() {
 			dataPlaneFS = encryptor.FS()
 		}
@@ -1663,6 +1664,28 @@ func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
 	}
 
 	return n.completeBoot(ctx)
+}
+
+// ChangePassphrase replaces the passphrase sealing the system barrier's
+// root key without changing the root key itself: data written under the old
+// passphrase stays readable, and the next Unseal takes next. The barrier
+// must be unsealed. Both credentials are BORROWED; the caller destroys them.
+//
+// The call is refused with seal.ErrCredentialMismatch when current does not
+// open the barrier, with seal.ErrPassphraseChangeConflict when a concurrent
+// change won the race, and with ErrSealNotEnabled on a node built without a
+// seal barrier. A Shamir barrier has no passphrase and refuses the call too.
+//
+// This is the in-process counterpart of the barrier change-passphrase
+// operation the transports carry; it bypasses their Security Officer gate, as
+// every other method on Node does, because the embedder already holds the
+// process.
+func (n *Node) ChangePassphrase(ctx context.Context, current, next seal.Credentials) error {
+	barrier := n.barrier.Load()
+	if barrier == nil {
+		return ErrSealNotEnabled
+	}
+	return barrier.ChangePassword(ctx, current, next)
 }
 
 // completeBoot finishes the node's boot sequence after the barrier is
@@ -4839,7 +4862,7 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 	if factory != nil {
 		// A composer's storage writes its files through the barrier's
 		// encrypting file system whatever the backend type names.
-		var dataPlaneFS vfs.FS
+		var dataPlaneFS filesys.FS
 		if enc.Enabled() {
 			dataPlaneFS = enc.FS()
 		}

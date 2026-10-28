@@ -644,7 +644,7 @@ boundary as a typed value and is mapped per transport by
 | `Compact` to a revision below 1 | `service.CompactRevisionInvalidError` | **yes** |
 | `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
 | `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |
-| `Compact` before every replica of the group supports per-database compaction | `featuregate.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
+| `Compact` before every replica of the group supports per-database compaction | `feature.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
 | As-of read against a non-MVCC state machine | `service.MVCCBackendRequiredError` (501 / `UNIMPLEMENTED`) | **yes** |
 | Restore naming a reserved prefix or key | refused, HTTP 403 equivalent, **no override** | **yes** |
 | Restore with no scope or both scopes | refused | **yes** |
@@ -817,7 +817,7 @@ consumes no revision, fires no watch and is never itself compacted.
   policy, recording a sample -- is `protocol.OpCompactionState` (16), proposed
   to the database's own group and applied in the apply batch, so every replica
   holds the same record. It is proposed only once the cluster feature
-  `prefix-compaction` is activated (`featuregate.NotActiveError` before),
+  `prefix-compaction` is activated (`feature.NotActiveError` before),
   the gate that carries `OpMVCCCompactPrefix` too. A state machine that does
   not apply it -- the pebble KV state machine, the KV engine, the state
   machines of `pkg/statemachine` -- refuses it as an unknown opcode. Such

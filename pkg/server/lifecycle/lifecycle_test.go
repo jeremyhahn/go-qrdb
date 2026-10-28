@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -598,7 +599,7 @@ type unactivatedHost struct {
 
 var _ service.AdminHost = unactivatedHost{}
 
-func (unactivatedHost) FeatureEnabled(uint64, featuregate.Feature) bool { return false }
+func (unactivatedHost) FeatureEnabled(uint64, feature.Feature) bool { return false }
 
 var _ service.FeatureGatedHost = unactivatedHost{}
 
@@ -613,7 +614,7 @@ func TestBuildServices_IsolatedTenantIsGatedOnPerNodeBarrierKeys(t *testing.T) {
 
 	ctx := context.Background()
 	const isolated = "isolated-tenant"
-	var notActive *featuregate.NotActiveError
+	var notActive *feature.NotActiveError
 	if _, err := node.Tenant.CreateTenant(ctx, isolated, "Isolated Tenant", tenant.IsolationBarrier); !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
 		t.Fatalf("CreateTenant(barrier) before activation = %v, want NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)
 	}

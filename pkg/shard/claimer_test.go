@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -252,9 +253,9 @@ func TestClaimShardID_WaitsForActivation(t *testing.T) {
 		t.Fatalf("NewClaimer: %v", err)
 	}
 	_, err = c.ClaimShardID(context.Background())
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
-		t.Fatalf("claim before activation = %v, want *featuregate.NotActiveError", err)
+		t.Fatalf("claim before activation = %v, want *feature.NotActiveError", err)
 	}
 	if msg := inactive.Error(); !strings.Contains(msg, `"cluster-shard-ids"`) {
 		t.Fatalf("error text %q does not name the feature", msg)

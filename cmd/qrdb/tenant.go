@@ -52,6 +52,8 @@ func newTenantCmd() *cobra.Command {
 		newTenantListDeletedCmd(),
 		newTenantReconcileDeletedCmd(),
 		newTenantBarrierInitCmd(),
+		newTenantBarrierInitBeginCmd(),
+		newTenantBarrierInitCompleteCmd(),
 		newTenantBarrierUnsealCmd(),
 		newTenantBarrierSealCmd(),
 		newTenantBarrierStatusCmd(),
@@ -495,20 +497,9 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"goes to --server's node and the others initialize their own keys from it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			officerRoster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
+			officerRoster, err := tenantBarrierRoster(officers, custodians, shares)
 			if err != nil {
 				return err
-			}
-			custodianRoster, err := parseTenantOfficerFlags("--custodians", transport.RoleCustodian, custodians)
-			if err != nil {
-				return err
-			}
-			officerRoster = append(officerRoster, custodianRoster...)
-			if len(officerRoster) > 0 && len(officerRoster) != shares {
-				return &InvalidArgError{
-					Arg:    "--shares",
-					Reason: "must equal the number of --officers plus --custodians (" + strconv.Itoa(len(officerRoster)) + ")",
-				}
 			}
 
 			keyFile, _ := cmd.Root().PersistentFlags().GetString("key-file")
@@ -592,6 +583,27 @@ func initProofSigner(keyFile string) (crypto.Signer, error) {
 		return nil, nil
 	}
 	return readSigner(keyFile)
+}
+
+// tenantBarrierRoster is a Shamir init's inline roster from the --officers and
+// --custodians flags, whose combined count must equal shares.
+func tenantBarrierRoster(officers, custodians []string, shares int) ([]transport.OfficerRegisterRequest, error) {
+	roster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
+	if err != nil {
+		return nil, err
+	}
+	custodianRoster, err := parseTenantOfficerFlags("--custodians", transport.RoleCustodian, custodians)
+	if err != nil {
+		return nil, err
+	}
+	roster = append(roster, custodianRoster...)
+	if len(roster) > 0 && len(roster) != shares {
+		return nil, &InvalidArgError{
+			Arg:    "--shares",
+			Reason: "must equal the number of --officers plus --custodians (" + strconv.Itoa(len(roster)) + ")",
+		}
+	}
+	return roster, nil
 }
 
 // parseTenantOfficerFlags parses repeatable holder flag values

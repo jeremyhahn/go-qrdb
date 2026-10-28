@@ -229,6 +229,21 @@ each signal path on a stub `docker`. `make security`, full tier only, and `make 
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
 
+**The Docker integration stack has one network namespace and, by default, no
+network** (`test/integration/api/docker-compose.yml`, run by
+`make integration-test-standalone`, `-cluster` and `-docker`). Its `netns`
+service holds the namespace with `network_mode: none`. The two servers and
+the test runner join it with `network_mode: "service:netns"` and talk over
+loopback: `qrdbd` on 63001-63005, `qrdbd-shamir` on 64001-64005, and the
+runner reaches them at `127.0.0.1:<port>`. Nothing in the stack needs a
+network at run time, because the image fetched its modules at build. A
+service per bridge attachment gave the host one veth per container start and
+stop. On a many-core runner each veth add or remove is a storm of hundreds of
+uevents, one per tx and rx queue. The stack now creates no veth. The opt-in
+Ollama overlay (`docker-compose.embedding.yml`) pulls its model at run time,
+so it gives the holder one bridge attachment, which is one veth for the
+stack.
+
 **The stage caches live in named volumes on the runner's Docker host,** never
 in a stage container's layer or its `/tmp` (handbook `ci-standard.md` §6). Every stage mounts `<prefix>cache-<class>-gobuild` as
 `GOCACHE` and `<prefix>cache-<class>-golangci` as `GOLANGCI_LINT_CACHE`, and

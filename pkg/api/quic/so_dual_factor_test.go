@@ -205,6 +205,75 @@ func TestSOPINFromPayload(t *testing.T) {
 	}
 }
 
+// TestSOPINFromPayload_CopiesOnlyThePIN: from a change-passphrase request the
+// gate copies the PIN and nothing else. Its one allocation is the returned
+// PIN, so no copy of Current or Next exists for the gate to leave unwiped,
+// and the PIN does not alias the payload the handler decodes next.
+func TestSOPINFromPayload_CopiesOnlyThePIN(t *testing.T) {
+	payload, err := proto.Marshal(&pb.BarrierChangePassphraseRequest{
+		Current: []byte("current-passphrase"),
+		Next:    []byte("next-passphrase"),
+		SoPin:   "1234",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	pin := soPINFromPayload("barrier.ChangePassphrase", payload)
+	if string(pin) != "1234" {
+		t.Fatalf("pin = %q, want 1234", pin)
+	}
+	clear(pin)
+	var decoded pb.BarrierChangePassphraseRequest
+	if err := proto.Unmarshal(payload, &decoded); err != nil || decoded.GetSoPin() != "1234" {
+		t.Fatalf("wiping the returned PIN changed the payload: %v, %q", err, decoded.GetSoPin())
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		soPINFromPayload("barrier.ChangePassphrase", payload)
+	}); allocs != 1 {
+		t.Fatalf("allocations = %v, want 1 (the PIN copy alone)", allocs)
+	}
+}
+
+// TestSOPINFromPayload_WireRules: the scan reads the payload as
+// proto.Unmarshal would, and yields no PIN wherever Unmarshal would fail.
+func TestSOPINFromPayload_WireRules(t *testing.T) {
+	const method = "barrier.ChangePassphrase"
+	valid, err := proto.Marshal(&pb.BarrierChangePassphraseRequest{Current: []byte("c"), SoPin: "1234"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	pinField := soPINCarriers[method].Fields().ByName(soPINField).Number()
+	unknown := protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), valid...), 999, protowire.VarintType), 7)
+	if got := string(soPINFromPayload(method, unknown)); got != "1234" {
+		t.Fatalf("an unknown field hid the PIN: %q", got)
+	}
+	appendPIN := func(typ protowire.Type) []byte {
+		return protowire.AppendTag(append([]byte(nil), valid...), pinField, typ)
+	}
+	cases := []struct {
+		name    string
+		payload []byte
+		want    string // "" means no PIN
+	}{
+		{"unknown field", unknown, "1234"},
+		{"repeated so_pin, the last wins", protowire.AppendString(appendPIN(protowire.BytesType), "5678"), "5678"},
+		{"so_pin of another wire type is an unknown field", protowire.AppendVarint(appendPIN(protowire.VarintType), 1), "1234"},
+		{"truncated", valid[:len(valid)-1], ""},
+		{"bad tag", append(append([]byte(nil), valid...), 0x80), ""},
+		{"truncated so_pin", appendPIN(protowire.BytesType), ""},
+		{"not UTF-8", protowire.AppendBytes(protowire.AppendTag(nil, pinField, protowire.BytesType), []byte{0xff, 0xfe}), ""},
+	}
+	for _, tc := range cases {
+		if got := string(soPINFromPayload(method, tc.payload)); got != tc.want {
+			t.Errorf("%s: pin = %q, want %q", tc.name, got, tc.want)
+		}
+		var decoded pb.BarrierChangePassphraseRequest
+		if err := proto.Unmarshal(tc.payload, &decoded); err == nil && decoded.GetSoPin() != tc.want || err != nil && tc.want != "" {
+			t.Errorf("%s: proto.Unmarshal reads pin %q (err %v), the scan %q", tc.name, decoded.GetSoPin(), err, tc.want)
+		}
+	}
+}
+
 // TestSODualFactor_GateWithoutAuthFailsClosed: with nothing to authenticate
 // the caller there is no SO to admit, so the gate refuses rather than being
 // skipped (go-qrdb#569 N5).

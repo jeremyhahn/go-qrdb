@@ -18,19 +18,18 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2"
-	"github.com/cockroachdb/pebble/v2/vfs"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 )
 
 // newTestBarrier returns an unsealed *seal.StorageBarrier backed by an
-// in-memory backend. It is initialized and unsealed so Apply can wrap a FS.
+// in-memory backend. It is initialized and unsealed so Wrap can wrap a FS.
 func newTestBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
 	ctx := context.Background()
@@ -94,87 +93,26 @@ func TestNilEncryptor_EnabledFalse(t *testing.T) {
 	}
 }
 
-// TestApply_NilBarrierIsNoOp confirms that Apply on a nil-barrier Encryptor
-// leaves pebble.Options.FS unchanged.
-func TestApply_NilBarrierIsNoOp(t *testing.T) {
-	e := atrest.New(nil)
-	var opts pebble.Options
-	e.Apply(&opts)
-	if opts.FS != nil {
-		t.Errorf("Apply with nil barrier set FS = %v, want nil (untouched)", opts.FS)
-	}
-}
-
-// TestApply_NilEncryptorIsNoOp confirms that a nil *Encryptor Apply is safe
-// and does not modify pebble.Options.FS.
-func TestApply_NilEncryptorIsNoOp(t *testing.T) {
-	var e *atrest.Encryptor
-	var opts pebble.Options
-	e.Apply(&opts)
-	if opts.FS != nil {
-		t.Errorf("nil Encryptor Apply set FS = %v, want nil", opts.FS)
-	}
-}
-
-// TestApply_WithBarrierWrapsFS confirms that Apply with a real barrier
-// installs a non-nil, non-default encrypting FS on pebble.Options.
-func TestApply_WithBarrierWrapsFS(t *testing.T) {
-	barrier := newTestBarrier(t)
-	e := atrest.New(barrier)
-	var opts pebble.Options
-	e.Apply(&opts)
-	if opts.FS == nil {
-		t.Fatal("Apply with real barrier left FS = nil, want encrypting wrapper")
-	}
-	if opts.FS == vfs.Default {
-		t.Error("Apply with real barrier did not replace FS (still vfs.Default)")
-	}
-}
-
-// TestApply_WrapsEncfsType confirms the FS installed by Apply is the encfs
-// type (not just any non-nil value).
-func TestApply_WrapsEncfsType(t *testing.T) {
-	barrier := newTestBarrier(t)
-	e := atrest.New(barrier)
-	var opts pebble.Options
-	e.Apply(&opts)
-	if _, ok := opts.FS.(*encfs.FS); !ok {
-		t.Errorf("Apply installed FS of type %T, want *encfs.FS", opts.FS)
-	}
-}
-
-// TestApply_PreservesExistingBase confirms that Apply wraps a pre-existing
-// opts.FS rather than discarding it in favour of vfs.Default.
-func TestApply_PreservesExistingBase(t *testing.T) {
-	barrier := newTestBarrier(t)
-	e := atrest.New(barrier)
-	opts := pebble.Options{FS: vfs.NewMem()}
-	e.Apply(&opts)
-	if _, ok := opts.FS.(*encfs.FS); !ok {
-		t.Errorf("Apply with existing FS installed %T, want *encfs.FS", opts.FS)
-	}
-}
-
 // TestFS_NilBarrierReturnsBase confirms that FS() on a nil-barrier Encryptor
-// returns the base FS (vfs.Default) rather than nil.
+// returns the base FS (filesys.Default) rather than nil.
 func TestFS_NilBarrierReturnsBase(t *testing.T) {
 	e := atrest.New(nil)
 	fs := e.FS()
 	if fs == nil {
-		t.Error("FS() with nil barrier returned nil, want vfs.Default")
+		t.Error("FS() with nil barrier returned nil, want filesys.Default")
 	}
-	if fs != vfs.Default {
-		t.Errorf("FS() = %T, want vfs.Default", fs)
+	if fs != filesys.Default {
+		t.Errorf("FS() = %T, want filesys.Default", fs)
 	}
 }
 
 // TestFS_NilReceiverReturnsDefault pins the nil-receiver contract: a nil
-// *Encryptor has no base FS to hand back, so FS falls back to vfs.Default
+// *Encryptor has no base FS to hand back, so FS falls back to filesys.Default
 // rather than dereferencing the receiver.
 func TestFS_NilReceiverReturnsDefault(t *testing.T) {
 	var e *atrest.Encryptor
-	if fs := e.FS(); fs != vfs.Default {
-		t.Errorf("nil Encryptor FS() = %T, want vfs.Default", fs)
+	if fs := e.FS(); fs != filesys.Default {
+		t.Errorf("nil Encryptor FS() = %T, want filesys.Default", fs)
 	}
 }
 
@@ -193,10 +131,10 @@ func TestFS_WithBarrierReturnsEncfsType(t *testing.T) {
 }
 
 // TestWrap_DisabledReturnsBase confirms that Wrap on a nil or nil-barrier
-// Encryptor hands back the base FS itself, so a store that is not Pebble
-// writes plaintext only when there is no barrier.
+// Encryptor hands back the base FS itself, so a store writes plaintext only
+// when there is no barrier.
 func TestWrap_DisabledReturnsBase(t *testing.T) {
-	base := vfs.NewMem()
+	base := filesys.Default
 	var nilEnc *atrest.Encryptor
 	for name, e := range map[string]*atrest.Encryptor{
 		"nil-receiver": nilEnc,
@@ -212,13 +150,14 @@ func TestWrap_DisabledReturnsBase(t *testing.T) {
 // the given base FS: bytes written through the wrapper are ciphertext in the
 // base and read back as the plaintext through it.
 func TestWrap_WithBarrierEncryptsContents(t *testing.T) {
-	base := vfs.NewMem()
+	base := filesys.Default
 	wrapped := atrest.New(newTestBarrier(t)).Wrap(base)
 	if _, ok := wrapped.(*encfs.FS); !ok {
 		t.Fatalf("Wrap = %T, want *encfs.FS", wrapped)
 	}
+	name := filepath.Join(t.TempDir(), "rec")
 	const secret = "wrap-plaintext-must-not-reach-the-base"
-	f, err := wrapped.Create("rec", vfs.WriteCategoryUnspecified)
+	f, err := wrapped.Create(name)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -229,7 +168,7 @@ func TestWrap_WithBarrierEncryptsContents(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	raw, err := base.Open("rec")
+	raw, err := base.Open(name)
 	if err != nil {
 		t.Fatalf("base Open: %v", err)
 	}
@@ -242,7 +181,7 @@ func TestWrap_WithBarrierEncryptsContents(t *testing.T) {
 		t.Fatal("base FS holds the plaintext; Wrap did not encrypt")
 	}
 
-	r, err := wrapped.Open("rec")
+	r, err := wrapped.Open(name)
 	if err != nil {
 		t.Fatalf("wrapped Open: %v", err)
 	}

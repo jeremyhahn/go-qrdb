@@ -647,6 +647,14 @@ func (foreignTenantServicer) TenantBarrierInit(context.Context, string, []byte, 
 func (foreignTenantServicer) TenantBarrierInitWithStrategy(context.Context, string, []byte, int, int, seal.StrategyID, *TenantBarrierShamirRoster, ...TenantBarrierInitOption) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
+
+func (foreignTenantServicer) TenantBarrierInitBegin(context.Context, *TenantBarrierInitBeginRequest) (*TenantBarrierInitBeginResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+func (foreignTenantServicer) TenantBarrierInitComplete(context.Context, *TenantBarrierInitCompleteRequest) (*TenantBarrierInitResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
 func (foreignTenantServicer) TenantBarrierUnseal(context.Context, string, []byte) error {
 	return ErrBarrierNotEnabled
 }

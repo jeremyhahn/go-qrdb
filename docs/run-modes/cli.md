@@ -1,6 +1,6 @@
 # Run Modes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 The run mode is a **server** property, selected on `qrdbd`. The `qrdb` client
@@ -57,6 +57,13 @@ backend: `kv` (put/get/del/list/exists/range, `revision`, `get --at-revision`,
 `collection`, `database`, `sql` (with `qrdb_sql`), `ts` and `vector` (with
 their tags), plus the always-compiled core — `auth`, `users`, `roles`,
 `barrier`, `ceremony`, `credential`, `ca`, `audit`.
+
+## Exit codes
+
+`qrdbd` and `qrdb` exit `0` on success and `1` on any error, which they print
+to stderr. A mode refusal is an error like any other, so a raft-only verb run
+against a standalone daemon exits `1`; `qrdb admin capabilities` itself exits
+`0` whatever it reports.
 
 ## Build-time feature selection
 

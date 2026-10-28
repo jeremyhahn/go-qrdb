@@ -154,6 +154,15 @@ func TestSealBinding_Stub_Unseal(t *testing.T) {
 	}
 }
 
+func TestSealBinding_Stub_ChangePassphrase(t *testing.T) {
+	b := NewSealBinding(testLogger(t), nil, nil)
+	err := b.ChangePassphrase("old", "new", "")
+	var fde *FeatureDisabledError
+	if !errors.As(err, &fde) {
+		t.Fatalf("expected FeatureDisabledError, got %T: %v", err, err)
+	}
+}
+
 func TestSealBinding_Stub_Seal(t *testing.T) {
 	log := testLogger(t)
 	b := NewSealBinding(log, nil, nil)

@@ -222,6 +222,50 @@ type ServiceTenantBarrierStatus = tenantpkg.TenantBarrierStatus
 // ServiceTenantServicer can name the return type without importing pkg/tenant.
 type ServiceTenantBarrierInitResult = tenantpkg.TenantBarrierInitResult
 
+// ServiceTenantBarrierInitBeginRequest asks for the first half of a two-phase
+// signed tenant barrier initialization (TenantBarrierInitBegin): the init
+// statement the tenant's first admin signs away from the node, under the key
+// named by its DER SubjectPublicKeyInfo.
+type ServiceTenantBarrierInitBeginRequest = tenantpkg.TenantBarrierInitBeginRequest
+
+// ServiceTenantBarrierInitBeginResult carries the statement to sign, detached,
+// and the single-use reference that redeems it before it expires.
+type ServiceTenantBarrierInitBeginResult = tenantpkg.TenantBarrierInitBeginResult
+
+// ServiceTenantBarrierInitCompleteRequest redeems a begun statement with the
+// detached signature over it (TenantBarrierInitComplete).
+type ServiceTenantBarrierInitCompleteRequest = tenantpkg.TenantBarrierInitCompleteRequest
+
+// ServiceTenantSignedInitError is TenantBarrierInitComplete's refusal of a
+// statement reference that cannot be redeemed: never issued, issued for
+// another tenant, already spent (a replay), or expired.
+type ServiceTenantSignedInitError = tenantpkg.SignedInitError
+
+// ServiceTenantSignedInitFieldRequiredError refuses a begin or complete
+// request missing a required field.
+type ServiceTenantSignedInitFieldRequiredError = tenantpkg.SignedInitFieldRequiredError
+
+// ServiceTenantTooManySignedInitsError refuses a begin while the node holds
+// its limit of unexpired statements.
+type ServiceTenantTooManySignedInitsError = tenantpkg.TooManySignedInitsError
+
+// ServiceTenantSignedInitUnsupportedError refuses a begin or complete on a
+// node that records no init statements.
+type ServiceTenantSignedInitUnsupportedError = tenantpkg.SignedInitUnsupportedError
+
+// ServiceTenantSignedInitReason names why a statement reference was refused.
+type ServiceTenantSignedInitReason = tenantpkg.SignedInitReason
+
+// The ServiceTenantSignedInitReason values.
+const (
+	ServiceTenantSignedInitUnknown = tenantpkg.SignedInitUnknown
+	ServiceTenantSignedInitExpired = tenantpkg.SignedInitExpired
+)
+
+// ServiceTenantSignedInitTTL is how long a begun statement's reference stays
+// redeemable.
+const ServiceTenantSignedInitTTL = tenantpkg.SignedInitTTL
+
 // NewServiceTenantService creates a new service-layer TenantServicer
 // backed by a metadata store and a BarrierRegistry.
 var NewServiceTenantService = tenantpkg.NewTenantService

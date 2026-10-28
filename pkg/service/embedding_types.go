@@ -62,6 +62,11 @@ type EmbeddingProvider interface {
 	// Models returns the list of embedding models available from the provider.
 	Models(ctx context.Context) ([]ModelInfo, error)
 
+	// DefaultModel returns the model Embed uses when it is called with an
+	// empty model. The embedding service keys its cache on it, so a request
+	// that names this model and one that names none share one entry.
+	DefaultModel() string
+
 	// Close releases any resources held by the provider.
 	Close() error
 }

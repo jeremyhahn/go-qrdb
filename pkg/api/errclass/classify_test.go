@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -633,11 +634,16 @@ func TestClassify_BarrierInit(t *testing.T) {
 		{"corrupt init record", &barrierinit.CorruptRecordError{Key: barrierinit.Prefix + string(b)}, Internal},
 		{"guarded writes not active", &barrierinit.GuardedWritesUnavailableError{}, Unavailable},
 		{"raft tenant init without a statement", &tenant.InitStatementRequiredError{TenantID: "t"}, InvalidArgument},
+		{"signed init reference replayed", &tenant.SignedInitError{TenantID: "t", Reason: tenant.SignedInitUnknown}, PermissionDenied},
+		{"signed init reference expired", &tenant.SignedInitError{TenantID: "t", Reason: tenant.SignedInitExpired}, PermissionDenied},
+		{"signed init without a signature", &tenant.SignedInitFieldRequiredError{Field: "signature"}, InvalidArgument},
+		{"too many signed inits", &tenant.TooManySignedInitsError{Limit: 1}, ResourceExhausted},
+		{"signed init on a node without a book", &tenant.SignedInitUnsupportedError{TenantID: "t"}, FailedPrecondition},
 		{"raft tenant unseal without a statement", &tenant.InitStatementMissingError{TenantID: "t"}, FailedPrecondition},
 		{"platform statement for an owner's barrier", &tenant.BarrierError{TenantID: "t", Op: "unseal", Err: tenant.ErrNotPlatformCustody}, FailedPrecondition},
 		{"unseal strategy is not the sealed one", &tenant.BarrierError{TenantID: "t", Op: "unseal", Err: &seal.UnsealStrategyMismatchError{Sealed: seal.StrategyPassphrase, Requested: seal.StrategyNone}}, FailedPrecondition},
 		{"stored statement no longer verifies", &tenant.BarrierError{TenantID: "t", Op: "init statement", Err: &barrierinit.InitStatementError{Barrier: b, Epoch: 1, Reason: barrierinit.ReasonWrongSigner}}, PermissionDenied},
-		{"per-node barrier keys not active", &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}, Unavailable},
+		{"per-node barrier keys not active", &feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}, Unavailable},
 		{"store failure is its cause", &barrierinit.StoreError{Op: "claim init record", Err: context.DeadlineExceeded}, Classify(context.DeadlineExceeded)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -32,12 +33,12 @@ import (
 type gatedHost struct {
 	*mockHost
 	enabled map[uint64]bool
-	asked   []featuregate.Feature
+	asked   []feature.Feature
 }
 
 var _ AdminHost = (*gatedHost)(nil)
 
-func (h *gatedHost) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
+func (h *gatedHost) FeatureEnabled(shardID uint64, feature feature.Feature) bool {
 	h.asked = append(h.asked, feature)
 	return h.enabled[shardID]
 }
@@ -145,7 +146,7 @@ type gateBackedHost struct {
 
 var _ AdminHost = (*gateBackedHost)(nil)
 
-func (h *gateBackedHost) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
+func (h *gateBackedHost) FeatureEnabled(shardID uint64, feature feature.Feature) bool {
 	return h.gate.Enabled(shardID, feature)
 }
 

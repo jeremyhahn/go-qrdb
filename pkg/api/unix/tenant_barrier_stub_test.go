@@ -101,6 +101,14 @@ func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context
 	return s.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
+func (s *stubTenantBarrierSvc) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (s *stubTenantBarrierSvc) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
 // TenantBarrierUnseal records arguments and returns the configured error.
 func (s *stubTenantBarrierSvc) TenantBarrierUnseal(_ context.Context, tenantID string, key []byte) error {
 	s.unsealCalled = true

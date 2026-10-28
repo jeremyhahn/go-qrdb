@@ -401,7 +401,7 @@ A range delete removes every key in `[start, end)` in one Raft entry:
 - **`OpDeleteRange` is only sent to a group that can apply it.**
   `KVService.DeleteRange` asks a `service.FeatureGatedHost` whether
   `featuregate.RangeDelete` is enabled for the shard and returns
-  `*featuregate.NotActiveError` without proposing when it is not; a
+  `*feature.NotActiveError` without proposing when it is not; a
   `LocalBackend` has every replica in this process and always proposes. The
   keyspace reclaim falls back to one delete per proposal for the rest of the
   prefix on that error (see [architecture.md](architecture.md), "What a drop
@@ -969,7 +969,7 @@ How a claim works:
 - **No claim before activation.** On a host whose groups can hold other
   binaries (one that answers `FeatureEnabled`, the raft adapter), the claimer
   is built with `shard.WithActivation`: every claim -- and so every raft
-  database create -- is refused with `*featuregate.NotActiveError` (503 /
+  database create -- is refused with `*feature.NotActiveError` (503 /
   `UNAVAILABLE`, retryable) until `featuregate.ClusterShardIDs` is active
   cluster-wide, and the store is not touched. Until then a node of an earlier
   release may allocate per node, and a rolling upgrade would otherwise have a
@@ -1036,8 +1036,8 @@ How a claim works:
 | Target: a raft state storage other than `pebble`, `file`, `memory` | `database.InvalidRaftStateStorageError` | **yes** |
 | Target: the owning node of a local-binding database is unreachable | a typed error naming the owner; 503 / `UNAVAILABLE` | **yes** |
 | Target: a binding cannot be materialized (store will not open, shard will not start) | a typed error wrapping the cause; 503 / `UNAVAILABLE` | **yes** |
-| A range delete or time-series retention command in a group where `featuregate.RangeDelete` or `featuregate.TimeSeriesRetention` is not active cluster-wide | `*featuregate.NotActiveError`; nothing is proposed | **yes** |
-| Target: a vector command in a group where `featuregate.VectorEngine` is not active cluster-wide | `*featuregate.NotActiveError`; nothing is proposed | **yes** |
+| A range delete or time-series retention command in a group where `featuregate.RangeDelete` or `featuregate.TimeSeriesRetention` is not active cluster-wide | `*feature.NotActiveError`; nothing is proposed | **yes** |
+| Target: a vector command in a group where `featuregate.VectorEngine` is not active cluster-wide | `*feature.NotActiveError`; nothing is proposed | **yes** |
 | A REST create body carrying `engine` or any other unknown member | `rest.ReadBodyError`, 400 | **yes** |
 
 Each `database.*Error` above is a struct type in `pkg/database/errors.go` with

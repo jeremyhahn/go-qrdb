@@ -59,6 +59,29 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return t.postJSONDecode(ctx, "BarrierUnseal", "/v1/barrier/unseal", req, nil)
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient via
+// POST /v1/barrier/change-passphrase.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
+	}
+	// The server verifies the SO PIN the body carries, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	body := struct {
+		*transport.BarrierChangePassphraseRequest
+		SOPin string `json:"so_pin,omitempty"`
+	}{req, soPIN}
+
+	return t.postJSONDecode(ctx, "BarrierChangePassphrase", "/v1/barrier/change-passphrase", body, nil)
+}
+
 // BarrierSeal seals the barrier, preventing further data access until
 // it is unsealed again. Maps to POST /v1/barrier/seal (204 No Content).
 func (t *Transport) BarrierSeal(ctx context.Context) error {

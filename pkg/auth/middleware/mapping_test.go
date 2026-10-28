@@ -131,6 +131,8 @@ func TestLookupGRPCFromDescriptor_DefaultDenyRegression(t *testing.T) {
 		"/qrdb.v1.TenantBarrierService/ShareClaimComplete",
 		"/qrdb.v1.TenantBarrierService/InitBegin",
 		"/qrdb.v1.TenantBarrierService/InitComplete",
+		"/qrdb.v1.TenantBarrierService/SignedInitBegin",
+		"/qrdb.v1.TenantBarrierService/SignedInitComplete",
 		"/qrdb.v1.TenantBarrierService/Unseal",
 		"/qrdb.v1.TenantBarrierService/QuorumBegin",
 		"/qrdb.v1.TenantBarrierService/QuorumSubmit",

@@ -25,6 +25,7 @@ are not reconstructed here — their history is in the git log.
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added
+- **Signed tenant barrier init** (#1212): a two-phase init for a first admin whose key signs away from the node. `POST /v1/tenants/{id}/barrier/signed-init/begin` (gRPC `TenantBarrierService.SignedInitBegin`, QUIC `tenant.BarrierSignedInitBegin`, MCP `qrdb_tenant_barrier_signed_init_begin`) takes the signer's SubjectPublicKeyInfo and returns the epoch-1 init statement to sign and a single-use reference valid for five minutes; `…/signed-init/complete` (`SignedInitComplete`, `tenant.BarrierSignedInitComplete`, `qrdb_tenant_barrier_signed_init_complete`) redeems it with the detached signature. Every complete attempt spends its reference. The Go SDK carries `Tenants().TenantBarrierSignedInitBegin` / `TenantBarrierSignedInitComplete` on every transport, and `sdk/go` re-exports the service types and refusals as `ServiceTenantBarrierInitBeginRequest`, `ServiceTenantSignedInitError` and the rest. The CLI adds `qrdb tenant barrier-init-begin` (`--public-key`, `--statement-out`) and `qrdb tenant barrier-init-complete` (`--reference-hex`, `--sig-file`).
 - `service.LeaseService.LogRenewals` counts the lease keep-alives sent
   through the raft log rather than answered by the lease primary from memory.
   `TestRaft_LeaseKeepAliveLatencyTail` now asserts that count stays at zero
@@ -63,6 +64,27 @@ are not reconstructed here — their history is in the git log.
   three in-process hosts, waiting for each follower's own stalled-fsync
   observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
   `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **A supported passphrase change for the system barrier** (#631).
+  `BarrierChangePassphrase(current, next)` re-wraps the root key of an
+  unsealed, passphrase-sealed barrier under a new passphrase; the root key and
+  the data are unchanged, the next unseal takes the new passphrase and the old
+  one is refused. It is on every transport — `POST /v1/barrier/change-passphrase`,
+  gRPC and the Unix socket `BarrierChangePassphrase`, QUIC
+  `barrier.ChangePassphrase` (the SO PIN in the request's new `so_pin`), MCP
+  `qrdb_barrier_change_passphrase`, the embedded client — and in
+  `qrdb barrier change-passphrase`, the TypeScript SDK's
+  `seal.changePassphrase`, the desktop binding and `Node.ChangePassphrase` for
+  embedders. It requires `seal:rekey` and the Security Officer PIN: every
+  transport, embedded included, verifies the SO PIN before the barrier is
+  reached, as for seal and rekey, and refuses the change outright on a node
+  with no PIN backend; the SDK clients send the PIN bound by
+  `transport.WithSOPIN`. Over REST the PIN goes both in the `X-QRDB-SO-PIN`
+  header, which the authorization middleware reads, and in the body's
+  `so_pin`, which the handler's own SO gate reads; the Go and TypeScript
+  clients send both.
+- **The objstore engine takes its provider credential by file reference.** `storage.objstore.credentials.{key_file,secret_file}` name owner-only files that `objstore.New` (`WithCredentialFiles`) reads into go-enclave handles and passes to go-objstore's `common.Credentials`; a credential inline in the YAML is refused at load, a reference the provider does not read (`key_file` on `azure`; either file on `gcs`, `local` or `memory`) is refused at open with `objstore.CredentialIgnoredError` before any file is read, and a credential file is opened without blocking so a FIFO is refused at once (#1143).
+- **`objstore.RegisterProvider` adds a provider that declares its credential reads, and is safe for concurrent use.** The provider is kept in the storage seam's own synchronized registry, which `New` consults before go-objstore's factory; nothing is written into the factory's unsynchronized map, so concurrent registrations and opens cannot fault the process. A name go-objstore ships, as a storage provider or an archiver, is refused whether or not its build tag compiled it in. `New` refuses a credential inline in the settings with `objstore.CredentialSettingError` before it calls any provider, so a registered creator never receives one. `New` resolves the provider once and validates and opens with that one registration, refusing an unknown name with `objstore.UnsupportedProviderError` before any credential file is read, so a registration racing an open cannot bypass the credential check (#1143).
+- **`sdk/go/storage` re-exports the objstore credential and provider-registration surface.** `WithObjStoreCredentialFiles`, `ObjStoreCredentialFiles`, `ObjStoreOption`, the `ObjStoreCredential*Error` types, `RejectObjStoreCredentialSettings` and `RegisterObjStoreProvider` alias their `pkg/storage/objstore` names, so an embedder opens `NewObjStoreStorage` with file credentials through the SDK boundary alone (#1215).
 - **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
 - **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
 - **`sdk.TenantBarrierInitVerifier`** is the server half of signed tenant barrier initialization, re-exported from `pkg/auth/middleware` beside the client's `transport.ProveTenantBarrierInit` (#1246). `Begin(tenantID, tlsState)` issues a nonce bound to the tenant and the connection's TLS exporter; `Complete(tenantID, tlsState, proof, key)` checks the proof against that nonce, that exporter and the key `key` names, and spends the nonce, refusing with `*sdk.FirstAdminProofError`. A facade that terminates its callers' TLS runs the exchange with it rather than a copy of qrdb's. `AuthMiddleware` now runs the same type for every transport. The aliases `NewTenantBarrierInitVerifier`, `TenantBarrierInitKey`, `TenantBarrierInitProof`, `InitChallenge`, `InitChallengeBook`, `NewInitChallengeBook`, `InitChallengeTTL`, `InitChallengeMaxOutstanding`, `InitProofReason*` and `InitTooManyChallengesError` come with it.
@@ -99,6 +121,50 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The cluster feature identity moved to the leaf package `pkg/feature`**
+  (#627). `featuregate.Feature` is now `feature.Feature` and
+  `featuregate.NotActiveError` is now `feature.NotActiveError`, unchanged in
+  fields, message and `errors.As` behaviour; the feature names
+  (`featuregate.GuardedWrites` and the rest) and the `Gate` stay in
+  `pkg/cluster/featuregate`. The old declarations are deleted, with no alias.
+  `(*config.Config).AdvertisedAPIEndpoints` is now
+  `cluster.AdvertisedAPIEndpoints(*config.Config)`. Together they take
+  `pkg/shard` and `pkg/config` out of the cluster import graph, so a lean
+  standalone embedder no longer compiles `pkg/cluster` through them.
+- **At-rest encryption is written against `pkg/filesys`, not Pebble's
+  `vfs.FS`** (#627). `pkg/filesys` is a standard-library-only file-system
+  interface; `pkg/seal/encfs.New`, `atrest.Encryptor.FS` and `Wrap`,
+  `file.Encryptor`, `server.StorageFactory` and `node.ReplicaStorageFactory`
+  now take and return `filesys.FS`, so the file backend and every non-Pebble
+  embedder no longer compile Pebble's `vfs`. `pkg/storage/pebble` owns the one
+  adapter: `VFS`, `FromVFS` and `WrapVFS`; a Pebble store is encrypted with
+  `opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)`. `atrest.Encryptor.Apply`
+  is deleted. The encrypting FS drops the Pebble-only `ReuseForWrite`,
+  `SyncData`, `SyncTo`, `Fd` and path helpers, which the adapter supplies;
+  `Lock` and `DiskUsage` forward to the base FS or return
+  `*filesys.UnsupportedError` (`errors.ErrUnsupported`). `filesys.Default`
+  and an encrypting FS over it implement `filesys.HostFS` (their names are
+  host paths), and the adapter takes such an FS's lock, and reads its disk
+  usage, through Pebble's `vfs.Default`: a host file's lock belongs to the
+  process, so it has one owner, and a store opened through
+  `pebblestore.VFS(dataPlaneFS)`, one through `WrapVFS(nil, enc.Wrap)` and a
+  plain Pebble store exclude each other in one process, with the platform's
+  own lock (`LockFileEx` on Windows). A composer's Pebble-backed
+  `StorageFactory` or `ReplicaStorageFactory` opening through
+  `pebblestore.VFS(dataPlaneFS)` with the barrier enabled therefore holds its
+  database lock. `filesys.Default.OpenDir`'s handle syncs the directory on
+  every platform but Windows, where its `Sync` is a no-op, as in Pebble's own
+  directory handle: `FlushFileBuffers` fails on a directory there.
+- **The Docker integration stack creates no host veth**:
+  `test/integration/api/docker-compose.yml` runs every service in ONE network
+  namespace, owned by a `netns` holder service with `network_mode: none`.
+  `qrdbd`, `qrdbd-shamir` and the test runner join it with
+  `network_mode: "service:netns"`, and the runner reaches the servers at
+  `127.0.0.1:<port>` on their unchanged port sets instead of by service name.
+  The `qrdb-integration` bridge network is gone. Its one veth per container
+  start and stop cost an 80-core host about 450 uevents each. The opt-in
+  Ollama overlay pulls its model at run time, so it gives the holder one
+  bridge attachment: one veth for the stack, not one per service.
 - **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
   sign-head returns and records are the tlog-checkpoint text (origin, tree
   size, base64 root) and one signed-note signature line carrying the key name
@@ -151,6 +217,19 @@ are not reconstructed here — their history is in the git log.
   `*vlog.ExpireNotAllowedError`, so `errors.As` matches them
   ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
 - **A database create whose mark-live propose times out no longer leaves an orphaned drop-fence incarnation.** A claim of the marker that timed out at the caller could still commit after the create rolled back, so the marker named an incarnation no catalog entry held and every retry of the create was refused as existing elsewhere. `UnfenceDatabaseKeyspace` now releases an unknown-outcome claim back to the tombstone under a detached context, so the create returns the documented retryable 503 and the fence and catalog agree; a release that fails too is `*service.MarkerReleaseError`, which unwraps to the timeout.
+- **An embedding request with no model hits the cache** (#658). The service
+  looked the cache up under the requested model but stored under the model the
+  provider used, so a request that left the model unset never hit. It now
+  resolves the effective model, the request's or else the provider's
+  configured default (the new `EmbeddingProvider.DefaultModel`), once and uses
+  it for both the lookup and the store, so a no-model request and a request
+  naming the default model share one entry
+  ([docs/embeddings/api.md](docs/embeddings/api.md)).
+- **`qrdb database create --backend` help names `objstore`** (#658). The help
+  text was a hand-written list that had left out a valid backend. It is now
+  built from `database.Backends()` (re-exported as `sdk.Backends`), the set
+  `BackendType.Valid` checks a create against, so a valid backend cannot be
+  missing from it.
 
 ### Changed
 
@@ -264,6 +343,35 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A passphrase change checks the current passphrase and cannot lose a
+  race** (#631). `StorageBarrier.ChangePassword` refuses a current passphrase
+  that does not open the persisted root key (`seal.ErrCredentialMismatch`),
+  keeps the load generation, so the next unseal no longer logs a generation
+  going backwards, and replaces the blob only through a guarded swap
+  (`seal.ErrPassphraseChangeConflict`, `seal.ErrGuardedSwapUnsupported`).
+  A change that overlaps another rewrite of the root key, such as a second
+  passphrase change, is refused before it writes anything with
+  `seal.ErrRootKeyWriteInProgress`, a retryable conflict (`409` / `Aborted`)
+  rather than an internal error. A migration's adoption of its target's root key retires the source
+  barrier's state persister under the same lock, and the persister reads that
+  retirement only once it holds the lock, so a rotation entered before the
+  adoption and resumed after it is refused (`seal.ErrRootKeyAdopted`) rather
+  than writing the pre-migration key back over the migrated one.
+- **Unsealing a barrier that was never initialized is
+  `seal.ErrNotInitialized`**, not a corrupt root-key error, and keeps its
+  identity across every transport (`BARRIER_NOT_INITIALIZED`), as do
+  `BARRIER_CREDENTIAL_MISMATCH`, `BARRIER_PASSPHRASE_CHANGE_CONFLICT` and
+  `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` (#631).
+
+### Security
+
+- **The TypeScript SDK sends a secret only over https and never follows a
+  redirect with one** (#631). Every call whose body carries a passphrase, PIN,
+  share, token or barrier secret is refused with `ConfigError` on an `http://`
+  base URL before any network I/O, and is sent with `redirect: "error"`
+  (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
+  only `so_pin` from a passphrase-change payload, so the current and next
+  passphrases are never decoded a second time.
 - `make security` passes on main again: gosec's G204 at
   `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
   repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
@@ -293,6 +401,30 @@ are not reconstructed here — their history is in the git log.
   `TimeToLive` a follower refuses on a host that implements `service.Host`
   alone still names the leader's replica ID, with an empty leader address,
   since such a host cannot report the shard's membership.
+- **At-rest encryption is written against `pkg/filesys`, not Pebble's
+  `vfs.FS`** (#627). `pkg/filesys` is a standard-library-only file-system
+  interface; `pkg/seal/encfs.New`, `atrest.Encryptor.FS` and `Wrap`,
+  `file.Encryptor`, `server.StorageFactory` and `node.ReplicaStorageFactory`
+  now take and return `filesys.FS`, so the file backend and every non-Pebble
+  embedder no longer compile Pebble's `vfs`. `pkg/storage/pebble` owns the one
+  adapter: `VFS`, `FromVFS` and `WrapVFS`; a Pebble store is encrypted with
+  `opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)`. `atrest.Encryptor.Apply`
+  is deleted. The encrypting FS drops the Pebble-only `ReuseForWrite`,
+  `SyncData`, `SyncTo`, `Fd` and path helpers, which the adapter supplies;
+  `Lock` and `DiskUsage` forward to the base FS or return
+  `*filesys.UnsupportedError` (`errors.ErrUnsupported`). `filesys.Default`
+  and an encrypting FS over it implement `filesys.HostFS` (their names are
+  host paths), and the adapter takes such an FS's lock, and reads its disk
+  usage, through Pebble's `vfs.Default`: a host file's lock belongs to the
+  process, so it has one owner, and a store opened through
+  `pebblestore.VFS(dataPlaneFS)`, one through `WrapVFS(nil, enc.Wrap)` and a
+  plain Pebble store exclude each other in one process, with the platform's
+  own lock (`LockFileEx` on Windows). A composer's Pebble-backed
+  `StorageFactory` or `ReplicaStorageFactory` opening through
+  `pebblestore.VFS(dataPlaneFS)` with the barrier enabled therefore holds its
+  database lock. `filesys.Default.OpenDir`'s handle syncs the directory on
+  every platform but Windows, where its `Sync` is a no-op, as in Pebble's own
+  directory handle: `FlushFileBuffers` fails on a directory there.
 - **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
   v0.7.0-alpha and go-objstore v0.7.0-alpha in the root, SDK, GORM
   conformance and cluster-proof modules** (#944); go-quicraft/test/performance

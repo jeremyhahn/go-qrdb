@@ -15,7 +15,9 @@
 package database
 
 import (
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
@@ -68,6 +70,12 @@ var validBackends = map[BackendType]struct{}{
 func (b BackendType) Valid() bool {
 	_, ok := validBackends[b]
 	return ok
+}
+
+// Backends returns every valid BackendType in sorted order: the set Valid
+// accepts, so a caller listing the backends cannot drift from it.
+func Backends() []BackendType {
+	return slices.Sorted(maps.Keys(validBackends))
 }
 
 // ---------------------------------------------------------------------------

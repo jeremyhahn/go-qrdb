@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
@@ -589,7 +590,7 @@ func TestLeaseService_CheckpointEnabledFollowsTheFeatureGate(t *testing.T) {
 	if !NewLeaseCheckpointer(gated, 2).CheckpointEnabled() {
 		t.Fatal("checkpoints refused in a group whose gate is open")
 	}
-	if !slices.Equal(gated.asked, []featuregate.Feature{featuregate.LeaseCheckpoint, featuregate.LeaseCheckpoint}) {
+	if !slices.Equal(gated.asked, []feature.Feature{featuregate.LeaseCheckpoint, featuregate.LeaseCheckpoint}) {
 		t.Fatalf("asked the gate about %v, want lease-checkpoint", gated.asked)
 	}
 }
@@ -625,7 +626,7 @@ func TestLeaseService_KeepAlive_GateClosedRenewsThroughTheLog(t *testing.T) {
 	if got.ID != 42 || got.RemainingTTL != 60 {
 		t.Fatalf("lease = %+v, want the committed renewal of 42", got)
 	}
-	if !slices.Equal(host.asked, []featuregate.Feature{featuregate.LeaseCheckpoint}) {
+	if !slices.Equal(host.asked, []feature.Feature{featuregate.LeaseCheckpoint}) {
 		t.Fatalf("asked the gate about %v, want lease-checkpoint", host.asked)
 	}
 }

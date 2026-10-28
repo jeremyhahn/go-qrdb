@@ -308,6 +308,46 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	})
 }
 
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node: TenantBarrierService.SignedInitBegin.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &transport.NilRequestError{}}
+	}
+	wire, err := holderconv.TenantBarrierSignedInitBeginToPB(req)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: err}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).SignedInitBegin(ctx, wire)
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierSignedInitBegin", err)
+	}
+	return holderconv.TenantBarrierSignedInitBeginFromPB(resp), nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it:
+// TenantBarrierService.SignedInitComplete.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &transport.NilRequestError{}}
+	}
+	resp, err := pb.NewTenantBarrierServiceClient(t.conn).SignedInitComplete(ctx, holderconv.TenantBarrierSignedInitCompleteToPB(req))
+	if err != nil {
+		return nil, mapGRPCError("TenantBarrierSignedInitComplete", err)
+	}
+	return holderconv.TenantBarrierInitResponseFromPB(resp), nil
+}
+
 // TenantBarrierUnseal unseals the per-tenant barrier using the provided key
 // material via the Unix gRPC-over-UDS TenantBarrierService. The transport
 // request's Key field carries raw key material; Share is forwarded for

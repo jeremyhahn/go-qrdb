@@ -23,12 +23,13 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // awaitFeatureActive waits until every node judges feature active
 // cluster-wide.
-func awaitFeatureActive(t *testing.T, nodes []*Node, feature featuregate.Feature) {
+func awaitFeatureActive(t *testing.T, nodes []*Node, feature feature.Feature) {
 	t.Helper()
 	deadline := time.Now().Add(clusterFormationBudget)
 	for i, n := range nodes {

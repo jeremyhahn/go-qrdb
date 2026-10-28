@@ -473,3 +473,66 @@ func TestTenantBarrierHoldersFromPB_Success(t *testing.T) {
 		t.Errorf("TenantBarrierHoldersFromPB()[1] = %+v", out[1])
 	}
 }
+
+func TestTenantBarrierSignedInitBeginToPB(t *testing.T) {
+	got, err := TenantBarrierSignedInitBeginToPB(&transport.TenantBarrierSignedInitBeginRequest{
+		TenantID: "acme", Strategy: "shamir", KeyRef: "kr", Threshold: 2, Shares: 3, Policy: "any-enrolled",
+		Officers: []transport.OfficerRegisterRequest{{Username: "alice", Role: "so"}}, PublicKey: []byte("spki"),
+	})
+	if err != nil {
+		t.Fatalf("TenantBarrierSignedInitBeginToPB: %v", err)
+	}
+	if got.GetTenantId() != "acme" || got.GetStrategy() != "shamir" || got.GetKeyRef() != "kr" || got.GetThreshold() != 2 ||
+		got.GetShares() != 3 || got.GetPolicy() != "any-enrolled" || string(got.GetPublicKey()) != "spki" ||
+		len(got.GetOfficers()) != 1 || got.GetOfficers()[0].GetUsername() != "alice" {
+		t.Fatalf("TenantBarrierSignedInitBeginToPB = %+v", got)
+	}
+}
+
+func TestTenantBarrierSignedInitBeginToPB_UnencodableFactor(t *testing.T) {
+	_, err := TenantBarrierSignedInitBeginToPB(&transport.TenantBarrierSignedInitBeginRequest{
+		TenantID: "acme",
+		Officers: []transport.OfficerRegisterRequest{{Username: "bob", Factors: []transport.HolderFactorEnrolment{{Name: "fido2", Params: map[string]any{"x": make(chan int)}}}}},
+	})
+	if err == nil {
+		t.Fatal("an unencodable factor returned no error")
+	}
+}
+
+func TestTenantBarrierSignedInitBeginFromPB(t *testing.T) {
+	got := TenantBarrierSignedInitBeginFromPB(&pb.TenantBarrierSignedInitBeginResponse{
+		TenantId: "acme", Strategy: "shamir", Reference: []byte("ref"), Statement: []byte("stmt"), Expires: 1_800_000_000,
+		Threshold: 2, TotalShares: 3, ShareCount: 3,
+		Holders: []*pb.CeremonyHolderCert{{Username: "alice", Role: "officer", CertPem: []byte("pem")}},
+	})
+	if got.TenantID != "acme" || got.Strategy != "shamir" || string(got.Reference) != "ref" || string(got.Statement) != "stmt" ||
+		!got.ExpiresAt.Equal(time.Unix(1_800_000_000, 0)) || got.Threshold != 2 || got.TotalShares != 3 || got.ShareCount != 3 {
+		t.Fatalf("TenantBarrierSignedInitBeginFromPB = %+v", got)
+	}
+	if len(got.Holders) != 1 || got.Holders[0].Username != "alice" {
+		t.Errorf("Holders = %+v, want alice", got.Holders)
+	}
+}
+
+func TestTenantBarrierSignedInitBeginFromPB_Empty(t *testing.T) {
+	got := TenantBarrierSignedInitBeginFromPB(&pb.TenantBarrierSignedInitBeginResponse{TenantId: "acme"})
+	if got.TenantID != "acme" || got.Reference != nil || len(got.Holders) != 0 {
+		t.Fatalf("TenantBarrierSignedInitBeginFromPB(empty) = %+v", got)
+	}
+}
+
+func TestTenantBarrierSignedInitCompleteToPB(t *testing.T) {
+	got := TenantBarrierSignedInitCompleteToPB(&transport.TenantBarrierSignedInitCompleteRequest{
+		TenantID: "acme", Reference: []byte("ref"), Signature: []byte("sig"), Passphrase: []byte("pw"),
+	})
+	if got.GetTenantId() != "acme" || string(got.GetReference()) != "ref" || string(got.GetSignature()) != "sig" || string(got.GetPassphrase()) != "pw" {
+		t.Fatalf("TenantBarrierSignedInitCompleteToPB = %+v", got)
+	}
+}
+
+func TestTenantBarrierSignedInitCompleteToPB_NoPassphrase(t *testing.T) {
+	got := TenantBarrierSignedInitCompleteToPB(&transport.TenantBarrierSignedInitCompleteRequest{TenantID: "acme"})
+	if got.GetTenantId() != "acme" || got.GetPassphrase() != nil {
+		t.Fatalf("TenantBarrierSignedInitCompleteToPB = %+v", got)
+	}
+}

@@ -18,6 +18,13 @@
 # the default fast run.
 
 services:
+  # Ollama pulls its model at run time, so this overlay is the one stack that
+  # needs egress. It gives the namespace holder ONE bridge attachment (Docker's
+  # default bridge): one veth for the whole stack, never one per service. Every
+  # service, ollama included, still shares the holder's namespace.
+  netns:
+    network_mode: bridge
+
   # Ollama sidecar: OpenAI-compatible /v1/embeddings endpoint for the
   # embedding and RAG end-to-end suites. The entrypoint starts the server,
   # pulls the embedding model, then hands control back to the server process.
@@ -25,8 +32,9 @@ services:
   # (depends_on ollama: service_healthy) does not start until embeddings work.
   ollama:
     image: ollama/ollama:latest
-    expose:
-      - "11434"
+    # Listens on 127.0.0.1:11434 (ollama's default OLLAMA_HOST) in the
+    # stack's namespace.
+    network_mode: "service:netns"
     environment:
       # Model pulled on startup and used by the e2e suite (768-dim embeddings).
       - OLLAMA_EMBED_MODEL=nomic-embed-text
@@ -51,15 +59,13 @@ services:
       retries: 30
       # Generous: first run downloads the model (~270MB) before it is listed.
       start_period: 300s
-    networks:
-      - qrdb-integration
 
   integration-tests:
     depends_on:
       ollama:
         condition: service_healthy
     environment:
-      - OLLAMA_URL=http://ollama:11434/v1
+      - OLLAMA_URL=http://127.0.0.1:11434/v1
       # The model the e2e suite expects the server's provider to use.
       - OLLAMA_EMBED_MODEL=nomic-embed-text
       # Scope the run to the embedding/RAG e2e suites only.

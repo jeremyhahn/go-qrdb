@@ -35,6 +35,7 @@ var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
 	userConcurrentUpdateRefusal,
+	barrierRefusal,
 	adminCredentialRequiresCARefusal,
 	vlogRefusal,
 }
@@ -90,6 +91,15 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
 	}
 	return "", nil, false
+}
+
+// barrierRefusal encodes a system-barrier sentinel -- not initialized, a
+// credential that does not open the root key, a passphrase change that lost
+// a race -- so a remote client rebuilds the sentinel rather than an opaque
+// status.
+func barrierRefusal(err error) (string, map[string]string, bool) {
+	reason, ok := transport.BarrierRefusal(err)
+	return reason, nil, ok
 }
 
 // adminCredentialRequiresCARefusal encodes a *ceremony.AdminCredentialRequiresCAError,

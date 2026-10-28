@@ -67,7 +67,10 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 
 	case database.BackendObjstore:
 		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
-		stg, err := objstore.New(provider, settings)
+		stg, err := objstore.New(provider, settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
+			KeyFile:    objCfg.Credentials.KeyFile,
+			SecretFile: objCfg.Credentials.SecretFile,
+		}))
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
@@ -77,7 +80,7 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		pebbleDir := filepath.Join(dataDir, "pebble")
 		cfg := pebbleStorage.DefaultConfig(pebbleDir)
 		if enc.Enabled() {
-			cfg.FS = enc.FS()
+			cfg.FS = pebbleStorage.WrapVFS(nil, enc.Wrap)
 		}
 		stg, err := pebbleStorage.New(cfg)
 		if err != nil {

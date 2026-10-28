@@ -26,7 +26,22 @@ storage:
     settings:
       bucket: "my-bucket"
       region: "us-east-1"
+    credentials:        # optional; omit to use the provider's default chain
+      key_file: "<install-dir>/secrets/objstore-access-key"
+      secret_file: "<install-dir>/secrets/objstore-secret-key"
 ```
+
+The provider credential is referenced by file, never written into the
+configuration. Each file holds one value (a trailing newline is ignored), is a
+regular file owned by the `qrdbd` user and has mode `0600` or `0400`;
+`secret_file` alone is an account key (Azure). Reference only what the
+provider reads: `s3` takes both files, `azure` only `secret_file`, and `gcs`,
+`local` and `memory` neither, so a reference the provider would ignore fails
+the boot naming the provider and the file. `qrdbd start` also refuses a
+credential under `settings` (`secret_key`, `access_key_id`, `account_key`,
+`sas_token`, `session_token` and their spellings) or any other key under
+`credentials`, and fails the boot naming a file it cannot use; neither error
+prints the value. Paths in YAML are taken literally: write the expanded path.
 
 `storage.backend` has no `qrdb` value: `qrdbd` does not store through another
 go-qrdb node.

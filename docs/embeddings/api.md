@@ -44,7 +44,9 @@ Response — `EmbedResponse`:
 
 **`embeddings` is positional**: `embeddings[i]` corresponds to `texts[i]`.
 `model` names the model actually used. `cached` distinguishes a cache hit from a
-provider call; only a request that sets `model` can be served from the cache.
+provider call. The cache keys on the effective model, the request's `model` or
+else the provider's configured default, so a request that leaves `model` unset
+and one that names the default model share one cache entry.
 
 `POST /v1/embeddings/batch` — `BatchEmbedRequest` adds `batch_size` (maximum
 texts per provider call; default 256 when unset). The response has no `cached`

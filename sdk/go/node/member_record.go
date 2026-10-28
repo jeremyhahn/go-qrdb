@@ -45,7 +45,7 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	endpoints, err := cfg.AdvertisedAPIEndpoints()
+	endpoints, err := cluster.AdvertisedAPIEndpoints(cfg)
 	if err != nil {
 		logger.Error("member record: invalid advertised endpoints; not published", slog.Any("error", err))
 		return

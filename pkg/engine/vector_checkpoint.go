@@ -19,11 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
@@ -49,7 +49,7 @@ const vectorIndexDir = "vector-index"
 // encodeCheckpointBody serializes a checkpoint's envelope: format version,
 // namespace sequence, index type, training generation, index parameters,
 // then the live index's own serialized bytes. Encryption is applied by the
-// vfs.FS this is written through (see writeCheckpoint), not by this
+// filesys.FS this is written through (see writeCheckpoint), not by this
 // function: the envelope itself is plaintext bytes handed to that FS.
 func encodeCheckpointBody(seq uint64, indexType byte, params map[string]string, generation uint64, indexPayload []byte) ([]byte, error) {
 	paramSize, err := protocol.ParamBlockSize(params)
@@ -112,17 +112,17 @@ func decodeCheckpointBody(data []byte) (checkpointHeader, error) {
 	}, nil
 }
 
-// fs returns the vfs.FS checkpoint I/O goes through: the binding's own
+// fs returns the filesys.FS checkpoint I/O goes through: the binding's own
 // encryptor when one is configured, transparently encrypting every
 // checkpoint at rest (it holds every embedding in the namespace), or the
 // plain base FS when the encryptor is disabled (a nil barrier, e.g. in
 // tests).
-func (m *VectorIndexManager) fs() vfs.FS {
+func (m *VectorIndexManager) fs() filesys.FS {
 	return m.enc.FS()
 }
 
-func (m *VectorIndexManager) namespaceDir(fsys vfs.FS, namespace string) string {
-	return fsys.PathJoin(m.dir, vectorIndexDir, namespace)
+func (m *VectorIndexManager) namespaceDir(namespace string) string {
+	return filepath.Join(m.dir, vectorIndexDir, namespace)
 }
 
 // writeCheckpoint writes namespace's checkpoint to a temporary name, syncs
@@ -143,16 +143,16 @@ func (m *VectorIndexManager) writeCheckpoint(namespace string, rec vector.Namesp
 	}
 
 	fsys := m.fs()
-	nsDir := m.namespaceDir(fsys, namespace)
+	nsDir := m.namespaceDir(namespace)
 	if err := fsys.MkdirAll(nsDir, 0o750); err != nil {
 		return err
 	}
 
 	finalName := fmt.Sprintf("%020d%s", rec.Seq, checkpointSuffix)
-	finalPath := fsys.PathJoin(nsDir, finalName)
+	finalPath := filepath.Join(nsDir, finalName)
 	tmpPath := finalPath + ".tmp"
 
-	f, err := fsys.Create(tmpPath, vfs.WriteCategoryUnspecified)
+	f, err := fsys.Create(tmpPath)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func (m *VectorIndexManager) writeCheckpoint(namespace string, rec vector.Namesp
 		if entry == finalName {
 			continue
 		}
-		_ = fsys.Remove(fsys.PathJoin(nsDir, entry))
+		_ = fsys.Remove(filepath.Join(nsDir, entry))
 	}
 	return nil
 }
@@ -192,7 +192,7 @@ func (m *VectorIndexManager) removeCheckpoints(namespace string) {
 		return
 	}
 	fsys := m.fs()
-	nsDir := m.namespaceDir(fsys, namespace)
+	nsDir := m.namespaceDir(namespace)
 	_ = fsys.RemoveAll(nsDir)
 }
 
@@ -210,7 +210,7 @@ func (m *VectorIndexManager) loadCheckpoint(stg storage.Storage, namespace strin
 		return false
 	}
 	fsys := m.fs()
-	nsDir := m.namespaceDir(fsys, namespace)
+	nsDir := m.namespaceDir(namespace)
 	entries, err := fsys.List(nsDir)
 	if err != nil || len(entries) == 0 {
 		return false
@@ -228,7 +228,7 @@ func (m *VectorIndexManager) loadCheckpoint(stg storage.Storage, namespace strin
 	sort.Strings(names) // fixed-width zero-padded sequence sorts numerically
 	newest := names[len(names)-1]
 
-	f, err := fsys.Open(fsys.PathJoin(nsDir, newest))
+	f, err := fsys.Open(filepath.Join(nsDir, newest))
 	if err != nil {
 		return false
 	}

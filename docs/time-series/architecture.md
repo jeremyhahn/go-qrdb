@@ -150,7 +150,7 @@ It is therefore a command, not a background delete:
   `aggregation` is read back by `TSGetRetention` but nothing computes it.
 - The command is behind the cluster feature gate
   (`featuregate.TimeSeriesRetention`): the scheduler's `ApplyRetention` call
-  is refused with `*featuregate.NotActiveError` until every member of the
+  is refused with `*feature.NotActiveError` until every member of the
   group supports the opcode.
 - The command is bounded per entry (`timeseries.MaxRetentionDeletesPerApply`);
   a metric with more expired points than one command's bound is swept over

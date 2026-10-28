@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek/dektest"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -120,7 +120,7 @@ func TestWithStorageFactory_OpensTheStandaloneDataPlane(t *testing.T) {
 		calls   int
 		gotDir  string
 		stg     storage.Storage
-		factory = func(dataDir string, _ vfs.FS) (storage.Storage, error) {
+		factory = func(dataDir string, _ filesys.FS) (storage.Storage, error) {
 			calls++
 			gotDir = dataDir
 			stg = memory.NewStorage()
@@ -137,7 +137,7 @@ func TestWithStorageFactory_ErrorFailsTheBoot(t *testing.T) {
 	boom := errors.New("device offline")
 	cfg := newTenantIsolationConfig(t)
 	_, err := NewStandaloneNode(context.Background(), cfg, nil,
-		WithStorageFactory(func(string, vfs.FS) (storage.Storage, error) { return nil, boom }))
+		WithStorageFactory(func(string, filesys.FS) (storage.Storage, error) { return nil, boom }))
 	require.ErrorIs(t, err, boom)
 }
 

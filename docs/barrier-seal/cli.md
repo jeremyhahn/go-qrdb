@@ -112,6 +112,33 @@ qrdb barrier unseal --passphrase '<passphrase>'   # passphrase barrier
 qrdb barrier unseal                               # none barrier
 ```
 
+An uninitialized barrier refuses it with `barrier not initialized`.
+
+## `qrdb barrier change-passphrase`
+
+Re-wrap the root key of an unsealed, passphrase-sealed barrier under a new
+passphrase. The root key and the data are unchanged; the next unseal takes
+`--next` and refuses `--current`. A `--current` that does not open the barrier
+is refused with `supplied credentials do not match the barrier's current key`
+and writes nothing. Requires `seal:rekey` and the Security Officer PIN, which
+every transport verifies before the barrier is reached, as for `barrier seal`
+and `barrier rekey`: once an SO PIN is provisioned, `--so-pin` is required, and
+a missing or wrong one is refused with nothing written. A node with no PIN
+backend refuses the change outright (`pin: no PIN backend configured`).
+
+| Flag | Type | Required |
+|---|---|---|
+| `--current` | string | yes |
+| `--next` | string | yes |
+| `--so-pin` | string | once an SO PIN is provisioned |
+
+```bash
+qrdb barrier change-passphrase --current '<current>' --next '<next>' --so-pin "$SO_PIN"
+```
+
+`TestBarrierCLI_ChangePassphrase_PerProtocol` drives it on REST, gRPC, QUIC,
+the Unix socket and MCP.
+
 ## `qrdb barrier seal`
 
 Seal the barrier. **Once sealed, the data path returns `ErrBarrierSealed` for

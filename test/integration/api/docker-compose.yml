@@ -9,9 +9,22 @@
 # a second `docker compose up` claims the same names and SIGKILLs the first
 # run's containers — exit 137, truncated log, no failing test, which reads as
 # OOM and is not. Docker does not refuse the collision the way it refuses a
-# port. Nothing referenced those names: the tests address the servers by compose
-# SERVICE name (https://qrdbd:63002). The Makefile supplies a per-run project
-# name so containers, networks and volumes are namespaced together.
+# port. Nothing referenced those names: the tests address the servers on
+# loopback (https://127.0.0.1:63002, below). The Makefile supplies a per-run
+# project name so containers and volumes are namespaced together.
+#
+# The stack has ONE network namespace, owned by the `netns` holder service:
+# every other service joins it (`network_mode: "service:netns"`) and they talk
+# over loopback on their distinct port sets, so the servers' port sets must
+# never overlap. The holder runs with `network_mode: none`, because nothing in
+# this stack needs a network at run time: the image fetched its modules at
+# build, through the BuildKit secret below. A service per bridge attachment
+# gave the host one veth per container start and stop, and on a many-core host
+# each veth add or remove is a storm of hundreds of uevents, one per tx and rx
+# queue; this stack now adds none. Docker refuses `hostname` and `expose` on a
+# service that joins another's namespace, which is why none here declares them.
+# An overlay that needs egress (docker-compose.embedding.yml) gives the holder
+# one bridge attachment: one veth for the stack, never one per service.
 #
 # The image is per-run too. Every service built from the Dockerfile runs the
 # one tag the Makefile names for this run, QRDB_INT_IMAGE
@@ -48,6 +61,24 @@ x-scanner-pins: &scanner-pins
   QRDB_BUILD_TAGS:
 
 services:
+  # The stack's network namespace holder (see the top of this file). It only
+  # holds the namespace: no capability, a read-only root, and `sleep`. Its
+  # image is the run's own, which `make integration-image` (or an `up --build`)
+  # builds before any container is created; `pull_policy: never` keeps compose
+  # from ever looking for that per-run tag in a registry.
+  netns:
+    image: *int-image
+    pull_policy: never
+    network_mode: none
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 16
+    entrypoint: ["sleep", "infinity"]
+
   # QRDB server with all protocols enabled.
   # Uses the devcontainer image and mounts source + sibling repos so the
   # server binary can be built with access to replace-directive dependencies.
@@ -60,14 +91,9 @@ services:
       secrets:
         - gomodauth
     image: *int-image
-    hostname: qrdbd
-    expose:
-      - "63001/udp"  # Raft/QUIC (UDP)
-      - "63001/tcp"  # Raft fallback (TCP)
-      - "63002"      # REST API
-      - "63003"      # gRPC
-      - "63004/udp"  # QUIC API
-      - "63005"      # MCP
+    # Listens in the stack's namespace on 63001 udp+tcp (Raft), 63002 (REST),
+    # 63003 (gRPC), 63004 udp (QUIC API) and 63005 (MCP).
+    network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true
     # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
@@ -91,8 +117,6 @@ services:
       timeout: 5s
       retries: 15
       start_period: 180s
-    networks:
-      - qrdb-integration
     user: root
     working_dir: /workspace/go-qrdb
     entrypoint:
@@ -206,8 +230,9 @@ services:
         wait $$QRDBD_PID
 
   # Dedicated QRDB server configured with the Shamir M-of-N seal strategy.
-  # Runs side by side with the software-seal "qrdbd" server above on a
-  # DISTINCT port set (64001-64005), data volume, and unix socket so the
+  # Runs side by side with the software-seal "qrdbd" server above, in the
+  # same network namespace, on a DISTINCT port set (64001-64005; the shared
+  # namespace makes that a requirement), data volume, and unix socket so the
   # Shamir CLI tests exercise a real Shamir-sealed barrier without disturbing
   # the software-seal coverage. The entrypoint mirrors qrdbd's bootstrap but
   # bootstraps through `qrdb init` with three share holders named by their
@@ -224,14 +249,9 @@ services:
       secrets:
         - gomodauth
     image: *int-image
-    hostname: qrdbd-shamir
-    expose:
-      - "64001/udp"  # Raft/QUIC (UDP)
-      - "64001/tcp"  # Raft fallback (TCP)
-      - "64002"      # REST API
-      - "64003"      # gRPC
-      - "64004/udp"  # QUIC API
-      - "64005"      # MCP
+    # Listens in the stack's namespace on 64001 udp+tcp (Raft), 64002 (REST),
+    # 64003 (gRPC), 64004 udp (QUIC API) and 64005 (MCP).
+    network_mode: "service:netns"
     # Required for QUIC UDP buffer settings
     privileged: true
     # privileged already grants IPC_LOCK; the memlock ulimit is stated so the
@@ -254,8 +274,6 @@ services:
       timeout: 5s
       retries: 15
       start_period: 180s
-    networks:
-      - qrdb-integration
     user: root
     working_dir: /workspace/go-qrdb
     entrypoint:
@@ -418,10 +436,10 @@ services:
     environment:
       - CGO_ENABLED=1
       - QRDB_UNIX_SOCKET=/var/run/qrdbd/qrdbd.sock
-      - QRDB_REST_URL=https://qrdbd:63002
-      - QRDB_GRPC_ADDR=qrdbd:63003
-      - QRDB_MCP_ADDR=qrdbd:63005
-      - QRDB_QUIC_ADDR=qrdbd:63004
+      - QRDB_REST_URL=https://127.0.0.1:63002
+      - QRDB_GRPC_ADDR=127.0.0.1:63003
+      - QRDB_MCP_ADDR=127.0.0.1:63005
+      - QRDB_QUIC_ADDR=127.0.0.1:63004
       - QRDB_CLI_BIN=/app/build/bin/qrdb
       - QRDB_TLS_CA=/data/raft/ca.pem
       - QRDB_TLS_CERT=/data/admin/admin.crt
@@ -435,10 +453,10 @@ services:
       # test binary.
       - QRDB_BACKUP_KEY_DIR=/backup-keys
       # Dedicated Shamir-seal server connection (mounted read-only at /data-shamir).
-      - QRDB_SHAMIR_REST_URL=https://qrdbd-shamir:64002
-      - QRDB_SHAMIR_GRPC_ADDR=qrdbd-shamir:64003
-      - QRDB_SHAMIR_MCP_ADDR=qrdbd-shamir:64005
-      - QRDB_SHAMIR_QUIC_ADDR=qrdbd-shamir:64004
+      - QRDB_SHAMIR_REST_URL=https://127.0.0.1:64002
+      - QRDB_SHAMIR_GRPC_ADDR=127.0.0.1:64003
+      - QRDB_SHAMIR_MCP_ADDR=127.0.0.1:64005
+      - QRDB_SHAMIR_QUIC_ADDR=127.0.0.1:64004
       - QRDB_SHAMIR_UNIX_SOCKET=/var/run/qrdbd-shamir/qrdbd.sock
       - QRDB_SHAMIR_TLS_CA=/data-shamir/raft/ca.pem
       - QRDB_SHAMIR_TLS_CERT=/data-shamir/admin/admin.crt
@@ -470,8 +488,7 @@ services:
       # `docker compose up`.
       - INTEGRATION_GO_TIMEOUT=${INTEGRATION_GO_TIMEOUT:-100m}
     working_dir: /workspace/go-qrdb
-    networks:
-      - qrdb-integration
+    network_mode: "service:netns"
     command: >
       sh -c "
       echo 'Configuring UDP buffers for QUIC...' &&
@@ -499,10 +516,6 @@ volumes:
     driver: local
   go-build-cache:
     driver: local
-
-networks:
-  qrdb-integration:
-    driver: bridge
 
 # The BuildKit secret that carries the internal Gitea module credentials into
 # `go mod download`. Every service above that builds .devcontainer/Dockerfile

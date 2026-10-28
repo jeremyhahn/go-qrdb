@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -790,7 +791,7 @@ func waitForCLIMigrationReaped(t *testing.T, cli string, c *noneSealRF3, node ga
 
 // waitForFeatureActive polls every node's log until each has activated
 // feature f cluster-wide or observed its activation.
-func waitForFeatureActive(t *testing.T, logs []*nodeLog, f featuregate.Feature, timeout time.Duration) {
+func waitForFeatureActive(t *testing.T, logs []*nodeLog, f feature.Feature, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for i, l := range logs {
@@ -805,7 +806,7 @@ func waitForFeatureActive(t *testing.T, logs []*nodeLog, f featuregate.Feature, 
 // featureActiveIn reports whether a node log holds the gate's activation line
 // -- "feature activated cluster-wide" or "feature activation observed" -- for
 // feature f.
-func featureActiveIn(log string, f featuregate.Feature) bool {
+func featureActiveIn(log string, f feature.Feature) bool {
 	for _, line := range strings.Split(log, "\n") {
 		if strings.Contains(line, "feature gate: feature activat") && strings.Contains(line, string(f)) {
 			return true

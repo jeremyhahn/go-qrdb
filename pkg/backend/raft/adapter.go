@@ -31,6 +31,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -153,7 +154,7 @@ func (a *HostAdapter) AdmitReplica(shardID uint64, raftAddr string) error {
 // test adapter with no host are enabled, while a host with a transport is
 // not: its groups can hold nodes running an older binary, and without a
 // gate nothing establishes that they do not.
-func (a *HostAdapter) FeatureEnabled(shardID uint64, feature featuregate.Feature) bool {
+func (a *HostAdapter) FeatureEnabled(shardID uint64, feature feature.Feature) bool {
 	if a.gate != nil {
 		return a.gate.Enabled(shardID, feature)
 	}

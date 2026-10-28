@@ -189,7 +189,7 @@ func tryReadAll(dir string, enc *atrest.Encryptor) map[string]string {
 	out := map[string]string{}
 	defer func() { _ = recover() }()
 	opts := &pebble.Options{ReadOnly: true}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		return out

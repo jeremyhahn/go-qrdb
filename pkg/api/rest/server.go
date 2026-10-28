@@ -2318,6 +2318,12 @@ func (s *Server) registerRoutes() {
 	// the call.
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/begin", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/init/complete", permission.IdentityGated, s.handleTenantByID)
+	// barrier/signed-init/{begin,complete} are IdentityGated for the same
+	// reason; the handlers authorize as a plain init does, and the signed
+	// statement anchored to the tenant's first admin is the proof of
+	// possession (handleTenantBarrierSignedInitBegin).
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/signed-init/begin", permission.IdentityGated, s.handleTenantByID)
+	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/signed-init/complete", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/unseal", permission.IdentityGated, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/seal", permission.TenantBarrierSeal, s.handleTenantByID)
 	s.route(http.MethodPost, "/v1/tenants/{id}/barrier/officers", permission.TenantBarrierOfficerRegister, s.handleTenantByID)
@@ -2424,6 +2430,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/initialize", permission.SealBootstrap, s.handleBarrierInitialize)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/unseal", permission.SealUnseal, s.handleBarrierUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/seal", permission.SealSeal, s.handleBarrierSeal)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/change-passphrase", permission.SealRekey, s.handleBarrierChangePassphrase)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/status", permission.SealStatus, s.handleBarrierStatus)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/cluster-unseal", permission.SealUnseal, s.handleBarrierClusterUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/initialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)

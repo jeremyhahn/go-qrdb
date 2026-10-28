@@ -16,6 +16,7 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { TLS_CERT_ENV, TLS_KEY_ENV } from "./playwright.tls.ts";
 
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
@@ -56,8 +57,28 @@ export default defineConfig({
     // overrides it via QRDB_PROXY_TARGET (the mocked tier with a per-run port
     // nothing listens on, the DOM tier with its daemon's admin port).
     proxy: buildApiProxy(process.env.QRDB_PROXY_TARGET ?? "https://localhost:63002"),
+    // `vite preview` inherits this, so both servers take the same TLS.
+    https: serverTLS(),
   },
 });
+
+/**
+ * serverTLS returns the certificate and key the Playwright tiers generate per
+ * run (playwright.tls.ts), so the app is served over https as qrdbd serves web
+ * mode: every secret-bearing SDK call refuses an http origin. Unset, the
+ * server speaks plain http, for an interactive `npm run dev` only.
+ */
+function serverTLS(): { cert: string; key: string } | undefined {
+  const cert = process.env[TLS_CERT_ENV];
+  const key = process.env[TLS_KEY_ENV];
+  if (cert && key) {
+    return { cert, key };
+  }
+  if (cert || key) {
+    throw new Error(`${TLS_CERT_ENV} and ${TLS_KEY_ENV} must be set together`);
+  }
+  return undefined;
+}
 
 /**
  * buildApiProxy maps every server-side API route prefix to the given backend

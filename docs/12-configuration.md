@@ -482,6 +482,15 @@ Configures the underlying storage backend.
 - `backend`, when non-empty, must be one of: `pebble`, `memory`, `file`, `objstore`.
 - `cache_size` must not be negative (>= 0).
 - `max_open_files` must not be negative (>= 0).
+- `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
+- `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
+
+**`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
+
+| Field         | Type   | Default | Required | Description |
+|---------------|--------|---------|----------|-------------|
+| `key_file`    | string | `""`    | no       | Owner-only file (mode `0600`/`0400`) holding the access key ID |
+| `secret_file` | string | `""`    | with `key_file` | Owner-only file holding the secret; alone, an account key |
 
 **Valid `backend` values:**
 

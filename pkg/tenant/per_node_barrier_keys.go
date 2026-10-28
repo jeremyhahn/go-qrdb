@@ -38,7 +38,7 @@ func (g perNodeBarrierKeysGate) admitIsolated(isolationType IsolationType) error
 
 // WithPerNodeBarrierKeysGate injects the per-node-barrier-keys activation
 // check: while required returns an error (the composer's
-// *featuregate.NotActiveError), creating an isolated tenant, or changing a
+// *feature.NotActiveError), creating an isolated tenant, or changing a
 // tenant to an isolated type, is refused with it. Without it nothing is
 // refused, which is right for a node whose groups hold no other binary.
 // The node composition passes the same check to the pkg/barrierinit Book, so

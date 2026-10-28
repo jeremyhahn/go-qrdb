@@ -401,6 +401,18 @@ go-xkms, not only for this repo.
   no cipher. Engines store what they are given.
 - Volume pool paths are filesystem paths on the node; a pool registration is a
   privileged operation.
+- **An object-storage credential crosses into go-objstore as a handle, never
+  as a value.** Configuration carries only file references
+  (`storage.objstore.credentials.{key_file,secret_file}`); a credential in the
+  YAML is refused at load. `objstore.New` reads each owner-only file straight
+  into a go-enclave locked-memory handle through `pkg/secure`, passes the
+  handles as go-objstore's `common.Credentials`, and destroys them before it
+  returns: go-objstore copies the bytes out only inside `Credentials.Open`,
+  zeroizes them after configuring the provider, and keeps no handle. File
+  references were chosen because the alternatives cannot hold this
+  credential: an environment variable is readable through `/proc` and lands in
+  an unzeroizable Go string, and `pkg/credentials` stores through a
+  `StorageBarrier`, which itself needs the storage this credential opens.
 
 ## What this feature deliberately does not do
 

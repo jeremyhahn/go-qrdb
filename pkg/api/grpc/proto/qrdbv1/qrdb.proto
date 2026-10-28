@@ -1009,6 +1009,14 @@ service QRDBService {
         option (qrdb.v1.permission) = "seal:unseal";
     }
 
+    // BarrierChangePassphrase re-wraps the root key of the unsealed,
+    // passphrase-sealed barrier under the next passphrase once the current
+    // one opens it. A wrong current passphrase is PERMISSION_DENIED and
+    // changes nothing; a concurrent root-key write is ABORTED.
+    rpc BarrierChangePassphrase(BarrierChangePassphraseRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:rekey";
+    }
+
     // BarrierSeal seals the barrier, preventing data access until unsealed.
     rpc BarrierSeal(BarrierSealRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:seal";
@@ -4200,6 +4208,17 @@ message BarrierUnsealRequest {
     bytes secret = 1;
 }
 
+// BarrierChangePassphraseRequest carries the current and the next passphrase
+// of the system barrier. Both are secrets the server wipes once the call
+// returns. so_pin is the Security Officer PIN the SO gate requires of a
+// seal:rekey call over QUIC, which has no header section; gRPC reads the
+// x-qrdb-so-pin metadata entry instead.
+message BarrierChangePassphraseRequest {
+    bytes current = 1;
+    bytes next = 2;
+    string so_pin = 3;
+}
+
 // BarrierStatusResponse describes the current barrier state.
 // shamir_threshold and shamir_total carry the configured M-of-N quorum
 // when the barrier uses the Shamir strategy and are zero otherwise.
@@ -5803,6 +5822,25 @@ service TenantBarrierService {
         option (qrdb.v1.permission) = "identity:gated";
     }
 
+    // SignedInitBegin is the first half of a two-phase signed initialization,
+    // for a client whose first admin signs away from the connection: it
+    // prepares the barrier's epoch-1 init statement naming public_key and
+    // returns the exact message to sign with a single-use reference. A Shamir
+    // init prepares its split here. identity:gated for InitBegin's reason; the
+    // handler authorizes through middleware.AuthorizeTenantBarrierInit. The
+    // signed statement, anchored to the tenant's first admin, is the proof of
+    // possession, so no channel-bound nonce is needed.
+    rpc SignedInitBegin(TenantBarrierSignedInitBeginRequest) returns (TenantBarrierSignedInitBeginResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
+    // SignedInitComplete redeems SignedInitBegin's reference with the detached
+    // signature over its statement and initializes the barrier under it.
+    // identity:gated for InitBegin's reason; authorized as SignedInitBegin.
+    rpc SignedInitComplete(TenantBarrierSignedInitCompleteRequest) returns (TenantBarrierInitResponse) {
+        option (qrdb.v1.permission) = "identity:gated";
+    }
+
     // Unseal unseals a tenant barrier using a single key (passphrase strategy).
     //
     // identity:gated at the interceptor: unseal must remain reachable while
@@ -5937,6 +5975,50 @@ message TenantBarrierInitResponse {
     // waits on the tenant's home group: holders unseal the other nodes with
     // the certificates above, and the admin completes once the group elects.
     bool   admin_pending    = 10;
+}
+
+// TenantBarrierSignedInitBeginRequest asks for tenant_id's init statement,
+// naming public_key -- the DER SubjectPublicKeyInfo of the tenant's pending
+// first admin's key -- as its signer. key_ref is the strategy's reference to
+// the tenant's key; threshold, shares, officers and policy are a Shamir
+// init's, as on TenantBarrierInitRequest.
+message TenantBarrierSignedInitBeginRequest {
+    string tenant_id  = 1;
+    string strategy   = 2;
+    string key_ref    = 3;
+    int32  threshold  = 4;
+    int32  shares     = 5;
+    repeated CeremonyOfficer officers = 6;
+    string policy     = 7;
+    bytes  public_key = 8;
+}
+
+// TenantBarrierSignedInitBeginResponse carries the statement to sign and the
+// reference SignedInitComplete redeems. statement is the exact message the
+// key signs, detached: ECDSA over its SHA-256 digest in ASN.1 form, RSA PKCS #1
+// v1.5 over its SHA-256 digest, or pure Ed25519 over the bytes. expires is
+// when the reference lapses (Unix seconds). threshold through holders report
+// a Shamir init's prepared split; zero for every other strategy.
+message TenantBarrierSignedInitBeginResponse {
+    string tenant_id    = 1;
+    string strategy     = 2;
+    bytes  reference    = 3;
+    bytes  statement    = 4;
+    int64  expires      = 5;
+    int32  threshold    = 6;
+    int32  total_shares = 7;
+    int32  share_count  = 8;
+    repeated CeremonyHolderCert holders = 9;
+}
+
+// TenantBarrierSignedInitCompleteRequest redeems reference with signature,
+// the detached signature over SignedInitBegin's statement. passphrase is the
+// passphrase strategy's credential, `bytes` so callers can zeroize it.
+message TenantBarrierSignedInitCompleteRequest {
+    string tenant_id  = 1;
+    bytes  reference  = 2;
+    bytes  signature  = 3;
+    bytes  passphrase = 4;
 }
 
 // TenantBarrierUnsealRequest carries single-key unseal material.

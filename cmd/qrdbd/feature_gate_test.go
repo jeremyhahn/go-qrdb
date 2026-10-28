@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -124,7 +125,7 @@ func TestStartFeatureGate_RefusesAnActivatedFeatureThisBinaryLacks(t *testing.T)
 
 	_, err := startFeatureGate(context.Background(), nil, gateServices(store), nil)
 	require.ErrorAs(t, err, &unsupported)
-	assert.Equal(t, featuregate.Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 
 	g := soloGate(t)
 	t.Cleanup(func() { _ = g.Close() })

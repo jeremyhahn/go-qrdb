@@ -20,21 +20,25 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 )
 
 // ---------------------------------------------------------------------------
-// Compile-time interface guard: errFile and errFS satisfy vfs.File / vfs.FS.
+// Compile-time interface guard: errFile and errFS satisfy filesys.File /
+// filesys.LockFS.
 // ---------------------------------------------------------------------------
 
-var _ vfs.File = (*errFile)(nil)
+var (
+	_ filesys.File   = (*errFile)(nil)
+	_ filesys.LockFS = (*errFS)(nil)
+)
 
-// errFile is a vfs.File that wraps a real vfs.File but injects an error
-// on the first call of a specific method. It is used to trigger error
+// errFile is a filesys.File that wraps a real filesys.File but injects an
+// error on the first call of a specific method. It is used to trigger error
 // branches in encryptedFile that are otherwise unreachable with a
-// well-behaved MemFS.
+// well-behaved in-memory FS.
 type errFile struct {
-	real       vfs.File
+	real       filesys.File
 	writeAtErr error
 	syncErr    error
 	statErr    error
@@ -45,20 +49,6 @@ func (f *errFile) Close() error               { return f.real.Close() }
 func (f *errFile) Read(p []byte) (int, error) { return f.real.Read(p) }
 func (f *errFile) ReadAt(p []byte, off int64) (int, error) {
 	return f.real.ReadAt(p, off)
-}
-func (f *errFile) Fd() uintptr { return vfs.InvalidFd }
-func (f *errFile) Preallocate(offset, length int64) error {
-	return f.real.Preallocate(offset, length)
-}
-func (f *errFile) Prefetch(offset, length int64) error {
-	return f.real.Prefetch(offset, length)
-}
-func (f *errFile) SyncData() error { return f.Sync() }
-func (f *errFile) SyncTo(length int64) (bool, error) {
-	if err := f.Sync(); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func (f *errFile) Write(p []byte) (int, error) {
@@ -82,52 +72,50 @@ func (f *errFile) Sync() error {
 	return f.real.Sync()
 }
 
-func (f *errFile) Stat() (vfs.FileInfo, error) {
+func (f *errFile) Stat() (os.FileInfo, error) {
 	if f.statErr != nil {
 		return nil, f.statErr
 	}
 	return f.real.Stat()
 }
 
-// errFS wraps vfs.NewMem() and injects configurable errors on specific
+// errFS wraps an in-memory FS and injects configurable errors on specific
 // operations. Only the methods under test are wrapped; all others
-// delegate to the underlying MemFS.
+// delegate to the underlying FS.
 type errFS struct {
-	real      vfs.FS
+	real      filesys.LockFS
 	createErr error
 	openRWErr error
 	statErr   error
 	removeErr error
 	renameErr error
-	// removeCount counts how many times Remove has been called so callers
-	// can inject an error on the second call (ReuseForWrite path).
+	// removeCalls counts how many times Remove has been called so callers
+	// can inject an error on a later call.
 	removeCalls int
 	removeErrOn int // 0 = always, N = on Nth call (1-based)
 }
 
 func newErrFS() *errFS {
-	return &errFS{real: vfs.NewMem(), removeErrOn: 0}
+	return &errFS{real: newBaseFS(), removeErrOn: 0}
 }
 
-func (fs *errFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
+func (fs *errFS) Create(name string) (filesys.File, error) {
 	if fs.createErr != nil {
 		return nil, fs.createErr
 	}
-	return fs.real.Create(name, cat)
+	return fs.real.Create(name)
 }
 
-func (fs *errFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.Open(name, opts...)
-}
+func (fs *errFS) Open(name string) (filesys.File, error) { return fs.real.Open(name) }
 
-func (fs *errFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
+func (fs *errFS) OpenReadWrite(name string) (filesys.File, error) {
 	if fs.openRWErr != nil {
 		return nil, fs.openRWErr
 	}
-	return fs.real.OpenReadWrite(name, cat, opts...)
+	return fs.real.OpenReadWrite(name)
 }
 
-func (fs *errFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
+func (fs *errFS) OpenDir(name string) (filesys.File, error) { return fs.real.OpenDir(name) }
 func (fs *errFS) Remove(name string) error {
 	fs.removeCalls++
 	if fs.removeErr != nil {
@@ -144,26 +132,16 @@ func (fs *errFS) Rename(oldname, newname string) error {
 	}
 	return fs.real.Rename(oldname, newname)
 }
-func (fs *errFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
 func (fs *errFS) MkdirAll(dir string, perm os.FileMode) error { return fs.real.MkdirAll(dir, perm) }
 func (fs *errFS) Lock(name string) (io.Closer, error)         { return fs.real.Lock(name) }
 func (fs *errFS) List(dir string) ([]string, error)           { return fs.real.List(dir) }
-func (fs *errFS) Stat(name string) (vfs.FileInfo, error) {
+func (fs *errFS) Stat(name string) (os.FileInfo, error) {
 	if fs.statErr != nil {
 		return nil, fs.statErr
 	}
 	return fs.real.Stat(name)
 }
-func (fs *errFS) PathBase(p string) string       { return fs.real.PathBase(p) }
-func (fs *errFS) PathJoin(elem ...string) string { return fs.real.PathJoin(elem...) }
-func (fs *errFS) PathDir(p string) string        { return fs.real.PathDir(p) }
-func (fs *errFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
 func (fs *errFS) Link(old, new string) error { return fs.real.Link(old, new) }
-func (fs *errFS) Unwrap() vfs.FS             { return nil }
 
 // ---------------------------------------------------------------------------
 // block.go — newBlockCrypto error branches
@@ -229,8 +207,8 @@ func TestNewWriteFile_BaseWriteError(t *testing.T) {
 		t.Fatalf("newHeader: %v", err)
 	}
 	// Use a base errFile whose Write always fails.
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("w.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("w.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -260,8 +238,8 @@ func TestNewReadFile_NegativePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBlockCrypto: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("r.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("r.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -288,8 +266,8 @@ func TestEncFile_CloseFlushTailWriteError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHeader: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("cf.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("cf.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -325,8 +303,8 @@ func TestEncFile_FlushFullBlockWrongLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHeader: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("fb.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("fb.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -353,8 +331,8 @@ func TestEncFile_FlushFullBlockWriteAtError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHeader: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("ffb.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("ffb.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -389,8 +367,8 @@ func TestEncFile_SyncFlushTailWriteAtError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHeader: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("sf.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("sf.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -417,7 +395,7 @@ func TestEncFile_SyncFlushTailWriteAtError(t *testing.T) {
 // delegates to the base file's Sync without attempting to flush a tail.
 func TestEncFile_SyncReadOnly(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("sync_ro.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("sync_ro.dat")
 	_, _ = f.Write([]byte("some data"))
 	_ = f.Close()
 	r, err := fs.Open("sync_ro.dat")
@@ -428,38 +406,6 @@ func TestEncFile_SyncReadOnly(t *testing.T) {
 	// Sync on a read-only file must succeed.
 	if err := r.Sync(); err != nil {
 		t.Errorf("Sync on RO file: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// encfile.go — SyncTo: Sync error path
-// ---------------------------------------------------------------------------
-
-// TestEncFile_SyncToSyncError ensures that SyncTo propagates a Sync failure.
-func TestEncFile_SyncToSyncError(t *testing.T) {
-	sentinel := errors.New("syncto-fail")
-	b := newFakeBarrier(t)
-	h, err := newHeader(b)
-	if err != nil {
-		t.Fatalf("newHeader: %v", err)
-	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("sto.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	ef := &errFile{real: realFile}
-	enc, err := newWriteFile(ef, h)
-	if err != nil {
-		t.Fatalf("newWriteFile: %v", err)
-	}
-	if _, err := enc.Write([]byte("data")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	ef.writeAtErr = sentinel
-	_, gotErr := enc.SyncTo(4)
-	if !errors.Is(gotErr, sentinel) {
-		t.Errorf("SyncTo error = %v, want sentinel", gotErr)
 	}
 }
 
@@ -476,8 +422,8 @@ func TestEncFile_StatBaseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newHeader: %v", err)
 	}
-	mem := vfs.NewMem()
-	realFile, err := mem.Create("stat.dat", vfs.WriteCategoryUnspecified)
+	mem := newBaseFS()
+	realFile, err := mem.Create("stat.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -502,11 +448,11 @@ func TestEncFile_StatBaseError(t *testing.T) {
 // corrupts one byte of the on-disk ciphertext payload, then verifies
 // that ReadAt returns an error (ErrAuthFailed propagated from decrypt).
 func TestEncFile_ReadAtTamperedCiphertext(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	fs := New(mem, b)
 
-	f, err := fs.Create("tamper.dat", vfs.WriteCategoryUnspecified)
+	f, err := fs.Create("tamper.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -520,7 +466,7 @@ func TestEncFile_ReadAtTamperedCiphertext(t *testing.T) {
 
 	// Corrupt the raw file: flip a byte inside the first block's ciphertext
 	// (after the header and nonce, within the GCM body).
-	rawFile, err := mem.OpenReadWrite("tamper.dat", vfs.WriteCategoryUnspecified)
+	rawFile, err := mem.OpenReadWrite("tamper.dat")
 	if err != nil {
 		t.Fatalf("raw OpenReadWrite: %v", err)
 	}
@@ -562,7 +508,7 @@ func TestEncFile_ReadAtTamperedCiphertext(t *testing.T) {
 // called at exactly off == logicalSize, which must return io.EOF immediately.
 func TestEncFile_ReadAtExactLogicalEnd(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("end.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("end.dat")
 	_, _ = f.Write([]byte("abc"))
 	_ = f.Close()
 	r, err := fs.Open("end.dat")
@@ -594,7 +540,7 @@ func TestEncFile_ReadAtTailPastEnd(t *testing.T) {
 	// Write more than one full block so tail starts at a known position.
 	// After Close the tail is flushed. Re-open with OpenReadWrite so that
 	// the trailing block is reloaded into the tail.
-	f, err := fs.Create("tailpast.dat", vfs.WriteCategoryUnspecified)
+	f, err := fs.Create("tailpast.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -610,7 +556,7 @@ func TestEncFile_ReadAtTailPastEnd(t *testing.T) {
 	}
 	// Re-open via OpenReadWrite: this loads the 50-byte tail back into
 	// encryptedFile.tail and sets flushedSize = BlockSize.
-	g, err := fs.OpenReadWrite("tailpast.dat", vfs.WriteCategoryUnspecified)
+	g, err := fs.OpenReadWrite("tailpast.dat")
 	if err != nil {
 		t.Fatalf("OpenReadWrite: %v", err)
 	}
@@ -631,7 +577,7 @@ func TestEncFile_ReadAtTailPastEnd(t *testing.T) {
 func TestFS_CreateNewHeaderError(t *testing.T) {
 	_, b, fs := newMemFS(t)
 	b.seal()
-	if _, err := fs.Create("noh.dat", vfs.WriteCategoryUnspecified); err == nil {
+	if _, err := fs.Create("noh.dat"); err == nil {
 		t.Error("expected Create to fail with sealed barrier")
 	}
 }
@@ -644,7 +590,7 @@ func TestFS_CreateBaseCreateError(t *testing.T) {
 	errBase.createErr = sentinel
 	b := newFakeBarrier(t)
 	fs := New(errBase, b)
-	_, gotErr := fs.Create("x.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := fs.Create("x.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
@@ -657,57 +603,29 @@ func TestFS_CreateBaseCreateError(t *testing.T) {
 func TestFS_CreateNewWriteFileError(t *testing.T) {
 	sentinel := errors.New("base-write-fail")
 	// Build a custom FS that returns an errFile from Create.
-	base := &writeErrFS{real: vfs.NewMem(), writeErr: sentinel}
+	base := &writeErrFS{FS: newBaseFS(), writeErr: sentinel}
 	b := newFakeBarrier(t)
 	fs := New(base, b)
-	_, gotErr := fs.Create("y.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := fs.Create("y.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
 }
 
-// writeErrFS is a minimal vfs.FS whose Create returns an errFile that
+// writeErrFS is a minimal filesys.FS whose Create returns an errFile that
 // fails Write calls with writeErr.
 type writeErrFS struct {
-	real     vfs.FS
+	filesys.FS
 	writeErr error
 }
 
-func (fs *writeErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	f, err := fs.real.Create(name, cat)
+func (fs *writeErrFS) Create(name string) (filesys.File, error) {
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return nil, err
 	}
 	return &errFile{real: f, writeErr: fs.writeErr}, nil
 }
-
-func (fs *writeErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.Open(name, opts...)
-}
-func (fs *writeErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.OpenReadWrite(name, cat, opts...)
-}
-func (fs *writeErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *writeErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *writeErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *writeErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *writeErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *writeErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *writeErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *writeErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *writeErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *writeErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *writeErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *writeErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *writeErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *writeErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *writeErrFS) Unwrap() vfs.FS { return nil }
 
 // ---------------------------------------------------------------------------
 // fs.go — OpenReadWrite: base.Stat error
@@ -717,10 +635,10 @@ func (fs *writeErrFS) Unwrap() vfs.FS { return nil }
 // error when the base file's Stat fails immediately after opening.
 func TestFS_OpenReadWriteStatError(t *testing.T) {
 	sentinel := errors.New("orw-stat-fail")
-	base := &statErrFS{real: vfs.NewMem(), statErr: sentinel}
+	base := &statErrFS{FS: newBaseFS(), statErr: sentinel}
 	b := newFakeBarrier(t)
 	fs := New(base, b)
-	_, gotErr := fs.OpenReadWrite("rw.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := fs.OpenReadWrite("rw.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
@@ -728,42 +646,17 @@ func TestFS_OpenReadWriteStatError(t *testing.T) {
 
 // statErrFS returns an errFile from OpenReadWrite whose Stat fails.
 type statErrFS struct {
-	real    vfs.FS
+	filesys.FS
 	statErr error
 }
 
-func (fs *statErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *statErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.Open(name, opts...)
-}
-func (fs *statErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	f, err := fs.real.OpenReadWrite(name, cat, opts...)
+func (fs *statErrFS) OpenReadWrite(name string) (filesys.File, error) {
+	f, err := fs.FS.OpenReadWrite(name)
 	if err != nil {
 		return nil, err
 	}
 	return &errFile{real: f, statErr: fs.statErr}, nil
 }
-func (fs *statErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *statErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *statErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *statErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *statErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *statErrFS) MkdirAll(dir string, perm os.FileMode) error { return fs.real.MkdirAll(dir, perm) }
-func (fs *statErrFS) Lock(name string) (io.Closer, error)         { return fs.real.Lock(name) }
-func (fs *statErrFS) List(dir string) ([]string, error)           { return fs.real.List(dir) }
-func (fs *statErrFS) Stat(name string) (vfs.FileInfo, error)      { return fs.real.Stat(name) }
-func (fs *statErrFS) Link(old, new string) error                  { return fs.real.Link(old, new) }
-func (fs *statErrFS) PathBase(p string) string                    { return fs.real.PathBase(p) }
-func (fs *statErrFS) PathJoin(elem ...string) string              { return fs.real.PathJoin(elem...) }
-func (fs *statErrFS) PathDir(p string) string                     { return fs.real.PathDir(p) }
-func (fs *statErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *statErrFS) Unwrap() vfs.FS { return nil }
 
 // ---------------------------------------------------------------------------
 // fs.go — OpenReadWrite: newHeader error for fresh file (sealed barrier)
@@ -774,7 +667,7 @@ func (fs *statErrFS) Unwrap() vfs.FS { return nil }
 func TestFS_OpenReadWriteNewHeaderError(t *testing.T) {
 	_, b, fs := newMemFS(t)
 	b.seal()
-	if _, err := fs.OpenReadWrite("sealed.dat", vfs.WriteCategoryUnspecified); err == nil {
+	if _, err := fs.OpenReadWrite("sealed.dat"); err == nil {
 		t.Error("expected error with sealed barrier on fresh OpenReadWrite")
 	}
 }
@@ -787,15 +680,15 @@ func TestFS_OpenReadWriteNewHeaderError(t *testing.T) {
 // existing non-encfs file returns ErrInvalidHeader. This exercises the
 // openEncryptedRW code path (file size > 0) hitting the magic mismatch.
 func TestFS_OpenReadWriteExistingBadMagic(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	fs := New(mem, b)
 	// Write a plain file (> fixedHeaderSize bytes so it looks like an encfs
 	// file to the size check but has wrong magic).
-	plain, _ := mem.Create("bad.dat", vfs.WriteCategoryUnspecified)
+	plain, _ := mem.Create("bad.dat")
 	_, _ = plain.Write(bytes.Repeat([]byte("X"), fixedHeaderSize+10))
 	_ = plain.Close()
-	if _, err := fs.OpenReadWrite("bad.dat", vfs.WriteCategoryUnspecified); !errors.Is(err, ErrInvalidHeader) {
+	if _, err := fs.OpenReadWrite("bad.dat"); !errors.Is(err, ErrInvalidHeader) {
 		t.Errorf("error = %v, want ErrInvalidHeader", err)
 	}
 }
@@ -809,16 +702,16 @@ func TestFS_OpenReadWriteExistingBadMagic(t *testing.T) {
 // readAtErrFS that returns a sentinel error on ReadAt.
 func TestFS_OpenEncryptedROReadAtError(t *testing.T) {
 	sentinel := errors.New("readat-magic-fail")
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	// Create a file large enough that the size check passes.
 	{
-		f, _ := mem.Create("readerr.dat", vfs.WriteCategoryUnspecified)
+		f, _ := mem.Create("readerr.dat")
 		_, _ = f.Write(bytes.Repeat([]byte("X"), fixedHeaderSize+10))
 		_ = f.Close()
 	}
 	// Wrap with a FS that wraps Open's returned file to inject a ReadAt error.
-	base := &readAtErrFS{real: mem, readAtErr: sentinel}
+	base := &readAtErrFS{FS: mem, readAtErr: sentinel}
 	enc := New(base, b)
 	_, gotErr := enc.Open("readerr.dat")
 	if !errors.Is(gotErr, sentinel) {
@@ -829,126 +722,26 @@ func TestFS_OpenEncryptedROReadAtError(t *testing.T) {
 // readAtErrFS injects a readAtErr into files returned by Open (for the
 // magic-check ReadAt in openEncryptedRO).
 type readAtErrFS struct {
-	real      vfs.FS
+	filesys.FS
 	readAtErr error
 }
 
-func (fs *readAtErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *readAtErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	f, err := fs.real.Open(name, opts...)
+func (fs *readAtErrFS) Open(name string) (filesys.File, error) {
+	f, err := fs.FS.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	return &readAtErrFile{File: f, readAtErr: fs.readAtErr}, nil
 }
-func (fs *readAtErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.OpenReadWrite(name, cat, opts...)
-}
-func (fs *readAtErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *readAtErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *readAtErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *readAtErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *readAtErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *readAtErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *readAtErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *readAtErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *readAtErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *readAtErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *readAtErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *readAtErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *readAtErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *readAtErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *readAtErrFS) Unwrap() vfs.FS { return nil }
 
-// readAtErrFile wraps a vfs.File and injects readAtErr on ReadAt.
+// readAtErrFile wraps a filesys.File and injects readAtErr on ReadAt.
 type readAtErrFile struct {
-	vfs.File
+	filesys.File
 	readAtErr error
 }
 
 func (f *readAtErrFile) ReadAt(p []byte, off int64) (int, error) {
 	return 0, f.readAtErr
-}
-
-// ---------------------------------------------------------------------------
-// fs.go — ReuseForWrite: Remove(newname) error that is not ErrNotExist
-// ---------------------------------------------------------------------------
-
-// TestFS_ReuseForWriteRemoveNewNameError verifies that ReuseForWrite
-// propagates a non-ErrNotExist error returned by Remove(newname).
-func TestFS_ReuseForWriteRemoveNewNameError(t *testing.T) {
-	sentinel := errors.New("remove-newname-fail")
-	errBase := newErrFS()
-	errBase.removeErr = sentinel
-	errBase.removeErrOn = 1 // first Remove call fails
-	b := newFakeBarrier(t)
-	encFS := New(errBase, b)
-	// Create old file.
-	f, err := encFS.Create("old.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	_, _ = f.Write([]byte("data"))
-	_ = f.Close()
-	// Create new file too so Remove(newname) is called on something that exists.
-	g, err := encFS.Create("new.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("Create new: %v", err)
-	}
-	_ = g.Close()
-	_, gotErr := encFS.ReuseForWrite("old.dat", "new.dat", vfs.WriteCategoryUnspecified)
-	if !errors.Is(gotErr, sentinel) {
-		t.Errorf("error = %v, want sentinel", gotErr)
-	}
-}
-
-// TestFS_ReuseForWriteRenameError verifies that ReuseForWrite propagates
-// an error from Rename(oldname, newname).
-func TestFS_ReuseForWriteRenameError(t *testing.T) {
-	sentinel := errors.New("rename-fail")
-	errBase := newErrFS()
-	errBase.renameErr = sentinel
-	b := newFakeBarrier(t)
-	encFS := New(errBase, b)
-	f, err := encFS.Create("r_old.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	_, _ = f.Write([]byte("data"))
-	_ = f.Close()
-	_, gotErr := encFS.ReuseForWrite("r_old.dat", "r_new.dat", vfs.WriteCategoryUnspecified)
-	if !errors.Is(gotErr, sentinel) {
-		t.Errorf("error = %v, want sentinel", gotErr)
-	}
-}
-
-// TestFS_ReuseForWriteSecondRemoveError verifies that ReuseForWrite
-// propagates an error from the second Remove(newname) call (after Rename).
-func TestFS_ReuseForWriteSecondRemoveError(t *testing.T) {
-	sentinel := errors.New("second-remove-fail")
-	errBase := newErrFS()
-	errBase.removeErr = sentinel
-	errBase.removeErrOn = 2 // second Remove call fails
-	b := newFakeBarrier(t)
-	encFS := New(errBase, b)
-	f, err := encFS.Create("sr_old.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	_, _ = f.Write([]byte("data"))
-	_ = f.Close()
-	_, gotErr := encFS.ReuseForWrite("sr_old.dat", "sr_new.dat", vfs.WriteCategoryUnspecified)
-	if !errors.Is(gotErr, sentinel) {
-		t.Errorf("error = %v, want sentinel", gotErr)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -979,18 +772,18 @@ func TestFS_StatDirectory(t *testing.T) {
 // like an encfs header (correct magic) but whose header_size field is below
 // fixedHeaderSize. Stat must fall back to the raw physical size.
 func TestFS_StatBadHeaderSizeField(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
 	// Write a real encfs file to get valid initial bytes, then corrupt
 	// the header_size field.
-	f, _ := enc.Create("hdr.dat", vfs.WriteCategoryUnspecified)
+	f, _ := enc.Create("hdr.dat")
 	_, _ = f.Write([]byte("hello"))
 	_ = f.Close()
 
 	// Read raw bytes.
-	rawFile, _ := mem.OpenReadWrite("hdr.dat", vfs.WriteCategoryUnspecified)
+	rawFile, _ := mem.OpenReadWrite("hdr.dat")
 	fi, _ := rawFile.Stat()
 	raw := make([]byte, fi.Size())
 	_, _ = rawFile.ReadAt(raw, 0)
@@ -999,7 +792,7 @@ func TestFS_StatBadHeaderSizeField(t *testing.T) {
 	// Corrupt header_size to be 1 (less than fixedHeaderSize).
 	raw[offHeaderSize] = 1
 	raw[offHeaderSize+1] = 0
-	corrupt, _ := mem.Create("hdr_bad.dat", vfs.WriteCategoryUnspecified)
+	corrupt, _ := mem.Create("hdr_bad.dat")
 	_, _ = corrupt.Write(raw)
 	_ = corrupt.Close()
 
@@ -1026,7 +819,7 @@ func TestFS_OpenReadWriteBaseError(t *testing.T) {
 	errBase.openRWErr = sentinel
 	b := newFakeBarrier(t)
 	enc := New(errBase, b)
-	_, gotErr := enc.OpenReadWrite("x.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := enc.OpenReadWrite("x.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
@@ -1042,12 +835,12 @@ func TestFS_OpenReadWriteBaseError(t *testing.T) {
 // This simulates the TOCTOU window where a file is removed between Stat and Open.
 func TestFS_StatOpenAfterStatError(t *testing.T) {
 	b := newFakeBarrier(t)
-	base := &statOpenErrFS{real: vfs.NewMem()}
+	base := &statOpenErrFS{FS: newBaseFS()}
 	enc := New(base, b)
 
 	// Create an encfs file that is large enough to trigger the Open path.
-	realEnc := New(base.real, b)
-	f, _ := realEnc.Create("toctou.dat", vfs.WriteCategoryUnspecified)
+	realEnc := New(base.FS, b)
+	f, _ := realEnc.Create("toctou.dat")
 	_, _ = f.Write(make([]byte, 100))
 	_ = f.Close()
 
@@ -1065,49 +858,22 @@ func TestFS_StatOpenAfterStatError(t *testing.T) {
 
 // statOpenErrFS delegates all operations but can inject an error on Open.
 type statOpenErrFS struct {
-	real    vfs.FS
+	filesys.FS
 	openErr error
 }
 
-func (fs *statOpenErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *statOpenErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+func (fs *statOpenErrFS) Open(name string) (filesys.File, error) {
 	if fs.openErr != nil {
 		return nil, fs.openErr
 	}
-	return fs.real.Open(name, opts...)
+	return fs.FS.Open(name)
 }
-func (fs *statOpenErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.OpenReadWrite(name, cat, opts...)
-}
-func (fs *statOpenErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *statOpenErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *statOpenErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *statOpenErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *statOpenErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *statOpenErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *statOpenErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *statOpenErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *statOpenErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *statOpenErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *statOpenErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *statOpenErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *statOpenErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *statOpenErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *statOpenErrFS) Unwrap() vfs.FS { return nil }
 
 // TestFS_StatLargeNonEncfsMagicMismatch confirms that Stat on a large file
 // (>= fixedHeaderSize) whose first bytes are not QENC returns the raw
 // physical size rather than a computed logical size.
 func TestFS_StatLargeNonEncfsMagicMismatch(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
@@ -1116,7 +882,7 @@ func TestFS_StatLargeNonEncfsMagicMismatch(t *testing.T) {
 	for i := range writeBuf {
 		writeBuf[i] = 'Z'
 	}
-	f, _ := mem.Create("largenoenc.dat", vfs.WriteCategoryUnspecified)
+	f, _ := mem.Create("largenoenc.dat")
 	_, _ = f.Write(writeBuf[:])
 	_ = f.Close()
 
@@ -1136,12 +902,12 @@ func TestFS_StatLargeNonEncfsMagicMismatch(t *testing.T) {
 // modulo CiphertextBlockSize that is in [1, BlockOverhead-1], which is the
 // range physicalToLogicalSize rejects as "trailing block too short".
 func TestFS_StatPhysicalToLogicalError(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
 	// Write a valid encfs file with enough data to know the header size.
-	f, _ := enc.Create("ptle.dat", vfs.WriteCategoryUnspecified)
+	f, _ := enc.Create("ptle.dat")
 	_, _ = f.Write([]byte("hello"))
 	_ = f.Close()
 
@@ -1160,7 +926,7 @@ func TestFS_StatPhysicalToLogicalError(t *testing.T) {
 	headerSize := int(uint16(raw[offHeaderSize]) | uint16(raw[offHeaderSize+1])<<8)
 	truncated := raw[:headerSize+1] // payload = 1 byte < BlockOverhead
 
-	corrupt, _ := mem.Create("ptle_corrupt.dat", vfs.WriteCategoryUnspecified)
+	corrupt, _ := mem.Create("ptle_corrupt.dat")
 	_, _ = corrupt.Write(truncated)
 	_ = corrupt.Close()
 
@@ -1207,15 +973,15 @@ func TestHeader_ReadHeaderOversizedWrappedLen(t *testing.T) {
 // the base file's Stat call fails inside openEncryptedRO.
 func TestFS_OpenEncryptedROStatError(t *testing.T) {
 	sentinel := errors.New("ro-stat-fail")
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	// Write a file large enough to pass the size check.
 	{
-		f, _ := mem.Create("rostat.dat", vfs.WriteCategoryUnspecified)
+		f, _ := mem.Create("rostat.dat")
 		_, _ = f.Write(bytes.Repeat([]byte("X"), fixedHeaderSize+10))
 		_ = f.Close()
 	}
-	base := &openStatErrFS{real: mem, statErr: sentinel}
+	base := &openStatErrFS{FS: mem, statErr: sentinel}
 	enc := New(base, b)
 	_, gotErr := enc.Open("rostat.dat")
 	if !errors.Is(gotErr, sentinel) {
@@ -1226,56 +992,29 @@ func TestFS_OpenEncryptedROStatError(t *testing.T) {
 // openStatErrFS injects a statErr into files returned by Open (for
 // the Stat call inside openEncryptedRO).
 type openStatErrFS struct {
-	real    vfs.FS
+	filesys.FS
 	statErr error
 }
 
-func (fs *openStatErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *openStatErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	f, err := fs.real.Open(name, opts...)
+func (fs *openStatErrFS) Open(name string) (filesys.File, error) {
+	f, err := fs.FS.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	return &errFile{real: f, statErr: fs.statErr}, nil
 }
-func (fs *openStatErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.OpenReadWrite(name, cat, opts...)
-}
-func (fs *openStatErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *openStatErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *openStatErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *openStatErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *openStatErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *openStatErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *openStatErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *openStatErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *openStatErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *openStatErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *openStatErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *openStatErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *openStatErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *openStatErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *openStatErrFS) Unwrap() vfs.FS { return nil }
 
 // TestFS_OpenPassthroughLargeNonEncfs confirms that Open returns the base
 // file directly (passthrough) when the file is >= fixedHeaderSize bytes
 // but does not carry the QENC magic. This covers the non-magic passthrough
 // in openEncryptedRO.
 func TestFS_OpenPassthroughLargeNonEncfs(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
 	// Build the payload in a separate buffer from what we pass to Write, because
-	// vfs.File.Write is permitted to modify the slice passed to it.
+	// filesys.File.Write is permitted to modify the slice passed to it.
 	const payloadLen = fixedHeaderSize + 100
 	var writeBuf [payloadLen]byte
 	for i := range writeBuf {
@@ -1285,7 +1024,7 @@ func TestFS_OpenPassthroughLargeNonEncfs(t *testing.T) {
 	copy(expected, writeBuf[:])
 
 	// Write a plain file larger than fixedHeaderSize with no QENC magic.
-	plain, _ := mem.Create("large_plain.dat", vfs.WriteCategoryUnspecified)
+	plain, _ := mem.Create("large_plain.dat")
 	_, _ = plain.Write(writeBuf[:])
 	_ = plain.Close()
 
@@ -1315,19 +1054,19 @@ func TestFS_OpenPassthroughLargeNonEncfs(t *testing.T) {
 // returned by the base FS's OpenReadWrite.
 func TestFS_OpenReadWriteExistingReadAtError(t *testing.T) {
 	sentinel := errors.New("orw-readat-fail")
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	// Write a valid encfs file.
 	{
 		enc := New(mem, b)
-		f, _ := enc.Create("rwerr.dat", vfs.WriteCategoryUnspecified)
+		f, _ := enc.Create("rwerr.dat")
 		_, _ = f.Write([]byte("data"))
 		_ = f.Close()
 	}
 	// Now wrap with a FS whose OpenReadWrite returns an errFile with readAtErr.
-	base := &orwReadAtErrFS{real: mem, readAtErr: sentinel}
+	base := &orwReadAtErrFS{FS: mem, readAtErr: sentinel}
 	enc := New(base, b)
-	_, gotErr := enc.OpenReadWrite("rwerr.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := enc.OpenReadWrite("rwerr.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
@@ -1335,56 +1074,29 @@ func TestFS_OpenReadWriteExistingReadAtError(t *testing.T) {
 
 // orwReadAtErrFS injects a readAtErr into files returned by OpenReadWrite.
 type orwReadAtErrFS struct {
-	real      vfs.FS
+	filesys.FS
 	readAtErr error
 }
 
-func (fs *orwReadAtErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *orwReadAtErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.Open(name, opts...)
-}
-func (fs *orwReadAtErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	f, err := fs.real.OpenReadWrite(name, cat, opts...)
+func (fs *orwReadAtErrFS) OpenReadWrite(name string) (filesys.File, error) {
+	f, err := fs.FS.OpenReadWrite(name)
 	if err != nil {
 		return nil, err
 	}
 	return &readAtErrFile{File: f, readAtErr: fs.readAtErr}, nil
 }
-func (fs *orwReadAtErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *orwReadAtErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *orwReadAtErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *orwReadAtErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *orwReadAtErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *orwReadAtErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *orwReadAtErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *orwReadAtErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *orwReadAtErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *orwReadAtErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *orwReadAtErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *orwReadAtErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *orwReadAtErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *orwReadAtErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *orwReadAtErrFS) Unwrap() vfs.FS { return nil }
 
 // TestFS_OpenReadWriteExistingSealedReadHeader confirms that openEncryptedRW
 // propagates a readHeader error (sealed barrier) when opening an existing file.
 func TestFS_OpenReadWriteExistingSealedReadHeader(t *testing.T) {
 	_, b, fs := newMemFS(t)
 	// Create an encrypted file while unsealed.
-	f, _ := fs.Create("rwhdr.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("rwhdr.dat")
 	_, _ = f.Write([]byte("hello"))
 	_ = f.Close()
 	// Seal the barrier so readHeader fails.
 	b.seal()
-	if _, err := fs.OpenReadWrite("rwhdr.dat", vfs.WriteCategoryUnspecified); err == nil {
+	if _, err := fs.OpenReadWrite("rwhdr.dat"); err == nil {
 		t.Error("expected error opening existing RW file with sealed barrier")
 	}
 }
@@ -1398,12 +1110,12 @@ func TestFS_OpenReadWriteExistingSealedReadHeader(t *testing.T) {
 // We create a file with a partial trailing block, then corrupt the
 // underlying file so the tail ReadAt returns an error.
 func TestFS_OpenReadWriteTailReadAtError(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
 	// Write BlockSize + partial bytes so there is a tail block.
-	f, _ := enc.Create("tailrderr.dat", vfs.WriteCategoryUnspecified)
+	f, _ := enc.Create("tailrderr.dat")
 	_, _ = f.Write(make([]byte, BlockSize+50))
 	_ = f.Close()
 
@@ -1412,9 +1124,9 @@ func TestFS_OpenReadWriteTailReadAtError(t *testing.T) {
 	// We use a counter-based injection: the first two ReadAt calls
 	// (magic + header) succeed; subsequent ones fail.
 	sentinel := errors.New("tail-readat-fail")
-	base := &nthReadAtErrFS{real: mem, failAfter: 3, err: sentinel}
+	base := &nthReadAtErrFS{FS: mem, failAfter: 3, err: sentinel}
 	wrapped := New(base, b)
-	_, gotErr := wrapped.OpenReadWrite("tailrderr.dat", vfs.WriteCategoryUnspecified)
+	_, gotErr := wrapped.OpenReadWrite("tailrderr.dat")
 	if !errors.Is(gotErr, sentinel) {
 		t.Errorf("error = %v, want sentinel", gotErr)
 	}
@@ -1424,17 +1136,17 @@ func TestFS_OpenReadWriteTailReadAtError(t *testing.T) {
 // propagates an error when the tail-block ciphertext fails to decrypt
 // (authentication failure due to corruption).
 func TestFS_OpenReadWriteTailDecryptError(t *testing.T) {
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	enc := New(mem, b)
 
 	// Write a file with a partial tail.
-	f, _ := enc.Create("taildecerr.dat", vfs.WriteCategoryUnspecified)
+	f, _ := enc.Create("taildecerr.dat")
 	_, _ = f.Write(make([]byte, BlockSize+50))
 	_ = f.Close()
 
 	// Corrupt the tail block on disk (the second encrypted block).
-	rawFile, _ := mem.OpenReadWrite("taildecerr.dat", vfs.WriteCategoryUnspecified)
+	rawFile, _ := mem.OpenReadWrite("taildecerr.dat")
 	fi, _ := rawFile.Stat()
 	raw := make([]byte, fi.Size())
 	_, _ = rawFile.ReadAt(raw, 0)
@@ -1446,11 +1158,11 @@ func TestFS_OpenReadWriteTailDecryptError(t *testing.T) {
 	if secondBlockOffset < len(raw) {
 		raw[secondBlockOffset] ^= 0xFF
 	}
-	corrupt, _ := mem.Create("taildecerr.dat", vfs.WriteCategoryUnspecified)
+	corrupt, _ := mem.Create("taildecerr.dat")
 	_, _ = corrupt.Write(raw)
 	_ = corrupt.Close()
 
-	if _, err := enc.OpenReadWrite("taildecerr.dat", vfs.WriteCategoryUnspecified); err == nil {
+	if _, err := enc.OpenReadWrite("taildecerr.dat"); err == nil {
 		t.Error("expected decrypt error on corrupted tail block")
 	}
 }
@@ -1458,49 +1170,22 @@ func TestFS_OpenReadWriteTailDecryptError(t *testing.T) {
 // nthReadAtErrFS wraps a MemFS and counts ReadAt calls; once failAfter
 // calls have been made on any file, all subsequent ReadAt calls return err.
 type nthReadAtErrFS struct {
-	real      vfs.FS
+	filesys.FS
 	failAfter int
 	err       error
 }
 
-func (fs *nthReadAtErrFS) Create(name string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.Create(name, cat)
-}
-func (fs *nthReadAtErrFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	return fs.real.Open(name, opts...)
-}
-func (fs *nthReadAtErrFS) OpenReadWrite(name string, cat vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	f, err := fs.real.OpenReadWrite(name, cat, opts...)
+func (fs *nthReadAtErrFS) OpenReadWrite(name string) (filesys.File, error) {
+	f, err := fs.FS.OpenReadWrite(name)
 	if err != nil {
 		return nil, err
 	}
 	return &nthReadAtErrFile{File: f, failAfter: fs.failAfter, err: fs.err}, nil
 }
-func (fs *nthReadAtErrFS) OpenDir(name string) (vfs.File, error) { return fs.real.OpenDir(name) }
-func (fs *nthReadAtErrFS) Remove(name string) error              { return fs.real.Remove(name) }
-func (fs *nthReadAtErrFS) RemoveAll(name string) error           { return fs.real.RemoveAll(name) }
-func (fs *nthReadAtErrFS) Rename(old, new string) error          { return fs.real.Rename(old, new) }
-func (fs *nthReadAtErrFS) ReuseForWrite(old, new string, cat vfs.DiskWriteCategory) (vfs.File, error) {
-	return fs.real.ReuseForWrite(old, new, cat)
-}
-func (fs *nthReadAtErrFS) MkdirAll(dir string, perm os.FileMode) error {
-	return fs.real.MkdirAll(dir, perm)
-}
-func (fs *nthReadAtErrFS) Lock(name string) (io.Closer, error)    { return fs.real.Lock(name) }
-func (fs *nthReadAtErrFS) List(dir string) ([]string, error)      { return fs.real.List(dir) }
-func (fs *nthReadAtErrFS) Stat(name string) (vfs.FileInfo, error) { return fs.real.Stat(name) }
-func (fs *nthReadAtErrFS) Link(old, new string) error             { return fs.real.Link(old, new) }
-func (fs *nthReadAtErrFS) PathBase(p string) string               { return fs.real.PathBase(p) }
-func (fs *nthReadAtErrFS) PathJoin(elem ...string) string         { return fs.real.PathJoin(elem...) }
-func (fs *nthReadAtErrFS) PathDir(p string) string                { return fs.real.PathDir(p) }
-func (fs *nthReadAtErrFS) GetDiskUsage(p string) (vfs.DiskUsage, error) {
-	return fs.real.GetDiskUsage(p)
-}
-func (fs *nthReadAtErrFS) Unwrap() vfs.FS { return nil }
 
-// nthReadAtErrFile wraps vfs.File and injects an error after failAfter ReadAt calls.
+// nthReadAtErrFile wraps filesys.File and injects an error after failAfter ReadAt calls.
 type nthReadAtErrFile struct {
-	vfs.File
+	filesys.File
 	failAfter int
 	calls     int
 	err       error

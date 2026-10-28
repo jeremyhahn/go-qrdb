@@ -586,7 +586,7 @@ majority of a shard's voters stops that shard until enough of them unseal
 Replica forwarding resolves the node it
 forwards to from these records ([../replica-forwarding/](../replica-forwarding/)).
 The endpoints a node publishes come from one derivation,
-`config.(*Config).AdvertisedAPIEndpoints`: the advertise host (else the Raft
+`cluster.AdvertisedAPIEndpoints(*config.Config)`: the advertise host (else the Raft
 address's host) with the port of every client protocol the node serves.
 
 **Safety:** dynamic membership is **opt-in and off by default**. Raft

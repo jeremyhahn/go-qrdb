@@ -1,6 +1,6 @@
 # TypeScript SDK — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Prerequisites
@@ -49,6 +49,12 @@ empty in the Go integration harness. Its coverage accounting row is
 `test/integration/COVERAGE.md` under `typescript-sdk`.
 
 ## Troubleshooting
+
+`ConfigError` naming "requires an https:// base URL" means a call that sends a
+secret (a passphrase, PIN, share, token or barrier secret) was made on a
+client connected to an `http://` URL. Connect to the `https://` endpoint; the
+SDK never sends a secret in the clear and never follows a redirect with one
+([api.md](api.md#secret-bearing-calls)).
 
 `DesktopOnlyError` means the call requires Wails desktop mode. Use the desktop
 app, or avoid the embedded-server and other desktop-only clients from browser

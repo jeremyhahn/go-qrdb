@@ -68,7 +68,7 @@ func (g *tenantUndoGate) SetTenantUndoGate(required func() error) {
 }
 
 // WithTenantUndoGate injects the tenant-undo activation check: while required
-// returns an error (the composer's featuregate.NotActiveError), or when none
+// returns an error (the composer's feature.NotActiveError), or when none
 // is injected, UndoCreateTenant retires the id as DeleteTenant does.
 func WithTenantUndoGate(required func() error) TenantServiceOption {
 	return func(s *TenantService) { s.tenantUndoRequired = required }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -37,6 +38,7 @@ type mockBarrierService struct {
 	service.BarrierServicer
 	barrierInitializeFn         func(ctx context.Context, secret []byte) error
 	barrierUnsealFn             func(ctx context.Context, secret []byte) error
+	barrierChangePassphraseFn   func(ctx context.Context, current, next []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
 	barrierClusterUnsealFn      func(ctx context.Context) (*clusterseal.Report, error)
@@ -59,6 +61,13 @@ func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byt
 func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, secret)
+	}
+	return nil
+}
+
+func (m *mockBarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error {
+	if m.barrierChangePassphraseFn != nil {
+		return m.barrierChangePassphraseFn(ctx, current, next)
 	}
 	return nil
 }
@@ -267,6 +276,122 @@ func TestEmbeddedBarrier_Unseal_NilService(t *testing.T) {
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
 		t.Errorf("expected NilServiceError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedBarrier_ChangePassphrase(t *testing.T) {
+	var gotCurrent, gotNext string
+	svc := &mockBarrierService{
+		barrierChangePassphraseFn: func(_ context.Context, current, next []byte) error {
+			gotCurrent, gotNext = string(current), string(next)
+			return nil
+		},
+	}
+	tr := newBarrierTransport(t, svc)
+
+	err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old-passphrase"),
+		Next:    []byte("new-passphrase"),
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if gotCurrent != "old-passphrase" || gotNext != "new-passphrase" {
+		t.Errorf("service got (%q, %q), want (old-passphrase, new-passphrase)", gotCurrent, gotNext)
+	}
+}
+
+func TestEmbeddedBarrier_ChangePassphrase_ServiceErrorPassesThrough(t *testing.T) {
+	svc := &mockBarrierService{
+		barrierChangePassphraseFn: func(context.Context, []byte, []byte) error { return errBarrier },
+	}
+	tr := newBarrierTransport(t, svc)
+
+	err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old"),
+		Next:    []byte("new"),
+	})
+	if !errors.Is(err, errBarrier) {
+		t.Errorf("expected errBarrier, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedBarrier_ChangePassphrase_Closed(t *testing.T) {
+	tr := closedBarrierTransport(t)
+
+	err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old"),
+		Next:    []byte("new"),
+	})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedBarrier_ChangePassphrase_NilService(t *testing.T) {
+	tr := newBarrierTransport(t, nil)
+
+	err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old"),
+		Next:    []byte("new"),
+	})
+	var nilErr *NilServiceError
+	if !errors.As(err, &nilErr) {
+		t.Errorf("expected NilServiceError, got %T: %v", err, err)
+	}
+}
+
+// TestEmbeddedBarrier_ChangePassphrase_RequiresSOPIN verifies the in-process
+// passphrase change is SO-gated exactly as on the network transports, against
+// the PIN bound by transport.WithSOPIN: no PIN backend fails closed, a missing
+// or wrong SO PIN is refused, and in none of those is the barrier service
+// reached; the right SO PIN reaches it.
+func TestEmbeddedBarrier_ChangePassphrase_RequiresSOPIN(t *testing.T) {
+	cases := map[string]struct {
+		noBackend bool
+		soPIN     string
+		want      error
+	}{
+		"no pin backend": {noBackend: true, soPIN: pintest.ThrottledSOPIN, want: pin.ErrBackendNotConfigured},
+		"missing pin":    {soPIN: "", want: pin.ErrPINInvalid},
+		"wrong pin":      {soPIN: "wrong-pin-0000", want: pin.ErrPINInvalid},
+		"right pin":      {soPIN: pintest.ThrottledSOPIN},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := &mockBarrierService{
+				barrierChangePassphraseFn: func(context.Context, []byte, []byte) error {
+					called = true
+					return nil
+				},
+			}
+			opts := []Option{WithBarrierService(svc)}
+			if !tc.noBackend {
+				opts = append(opts, WithPINBackend(pintest.NewSOPINBackend(t)))
+			}
+			tr, err := New(newMockKVService(), &mockAdminService{}, opts...)
+			if err != nil {
+				t.Fatalf("failed to create transport: %v", err)
+			}
+			ctx, release, err := transport.WithSOPIN(context.Background(), []byte(tc.soPIN))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+
+			err = tr.BarrierChangePassphrase(ctx, &transport.BarrierChangePassphraseRequest{
+				Current: []byte("old-passphrase"),
+				Next:    []byte("new-passphrase"),
+			})
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if reached := tc.want == nil; called != reached {
+				t.Fatalf("service reached = %v, want %v", called, reached)
+			}
+		})
 	}
 }
 
@@ -788,6 +913,39 @@ func TestEmbeddedBarrier_Request_BarrierUnseal_InvalidRequest(t *testing.T) {
 	tr := newBarrierTransport(t, &mockBarrierService{})
 
 	err := tr.Request(context.Background(), "BarrierUnseal", 42, nil)
+	var ire *InvalidRequestError
+	if !errors.As(err, &ire) {
+		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedBarrier_Request_BarrierChangePassphrase(t *testing.T) {
+	var called bool
+	svc := &mockBarrierService{
+		barrierChangePassphraseFn: func(_ context.Context, current, next []byte) error {
+			called = string(current) == "old-via-dispatch" && string(next) == "new-via-dispatch"
+			return nil
+		},
+	}
+	tr := newBarrierTransport(t, svc)
+
+	err := tr.Request(context.Background(), "BarrierChangePassphrase",
+		&transport.BarrierChangePassphraseRequest{
+			Current: []byte("old-via-dispatch"),
+			Next:    []byte("new-via-dispatch"),
+		}, nil)
+	if err != nil {
+		t.Fatalf("Request BarrierChangePassphrase failed: %v", err)
+	}
+	if !called {
+		t.Error("the service did not receive the dispatched passphrases")
+	}
+}
+
+func TestEmbeddedBarrier_Request_BarrierChangePassphrase_InvalidRequest(t *testing.T) {
+	tr := newBarrierTransport(t, &mockBarrierService{})
+
+	err := tr.Request(context.Background(), "BarrierChangePassphrase", 42, nil)
 	var ire *InvalidRequestError
 	if !errors.As(err, &ire) {
 		t.Errorf("expected InvalidRequestError, got %T: %v", err, err)

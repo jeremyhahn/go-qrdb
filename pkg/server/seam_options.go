@@ -15,10 +15,9 @@
 package server
 
 import (
-	"github.com/cockroachdb/pebble/v2/vfs"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -34,7 +33,7 @@ import (
 // The seal store is deliberately not behind this factory: per-node seal keys
 // are the one node-local state the architecture allows, so the seal store is
 // opened by the node itself (see docs/seal).
-type StorageFactory func(dataDir string, dataPlaneFS vfs.FS) (storage.Storage, error)
+type StorageFactory func(dataDir string, dataPlaneFS filesys.FS) (storage.Storage, error)
 
 // seamOptions holds the composition seams a composer fills to substitute an
 // enhanced implementation (go-xkms hardware, go-quicbaas managed custody) for

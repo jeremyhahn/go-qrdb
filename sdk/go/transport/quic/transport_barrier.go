@@ -65,6 +65,29 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return err
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	// seal:rekey is SO-gated, and a QUIC frame has no header section: the PIN
+	// bound by transport.WithSOPIN travels in the request's so_pin field.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(&pb.BarrierChangePassphraseRequest{
+		Current: req.Current,
+		Next:    req.Next,
+		SoPin:   soPIN,
+	})
+	if err != nil {
+		return &marshalError{Err: err}
+	}
+	_, err = t.callWithSecret(ctx, "barrier.ChangePassphrase", payload)
+	return err
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again.
 func (t *Transport) BarrierSeal(ctx context.Context) error {

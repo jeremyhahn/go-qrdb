@@ -37,6 +37,23 @@ certificates are handled by the browser/host, and bearer or cookie material is
 deployment-specific. Desktop mode delegates authentication to the Wails binding
 and embedded or remote Go client path.
 
+### Secret-bearing calls
+
+A call whose request body carries a secret is refused before any network I/O
+unless the client's base URL is `https://`; it fails with `ConfigError` and
+nothing is sent. The request is sent with `redirect: "error"`, so a 3xx
+response fails the call and the secret is never re-sent to another location.
+This is stricter than the Go SDK, whose `transport.GuardBarrierSecret` accepts
+a redirect to the same host. The guarded calls are `seal.initialize`,
+`initializeShamir`, `unseal`, `changePassphrase`, `seal` with an SO PIN and
+`enableEncryption`; `ceremony.initialize` and `signCSR`; `officers.startRekey`
+and `revokeOfficer`; `tenants.barrierInit` and `barrierUnseal`;
+`database.create` and `updateRaft` when they carry a barrier secret, discovery
+token or multicast shared secret; `certs.export`; `invitations.redeem`; and
+`credentials.submit`, `store` and `rotate`. A call whose optional secret is
+absent is not guarded. `sdk/typescript/test/secret-transport.test.ts` holds
+each one to all three outcomes.
+
 ## Versioning
 
 The package version is `0.1.0` in `sdk/typescript/package.json`. The package is

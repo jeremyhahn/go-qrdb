@@ -79,6 +79,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -464,6 +465,13 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 		}
 		if err := cfg.ValidateCapabilities(); err != nil {
 			return err
+		}
+		if err := objstore.RejectCredentialSettings(cfg.Storage.Objstore.Settings); err != nil {
+			return &qrdbconfig.ValidationError{
+				Field:  "storage.objstore.settings",
+				Reason: "carries a credential inline; reference it by file under storage.objstore.credentials",
+				Err:    err,
+			}
 		}
 		applyConfigToFlags(cmd, f, cfg)
 	} else if f.authEnabled {
@@ -3590,7 +3598,7 @@ func advertisedAPIEndpoints(f *startFlags) (map[cluster.APIProtocol]string, erro
 		MCP:  qrdbconfig.MCPConfig{Port: f.mcpPort},
 		Raft: qrdbconfig.RaftConfig{RaftAddress: f.raftAddress},
 	}
-	return cfg.AdvertisedAPIEndpoints()
+	return cluster.AdvertisedAPIEndpoints(cfg)
 }
 
 // startDynamicMembership builds an in-process (embedded) qrdb SDK client over

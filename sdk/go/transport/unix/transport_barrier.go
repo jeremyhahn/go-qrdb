@@ -76,6 +76,30 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return nil
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return err
+	}
+	// The server verifies the SO PIN the request carries, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	_, err = t.client.BarrierChangePassphrase(ctx, &pb.BarrierChangePassphraseRequest{
+		Current: req.Current,
+		Next:    req.Next,
+		SoPin:   soPIN,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierChangePassphrase", err)
+	}
+	return nil
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again.
 func (t *Transport) BarrierSeal(ctx context.Context) error {

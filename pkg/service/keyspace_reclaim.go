@@ -21,9 +21,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -657,7 +657,7 @@ func reclaimKeyRanges(ctx context.Context, ranged RangeDeleteKV, prefix string, 
 			rangeEnd = []byte(keys[end])
 		}
 		if err := ranged.DeleteRange(ctx, []byte(keys[start]), rangeEnd); err != nil {
-			var notActive *featuregate.NotActiveError
+			var notActive *feature.NotActiveError
 			if errors.As(err, &notActive) {
 				return keys[start:], nil
 			}

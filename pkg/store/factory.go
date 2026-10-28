@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -49,13 +50,15 @@ func WithMaxOpenFiles(n int) Option {
 	}
 }
 
-// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
-// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
-// barrier is nil is a no-op, so plaintext deployments and tests are
-// unaffected.
+// WithEncryptor applies enc to the Pebble options, wrapping their FS with
+// barrier-driven AES-256-GCM encryption through pkg/storage/pebble's
+// adapter. A nil enc or an enc whose barrier is nil is a no-op, so
+// plaintext deployments and tests are unaffected.
 func WithEncryptor(enc *atrest.Encryptor) Option {
 	return func(o *pebble.Options) {
-		enc.Apply(o)
+		if enc.Enabled() {
+			o.FS = pebblestore.WrapVFS(o.FS, enc.Wrap)
+		}
 	}
 }
 

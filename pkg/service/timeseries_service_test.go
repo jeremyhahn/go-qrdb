@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -938,9 +939,9 @@ func TestTimeSeriesService_ApplyRetention_RefusedUntilFeatureActive(t *testing.T
 	svc := NewTimeSeriesService(host, 1)
 
 	err := svc.ApplyRetention(context.Background(), "cpu", time.Now())
-	var notActive *featuregate.NotActiveError
+	var notActive *feature.NotActiveError
 	if !errors.As(err, &notActive) {
-		t.Fatalf("expected *featuregate.NotActiveError, got %T: %v", err, err)
+		t.Fatalf("expected *feature.NotActiveError, got %T: %v", err, err)
 	}
 	if notActive.Feature != featuregate.TimeSeriesRetention {
 		t.Errorf("Feature = %q, want %q", notActive.Feature, featuregate.TimeSeriesRetention)

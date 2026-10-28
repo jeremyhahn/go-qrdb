@@ -105,7 +105,9 @@ create a namespace at the right dimension.
 **Everything is slow and your token bill is large.** Set `cache_capacity` to a
 non-zero value; `10000` is the recommended production figure. Then check the
 `cached` field on responses to confirm hits are happening. Note the cache keys
-on `(model, text)`, so identical text under a new model is a miss.
+on `(model, text)`, so identical text under a new model is a miss. A request
+with no model is keyed on the provider's default model, so it shares an entry
+with a request that names that model.
 
 **A batch failed halfway.** No partial results are returned; the whole request
 fails. Retry, or lower `--batch-size` if the provider is rejecting large calls.

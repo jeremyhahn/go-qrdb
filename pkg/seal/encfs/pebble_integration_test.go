@@ -18,7 +18,9 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // fakeKEK mirrors the unexported fakeBarrier from the in-package
@@ -55,7 +57,7 @@ func (fakeKEK) Decrypt(ciphertext []byte) ([]byte, error) {
 // intact.
 func TestPebble_RoundTripThroughEncFS(t *testing.T) {
 	dir := t.TempDir()
-	enc := encfs.New(vfs.Default, fakeKEK{})
+	enc := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, fakeKEK{}) })
 
 	open := func() *pebble.DB {
 		t.Helper()
@@ -104,7 +106,7 @@ func TestPebble_RoundTripThroughEncFS(t *testing.T) {
 // plaintext leaks anywhere on disk.
 func TestPebble_OnDiskDataIsEncrypted(t *testing.T) {
 	dir := t.TempDir()
-	enc := encfs.New(vfs.Default, fakeKEK{})
+	enc := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, fakeKEK{}) })
 	db, err := pebble.Open(dir, &pebble.Options{FS: enc})
 	if err != nil {
 		t.Fatalf("Open: %v", err)

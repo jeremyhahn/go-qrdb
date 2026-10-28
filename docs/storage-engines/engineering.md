@@ -60,7 +60,7 @@ func New(dir string, opts ...Option) (*Engine, error)
 type Option func(*options)
 type Encryptor interface {      // satisfied by *atrest.Encryptor
 	Enabled() bool
-	Wrap(base vfs.FS) vfs.FS
+	Wrap(base filesys.FS) filesys.FS
 }
 func WithEncryptor(enc Encryptor) Option   // nil or disabled: plaintext
 
@@ -74,10 +74,28 @@ type AtRestMismatchError struct{ Dir, Found, Want string }   // "plaintext" | "e
 ```go
 func New(barrier *seal.StorageBarrier) *Encryptor   // nil barrier: disabled
 func (e *Encryptor) Enabled() bool
-func (e *Encryptor) Apply(o *pebble.Options)        // Pebble: Options.FS
-func (e *Encryptor) FS() vfs.FS
-func (e *Encryptor) Wrap(base vfs.FS) vfs.FS        // file engine: over its base FS
+func (e *Encryptor) FS() filesys.FS
+func (e *Encryptor) Wrap(base filesys.FS) filesys.FS   // over any store's base FS
 ```
+
+`pkg/filesys` is the store-neutral file-system interface (standard library
+only) that `pkg/seal/encfs` and `pkg/atrest` are written against, so an
+embedder that never opens Pebble does not compile it. `pkg/storage/pebble`
+owns the one adapter between it and Pebble's `vfs.FS`:
+
+```go
+func VFS(fsys filesys.FS) vfs.FS
+func FromVFS(fs vfs.FS) filesys.FS                             // nil: vfs.Default
+func WrapVFS(base vfs.FS, wrap func(filesys.FS) filesys.FS) vfs.FS
+
+opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)               // a Pebble store, encrypted
+```
+
+`filesys.Default.OpenDir` returns a handle whose `Sync` fsyncs the directory,
+except on Windows, where `FlushFileBuffers` fails on a directory handle and
+the `Sync` is a no-op, as in Pebble's own `vfs.Default`. A Pebble store opened
+through `pebblestore.VFS(enc.FS())` therefore syncs its database directory on
+Windows exactly as one over `vfs.Default` does.
 
 ```go
 // pkg/server/lifecycle
@@ -192,8 +210,58 @@ storage:
   max_open_files: 0      # 0 = pebble default
   objstore:              # used when a backend is objstore
     provider: local      # local | memory | s3 | gcs | azure
-    settings: {}         # passed verbatim to the go-objstore factory
+    settings: {}         # passed verbatim to the go-objstore factory; never a credential
+    credentials:         # optional; empty = the provider's default chain
+      key_file: ""       # owner-only file holding the access key ID
+      secret_file: ""    # owner-only file holding the secret (alone: an account key)
 ```
+
+The provider credential is a **file reference**, never a value. A credential
+setting in `settings` (go-objstore's `common.RejectCredentialSettings` list,
+e.g. `secret_key`, `access_key_id`, `account_key`) is refused by `qrdbd start`
+at load with a `config.ValidationError` on `storage.objstore.settings`, through
+the storage seam's `objstore.RejectCredentialSettings` (an
+`*objstore.CredentialSettingError` naming the setting), and by
+`objstore.New` at every open, through the same function and before any
+provider's creator runs, so a creator added through `objstore.RegisterProvider`
+that does not delegate to a go-objstore `Configure` never receives the value;
+`pkg/config` itself does not import go-objstore, because a lean standalone
+embedder compiles it without that module. Any other key under `credentials` is
+refused at load with a `config.UnknownFieldError`. No refusal carries the
+value. `objstore.New` takes `objstore.WithCredentialFiles`: it reads each file
+through `secure.ReadFileHandle`, straight into a go-enclave locked-memory
+handle (one trailing line ending stripped; a file other than a regular,
+owner-owned file of mode `0600` or tighter, empty, or over 64 KiB is refused),
+passes the handles to go-objstore as a `common.Credentials` for the data and
+the journal store, and destroys both before it returns, on success and on
+every failed-open path: go-objstore backends take what they need during
+configuration and retain no handle. Before reading any file, `objstore.New`
+refuses a reference the provider would ignore with an
+`objstore.CredentialIgnoredError` naming the provider, the credential and the
+file: at the pinned go-objstore v0.7.0-alpha, `s3` reads the key and the
+secret, `azure` reads only the secret (as the account key), and `gcs` (Google
+application default credentials), `local` and `memory` read none. Accepting
+such a reference would open the store under the provider's ambient identity
+while the operator believes the configured credential is in use. A provider
+added through `objstore.RegisterProvider` declares its reads there instead;
+the pinned table is never written, and a name go-objstore ships is refused
+even when its build tag leaves it out of the binary, so a registration cannot
+change what a shipped provider reads, nor be answered with a shipped
+provider's pinned reads in place of its own declaration. The registered
+creator lives in the seam's own `sync.Map`, which `New` consults before
+go-objstore's factory: the factory keeps its creators in an unsynchronized
+map, filled only by its package initialisation, so writing a registration
+there would race every concurrent registration and open. `New` resolves the
+provider once, before any file is read, and both checks the reads and opens
+the stores with that one resolution: a name neither registry knows is refused
+as unsupported then, so a registration completing during the open can never
+supply a creator that skipped the credential check. The
+file is opened with `O_NONBLOCK` and every check runs on the opened descriptor
+(`fstat`), so a FIFO or device is refused at once instead of blocking the
+open. File references were chosen over
+environment variables (readable in `/proc/<pid>/environ` and copied into an
+unzeroizable Go string) and over `pkg/credentials` (which stores through a
+`StorageBarrier` and so cannot hold the credential that opens the storage).
 
 `pkg/config.StorageConfig` also carries `volume_pools` and
 `allow_degraded_volume_boot`; see
@@ -201,12 +269,20 @@ storage:
 
 A composer can replace the configured backend of a **standalone** node's data
 plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
-`func(dataDir string, dataPlaneFS vfs.FS) (storage.Storage, error)`, and the
+`func(dataDir string, dataPlaneFS filesys.FS) (storage.Storage, error)`, and the
 node closes what it returns. A factory that writes files must route its I/O
-through the `vfs.FS` it is given so the data stays under the barrier. A
+through the `filesys.FS` it is given (a Pebble store through
+`pebblestore.VFS(dataPlaneFS)`) so the data stays under the barrier. The
+data-plane FS names host paths (`filesys.HostFS`), and the adapter takes its
+database lock through Pebble's own default file system: a host file's lock
+belongs to the process, so every Pebble store in the process locks through
+that one owner, whichever way it was opened, with the platform's own lock
+(`LockFileEx` on Windows). Such a store holds its database lock whether or not
+the barrier is enabled; a second open of a held directory, in this process or
+another, fails rather than waits. A
 **clustered** node's `disk` and `fast` replicas take a composer's storage
 through `node.WithReplicaStorageFactory`, a
-`func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)`
+`func(shardID, replicaID uint64, dir string, dataPlaneFS filesys.FS) (storage.Storage, error)`
 called once per replica with that replica's own directory; the node closes
 each storage with its replica, and a factory error fails the replica's open
 with `statemachine.ReplicaStorageOpenError`. The clustered MVCC store and the
@@ -239,6 +315,11 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Iterator created before `Close` and advanced after it | serves its pinned version; never panics. `Close` reported the leak | — |
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
+| Objstore provider credential inline in `storage.objstore.settings` or `credentials` | refused by `qrdbd start` at load (`config.ValidationError`, `config.UnknownFieldError`) and by `objstore.New` at open (`common.CredentialSettingError`), naming the key, never the value | **yes** |
+| Objstore `key_file` without `secret_file` | refused at load (`config.ValidationError` on `storage.objstore.credentials.secret_file`) and at open (`objstore.ErrCredentialKeyWithoutSecret`) | **yes** |
+| Objstore credential file referenced for a provider that does not read it (`key_file` on `azure`; either file on `gcs`, `local` or `memory`) | refused at open, before any file is read (`objstore.CredentialIgnoredError`), naming the provider and the file | **yes** |
+| Objstore credential file missing, not a regular file (a FIFO is refused without blocking), not owner-only, empty or too large | refused at open (`objstore.CredentialFileError` wrapping `secure.FileHandleError` / `FileModeError` / `FileOwnerError`) naming the file, never the value | **yes** |
+| Objstore credential handle unreadable inside go-objstore | refused at open (`objstore.CredentialUnavailableError`) naming the files | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
 | Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |

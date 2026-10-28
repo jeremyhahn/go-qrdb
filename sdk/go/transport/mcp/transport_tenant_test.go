@@ -147,6 +147,14 @@ func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id st
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
 }
 
+func (m *mockTenantSvc) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantSvc) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, id string, key []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

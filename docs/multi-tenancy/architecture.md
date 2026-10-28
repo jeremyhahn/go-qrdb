@@ -1467,7 +1467,7 @@ the init statement is written through the existing guarded write.
   isolated tenant is not admitted until every member advertises the feature.
 - **Not yet active:** creating a `barrier`, `volume` or `raft` tenant, or
   changing an existing tenant to one of those types, is refused with
-  `*featuregate.NotActiveError{Feature: per-node-barrier-keys}` (503,
+  `*feature.NotActiveError{Feature: per-node-barrier-keys}` (503,
   retryable after rollout) and writes nothing. A `prefix` tenant is unaffected.
   Recording an init statement is refused the same way.
 - **Active:** on a clustered node, once every member advertises the feature;

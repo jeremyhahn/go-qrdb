@@ -180,6 +180,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"user.Invite":                        permission.UsersInvite,
 	"barrier.Initialize":                 permission.SealBootstrap,
 	"barrier.Unseal":                     permission.SealUnseal,
+	"barrier.ChangePassphrase":           permission.SealRekey,
 	"barrier.Seal":                       permission.SealSeal,
 	"barrier.Status":                     permission.SealStatus,
 	"barrier.ClusterUnseal":              permission.SealUnseal,
@@ -203,6 +204,8 @@ var expectedMethodPerms = map[string]permission.Permission{
 	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and MCP.
 	"tenant.BarrierInitBegin":          permission.IdentityGated,
 	"tenant.BarrierInitComplete":       permission.IdentityGated,
+	"tenant.BarrierSignedInitBegin":    permission.IdentityGated,
+	"tenant.BarrierSignedInitComplete": permission.IdentityGated,
 	"tenant.BarrierUnseal":             permission.IdentityGated,
 	"tenant.BarrierSeal":               permission.TenantBarrierSeal,
 	"tenant.BarrierStatus":             permission.IdentityGated,

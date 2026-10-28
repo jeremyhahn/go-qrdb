@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -790,7 +791,7 @@ func populatedRefusingRangeKV(t *testing.T, allowed int, err error) *refusingRan
 }
 
 func TestKeyspaceReclaim_GateNotActiveFallsBackToPerKeyDeletes(t *testing.T) {
-	kv := populatedRefusingRangeKV(t, 0, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	kv := populatedRefusingRangeKV(t, 0, &feature.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
 	ctx := context.Background()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
@@ -802,7 +803,7 @@ func TestKeyspaceReclaim_GateNotActiveFallsBackToPerKeyDeletes(t *testing.T) {
 }
 
 func TestKeyspaceReclaim_GateNotActiveMidPrefixDeletesTheRest(t *testing.T) {
-	kv := populatedRefusingRangeKV(t, 1, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	kv := populatedRefusingRangeKV(t, 1, &feature.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
 	ctx := context.Background()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 

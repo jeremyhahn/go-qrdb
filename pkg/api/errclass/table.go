@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
@@ -582,7 +583,7 @@ var databaseRules = []rule{
 	// or compaction-state command before prefix-compaction or
 	// node-compaction. Nothing was done, and a retry succeeds once every node
 	// runs a binary that implements the feature: transient, so Unavailable.
-	as(&featuregate.NotActiveError{Feature: featuregate.ClusterShardIDs}, Unavailable),
+	as(&feature.NotActiveError{Feature: featuregate.ClusterShardIDs}, Unavailable),
 	// A claim that lost the race on every attempt, or whose store did not
 	// answer: nothing was created, and a retry can succeed.
 	as(&shard.ClaimContentionError{Attempts: 1}, Unavailable),
@@ -1062,6 +1063,12 @@ var tenantRules = []rule{
 	is(tenant.ErrNilEntitlements, InvalidArgument),
 	as(&tenant.InvalidStrategyError{}, InvalidArgument),
 	as(&tenant.InitStatementRequiredError{}, InvalidArgument),
+	// A signed init's statement reference that was never begun, was spent or
+	// lapsed admits nothing: the caller begins again.
+	as(&tenant.SignedInitError{}, PermissionDenied),
+	as(&tenant.SignedInitFieldRequiredError{}, InvalidArgument),
+	as(&tenant.TooManySignedInitsError{}, ResourceExhausted),
+	as(&tenant.SignedInitUnsupportedError{}, FailedPrecondition),
 	// A raft-isolated tenant's barrier with no recorded init statement has
 	// nothing to reattach from: no retry or other credential changes that.
 	as(&tenant.InitStatementMissingError{}, FailedPrecondition),
@@ -1329,6 +1336,23 @@ var ceremonyRules = []rule{
 	// The root key is sealed with another strategy than the one the unseal
 	// was resolved for -- the barrier's init statement names it.
 	is(seal.ErrStrategyMismatch, FailedPrecondition),
+	// A passphrase change whose current passphrase does not open the
+	// persisted root key: the caller does not hold the barrier's passphrase.
+	is(seal.ErrCredentialMismatch, PermissionDenied),
+	// A passphrase change with an empty current or next passphrase.
+	is(seal.ErrInvalidPassphrase, InvalidArgument),
+	// Another writer replaced the root-key blob between the change's read
+	// and its guarded swap; nothing was written. Re-read and retry.
+	is(seal.ErrPassphraseChangeConflict, Aborted),
+	// Another rewrite of the root-key blob (a second passphrase change, a
+	// share redistribution, a migration's adoption) holds it; nothing was
+	// written. Retry once that rewrite has finished.
+	is(seal.ErrRootKeyWriteInProgress, Aborted),
+	// The barrier is not passphrase-sealed, or its storage cannot perform the
+	// guarded swap the change requires: no retry of the same request helps.
+	is(seal.ErrStrategyNotFound, FailedPrecondition),
+	is(seal.ErrPassphraseStrategyNotSoftware, FailedPrecondition),
+	is(seal.ErrGuardedSwapUnsupported, FailedPrecondition),
 	is(ceremony.ErrCertThumbprintMismatch, PermissionDenied),
 	// An anonymous officer registration after enrollment closed: retrying
 	// will not help; register through an authenticated listener.

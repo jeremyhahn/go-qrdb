@@ -25,6 +25,28 @@ and on the embedded node (`sdk/go/node`):
 
 ```go
 func WithSealStrategy(strategy seal.SealingStrategy) NodeOption     // a pre-built strategy, registered under its ID
+func WithSealPassphrase(passphrase []byte) NodeOption               // initializes on first boot, unseals after
+func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error
+func (n *Node) ChangePassphrase(ctx context.Context, current, next seal.Credentials) error
+```
+
+`Node.Unseal` initializes an uninitialized system barrier and unseals an
+initialized one. `Node.ChangePassphrase` re-wraps the system barrier's root
+key under `next` through `StorageBarrier.ChangePassword`; it returns
+`ErrSealNotEnabled` on a node without a seal barrier.
+
+The passphrase change on the client surface:
+
+```go
+// sdk/go/transport
+type BarrierChangePassphraseRequest struct{ Current, Next []byte } // both wiped by the caller
+func (BarrierClient) BarrierChangePassphrase(ctx context.Context, req *BarrierChangePassphraseRequest) error // sends the SO PIN bound by WithSOPIN
+
+// pkg/service
+func (s *BarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error
+
+// pkg/seal
+func (b *StorageBarrier) ChangePassword(ctx context.Context, current, next Credentials) error
 ```
 
 The system barrier resolves its strategies through a registry, the same seam
@@ -1069,7 +1091,7 @@ adapter: `PutIf` is a `service.WriteGuard` comparing the key's value to
 
 The activation check `NewBook` and `tenant.WithPerNodeBarrierKeysGate` take
 returns the refusal itself: the composer builds the
-`*featuregate.NotActiveError`, so neither package imports `pkg/cluster` and a
+`*feature.NotActiveError`, so neither package imports `pkg/cluster` and a
 lean standalone build does not compile cluster code through them.
 
 `featuregate.PerNodeBarrierKeys` is in the supported set, so every binary
@@ -1077,7 +1099,7 @@ advertises it and adopts its activation record. `pkg/server/lifecycle` builds
 the check once per node (`perNodeBarrierKeysRequired`): nil on a host that is
 not a `service.FeatureGatedHost` — a standalone node, which gates nothing —
 and otherwise a function that returns
-`*featuregate.NotActiveError{Feature: per-node-barrier-keys}` until
+`*feature.NotActiveError{Feature: per-node-barrier-keys}` until
 `FeatureEnabled(0, PerNodeBarrierKeys)` holds cluster-wide. The same check is
 passed to `tenant.WithPerNodeBarrierKeysGate` and to the book, so neither an
 isolated tenant nor a statement is admitted before every member can
@@ -1277,7 +1299,15 @@ key.
 | `enable-encryption` on a node that cannot migrate (see above) | refused before any teardown, `ErrMigrationProviderUnavailable` | **yes** |
 | tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
 | `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
-| Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
+| Wrong passphrase on unseal | refused; barrier stays sealed (`seal.ErrDecryptionFailed`, inside `*node.UnsealError` for `Node.Unseal`) | **yes** |
+| Unseal of a barrier never initialized | `seal.ErrNotInitialized` (`BARRIER_NOT_INITIALIZED` on QUIC and MCP), never `ErrCorruptRootKey` | **yes** |
+| Passphrase change whose current passphrase does not open the persisted root key | `seal.ErrCredentialMismatch`; nothing written | **yes** |
+| Passphrase change whose blob was replaced between the check and the write | `seal.ErrPassphraseChangeConflict`; nothing written; retry | **yes** |
+| Passphrase change while another rewrite of the root key, such as a second change, is in flight | `seal.ErrRootKeyWriteInProgress`, `409` / `Aborted` (`BARRIER_ROOT_KEY_WRITE_IN_PROGRESS`); nothing written; retry | **yes** |
+| Passphrase change on a store without a guarded swap | `seal.ErrGuardedSwapUnsupported`; never an unguarded write | **yes** |
+| Passphrase change on a node with no seal barrier (`Node.ChangePassphrase`) | `node.ErrSealNotEnabled` | **yes** |
+| Passphrase change with no PIN backend configured | `pin.ErrBackendNotConfigured`, `412` / `FailedPrecondition`; the barrier is not reached | **yes** |
+| Passphrase change with a missing or wrong SO PIN | refused, `401` / `Unauthenticated`; the barrier is not reached | **yes** |
 | System shard electing during a seal or clear | retried within one 15 s `SettleBudget`; succeeds once a leader serves | **yes** |
 | Seal record not confirmed | the receiving node is sealed; `RecordNotConfirmedError` | **yes** |
 | Tenant or database unseal whose clear record cannot be written | the barrier is sealed again; `RecordNotConfirmedError` | **yes** |
@@ -1296,7 +1326,7 @@ key.
 | Raft-isolated tenant barrier unseal with no recorded statement | `*tenant.InitStatementMissingError`; stays sealed | **yes** |
 | Tenant barrier unseal whose statement names `system-barrier` for a tenant its owner keeps custody of | `tenant.ErrNotPlatformCustody` inside `tenant.BarrierError{Op: unseal}`; stays sealed (`TestTenantBarrierUnseal_PlatformStatementForAnOwnersBarrier`) | **yes** |
 | Statement record for a barrier level the node cannot yet self-initialise | `*lifecycle.UnsupportedBarrierKindError`; retried on the next poll | **yes** |
-| Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*featuregate.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
+| Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*feature.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
 | Node lease expired, or no read since start | node gate refuses as `SEAL_STATE_UNCONFIRMED`, never `SEALED` (`sealedwindow.StateProbe`, `TestClusterSeal_LapsedLeaseIsUnconfirmedNotSealed`); streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
 | Enforcement step fails on a node (shard close, key wipe) | logged and retried on the next poll; the gate stays closed | **yes** |
 | Platform operator seals or unseals a tenant's barrier | `403` (`tenant_barrier:*` are tenant-only) and `TenantScopeError` in the service | **yes** |
@@ -1668,6 +1698,22 @@ distinguishes them.
   `barrier-seal` leg of the `integration-features` job
   (`make integration-test-barrier-seal`), part of the result gate, tenant-scope
   case included.
+- **Passphrase change**: `pkg/seal` proves the old passphrase is checked, the
+  load generation kept and the swap guarded; `pkg/service` and every transport
+  (REST, gRPC, Unix, QUIC with its `so_pin` carrier, MCP, embedded) prove the
+  call and its typed refusals. Each server transport's
+  `*ChangePassphrase*RequiresSOPIN` test and the embedded transport's prove the
+  SO PIN gate: no PIN backend, a missing and a wrong PIN are refused before the
+  barrier service is reached, the right PIN reaches it; the shared SO PIN
+  conformance suite (`sdk/go/transport/internal/sotest`) proves the gRPC, Unix,
+  REST, QUIC and MCP SDK clients carry the bound PIN. `sdk/go/node`'s
+  `TestNode_ChangePassphrase_EmbedderFlow` initializes through `Node.Unseal`,
+  changes the passphrase and reboots: the old passphrase is
+  `seal.ErrDecryptionFailed`, the new one unseals, and an error-level log
+  handler records nothing. `TestBarrierCLI_ChangePassphrase_PerProtocol`
+  drives the CLI on all five network transports: a pre-init unseal is
+  `barrier not initialized`, a wrong current passphrase is the credential
+  mismatch, and after a seal only the new passphrase unseals.
 - **Feature target**: `make integration-test-barrier-seal` runs this feature's
   self-spawned suites (`test/integration/features.mk`, no Docker). The
   per-transport accounting, including the embedded-transport gap, is the

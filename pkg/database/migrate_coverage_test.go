@@ -22,8 +22,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -70,7 +68,7 @@ func TestReencryptStoreFiles_RawCopyNonEncfs(t *testing.T) {
 	}
 	// An encfs file written through a none barrier's encrypting FS.
 	noneEnc := newNoneEncryptor(t, "n")
-	f, err := noneEnc.FS().Create(filepath.Join(srcDir, "000001.sst"), vfs.WriteCategoryUnspecified)
+	f, err := noneEnc.FS().Create(filepath.Join(srcDir, "000001.sst"))
 	if err != nil {
 		t.Fatalf("create encfs file: %v", err)
 	}
