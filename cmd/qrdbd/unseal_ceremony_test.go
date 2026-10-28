@@ -199,6 +199,106 @@ func drawTestPort(t *testing.T, network string) int {
 	return port
 }
 
+// caPool returns a pool holding bundle's CA certificate, the one root a client
+// of this test's daemon trusts.
+func caPool(t *testing.T, bundle *TLSBundle) *x509.CertPool {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(bundle.CACertPEM) {
+		t.Fatal("the test's own CA PEM did not parse")
+	}
+	return pool
+}
+
+// sealedWindowServing reports whether the daemon's own HTTPS server answers on
+// port, by a TLS handshake that verifies against roots.
+//
+// A TCP dial is not that evidence, and taking it for that is how this test
+// stole its own port (run 69190). bindServerSockets listens on the REST port
+// first and binds the gRPC, QUIC and MCP sockets after it, and the kernel
+// completes a connection to a listening socket before any server runs, so a
+// dial can succeed while the later ports are not yet bound -- and a probe at
+// that moment takes one before the daemon does. A handshake needs the
+// server's accept loop, which starts only after every socket is bound, and a
+// certificate this attempt's CA signed, which no other process on the host
+// presents.
+func sealedWindowServing(roots *x509.CertPool, port int) func() bool {
+	addr := net.JoinHostPort(testBindHost, strconv.Itoa(port))
+	cfg := &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return func() bool {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 500 * time.Millisecond}, "tcp", addr, cfg)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+}
+
+// serveTLSFixture serves bundle's leaf certificate on a fresh testBindHost
+// port until t ends and returns the port. Every connection is handshaken and
+// closed.
+func serveTLSFixture(t *testing.T, bundle *TLSBundle) int {
+	t.Helper()
+	cert, err := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
+	if err != nil {
+		t.Fatalf("leaf key pair: %v", err)
+	}
+	raw, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, "0"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := tls.NewListener(raw, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.(*tls.Conn).Handshake()
+			_ = c.Close()
+		}
+	}()
+	return raw.Addr().(*net.TCPAddr).Port
+}
+
+// A socket that accepts at the kernel but has no server behind it is the
+// state bindServerSockets leaves between its REST bind and its later ones:
+// it is not the sealed window serving.
+func TestSealedWindowServing_ListeningSocketIsNotServing(t *testing.T) {
+	bundle := writeTLSFixtures(t, t.TempDir())
+	ln, err := net.Listen(netport.NetworkTCP, net.JoinHostPort(testBindHost, "0"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	if sealedWindowServing(caPool(t, bundle), ln.Addr().(*net.TCPAddr).Port)() {
+		t.Fatal("a listening socket nobody serves was taken for the sealed window serving")
+	}
+}
+
+func TestSealedWindowServing_OwnServerIsServing(t *testing.T) {
+	bundle := writeTLSFixtures(t, t.TempDir())
+	port := serveTLSFixture(t, bundle)
+
+	if !sealedWindowServing(caPool(t, bundle), port)() {
+		t.Fatal("a server presenting the attempt's own certificate was not taken for serving")
+	}
+}
+
+// A server another CA signed is some other process on the port, not this
+// attempt's daemon.
+func TestSealedWindowServing_ForeignServerIsNotServing(t *testing.T) {
+	port := serveTLSFixture(t, writeTLSFixtures(t, t.TempDir()))
+	own := writeTLSFixtures(t, t.TempDir())
+
+	if sealedWindowServing(caPool(t, own), port)() {
+		t.Fatal("a server another CA signed was taken for this attempt's daemon")
+	}
+}
+
 // bootThroughUnsealCeremony boots runStart with a sealed barrier, performs the
 // unseal ceremony through the sealed-window listener, waits for the regular
 // server to serve, shuts the daemon down cleanly, and returns the data
@@ -276,7 +376,9 @@ func bootThroughUnsealCeremony(t *testing.T, configure func(f *startFlags), prob
 			configure(f)
 		}
 
-		listening, isServing := adminReady(p), hookFired(serving)
+		// The sealed window is serving once it completes a handshake, not
+		// once the admin port accepts a connection: see sealedWindowServing.
+		listening, isServing := sealedWindowServing(caPool(t, bundle), p.admin), hookFired(serving)
 		wasUnsealed = hookFired(unsealed)
 		initialized := false
 		return runStartLaunch(t, f, func() bool {
@@ -320,11 +422,7 @@ func bootThroughUnsealCeremony(t *testing.T, configure func(f *startFlags), prob
 func initializeCeremony(t *testing.T, bundle *TLSBundle, adminPort int, secret string) {
 	t.Helper()
 
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(bundle.CACertPEM) {
-		t.Fatal("the test's own CA PEM did not parse")
-	}
-
+	pool := caPool(t, bundle)
 	client := &http.Client{
 		Timeout: readinessTimeout,
 		Transport: &http.Transport{

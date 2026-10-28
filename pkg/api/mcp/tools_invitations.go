@@ -142,9 +142,13 @@ func toolInvitationRedeem() mcp.Tool {
 
 func handleInvitationRedeem(svc service.InvitationServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		token, _, err := stringArg(req, "token")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		enrolled, err := svc.RedeemInvitation(ctx, &service.RedeemInvitationRequest{
 			TenantID: mcp.ParseString(req, "tenant_id", ""),
-			Token:    mcp.ParseString(req, "token", ""),
+			Token:    token,
 			CSRPEM:   []byte(mcp.ParseString(req, "csr_pem", "")),
 			CertPEM:  []byte(mcp.ParseString(req, "cert_pem", "")),
 			ChainPEM: []byte(mcp.ParseString(req, "chain_pem", "")),

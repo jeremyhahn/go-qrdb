@@ -44,12 +44,8 @@ func ceremonyTools(svc service.CeremonyServicer, ca ceremony.CeremonyCA) []serve
 func toolCeremonyInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_ceremony_initialize",
 		mcp.WithDescription("Initialize the system ceremony, issuing TLS and SO certificates and optionally starting M-of-N enrollment."),
-		mcp.WithString("so_pin",
-			mcp.Description("The Security Officer PIN to seal at initialization. Takes precedence over server configuration when provided."),
-		),
-		mcp.WithString("user_pin",
-			mcp.Description("The user-level PIN to seal at initialization. Takes precedence over server configuration when provided."),
-		),
+		withSecretArg("so_pin", "The Security Officer PIN to seal at initialization. Takes precedence over server configuration when provided."),
+		withSecretArg("user_pin", "The user-level PIN to seal at initialization. Takes precedence over server configuration when provided."),
 		mcp.WithString("credential_seal_strategy",
 			mcp.Description("How credentials are sealed at rest. Takes precedence over server configuration when provided."),
 		),
@@ -80,9 +76,7 @@ func toolCeremonyInitialize() mcp.Tool {
 		mcp.WithBoolean("admin_generate",
 			mcp.Description("Selects the generate path explicitly: the server mints the bootstrap admin's key pair and certificate. Mutually exclusive with admin_csr_pem and admin_cert_pem; requires a configured CeremonyCA. The generated private key is returned exactly once in the response and never retained."),
 		),
-		mcp.WithString("secret",
-			mcp.Description("The passphrase the system barrier is initialized with (single-admin path only; ignored for Threshold >= 2, where the barrier unseals later from share holders' Shamir reconstruction)."),
-		),
+		withSecretArg("secret", "The passphrase the system barrier is initialized with (single-admin path only; ignored for Threshold >= 2, where the barrier unseals later from share holders' Shamir reconstruction)."),
 	)
 }
 
@@ -97,31 +91,43 @@ func toolCeremonyInitialize() mcp.Tool {
 // actually need one to sign with (CSR-sign, generate) via the typed
 // *ceremony.AdminCredentialRequiresCAError the service layer already
 // returns (go-qrdb#560 review item 5).
+// ceremonyInitializeSecretArgs is every argument handleCeremonyInitialize
+// reads through secretArg, in both forms, and so keeps out of its struct
+// decode.
+var ceremonyInitializeSecretArgs = map[string]struct{}{
+	"secret": {}, "secret" + secretB64Suffix: {},
+	"so_pin": {}, "so_pin" + secretB64Suffix: {},
+	"user_pin": {}, "user_pin" + secretB64Suffix: {},
+}
+
 func handleCeremonyInitialize(svc service.CeremonyServicer, ca ceremony.CeremonyCA) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// "secret" is decoded separately, through secretArg -- the same
-		// plain-text convention the tenant-barrier tools' "passphrase"
-		// argument uses -- never through the generic struct decode below:
-		// transport.CeremonyInitializeRequest.Secret is []byte, which
-		// encoding/json renders as base64 on every OTHER transport, but an
-		// MCP caller types the secret as plain text, not base64
-		// (go-qrdb#560 review item 7, follow-up). argsWithoutSecret is a
-		// shallow copy with "secret" removed so DecodeArgs never attempts
-		// to base64-decode it.
+		// "secret", "so_pin" and "user_pin" are decoded separately, through
+		// secretArg, in the text-or-_b64 forms every barrier and ceremony
+		// secret takes -- never through the generic struct decode below,
+		// which knows neither form's sibling. argsWithoutSecrets is a
+		// shallow copy with both forms of each removed.
 		args := req.GetArguments()
-		argsWithoutSecret := make(map[string]any, len(args))
+		argsWithoutSecrets := make(map[string]any, len(args))
 		for k, v := range args {
-			if k == "secret" {
+			if _, isSecret := ceremonyInitializeSecretArgs[k]; isSecret {
 				continue
 			}
-			argsWithoutSecret[k] = v
+			argsWithoutSecrets[k] = v
 		}
 
 		var in transport.CeremonyInitializeRequest
-		if err := wire.DecodeArgs(argsWithoutSecret, &in, wire.CeremonyJSONFields...); err != nil {
+		if err := wire.DecodeArgs(argsWithoutSecrets, &in, wire.CeremonyJSONFields...); err != nil {
 			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
 		}
-		in.Secret = secretArg(req, "secret")
+		soPIN, userPIN, err := initializePINArgs(req)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
+		}
+		in.SOPin, in.UserPin = soPIN, userPIN
+		if in.Secret, err = secretArg(req, "secret"); err != nil {
+			return nil, &ToolError{Tool: "qrdb_ceremony_initialize", Err: err}
+		}
 
 		// in.Secret is consumed into a *secure.Buffer by CeremonyInitFrom,
 		// which this handler owns and destroys once the ceremony call below
@@ -184,10 +190,7 @@ func toolCeremonySignCSR() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The officer or service username requesting CSR signing."),
 		),
-		mcp.WithString("so_pin",
-			mcp.Required(),
-			mcp.Description("The Security Officer PIN authorizing the signing operation."),
-		),
+		withSecretArg("so_pin", "The Security Officer PIN authorizing the signing operation. Required, in exactly one of its two forms."),
 		mcp.WithString("csr_pem",
 			mcp.Required(),
 			mcp.Description("The PEM-encoded certificate signing request."),
@@ -208,7 +211,10 @@ func handleCeremonySignCSR(svc service.CeremonyServicer) mcpserver.ToolHandlerFu
 			return mcp.NewToolResultError("username is required"), nil
 		}
 
-		soPin := mcp.ParseString(req, "so_pin", "")
+		soPin, err := pinArg(req, "so_pin")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_ceremony_sign_csr", Err: err}
+		}
 		if soPin == "" {
 			return mcp.NewToolResultError("so_pin is required"), nil
 		}

@@ -582,7 +582,10 @@ func (g *Gate) adoptApplied(ctx context.Context, kv ActivationKV) {
 
 // adopt marks every feature in features enabled, and refuses with
 // *UnsupportedFeatureError -- kept for Refusal -- at one this binary does
-// not implement.
+// not implement. It logs each feature it is first to enable, so every node
+// logs each activation exactly once whichever path learns of it: activate,
+// a linearizable refresh, or a replica's applied record read while its
+// leader is unreachable.
 func (g *Gate) adopt(features []Feature) error {
 	for _, f := range features {
 		flag, ok := g.activated[f]
@@ -591,7 +594,9 @@ func (g *Gate) adopt(features []Feature) error {
 			g.refusal.Store(refusal)
 			return refusal
 		}
-		flag.Store(true)
+		if flag.CompareAndSwap(false, true) {
+			g.logger.Info("feature gate: feature activation observed", "feature", string(f))
+		}
 	}
 	return nil
 }
@@ -883,7 +888,9 @@ func (g *Gate) activate(ctx context.Context, kv ActivationKV) {
 				"feature", string(f), "error", err)
 			continue
 		}
-		g.activated[f].Store(true)
+		if !g.activated[f].CompareAndSwap(false, true) {
+			continue // adopted meanwhile, and logged there
+		}
 		if stored {
 			g.logger.Info("feature gate: feature activated cluster-wide", "feature", string(f))
 		} else {

@@ -63,6 +63,90 @@ func TestNewClusteredNode_CancelledContextBuildsNoHost(t *testing.T) {
 	}
 }
 
+// cancelOnPath is a context cancelled by the first Err call that finds path
+// on disk. A boot step is synchronous and takes no ctx, so the directory it
+// creates is the one observable sign that it has run: cancelling there
+// puts the cancel between that step and the next, exactly, on any disk and
+// under any load -- where a timer would land wherever the boot happened to be.
+type cancelOnPath struct {
+	context.Context
+	cancel context.CancelFunc
+	path   string
+}
+
+func newCancelOnPath(path string) *cancelOnPath {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &cancelOnPath{Context: ctx, cancel: cancel, path: path}
+}
+
+func (c *cancelOnPath) Err() error {
+	if _, err := os.Stat(c.path); err == nil {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+// Done is checked too, so a wait that selects on Done without calling Err
+// still sees the cancel once the path is there.
+func (c *cancelOnPath) Done() <-chan struct{} {
+	_ = c.Err()
+	return c.Context.Done()
+}
+
+// The directories each clustered boot step creates under cfg.Raft.DataDir:
+// the Raft WAL, the host, and the KV shard the host starts.
+const (
+	bootWALDir   = "wal"
+	bootHostDir  = "nodehost"
+	bootShardDir = "nodehost/snapshots/shard-1"
+)
+
+// bootClusteredCancelledAt boots replica 1 of a three-member cluster whose
+// other members never run, under a ctx cancelled once dir (relative to the
+// data directory) exists, and returns the data directory and the boot's
+// error. No quorum can form, so only the cancel ends the boot early.
+func bootClusteredCancelledAt(t *testing.T, dir string) (string, error) {
+	t.Helper()
+	ca, replicas := newFormationReplicas(t, 3)
+	members := make(map[uint64]string, len(replicas))
+	for _, r := range replicas {
+		members[r.id] = r.addr
+	}
+	r := replicas[0]
+	cfg := formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas))
+	mtls := &RaftMTLSConfig{CACert: mustReadCAPEM(t, ca), Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
+
+	n, err := NewClusteredNode(newCancelOnPath(filepath.Join(cfg.Raft.DataDir, dir)), cfg, members, nil, WithRaftMTLS(mtls))
+	if n != nil {
+		_ = n.Close()
+		t.Fatal("NewClusteredNode returned a node although no quorum could form")
+	}
+	return cfg.Raft.DataDir, err
+}
+
+// A cancel that lands while the WAL opens is honoured as it ends: the host,
+// whose open is seconds of fsyncs on a contended disk, is never built
+// (run 69313).
+func TestNewClusteredNode_CancelDuringWALOpenBuildsNoHost(t *testing.T) {
+	dataDir, err := bootClusteredCancelledAt(t, bootWALDir)
+	require.ErrorIs(t, err, context.Canceled)
+	var hostErr *HostCreateError
+	require.ErrorAs(t, err, &hostErr)
+	_, statErr := os.Stat(filepath.Join(dataDir, bootHostDir))
+	require.True(t, os.IsNotExist(statErr), "a boot cancelled during the WAL open built the host (stat err %v)", statErr)
+}
+
+// A cancel that lands while the host opens is honoured as it ends: the
+// shard is never started.
+func TestNewClusteredNode_CancelDuringHostOpenStartsNoShard(t *testing.T) {
+	dataDir, err := bootClusteredCancelledAt(t, bootHostDir)
+	require.ErrorIs(t, err, context.Canceled)
+	var hostErr *HostCreateError
+	require.ErrorAs(t, err, &hostErr)
+	_, statErr := os.Stat(filepath.Join(dataDir, bootShardDir))
+	require.True(t, os.IsNotExist(statErr), "a boot cancelled during the host open started the shard (stat err %v)", statErr)
+}
+
 // TestNewStandaloneNode_FailedBootLeavesNoReclaimSweeper: a standalone boot
 // that fails after its services are built -- here in wireClientAndServer, on
 // an unparseable auth.revocation_cache_ttl -- stops and closes the backend it

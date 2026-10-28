@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -56,6 +57,17 @@ func TestRefusalError_userConcurrentUpdate(t *testing.T) {
 	}
 	if !dberrors.Is(err, dberrors.ErrConflict) || !dberrors.IsRetryable(err) {
 		t.Fatalf("RefusalError() = %v, want a retryable ErrConflict", err)
+	}
+}
+
+func TestRefusalError_adminCredentialRequiresCA(t *testing.T) {
+	for _, path := range []string{"csr-sign", "generate"} {
+		want := &ceremony.AdminCredentialRequiresCAError{Path: path}
+		err := RefusalError(ceremony.ReasonAdminCredentialRequiresCA, want.Metadata())
+		got, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](err)
+		if !ok || *got != *want {
+			t.Fatalf("RefusalError() = %+v, want %+v", got, want)
+		}
 	}
 }
 

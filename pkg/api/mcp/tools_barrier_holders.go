@@ -65,6 +65,22 @@ func decodeHolderArgs(tool string, req mcp.CallToolRequest, v any) error {
 	return nil
 }
 
+// decodeHolderSOPINArgs decodes a holder tool's arguments like
+// decodeHolderArgs, then sets *soPIN from so_pin through pinArg, so the SO PIN
+// is read in either of its two forms and never from the struct decode, which
+// knows only the text form.
+func decodeHolderSOPINArgs(tool string, req mcp.CallToolRequest, v any, soPIN *string) error {
+	if err := decodeHolderArgs(tool, req, v); err != nil {
+		return err
+	}
+	pin, err := pinArg(req, "so_pin")
+	if err != nil {
+		return &ToolError{Tool: tool, Err: err}
+	}
+	*soPIN = pin
+	return nil
+}
+
 // holderResult renders a share-holder tool's result as JSON text.
 func holderResult(tool string, v any) (*mcp.CallToolResult, error) {
 	data, err := json.Marshal(v)
@@ -79,7 +95,7 @@ var (
 	argUsername = mcp.WithString("username", mcp.Required(), mcp.Description("The share holder's username."))
 	argDomain   = mcp.WithString("domain", mcp.Required(), mcp.Description("The key the round is over: unseal or recovery."))
 	argPolicy   = mcp.WithString("policy", mcp.Description("Factor policy of the new share set: designated (default) or any-enrolled."))
-	argSOPin    = mcp.WithString("so_pin", mcp.Description("SO PIN verified against the node's PIN backend."))
+	argSOPin    = withSecretArg("so_pin", "SO PIN verified against the node's PIN backend.")
 	argTenantID = mcp.WithString("tenant_id", mcp.Required(), mcp.Description("The tenant whose barrier the call is for."))
 )
 
@@ -271,7 +287,7 @@ func handleRekeyStart(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		const tool = "qrdb_barrier_rekey_start"
 		var in transport.RekeyStartRequest
-		if err := decodeHolderArgs(tool, req, &in); err != nil {
+		if err := decodeHolderSOPINArgs(tool, req, &in, &in.SOPin); err != nil {
 			return nil, err
 		}
 		round, err := svc.BarrierRekeyStart(ctx, seal.QuorumDomain(in.Domain), in.Threshold, seal.FactorPolicy(in.Policy), in.SOPin)
@@ -288,7 +304,7 @@ func handleOfficerRevoke(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		const tool = "qrdb_barrier_officer_revoke"
 		var in transport.OfficerRevokeRequest
-		if err := decodeHolderArgs(tool, req, &in); err != nil {
+		if err := decodeHolderSOPINArgs(tool, req, &in, &in.SOPin); err != nil {
 			return nil, err
 		}
 		round, err := svc.BarrierOfficerRevoke(ctx, seal.QuorumDomain(in.Domain), in.Username, in.Threshold, in.SOPin)

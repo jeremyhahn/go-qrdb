@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -37,6 +38,21 @@ type LeaseServicer = lease.LeaseServicer
 type LeaseService struct {
 	host    Host
 	shardID uint64
+
+	// logRenewals counts the keep-alives sent through the raft log rather
+	// than answered by the leader from memory; see LogRenewals.
+	logRenewals atomic.Uint64
+}
+
+// LogRenewals reports how many keep-alives this service has sent through the
+// raft log rather than answering from the lease primary's memory: those with
+// the LeaseCheckpoint gate closed, those answered by a replica that is not
+// the primary, and the one renewal that clears a checkpointed lease. Each
+// waits on a log commit and its fsync, the latency tail leader-local renewal
+// removed (go-qrdb#275), so the count is that tail measured by the code path
+// a renewal took rather than by a clock.
+func (s *LeaseService) LogRenewals() uint64 {
+	return s.logRenewals.Load()
 }
 
 // NewLeaseService creates a new LeaseServicer that operates on the
@@ -189,6 +205,7 @@ func (s *LeaseService) awaitExpired(ctx context.Context, expired *lease.ExpiredE
 // whenever the leader's local read lease was not valid when the follow-up
 // landed -- on top of the proposal's own round trip.
 func (s *LeaseService) keepAliveReplicated(ctx context.Context, leaseID int64) (*Lease, error) {
+	s.logRenewals.Add(1)
 	result, err := s.proposeKeepAlive(ctx, leaseID)
 	if err != nil {
 		return nil, err

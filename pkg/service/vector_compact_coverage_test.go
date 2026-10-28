@@ -82,56 +82,6 @@ func (m *coverageMockHNSWIndex) GetStats() *interfaces.HNSWStats {
 // Helper: create vectorService with direct access to internal fields
 // =============================================================================
 
-func newCoverageVecSvc(t *testing.T, namespace string, dimension uint32, storageBytes int64) (*vectorService, *vecMockStorage) {
-	t.Helper()
-	storage := newVecMockStorage()
-	logger := newVecTestLogger()
-
-	// The scoped name used for system-tenant requests (no ctx tenant set).
-	scoped := scopedNamespace(tenantid.System, namespace)
-
-	storage.listNamespacesFn = func(ctx context.Context) ([]vector.NamespaceInfo, error) {
-		if namespace == "" {
-			return []vector.NamespaceInfo{}, nil
-		}
-		return []vector.NamespaceInfo{
-			{
-				Name:           scoped,
-				Dimension:      dimension,
-				VectorCount:    0,
-				DistanceMetric: "L2",
-				IndexType:      "HNSW",
-				StorageBytes:   storageBytes,
-				CreatedAt:      time.Now().UnixNano(),
-				UpdatedAt:      time.Now().UnixNano(),
-			},
-		}, nil
-	}
-
-	storage.getNamespaceInfoFn = func(ctx context.Context, ns string) (*vector.NamespaceInfo, error) {
-		if ns == scoped {
-			return &vector.NamespaceInfo{
-				Name:           scoped,
-				Dimension:      dimension,
-				VectorCount:    5,
-				DistanceMetric: "L2",
-				IndexType:      "HNSW",
-				StorageBytes:   storageBytes,
-				CreatedAt:      time.Now().UnixNano(),
-				UpdatedAt:      time.Now().UnixNano(),
-			}, nil
-		}
-		return nil, vector.ErrNamespaceNotFound
-	}
-
-	svc, err := NewVectorService(storage, logger)
-	require.NoError(t, err)
-
-	// Cast to concrete type for internal field access
-	concrete := svc.(*vectorService)
-	return concrete, storage
-}
-
 // =============================================================================
 // performCompaction Tests
 // =============================================================================
