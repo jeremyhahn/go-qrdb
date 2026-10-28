@@ -433,6 +433,11 @@ Invariants:
   before it is recorded.
 - A rotation names the next version; any other is refused at apply with
   `KeyVersionConflictError`, a conflict.
+- A proof is checked where a caller checks it: the SDK suite every transport
+  runs (`sdk/go/transport/internal/vlogtest`) verifies the inclusion and
+  consistency proofs it reads against the roots the log's heads answer, with
+  `servicetest.VerifyInclusion` and `servicetest.VerifyConsistency` (RFC 9162
+  tree hashing, `transparency-dev/merkle`).
 
 ## Invariants
 

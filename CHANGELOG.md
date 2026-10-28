@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.58.0-alpha] - 2026-10-27
+
 ### Added
 - **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
   WAL fsync stall keeps its leadership and term, so linearizable reads and
@@ -24,6 +26,7 @@ are not reconstructed here — their history is in the git log.
   `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
 - **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
 - **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+- **`sdk.TenantBarrierInitVerifier`** is the server half of signed tenant barrier initialization, re-exported from `pkg/auth/middleware` beside the client's `transport.ProveTenantBarrierInit` (#1246). `Begin(tenantID, tlsState)` issues a nonce bound to the tenant and the connection's TLS exporter; `Complete(tenantID, tlsState, proof, key)` checks the proof against that nonce, that exporter and the key `key` names, and spends the nonce, refusing with `*sdk.FirstAdminProofError`. A facade that terminates its callers' TLS runs the exchange with it rather than a copy of qrdb's. `AuthMiddleware` now runs the same type for every transport. The aliases `NewTenantBarrierInitVerifier`, `TenantBarrierInitKey`, `TenantBarrierInitProof`, `InitChallenge`, `InitChallengeBook`, `NewInitChallengeBook`, `InitChallengeTTL`, `InitChallengeMaxOutstanding`, `InitProofReason*` and `InitTooManyChallengesError` come with it.
 
 - **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
   (#912): the ten `Vlog*` gRPC methods, `/vlog/*` REST routes, `vlog.*` QUIC

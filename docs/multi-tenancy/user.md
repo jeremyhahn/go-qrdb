@@ -177,6 +177,27 @@ Later officers register and claim through `qrdb tenant barrier-officer ...`,
 mirroring the system barrier's flow with `--tenant-id` added — see
 [../shamir-custody/user.md](../shamir-custody/user.md).
 
+**Serving `barrier-init` from your own service.** A service built on the Go
+SDK that terminates its callers' TLS itself — its own REST, gRPC or MCP
+front end — runs the same two-step proof on its own connection with
+`sdk.TenantBarrierInitVerifier`. `Begin(tenantID, tlsState)` issues the
+one-time challenge, bound to the tenant and that connection;
+`Complete(tenantID, tlsState, proof, key)` checks the caller's signature
+against it, and against the key `key` names (an `sdk.ComputeSPKIThumbprint`
+value), and spends the challenge. A refused proof is
+`*sdk.FirstAdminProofError`, whose `Reason` says which check failed. The
+verifier decides only the proof: authorizing the caller is still the
+service's own job.
+
+```go
+v := sdk.NewTenantBarrierInitVerifier(nil) // one per service, shared by every connection
+c, err := v.Begin(tenantID, r.TLS)          // send c.Nonce to the caller
+// ... the caller signs with transport.ProveTenantBarrierInit ...
+err = v.Complete(tenantID, r.TLS, proof, func() (string, error) {
+	return sdk.ComputeSPKIThumbprint(firstAdminCert), nil
+})
+```
+
 **Self-managed is the default and it is the secure one.** `--barrier-auto-unseal`
 at creation wraps the tenant's key under the *system* barrier so the node can
 unseal without the tenant present. Convenient; strictly weaker; entitlement-gated

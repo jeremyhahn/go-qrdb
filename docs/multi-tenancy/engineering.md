@@ -1738,11 +1738,20 @@ to 12, in the table after it, are the plan.
   that exporter by the key whose SPKI the pending first admin records. The
   SDK signs with a caller-supplied `crypto.Signer`
   (`transport.ProveTenantBarrierInit`), the seam for device-held keys; the
-  CLI signs with its `--key-file` key. The embedded transport is in process,
+  CLI signs with its `--key-file` key. The verifier half is one type,
+  `middleware.TenantBarrierInitVerifier` (`Begin`, `Complete`, over an
+  `initproof.Book`): `AuthMiddleware` runs it for every transport, holding
+  the proof to the pending first admin's key, and the SDK re-exports it
+  (`sdk.TenantBarrierInitVerifier`, `sdk.NewTenantBarrierInitVerifier`,
+  `sdk.TenantBarrierInitKey`) for a facade that terminates the caller's TLS
+  and so must run the exchange on its own connection; the facade names the
+  expected key through `TenantBarrierInitKey` and authorizes the caller
+  itself. The embedded transport is in process,
   has no connection to bind, and asks no proof. A replayed nonce, a nonce
   from another connection, an expired challenge and a signature by another
   key are each refused with `FirstAdminProofError`
-  (`pkg/auth/middleware/barrier_bootstrap_test.go`, `pkg/initproof`);
+  (`pkg/auth/middleware/barrier_bootstrap_test.go`, `pkg/initproof`,
+  `sdk/go/types_tenant_barrier_init_test.go`);
   `test/integration/tenant_barrier_init_proof_cli_test.go` runs the real CLI
   on every network transport. The pending first-admin record stays in the
   system shard until phase 8.
