@@ -19,6 +19,8 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -69,6 +71,9 @@ func NewTransactionService(host Host, shardID uint64) TransactionServicer {
 // operation set through Raft consensus. When all compares succeed, successOps
 // are applied; otherwise failureOps are applied.
 func (s *TransactionService) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
+	if err := s.refuseInactiveReads(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
@@ -84,7 +89,7 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 		return nil, resultErr
 	}
 
-	return s.buildTransactionResponse(result, successOps, failureOps), nil
+	return s.buildTransactionResponse(result, successOps, failureOps)
 }
 
 // ExecuteWithMode atomically evaluates compares and executes the
@@ -92,6 +97,9 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 // Raft consensus. When all compares succeed, successOps are applied;
 // otherwise failureOps are applied.
 func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
+	if err := s.refuseInactiveReads(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
 	if err != nil {
 		return nil, &EncodeRequestError{Err: err}
@@ -104,7 +112,7 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 		return nil, resultErr
 	}
 
-	return s.buildTransactionResponse(result, successOps, failureOps), nil
+	return s.buildTransactionResponse(result, successOps, failureOps)
 }
 
 // encodeTransactionCommand encodes compares, success ops, and failure ops
@@ -158,9 +166,13 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 
 // buildTransactionResponse constructs a TransactionResponse from the Raft
 // proposal result and the original operation sets.
-func (s *TransactionService) buildTransactionResponse(result sm.Result, successOps, failureOps []Op) *TransactionResponse {
-	// Parse result: Value = revision, Data[0] = succeeded flag.
-	succeeded := len(result.Data) > 0 && result.Data[0] == 1
+func (s *TransactionService) buildTransactionResponse(result sm.Result, successOps, failureOps []Op) (*TransactionResponse, error) {
+	// Parse result: Value = revision, Data = the succeeded flag and, when the
+	// executed branch read, one answer per op (protocol.EncodeTransactionResult).
+	succeeded, reads, err := protocol.DecodeTransactionResult(result.Data)
+	if err != nil {
+		return nil, &TransactionResultError{Err: err}
+	}
 	revision := int64(result.Value)
 
 	// Build per-operation responses for the executed branch.
@@ -170,17 +182,37 @@ func (s *TransactionService) buildTransactionResponse(result sm.Result, successO
 	} else {
 		executedOps = failureOps
 	}
+	if (reads != nil || hasReadOp(executedOps, nil)) && len(reads) != len(executedOps) {
+		return nil, &TransactionResultError{Err: &TransactionResultShapeError{Ops: len(executedOps), Answers: len(reads)}}
+	}
 
 	responses := make([]OpResponse, len(executedOps))
 	for i := range executedOps {
 		responses[i] = OpResponse{Succeeded: true}
+		if reads != nil {
+			responses[i].Kvs = reads[i].Kvs
+			responses[i].Count = reads[i].Count
+		}
 	}
 
 	return &TransactionResponse{
 		Succeeded: succeeded,
 		Revision:  revision,
 		Responses: responses,
+	}, nil
+}
+
+// refuseInactiveReads refuses a transaction holding a read until every
+// replica of the shard can answer one (featuregate.TransactionReads): a
+// replica built before reads would refuse the op its peers answered.
+func (s *TransactionService) refuseInactiveReads(successOps, failureOps []Op) error {
+	if !hasReadOp(successOps, failureOps) {
+		return nil
 	}
+	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.TransactionReads) {
+		return &feature.NotActiveError{Feature: featuregate.TransactionReads, ShardID: s.shardID}
+	}
+	return nil
 }
 
 // ExecuteEntity atomically evaluates entity-typed compares and executes
@@ -299,21 +331,25 @@ func encodeEntityOps(ops []TransactionEntityOp) ([][]byte, error) {
 // Op encoding helpers
 // ---------------------------------------------------------------------------
 
-// opTypeMap maps service OpType values to protocol op codes.
+// opTypeMap maps service OpType values to protocol op codes. Both reads are
+// protocol.OpMVCCRange, whose empty range end is a single-key get, the shape
+// of an etcd RangeRequest.
 var opTypeMap = map[OpType]byte{
 	OpPut:    protocol.OpMVCCPut,
 	OpDelete: protocol.OpMVCCDelete,
+	OpGet:    protocol.OpMVCCRange,
+	OpRange:  protocol.OpMVCCRange,
 }
 
-// encodeServiceOp converts a service.Op to its binary protocol
-// representation. Only OpPut and OpDelete are supported: transaction and
-// batch write-op encoding (the only callers of this function) never
-// operate on reads (OpGet, OpRange), which are executed as linearizable
-// reads through separate code paths and must never reach this encoder.
-// An unmapped OpType — including OpGet, OpRange, or any future/invalid
-// value — fails closed with UnsupportedTransactionOpError rather than
-// silently defaulting to a write, which would otherwise let a caller's
-// read request corrupt the target key with an empty-value put.
+// encodeServiceOp converts a service.Op of a transaction branch to its binary
+// protocol representation. A write is encoded as itself; a read (OpGet,
+// OpRange) is encoded as an OpMVCCRange the state machine answers inside the
+// same apply, carrying no value or lease, and an OpGet carrying no range end
+// whatever the caller set, so a get never widens into a range. An unmapped
+// OpType -- any future or invalid value -- fails closed with
+// UnsupportedTransactionOpError rather than silently defaulting to a write,
+// which would otherwise let a caller's request corrupt the target key with an
+// empty-value put.
 //
 // An empty key is refused here, before anything is proposed: no state machine
 // can store one, and refusing at the proposer is the early answer to the
@@ -326,5 +362,23 @@ func encodeServiceOp(op Op) ([]byte, error) {
 	if len(op.Key) == 0 {
 		return nil, &InvalidKeyError{Field: "op"}
 	}
+	switch op.Type {
+	case OpGet:
+		return protocol.EncodeOp(protocolOp, op.Key, nil, nil, 0)
+	case OpRange:
+		return protocol.EncodeOp(protocolOp, op.Key, nil, op.RangeEnd, 0)
+	}
 	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
+}
+
+// hasReadOp reports whether either branch of a transaction holds a read.
+func hasReadOp(successOps, failureOps []Op) bool {
+	for _, ops := range [][]Op{successOps, failureOps} {
+		for _, op := range ops {
+			if op.Type == OpGet || op.Type == OpRange {
+				return true
+			}
+		}
+	}
+	return false
 }
