@@ -79,10 +79,14 @@ second registration path.
 wiped from memory after use the way a `[]byte` can. It is the system
 barrier's passphrase for the single-admin path (`threshold < 2`); omit it for
 `--barrier-strategy none` and for M-of-N, where the barrier stays sealed
-until officers reconstruct it from their shares. The MCP tool's `secret`
-argument is the one exception: it is plain text there, not base64, matching
-its `passphrase` argument's convention on the barrier and tenant-barrier
-tools.
+until officers reconstruct it from their shares. On the MCP tool
+`qrdb_ceremony_initialize`, `secret`, `so_pin` and `user_pin` each take one of
+two forms, the same convention as the barrier and tenant-barrier tools
+([barrier API](../barrier-seal/api.md#secret-arguments-over-mcp)): the plain
+`<name>` argument as UTF-8 text, or `<name>_b64` as standard base64 (RFC 4648
+§4, padded), which carries any bytes exactly. A call carrying both forms of one
+argument is refused, and so is either form sent as anything but a JSON string,
+which is never read as an absent PIN or secret. The Go SDK's MCP client always sends `<name>_b64`.
 
 **`credential_seal_strategy` names how credentials are sealed at rest.** It
 is optional; the CLI sets it from `qrdb init --barrier-strategy`.
@@ -143,7 +147,7 @@ requires an authenticated, authorized caller rather than only the SO PIN.
 | Duplicate holder, self-enrolment, bad CSR or role | per [../shamir-custody/api.md](../shamir-custody/api.md#error-classes) | |
 | Wrong SO PIN (sign-csr) | 401 | `UNAUTHENTICATED` |
 | No PIN backend | 412 | `FAILED_PRECONDITION` |
-| CSR-sign or generate admin path on a node with no CA key | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError` |
+| CSR-sign or generate admin path on a node with no CA key (a composer's gRPC registration without `sdk.WithRegisterCeremonyCA`) | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError`, refusal reason `ADMIN_CREDENTIAL_REQUIRES_CA` with metadata `path` (`csr-sign` or `generate`); the SDK rebuilds the typed error on every transport |
 | Ceremony already performed | 409 | `FAILED_PRECONDITION` — `ErrAlreadyInitialized` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 

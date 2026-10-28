@@ -89,6 +89,15 @@ and defaults `--distance-metric` to `cosine`.
   operation ID) immediately; progress is polled through the corresponding
   progress call. A caller that does not poll has started an operation it cannot
   observe.
+- **An asynchronous job never outlives the node.** An async rebuild or
+  compaction runs on the vector service's own background context, not the
+  request's. Closing the node closes the service before the vector Pebble DB:
+  the service cancels every job in flight and returns only once each has
+  stopped, so none reaches the closed DB, and it refuses every request made
+  after that, a rebuild, a compaction or any read or write, with
+  `VectorServiceClosedError` before it touches storage. Every Close call waits
+  for the jobs to stop, a second one concurrent with the first included. A job
+  Close cancelled records the cancellation as its error.
 - **Search targets exactly one namespace.** There is no cross-namespace search.
 - **`ef_search` applies to HNSW only** and trades recall against latency; it is
   ignored by `flat` and has no meaning for it.

@@ -302,6 +302,47 @@ strings by definition of the protocol, so the MCP client and server each carry
 the credential through one Go string at a single documented conversion point.
 Callers who cannot accept that should not drive barrier operations over MCP.
 
+### Secret arguments over MCP
+
+Every secret-bearing argument of the barrier, tenant-barrier, database and
+ceremony tools takes one of two forms:
+
+| Form | Encoding | Carries |
+|---|---|---|
+| `<name>` | the JSON string as UTF-8 text | text only |
+| `<name>_b64` | standard base64, RFC 4648 §4, padded | any bytes, exactly |
+
+The arguments are `passphrase` on `qrdb_barrier_enable_encryption` and
+`qrdb_tenant_barrier_init_complete`; `secret` on `qrdb_barrier_initialize`,
+`qrdb_barrier_unseal`, `qrdb_database_unseal` and `qrdb_ceremony_initialize`;
+`barrier_secret` on `qrdb_database_create`; and `so_pin` and `user_pin`
+wherever those tools, `qrdb_barrier_seal`, `qrdb_barrier_shamir_initialize`,
+`qrdb_barrier_recovery_generate`, `qrdb_barrier_rekey_start`,
+`qrdb_barrier_officer_revoke` and `qrdb_ceremony_sign_csr` take them. A JSON string cannot hold bytes that are
+not UTF-8 — a decoder replaces them with U+FFFD — so a passphrase sent as text
+is keyed to different bytes than the caller holds; its base64 is ASCII and
+arrives exactly. The Go SDK's MCP client always sends `<name>_b64`.
+
+Either form present with a value that is not a JSON string (an array,
+object, number, boolean or `null`) is refused with `ToolArgumentError` naming
+it, before either form is decoded: it is never read as an absent secret, so a
+malformed `so_pin_b64` cannot let an initialization go ahead with no PIN
+provisioned. Only an absent argument or an empty string means "none". A call
+carrying both forms of one argument is refused with
+`SecretArgumentConflictError`; a `<name>_b64` that is not padded standard
+base64 is refused with `ValueDecodeError` naming it. All three are tool
+errors, raised before the service is reached.
+
+The other secret- and credential-bearing MCP arguments, which take one form
+only, are held to the same rule: a non-string value is refused with
+`ToolArgumentError`. They are `static_shared_secret`,
+`multicast_shared_secret` and `token_value` on the database tools; `value` on
+`qrdb_credential_store` and `qrdb_credential_submit` and `new_value` on
+`qrdb_credential_rotate`; `credential_b64`, `spki_credential_b64` and
+`lookup_key_b64` on the user auth-factor tools; `key` on
+`qrdb_tenant_barrier_unseal`; and `token` on `qrdb_invitation_redeem`. The decoded bytes are wiped when the
+handler returns, the same as the text form's.
+
 ### Request bodies
 
 `POST /v1/barrier/initialize`:

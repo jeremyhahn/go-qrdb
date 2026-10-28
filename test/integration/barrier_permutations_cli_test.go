@@ -422,6 +422,68 @@ func TestBarrierPermutations_PassphraseLifecycle_PerProtocol(t *testing.T) {
 	}
 }
 
+// TestBarrierPermutations_MCPPassphraseBytesAreLossless initializes the
+// system barrier over MCP with passphrases a JSON text argument cannot carry
+// exactly -- bytes that are not UTF-8, and a leading byte-order mark -- and
+// unseals it over REST with the same bytes (go-qrdb#1130). The MCP client
+// sends every barrier secret as its <name>_b64 argument; were the bytes
+// altered on the way in, the barrier would be keyed to different bytes and
+// the REST unseal would be refused.
+func TestBarrierPermutations_MCPPassphraseBytesAreLossless(t *testing.T) {
+	t.Parallel()
+	protoNamed := func(name string) multiProtocol {
+		for _, p := range multiProtocols {
+			if p.name == name {
+				return p
+			}
+		}
+		t.Fatalf("no protocol %q", name)
+		return multiProtocol{}
+	}
+	mcpProto, restProto := protoNamed("mcp"), protoNamed("rest")
+	for _, tc := range []struct {
+		name       string
+		passphrase string
+	}{
+		{name: "non-utf8", passphrase: "\xff\x80"},
+		{name: "bom", passphrase: "\xef\xbb\xbfbarrier-perm-bom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			node := startFreshSealedNode(t, "passphrase", 0, 0)
+			waitForBarrierReachable(t, node.cli, node.noAuthFlagsFor(mcpProto), 60*time.Second)
+
+			node.initSystem(t, mcpProto, "--barrier-strategy", "passphrase", "--passphrase", tc.passphrase)
+			node.waitForFullBoot(t)
+			restFlags := node.flagsFor(restProto)
+
+			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, restFlags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
+				t.Fatalf("barrier seal: %v\nstderr: %s", err, stderr)
+			}
+			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, restFlags...),
+				"barrier", "unseal", "--passphrase", tc.passphrase)...); err != nil {
+				t.Fatalf("REST unseal with the bytes MCP initialized: %v\nstderr: %s", err, stderr)
+			}
+			if barrierStatus(t, node.cli, restFlags).Sealed {
+				t.Fatal("barrier still sealed after the REST unseal")
+			}
+
+			// And back over MCP: seal there, unseal there with the same bytes.
+			mcpFlags := node.flagsFor(mcpProto)
+			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, mcpFlags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
+				t.Fatalf("MCP barrier seal: %v\nstderr: %s", err, stderr)
+			}
+			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, mcpFlags...),
+				"barrier", "unseal", "--passphrase", tc.passphrase)...); err != nil {
+				t.Fatalf("MCP unseal with the same bytes: %v\nstderr: %s", err, stderr)
+			}
+			if barrierStatus(t, node.cli, mcpFlags).Sealed {
+				t.Fatal("barrier still sealed after the MCP unseal")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Strategy "shamir": M-of-N officer lifecycle.
 // ---------------------------------------------------------------------------

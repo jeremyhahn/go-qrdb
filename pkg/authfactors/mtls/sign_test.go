@@ -15,8 +15,8 @@
 package mtls
 
 import (
+	"bytes"
 	"crypto"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -27,6 +27,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 )
 
 // TestSignNonce_RoundTripsThroughVerify pins that SignNonce produces exactly
@@ -106,34 +108,30 @@ func TestParseSignerPEM(t *testing.T) {
 	}
 
 	// An X25519 key cannot sign, so ParseSignerPEM must refuse one with
-	// *UnsupportedSignerError. X25519 key generation is itself refused
-	// under GODEBUG=fips140=only (crypto/ecdh rejects the curve, SP
-	// 800-186 has no FIPS-approved DH to substitute), and so is
-	// x509.ParsePKCS8PrivateKey's own construction of the resulting
-	// *ecdh.PrivateKey -- both call ecdh.X25519().{GenerateKey,
-	// NewPrivateKey}, which check crypto/fips140.Enforced() before doing
-	// anything else. So under strict enforcement there is no byte string
-	// that is simultaneously "a valid X25519 PKCS8 key" and "parseable",
-	// which makes this refusal path provably unreachable rather than
-	// merely untested; see docs/seal/fips140-mode.md "Skipped tests under
-	// fips140=only".
+	// *UnsupportedSignerError. Under GODEBUG=fips140=only the module refuses
+	// x509.ParsePKCS8PrivateKey's construction of the *ecdh.PrivateKey
+	// (ecdh.X25519().NewPrivateKey checks crypto/fips140.Enforced() first), so
+	// the refusal is raised one step earlier, as *EnrollmentInvalidError. The
+	// key is built from fixed bytes because generating one is refused there too.
 	t.Run("x25519_cannot_sign", func(t *testing.T) {
+		_, err := ParseSignerPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: x25519PKCS8()}))
 		if fips140.Enforced() {
-			t.Skip("X25519 key generation and PKCS8 parsing are both refused " +
-				"under fips140=only, so this refusal path is unreachable: see " +
-				"docs/seal/fips140-mode.md")
-		}
-		xKey, err := ecdh.X25519().GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("ecdh.X25519().GenerateKey: %v", err)
-		}
-		xPKCS8, err := x509.MarshalPKCS8PrivateKey(xKey)
-		if err != nil {
-			t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
+			var invalid *authfactors.EnrollmentInvalidError
+			if !errors.As(err, &invalid) {
+				t.Errorf("an X25519 key must be refused as unparseable under fips140=only: %v", err)
+			}
+			return
 		}
 		var unsupported *UnsupportedSignerError
-		if _, err := ParseSignerPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: xPKCS8})); !errors.As(err, &unsupported) {
+		if !errors.As(err, &unsupported) {
 			t.Errorf("an X25519 key cannot sign: %v", err)
 		}
 	})
+}
+
+// x25519PKCS8 returns an RFC 8410 PKCS#8 X25519 private key built from fixed
+// bytes, because generating one is refused under fips140=only.
+func x25519PKCS8() []byte {
+	der := []byte{0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20}
+	return append(der, bytes.Repeat([]byte{0x42}, 32)...)
 }

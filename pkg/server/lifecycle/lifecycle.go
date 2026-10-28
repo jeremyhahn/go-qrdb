@@ -26,6 +26,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -519,6 +520,12 @@ type Infra struct {
 	// CA) is unaffected: it is a different trust domain and is built
 	// unconditionally in the same block.
 	NoClusterCAKey bool
+
+	// wrapVectorStorage, when non-nil, wraps the vector storage before the
+	// vector service and the node's closers take it. It is unexported: the
+	// package's own tests use it to hold a background vector job in flight
+	// and observe the shutdown order around it (#1171).
+	wrapVectorStorage func(vectorstorage.Storage) vectorstorage.Storage
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -1115,6 +1122,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		vectorStorage = pebbleVectorStorage
 	}
+	if infra.wrapVectorStorage != nil {
+		vectorStorage = infra.wrapVectorStorage(vectorStorage)
+	}
 	vectorLog := logger.NewAdapter(newMinimalLogger(log))
 	n.addCloser(func() error { return vectorStorage.Close() })
 
@@ -1124,6 +1134,12 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	)
 	if err != nil {
 		return nil, &VectorServiceError{Err: err}
+	}
+	// Closers run last-added first, so this runs before the vectorStorage
+	// closer above: the service cancels and waits for its async compactions
+	// and index rebuilds before the Pebble DB beneath them closes (#1171).
+	if closer, ok := vectorSvc.(io.Closer); ok {
+		n.addCloser(closer.Close)
 	}
 	n.Vector = vectorSvc
 

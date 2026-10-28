@@ -1,7 +1,7 @@
 # Storage Engines — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
 concern.
@@ -114,7 +114,14 @@ no `qrdb` verb. The volume pool verbs are covered in
 [../volume-pools/cli.md](../volume-pools/cli.md); the database verbs that select a backend are covered in
 [../databases/cli.md](../databases/cli.md).
 
-## Not built
+## Target design: no CLI change
 
-No configuration exists for an object-storage LSM segment layout; see
-[architecture.md](architecture.md#not-built).
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout).
+**Not implemented** — future work under the SPEC row `object-storage-lsm`.
+The proposed object-storage LSM segment layout adds no `qrdb` verb and no
+flag. `qrdb database create ... --backend objstore` is unchanged as a
+command; what changes is what the node does when such a database opens. The
+proposed configuration is in [engineering.md](engineering.md)'s target
+design, not here, because none of it exists yet. `glacier` and
+`azurearchive` stay archive destinations reached through `qrdb backup create`
+(see [../backup-restore/cli.md](../backup-restore/cli.md)).
