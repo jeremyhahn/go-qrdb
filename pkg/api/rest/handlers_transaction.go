@@ -104,12 +104,12 @@ func (s *Server) handleTransaction(w http.ResponseWriter, r *http.Request) {
 
 	successOps, err := jsonToOps(req.SuccessOps)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	failureOps, err := jsonToOps(req.FailureOps)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
