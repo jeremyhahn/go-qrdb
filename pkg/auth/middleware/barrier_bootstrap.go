@@ -16,7 +16,6 @@ package middleware
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -25,7 +24,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // This file is the single home of the tenant-barrier BOOTSTRAP authorization
@@ -203,11 +201,13 @@ func (m *AuthMiddleware) BeginTenantBarrierInit(ctx context.Context, tenantID st
 	if err := m.AuthorizeTenantBarrierInit(ctx, tenantID, status); err != nil {
 		return nil, err
 	}
-	exporter, err := initproof.Exporter(auth.TLSStateFromContext(ctx))
-	if err != nil {
-		return nil, &tenant.FirstAdminProofError{TenantID: tenantID, Reason: initproof.ReasonNoExporter, Err: err}
-	}
-	return m.initChallenges.Issue(tenantID, exporter)
+	return m.initVerifier().Begin(tenantID, auth.TLSStateFromContext(ctx))
+}
+
+// initVerifier is the proof verifier over this node's book of init
+// challenges.
+func (m *AuthMiddleware) initVerifier() *TenantBarrierInitVerifier {
+	return &TenantBarrierInitVerifier{book: m.initChallenges}
 }
 
 // AuthorizeTenantBarrierInitProof is init/complete's gate: the caller must
@@ -232,45 +232,11 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInitProof(ctx context.Context, te
 }
 
 // verifyTenantBarrierInitProof checks proof against this connection and the
-// first admin's key. The nonce is redeemed before the key and signature are
-// examined, so a wrong-key attempt spends it exactly as a right one does.
+// first admin's key (TenantBarrierInitVerifier.Complete).
 func (m *AuthMiddleware) verifyTenantBarrierInitProof(ctx context.Context, tenantID string, proof *TenantBarrierInitProof) error {
-	refuse := func(reason initproof.Reason, err error) error {
-		return &tenant.FirstAdminProofError{TenantID: tenantID, Reason: reason, Err: err}
-	}
-	if proof == nil || len(proof.Nonce) == 0 || len(proof.PublicKey) == 0 || len(proof.Signature) == 0 {
-		return refuse(initproof.ReasonAbsent, nil)
-	}
-	exporter, err := initproof.Exporter(auth.TLSStateFromContext(ctx))
-	if err != nil {
-		return refuse(initproof.ReasonNoExporter, err)
-	}
-	if err := m.initChallenges.Consume(tenantID, proof.Nonce, exporter); err != nil {
-		var ce *initproof.ChallengeError
-		if errors.As(err, &ce) {
-			return refuse(ce.Reason, err)
-		}
-		return refuse(initproof.ReasonUnknownNonce, err)
-	}
-	pub, err := x509.ParsePKIXPublicKey(proof.PublicKey)
-	if err != nil {
-		return refuse(initproof.ReasonMalformedKey, err)
-	}
-	want, err := m.initProofThumbprint(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	if want == "" {
-		return refuse(initproof.ReasonNoPendingAdmin, nil)
-	}
-	got, err := user.PublicKeySPKIThumbprint(pub)
-	if err != nil || got != want {
-		return refuse(initproof.ReasonWrongKey, err)
-	}
-	if !initproof.Verify(pub, tenantID, proof.Nonce, exporter, proof.Signature) {
-		return refuse(initproof.ReasonBadSignature, nil)
-	}
-	return nil
+	return m.initVerifier().Complete(tenantID, auth.TLSStateFromContext(ctx), proof, func() (string, error) {
+		return m.initProofThumbprint(ctx, tenantID)
+	})
 }
 
 // initProofThumbprint returns the SPKI thumbprint the init proof must be by:
