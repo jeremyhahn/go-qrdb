@@ -52,13 +52,15 @@ func TestDeleteThenGetIsTypedNotFound(t *testing.T) {
 	for _, c := range deleteThenGetCells() {
 		t.Run(c.name(), func(t *testing.T) {
 			cl := c.boot(t)
-			ctx := boundedCtx(t)
 			shapes := map[string]string{
 				"short":  "dtg/short/",
 				"hashed": "dtg/hashed/" + strings.Repeat("h", hashedKeyLen) + "/",
 			}
 			for shape, prefix := range shapes {
 				for round := range deleteThenGetRounds {
+					// Each round gets its own callTimeout: one deadline shared by
+					// every round outlasts the objstore cell under -race.
+					ctx := boundedCtx(t)
 					key := fmt.Sprintf("%s%d", prefix, round)
 					if err := cl.kv.Put(ctx, key, []byte("v")); err != nil {
 						t.Fatalf("%s round %d: Put: %v", shape, round, err)
@@ -80,9 +82,10 @@ func TestDeleteThenGetIsTypedNotFound_ReusedKey(t *testing.T) {
 	for _, c := range deleteThenGetCells() {
 		t.Run(c.name(), func(t *testing.T) {
 			cl := c.boot(t)
-			ctx := boundedCtx(t)
 			const key = "dtg/reused"
 			for round := range deleteThenGetRounds {
+				// One callTimeout per round, as in TestDeleteThenGetIsTypedNotFound.
+				ctx := boundedCtx(t)
 				value := []byte(fmt.Sprintf("v%d", round))
 				if err := cl.kv.Put(ctx, key, value); err != nil {
 					t.Fatalf("round %d: Put: %v", round, err)
