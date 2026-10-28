@@ -135,7 +135,10 @@ func handleUserAuthFactorAddTool(svc service.UserAuthFactorServicer) mcpserver.T
 			return mcp.NewToolResultError("user_id must be a uint64: " + err.Error()), nil
 		}
 		typ := mcp.ParseString(req, "type", "")
-		credB64 := mcp.ParseString(req, "credential_b64", "")
+		credB64, _, argErr := stringArg(req, "credential_b64")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if typ == "" || credB64 == "" {
 			return mcp.NewToolResultError("type and credential_b64 are required"), nil
 		}
@@ -151,7 +154,7 @@ func handleUserAuthFactorAddTool(svc service.UserAuthFactorServicer) mcpserver.T
 		}
 		spkiCred, perr := parseOptionalB64(req, "spki_credential_b64")
 		if perr != nil {
-			return mcp.NewToolResultError("spki_credential_b64 must be base64: " + perr.Error()), nil
+			return mcp.NewToolResultError(perr.Error()), nil
 		}
 		var expectedVersion *uint64
 		if ev := mcp.ParseString(req, "expected_factor_set_version", ""); ev != "" {
@@ -247,7 +250,10 @@ func handleUserAuthFactorRotateTool(svc service.UserAuthFactorServicer) mcpserve
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		oldID := mcp.ParseString(req, "old_factor_id", "")
 		typ := mcp.ParseString(req, "type", "")
-		credB64 := mcp.ParseString(req, "credential_b64", "")
+		credB64, _, argErr := stringArg(req, "credential_b64")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if oldID == "" || typ == "" || credB64 == "" {
 			return mcp.NewToolResultError("old_factor_id, type, and credential_b64 are required"), nil
 		}
@@ -263,7 +269,7 @@ func handleUserAuthFactorRotateTool(svc service.UserAuthFactorServicer) mcpserve
 		}
 		spkiCred, perr := parseOptionalB64(req, "spki_credential_b64")
 		if perr != nil {
-			return mcp.NewToolResultError("spki_credential_b64 must be base64: " + perr.Error()), nil
+			return mcp.NewToolResultError(perr.Error()), nil
 		}
 		newFactor := &auth.AuthFactor{
 			Type:           auth.AuthFactorType(typ),
@@ -300,7 +306,10 @@ func handleUserAuthFactorRelabelTool(svc service.UserAuthFactorServicer) mcpserv
 func handleUserAuthFactorLoginTool(svc service.UserAuthFactorServicer, userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		typ := mcp.ParseString(req, "type", "")
-		keyB64 := mcp.ParseString(req, "lookup_key_b64", "")
+		keyB64, _, argErr := stringArg(req, "lookup_key_b64")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if typ == "" || keyB64 == "" {
 			return mcp.NewToolResultError("type and lookup_key_b64 are required"), nil
 		}
@@ -379,9 +388,16 @@ func parseUint64(s string) (uint64, error) {
 // parseOptionalB64 decodes an optional base64-encoded string tool argument.
 // Returns (nil, nil) when the argument is absent or empty.
 func parseOptionalB64(req mcp.CallToolRequest, name string) ([]byte, error) {
-	v := mcp.ParseString(req, name, "")
+	v, _, err := stringArg(req, name)
+	if err != nil {
+		return nil, err
+	}
 	if v == "" {
 		return nil, nil
 	}
-	return base64.StdEncoding.DecodeString(v)
+	b, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		return nil, &ToolArgumentError{Argument: name, Reason: "must be base64: " + err.Error()}
+	}
+	return b, nil
 }

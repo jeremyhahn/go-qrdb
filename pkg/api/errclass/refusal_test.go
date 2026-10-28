@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -92,6 +93,20 @@ func TestRefusal_userConcurrentUpdateUnderDataLossCarriesNone(t *testing.T) {
 	}
 	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
 		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
+	}
+}
+
+func TestRefusal_adminCredentialRequiresCA(t *testing.T) {
+	want := &ceremony.AdminCredentialRequiresCAError{Path: "generate"}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != ceremony.ReasonAdminCredentialRequiresCA {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, ceremony.ReasonAdminCredentialRequiresCA)
+	}
+	if got := ceremony.AdminCredentialRequiresCAFromMetadata(md); *got != *want {
+		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+	if got := Classify(want); got != FailedPrecondition {
+		t.Fatalf("Classify(no CA) = %v, want FailedPrecondition", got)
 	}
 }
 

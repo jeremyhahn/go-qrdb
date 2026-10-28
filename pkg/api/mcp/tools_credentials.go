@@ -64,7 +64,10 @@ func handleCredentialStore(svc service.CredentialServicer) mcpserver.ToolHandler
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		valueArg := mcp.ParseString(req, "value", "")
+		valueArg, _, argErr := stringArg(req, "value")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if valueArg == "" {
 			return mcp.NewToolResultError("value is required"), nil
 		}
@@ -136,7 +139,10 @@ func handleCredentialSubmit(svc service.CredentialServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		valueArg := mcp.ParseString(req, "value", "")
+		valueArg, _, argErr := stringArg(req, "value")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if valueArg == "" {
 			return mcp.NewToolResultError("value is required"), nil
 		}
@@ -277,7 +283,10 @@ func handleCredentialRotate(svc service.CredentialServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		newValueArg := mcp.ParseString(req, "new_value", "")
+		newValueArg, _, argErr := stringArg(req, "new_value")
+		if argErr != nil {
+			return mcp.NewToolResultError(argErr.Error()), nil
+		}
 		if newValueArg == "" {
 			return mcp.NewToolResultError("new_value is required"), nil
 		}

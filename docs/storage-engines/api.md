@@ -1,7 +1,7 @@
 # Storage Engines — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Storage engines
 
@@ -103,7 +103,26 @@ Two things reach a caller:
 
 Not applicable — there are no versioned routes in this feature.
 
-## Not built
+## Target design: what a caller would see
 
-An object-storage LSM segment layout for `objstore` is not implemented; this
-API describes the shipped engines only.
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+for the full design, future work under the SPEC row `object-storage-lsm`.
+**Not implemented.** The wire surface does not change shape:
+
+- The backend enum stays `objstore` — `DatabaseInfo.Backend` does not gain or
+  rename a value. The LSM segment layout is an internal rebuild of what
+  `backend: objstore` means, not a new caller-visible option.
+- There is still no wire API for storage engines (this feature has none
+  today, per "Storage engines" above), and this design does not add one.
+
+Three things a caller observes today would change:
+
+- **The capability report's `unencryptedAtRest` list** stops naming a
+  standalone `objstore` store under the seal, because the design encrypts
+  every remote object through the barrier (OS-4).
+- **A database's `backend: objstore`** stops being refused when the database
+  opens (`database.InvalidBackendError`), in phase 2 of the design.
+- **`raft.sm_storage`/`state_storage: objstore`** stays refused (see
+  [engineering.md](engineering.md)'s error table). Lifting the Raft
+  hot-apply-path refusal is OS-7, deferred to a gated phase 3, and is called
+  out here so a reader of this API doc is not surprised by it later.

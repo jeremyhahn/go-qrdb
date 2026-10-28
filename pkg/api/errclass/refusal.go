@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -34,6 +35,7 @@ var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
 	userConcurrentUpdateRefusal,
+	adminCredentialRequiresCARefusal,
 	vlogRefusal,
 }
 
@@ -86,6 +88,15 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// adminCredentialRequiresCARefusal encodes a *ceremony.AdminCredentialRequiresCAError,
+// so a gRPC or Unix client rebuilds it and errors.As matches across the wire.
+func adminCredentialRequiresCARefusal(err error) (string, map[string]string, bool) {
+	if e, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](err); ok {
+		return ceremony.ReasonAdminCredentialRequiresCA, e.Metadata(), true
 	}
 	return "", nil, false
 }

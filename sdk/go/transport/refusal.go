@@ -16,6 +16,7 @@ package transport
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
@@ -31,6 +32,9 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
+	},
+	ceremony.ReasonAdminCredentialRequiresCA: func(md map[string]string) error {
+		return ceremony.AdminCredentialRequiresCAFromMetadata(md)
 	},
 	vlog.ReasonLogExists: func(md map[string]string) error {
 		return vlog.LogExistsFromMetadata(md)

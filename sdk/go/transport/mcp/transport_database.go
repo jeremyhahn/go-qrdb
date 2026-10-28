@@ -76,7 +76,7 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 			args["barrier_shares_total"] = req.Barrier.SharesTotal
 		}
 		if req.Barrier.Secret != "" {
-			args["barrier_secret"] = req.Barrier.Secret
+			putStringSecret(args, "barrier_secret", req.Barrier.Secret)
 		}
 	}
 

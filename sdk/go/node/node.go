@@ -4899,6 +4899,13 @@ func buildClusteredHost(
 	// one opens the WAL, binds the Raft transport and starts the shard, only
 	// for all of it to be torn down again on a cancelled boot. Callers wrap
 	// this in *HostCreateError like every other host-open failure.
+	//
+	// ctx is checked again between those three steps, not only before the
+	// first. None of them takes a ctx -- each is a run of durable bootstrap
+	// writes, fsync after fsync, which cannot be abandoned half-written --
+	// and on a disk under contention the three together take seconds. A
+	// cancel that lands in one step is honoured as that step ends, rather
+	// than paying for the steps after it as well.
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -4909,6 +4916,10 @@ func buildClusteredHost(
 		UnmarkedFormat: database.WALFormatPlaintext,
 	})
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = wal.Close()
 		return nil, nil, err
 	}
 	hostOpts = append(hostOpts, wal.Options...)
@@ -4924,6 +4935,10 @@ func buildClusteredHost(
 		log.Info("raft member identity",
 			slog.Uint64("replica_id", shardCfg.ReplicaID),
 			slog.String("identity", identity))
+	}
+	if err := ctx.Err(); err != nil {
+		_ = host.Close()
+		return nil, nil, err
 	}
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {

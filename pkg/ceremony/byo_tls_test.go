@@ -226,6 +226,28 @@ func TestInitialize_BYOTLS_GenerateRefused(t *testing.T) {
 	assert.Equal(t, "generate", needsCA.Path)
 }
 
+// TestAdminCredentialRequiresCA_MetadataRoundTrip: the refusal metadata
+// rebuilds the error with its path, so a remote client reports the same
+// refused path the node did.
+func TestAdminCredentialRequiresCA_MetadataRoundTrip(t *testing.T) {
+	for _, path := range []string{"csr-sign", "generate"} {
+		want := &AdminCredentialRequiresCAError{Path: path}
+		got := AdminCredentialRequiresCAFromMetadata(want.Metadata())
+		assert.Equal(t, want, got)
+		assert.Equal(t, want.Error(), got.Error())
+	}
+}
+
+// TestAdminCredentialRequiresCAFromMetadata_MissingPathKeepsType: a refusal
+// with no path still rebuilds the typed error, with Path empty.
+func TestAdminCredentialRequiresCAFromMetadata_MissingPathKeepsType(t *testing.T) {
+	for _, md := range []map[string]string{nil, {"other": "x"}} {
+		got := AdminCredentialRequiresCAFromMetadata(md)
+		require.NotNil(t, got)
+		assert.Empty(t, got.Path)
+	}
+}
+
 // TestInitialize_BYOTLS_BYOCDefaultsToClientCACertPEM covers BYOC's pool
 // fallback on a BYO-TLS node: with no explicit AdminCertPoolPEM, the
 // admin certificate is validated against CeremonyConfig.ClientCACertPEM

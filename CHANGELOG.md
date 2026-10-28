@@ -11,9 +11,48 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Security
+- **mcp-secret-argument-types** (#1129, #1130): an MCP secret, PIN or
+  credential argument sent as anything but a JSON string (an array, object,
+  number, boolean or `null`) is refused with `ToolArgumentError` naming it,
+  before either its text or its `<name>_b64` form is decoded. `mcp.ParseString`
+  had coerced such a value, reading an array or object as an absent secret, so
+  `so_pin_b64` and `user_pin_b64` sent as arrays let `qrdb_barrier_initialize`
+  go ahead with neither PIN provisioned. The same check covers the discovery
+  shared secrets and token, the credential values, the user auth-factor
+  credentials, the tenant-barrier unseal key and the invitation token
+  (`docs/barrier-seal/api.md`, "Secret arguments over MCP").
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added
+- `service.LeaseService.LogRenewals` counts the lease keep-alives sent
+  through the raft log rather than answered by the lease primary from memory.
+  `TestRaft_LeaseKeepAliveLatencyTail` now asserts that count stays at zero
+  instead of bounding p90/median, which a loaded CI runner failed with nothing
+  on the renewal path waiting (CI run 69207); the latencies are still logged
+  for `test/performance/lease-keepalive.md`.
+- **fips-140-3** (#914): a joiner configured with both a Noise key and a P-256
+  key is now tested against the real runtime rather than the
+  `forceNoiseAvailable` override. Under `GOFIPS140=latest GODEBUG=fips140=only`,
+  `pkg/clusterenroll`'s `TestJoinCSR_DualKeyClientSelectsTheRuntimeSuite`
+  selects `p256proto.SuiteP256AESGCM`, asserts the runtime refuses X25519 key
+  generation and completes the CSR join, so the join never reaches X25519; it
+  logs the observed `fips140` mode. `TestFetchAnchor_DualKeyBootstrapTracksTheRuntime`
+  proves the anchor fetch hands go-truststrap no Noise key in that runtime.
+- **fips-140-3** (#914): two tests that skipped under `fips140=only` now assert
+  in both modes. `TestCheckPublicKeyStrength_RSA` (`pkg/clusterca`) builds its
+  1024-bit RSA public key from a modulus, which the module does not refuse, and
+  reaches the `*WeakKeyError` refusal; `TestParseSignerPEM`'s
+  `x25519_cannot_sign` (`pkg/authfactors/mtls`) builds an RFC 8410 X25519
+  PKCS#8 key from fixed bytes and asserts `*authfactors.EnrollmentInvalidError`
+  where the module refuses to parse it and `*UnsupportedSignerError` elsewhere.
+  Both leave the skip register in `docs/seal/fips140-mode.md`.
+- **fips-140-3** (#914): `pkg/seal`'s `TestOpenWrapped_AuthenticationFailureIsKeyMismatch`,
+  `TestOpenWrapped_CiphertextShorterThanOverheadIsKeyMismatch` and
+  `TestOpenWrapped_RefusesPlaintextOutsideProtectedMemory` skipped whole under
+  `fips140=only` although only their caller-nonce AEAD is refused there; each
+  now runs once per nonce convention, so the module-nonce case runs in both
+  modes and only the unreachable caller-nonce case skips.
 - **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
   WAL fsync stall keeps its leadership and term, so linearizable reads and
   admin requests are not failed by an election the stall caused; writes wait
@@ -91,6 +130,15 @@ are not reconstructed here — their history is in the git log.
   registers each claim it attempts, and the rollback's release is guarded on
   the freshly generated id, so it removes a claim that landed and nothing
   else.
+
+- **A cancelled clustered boot stops at the step it is in**: `sdk/go/node`'s
+  `NewClusteredNode` checked its ctx before opening the Raft WAL and in the
+  readiness wait, but not between the WAL open, the host open and the shard
+  start, so a cancel landing in the first still paid for the fsyncs of all
+  three -- seconds on a contended disk (CI run 69313). ctx is now checked as
+  each step ends: a boot cancelled while the WAL opens builds no host, and one
+  cancelled while the host opens starts no shard; both return
+  `*HostCreateError` wrapping `context.Canceled`.
 
 - **The verifiable log's three remaining refusals are typed on every
   transport** (#912): a second create of a log, a second sign-head at a tree
@@ -355,9 +403,41 @@ are not reconstructed here — their history is in the git log.
   waits for in-flight operations, marks the store closed and closes the DB
   exactly once, and a later or concurrent Close returns nil. Calls after Close
   return `ErrStorageClosed`.
+- **An async vector compaction or index rebuild no longer outlives the node**
+  (#1171): the jobs ran on no context the node controlled, so one in flight at
+  shutdown reached the vector Pebble DB after it closed. The vector service now
+  runs them on its own background context, and the node closes the service
+  before the vector storage. `Close` cancels every job and returns only once
+  each has stopped, on every call, a concurrent second one included, and the
+  service refuses every later request (a rebuild, a compaction, or any read or
+  write, `BatchDeleteVectors`, `ListVectors`, `UpdateMetadata` and
+  `SearchByID` among them) with `VectorServiceClosedError` before it touches
+  storage.
 
 ### Added
 
+- **`sdk/go` re-exports `WithRegisterCeremonyCA`** (#1129), beside the other
+  gRPC registration options: a composer registering qrdb's gRPC service on its
+  own server (gRPC or the Unix socket) attaches its `sdk.CeremonyCA`, so
+  `CeremonyInitialize`'s CSR-sign and generate paths issue the bootstrap
+  admin's certificate from that CA instead of failing with
+  `*ceremony.AdminCredentialRequiresCAError`. That error now reaches a remote
+  client typed: every transport carries it as the structured refusal
+  `ADMIN_CREDENTIAL_REQUIRES_CA` (metadata `path`), and the SDK rebuilds it, so
+  `errors.As` matches it, `Path` included, over gRPC, Unix, REST, QUIC and MCP.
+- **MCP barrier and ceremony secrets travel as base64, losslessly** (#1130).
+  Every secret argument of the barrier, tenant-barrier, holder, database and
+  ceremony tools (`secret`, `passphrase`, `barrier_secret`, `so_pin`,
+  `user_pin`, including `qrdb_database_unseal`, `qrdb_database_create`,
+  `qrdb_barrier_rekey_start` and `qrdb_barrier_officer_revoke`) has a
+  `<name>_b64` sibling in
+  standard padded base64 (RFC 4648 §4), so bytes that are not UTF-8, or that
+  begin with a byte-order mark, reach the barrier exactly. The text form stays;
+  a call carrying both forms is refused with `SecretArgumentConflictError`, and
+  invalid base64 with `ValueDecodeError`. The Go SDK's MCP client always sends
+  `<name>_b64`. `qrdb_barrier_unseal`'s `secret` and
+  `qrdb_ceremony_sign_csr`'s `so_pin` are no longer schema-`required`, since
+  either form satisfies them; the handler still refuses a call with neither.
 - **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
   through the new `WithRegisterTenantBarrierService` option, gated by the
   middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);

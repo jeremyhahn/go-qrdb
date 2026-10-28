@@ -232,6 +232,15 @@ travels in the **path**, not the body (`json:"-"` on the request struct).
 
 `POST /v1/databases/{name}/unseal` — carries the unseal `secret`.
 
+On MCP, `qrdb_database_unseal`'s `secret` and `qrdb_database_create`'s
+`barrier_secret` each take a text form and a `<name>_b64` form, standard
+base64 that carries any bytes exactly; a call carrying both is refused, and
+so is a value that is not a JSON string, in either form or in
+`static_shared_secret`, `multicast_shared_secret` or `token_value`. The
+convention is the barrier tools' own
+([../barrier-seal/api.md](../barrier-seal/api.md#secret-arguments-over-mcp)).
+The Go SDK's MCP client always sends `<name>_b64`.
+
 `DatabaseRaftConfig` fields: `clusterMode` (`none|local|distributed`),
 `replicaId`, `raftAddress`, `peers`, `localNodeCount`. **There is no
 `shardId`**: the cluster issues a database's shard ID at create, it never

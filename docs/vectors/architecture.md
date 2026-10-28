@@ -41,7 +41,9 @@ Four search modes, deliberately distinct rather than one overloaded call:
 
 Index maintenance is explicit and asynchronous: `RebuildIndex` and
 `CompactNamespace` return immediately and expose progress endpoints
-(`GetRebuildProgress`, `GetCompactionProgress`).
+(`GetRebuildProgress`, `GetCompactionProgress`). The vector service owns
+those background jobs: closing it cancels them and waits for them, and the
+node closes it before the vector storage beneath it.
 
 ### Alternatives rejected
 
