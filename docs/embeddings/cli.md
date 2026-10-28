@@ -1,6 +1,6 @@
 # Embedding Service — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb embedding` — generate vector embeddings for text and list
@@ -9,6 +9,17 @@ available models. All verbs accept the root persistent flags documented in
 
 The daemon must have at least one provider configured in its `embedding`
 section; otherwise the capability is unavailable.
+
+## Exit codes, output and required flags
+
+Every verb exits `0` on success and `1` on any error, which it prints to
+stderr. No flag is required; `embed` and `batch-embed` need at least one text
+argument.
+
+| Verb | `--output table` (default) | `--output json` / `yaml` |
+|---|---|---|
+| `embed`, `batch-embed` | a summary: `model`, `count`, `dims`, `cached` | `embeddings`, `model`, `cached` |
+| `models` | a table: `NAME`, `DIMENSIONS`, `MAX_TOKENS` | the model list |
 
 ## `qrdb embedding embed <text> [text...]`
 

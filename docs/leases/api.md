@@ -1,6 +1,6 @@
 # Leases — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -37,6 +37,16 @@ compare-and-swap keeps the key's current lease. Every transport behaves the same
 way, because the binding is decided in the state machine.
 
 ## Schemas
+
+Requests, the same fields on every transport (REST names shown):
+
+| Capability | Request |
+|---|---|
+| Grant | `{"ttl": 60}`, the TTL in seconds (`LeaseGrantRequest.ttl`) |
+| Revoke | `{"lease_id": 7}` (`LeaseRevokeRequest.lease_id`) |
+| Keep-alive | `{"lease_id": 7}` (`LeaseKeepAliveRequest.lease_id`) |
+| Time-to-live | query parameter `lease_id`, required: `GET /lease/ttl?lease_id=7`; missing or unparseable is `400` (`LeaseTimeToLiveRequest.lease_id`) |
+| List | no fields |
 
 A lease (the gRPC message `Lease`, the SDK type `transport.LeaseInfo`), returned
 by grant, keep-alive and time-to-live, and in the list:

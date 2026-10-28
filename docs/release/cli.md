@@ -1,6 +1,6 @@
 # Release — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -30,16 +30,24 @@ no bot that performs this step instead.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VERSION` | *(required)* | the release, `vX.Y.Z-alpha`. Must be given on the command line; a value inherited from the environment is refused |
+| `VERSION` | *(required)* | the release, `vX.Y.Z-alpha`. Must be given on the command line |
 | `RELEASE_REMOTE` | `dev` | the remote to publish to. A remote that points at github.com is refused |
-| `AGENT_GIT` | the operator's signing wrapper, from `PATH` | the identity and signing wrapper every git write goes through |
+| `AGENT_GIT` | a fixed wrapper name set in the Makefile, resolved on `PATH` | the identity and signing wrapper every git write goes through |
 | `REPO_NAME` | `go-qrdb` | the literal repository name handed to the wrapper |
+
+`VERSION`, `RELEASE_REMOTE`, `AGENT_GIT`, `REPO_NAME` and `SUBMODULE_TAGS` are
+each refused when the value comes from the environment (`make -e`, including
+an inherited `MAKEFLAGS=-e`).
 
 `VERSION` is authoritative: the recipe tags `HEAD` and never writes VERSION
 or commits. It refuses unless `VERSION` on `HEAD` already names the requested
 release ("VERSION on HEAD names X, not Y; merge the VERSION/CHANGELOG bump
 first"), `HEAD` is SSH-signed, and `HEAD` is exactly what the remote's `main`
-holds. It pushes only the tags.
+holds. It also refuses a branch other than `main`, a dirty tree, a skewed tag
+set, an existing tag, a missing CHANGELOG section and a remote whose fetch
+and push URLs differ; the messages are in
+[When `release-alpha` refuses](user.md#when-release-alpha-refuses). It pushes
+only the tags.
 
 Once the push lands, `.github/workflows/release.yml` fires on the tag and
 validates it (api.md), with no further action from the operator.

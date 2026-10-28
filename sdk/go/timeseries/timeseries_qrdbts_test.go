@@ -73,6 +73,13 @@ func queryValue(t *testing.T, ts *sdkts.TimeSeriesDirStorage) float64 {
 // filesContain reports whether any regular file under dir holds needle. The
 // walk and every read resolve under one os.Root opened on dir (G122), so a
 // path retargeted mid-walk cannot lead a read outside it.
+//
+// The store on dir must be closed first. An open Pebble replaces its OPTIONS
+// file, its manifest and its WAL on its own schedule, so a file the walk
+// lists can be gone by the time it is read (main run 68703). Skipping such a
+// file instead would weaken the claim: a file deleted under the walk may be
+// the one that held a clear copy. A closed store holds still, so every file
+// on disk is read.
 func filesContain(t *testing.T, dir string, needle []byte) bool {
 	t.Helper()
 	root, err := os.OpenRoot(dir)
@@ -115,9 +122,11 @@ func TestNewTimeSeriesStorageWithDir_WriteQueryPersists(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	ts = open(t, dir, nil)
-	defer func() { _ = ts.Close() }()
 	if v := queryValue(t, ts); v != 42.5 {
 		t.Fatalf("value after reopen = %v, want 42.5", v)
+	}
+	if err := ts.Close(); err != nil {
+		t.Fatalf("Close after reopen: %v", err)
 	}
 	if !filesContain(t, dir, []byte(markerMetric)) {
 		t.Fatal("a plaintext store holds no clear copy of the metric: the encrypted case below proves nothing")
@@ -136,9 +145,11 @@ func TestNewTimeSeriesStorageWithEncryptor_EncryptsAtRest(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	ts = open(t, dir, enc)
-	defer func() { _ = ts.Close() }()
 	if v := queryValue(t, ts); v != 7 {
 		t.Fatalf("value after reopen = %v, want 7", v)
+	}
+	if err := ts.Close(); err != nil {
+		t.Fatalf("Close after reopen: %v", err)
 	}
 	if filesContain(t, dir, []byte(markerMetric)) {
 		t.Fatal("an encrypted store holds the metric name in the clear")

@@ -1,6 +1,6 @@
 # Embedding Service — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -75,7 +75,10 @@ Wired into every protocol server with `server.WithEmbedding()`.
   means that provider's configured model.** The response always names the model
   actually used, so a caller can record it alongside the vector.
 - **Cache keys are the `(model, text)` pair.** The same text embedded under two
-  models yields two entries; one is never served for the other.
+  models yields two entries; one is never served for the other. The lookup
+  uses the request's `Model` and the store uses the model the provider
+  reports, so a request with an empty `Model` never hits the cache: a cache
+  hit needs `Model` set explicitly.
 - **`Cached` is reported on the response** so a caller can tell a cache hit from
   a provider call.
 - **The cache has no TTL** and is cleared on service shutdown. It retains
@@ -112,7 +115,7 @@ Each entry of `providers`:
 | `base_url` | string | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `api_key` | string | `""` | bearer token; empty for unauthenticated endpoints |
 | `model` | string | `text-embedding-3-small` | default embedding model name |
-| `timeout` | string | `"30s"` | per-request timeout, Go duration format |
+| `timeout` | string | `"30s"` | per-request timeout, Go duration format, truncated to whole seconds. A value that does not parse is ignored and the 30 s default applies; a value below one second truncates to 0, which the provider replaces with its own default (30 s for OpenAI) |
 | `max_retries` | int | `3` | retries for transient failures (5xx, network) |
 
 ```yaml
@@ -146,13 +149,15 @@ config file must be protected as a secret.
 
 ## Error semantics
 
-Source: `pkg/service/embedding_errors.go`.
+Source: the types are in `pkg/service/embedding_errors.go` and
+`pkg/service/embedding_service.go`.
 
 | Error type | Condition | Fails closed? |
 |---|---|---|
 | `*EmbeddingProviderNotFoundError` | the requested provider is not registered | **yes** — no substitution |
-| `*EmbeddingProviderRegistrationError` | the provider name is already registered | yes |
+| `*EmbeddingProviderRegistrationError` | the provider name is already registered; wraps `*EmbeddingProviderAlreadyRegisteredError` | yes |
 | `*EmbeddingServiceClosedError` | a call after `Close` | yes |
+| `*EmbeddingCloseError` | `Close` could not close one or more providers; carries every provider's error | n/a — the service is closed either way |
 
 | Condition | Behavior |
 |---|---|

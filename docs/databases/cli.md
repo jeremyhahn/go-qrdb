@@ -1,7 +1,7 @@
 # Databases — CLI
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-22
+> Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" sections describe the multi-model database program in
@@ -20,8 +20,8 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 |---|---|---|---|
 | `--backend` | string | `pebble` | `pebble \| memory \| file \| raft \| objstore` — see below |
 | `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
-| `--cluster-mode` | string | `local` | `local \| distributed` — **raft backend only** |
-| `--replicas` | int | 1 | replication factor — **raft backend only** |
+| `--cluster-mode` | string | unset (server applies `local`) | `local \| distributed` — **raft backend only** |
+| `--replicas` | int | unset (server applies `1`) | replication factor — **raft backend only** |
 | `--barrier-enabled` | bool | false | enable a per-database encryption barrier (**non-raft `--data-dir` database, system tenant only**) |
 | `--barrier-strategy` | string | `passphrase` | `passphrase \| shamir`; `shamir` splits the root key to the database's enrolled share holders (see [Share-holder verbs](#share-holder-verbs-shamir-database-barrier)) instead of taking a passphrase |
 | `--barrier-passphrase` | string | — | passphrase, when strategy is `passphrase` |
@@ -30,7 +30,7 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 | `--etcd` | bool | false | enable the etcd wire protocol |
 | `--etcd-listen-addr` | string | `localhost:2379` | etcd listen address |
 | `--etcd-advertise-urls` | strings | — | advertised etcd client URLs |
-| `--sql-concurrency` | string | `optimistic` | `optimistic \| pessimistic` — the database's SQL concurrency mode |
+| `--sql-concurrency` | string | unset (server applies `optimistic`) | `optimistic \| pessimistic` — the database's SQL concurrency mode |
 
 ```bash
 qrdb database create app
@@ -146,7 +146,7 @@ Seal the database's barrier. Data becomes unreadable until unsealed. No flags.
 
 | Flag | Type | Required |
 |---|---|---|
-| `--secret` | string | yes — unseal secret for the database barrier |
+| `--secret` | string | no — unseal secret for the database barrier; the CLI does not enforce it and sends an empty secret to the server as is |
 
 ```bash
 qrdb database barrier-status secure

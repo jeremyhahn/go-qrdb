@@ -144,6 +144,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -309,6 +310,14 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithHeadSignerProvider replaces the software head-signing key of every
+// verifiable log with a composer's vlog.HeadSignerProvider, typically one
+// that keeps the key on a device or in a KMS and never exports it.
+// Equivalent to server.WithHeadSignerProvider; forwarded in both boot paths.
+func WithHeadSignerProvider(p vlog.HeadSignerProvider) NodeOption {
+	return func(o *nodeOptions) { o.headSignerProvider = p }
+}
+
 // WithInvitationRedeemLimiter replaces the built-in token bucket that
 // throttles invitation redemption. Equivalent to
 // server.WithInvitationRedeemLimiter; the caller closes it.
@@ -333,6 +342,7 @@ func mergeSeamOptions(n nodeOptions, serverOpts []server.ServerOption) []server.
 		server.WithClock(n.clock),
 		server.WithStorageFactory(n.storageFactory),
 		server.WithDEKProvider(n.dekProvider),
+		server.WithHeadSignerProvider(n.headSignerProvider),
 		server.WithInvitationRedeemLimiter(n.invitationRedeemLimiter),
 		server.WithHolderActLimiter(n.holderActLimiter),
 		server.WithCertKeyProviderFactory(n.certKeyProviderFactory),
@@ -436,8 +446,9 @@ type nodeOptions struct {
 	// before calling NewStandaloneNode / NewClusteredNode.
 	sealStrategy seal.SealingStrategy
 
-	// backupSink, storageFactory, dekProvider, invitationRedeemLimiter,
-	// holderActLimiter, certKeyProviderFactory and certProvider are
+	// backupSink, storageFactory, dekProvider, headSignerProvider,
+	// invitationRedeemLimiter, holderActLimiter, certKeyProviderFactory and
+	// certProvider are
 	// composition seams; clock is another. Each is nil unless a composer set
 	// it, and nil keeps the software default. mergeSeamOptions folds them
 	// into the server options.
@@ -445,6 +456,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
+	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
 	certKeyProviderFactory  cakey.ProviderFactory
@@ -938,6 +950,7 @@ func withCryptoInfra(infra lifecycle.Infra, cfg *qrdbconfig.Config, serverOpts [
 	infra.StrategyRegistry = crypto.StrategyRegistry
 	infra.BarrierKeyProvider = crypto.BarrierKeyProvider
 	infra.DEKProvider = crypto.DEKProvider
+	infra.HeadSignerProvider = crypto.HeadSignerProvider
 	infra.InvitationRedeemLimiter = crypto.InvitationRedeemLimiter
 	infra.HolderActLimiter = crypto.HolderActLimiter
 	// The login CA is built inside BuildServices, so its seams are forwarded
@@ -4352,6 +4365,7 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		embedded.WithVectorService(svcNode.Vector),
 		embedded.WithEmbeddingService(svcNode.Embedding),
 		embedded.WithRAGService(svcNode.RAG),
+		embedded.WithLogService(svcNode.Log),
 		embedded.WithDatabaseService(svcNode.Database),
 		// Wired unconditionally, matching every service above: svcNode.Backup
 		// is itself constructed unconditionally (BuildServices). Without
@@ -4669,6 +4683,7 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 		server.WithCollectionService(svcNode.Collection),
 		server.WithDatabaseService(svcNode.Database),
 		server.WithVector(svcNode.Vector),
+		server.WithLogService(svcNode.Log),
 	}
 	// The transaction/CAS family is composed in BOTH modes. A standalone node
 	// is engine-direct and single-process, so a compare-and-swap there is
@@ -4887,6 +4902,13 @@ func buildClusteredHost(
 	// one opens the WAL, binds the Raft transport and starts the shard, only
 	// for all of it to be torn down again on a cancelled boot. Callers wrap
 	// this in *HostCreateError like every other host-open failure.
+	//
+	// ctx is checked again between those three steps, not only before the
+	// first. None of them takes a ctx -- each is a run of durable bootstrap
+	// writes, fsync after fsync, which cannot be abandoned half-written --
+	// and on a disk under contention the three together take seconds. A
+	// cancel that lands in one step is honoured as that step ends, rather
+	// than paying for the steps after it as well.
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -4897,6 +4919,10 @@ func buildClusteredHost(
 		UnmarkedFormat: database.WALFormatPlaintext,
 	})
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = wal.Close()
 		return nil, nil, err
 	}
 	hostOpts = append(hostOpts, wal.Options...)
@@ -4912,6 +4938,10 @@ func buildClusteredHost(
 		log.Info("raft member identity",
 			slog.Uint64("replica_id", shardCfg.ReplicaID),
 			slog.String("identity", identity))
+	}
+	if err := ctx.Err(); err != nil {
+		_ = host.Close()
+		return nil, nil, err
 	}
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
@@ -5056,6 +5086,17 @@ func buildClusteredRaftConfigs(
 
 		identities, err := cluster.ResolveMemberIdentities(
 			splitMemberIdentities(cfg.Raft.MemberIdentities), shardCfg.ReplicaID, identityCertPEM(mtls))
+		if err != nil {
+			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
+				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}
+		}
+		shardCfg.MemberIdentities = identities
+	} else if self := identityCertPEM(mtls); len(self) > 0 {
+		// A transport-less host checks no identity, but the membership it
+		// founds is the one every replica later added to the shard authorizes
+		// it by: seed its own identity, or the first member added refuses it
+		// as missing_identity. It has no other member to name.
+		identities, err := cluster.ResolveMemberIdentities(nil, shardCfg.ReplicaID, self)
 		if err != nil {
 			return quicraftconfig.HostConfig{}, quicraftconfig.Config{}, nil,
 				&ConfigError{Field: "raft.member_identities", Message: err.Error(), Err: err}

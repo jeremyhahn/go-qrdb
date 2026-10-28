@@ -18,7 +18,7 @@ import "time"
 
 // AuthFactorType identifies the kind of authentication factor a user has
 // registered. Four first-class types are supported per
-// docs/08-bootstrap-auth-architecture.md §5e.
+// docs/auth-factors/architecture.md.
 type AuthFactorType string
 
 const (

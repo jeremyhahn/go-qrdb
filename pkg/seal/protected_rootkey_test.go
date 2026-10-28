@@ -80,6 +80,26 @@ func sealForTest(t *testing.T, aead cipher.AEAD, plaintext, aad []byte) (nonce, 
 }
 
 func TestOpenWrapped_DecryptsIntoProtectedMemory(t *testing.T) {
+	eachNonceConvention(t, func(t *testing.T, aead cipher.AEAD) {
+		want := bytes.Repeat([]byte{0x5a}, 32)
+		aad := []byte("root-key-path")
+		nonce, ct := sealForTest(t, aead, want, aad)
+
+		buf, err := openWrapped(aead, nonce, ct, aad)
+		if err != nil {
+			t.Fatalf("openWrapped: %v", err)
+		}
+		if got := protectedBytes(t, buf); !bytes.Equal(got, want) {
+			t.Fatalf("root key = %x, want %x", got, want)
+		}
+	})
+}
+
+// eachNonceConvention runs test once per AEAD nonce convention openWrapped
+// accepts. The caller-nonce subtest skips under fips140=only (newTestGCM), so
+// the module-nonce subtest is the one that runs in a FIPS deployment.
+func eachNonceConvention(t *testing.T, test func(t *testing.T, aead cipher.AEAD)) {
+	t.Helper()
 	for _, tc := range []struct {
 		name        string
 		randomNonce bool
@@ -88,38 +108,29 @@ func TestOpenWrapped_DecryptsIntoProtectedMemory(t *testing.T) {
 		{name: "module nonce", randomNonce: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			aead := newTestGCM(t, tc.randomNonce)
-			want := bytes.Repeat([]byte{0x5a}, 32)
-			aad := []byte("root-key-path")
-			nonce, ct := sealForTest(t, aead, want, aad)
-
-			buf, err := openWrapped(aead, nonce, ct, aad)
-			if err != nil {
-				t.Fatalf("openWrapped: %v", err)
-			}
-			if got := protectedBytes(t, buf); !bytes.Equal(got, want) {
-				t.Fatalf("root key = %x, want %x", got, want)
-			}
+			test(t, newTestGCM(t, tc.randomNonce))
 		})
 	}
 }
 
 func TestOpenWrapped_AuthenticationFailureIsKeyMismatch(t *testing.T) {
-	aead := newTestGCM(t, false)
-	aad := []byte("root-key-path")
-	nonce, ct := sealForTest(t, aead, bytes.Repeat([]byte{1}, 32), aad)
-	ct[0] ^= 0xff
+	eachNonceConvention(t, func(t *testing.T, aead cipher.AEAD) {
+		aad := []byte("root-key-path")
+		nonce, ct := sealForTest(t, aead, bytes.Repeat([]byte{1}, 32), aad)
+		ct[0] ^= 0xff
 
-	if _, err := openWrapped(aead, nonce, ct, aad); !errors.Is(err, ErrUnsealKeyMismatch) {
-		t.Fatalf("err = %v, want ErrUnsealKeyMismatch", err)
-	}
+		if _, err := openWrapped(aead, nonce, ct, aad); !errors.Is(err, ErrUnsealKeyMismatch) {
+			t.Fatalf("err = %v, want ErrUnsealKeyMismatch", err)
+		}
+	})
 }
 
 func TestOpenWrapped_CiphertextShorterThanOverheadIsKeyMismatch(t *testing.T) {
-	aead := newTestGCM(t, false)
-	if _, err := openWrapped(aead, make([]byte, aead.NonceSize()), []byte{1, 2, 3}, nil); !errors.Is(err, ErrUnsealKeyMismatch) {
-		t.Fatalf("err = %v, want ErrUnsealKeyMismatch", err)
-	}
+	eachNonceConvention(t, func(t *testing.T, aead cipher.AEAD) {
+		if _, err := openWrapped(aead, make([]byte, aead.NonceSize()), []byte{1, 2, 3}, nil); !errors.Is(err, ErrUnsealKeyMismatch) {
+			t.Fatalf("err = %v, want ErrUnsealKeyMismatch", err)
+		}
+	})
 }
 
 // allocatingAEAD opens correctly but ignores the destination it is handed and
@@ -139,20 +150,21 @@ func (a *allocatingAEAD) Open(_, nonce, ciphertext, aad []byte) ([]byte, error) 
 // assertion: an AEAD that decrypts into memory it allocated would put the root
 // key on the heap, so the result is wiped and refused rather than accepted.
 func TestOpenWrapped_RefusesPlaintextOutsideProtectedMemory(t *testing.T) {
-	inner := newTestGCM(t, false)
-	aad := []byte("root-key-path")
-	nonce, ct := sealForTest(t, inner, bytes.Repeat([]byte{0x7e}, 32), aad)
+	eachNonceConvention(t, func(t *testing.T, inner cipher.AEAD) {
+		aad := []byte("root-key-path")
+		nonce, ct := sealForTest(t, inner, bytes.Repeat([]byte{0x7e}, 32), aad)
 
-	aead := &allocatingAEAD{AEAD: inner}
-	_, err := openWrapped(aead, nonce, ct, aad)
-	var unprotected *UnprotectedDecryptError
-	if !errors.As(err, &unprotected) {
-		t.Fatalf("err = %v (%T), want *UnprotectedDecryptError", err, err)
-	}
-	if unprotected.Error() == "" {
-		t.Error("empty error string")
-	}
-	if !bytes.Equal(aead.returned, make([]byte, len(aead.returned))) {
-		t.Fatal("the heap plaintext the AEAD returned was not wiped")
-	}
+		aead := &allocatingAEAD{AEAD: inner}
+		_, err := openWrapped(aead, nonce, ct, aad)
+		var unprotected *UnprotectedDecryptError
+		if !errors.As(err, &unprotected) {
+			t.Fatalf("err = %v (%T), want *UnprotectedDecryptError", err, err)
+		}
+		if unprotected.Error() == "" {
+			t.Error("empty error string")
+		}
+		if !bytes.Equal(aead.returned, make([]byte, len(aead.returned))) {
+			t.Fatal("the heap plaintext the AEAD returned was not wiped")
+		}
+	})
 }

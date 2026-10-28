@@ -162,14 +162,11 @@ func startRestoreDRNode(t *testing.T, bin string, prefix string) *restoreDRNode 
 // test proves recovery from), and relaunches it with the same start
 // arguments plus --restore-backup-id.
 //
-// A barrier -- even a "none"-strategy one -- always comes back up SEALED
-// after a cold OS-process restart and must be driven through the sealed
-// window again before the boot can reach restore.go's offline restore step
-// (confirmed empirically: unlike the in-process migration recycle,
-// strategy=none grants no free pass across a real process restart). A wiped
-// data dir also destroys the barrier's persisted state, so that case needs a
-// fresh initialize+unseal; a non-wiped restart's barrier is already
-// initialized, so only unseal is valid (a second initialize is refused).
+// A wiped data dir destroys the barrier's persisted state, so that case
+// needs a fresh initialize+unseal before the boot can reach restore.go's
+// offline restore step. A non-wiped restart's "none" barrier is already
+// initialized and its node unseals it at boot, so the helper only waits for
+// that (a second initialize is refused).
 func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, backupID string, wipeDataDir bool) {
 	t.Helper()
 
@@ -197,26 +194,36 @@ func (n *restoreDRNode) restartWithOfflineRestore(t *testing.T, bin, prefix, bac
 	if wipeDataDir {
 		initAndUnsealBarrier(t, n.ca, n.adminPort, "")
 	} else {
-		unsealOnlyBarrier(t, n.ca, n.adminPort)
+		waitForSelfUnsealed(t, n.ca, n.adminPort)
 	}
 	waitForHealthy(t, n.dataDir, 90*time.Second)
 	waitForAdmin(t, n.ca.Pool, n.adminPort, 90*time.Second)
 	waitForLeaderViaAdmin(t, n.ca, []int{n.adminPort}, 60*time.Second)
 }
 
-// unsealOnlyBarrier unseals an ALREADY-INITIALIZED barrier (secret "",
-// matching the "none" strategy) without attempting to re-initialize it --
-// unlike initAndUnsealBarrier, which is only valid on a barrier's first
-// boot. Used after a restart that did not wipe the data directory, where
-// the barrier's persisted state (and therefore its initialized status)
-// survived. It returns once the node reports the barrier unsealed.
-func unsealOnlyBarrier(t *testing.T, ca *testCA, port int) {
+// waitForSelfUnsealed waits until an ALREADY-INITIALIZED "none" barrier,
+// whose persisted state survived a restart, reports itself unsealed. A none
+// barrier holds no secret and its node unseals it at every start
+// (docs/barrier-seal/cli.md), so no unseal is sent: a node that stays sealed
+// fails the test.
+func waitForSelfUnsealed(t *testing.T, ca *testCA, port int) {
 	t.Helper()
-	unsealOnlyBarrierWithSecret(t, ca, port, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), barrierBootTimeout)
+	defer cancel()
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	for !barrierUnsealedOn(ctx, client, port) {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waitForSelfUnsealed: the none barrier on port %d never reported unsealed within %v", port, barrierBootTimeout)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
-// unsealOnlyBarrierWithSecret is unsealOnlyBarrier for a barrier sealed with
-// a passphrase: it unseals with secret.
+// unsealOnlyBarrierWithSecret unseals an ALREADY-INITIALIZED barrier sealed
+// with a passphrase, without re-initializing it -- unlike
+// initAndUnsealBarrier, which is only valid on a barrier's first boot. It
+// returns once the node reports the barrier unsealed.
 func unsealOnlyBarrierWithSecret(t *testing.T, ca *testCA, port int, secret []byte) {
 	t.Helper()
 
@@ -229,11 +236,11 @@ func unsealOnlyBarrierWithSecret(t *testing.T, ca *testCA, port int, secret []by
 	client := mtlsHTTPClient(t, ca, barrierBootTimeout)
 	statusClient := mtlsHTTPClient(t, ca, 5*time.Second)
 	if err := unsealInitializedBarrier(ctx, client, statusClient, port, secret); err != nil {
-		t.Fatalf("unsealOnlyBarrier: %v", err)
+		t.Fatalf("unsealOnlyBarrierWithSecret: %v", err)
 	}
 }
 
-// unsealInitializedBarrier is unsealOnlyBarrier's loop, returning its outcome
+// unsealInitializedBarrier is unsealOnlyBarrierWithSecret's loop, returning its outcome
 // rather than failing a test so the helper's own behaviour is testable.
 func unsealInitializedBarrier(ctx context.Context, client, statusClient *http.Client, port int, secret []byte) error {
 	body, err := json.Marshal(map[string]interface{}{"secret": secret})

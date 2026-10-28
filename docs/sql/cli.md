@@ -1,6 +1,6 @@
 # SQL — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Two surfaces: the `qrdb sql` client verb group, and the `qrdbd` flags that turn
@@ -45,6 +45,11 @@ qrdb sql query --database mydb "SELECT * FROM kv WHERE key = 'foo'"
 qrdb sql query --file query.sql
 echo "SELECT * FROM kv" | qrdb sql query --file -
 ```
+
+The verb runs over every `--transport`. With `--transport embedded` it opens
+the data directory in-process and needs no running server.
+
+**Exit codes.** `0` on success; `1` on any error, with the message on stderr.
 
 `qrdb sql` has exactly one verb. Full DDL, DML and transaction control are
 available over the wire protocols and the in-process driver, not through this

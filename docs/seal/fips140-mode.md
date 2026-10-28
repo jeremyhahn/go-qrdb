@@ -1,6 +1,6 @@
 # FIPS 140-3 Mode (`GODEBUG=fips140=only`)
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -22,17 +22,17 @@ product; where the gate sits and why is in [Arming the gate](#arming-the-gate).
 ci.yml's `fips` job (`FIPS 140-3`) runs in the full tier — every push to
 `main`, every `workflow_dispatch`, and a pull request labelled `ci:full` — in
 the one toolchain image `docker-build` produces, and executes the full unit
-suite of **both modules** under:
+suite of **both modules**, `make test` and `make test-sdk`, as parallel matrix
+legs, one per name in the Makefile's `FIPS_LEGS` (#1230). Each leg runs:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only go build ./...
-GOFIPS140=latest GODEBUG=fips140=only make test
-GOFIPS140=latest GODEBUG=fips140=only make test-sdk
+GOFIPS140=latest GODEBUG=fips140=only make test-fips-leg FIPS_LEG=<leg>
 ```
 
 The `go build ./...` line runs in the **root module only**: the job has no
 build step for `sdk/go`. The SDK is compiled under the FIPS module only as far
-as `make test-sdk` compiles it — `go test ./...` in `sdk/go`, which builds every
+as its legs compile it — `go test ./...` in `sdk/go`, which builds every
 package it visits, with the test build tags. Whatever is claimed about the SDK
 below is a claim about that step, not about a `go build`.
 
@@ -49,25 +49,88 @@ prohibited cryptography and the job still reports green. `only` is the setting a
 FedRAMP / PCI DSS v4 / HIPAA gate has to run (handbook
 `software/conventions/configuration.md` §5).
 
-The job scope is deliberately identical to the ordinary gate — the same
-`make test` **and `make test-sdk`** targets with the same build tags. A FIPS job
-over a subset of the suite does not tell you the product is FIPS-clean.
+The job scope is deliberately identical to the ordinary gate — the packages of
+`make test` **and `make test-sdk`** with the same build tags. A FIPS job over a
+subset of the suite does not tell you the product is FIPS-clean.
 
-**`make test-sdk` is required.** `sdk/go` is a separate Go module, so
-`make test` (`./pkg/... ./cmd/... ./test/buildgates/...`) does not reach a
+**`make test-sdk`'s packages are required.** `sdk/go` is a separate Go module,
+so `make test` (`./pkg/... ./cmd/... ./test/buildgates/...`) does not reach a
 single line of it: every transport, `sdk/go/node`, the driver, the DAO layer
-and the conformance matrix run only under `make test-sdk`.
+and the conformance matrix run only in the SDK's legs.
 
-The sdk step runs even when the root suite fails (`if: always()`), so a red
-root module still yields an SDK measurement. Either module failing fails the
-job.
+### The legs
 
-The job is in `ci-gate`'s `needs`, so a red `fips` turns CI Gate red; see
-[Arming the gate](#arming-the-gate).
+One run of both suites took 69.9 minutes, the longest job of the full tier, and
+set the time to a green main and to every tag. The legs run side by side, each
+aimed under 30 minutes and under its own limit, at most 45 minutes (ruling
+221(5)), with go test's per-package budget 5 minutes inside the limit.
+`make -s print-fips-legs` prints them, and
+`make -s print-fips-leg-packages FIPS_LEG=<leg>` prints a leg's packages.
 
-To reproduce a CI failure locally, prefix the same commands:
+The split is from measured wall times, run 68401 (the first seven-leg run), not
+from package counts. A leg takes about its slowest package plus 3 to 4 minutes
+of build and setup, so a package that runs long sits in a leg alone. A pattern
+without `/...` names one package, which is how `seal` holds `pkg/seal` while
+its subpackages run in `api-keys`:
+
+| Leg | Module | Packages | Slowest package (run 68401) | Expected | Limit |
+|---|---|---|---|---|---|
+| `tenant-lifecycle` | root | `pkg/tenant`'s `TenantService`, `CreateTenant`, `StoreResolver`, `DeleteTenant` and `UndoCreate` tests | 200 tests, 13.8 min locally | ~23.5 min | 30 min |
+| `tenant` | root | the rest of `pkg/tenant` | 528 tests, 13.6 min locally | ~23 min | 30 min |
+| `seal-barrier` | root | `pkg/seal`'s `Barrier`, `StorageBarrier`, `ChangePassword`, `SealStore` and `TenantBarrier` tests | 260 tests, 9.4 min locally | ~18 min | 30 min |
+| `seal` | root | the rest of `pkg/seal` | 436 tests, 9.1 min locally | ~18 min | 30 min |
+| `server-raft` | root | `pkg/server`'s `Raft` and `ReattachRaft` tests | 11.3 min locally | ~16.5 min | 25 min |
+| `server` | root | the rest of `pkg/server` | 11.6 min locally | ~17 min | 25 min |
+| `auth` | root | `pkg/server/lifecycle`, `pkg/auth`, `cmd` | `pkg/server/lifecycle` 10.9 min | ~15 min | 25 min |
+| `service` | root | `pkg/service`, `pkg/database`, `pkg/statemachine`, `pkg/engine`, `pkg/dao`, `pkg/store` | `pkg/service` 11.6 min | ~16 min | 25 min |
+| `api-keys` | root | `pkg/api`; `pkg/seal`'s subpackages, `pkg/ceremony`, `pkg/credentials`, `pkg/firstboot`, `pkg/pin`, `pkg/clusterseal`, `pkg/barrierinit`, `pkg/authfactors`, `pkg/keywrap`, `pkg/dek`, `pkg/sql` | `pkg/credentials` 3.4 min | ~10 min | 20 min |
+| `rest` | root | `test-clusterproof`, then every package of `make test` no root leg above names | `test/buildgates` 6.1 min | 18.2 min (measured) | 30 min |
+| `sdk-transport` | `sdk/go` | `transport` | `transport/embedded/internal/scopegen` 13.3 min | 18.3 min (measured) | 30 min |
+| `sdk` | `sdk/go` | every package of `make test-sdk` `sdk-transport` does not name | `sdk/go/node` 12.4 min | 17.4 min (measured) | 30 min |
+
+**A package too slow for a leg alone is split by test name.** `pkg/tenant`
+(38.6 minutes in run 68401) and `pkg/seal` (32.9 minutes) are each one package
+over 30 minutes, so no assignment of packages to legs brings them under, and
+`pkg/server` (25.7 minutes) left its leg no headroom. Their cost is the mode's
+KDF spread over hundreds of tests, not one test: the same packages run in 6.0
+(`pkg/seal`) and 7.0 (`pkg/tenant`) minutes without FIPS mode, where the
+software strategy's KDF is Argon2id rather than PBKDF2 at 600,000 iterations.
+The one outlier, a race test that changed a password on the production KDF
+(195 seconds), now uses the cheap test parameters. Each package's tests run
+one after another, so splitting them by name over two legs halves the time.
+
+A split package's first leg selects tests with `go test -run`
+(`FIPS_RUN_<leg>` in the Makefile) and its second runs everything else with
+`-skip` built from the first's pattern, so a new test runs in the second leg
+until a pattern names it. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints
+a leg's patterns. A split leg's expected time is its tests' local time, scaled
+by the package's measured ratio of CI to local time, plus setup; the other legs
+carry their run 68401 times.
+
+The two remainder legs mean a new package always runs, in `rest` or `sdk`,
+until a leg names it. Each leg's "Package results and slowest tests" step
+prints every package's time, so a leg nearing its limit shows which package to
+move; the fix is to move a pattern between `FIPS_LEG_<leg>` lists in the
+Makefile, and its limit in ci.yml's matrix, never to drop one.
+`test/buildgates/fips_legs_test.go` fails when a package of either suite is in
+no leg or in two, when a leg is empty, when ci.yml's matrix is not
+`FIPS_LEGS`, and when a leg has no limit of its own, one over 45 minutes, or a
+per-package budget other than its limit less 5 minutes. A package may be in
+two legs only when both select by name, and
+`test/buildgates/fips_split_test.go` then fails when a top-level test of the
+package runs in no leg or in two.
+
+Every leg runs to the end when another fails (`fail-fast: false`), so a red
+root leg still yields an SDK measurement. Any leg failing fails the job.
+
+The job is in `ci-gate`'s `needs`, and its result is every leg's, so a red leg
+turns CI Gate red; see [Arming the gate](#arming-the-gate).
+
+To reproduce a CI failure locally, prefix the same commands — the failing leg
+alone, or both whole suites:
 
 ```
+GOFIPS140=latest GODEBUG=fips140=only make test-fips-leg FIPS_LEG=<leg>
 GOFIPS140=latest GODEBUG=fips140=only make test
 GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
@@ -308,6 +371,11 @@ under `-race`. The KDF cost is the mode's contract.
   and `rsa.GenerateKey` at 1024 bits return an error under `fips140=only`; an
   ignored error leaves a nil key, and the panic that follows kills the whole
   test binary, so every later test in the package reports nothing.
+- **Build a fixture the module will not generate when only its shape is
+  judged.** `CheckPublicKeyStrength` reads only an RSA key's modulus size, so
+  `TestCheckPublicKeyStrength_RSA` (`pkg/clusterca`) builds a 1024-bit
+  `rsa.PublicKey` from a modulus and reaches the weak-key refusal in both
+  modes; `TestParseSignerPEM` builds its X25519 PKCS#8 key from fixed bytes.
 - **Guard a SHA-1 fixture on `fips140.Enforced()` up front.** `crypto/sha1`
   panics rather than returning an error, so no error check can catch it.
 - **Use an approved KEM where the KEM is incidental.** A holder's separate
@@ -328,7 +396,9 @@ under `-race`. The KDF cost is the mode's contract.
   expected suite. Under `fips140=only` the CSR join selects P-256 and the
   anchor fetch hands go-truststrap no Noise key. The first test also asserts
   that the runtime refuses X25519 key generation, so a completed join proves
-  that X25519 was never reached.
+  that X25519 was never reached. It logs the mode it observed, so a `-v` run
+  records which branch it took: under `GOFIPS140=latest GODEBUG=fips140=only`
+  it reads `Enabled=true Enforced=true` and suite `0x2`, the P-256 suite.
 - **A test of a FIPS-dependent selector folds `fips140.Enabled()` into its
   expectation**, as `wantVersion` does for `kdf.DefaultHasher`
   (`pkg/seal/kdf`). `GOFIPS140` selects the module at build time, so
@@ -359,10 +429,9 @@ count: read `--- SKIP` here as *unreachable code*, not *hidden red*.
 |---|---|---|
 | `TestWrappedRootKey_CallerNonceProvider` | Constructs a caller-nonce AEAD (`cipher.NewGCM`) to exercise the caller-nonce branch of `sealWrapped`/`openWrapped` | The full non-FIPS suite |
 | `TestWrappedRootKey_RejectsMismatchedProviderNonceWidth` | Same, via `cipher.NewGCMWithNonceSize` | The full non-FIPS suite |
-| `TestOpenWrapped_DecryptsIntoProtectedMemory`'s `caller_nonce` subtest (`pkg/seal/protected_rootkey_test.go`) | Same caller-nonce `cipher.NewGCM` construction as the two rows above, through `skipIfFIPS` | Its `module_nonce` subtest, plus the full non-FIPS suite |
-| `TestParseSignerPEM`'s `x25519_cannot_sign` subtest (`pkg/authfactors/mtls`) | `ecdh.X25519().{GenerateKey,NewPrivateKey}` both refuse under `fips140=only`, so there is no byte string that is both "a valid X25519 PKCS8 key" and "parseable" to feed `ParseSignerPEM` | The full non-FIPS suite |
+| The `caller_nonce` subtests of `TestOpenWrapped_DecryptsIntoProtectedMemory`, `TestOpenWrapped_AuthenticationFailureIsKeyMismatch`, `TestOpenWrapped_CiphertextShorterThanOverheadIsKeyMismatch` and `TestOpenWrapped_RefusesPlaintextOutsideProtectedMemory` (`pkg/seal/protected_rootkey_test.go`, `eachNonceConvention`) | Same caller-nonce `cipher.NewGCM` construction as the two rows above, through `skipIfFIPS` | Each test's `module_nonce` subtest, plus the full non-FIPS suite |
 | `TestRecipientFromPublicKey_FIPSModeRefusesX25519` (`pkg/keydelivery`) | Needs a real X25519 public key to prove `RecipientFromPublicKey` refuses it; `GenerateKey` itself refuses first | The full non-FIPS suite, via the same test with its simulated-FIPS branch (`withFIPSMode`) |
-| `TestCheckPublicKeyStrength_RSA`'s weak-key case (`pkg/clusterca`), `TestParseCSR_RefusesWhatItCannotIssueFor`'s `1024-bit RSA` case (`pkg/cert`), `TestParseAnchors_RefusesWeakRSA` (`pkg/trustanchor`) | `rsa.GenerateKey(.., 1024)` itself refuses under `fips140=only` | The full non-FIPS suite |
+| `TestParseCSR_RefusesWhatItCannotIssueFor`'s `1024-bit RSA` case (`pkg/cert`), `TestParseAnchors_RefusesWeakRSA` (`pkg/trustanchor`) | `rsa.GenerateKey(.., 1024)` itself refuses under `fips140=only` | The full non-FIPS suite |
 | `TestParsePrivateKeyBlock_RefusesUnknownTypesAndWeakKeys`'s weak-key case (`pkg/cert`) | Same RSA-1024 generation refusal | The full non-FIPS suite |
 | `TestParseAnchors_RefusesSHA1Signature` (`pkg/trustanchor`) | `crypto/sha1` **panics** (not an error return) when `x509.CreateCertificate` is asked to sign with `SHA1WithRSA`, so the fixture cannot be built at all | The full non-FIPS suite |
 | `TestRegisterOfficer_EnvelopeKEMs`'s `dhkem-x25519`/`mlkem768-x25519` cases (`pkg/ceremony`), `TestSuite_RoundTripEveryKEM`'s same two cases (`pkg/keydelivery`) | The KEM under test is itself refused by `keydelivery.LookupSuite`, which is exactly the behaviour `TestLookupSuite_FIPSModeRefusesX25519Suites` already covers directly | `TestLookupSuite_FIPSModeRefusesX25519Suites`, plus the full non-FIPS suite |
@@ -374,6 +443,7 @@ refusal is the documented typed error, and any other result fails it:
 | Test | What it asserts under `fips140=only` |
 |---|---|
 | `TestNewDecrypter_DHKEMOpensThroughTheDevice`'s `dhkem-x25519` case, `TestNewDecrypter_HybridOpensThroughTheDevice`, and the hybrid key-shape cases of `TestNewDecrypter_Refusals` (`pkg/keydelivery`) | `LookupSuite` and `NewDecrypter` both return `*SuiteNotApprovedError` |
+| `TestParseSignerPEM`'s `x25519_cannot_sign` subtest (`pkg/authfactors/mtls`) | an RFC 8410 PKCS#8 X25519 key built from fixed bytes is refused as `*authfactors.EnrollmentInvalidError`, because the module refuses to parse it; elsewhere it is refused as `*UnsupportedSignerError` |
 | The `noise-nk` subtests of `TestJoinCSR_DeviceHeldKeyJoinsThroughTheSDK` and `TestJoinCSR_RefusedTokenIsAJoinRefusedError` (`sdk/go/clusterenroll`) | `JoinCSR` pinned to a Noise key alone returns `*NoiseFIPSUnavailableError` before it dials; their `p256` subtests join (or are refused the bad token) in both modes |
 
 A test that only needs *a KEM other than the device's*, such as
@@ -475,7 +545,7 @@ for each rejection class:
 **A `--- SKIP` line is not a failure, and a change in the skip count is not a
 regression.** Read each one against the register before reacting:
 
-- the `caller_nonce` subtest under [Skipped tests under
+- the `caller_nonce` subtests under [Skipped tests under
   `fips140=only`](#skipped-tests-under-fips140only), which is unreachable code;
 - `TestHelperProcess_Boot1Kill` (`pkg/seal/encfs`) and
   `TestHelperProcess_StandaloneNodeBoot1Kill` (`sdk/go/node`), helper-process

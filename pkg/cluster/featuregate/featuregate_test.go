@@ -552,8 +552,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo)}, SupportedNames())
+	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -792,6 +792,62 @@ func TestGate_AdoptAppliedLeavesActivationsUnloaded(t *testing.T) {
 	unread := newGate(t, threeNodes())
 	unread.adoptApplied(context.Background(), kv)
 	assert.False(t, unread.Activated(GuardedWrites), "a failed local read adopted something")
+}
+
+// loggedGate returns a single-member gate whose log is written to buf.
+func loggedGate(t *testing.T, buf *bytes.Buffer) *Gate {
+	t.Helper()
+	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
+	m.set(systemShard, 1, map[uint64]string{1: "n1:7000", 2: "n2:7000"})
+	g, err := New(Config{Self: Self{ReplicaID: 1}, SystemShardID: systemShard, Members: m,
+		RefreshInterval: time.Hour, Logger: slog.New(slog.NewTextHandler(buf, nil))})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	return g
+}
+
+// A node that learns of an activation only from its replica's applied
+// record -- its leader unreachable, so neither the linearizable refresh nor
+// activate's write gets through -- still logs it, once, however many passes
+// find it.
+func TestGate_AppliedActivationIsLoggedOnce(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(RollingMigration), []byte(`{}`))
+	require.NoError(t, err)
+	noLeader := errors.New("not leader")
+	kv.fail(noLeader, nil, noLeader)
+
+	var buf bytes.Buffer
+	g := loggedGate(t, &buf)
+	g.adoptApplied(context.Background(), kv)
+	g.adoptApplied(context.Background(), kv)
+	g.activate(context.Background(), kv)
+
+	require.True(t, g.Activated(RollingMigration))
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "feature activation observed"), logged)
+	assert.Contains(t, logged, "feature="+string(RollingMigration))
+	assert.NotContains(t, logged, "activated cluster-wide")
+}
+
+// A linearizable refresh that finds an activation logs it once, and a
+// feature no record names is neither enabled nor logged.
+func TestGate_CheckActivatedLogsEachAdoptionOnce(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(TenantUndo), []byte(`{}`))
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	g := loggedGate(t, &buf)
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+
+	require.True(t, g.Activated(TenantUndo))
+	require.False(t, g.Activated(RollingMigration))
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "feature activation observed"), logged)
+	assert.Contains(t, logged, "feature="+string(TenantUndo))
+	assert.NotContains(t, logged, "feature="+string(RollingMigration))
 }
 
 // failingListStore cannot list advertisements.

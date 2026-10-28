@@ -1,6 +1,6 @@
 # FIPS 140-3 Role Model
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -14,7 +14,7 @@ Role definitions and enforced separation of duties for go-qrdb, aligned with FIP
 
 go-qrdb implements a five-role model that enforces separation of duties between module initialization, cryptographic operations, and auditing. The critical design constraint is that the Security Officer (SO) role **cannot** perform cryptographic operations (sign, encrypt, decrypt). This prevents a single compromised identity from both managing the module infrastructure and using it for sensitive operations, meeting FIPS 140-3 AS10.03 and PCI-DSS v4 Req 7.1 separation-of-duties requirements.
 
-Unlike Vault's four-role model, go-qrdb splits Operator and User into distinct roles (Operator does maintenance; User is read-only crypto consumer) matching the xkms role architecture and the PKCS#11-extended two-role model. Key custodians, who hold Shamir shares for M-of-N unseal ceremonies, are share holders rather than an RBAC role: see [Key custodians](#key-custodians).
+go-qrdb splits Operator and User into distinct roles (Operator does maintenance; User is read-only crypto consumer) matching the xkms role architecture and the PKCS#11-extended two-role model. Key custodians, who hold Shamir shares for M-of-N unseal ceremonies, are share holders rather than an RBAC role: see [Key custodians](#key-custodians).
 
 ## Roles
 
@@ -285,7 +285,7 @@ A key custodian is a share holder, not an RBAC principal. RBAC refuses a holder 
 
 Auditors can observe but not modify. This ensures audit trail integrity — an auditor cannot cover their tracks by deleting logs or modifying system state.
 
-**Enforcement:** by the composition of the auditor grant list only (`registerAuditorGrants` in `pkg/permission/builtin_role_grants.go` lists read-only verbs, and the golden-set drift guard in `pkg/role/builtin_grants_equivalence_test.go` fails if it changes). There is **no** structural deny-all-writes rule for the auditor role: unlike the SO constraint above, nothing panics if a future contributor adds a write permission to the auditor role — the drift guard turns it into a deliberate review item rather than an impossibility. Add a structural guard here before relying on AS10.10 as an enforced invariant rather than a maintained one.
+**Enforcement:** by the composition of the auditor grant list only (`registerAuditorGrants` in `pkg/permission/builtin_role_grants.go` lists read-only verbs, and the golden-set drift guard in `pkg/role/builtin_grants_equivalence_test.go` fails if it changes). There is **no** structural deny-all-writes rule for the auditor role: unlike the SO constraint above, nothing panics if a future contributor adds a write permission to the auditor role — the drift guard turns it into a deliberate review item rather than an impossibility. AS10.10 is therefore a maintained invariant, not an enforced one.
 
 ### Key Deletion Is Limited to SO and Admin (FIPS 140-3 AS10.03)
 

@@ -62,6 +62,7 @@ func TestClient_CapabilityAccessors_PanicNamingTheMissingInterface(t *testing.T)
 		{"Lock", "transport.LockClient", func() { c.Lock() }},
 		{"TimeSeries", "transport.TimeSeriesClient", func() { c.TimeSeries() }},
 		{"Vector", "transport.VectorClient", func() { c.Vector() }},
+		{"Vlog", "transport.VlogClient", func() { c.Vlog() }},
 		{"Users", "transport.UserClient", func() { c.Users() }},
 		{"Roles", "transport.RoleClient", func() { c.Roles() }},
 		{"Certs", "transport.CertClient", func() { c.Certs() }},

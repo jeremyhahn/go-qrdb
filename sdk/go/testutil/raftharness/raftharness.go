@@ -69,11 +69,34 @@ type Cluster struct {
 	createFn sm.CreateFunc
 }
 
+// HostOptionsFunc returns the extra host options for the host serving
+// system-shard replica replicaID, whose WAL directory is walDir. It runs before
+// that host is constructed, so a t.Cleanup it registers runs after the host
+// closes.
+type HostOptionsFunc func(t testing.TB, replicaID uint64, walDir string) []quicraft.HostOption
+
+// Option configures NewCluster.
+type Option func(*options)
+
+type options struct {
+	hostOptions HostOptionsFunc
+}
+
+// WithHostOptions appends fn's options to each host's construction, after
+// the harness's own. A test injects a LogDB over a fault filesystem this way.
+func WithHostOptions(fn HostOptionsFunc) Option {
+	return func(o *options) { o.hostOptions = fn }
+}
+
 // NewCluster starts n hosts and forms their system shard, waiting until every
 // host serves a linearizable read of its membership. The hosts are closed when
 // the test ends.
-func NewCluster(t testing.TB, n int) *Cluster {
+func NewCluster(t testing.TB, n int, opts ...Option) *Cluster {
 	t.Helper()
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	pki := t.TempDir()
 	ca, err := qrdbdharness.NewCA(pki)
 	if err != nil {
@@ -118,7 +141,11 @@ func NewCluster(t testing.TB, n int) *Cluster {
 			DeploymentID:  1,
 		}
 		cfg.TransportConfig.MTLSConfig = &quicraftconfig.MTLSConfig{CACert: caPEM, Cert: certs[i].CertPEM, Key: certs[i].KeyPEM}
-		host, err := quicraft.NewHost(cfg, quicraft.WithoutEncryption())
+		hostOpts := []quicraft.HostOption{quicraft.WithoutEncryption()}
+		if o.hostOptions != nil {
+			hostOpts = append(hostOpts, o.hostOptions(t, uint64(i+1), cfg.WALDir)...)
+		}
+		host, err := quicraft.NewHost(cfg, hostOpts...)
 		if err != nil {
 			t.Fatalf("raftharness: NewHost: %v", err)
 		}

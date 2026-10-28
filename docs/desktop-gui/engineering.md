@@ -1,6 +1,6 @@
 # Desktop GUI — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 ## Build tags
@@ -176,30 +176,11 @@ management, feature errors), watch streaming and npm packaging are documented in
   same admin-certificate/holder-certificate/admin-key-path result panel
   `ServerInitWizard` does before connecting.
 
-## App shell states
+## App shell states and wizard steps
 
-`App.svelte`'s `AppState`: `loading` → `init` or `unseal` (browser only) →
-`app`, with `error` when start-up fails.
-
-| State | Condition |
-|---|---|
-| `loading` | initial load |
-| `init` | browser mode; the server is sealed and has never been initialized (`ServerInitWizard`) |
-| `unseal` | browser mode; the server is sealed and initialized |
-| `app` | unsealed, or desktop mode |
-| `error` | connecting, the seal status check or loading the profiles failed |
-
-The desktop goes straight to `app`: `MainApp` holds the saved connection
-profiles and the seal flows, and opens **Add Server** (`ConnectionManager`)
-when there is none.
-
-## Wizard steps
-
-`ServerInitWizard`: barrier → officers (Shamir only) → admin → applying →
-complete.
-
-`ConnectionManager`'s embedded-server wizard: name → mode → discovery (Raft
-only) → barrier → officers (Shamir only) → admin → summary → applying.
+The `AppState` machine and the two wizards' steps are in
+[architecture.md](architecture.md#app-shell-state-machine) and
+[architecture.md](architecture.md#initialization-wizard).
 
 ## Error semantics
 
@@ -218,14 +199,7 @@ no" from "the connection failed".
 
 ## Makefile targets
 
-```bash
-make install-frontend    # npm install for the TypeScript SDK + frontend
-make build-frontend      # build the TypeScript SDK + Vite frontend
-make build-client        # client binary in the devcontainer (CLI + GUI)
-make dev-gui             # Wails dev mode with hot reload
-```
-
-`build-client` produces a **single binary with every frontend asset embedded**.
+The build targets are in [cli.md](cli.md#building-it).
 
 ## TypeScript in CI
 

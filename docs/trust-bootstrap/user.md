@@ -21,7 +21,7 @@ trusted fact to you by a different route:
 | Mode | Where the trusted fact comes from |
 |---|---|
 | `dane` | a DNSSEC-signed TLSA record |
-| `noise` | a Noise XK handshake using a static key you already have |
+| `noise` | a Noise NK handshake using a static key you already have |
 | `spki` | a SHA-256 hash somebody handed you out of band |
 | `direct` | the CA bundle itself, copied by an operator |
 | `auto` | whichever of the above is available, strongest first |

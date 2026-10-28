@@ -19,6 +19,9 @@ package workload
 import (
 	"errors"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/history"
 )
@@ -36,6 +39,41 @@ var definiteWriteRejections = []func(error) bool{
 	isA[*transport.NotImplementedError],
 	isA[*transport.InvalidWriteModeError],
 	isA[*transport.ConfigError],
+	grpcCodeIn(definiteGRPCRejections),
+}
+
+// definiteGRPCRejections are the gRPC status codes a node answers only for a
+// request it refused outright: malformed, unauthenticated, not permitted, or
+// over a quota or rate limit (pkg/api/grpc/error_status.go); each means the
+// write had no effect. Unavailable, DeadlineExceeded, Aborted and Unknown are
+// absent on purpose: gRPC returns Unavailable when a connection breaks after
+// the request was written as well as before it, so a write that meets one
+// stays indeterminate. A sealed node's refusal stays indeterminate too: a
+// barrier can seal between a write's commit and its answer.
+var definiteGRPCRejections = map[codes.Code]bool{
+	codes.InvalidArgument:   true,
+	codes.Unauthenticated:   true,
+	codes.PermissionDenied:  true,
+	codes.ResourceExhausted: true,
+}
+
+// grpcCodeIn reports whether an error carries a gRPC status whose code is in
+// set. An error from a transport other than gRPC carries no status and never
+// matches.
+func grpcCodeIn(set map[codes.Code]bool) func(error) bool {
+	return func(err error) bool {
+		st, ok := grpcStatus(err)
+		return ok && set[st.Code()]
+	}
+}
+
+// grpcStatus returns the gRPC status err wraps, if it wraps one.
+func grpcStatus(err error) (*status.Status, bool) {
+	var carrier interface{ GRPCStatus() *status.Status }
+	if !errors.As(err, &carrier) {
+		return nil, false
+	}
+	return carrier.GRPCStatus(), true
 }
 
 // absentOK names the operations for which KeyNotFound is a successful answer.
@@ -76,7 +114,14 @@ func isA[T error](err error) bool {
 }
 
 // connectionLost reports whether err means the connection itself is gone, so
-// the client should drop it and dial again.
+// the client should drop it and dial again. A gRPC Unavailable counts: the
+// node is down or unreachable, and the redial's health check, which records
+// nothing, finds out when it is back instead of one recorded operation per
+// retry.
 func connectionLost(err error) bool {
-	return isA[*transport.ConnectionError](err) || isA[*transport.ClosedError](err)
+	if isA[*transport.ConnectionError](err) || isA[*transport.ClosedError](err) {
+		return true
+	}
+	st, ok := grpcStatus(err)
+	return ok && st.Code() == codes.Unavailable
 }

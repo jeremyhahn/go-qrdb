@@ -1,6 +1,6 @@
 # Document Collections — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb collection`, with a `doc` subgroup for the documents
@@ -58,6 +58,8 @@ shows when it entered its state, e.g. `State: dropping (since
 qrdb collection info users --database app --output json
 ```
 
+An unknown collection exits non-zero with a not-found error.
+
 ## `qrdb collection list`
 
 List all collections in a database, with a `STATE` column. A collection
@@ -70,6 +72,9 @@ that is `creating` or `dropping` is listed, not hidden.
 ```bash
 qrdb collection list --database app
 ```
+
+A database with no collections prints an empty list and exits `0`; an unknown
+database exits non-zero with a not-found error.
 
 ## `qrdb collection drop <name>`
 
@@ -135,7 +140,7 @@ exits non-zero with "document already exists" rather than replacing it. Use
 
 ## `qrdb collection doc get <collection> <id>`
 
-Retrieve a document by ID.
+Retrieve a document by ID. Prints the document's JSON, without `_id`.
 
 | Flag | Type | Default |
 |---|---|---|
@@ -145,21 +150,29 @@ Retrieve a document by ID.
 qrdb collection doc get users 1755561600000000000 --database app
 ```
 
+An unknown ID or collection exits non-zero with a not-found error; a
+collection that is `creating` or `dropping` is refused with a
+failed-precondition error.
+
 ## `qrdb collection doc update <collection> <id>`
 
 **Replace** an existing document. This is not a merge — the document you supply
 becomes the document.
 
-| Flag | Type | Default |
-|---|---|---|
-| `--database` | string | `system` |
-| `--data` | string | — |
-| `--file` | string | — |
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--database` | string | `system` | target database |
+| `--data` | string | — | replacement document JSON, inline |
+| `--file` | string | — | replacement document JSON file path, `-` for stdin |
 
 ```bash
 qrdb collection doc update users 1755561600000000000 --database app \
      --data '{"email":"alice@example.com","status":"disabled"}'
 ```
+
+An unknown ID exits non-zero with a not-found error — update never creates a
+document. Malformed JSON, or a field named `id`, is refused as an invalid
+argument and nothing is stored.
 
 ## `qrdb collection doc delete <collection> <id>`
 
@@ -172,6 +185,8 @@ Delete a document by ID.
 ```bash
 qrdb collection doc delete users 1755561600000000000 --database app
 ```
+
+An unknown ID exits non-zero with a not-found error.
 
 ## `qrdb collection doc list <collection>`
 

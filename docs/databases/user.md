@@ -1,7 +1,7 @@
 # Databases — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-22
+> Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Coming change" sections describe the multi-model database design in
@@ -191,6 +191,48 @@ period. Leader changes and restarts do not reset that wait.
 **Dropping a database removes its policy.** A database created again under the
 same name starts with no policy.
 
+**Keep a verifiable log.** A verifiable log is an append-only list of entries
+in a database, kept as an RFC 9162 Merkle tree: anyone holding a head can check
+that an entry is in it, and that a later head extends an earlier one, without
+trusting the server. A signed head is a C2SP checkpoint. The `qrdb vlog`
+commands are in a client built with verifiable logs (the default build), and
+the root `--database` flag picks the database:
+
+```bash
+qrdb vlog create --log releases --origin db.example.com/releases --signing-key-type ed25519
+qrdb vlog append --log releases --entry "v1.0.0 sha256:..." --entry "v1.0.1 sha256:..."
+qrdb vlog get --log releases --from 0 --limit 100
+qrdb vlog head --log releases
+qrdb vlog prove-inclusion --log releases --index 1 --size 2
+qrdb vlog prove-consistency --log releases --size1 1 --size2 2
+qrdb vlog sign-head --log releases
+qrdb vlog rotate-key --log releases --signing-key-type ecdsa-p256-sha256
+qrdb vlog list
+```
+
+`--origin` is required on every log and becomes the checkpoint's first line;
+`--signing-key-type` gives the log a head-signing key (`ed25519` or
+`ecdsa-p256-sha256`), and a log without one cannot sign heads. The proofs print
+as hex hashes, or as `sdk/go/transport/vlogwire` JSON with `--output json`; check them
+with any RFC 9162 verifier against the root `vlog head` prints. Signing a head
+needs `vlog:sign_head`, an Operator permission an Admin does not hold.
+
+**A head is signed once per tree size.** `qrdb vlog sign-head` on a log whose
+current size already has a checkpoint is refused ("a checkpoint for tree size
+N already exists"; `*vlog.CheckpointExistsError` to an SDK caller): append an
+entry first. `qrdb vlog head` shows the latest
+checkpoint and the size it signs.
+
+**Expire old entry bodies.** On a log created with `--allow-expire-bodies`,
+`qrdb vlog expire --log releases --cutoff 1000` drops the bodies of the
+entries before index 1000. Their hashes stay, so every head and proof is still
+valid; `vlog get` shows those entries as `(expired)`. A log created without the
+flag refuses it ("does not allow expiring entry bodies";
+`*vlog.ExpireNotAllowedError` to an SDK caller), and creating a log that
+already exists is refused with `*vlog.LogExistsError`. Every SDK transport
+returns these typed errors; [api.md](api.md), "Verifiable logs", lists their
+wire reasons.
+
 ## Upgrading a cluster that holds raft databases
 
 A cluster whose raft-backed databases were created with per-node shard IDs
@@ -238,13 +280,28 @@ database.** Scaling works only on a `--backend raft` database created with
 `--cluster-mode distributed`; any other database has no replicas to change.
 
 **A lease or lock call, or a transaction naming a lease or comparing a
-revision, is refused as "unsupported".** On a standalone node the file and
-objstore backends keep no leases. Use pebble or memory; see
-[../run-modes/user.md](../run-modes/user.md).
+revision, is refused as "unsupported".** The database lives on a dedicated
+non-raft store, which has no lease service. Use a database on the default
+store; see [../run-modes/user.md](../run-modes/user.md).
 
 **"database not found" on a data-plane call.** Databases are never created
 implicitly, so a typo in `--database` is an error rather than a new, empty
 database you would not notice until later.
+
+**`qrdb vlog append` (or `sign-head`, `expire`) says the log was not found.**
+Logs are never created implicitly, as databases are not: create it with
+`qrdb vlog create`, and check `--database`, since each database has its own
+logs.
+
+**`qrdb vlog` says verifiable logs are not available in a barrier-enabled
+database.** A log is kept under the cluster's system barrier, not under a
+database's or tenant's own, so a database with a barrier (sealed or not) and a
+barrier-isolated tenant have no logs; the server answers `501 Not Implemented`
+(`UNIMPLEMENTED`). Keep the log in a database without a barrier.
+
+**`qrdb vlog` is an unknown command.** The client was built without verifiable
+logs (`WITH_QRDB_VLOG=0`); a server built without them answers every vlog call
+with `501 Not Implemented` (`UNIMPLEMENTED`).
 
 **You want to change backend.** Not possible in place. Create a new
 database with the shape you want and migrate the data — backup and restore

@@ -96,6 +96,39 @@ func TestSystemShardAuditResolver_RoutesPrefixAndBarrierTenantsToTheSystemShard(
 	}
 }
 
+// TestSystemShardLogResolver_RefusesBarrierTenants: the log registry sits
+// under the system barrier, so the log resolver refuses a barrier tenant.
+func TestSystemShardLogResolver_RefusesBarrierTenants(t *testing.T) {
+	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"widgets": {ID: "widgets", IsolationType: tenant.IsolationBarrier},
+	}}
+	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup)
+	_, _, err := r.ResolveAuditShard(context.Background(), "widgets")
+	var refused *BarrierTenantLogNotSupportedError
+	if !errors.As(err, &refused) || refused.TenantID != "widgets" {
+		t.Fatalf("ResolveAuditShard = %v, want *BarrierTenantLogNotSupportedError for widgets", err)
+	}
+}
+
+// TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes: only
+// a barrier tenant is refused beyond what the audit resolver refuses.
+func TestSystemShardLogResolver_RoutesOtherTenantsAsTheAuditResolverDoes(t *testing.T) {
+	lookup := &fakeIsolationLookup{tenants: map[string]*tenant.TenantInfo{
+		"acme":  {ID: "acme", IsolationType: tenant.IsolationPrefix},
+		"vault": {ID: "vault", IsolationType: tenant.IsolationVolume},
+	}}
+	r := NewSystemShardLogResolver(&mockHost{}, 1, lookup)
+	for _, id := range []string{tenantid.System, "acme", "ghost"} {
+		if _, shardID, err := r.ResolveAuditShard(context.Background(), id); err != nil || shardID != 1 {
+			t.Fatalf("ResolveAuditShard(%q) = %d, %v; want shard 1", id, shardID, err)
+		}
+	}
+	var dedicated *DedicatedTenantAuditNotSupportedError
+	if _, _, err := r.ResolveAuditShard(context.Background(), "vault"); !errors.As(err, &dedicated) {
+		t.Fatalf("ResolveAuditShard(vault) = %v, want *DedicatedTenantAuditNotSupportedError", err)
+	}
+}
+
 // TestSystemShardAuditResolver_RefusesDedicatedIsolationTenants is the
 // explicit-refusal property: a volume or raft tenant must never silently
 // get the system shard's chain under its own segment.

@@ -366,9 +366,9 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 				return nil, &SystemBarrierInitError{Cause: initErr}
 			}
 		} else {
-			result.BarrierStrategy = strategy
+			result.BarrierStrategy = strategyInForce(system, strategy)
 			deps.Logger.Info("bootstrap: system barrier initialized",
-				slog.String("strategy", string(strategy)))
+				slog.String("strategy", string(result.BarrierStrategy)))
 		}
 	}
 
@@ -394,11 +394,32 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 	}
 	result.FirstBoot = fbResult
 
-	deps.Logger.Info("bootstrap: system bootstrap complete",
-		slog.String("strategy", string(strategy)),
-		slog.Bool("barrier_already_initialized", result.BarrierAlreadyInitialized))
+	// The strategy logged is the one the barrier is sealed under, not the
+	// configured one: a barrier initialized out of band, or on an earlier
+	// boot, keeps its own strategy whatever this boot's configuration names
+	// (#671: an init under none logged strategy=passphrase). A configuration
+	// that disagrees is logged beside it.
+	inForce := strategyInForce(system, strategy)
+	attrs := []any{
+		slog.String("strategy", string(inForce)),
+		slog.Bool("barrier_already_initialized", result.BarrierAlreadyInitialized),
+	}
+	if inForce != strategy {
+		attrs = append(attrs, slog.String("configured_strategy", string(strategy)))
+	}
+	deps.Logger.Info("bootstrap: system bootstrap complete", attrs...)
 
 	return result, nil
+}
+
+// strategyInForce returns the strategy that sealed the barrier's root key,
+// or configured while the barrier reports none (a sealed shamir barrier
+// awaiting its ceremony).
+func strategyInForce(b *seal.StorageBarrier, configured seal.StrategyID) seal.StrategyID {
+	if active := b.ActiveStrategy(); active != "" {
+		return active
+	}
+	return configured
 }
 
 // ---------------------------------------------------------------------------

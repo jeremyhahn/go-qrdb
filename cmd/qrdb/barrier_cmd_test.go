@@ -362,11 +362,33 @@ func TestBarrierUnsealCmd_Success(t *testing.T) {
 	}
 }
 
-func TestBarrierUnsealCmd_MissingSecret(t *testing.T) {
-	root := newBarrierTestRoot(t, &mockBarrierService{})
-	_, err := executeCommand(root, "barrier", "unseal")
-	if err == nil {
-		t.Fatal("expected error for missing --passphrase flag")
+func TestBarrierUnsealCmd_NoPassphraseSendsEmptySecret(t *testing.T) {
+	// A none barrier holds no secret: unseal without --passphrase is its
+	// form, and the server, not the CLI, refuses an empty secret for a
+	// keyed barrier.
+	called := false
+	root := newBarrierTestRoot(t, &mockBarrierService{unsealFn: func(_ context.Context, secret []byte) error {
+		called = true
+		if len(secret) != 0 {
+			t.Errorf("unseal without --passphrase sent a %d-byte secret", len(secret))
+		}
+		return nil
+	}})
+	out, err := executeCommand(root, "barrier", "unseal")
+	if err != nil {
+		t.Fatalf("unseal without --passphrase: %v", err)
+	}
+	if !called || !strings.Contains(out, "OK") {
+		t.Fatalf("unseal not sent (called=%v), output %q", called, out)
+	}
+}
+
+func TestBarrierUnsealCmd_NoPassphraseKeyedBarrierRefused(t *testing.T) {
+	root := newBarrierTestRoot(t, &mockBarrierService{unsealFn: func(context.Context, []byte) error {
+		return errBarrierTest
+	}})
+	if _, err := executeCommand(root, "barrier", "unseal"); !errors.Is(err, errBarrierTest) {
+		t.Fatalf("unseal of a keyed barrier without --passphrase = %v, want the server's refusal", err)
 	}
 }
 

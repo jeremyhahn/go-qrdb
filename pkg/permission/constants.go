@@ -203,6 +203,35 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Verifiable-log permissions
+// ---------------------------------------------------------------------------
+
+// The verifiable-log permissions gate the named append-only Merkle logs of a
+// database (docs/databases/architecture.md, "Verifiable log"). Each is
+// tenant-scoped (self_scope.go), like the vector permissions.
+const (
+	// VlogCreate grants access to create a verifiable log.
+	VlogCreate Permission = "vlog:create"
+	// VlogList grants access to list a database's verifiable logs.
+	VlogList Permission = "vlog:list"
+	// VlogAppend grants access to append an entry to a verifiable log.
+	VlogAppend Permission = "vlog:append"
+	// VlogGet grants access to read a verifiable log's entries.
+	VlogGet Permission = "vlog:get"
+	// VlogProof grants access to inclusion and consistency proofs.
+	VlogProof Permission = "vlog:proof"
+	// VlogHead grants access to read a verifiable log's head.
+	VlogHead Permission = "vlog:head"
+	// VlogExpire grants access to expire entry bodies on a log that allows it.
+	VlogExpire Permission = "vlog:expire"
+	// VlogSignHead grants access to sign a verifiable log's head with the
+	// owner's key, and to rotate that key. It is a use of that key, so it
+	// follows keys:sign: an Operator permission, never an Admin one, and
+	// declared in DutyCryptoUse.
+	VlogSignHead Permission = "vlog:sign_head"
+)
+
+// ---------------------------------------------------------------------------
 // Admin permissions
 // ---------------------------------------------------------------------------
 
@@ -1085,6 +1114,14 @@ var categories = []Category{
 		Name:        "Vector Service",
 		Group:       "Data Services",
 		Permissions: allVectorPermissions(),
+	},
+	{
+		Name:  "Verifiable Log Service",
+		Group: "Data Services",
+		Permissions: []Permission{
+			VlogCreate, VlogList, VlogAppend, VlogGet,
+			VlogProof, VlogHead, VlogExpire, VlogSignHead,
+		},
 	},
 	{
 		Name:  "Admin Service",

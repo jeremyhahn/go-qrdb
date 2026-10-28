@@ -332,6 +332,78 @@ func DecodeLeaseNotFoundError(data []byte) (leaseID int64, ok bool) {
 	return id, true
 }
 
+// LogRefusalReason names the verifiable-log refusal a log-refusal payload
+// carries (see EncodeLogRefusal).
+type LogRefusalReason byte
+
+// The verifiable-log refusals the state machine encodes under
+// logRefusalMarker, each answered by the log service with its typed vlog
+// error (go-qrdb#912).
+const (
+	// LogRefusalNotFound is a write naming a log that was never created.
+	LogRefusalNotFound LogRefusalReason = iota + 1
+	// LogRefusalExists is a create naming a log that already exists.
+	LogRefusalExists
+	// LogRefusalCheckpointExists is a checkpoint for a tree size that
+	// already has one.
+	LogRefusalCheckpointExists
+	// LogRefusalExpireNotAllowed is an expiry on a log whose descriptor
+	// does not allow it.
+	LogRefusalExpireNotAllowed
+)
+
+// logRefusalKinds is the generic kind of each log refusal, the one the state
+// machine's refusal table gives its vlog error, for a reader that does not
+// know the reason. It is also the set of reasons DecodeLogRefusal accepts.
+var logRefusalKinds = map[LogRefusalReason]AppErrorKind{
+	LogRefusalNotFound:         AppErrorInvalid,
+	LogRefusalExists:           AppErrorConflict,
+	LogRefusalCheckpointExists: AppErrorConflict,
+	LogRefusalExpireNotAllowed: AppErrorInvalid,
+}
+
+// logRefusalMarker distinguishes the refusal of a verifiable-log command
+// (OpVerifiableLog) the log service answers with a typed vlog error. Its
+// payload is the reason byte, the refused tree size as a little-endian
+// uint64 (zero for a reason without one), then the refusal's message. Every
+// such command names exactly one log, which the service layer already holds,
+// so the payload need not carry it: the service rebuilds the typed error
+// from the reason, the size and its own log ID, without reading anything out
+// of prose.
+var logRefusalMarker = []byte("\x00vlogref\x00")
+
+// logRefusalHeader is the length of a log-refusal payload's reason and size.
+const logRefusalHeader = 1 + 8
+
+// EncodeLogRefusal encodes a verifiable-log refusal: its reason, the tree size
+// it names (zero when it names none) and its message.
+func EncodeLogRefusal(reason LogRefusalReason, size uint64, msg string) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(logRefusalMarker)+logRefusalHeader+len(msg))
+	out = append(out, appErrorPrefix...)
+	out = append(out, logRefusalMarker...)
+	out = append(out, byte(reason))
+	out = binary.LittleEndian.AppendUint64(out, size)
+	return append(out, msg...)
+}
+
+// DecodeLogRefusal reports whether data is a verifiable-log refusal of a known
+// reason and, if so, its reason, tree size and message.
+func DecodeLogRefusal(data []byte) (reason LogRefusalReason, size uint64, msg string, ok bool) {
+	body, ok := bytes.CutPrefix(data, appErrorPrefix)
+	if !ok {
+		return 0, 0, "", false
+	}
+	rest, ok := bytes.CutPrefix(body, logRefusalMarker)
+	if !ok || len(rest) < logRefusalHeader {
+		return 0, 0, "", false
+	}
+	reason = LogRefusalReason(rest[0])
+	if _, known := logRefusalKinds[reason]; !known {
+		return 0, 0, "", false
+	}
+	return reason, binary.LittleEndian.Uint64(rest[1:logRefusalHeader]), string(rest[logRefusalHeader:]), true
+}
+
 // DecodeAppError reports whether data carries an encoded application error and,
 // if so, returns the error message with its kind marker stripped. Ordinary
 // result payloads (including the one-byte transaction success flag) do not
@@ -378,6 +450,13 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// kind -- the request named a lease that does not exist.
 	if id, nf := DecodeLeaseNotFoundError(data); nf {
 		return "lease not found: " + strconv.FormatInt(id, 10), AppErrorInvalid, true
+	}
+	// A verifiable-log refusal carries its own marker and payload (see
+	// EncodeLogRefusal). The log service decodes it into its typed vlog
+	// error first; a generic reader gets its message and the kind the state
+	// machine's refusal table gives that error.
+	if reason, _, msg, refused := DecodeLogRefusal(data); refused {
+		return msg, logRefusalKinds[reason], true
 	}
 	// A compaction refusal carries its own marker and payload too (see
 	// EncodeCompactRefusal). checkResultError decodes it into the typed

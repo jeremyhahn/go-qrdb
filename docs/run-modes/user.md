@@ -1,6 +1,6 @@
 # Run Modes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Test reference: `make integration-test-run-modes`; coverage row: `test/integration/COVERAGE.md` `[run-modes](../../docs/run-modes/)`.
@@ -71,10 +71,12 @@ the next holder. On a standalone node the server runs the expiry itself.
 the whole data plane, revisions, watch, leases and locks included.
 
 **Compile in the optional features you want.** Build tags are the outermost
-gate — config cannot switch on something the binary does not contain.
+gate — config cannot switch on something the binary does not contain. SQL,
+the MySQL and PostgreSQL protocols, etcd, time series and vectors are built in
+by default; `=0` drops one. Full-text search is opt-in:
 
 ```bash
-make build WITH_QRDB_SQL=1 WITH_QRDB_PGSQL=1 WITH_QRDB_VECTOR=1 WITH_QRDB_TS=1
+make build WITH_QRDB_FTS=1
 ```
 
 **Turn something off that is compiled in.** Config can narrow, never widen:

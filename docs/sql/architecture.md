@@ -1,6 +1,6 @@
 # SQL — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated.** `qrdb_sql` compiles the shared SQL core; `qrdb_mysql`
@@ -394,9 +394,9 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
   are keyed by an index incarnation that is never handed out twice within a
   table — no catalog change can land while an `ALTER` rewrite is open and be
   undone by its write-back — so `RENAME INDEX` moves no data and a dropped
-  index's keyspace can never become a live one's. **Tables created by v0.20.0 through v0.21.0 must
-  be dropped and re-created**: they were written under a key layout this
-  version does not read, and there is no migration. Such a table is refused (MySQL 1459 /
+  index's keyspace can never become a live one's. **A table written under the pre-generation key
+  layout must be dropped and re-created**: this version does not read that
+  layout, and there is no migration. Such a table is refused (MySQL 1459 /
   SQLSTATE 55000) rather than read as empty; `DROP TABLE` still works.
   See [engineering.md](engineering.md#truncate-table-generation-scoped-keys-o1-regardless-of-table-size).
 - **No read-set conflict detection by default** — see the isolation model in

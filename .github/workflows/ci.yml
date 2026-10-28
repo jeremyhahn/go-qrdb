@@ -1,5 +1,5 @@
-# ci-template: v1.27.0 — canonical CI for all first-party Go repos.
-# go-qrdb deviations from v1.27.0, one line each (the CUSTOMIZE block below
+# ci-template: v1.28.0 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.28.0, one line each (the CUSTOMIZE block below
 # gives each one's reason):
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
 #   - a docker-build job builds both images once; the others take its output
@@ -11,6 +11,13 @@
 #   - a fips job runs both unit suites under FIPS 140-3 mode, full tier
 #   - test-typescript is a job of its own
 #   - no revert-red-main.yml beside this file
+# v1.28.0, adopted here (ruling 220(3), DS-4015): `make deps-check` is a
+# lint-class gate on the PR tier (ruling 219(3)) and runs wherever `make lint`
+# runs, a docs-only PR included. The template's image job runs lint, so it
+# drops the step's CI_FULL_TIER condition there; here lint is its own job
+# (#1046) and the image job skips on a docs-only PR, so the step moves from
+# the image job to the lint job, after `make lint`, on every event, with
+# IN_IMAGE_NETWORK=bridge for the module proxy. CI Gate's lines do not change.
 # v1.27.0, adopted here (ruling 211, CA m1355): the lint-gates job runs
 # `make -k lint-gates` in parallel with the lint job's `make lint` (DS-3603,
 # DS-3609; m1192 (6) item 27, m1207 (1)); it was adopted alone first. The
@@ -48,7 +55,8 @@
 # two tiers. A pull request runs the PR tier only: lint (with
 # assert-build-tags and arch-gates), build, and the unit suite under -race
 # (`make coverage`, so unit test and race are one step). Integration, Soak,
-# security, deps-check and trivy image do not run on a PR. The full tier runs
+# security, deps-check and trivy image do not run on a PR (v1.28 puts
+# deps-check on the PR tier). The full tier runs
 # on main after every merge (push), nightly (a new `schedule:` trigger), on
 # workflow_dispatch, and on a PR labelled ci:full (kept as the opt-in). A new
 # `soak` job loops the integration suite in the integration image for
@@ -73,7 +81,7 @@
 # container's cgroup cpu.max and gives the stage container that --cpus, with
 # GOMAXPROCS and GOFLAGS=-p from it; golangci-lint follows the quota. No
 # number is hardcoded. No job changes.
-# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.27.0, and why.
+# CUSTOMIZE (go-qrdb) begin: where this file departs from v1.28.0, and why.
 #   - No revert-red-main.yml beside this file: not adopted here.
 #   - The integration image is held by the job's IT_HOLD container (#813, run
 #     57540), not the template's `<prefix>lease-` steps, and named in the
@@ -404,7 +412,7 @@ env:
   # CUSTOMIZE (go-qrdb): exactly `make -s print-build-tags`, the default feature
   # set the coverage baseline was measured under (its `# build-tags:` line), in
   # the same order; the Makefile adopts it as BUILD_TAGS when it is set.
-  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
+  GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
   # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
   # (push to main, schedule, workflow_dispatch), and a PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
   # cannot read env, so each full-tier job repeats this expression. Keep them
@@ -430,7 +438,7 @@ jobs:
   # `if: needs.changes.outputs.docs_only != 'true'` and lists changes in
   # needs; CI Gate excuses its skip only when DOCS_ONLY is true. A docs-only
   # PR runs changes, docker-build (the toolchain image alone), lint (make
-  # lint and make lint-gates), arch-gates (make check-public-releasable
+  # lint and make deps-check), lint-gates (make lint-gates), arch-gates (make check-public-releasable
   # alone) and CI Gate; image and test-typescript, the code tier, are
   # skipped.
   changes:
@@ -572,8 +580,10 @@ jobs:
   # bridge) for the vulnerability databases and the module proxy.
   #
   # v1.23: lint, assert-build-tags, build and coverage are the PR tier and run
-  # on every event. security, deps-check and trivy image are full tier only
+  # on every event. security and trivy image are full tier only
   # (env.CI_FULL_TIER): main after every merge, dispatch, ci:full.
+  # v1.28: deps-check is a lint-class gate on the PR tier and runs on every
+  # event (ruling 219(3)); here it is a lint job step (#1046).
   #
   # v1.22: every stage mounts the build and golangci-lint cache volumes, and a
   # bridge stage the module cache volume, from the runner's Docker host
@@ -594,9 +604,9 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
   # template's one image job (m601 (a)). The stages run in two jobs side by
-  # side, lint (make lint, make lint-sweeps) and image (the
+  # side, lint (make lint, make deps-check, make lint-sweeps) and image (the
   # tag assertion, build, the release cross-build, the unit suites, security,
-  # deps-check, trivy image), in the one toolchain image docker-build built,
+  # trivy image), in the one toolchain image docker-build built,
   # each with its own limit: together they outlast one job's 90 minutes on a
   # loaded runner, where lint with lint-sweeps takes most of an hour and
   # coverage about half of one.
@@ -606,7 +616,7 @@ jobs:
   # nor releases a hold.
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer image [lint, lint-sweeps]
+    name: Devcontainer image [lint, deps-check, lint-sweeps]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
     timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
@@ -674,6 +684,19 @@ jobs:
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      # Fails when a library, first-party or third-party, is behind its latest
+      # release without devops.md §9's documented reason (ci-standard.md §1).
+      # v1.28: a lint-class gate of seconds on the PR tier, every event, a
+      # docs-only PR included (ruling 219(3)); it was full tier only from v1.23.
+      # CUSTOMIZE (go-qrdb, #1046): the template runs it in the image job,
+      # which runs lint there; here it follows `make lint` in the lint job.
+      # It reads go.mod and the module proxy only, no build output.
+      - name: make deps-check
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
+        env:
+          IN_IMAGE_NETWORK: bridge
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
       # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
@@ -786,7 +809,7 @@ jobs:
         run: rm -f "$RUNNER_TEMP/gomodauth.env"
 
   image:
-    name: Devcontainer image [build, test, security, deps-check, trivy image]
+    name: Devcontainer image [build, test, security, trivy image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     # CUSTOMIZE (go-qrdb, #1046): the code tier (DS-3160), so a docs-only PR,
     # which builds nothing, skips it; lint, above, is that PR's stage job.
@@ -794,7 +817,7 @@ jobs:
     # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
     # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security, deps-check and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
+    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
       # CUSTOMIZE (go-qrdb, run 57540): this job's hold on the integration
@@ -906,14 +929,6 @@ jobs:
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-
-      # Fails when a library, first-party or third-party, is behind its latest
-      # release without devops.md §9's documented reason (ci-standard.md §1).
-      - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
       # The integration image is gated before any push to either registry
       # (devops.md §8): --ignore-unfixed (v1.19) and --skip-dirs /opt/go/mod
@@ -1421,14 +1436,57 @@ jobs:
   # in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
   # continue-on-error, add a build tag that skips a package, or narrow the
   # package list.
+  #
+  # The suites run as parallel legs (#1230): one run of both took 69.9 minutes
+  # and set the time to a green main and to every tag. Each leg is
+  # `make test-fips-leg FIPS_LEG=<leg>`; the Makefile's FIPS_LEGS is the one
+  # list of legs, and its two remainder legs put every package no leg names
+  # in `rest` (the root module) or `sdk` (sdk/go), so the legs together are
+  # exactly `make test` and `make test-sdk`, each package once.
+  # test/buildgates/fips_legs_test.go fails when this matrix is not FIPS_LEGS
+  # or a package is in two legs or none. The legs are split by measured cost;
+  # a leg past 30 minutes is rebalanced by moving a package between
+  # FIPS_LEG_<leg> lists, never by narrowing one.
   fips:
-    name: FIPS 140-3
+    name: FIPS 140-3 (${{ matrix.leg }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
-    # The race-enabled suite under fips140=only is what takes the time; 90
-    # minutes holds both modules with each under its 60m package budget.
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # Each leg's limit is its measured time (run 68401) with room for a
+      # loaded runner, at most 45; go test's per-package budget is the limit
+      # less 5 minutes, so a runaway package is named before the leg is
+      # killed. pkg/tenant and pkg/seal each run past 30 minutes alone, and
+      # pkg/server near it, so each is split by test name over two legs
+      # (#1234, docs/seal/fips140-mode.md).
+      matrix:
+        include:
+          - leg: tenant-lifecycle
+            minutes: 30
+          - leg: tenant
+            minutes: 30
+          - leg: seal-barrier
+            minutes: 30
+          - leg: seal
+            minutes: 30
+          - leg: server-raft
+            minutes: 25
+          - leg: server
+            minutes: 25
+          - leg: auth
+            minutes: 25
+          - leg: service
+            minutes: 25
+          - leg: api-keys
+            minutes: 20
+          - leg: rest
+            minutes: 30
+          - leg: sdk-transport
+            minutes: 30
+          - leg: sdk
+            minutes: 30
+    timeout-minutes: ${{ matrix.minutes }}
     env:
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -1476,86 +1534,70 @@ jobs:
       - name: Build all packages against the FIPS module
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV go build ./..."
 
-      # The same targets the unit suites run, with the same build tags. The
-      # scope is deliberately identical: a FIPS job over a subset of the suite
+      # The packages the unit suites run, with the same build tags: this leg's
+      # share of them, and every leg together is the whole of both. The scope
+      # is deliberately identical: a FIPS job over a subset of the suite
       # cannot tell you the product is FIPS-clean.
       #
       # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
       # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
       # iterations, which measured 2.6x on pkg/seal, and pkg/seal has been
-      # killed at exactly 30m (go-qrdb#147). The job ceiling above is 90
-      # minutes, so a 60m package budget cannot outlive the job. This raises a
+      # killed at exactly 30m (go-qrdb#147). The budget is the leg's limit
+      # less 5 minutes (40m on the 45-minute legs), so it cannot outlive the
+      # leg. This raises a
       # runaway guard; it does not skip a package, weaken an assertion or
       # narrow the scope.
       #
       # pipefail matters: without it tee's exit status hides a failing suite.
       - name: Unit tests (race, FIPS 140-only)
+        env:
+          FIPS_LEG: ${{ matrix.leg }}
+          FIPS_LEG_MINUTES: ${{ matrix.minutes }}
         run: |
           set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
-
-      # `sdk/go` IS A SEPARATE GO MODULE (#142): `make test` is
-      # `./pkg/... ./cmd/...` and never reaches the SDK, so without this step
-      # the job is the "FIPS job over a subset of the suite" ruled out above.
-      # `if: always()` is load-bearing: a root-module regression must not stop
-      # the SDK suite from being measured. Both suites run; either failing
-      # fails the job. Its own log file, because the report below parses these
-      # by package and both modules define packages of the same name.
-      - name: Unit tests (race, FIPS 140-only, sdk/go module)
-        if: ${{ always() && env.TOOLCHAIN_IMAGE != '' }}
-        run: |
-          set -o pipefail
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-sdk GOTEST_TIMEOUT=60m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test-sdk.log
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "$FIPS_ENV make test-fips-leg FIPS_LEG='$FIPS_LEG' GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m GO_BUILD_TAGS='$GO_BUILD_TAGS'" 2>&1 | tee fips-test.log
 
       # A per-package timeout panic names whichever test was running when the
       # alarm fired, NOT the test that consumed the budget. This step lists the
-      # package results and the slowest completed tests of both modules, on
-      # success too, so the trend is visible before the cliff. A missing log
-      # is reported: it means that suite never started.
+      # leg's package results, with each package's time, and its slowest
+      # completed tests, on success too, so the trend is visible before the
+      # cliff and a leg nearing 30 minutes shows which package to move. A
+      # missing log is reported: it means the suite never started.
       - name: Package results and slowest tests
         if: always()
         run: |
-          report() { # report <label> <logfile>
-            label="$1"
-            log="$2"
-            echo "######## ${label} ########"
-            if [ ! -f "$log" ]; then
-              echo "no ${log}: this suite never started -- see the step above" >&2
-              echo
-              return 0
-            fi
-            # Captured into variables rather than piped straight to stdout so
-            # the "nothing parsed" case can actually be reported. A `grep ...
-            # | sort || echo fallback` cannot do that: the pipeline's status is
-            # sort's, which is 0 on empty input, so the fallback is unreachable.
-            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
-              "$log" | sort -u || true)
-            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
-              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
-              | sort -rn | head -25 || true)
+          log=fips-test.log
+          if [ ! -f "$log" ]; then
+            echo "no ${log}: this leg's suite never started -- see the step above" >&2
+            exit 0
+          fi
+          # Captured into variables rather than piped straight to stdout so
+          # the "nothing parsed" case can actually be reported. A `grep ...
+          # | sort || echo fallback` cannot do that: the pipeline's status is
+          # sort's, which is 0 on empty input, so the fallback is unreachable.
+          pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+            "$log" | sort -u || true)
+          slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
+            | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+            | sort -rn | head -25 || true)
 
-            echo "== package results =="
-            if [ -n "$pkgs" ]; then
-              echo "$pkgs"
-              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
-            else
-              echo "(no package result lines parsed -- the suite may have died before any package finished)"
-            fi
+          echo "== package results =="
+          if [ -n "$pkgs" ]; then
+            echo "$pkgs"
+            echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+          else
+            echo "(no package result lines parsed -- the suite may have died before any package finished)"
+          fi
 
-            echo
-            echo "== 25 slowest tests that COMPLETED =="
-            echo "A timeout panic names the test holding the alarm, not the one"
-            echo "that spent the budget. These are the candidates that did."
-            if [ -n "$slow" ]; then
-              echo "$slow"
-            else
-              echo "(no completed top-level tests parsed)"
-            fi
-            echo
-          }
-
-          report "root module (./pkg/... ./cmd/...)" fips-test.log
-          report "sdk/go module" fips-test-sdk.log
+          echo
+          echo "== 25 slowest tests that COMPLETED =="
+          echo "A timeout panic names the test holding the alarm, not the one"
+          echo "that spent the budget. These are the candidates that did."
+          if [ -n "$slow" ]; then
+            echo "$slow"
+          else
+            echo "(no completed top-level tests parsed)"
+          fi
 
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's

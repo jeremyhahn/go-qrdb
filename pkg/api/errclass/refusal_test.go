@@ -16,13 +16,16 @@ package errclass
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -54,6 +57,33 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 	}
 }
 
+// TestRefusal_vlog checks each verifiable-log refusal a client rebuilds typed
+// carries its reason and metadata through a wrap, and keeps its class.
+func TestRefusal_vlog(t *testing.T) {
+	id := vlog.LogID{TenantID: "acme", Database: "ledger", Log: "certs"}
+	cases := []struct {
+		err    error
+		reason string
+		class  Class
+	}{
+		{&vlog.LogExistsError{ID: id}, vlog.ReasonLogExists, AlreadyExists},
+		{&vlog.CheckpointExistsError{Size: 5}, vlog.ReasonCheckpointExists, AlreadyExists},
+		{&vlog.ExpireNotAllowedError{ID: id}, vlog.ReasonExpireNotAllowed, FailedPrecondition},
+	}
+	for _, c := range cases {
+		reason, md, ok := Refusal(&wrappedError{c.err})
+		if !ok || reason != c.reason {
+			t.Fatalf("Refusal(%T) = %q, %v; want %q, true", c.err, reason, ok, c.reason)
+		}
+		if got := transport.RefusalError(reason, md); !reflect.DeepEqual(got, c.err) {
+			t.Fatalf("Refusal(%T) rebuilds %#v, want %#v", c.err, got, c.err)
+		}
+		if got := Classify(c.err); got != c.class {
+			t.Fatalf("Classify(%T) = %v, want %v", c.err, got, c.class)
+		}
+	}
+}
+
 // A failed rollback over a lost race is DataLoss, not a conflict to retry, so
 // it carries no refusal a client would rebuild as one.
 func TestRefusal_userConcurrentUpdateUnderDataLossCarriesNone(t *testing.T) {
@@ -63,6 +93,20 @@ func TestRefusal_userConcurrentUpdateUnderDataLossCarriesNone(t *testing.T) {
 	}
 	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
 		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
+	}
+}
+
+func TestRefusal_adminCredentialRequiresCA(t *testing.T) {
+	want := &ceremony.AdminCredentialRequiresCAError{Path: "generate"}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != ceremony.ReasonAdminCredentialRequiresCA {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, ceremony.ReasonAdminCredentialRequiresCA)
+	}
+	if got := ceremony.AdminCredentialRequiresCAFromMetadata(md); *got != *want {
+		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+	if got := Classify(want); got != FailedPrecondition {
+		t.Fatalf("Classify(no CA) = %v, want FailedPrecondition", got)
 	}
 }
 

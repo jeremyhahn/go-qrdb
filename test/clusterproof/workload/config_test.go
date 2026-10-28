@@ -39,7 +39,8 @@ func TestParseConfig(t *testing.T) {
 		"op_timeout": "750ms",
 		"duration": "2m",
 		"ops_per_client": 10,
-		"redial_backoff": "1s"
+		"redial_backoff": "1s",
+		"max_backoff": "8s"
 	}`
 	cfg, err := ParseConfig(strings.NewReader(src))
 	if err != nil {
@@ -58,6 +59,7 @@ func TestParseConfig(t *testing.T) {
 		Duration:      Duration(2 * time.Minute),
 		OpsPerClient:  10,
 		RedialBackoff: Duration(time.Second),
+		MaxBackoff:    Duration(8 * time.Second),
 	}
 	if !equalConfig(cfg, want) {
 		t.Fatalf("cfg = %+v\nwant  %+v", cfg, want)
@@ -70,7 +72,8 @@ func TestParseConfigDefaults(t *testing.T) {
 		t.Fatalf("ParseConfig: %v", err)
 	}
 	if cfg.Clients != DefaultClients || cfg.Keys != DefaultKeys || cfg.Mix != DefaultMix ||
-		cfg.OpTimeout != Duration(DefaultOpTimeout) || cfg.RedialBackoff != Duration(DefaultRedialBackoff) {
+		cfg.OpTimeout != Duration(DefaultOpTimeout) || cfg.RedialBackoff != Duration(DefaultRedialBackoff) ||
+		cfg.MaxBackoff != Duration(DefaultMaxBackoff) {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
 	if !strings.HasPrefix(cfg.KeyPrefix, "clusterproof/") || len(cfg.KeyPrefix) != len("clusterproof/")+16 {
@@ -123,19 +126,24 @@ func TestValidate(t *testing.T) {
 		mutate func(*Config)
 		field  string
 	}{
-		"empty endpoint":    {func(c *Config) { c.Endpoints = []string{"a:1", ""} }, "endpoints"},
-		"zero keys":         {func(c *Config) { c.Keys = 0 }, "keys"},
-		"zero clients":      {func(c *Config) { c.Clients = 0 }, "clients"},
-		"empty prefix":      {func(c *Config) { c.KeyPrefix = "" }, "key_prefix"},
-		"negative weight":   {func(c *Config) { c.Mix.Delete = -1 }, "mix"},
-		"all weights zero":  {func(c *Config) { c.Mix = Mix{} }, "mix"},
-		"zero op timeout":   {func(c *Config) { c.OpTimeout = 0 }, "op_timeout"},
-		"negative duration": {func(c *Config) { c.Duration = -1 }, "duration"},
-		"negative ops":      {func(c *Config) { c.OpsPerClient = -1 }, "ops_per_client"},
-		"zero backoff":      {func(c *Config) { c.RedialBackoff = 0 }, "redial_backoff"},
-		"cert without key":  {func(c *Config) { c.Credentials = Credentials{CAFile: "ca", CertFile: "c"} }, "credentials"},
-		"key without cert":  {func(c *Config) { c.Credentials = Credentials{CAFile: "ca", KeyFile: "k"} }, "credentials"},
-		"mtls without ca":   {func(c *Config) { c.Credentials = Credentials{CertFile: "c", KeyFile: "k"} }, "credentials"},
+		"empty endpoint":       {func(c *Config) { c.Endpoints = []string{"a:1", ""} }, "endpoints"},
+		"zero keys":            {func(c *Config) { c.Keys = 0 }, "keys"},
+		"zero clients":         {func(c *Config) { c.Clients = 0 }, "clients"},
+		"empty prefix":         {func(c *Config) { c.KeyPrefix = "" }, "key_prefix"},
+		"negative weight":      {func(c *Config) { c.Mix.Delete = -1 }, "mix"},
+		"all weights zero":     {func(c *Config) { c.Mix = Mix{} }, "mix"},
+		"zero op timeout":      {func(c *Config) { c.OpTimeout = 0 }, "op_timeout"},
+		"negative duration":    {func(c *Config) { c.Duration = -1 }, "duration"},
+		"negative ops":         {func(c *Config) { c.OpsPerClient = -1 }, "ops_per_client"},
+		"zero backoff":         {func(c *Config) { c.RedialBackoff = 0 }, "redial_backoff"},
+		"negative max backoff": {func(c *Config) { c.MaxBackoff = -1 }, "max_backoff"},
+		"max below redial": {func(c *Config) {
+			c.RedialBackoff = Duration(time.Second)
+			c.MaxBackoff = Duration(time.Second - 1)
+		}, "max_backoff"},
+		"cert without key": {func(c *Config) { c.Credentials = Credentials{CAFile: "ca", CertFile: "c"} }, "credentials"},
+		"key without cert": {func(c *Config) { c.Credentials = Credentials{CAFile: "ca", KeyFile: "k"} }, "credentials"},
+		"mtls without ca":  {func(c *Config) { c.Credentials = Credentials{CertFile: "c", KeyFile: "k"} }, "credentials"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -146,6 +154,57 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("err = %v, want ConfigError on %q", err, tc.field)
 			}
 		})
+	}
+}
+
+func TestValidateAcceptsMaxBackoff(t *testing.T) {
+	for name, maxBackoff := range map[string]Duration{
+		"unset":        0,
+		"equal redial": Duration(time.Second),
+		"above redial": Duration(time.Minute),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Config{Endpoints: []string{"a:1"}, KeyPrefix: "p", RedialBackoff: Duration(time.Second)}
+			if err := c.Normalize(); err != nil {
+				t.Fatalf("Normalize: %v", err)
+			}
+			c.MaxBackoff = maxBackoff
+			if err := c.Validate(); err != nil {
+				t.Fatalf("max_backoff %v rejected: %v", time.Duration(maxBackoff), err)
+			}
+		})
+	}
+}
+
+func TestBackoffLimit(t *testing.T) {
+	cases := map[string]struct {
+		redial, maxBackoff Duration
+		want               time.Duration
+	}{
+		"configured":               {Duration(time.Second), Duration(time.Minute), time.Minute},
+		"unset takes the default":  {Duration(time.Millisecond), 0, DefaultMaxBackoff},
+		"unset never below redial": {Duration(2 * DefaultMaxBackoff), 0, 2 * DefaultMaxBackoff},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := Config{RedialBackoff: tc.redial, MaxBackoff: tc.maxBackoff}
+			if got := c.backoffLimit(); got != tc.want {
+				t.Fatalf("backoffLimit() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeMaxBackoffFollowsRedial(t *testing.T) {
+	c := Config{Endpoints: []string{"a:1"}, KeyPrefix: "p", RedialBackoff: Duration(2 * DefaultMaxBackoff)}
+	if err := c.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if c.MaxBackoff != c.RedialBackoff {
+		t.Fatalf("MaxBackoff = %v, want redial_backoff %v", time.Duration(c.MaxBackoff), time.Duration(c.RedialBackoff))
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("normalized config rejected: %v", err)
 	}
 }
 

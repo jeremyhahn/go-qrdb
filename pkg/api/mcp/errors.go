@@ -185,6 +185,20 @@ func (e *ValueDecodeError) Unwrap() error {
 	return e.Err
 }
 
+// SecretArgumentConflictError is returned when a secret-bearing tool argument
+// arrives in both of its forms, text (Argument) and base64 (Argument_b64).
+// The two could disagree, so the call is refused rather than resolved in
+// favour of either.
+type SecretArgumentConflictError struct {
+	// Argument is the text form's name (e.g. "secret").
+	Argument string
+}
+
+// Error returns a human-readable description naming both forms.
+func (e *SecretArgumentConflictError) Error() string {
+	return "mcp: " + e.Argument + " and " + e.Argument + secretB64Suffix + " are mutually exclusive; send one"
+}
+
 // ToolArgumentError reports a tool argument whose SHAPE is wrong — an array
 // where a scalar arrived, or a non-string element in a list of identifiers.
 //

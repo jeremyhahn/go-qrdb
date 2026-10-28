@@ -1558,6 +1558,63 @@ func TestUpdateUser_PutPrimaryFails(t *testing.T) {
 	}
 }
 
+// lateCommitKVStore commits the claim of the Nth PutIfAbsent and still fails
+// it, as a proposal that timed out after it was submitted and then committed.
+type lateCommitKVStore struct {
+	*memKVStore
+	calls  int
+	lateAt int
+}
+
+func (s *lateCommitKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	s.calls++
+	stored, err := s.memKVStore.PutIfAbsent(ctx, key, value)
+	if s.calls == s.lateAt {
+		return false, errors.New("quicraft: timeout (already submitted to raft; it may still commit)")
+	}
+	return stored, err
+}
+
+// A create whose claim fails yet commits releases it, so the handle is free
+// for the retry rather than "already exists" with no user behind it.
+func TestCreateUser_ClaimThatCommitsLateIsReleased(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lateAt int // the username is claimed first, the email second
+	}{
+		{name: "username", lateAt: 1},
+		{name: "email", lateAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := &lateCommitKVStore{memKVStore: newMemKVStore(), lateAt: tc.lateAt}
+			svc, err := NewStore(kv, newTestIDGen(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			req := &CreateUserRequest{Username: "alice", Email: "alice@acme.example.com", TenantID: "acme"}
+
+			_, err = svc.CreateUser(ctx, req)
+			var storeErr *StoreError
+			if !errors.As(err, &storeErr) {
+				t.Fatalf("first create: want *StoreError, got %T: %v", err, err)
+			}
+			if keys, _ := kv.List(ctx, ""); len(keys) != 0 {
+				t.Fatalf("first create left keys behind: %v", keys)
+			}
+
+			created, err := svc.CreateUser(ctx, req)
+			if err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			got, err := svc.GetUserByUsername(ctx, "acme", "alice")
+			if err != nil || got.ID != created.ID {
+				t.Fatalf("lookup after retry: %v, %v; want id %d", got, err, created.ID)
+			}
+		})
+	}
+}
+
 // Renamed from TestUpdateUser_UsernameChange_GetFails: the uniqueness Get is
 // gone, replaced by an atomic claim (#190). The injection follows the verb.
 func TestUpdateUser_UsernameChange_ClaimFails(t *testing.T) {

@@ -1,6 +1,6 @@
 # Configuration — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-06
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 How the daemon is configured: the load order, the validation contract, and the
@@ -146,8 +146,12 @@ create --etcd` uses `localhost:2379`).
   references into enclave-backed values at boot, and **fail closed** if they
   cannot — see
   [../credentials/](../credentials/architecture.md#secret-resolution).
-- **TLS and auth are mandatory for the SQL and etcd protocols**; validation
-  refuses the combination otherwise.
+- **TLS and auth are mandatory for the SQL wire protocols.** `Validate`
+  refuses a configuration that enables `protocols.mysql` or
+  `protocols.postgresql` with `tls.enabled` or `auth.enabled` false, so the
+  node does not start (`*ValidationError` on `tls.enabled` or `auth.enabled`).
+- **TLS and auth are mandatory for the etcd protocol**; its listener refuses
+  to start without them (`AuthRequiredError`).
 - **A multicast discovery secret has no default.** Without an operator-chosen
   PSK the method does not run — see [../clustering/](../clustering/).
 

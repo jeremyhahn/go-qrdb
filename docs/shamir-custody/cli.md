@@ -1,6 +1,6 @@
 # Shamir Custody — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Custody verbs live under `qrdb barrier` (`officer`, `quorum`, `rekey`,
@@ -17,6 +17,17 @@ or `--output yaml` where they print a result.
 Private keys never leave the machine the CLI runs on. `claim` signs the claim
 nonce locally; `quorum submit` answers the `mtls` factor, opens the envelope
 and sends only the factor response and the opened share.
+
+**Transports.** Every verb runs on every `--transport` (`rest`, `grpc`,
+`quic`, `mcp`, `unix`, `embedded`). A claim over a network transport requires
+the holder's client certificate on the connection; on `embedded`, which has no
+connection, the claim is bound to the holder's enrolled certificate and the
+nonce signature by its key is the proof ([api.md](api.md)).
+
+**Exit status.** `0` when the verb succeeded; `1` for any failure — a refused
+or failed call, a bad flag, an unreadable file — with the error on stderr. A
+`quorum submit` that is accepted but does not yet complete the round exits `0`
+and prints the round's progress.
 
 ## Scope flags
 
@@ -58,6 +69,11 @@ The command prints the CA-issued certificate; deliver it to the holder.
 
 Holders and their claim state. Never a share.
 
+```bash
+qrdb barrier officer list --output json
+qrdb barrier officer list --domain recovery
+```
+
 ## Distribution
 
 ### `qrdb barrier init-shamir`
@@ -87,6 +103,10 @@ PIN once one is provisioned.
 | `--policy` | string |
 | `--so-pin` | string |
 
+```bash
+qrdb barrier recovery generate --threshold 2 --policy any-enrolled --so-pin "$SO_PIN"
+```
+
 `recovery status` and `recovery delete` report and remove the recovery key.
 
 ## Claim
@@ -102,6 +122,11 @@ certificate (the root `--cert-file`/`--key-file` flags).
 | `--key` | path | PEM private key of the holder's certificate, used to sign the nonce |
 | `--out` | path | where to write the envelope (mode 0600) |
 
+```bash
+qrdb --cert-file alice.crt --key-file alice.key \
+     barrier officer claim --username alice --key alice.key --out alice.env
+```
+
 ### `qrdb barrier officer claim-begin` / `claim-complete`
 
 The same claim, split for keys that sign outside the CLI (a smart card, an
@@ -109,6 +134,13 @@ HSM). `claim-begin --username` prints the nonce and `SignMessageHex`
 (`sign_message_hex` in JSON). That is the exact share-claim message to sign
 ([api.md](api.md#schemas)): sign those bytes, not the bare nonce.
 `claim-complete --username --nonce-hex --sig-file --out` delivers the envelope.
+
+```bash
+qrdb barrier officer claim-begin --username bob --output json   # -> nonce_hex, sign_message_hex
+# sign the sign_message_hex bytes on the card, writing bob.sig
+qrdb barrier officer claim-complete --username bob --nonce-hex "$NONCE" \
+     --sig-file bob.sig --out bob.env
+```
 
 ## Quorum rounds
 
@@ -173,6 +205,12 @@ moment — which is how a holder is added.
 | `--policy` | string | `designated` or `any-enrolled` |
 | `--so-pin` | string | Security Officer PIN |
 
+```bash
+qrdb barrier rekey --threshold 3 --policy designated --so-pin "$SO_PIN"
+# then M current holders:
+qrdb barrier quorum submit --op rekey --username alice --envelope alice.env --key alice.key
+```
+
 ### `qrdb barrier officer revoke`
 
 Revoke a holder: a rekey round that removes them, completed by M of the
@@ -184,6 +222,10 @@ remaining holders and refused when M would exceed N−1.
 | `--threshold` | int | M of the remaining share set; 0 keeps the current one |
 | `--so-pin` | string | Security Officer PIN |
 
+```bash
+qrdb barrier officer revoke --username dave --so-pin "$SO_PIN"
+```
+
 Every remaining holder claims a new envelope once the round completes.
 
 ## Tenant barriers
@@ -192,6 +234,12 @@ Every remaining holder claims a new envelope once the round completes.
 `qrdb tenant barrier-quorum begin|submit` and `qrdb tenant barrier-rekey`
 take `--tenant-id` and otherwise the same flags, without `--domain` and
 without `--so-pin` (tenant rekey and revocation are authorized by RBAC).
+
+```bash
+qrdb tenant barrier-officer register --tenant-id acme --username alice --csr-file alice.csr
+qrdb tenant barrier-quorum submit --tenant-id acme --op unseal --username alice \
+     --envelope alice.env --key alice.key
+```
 
 ## Database barriers
 
