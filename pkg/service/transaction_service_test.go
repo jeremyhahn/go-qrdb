@@ -23,6 +23,8 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -571,33 +573,44 @@ func TestTransactionService_Execute_OpWithLeaseAndRangeEnd(t *testing.T) {
 // TestTransactionService_Execute_RejectsOpGetInSuccessOps verifies that a Get
 // op in the success branch is rejected with a typed error and never reaches
 // Raft (it must not be silently coerced into an empty-value Put).
-func TestTransactionService_Execute_RejectsOpGetInSuccessOps(t *testing.T) {
-	proposed := false
+func TestTransactionService_Execute_GetInSuccessBranchReturnsTheRead(t *testing.T) {
+	read := &KeyValue{Key: []byte("k"), Value: []byte("v2"), CreateRevision: 3, ModRevision: 7, Version: 2, LeaseID: 4}
+	var proposedOp protocol.DecodedOp
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			proposed = true
-			return sm.Result{Value: 1, Data: []byte{1}}, nil
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			decoded, err := protocol.DecodeCommand(cmd)
+			if err != nil {
+				t.Fatalf("decode proposed command: %v", err)
+			}
+			txn, err := protocol.DecodeTransaction(decoded.Payload)
+			if err != nil {
+				t.Fatalf("decode proposed transaction: %v", err)
+			}
+			proposedOp = txn.SuccessOps[0]
+			data, err := protocol.EncodeTransactionResult(true, []protocol.TxnReadResult{{Kvs: []*KeyValue{read}, Count: 1}})
+			if err != nil {
+				t.Fatalf("encode result: %v", err)
+			}
+			return sm.Result{Value: 7, Data: data}, nil
 		},
 	}
 
 	svc := NewTransactionService(host, 1)
-	successOps := []Op{
-		{Type: OpGet, Key: []byte("k")},
-	}
-
+	// A get's range end is dropped, so it never widens into a range.
+	successOps := []Op{{Type: OpGet, Key: []byte("k"), RangeEnd: []byte("z"), Value: []byte("ignored")}}
 	resp, err := svc.Execute(context.Background(), nil, successOps, nil)
-	if resp != nil {
-		t.Fatalf("expected nil response on rejection, got %+v", resp)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	var utoe *UnsupportedTransactionOpError
-	if !errors.As(err, &utoe) {
-		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	if proposedOp.Type != protocol.OpMVCCRange || len(proposedOp.RangeEnd) != 0 || len(proposedOp.Value) != 0 {
+		t.Fatalf("proposed op = %+v, want a single-key OpMVCCRange", proposedOp)
 	}
-	if utoe.OpType != OpGet {
-		t.Fatalf("expected OpType OpGet in error, got %d", utoe.OpType)
+	if !resp.Succeeded || len(resp.Responses) != 1 || resp.Responses[0].Count != 1 || len(resp.Responses[0].Kvs) != 1 {
+		t.Fatalf("response = %+v, want one read answer", resp)
 	}
-	if proposed {
-		t.Fatal("SyncPropose must not be called when a branch op is rejected")
+	got := resp.Responses[0].Kvs[0]
+	if string(got.Value) != "v2" || got.Version != 2 || got.ModRevision != 7 || got.CreateRevision != 3 || got.LeaseID != 4 {
+		t.Fatalf("read = %+v, want %+v", got, read)
 	}
 }
 
@@ -605,56 +618,165 @@ func TestTransactionService_Execute_RejectsOpGetInSuccessOps(t *testing.T) {
 // OpRange in the failure branch is rejected the same way as OpGet, and that
 // the key targeted by an earlier, valid success op is not touched by the
 // rejected proposal (nothing is ever proposed).
-func TestTransactionService_Execute_RejectsOpRangeInFailureOps(t *testing.T) {
-	proposed := false
+func TestTransactionService_Execute_MixedFailureBranchAnswersReadsAndWrites(t *testing.T) {
 	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			proposed = true
-			return sm.Result{Value: 1, Data: []byte{0}}, nil
+		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
+			decoded, err := protocol.DecodeCommand(cmd)
+			if err != nil {
+				t.Fatalf("decode proposed command: %v", err)
+			}
+			txn, err := protocol.DecodeTransaction(decoded.Payload)
+			if err != nil {
+				t.Fatalf("decode proposed transaction: %v", err)
+			}
+			if got := string(txn.FailureOps[1].RangeEnd); txn.FailureOps[1].Type != protocol.OpMVCCRange || got != "z" {
+				t.Fatalf("proposed range op = %+v, want OpMVCCRange to z", txn.FailureOps[1])
+			}
+			data, err := protocol.EncodeTransactionResult(false, []protocol.TxnReadResult{
+				{},
+				{Count: 2, Kvs: []*KeyValue{{Key: []byte("a"), Value: []byte("1"), Version: 1}, {Key: []byte("b"), Value: []byte("2"), Version: 3}}},
+			})
+			if err != nil {
+				t.Fatalf("encode result: %v", err)
+			}
+			return sm.Result{Value: 9, Data: data}, nil
 		},
 	}
 
 	svc := NewTransactionService(host, 1)
 	failureOps := []Op{
+		{Type: OpPut, Key: []byte("k"), Value: []byte("v")},
 		{Type: OpRange, Key: []byte("a"), RangeEnd: []byte("z")},
 	}
-
-	_, err := svc.Execute(context.Background(), nil, nil, failureOps)
-	var utoe *UnsupportedTransactionOpError
-	if !errors.As(err, &utoe) {
-		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	resp, err := svc.Execute(context.Background(), nil, []Op{{Type: OpPut, Key: []byte("k"), Value: []byte("s")}}, failureOps)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if utoe.OpType != OpRange {
-		t.Fatalf("expected OpType OpRange in error, got %d", utoe.OpType)
+	if resp.Succeeded || resp.Revision != 9 || len(resp.Responses) != 2 {
+		t.Fatalf("response = %+v, want the failure branch's two answers at revision 9", resp)
+	}
+	if len(resp.Responses[0].Kvs) != 0 || !resp.Responses[0].Succeeded {
+		t.Fatalf("write answer = %+v, want succeeded with no key-values", resp.Responses[0])
+	}
+	if r := resp.Responses[1]; r.Count != 2 || len(r.Kvs) != 2 || r.Kvs[1].Version != 3 {
+		t.Fatalf("range answer = %+v, want a and b", r)
+	}
+}
+
+func TestTransactionService_Execute_ReadsRefusedUntilTheGateIsActive(t *testing.T) {
+	proposed := false
+	host := &gatedHost{
+		mockHost: &mockHost{
+			syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+				proposed = true
+				return sm.Result{Value: 1, Data: []byte{1}}, nil
+			},
+		},
+		enabled: map[uint64]bool{},
+	}
+
+	svc := NewTransactionService(host, 1)
+	_, err := svc.Execute(context.Background(), nil, nil, []Op{{Type: OpGet, Key: []byte("k")}})
+	var nae *feature.NotActiveError
+	if !errors.As(err, &nae) || nae.Feature != featuregate.TransactionReads {
+		t.Fatalf("got %T: %v, want *feature.NotActiveError for %s", err, err, featuregate.TransactionReads)
 	}
 	if proposed {
-		t.Fatal("SyncPropose must not be called when a branch op is rejected")
+		t.Fatal("a transaction holding a read was proposed before its gate was active")
+	}
+	// A transaction of writes alone is not gated.
+	if _, err := svc.Execute(context.Background(), nil, []Op{{Type: OpPut, Key: []byte("k"), Value: []byte("v")}}, nil); err != nil {
+		t.Fatalf("write-only transaction: %v", err)
+	}
+	if !proposed {
+		t.Fatal("a write-only transaction was not proposed")
+	}
+}
+
+func TestTransactionService_Execute_ReadsProposedOnceTheGateIsActive(t *testing.T) {
+	data, err := protocol.EncodeTransactionResult(true, []protocol.TxnReadResult{{}})
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
+	host := &gatedHost{
+		mockHost: &mockHost{
+			syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+				return sm.Result{Value: 1, Data: data}, nil
+			},
+		},
+		enabled: map[uint64]bool{1: true},
+	}
+
+	resp, err := NewTransactionService(host, 1).Execute(context.Background(), nil, []Op{{Type: OpGet, Key: []byte("absent")}}, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(resp.Responses) != 1 || resp.Responses[0].Count != 0 || len(resp.Responses[0].Kvs) != 0 {
+		t.Fatalf("response = %+v, want one empty answer", resp)
+	}
+}
+
+func TestTransactionService_Execute_UndecodableResultIsTyped(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 1, Data: []byte{1, 0xff}}, nil
+		},
+	}
+
+	_, err := NewTransactionService(host, 1).Execute(context.Background(), nil, []Op{{Type: OpGet, Key: []byte("k")}}, nil)
+	var tre *TransactionResultError
+	if !errors.As(err, &tre) {
+		t.Fatalf("got %T: %v, want *TransactionResultError", err, err)
+	}
+}
+
+func TestTransactionService_Execute_ResultMissingReadAnswersIsTyped(t *testing.T) {
+	// A one-byte result for a branch that read: the state machine answered
+	// none of its ops, so the read's value is unknown rather than absent.
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 1, Data: []byte{1}}, nil
+		},
+	}
+
+	_, err := NewTransactionService(host, 1).Execute(context.Background(), nil, []Op{{Type: OpGet, Key: []byte("k")}}, nil)
+	var shape *TransactionResultShapeError
+	if !errors.As(err, &shape) || shape.Ops != 1 || shape.Answers != 0 {
+		t.Fatalf("got %T: %v, want *TransactionResultShapeError{Ops: 1, Answers: 0}", err, err)
+	}
+	if shape.Error() == "" {
+		t.Fatal("shape error has no message")
 	}
 }
 
 // TestTransactionService_ExecuteWithMode_RejectsOpGet mirrors the Execute
 // rejection test for the ExecuteWithMode path.
-func TestTransactionService_ExecuteWithMode_RejectsOpGet(t *testing.T) {
-	proposed := false
+func TestTransactionService_ExecuteWithMode_GetReturnsTheRead(t *testing.T) {
+	data, err := protocol.EncodeTransactionResult(true, []protocol.TxnReadResult{{Count: 1, Kvs: []*KeyValue{{Key: []byte("k"), Value: []byte("v"), Version: 5}}}})
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
 	host := &mockHost{
 		proposeWithModeFn: func(_ context.Context, _ uint64, _ []byte, _ writemode.Mode) (sm.Result, error) {
-			proposed = true
-			return sm.Result{Value: 1, Data: []byte{1}}, nil
+			return sm.Result{Value: 1, Data: data}, nil
 		},
 	}
 
-	svc := NewTransactionService(host, 1)
-	successOps := []Op{
-		{Type: OpGet, Key: []byte("k")},
+	resp, err := NewTransactionService(host, 1).ExecuteWithMode(context.Background(), nil, []Op{{Type: OpGet, Key: []byte("k")}}, nil, writemode.WALDurable)
+	if err != nil {
+		t.Fatalf("ExecuteWithMode: %v", err)
 	}
+	if len(resp.Responses) != 1 || resp.Responses[0].Kvs[0].Version != 5 {
+		t.Fatalf("response = %+v, want the read at version 5", resp)
+	}
+}
 
-	_, err := svc.ExecuteWithMode(context.Background(), nil, successOps, nil, writemode.WALDurable)
-	var utoe *UnsupportedTransactionOpError
-	if !errors.As(err, &utoe) {
-		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
-	}
-	if proposed {
-		t.Fatal("ProposeWithMode must not be called when a branch op is rejected")
+func TestTransactionService_ExecuteWithMode_ReadsRefusedUntilTheGateIsActive(t *testing.T) {
+	host := &gatedHost{mockHost: &mockHost{}, enabled: map[uint64]bool{}}
+	_, err := NewTransactionService(host, 1).ExecuteWithMode(context.Background(), nil, []Op{{Type: OpRange, Key: []byte("a"), RangeEnd: []byte("b")}}, nil, writemode.Sync)
+	var nae *feature.NotActiveError
+	if !errors.As(err, &nae) {
+		t.Fatalf("got %T: %v, want *feature.NotActiveError", err, err)
 	}
 }
 

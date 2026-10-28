@@ -264,6 +264,37 @@ func (e *EncodeRequestError) Is(target error) bool {
 	return target == ErrNotStored
 }
 
+// TransactionResultError is returned when a transaction's apply result cannot
+// be decoded, or does not answer every op of the branch it ran. The
+// transaction was applied; only its answer is unreadable, so this is a SERVER
+// error: a client cannot tell from it which branch ran or what a read saw.
+type TransactionResultError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the decode failure.
+func (e *TransactionResultError) Error() string {
+	return "service: cannot decode transaction result: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *TransactionResultError) Unwrap() error {
+	return e.Err
+}
+
+// TransactionResultShapeError is the Err of a TransactionResultError whose
+// result decoded but answers a different number of ops than the executed
+// branch holds.
+type TransactionResultShapeError struct {
+	Ops     int
+	Answers int
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *TransactionResultShapeError) Error() string {
+	return "transaction result answers " + strconv.Itoa(e.Answers) + " ops, branch holds " + strconv.Itoa(e.Ops)
+}
+
 // ProposeError is returned when a Raft proposal fails.
 type ProposeError struct {
 	Err error
