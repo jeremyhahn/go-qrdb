@@ -791,6 +791,16 @@ func TestProtoToOp_Range(t *testing.T) {
 	}
 }
 
+// An enum value this server does not know must not become the zero OpPut.
+func TestProtoToOp_UnknownTypeIsNotAPut(t *testing.T) {
+	for _, v := range []pb.OpType{pb.OpType(4), pb.OpType(99), pb.OpType(256)} {
+		so := protoToOp(&pb.Op{Type: v, Key: []byte("k"), Value: []byte("v")})
+		if so.Type != service.OpUnknown {
+			t.Fatalf("type %d became %d, want OpUnknown", v, so.Type)
+		}
+	}
+}
+
 func TestOpResponseToProto_WithKvs(t *testing.T) {
 	r := service.OpResponse{
 		Kvs: []*kv.KeyValue{

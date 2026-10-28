@@ -141,6 +141,11 @@ const (
 
 	// OpRange retrieves a range of key-value pairs.
 	OpRange
+
+	// OpUnknown stands for an op type a transport could not map. Nothing
+	// maps it, so a transaction or batch carrying it is refused rather than
+	// read as the zero value, OpPut, which would overwrite the key.
+	OpUnknown OpType = 0xFF
 )
 
 // Op is a single operation within a transaction or batch.

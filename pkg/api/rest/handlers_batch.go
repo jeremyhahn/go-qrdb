@@ -57,7 +57,11 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ops := jsonToOps(req.Ops)
+	ops, err := jsonToOps(req.Ops)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
 
 	result, err := batchSvc.Execute(ctx, ops)
 	if err != nil {

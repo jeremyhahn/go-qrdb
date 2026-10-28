@@ -48,11 +48,18 @@ Keys and values are JSON strings, sent as their bytes.
 compare reads the field of the same name (`version`, `create_revision`,
 `mod_revision` or `value`).
 `result`: `equal` · `greater` · `less` · `not_equal`.
-op `type`: `put` · `delete`. `get` and `range` parse but are refused in a
-transaction or batch branch (`UnsupportedTransactionOpError`: REST 400,
-gRPC/Unix/QUIC/MCP `INVALID_ARGUMENT`); read the keys after the transaction
-commits. An unrecognised string is not refused: `target` falls back to
-`version`, `result` to `equal`, and `type` to `put`.
+op `type`: `put` · `delete` · `get` · `range`. A `get` reads `key`; a `range`
+reads `[key, range_end)`. A read in a transaction branch is answered inside
+the transaction, after the compares and the writes staged before it in the
+same branch, and needs an MVCC state machine (`--state-machine mvcc`) and the
+cluster feature `transaction-reads`; before that feature is active the
+transaction is refused whole (`feature.NotActiveError`: REST 503,
+gRPC/Unix/QUIC/MCP `UNAVAILABLE`), and nothing is applied. An unrecognised
+`target` falls back to `version` and `result` to `equal`; an unrecognised op
+`type`, in a transaction or a batch, is refused before anything is proposed
+rather than read as a write: REST 400 (`UnknownOpTypeError`), gRPC/Unix/QUIC
+`INVALID_ARGUMENT` for an unknown `OpType` enum value
+(`UnsupportedTransactionOpError`), MCP a tool error (`UnknownOpTypeError`).
 
 Response — `TransactionResponse`:
 
@@ -60,9 +67,18 @@ Response — `TransactionResponse`:
 {
   "succeeded": true,
   "revision": 4711,
-  "responses": [ { "kvs": [], "count": 0, "succeeded": true } ]
+  "responses": [
+    { "kvs": [], "count": 0, "succeeded": true },
+    { "kvs": [ { "key": "k1", "value": "v1", "create_revision": 4702,
+                 "mod_revision": 4711, "version": 3, "lease": 0 } ],
+      "count": 1, "succeeded": true }
+  ]
 }
 ```
+
+`responses` holds one entry per op of the branch that ran, in order. A write's
+entry carries no `kvs`; a read's carries the keys it found, with their MVCC
+metadata, and `count`. An absent key answers `count: 0`.
 
 `POST /batch` — `{"ops": [Op, ...]}`, response
 `{"revision": 4712, "responses": [OpResponse, ...]}`. `revision` is the single

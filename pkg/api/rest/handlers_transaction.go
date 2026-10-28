@@ -102,8 +102,16 @@ func (s *Server) handleTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	successOps := jsonToOps(req.SuccessOps)
-	failureOps := jsonToOps(req.FailureOps)
+	successOps, err := jsonToOps(req.SuccessOps)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
+	failureOps, err := jsonToOps(req.FailureOps)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
 
 	resp, err := txSvc.Execute(ctx, compares, successOps, failureOps)
 	if err != nil {
@@ -132,18 +140,22 @@ func (s *Server) handleTransaction(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // jsonToOps converts a slice of opJSON to service.Op values.
-func jsonToOps(ops []opJSON) []service.Op {
+func jsonToOps(ops []opJSON) ([]service.Op, error) {
 	result := make([]service.Op, len(ops))
 	for i, o := range ops {
+		opType, err := parseOpType(o.Type)
+		if err != nil {
+			return nil, err
+		}
 		result[i] = service.Op{
-			Type:     parseOpType(o.Type),
+			Type:     opType,
 			Key:      []byte(o.Key),
 			Value:    []byte(o.Value),
 			RangeEnd: []byte(o.RangeEnd),
 			LeaseID:  o.LeaseID,
 		}
 	}
-	return result
+	return result, nil
 }
 
 // compareTargetMap maps JSON string values to CompareTarget constants.
@@ -186,10 +198,11 @@ func parseCompareResult(s string) service.CompareResult {
 	return service.CompareEqual
 }
 
-// parseOpType converts a JSON string to an OpType constant.
-func parseOpType(s string) service.OpType {
+// parseOpType converts a JSON string to an OpType constant, refusing a string
+// that names no op type.
+func parseOpType(s string) (service.OpType, error) {
 	if opType, ok := restOpTypeMap[s]; ok {
-		return opType
+		return opType, nil
 	}
-	return service.OpPut
+	return 0, &UnknownOpTypeError{Type: s}
 }
