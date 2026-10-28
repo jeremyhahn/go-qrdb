@@ -18,8 +18,10 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -33,6 +35,24 @@ var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
 	userConcurrentUpdateRefusal,
+	adminCredentialRequiresCARefusal,
+	vlogRefusal,
+}
+
+// vlogRefusal encodes the verifiable-log refusals a client rebuilds typed
+// (go-qrdb#912): a create of a log that exists, a second checkpoint at one
+// tree size, and an expiry on a log that does not allow it.
+func vlogRefusal(err error) (string, map[string]string, bool) {
+	if e, ok := errors.AsType[*vlog.LogExistsError](err); ok {
+		return vlog.ReasonLogExists, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*vlog.CheckpointExistsError](err); ok {
+		return vlog.ReasonCheckpointExists, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*vlog.ExpireNotAllowedError](err); ok {
+		return vlog.ReasonExpireNotAllowed, e.Metadata(), true
+	}
+	return "", nil, false
 }
 
 // Refusal returns the structured refusal err carries -- a reason and its
@@ -68,6 +88,15 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// adminCredentialRequiresCARefusal encodes a *ceremony.AdminCredentialRequiresCAError,
+// so a gRPC or Unix client rebuilds it and errors.As matches across the wire.
+func adminCredentialRequiresCARefusal(err error) (string, map[string]string, bool) {
+	if e, ok := errors.AsType[*ceremony.AdminCredentialRequiresCAError](err); ok {
+		return ceremony.ReasonAdminCredentialRequiresCA, e.Metadata(), true
 	}
 	return "", nil, false
 }

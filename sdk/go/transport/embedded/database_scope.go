@@ -125,6 +125,7 @@ func (t *Transport) WithDatabase(database string) (transport.Transport, error) {
 	if t.ragSvc != nil {
 		c.ragSvc = &scopedRAG{inner: t.ragSvc, database: db}
 	}
+	c.logDatabase = db
 	if t.forwarding != nil {
 		return &forwardingScope{Transport: c, database: db, fwd: t.forwarding}, nil
 	}
@@ -182,6 +183,8 @@ func (t *Transport) cloneShared() *Transport {
 		embeddingSvc:                 t.embeddingSvc,
 		ragSvc:                       t.ragSvc,
 		collectionSvc:                t.collectionSvc,
+		logSvc:                       t.logSvc,
+		logDatabase:                  t.logDatabase,
 		sealStoreSvc:                 t.sealStoreSvc,
 		tenantSvc:                    t.tenantSvc,
 		volumeSvc:                    t.volumeSvc,

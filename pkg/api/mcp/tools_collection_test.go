@@ -673,7 +673,7 @@ func TestHandleCollectionInsertDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.InsertDocumentResponse
+	var resp documentIDResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -810,7 +810,7 @@ func TestHandleCollectionGetDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.GetDocumentResponse
+	var resp documentResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -999,7 +999,7 @@ func TestHandleCollectionUpdateDocument_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.UpdateDocumentResponse
+	var resp documentIDResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -1289,7 +1289,7 @@ func TestHandleCollectionListDocuments_Success(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.ListDocumentsResponse
+	var resp documentListResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -1373,7 +1373,7 @@ func TestHandleCollectionListDocuments_WithPagination(t *testing.T) {
 	}
 
 	text := resultText(t, result)
-	var resp service.ListDocumentsResponse
+	var resp documentListResult
 	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}

@@ -17,6 +17,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -51,15 +52,156 @@ func TestEncodeVerifiableLogCreate_RoundTrips(t *testing.T) {
 		t.Fatalf("EncodeVerifiableLogCreate: %v", err)
 	}
 	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
-	id, got, err := DecodeVerifiableLogCreate(tenantID, body)
+	id, got, key, err := DecodeVerifiableLogCreate(tenantID, body)
 	if err != nil {
 		t.Fatalf("DecodeVerifiableLogCreate: %v", err)
+	}
+	if key != nil {
+		t.Fatalf("key = %+v, want none", key)
 	}
 	if id != testLogID {
 		t.Fatalf("id = %v, want %v", id, testLogID)
 	}
 	if !reflect.DeepEqual(got, desc) {
 		t.Fatalf("descriptor = %+v, want %+v", got, desc)
+	}
+}
+
+func TestEncodeVerifiableLogCreate_FramesTheKeyRecordExplicitly(t *testing.T) {
+	desc := vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256}
+	value, err := json.Marshal(desc)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	name := logNameBody(testLogID.Database, testLogID.Log)
+	for _, tc := range []struct {
+		name string
+		key  *vlog.SigningKey
+		want []byte
+	}{
+		{"absent", nil, []byte{keyRecordAbsent}},
+		{"present", &vlog.SigningKey{Version: 1, PKCS8: []byte("pk")}, []byte{keyRecordPresent, 0, 0, 0, 1, 'p', 'k'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := encodeVerifiableLogCreate(testLogID, desc, tc.key)
+			if err != nil {
+				t.Fatalf("encodeVerifiableLogCreate: %v", err)
+			}
+			_, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
+			want := binary.BigEndian.AppendUint32(append([]byte(nil), name...), uint32(len(value)))
+			want = append(append(want, value...), tc.want...)
+			if !bytes.Equal(body, want) {
+				t.Fatalf("body = %x, want %x", body, want)
+			}
+		})
+	}
+}
+
+func TestEncodeVerifiableLogCreateWithKey_RoundTrips(t *testing.T) {
+	key, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, vlog.FirstKeyVersion)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	desc := vlog.Descriptor{Origin: "db.example.com/ledger", Hash: vlog.HashSHA256, Keys: []vlog.HeadKey{headKeyOf(t, key)}}
+	cmd, err := EncodeVerifiableLogCreateWithKey(testLogID, desc, key)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogCreateWithKey: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeCreate)
+	id, got, gotKey, err := DecodeVerifiableLogCreate(tenantID, body)
+	if err != nil {
+		t.Fatalf("DecodeVerifiableLogCreate: %v", err)
+	}
+	if id != testLogID || !reflect.DeepEqual(got, desc) {
+		t.Fatalf("decoded %v %+v, want %v %+v", id, got, testLogID, desc)
+	}
+	if gotKey == nil || !reflect.DeepEqual(*gotKey, key) {
+		t.Fatalf("key = %+v, want %+v", gotKey, key)
+	}
+}
+
+// headKeyOf returns the descriptor's record of the software key k.
+func headKeyOf(t *testing.T, k vlog.SigningKey) vlog.HeadKey {
+	t.Helper()
+	signer, _, err := k.Signer()
+	if err != nil {
+		t.Fatalf("Signer: %v", err)
+	}
+	hk, err := vlog.NewHeadKey(k.Version, vlog.KeyRef(k.Version), signer.Public())
+	if err != nil {
+		t.Fatalf("NewHeadKey: %v", err)
+	}
+	return hk
+}
+
+func TestEncodeVerifiableLogRotateKey_RoundTripsTheSoftwareRecord(t *testing.T) {
+	key, err := vlog.GenerateSigningKey(vlog.SignatureECDSAP256SHA256, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	next := headKeyOf(t, key)
+	cmd, err := EncodeVerifiableLogRotateKey(testLogID, next, &key)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogRotateKey: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeRotateKey)
+	id, got, gotKey, err := DecodeVerifiableLogRotateKey(tenantID, body)
+	if err != nil {
+		t.Fatalf("DecodeVerifiableLogRotateKey: %v", err)
+	}
+	if id != testLogID || !reflect.DeepEqual(got, next) {
+		t.Fatalf("decoded %v %+v, want %v %+v", id, got, testLogID, next)
+	}
+	if gotKey == nil || !reflect.DeepEqual(*gotKey, key) {
+		t.Fatalf("key = %+v, want %+v", gotKey, key)
+	}
+}
+
+// A provider that keeps its key outside go-qrdb rotates with no record.
+func TestEncodeVerifiableLogRotateKey_RoundTripsWithoutARecord(t *testing.T) {
+	key, err := vlog.GenerateSigningKey(vlog.SignatureEd25519, 2)
+	if err != nil {
+		t.Fatalf("GenerateSigningKey: %v", err)
+	}
+	next := headKeyOf(t, key)
+	next.Ref = "hsm:slot-7"
+	cmd, err := EncodeVerifiableLogRotateKey(testLogID, next, nil)
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogRotateKey: %v", err)
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeRotateKey)
+	id, got, gotKey, err := DecodeVerifiableLogRotateKey(tenantID, body)
+	if err != nil || id != testLogID || !reflect.DeepEqual(got, next) || gotKey != nil {
+		t.Fatalf("DecodeVerifiableLogRotateKey = %v %+v %+v, %v; want %v %+v and no record", id, got, gotKey, err, testLogID, next)
+	}
+}
+
+func TestEncodeVerifiableLogRotateKey_RefusesEmptyRecord(t *testing.T) {
+	for name, key := range map[string]vlog.SigningKey{
+		"version 0": {PKCS8: []byte{1}},
+		"no bytes":  {Version: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ice *InvalidCommandError
+			if _, err := EncodeVerifiableLogRotateKey(testLogID, vlog.HeadKey{Version: 2, Ref: "2"}, &key); !errors.As(err, &ice) {
+				t.Fatalf("err = %v, want *InvalidCommandError", err)
+			}
+		})
+	}
+}
+
+func TestEncodeVerifiableLogCreateWithKey_RefusesEmptyKey(t *testing.T) {
+	desc := vlog.Descriptor{Origin: "db.example.com/ledger", Hash: vlog.HashSHA256}
+	for name, key := range map[string]vlog.SigningKey{
+		"version 0": {PKCS8: []byte{1}},
+		"no bytes":  {Version: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ice *InvalidCommandError
+			if _, err := EncodeVerifiableLogCreateWithKey(testLogID, desc, key); !errors.As(err, &ice) {
+				t.Fatalf("err = %v, want *InvalidCommandError", err)
+			}
+		})
 	}
 }
 
@@ -232,8 +374,20 @@ func TestDecodeVerifiableLog_RejectsMalformedBodies(t *testing.T) {
 		{"name: database truncated", decodeCreate, []byte{0, 4, 'd'}},
 		{"name: log length missing", decodeCreate, []byte{0, 1, 'd', 0}},
 		{"name: log truncated", decodeCreate, []byte{0, 1, 'd', 0, 3, 'l'}},
-		{"create: descriptor not JSON", decodeCreate, withName('{')},
-		{"create: descriptor missing", decodeCreate, withName()},
+		{"create: descriptor not JSON", decodeCreate, withName(append(u32(1), '{')...)},
+		{"create: descriptor length missing", decodeCreate, withName(0, 0)},
+		{"create: descriptor truncated", decodeCreate, withName(append(u32(3), '{', '}')...)},
+		{"create: signing key truncated", decodeCreate, withName(append(u32(2), '{', '}', 1, 0, 0, 0, 1)...)},
+		{"create: key record missing", decodeCreate, withName(append(u32(2), '{', '}')...)},
+		{"create: trailing bytes after an absent key", decodeCreate, withName(append(u32(2), '{', '}', 0, 'x')...)},
+		{"create: unknown key record presence", decodeCreate, withName(append(u32(2), '{', '}', 2, 0, 0, 0, 1, 'k')...)},
+		{"create: the descriptor without its length", decodeCreate, withName([]byte(`{"origin":"o","hash":"sha256"}`)...)},
+		{"rotate: key not JSON", decodeRotateKey, withName(append(u32(1), '[')...)},
+		{"rotate: key length missing", decodeRotateKey, withName(0, 0)},
+		{"rotate: key truncated", decodeRotateKey, withName(append(u32(3), '{', '}')...)},
+		{"rotate: signing key truncated", decodeRotateKey, withName(append(u32(2), '{', '}', 1, 0, 0, 0, 2)...)},
+		{"rotate: key record missing", decodeRotateKey, withName(append(u32(2), '{', '}')...)},
+		{"rotate: unknown key record presence", decodeRotateKey, withName(append(u32(2), '{', '}', 7, 0, 0, 0, 2, 'k')...)},
 		{"append: count missing", decodeAppend, withName(0, 0)},
 		{"append: count beyond body", decodeAppend, withName(append(u32(1<<31), 0, 0, 0, 0)...)},
 		{"append: entry length missing", decodeAppend, withName(append(u32(2), append(u32(4), 'a', 'b', 'c', 'd')...)...)},
@@ -255,7 +409,12 @@ func TestDecodeVerifiableLog_RejectsMalformedBodies(t *testing.T) {
 }
 
 func decodeCreate(body []byte) error {
-	_, _, err := DecodeVerifiableLogCreate("t", body)
+	_, _, _, err := DecodeVerifiableLogCreate("t", body)
+	return err
+}
+
+func decodeRotateKey(body []byte) error {
+	_, _, _, err := DecodeVerifiableLogRotateKey("t", body)
 	return err
 }
 

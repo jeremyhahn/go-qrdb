@@ -1,6 +1,6 @@
 # etcd Compatibility — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated: `qrdb_etcd`** (`WITH_QRDB_ETCD=1`, on by default). Disable
@@ -11,7 +11,7 @@
 etcd compatibility is configured **per database**, not globally. `etcd` sits
 directly on the database entry, the same as `mysql` and `postgresql`:
 `config.DatabaseConfig` has no `protocol` field, so a nested `protocol.etcd`
-block is dropped by the YAML decoder rather than applied.
+block is an unknown key and the config load refuses the file.
 
 ```yaml
 databases:
@@ -39,6 +39,23 @@ databases:
 The RPC-to-service and RPC-to-permission map is
 [api.md](api.md#rpc-coverage). `translate.go` converts qrdb `kv.KeyValue`
 records to etcd `mvccpb.KeyValue` and builds the etcd response header.
+
+## Exported surface
+
+`pkg/api/etcd`:
+
+- `Server`, built by `NewServer(dbName, addr string, opts ...ServerOption)`,
+  with `Start`, `Stop` and `Addr`.
+- `ServerOption` constructors: `WithTLS`, `WithClusterID`, `WithMemberID`,
+  `WithRaftTerm`, `WithMVCC`, `WithTransaction`, `WithWatch`, `WithLease`,
+  `WithAdmin` and `WithRequestAuthorizer`.
+- `RequestAuthorizer` and `StreamGuard`, the seams the composer fills;
+  `MethodPermission`, the RPC-to-permission map; `ValidateConfig`, the
+  per-database config check.
+- The typed errors in `errors.go`: `StartError`, `InvalidRequestError`,
+  `AuthRequiredError`, `ScopeUnavailableError`, `MethodNotAllowedError`,
+  `TenantMismatchError`, `PermissionDeniedError`, `AuthNotEnabledError` and
+  `RevisionHistoryRequiredError`.
 
 ## Invariants
 
@@ -135,13 +152,19 @@ make coverage-etcd        # etcd coverage; fails below COVER_MIN (91%)
   shared with other tenants and databases, refuses another tenant's caller and
   an unauthenticated one, and refuses the next RPC once the database is sealed.
 - **Integration**: `clientv3` flows in `test/integration/etcd_test.go` against
-  a self-spawned `qrdbd` (`make integration-test-etcd-compatibility`).
+  a self-spawned `qrdbd` (`make integration-test-etcd-compatibility`). The
+  per-transport accounting is the `etcd-compatibility` row of
+  [test/integration/COVERAGE.md](../../test/integration/COVERAGE.md).
 
 ## Observability
 
 - `Maintenance.Status` reports the database's current revision (in the header
-  and as `RaftIndex`); `Leader`, `RaftTerm` and `DbSize` are fixed values, not
-  the node's real status.
+  and as `RaftIndex`). The other fields are fixed, not the node's real status:
+  `Leader` is the listener's own member ID, `RaftTerm` is `1` and `DbSize` is
+  `0`.
 - `Maintenance.Alarm` returns no alarms.
+- Log events, each carrying `database`: `etcd server started` (with `addr`),
+  `etcd server stopped`, and `etcd server error` (with `error`) when serving
+  ends in an error. The listener exports no metrics of its own.
 - Each RPC's authorization decision is audited by the auth middleware, through
   [../audit/](../audit/) like any other data-plane access.

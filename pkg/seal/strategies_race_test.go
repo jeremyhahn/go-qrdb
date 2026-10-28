@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -182,35 +181,17 @@ func spinOpposite(stop <-chan struct{}, body func()) *sync.WaitGroup {
 // for reading them back. Do not "fix" this by cutting the 60 iterations: the
 // iteration count is the race window, which is the coverage.
 func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
-	// Collect eagerly for the duration of this test.
-	//
-	// The writer's payload is 60 Argon2id derivations at 128 MiB each. Those
-	// buffers die immediately, but at the default GOGC=100 the heap roughly
-	// doubles before the collector runs, so they pile up. Bounding the
-	// participants (raceParticipants) stopped the writer being starved, which
-	// means it now issues those derivations FASTER and the pile grows faster
-	// still: measured at GOMAXPROCS=2, n=3 each, peak RSS went 1224 MB ->
-	// 1492 MB while wall time went 284s -> 82s.
-	//
-	// Faster but hungrier is the wrong trade for this test specifically: it
-	// was OOM-KILLED on CI, not merely slow (go-qrdb#151, run 6900), on a
-	// runner packing seven jobs. Collecting more eagerly hands the memory back
-	// and keeps most of the speedup -- same conditions, n=3:
-	//
-	//	baseline (8 unbounded)      284s   1224 MB
-	//	bounded participants         82s   1492 MB
-	//	bounded + this line         100s   1230 MB
-	//
-	// 2.8x faster than baseline with peak RSS back where it started.
-	//
-	// SetGCPercent returns the previous value, so this restores it on exit. It
-	// is process-wide, which is safe here because this test does not call
-	// t.Parallel() and therefore runs alone.
-	defer debug.SetGCPercent(debug.SetGCPercent(20))
-
+	// The race under test is on b.strategies, not in the KDF, so the barrier
+	// starts on a cheap-KDF strategy and every ChangePassword keeps its
+	// factor (change_password.go builds the replacement from the old
+	// strategy's KDF params). At the production factor the writer's 61
+	// derivations cost 195 s under FIPS 140-3 mode, PBKDF2 at 600,000
+	// iterations, and 128 MiB of Argon2id apiece otherwise, which OOM-killed
+	// this test on CI (go-qrdb#151, run 6900) until it ran under an eager
+	// collector (#1234).
 	ctx := context.Background()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, cheapSoftwareStrategy(t, "initial-password"))
 	require.NoError(t, err)
 	require.NoError(t, b.Initialize(ctx, MustCredentials(context.Background(), []byte("initial-password"))))
 

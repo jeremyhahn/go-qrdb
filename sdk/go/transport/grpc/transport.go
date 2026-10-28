@@ -272,6 +272,12 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 // Get retrieves a value by key with a linearizable read. Returns
 // KeyNotFoundError when the server responds with NotFound.
 func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
+	return t.get(ctx, "Get", key, opts...)
+}
+
+// get is the Get RPC behind both Get and Exists; method names the verb in
+// the errors it returns, so an Exists failure is reported as Exists.
+func (t *Transport) get(ctx context.Context, method, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -280,7 +286,7 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 
 	resp, err := t.client.Get(ctx, &pb.GetRequest{Key: key, Consistency: protoConsistency(opts...)})
 	if err != nil {
-		return nil, mapGRPCError("Get", err)
+		return nil, mapGRPCError(method, err)
 	}
 	return resp.GetValue(), nil
 }
@@ -385,7 +391,7 @@ func (t *Transport) Scan(ctx context.Context, prefix string, opts ...transport.R
 
 // Exists checks whether a key exists. Performs a check via Get.
 func (t *Transport) Exists(ctx context.Context, key string, opts ...transport.ReadOption) (bool, error) {
-	_, err := t.Get(ctx, key, opts...)
+	_, err := t.get(ctx, "Exists", key, opts...)
 	if err != nil {
 		var knf *transport.KeyNotFoundError
 		if errors.As(err, &knf) {

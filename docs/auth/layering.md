@@ -1,6 +1,6 @@
 # Identity / authorization layering
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 <!--
@@ -9,13 +9,16 @@ Licensed under the Apache License, Version 2.0
 -->
 
 go-qrdb's auth subsystem is **identity-layer**. It owns tenants, users,
-roles, role memberships, and the permission registry for identity-domain
-operations. It deliberately does **not** own permissions for downstream
-applications' domains.
+roles, role memberships, and the permission registry. That registry carries
+the stack's shared permission vocabulary: besides the identity-domain
+operations it declares the families downstream services check — cryptographic
+keys, the broker data-plane families (`objstore:*`, `orchestrator:*`) and
+`passwords:*` — and `pkg/permission/builtin_role_grants.go` grants them to the
+built-in roles.
 
-Downstream consumers (go-xkms, go-quicbaas, ...) maintain their own
-role -> permission maps for their own domains and read identity / role
-membership from qrdb via the SDK.
+Downstream consumers (go-xkms, go-quicbaas, ...) read identity / role
+membership from qrdb via the SDK and decide over their own resources with
+those permission names.
 
 ## What lives in qrdb
 
@@ -36,6 +39,7 @@ membership from qrdb via the SDK.
   - certificate authority (CA) and ACME operations
   - seal/barrier operations and recovery
   - ceremony operations
+  - broker data-plane operations (`objstore:*`, `orchestrator:*`) and static passwords (`passwords:*`)
 - **System-tenant rule** — a cross-scope permission (`:cross`, tagged
   `ScopeCross`) takes effect only for an identity in the `system` tenant;
   every other identity is bound to its own tenant.
@@ -44,7 +48,7 @@ membership from qrdb via the SDK.
 
 - Hardware-specific authentication factor implementations (FIDO2, PIV, PKCS#11, TPM2). These live in go-xkms and implement the `authfactors.Factor` interface, registered in an `authfactors.FactorRegistry`.
 - Hardware seal strategy implementations (TPM2, PKCS#11, cloud KMS, Vault). These live in go-xkms and register into qrdb's `seal.StrategyRegistry`.
-- Application-specific resource models beyond the core qrdb / go-xkms domains (e.g., quicbaas's static-password / team domain).
+- Application-specific resource models beyond the core qrdb / go-xkms domains (e.g., quicbaas's static-password / team domain). qrdb's registry declares the permission names such a domain checks (`passwords:*`), not the domain's model.
 - Policies over an application's own resources. qrdb implements role-based access control, with an optional ABAC decorator over it ([abac.md](abac.md)); a downstream application's resource policies belong to that application.
 
 The split respects module boundaries: qrdb owns core identity, cryptographic operations, and seal/barrier lifecycle. go-xkms and go-quicbaas inject hardware backends and application-specific domains via composition.
@@ -65,8 +69,9 @@ The downstream app owns the permission semantics; qrdb owns the membership.
 
 ## Why the split
 
-- **Cohesion.** qrdb's release cadence is independent of xkms's permission
-  vocabulary. New crypto operations don't churn qrdb's API surface.
+- **Cohesion.** qrdb holds one shared permission vocabulary for the stack, so
+  a new permission family is a change to qrdb's registry; how a downstream
+  application models the resources behind it stays in that application.
 - **Multi-tenant security.** A bug in xkms's permission map cannot leak
   cross-tenant identity data, because the identity layer is upstream of
   the permission decision.

@@ -676,8 +676,9 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 			"--admin-cert", adminCertPath, "--barrier-strategy", "none")
 	}
 
-	// A one-peer static founder runs without a Raft transport and can never
-	// grow, so shard 1 is founded by two members, as
+	// A one-peer static founder runs without a Raft transport and grows only
+	// through a restart (TestCluster_OneNodeManagedTLSFounderGrows), so shard
+	// 1 is founded by two members, as
 	// TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved founds
 	// it: node 1 self-issues the cluster CA and lists node 2, whose identity
 	// is fixed up front by a key generated here; node 2 then brings a leaf

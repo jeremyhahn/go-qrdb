@@ -170,8 +170,10 @@ type ServiceModule interface {
 	// signature is identical to RegisterGRPC, most modules implement this by
 	// calling the same pb.Register<X>Server(reg, impl) a second time (or simply
 	// delegating: `func (m *M) RegisterQUIC(r grpc.ServiceRegistrar) { m.RegisterGRPC(r) }`).
-	// A method with no declared permission fails the QUIC server's default-deny
-	// startup assertion, exactly like an undeclared REST route. Streaming methods
+	// A method the module declares public (GRPCPublicMethodLister) is served
+	// without authentication, as on gRPC; any other method with no declared
+	// permission fails the QUIC server's default-deny startup assertion,
+	// exactly like an undeclared REST route. Streaming methods
 	// (grpc.ServiceDesc.Streams) are NOT projected — QUIC's frame protocol has no
 	// generic streaming path — so a module whose surface is entirely streaming
 	// leaves this a no-op via BaseModule.
@@ -231,12 +233,10 @@ type ModuleAuthFallback interface {
 // option. A malformed method name is rejected at registration time so a typo
 // fails server startup loudly instead of silently staying auth-gated.
 //
-// The native QUIC transport (RegisterQUIC) has no unauthenticated-method path
-// at all -- every frame requires a verified mTLS client certificate -- so a
-// method declared here that carries no (qrdb.v1.permission) option is simply
-// left unreachable over QUIC (logged at registration) rather than failing the
-// QUIC server's default-deny startup assertion. The declaration only ever
-// widens gRPC/unix reachability; it never narrows QUIC's.
+// The native QUIC transport reads the same declaration: a method listed here
+// and registered through RegisterQUIC is served without a client
+// certificate, skipping authentication and authorization, as on gRPC and
+// unix. One list is the module's public set on every gRPC-shaped transport.
 type GRPCPublicMethodLister interface {
 	PublicGRPCMethods() []string
 }

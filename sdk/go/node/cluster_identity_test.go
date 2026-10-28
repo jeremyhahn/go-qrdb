@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -162,4 +163,33 @@ func TestNode_ClusteredIsolationRaft_WithoutAnIdentityRefusesTheCreate(t *testin
 		tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
 	var required *tenant.InitStatementRequiredError
 	require.ErrorAs(t, err, &required, "an identity-less node must refuse the create")
+}
+
+// A transport-less founder seeds its own identity into the membership it
+// founds (go-qrdb#671): the first member it later adds authorizes it by that
+// committed identity, and refuses it as missing_identity without one. It names
+// no other member, so a configured entry for another replica is not seeded.
+func TestBuildClusteredRaftConfigs_TransportlessSeedsItsOwnIdentity(t *testing.T) {
+	der, _ := selfSignedIdentity(t)
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	self, err := MemberIdentityFromPEM(leafPEM)
+	require.NoError(t, err)
+	cfg := tuningTestConfig(t)
+	cfg.Raft.MemberIdentities = "2=spki:" + strings.Repeat("ab", 32)
+
+	_, shardCfg, _, err := buildClusteredRaftConfigs(cfg, singleMember(), &RaftMTLSConfig{Cert: leafPEM})
+	require.NoError(t, err)
+	require.Equal(t, map[uint64]string{1: self}, shardCfg.MemberIdentities)
+
+	_, shardCfg, _, err = buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(), nil)
+	require.NoError(t, err)
+	require.Empty(t, shardCfg.MemberIdentities, "a node with no certificate has no identity to seed")
+}
+
+func TestBuildClusteredRaftConfigs_TransportlessBadCertificateIsTyped(t *testing.T) {
+	_, _, _, err := buildClusteredRaftConfigs(tuningTestConfig(t), singleMember(),
+		&RaftMTLSConfig{Cert: []byte("not a certificate")})
+	var cfgErr *ConfigError
+	require.ErrorAs(t, err, &cfgErr)
+	require.Equal(t, "raft.member_identities", cfgErr.Field)
 }

@@ -28,7 +28,7 @@ go 1.27.3
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.57.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
@@ -121,7 +121,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
 	github.com/jeremyhahn/go-enclave v0.10.0-alpha // indirect
 	github.com/jeremyhahn/go-objstore v0.7.0-alpha // indirect
-	github.com/jeremyhahn/go-qrdb v0.57.0-alpha // indirect
+	github.com/jeremyhahn/go-qrdb v0.58.0-alpha // indirect
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
 	github.com/jeremyhahn/go-quicraft v0.24.2-alpha // indirect
 	github.com/jeremyhahn/go-truststrap v0.7.0-alpha // indirect

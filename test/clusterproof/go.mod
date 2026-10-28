@@ -17,9 +17,10 @@ go 1.27.3
 
 require (
 	github.com/anishathalye/porcupine v1.3.1
-	github.com/jeremyhahn/go-qrdb v0.57.0-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.57.0-alpha
+	github.com/jeremyhahn/go-qrdb v0.58.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
 	golang.org/x/sys v0.49.0
+	google.golang.org/grpc v1.84.0
 )
 
 require (
@@ -176,7 +177,6 @@ require (
 	google.golang.org/genproto v0.0.0-20260810153831-ec0a7760b754 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
-	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/src-d/go-errors.v1 v1.0.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

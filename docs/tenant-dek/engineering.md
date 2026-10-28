@@ -1,6 +1,6 @@
 # Tenant DEK Keyring — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Packages
@@ -18,21 +18,29 @@
 
 ## Composition
 
-`lifecycle.BuildServices` builds the keyring wherever it builds a
-`StoreResolver`, which is every composition, passing it the SAME key-wrap
+`lifecycle.BuildServices` builds the DEK service wherever it builds a
+`StoreResolver`, which is every composition, through `buildDEKService`
+(`pkg/server/lifecycle/lifecycle.go`). An injected `DEKProvider` wins
+outright; otherwise it builds the keyring with the SAME key-wrap
 registry/provider Backup consumes (`lifecycle.Infra.
 KeyWrapRegistry`/`KeyWrapProvider`) plus its own key directory
-(`lifecycle.Infra.DEKKeyDir`):
+(`lifecycle.Infra.DEKKeyDir`), and every construction error is returned as
+`lifecycle.DEKServiceError`:
 
 ```go
-opts := []dek.KeyringOption{dek.WithKeyDir(infra.DEKKeyDir)}
-if infra.KeyWrapRegistry != nil {
-    opts = append(opts, dek.WithKeyWrapRegistry(infra.KeyWrapRegistry))
-} else if infra.KeyWrapProvider != nil {
-    opts = append(opts, dek.WithKeyWrapProvider(infra.KeyWrapProvider))
+if provider != nil {
+    return service.NewDEKService(provider)
 }
-keyring, _ := dek.NewKeyring(node.StoreResolver, opts...)
-node.DEK, _ = service.NewDEKService(keyring)
+opts := []dek.KeyringOption{}
+if keyWrapRegistry != nil {
+    opts = append(opts, dek.WithKeyWrapRegistry(keyWrapRegistry))
+} else if keyWrapProvider != nil {
+    opts = append(opts, dek.WithKeyWrapProvider(keyWrapProvider))
+}
+opts = append(opts, dek.WithKeyDir(keyDir))
+keyring, err := dek.NewKeyring(resolver, opts...)
+// ...
+return service.NewDEKService(keyring)
 ```
 
 `WithKeyWrapProvider` is skipped when a shared registry is also supplied:

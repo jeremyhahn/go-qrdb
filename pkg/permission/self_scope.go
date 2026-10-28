@@ -400,6 +400,16 @@ func selfScopedPermissions() []Permission {
 		VectorUpdateMetadata,
 		VectorUpsert,
 
+		// vlog
+		VlogAppend,
+		VlogCreate,
+		VlogExpire,
+		VlogGet,
+		VlogHead,
+		VlogList,
+		VlogProof,
+		VlogSignHead,
+
 		// watch
 		WatchWatch,
 		WatchWatchPrefix,

@@ -1,6 +1,6 @@
 # Watch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -30,8 +30,8 @@ methods. Every transport checks `watch:watch` for both.
 | `prev_kv` | bool | false | include the previous value in each event (REST query parameter `prev-kv`) |
 | `progress_notify` | bool | false | emit one progress response after the replay completes, carrying a cursor safe to resume from; not accepted on REST |
 
-REST selects the key with the `key` or `prefix` query parameter on `GET /watch`
-and answers with Server-Sent Events.
+REST selects the key with the `key` query parameter on `GET /watch`; adding
+`prefix=true` makes `key` a prefix. It answers with Server-Sent Events.
 
 ## Response
 
@@ -47,8 +47,7 @@ and answers with Server-Sent Events.
       "kv":      { "key": "app/config/timeout", "value": "MzBz", "mod_revision": 4712, "create_revision": 12, "version": 4 },
       "prev_kv": { "key": "app/config/timeout", "value": "MTVz", "mod_revision": 4711, "create_revision": 12, "version": 3 }
     }
-  ],
-  "canceled": false
+  ]
 }
 ```
 
@@ -58,7 +57,8 @@ watch was canceled by compaction.
 
 A terminal response sets `"canceled": true` and carries `cancel_reason`. SDK
 callers should not parse that string: `WatchResponse.Err()` classifies it into
-`WatchCompactedError`, `WatchStartRevisionUnsupportedError`, or
+`WatchCompactedError`, `WatchStartRevisionUnsupportedError`,
+`CapabilityUnsupportedError` (the serving node has no watch service), or
 `WatchCanceledError`.
 
 ## Entity watch (service layer)

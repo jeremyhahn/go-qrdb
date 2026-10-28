@@ -22,6 +22,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"math/big"
 	"testing"
 )
 
@@ -79,16 +80,14 @@ func TestCheckPublicKeyStrength_RSA(t *testing.T) {
 		t.Fatalf("CheckPublicKeyStrength(RSA-2048) = %v, want nil", err)
 	}
 
-	weak, err := rsa.GenerateKey(rand.Reader, 1024) // #nosec G403 -- deliberately weak key to prove CheckPublicKeyStrength refuses it; the test IS the rejection path
-	if err != nil {
-		// crypto/rsa itself refuses to generate a sub-2048-bit key under
-		// GODEBUG=fips140=only, which makes CheckPublicKeyStrength's own
-		// weak-key refusal unreachable there: see
-		// docs/seal/fips140-mode.md "Skipped tests under fips140=only".
-		t.Skipf("cannot generate RSA-1024 in this toolchain: %v", err)
-	}
+	// Built rather than generated: crypto/rsa refuses to generate a key under
+	// 2048 bits under GODEBUG=fips140=only, and the strength check reads only
+	// the modulus size, so the refusal is reached in every runtime.
+	weakModulus := new(big.Int).Lsh(big.NewInt(1), 1023)
+	weakModulus.Add(weakModulus, big.NewInt(1))
+	weak := &rsa.PublicKey{N: weakModulus, E: 65537}
 	var weakErr *WeakKeyError
-	if err := CheckPublicKeyStrength(&weak.PublicKey); !errors.As(err, &weakErr) {
+	if err := CheckPublicKeyStrength(weak); !errors.As(err, &weakErr) {
 		t.Fatalf("CheckPublicKeyStrength(RSA-1024) = %v, want *WeakKeyError", err)
 	} else if weakErr.KeyType != "RSA/1024" {
 		t.Fatalf("WeakKeyError.KeyType = %q, want %q", weakErr.KeyType, "RSA/1024")

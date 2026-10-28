@@ -147,7 +147,13 @@ func TestSQLCluster_RowLocks(t *testing.T) {
 	})
 
 	// A deadlock across replicas makes one transaction the victim (1213) and
-	// lets the other finish.
+	// lets the other finish. The victim is the request that closes the cycle,
+	// the newest enqueue (docs/row-locking/architecture.md, "Deadlock
+	// detection"). s1's request is sent first, but the window below proves
+	// only that it has not returned, not that its enqueue has committed, so
+	// on a loaded runner s2's can enqueue first and make s1 the victim. The
+	// test asserts what the design guarantees: exactly one victim, and the
+	// other member is granted its row once the victim's rollback frees it.
 	t.Run("DeadlockVictim", func(t *testing.T) {
 		const table = "lock_deadlock"
 		setup(t, table)
@@ -164,25 +170,41 @@ func TestSQLCluster_RowLocks(t *testing.T) {
 		_, s1Done := asyncBalance(s1, fmt.Sprintf("SELECT balance FROM %s WHERE id = 2 FOR UPDATE", table))
 		select {
 		case err := <-s1Done:
-			t.Fatalf("s1 returned while s2 held row 2: %v", err)
+			t.Fatalf("s1 returned while s2 held row 2 and no cycle existed: %v", err)
 		case <-time.After(500 * time.Millisecond):
 		}
+		_, s2Done := asyncBalance(s2, fmt.Sprintf("SELECT balance FROM %s WHERE id = 1 FOR UPDATE", table))
 
-		_, err := connBalance(s2, fmt.Sprintf("SELECT balance FROM %s WHERE id = 1 FOR UPDATE", table))
-		if mysqlErrNumber(err) != erLockDeadlock {
-			t.Fatalf("the cycle-closing request got %v, want MySQL %d", err, erLockDeadlock)
-		}
-		connExec(t, s2, "ROLLBACK")
-
-		select {
-		case err := <-s1Done:
-			if err != nil {
-				t.Fatalf("the survivor's FOR UPDATE: %v", err)
+		var s1Err, s2Err error
+		for pending := 2; pending > 0; pending-- {
+			select {
+			case s1Err = <-s1Done:
+				s1Done = nil
+			case s2Err = <-s2Done:
+				s2Done = nil
+			case <-time.After(30 * time.Second):
+				t.Fatalf("the deadlock was not resolved: s1 returned %v (%v), s2 returned %v (%v)", s1Done == nil, s1Err, s2Done == nil, s2Err)
 			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the survivor never acquired row 2 after the victim rolled back")
 		}
-		connExec(t, s1, "COMMIT")
+
+		sessions := map[string]*sql.Conn{"s1": s1, "s2": s2}
+		errs := map[string]error{"s1": s1Err, "s2": s2Err}
+		var victims, survivors []string
+		for name, err := range errs {
+			switch {
+			case err == nil:
+				survivors = append(survivors, name)
+			case mysqlErrNumber(err) == erLockDeadlock:
+				victims = append(victims, name)
+			default:
+				t.Fatalf("%s's request in the cycle got %v, want MySQL %d or a grant", name, err, erLockDeadlock)
+			}
+		}
+		if len(victims) != 1 || len(survivors) != 1 {
+			t.Fatalf("victims %v, survivors %v: a deadlock cycle has exactly one victim (s1 %v, s2 %v)", victims, survivors, s1Err, s2Err)
+		}
+		connExec(t, sessions[victims[0]], "ROLLBACK")
+		connExec(t, sessions[survivors[0]], "COMMIT")
 	})
 
 	// A lock held across a leader failover is still held afterwards: the

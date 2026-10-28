@@ -117,16 +117,14 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
 	// (AdoptIfAbsent's loadMatching path) rather than refuse with
 	// *cakey.NotInitializedError.
 	startNode(t, bin, args, "[clusterca-r2] ")
-	// A restart ALWAYS comes back up sealed, even under strategy "none"
-	// (server.ServeSealedWindow blocks until the unseal API is driven,
-	// whatever the strategy): reach the sealed-window listener, then
-	// unseal with an empty passphrase, which StrategyNone ignores.
-	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
-	if out, err := runQRDB(t, cli, connArgs, "barrier", "unseal", "--passphrase", ""); err != nil {
-		t.Fatalf("barrier unseal (restart): %v\noutput: %s", err, out)
-	}
+	// A none barrier holds no secret, so the node unseals itself at
+	// restart (docs/barrier-seal/cli.md, `qrdb barrier unseal`): no unseal
+	// call, and the barrier must report unsealed on its own.
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
+	if barrierStatus(t, cli, connArgs).Sealed {
+		t.Fatal("expected the none barrier to unseal itself at restart")
+	}
 
 	var out string
 	var err error
@@ -255,15 +253,13 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 
 	// Restart over the SAME data directory and ports.
 	startNode(t, bin, args, "[clusterca-perprotocol-r2] ")
-	// A restart ALWAYS comes back up sealed, even under strategy "none":
-	// reach the sealed-window listener, then unseal with an empty
-	// passphrase, which StrategyNone ignores.
-	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
-	if out, err := runQRDB(t, cli, connArgs, "barrier", "unseal", "--passphrase", ""); err != nil {
-		t.Fatalf("barrier unseal (restart): %v\noutput: %s", err, out)
-	}
+	// A none node unseals itself at restart: no unseal call. See
+	// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart.
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
+	if barrierStatus(t, cli, connArgs).Sealed {
+		t.Fatal("expected the none barrier to unseal itself at restart")
+	}
 
 	// Every transport's TLS stack must also work against the RELOADED Key
 	// A after the restart.

@@ -1,6 +1,6 @@
 # Clustering — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 **Raft mode only.** In standalone every capability here refuses with
@@ -1131,7 +1131,7 @@ database's owning tenant.
 | Founding a dedicated database whose placement names a host the system shard never committed | `*service.MemberIdentityError` from the factory; the shard does not start | **yes** |
 | Multicast configured without a secret | method does not run | **yes** |
 | `RemoveMember` would drop below `MinQuorum` | refused by the quorum guard | **yes** |
-| Any bootstrap join (bootstrap flags set) | `*EnrollmentUnavailableError` before the first dial; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that dials. | **yes** |
+| A join with an anchor-fetch method but no join-transport flags (`Join`), or a node with bootstrap flags reaching `Resolve` or `ResolveCA` | `*EnrollmentUnavailableError` before the first dial; a fully configured join fetches the anchor and enrolls; nothing is written to the data directory. The FIPS rows below apply to `FetchAnchor`, the one fetch that dials. | **yes** |
 | `/v1/ca/bootstrap` or the Noise advertiser handed key material | filtered to `CERTIFICATE` blocks (`clustertls.CertificatesOnly`, `ValidateAnchorBundle`); the CA private key is never served | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise as its only method | `*NoiseFIPSUnavailableError` before the first dial; nothing is written to the data directory | **yes** |
 | FIPS 140-3 mode, anchor fetch configured with Noise plus an approved method | Noise dropped from `MethodOrder` with a WARN naming FIPS; the approved methods carry the fetch | n/a |
@@ -1249,14 +1249,29 @@ suite is not served there — the listener still opens, for the P-256 suite — 
   per protocol) runs the real `qrdb admin replica-states` against each of three
   nodes and asserts all three replicas of a shard report one hash at one
   applied index.
+- **Leadership through a follower WAL fsync stall** is a unit test,
+  `pkg/service/fsync_stall_leadership_test.go`. Three in-process hosts with
+  real QUIC transports (`sdk/go/testutil/raftharness`, `WithHostOptions`)
+  run their WALs over `raftharness.StallFS`, a `waldb.FS` whose `Sync` parks
+  while a stall is armed. Both followers park in the fsync of one write for
+  three election timeouts; the write staying uncommitted proves the quorum is
+  stalled. At every heartbeat interval through the stall the test asserts the
+  leader and term are unchanged on every host, and that a linearizable `Get`
+  and the admin `Peers` request succeed. Afterwards it waits, with a deadline,
+  for each follower's own WAL metrics collector to report an fsync of at least
+  the stall's length — the write commits on one follower's acknowledgement, so
+  its return says nothing of the other — and only then asserts the shared WAL
+  fsync histogram gained both observations and both durations.
+  `Stall.Entered` and the collectors' reports are the test's signals; nothing
+  waits on a sleep.
 - **Integration**: the 3-node Raft suites — `isolation_raft_cluster_test.go`,
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,
   `cluster_enable_encryption_test.go` — run under
   `make integration-test-<feature>` for the feature `test/integration/features.mk`
   maps each file to. **Those tests run in CI** in the `integration-features` job
-  (`.github/workflows/ci.yml`), one leg per feature (`clustering`,
-  `multi-tenancy`, `barrier-seal`), required by the `ci-gate` job in CI's full
+  (`.github/workflows/ci.yml`), whose six shard legs each run a list of
+  features (`clustering`, `multi-tenancy` and `barrier-seal` among them), required by the `ci-gate` job in CI's full
   tier, so cluster behaviour is
   exercised on every push to `main`, every dispatch, and every pull request
   labelled `ci:full`.

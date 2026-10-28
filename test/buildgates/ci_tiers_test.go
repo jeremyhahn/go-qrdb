@@ -223,6 +223,7 @@ type ciWorkflow struct {
 		If    string    `yaml:"if"`
 		Needs yaml.Node `yaml:"needs"`
 		Steps []struct {
+			If  string            `yaml:"if"`
 			Run string            `yaml:"run"`
 			Env map[string]string `yaml:"env"`
 		} `yaml:"steps"`

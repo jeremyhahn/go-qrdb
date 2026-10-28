@@ -36,7 +36,9 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 	if err != nil {
 		return err
 	}
-	if _, err := t.callTool(ctx, "qrdb_database_unseal", map[string]any{"name": name, "secret": secret}); err != nil {
+	args := map[string]any{"name": name}
+	putStringSecret(args, "secret", secret)
+	if _, err := t.callTool(ctx, "qrdb_database_unseal", args); err != nil {
 		return &transport.RequestError{Method: "UnsealDatabase", Err: err}
 	}
 	return nil

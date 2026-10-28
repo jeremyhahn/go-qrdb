@@ -1,6 +1,6 @@
 # Desktop GUI — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 The same binary that gives you the CLI also gives you a desktop application, and
@@ -128,5 +128,6 @@ GUI-only API; both paths use the same surfaces, and you have exactly the
 permissions your certificate's user holds.
 
 **The desktop app is holding your data.** In embedded mode it is: the data
-directory and the barrier are on your machine. Treat a desktop deployment as the
-single-node server it is, including for backups.
+directory and the barrier are on your machine, whether the embedded server runs
+alone or joins a Raft cluster. Treat it as a server node, including for
+backups.

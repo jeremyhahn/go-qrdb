@@ -1,6 +1,6 @@
 # Entity-to-SQL Bridge
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 The entity-to-SQL bridge exposes a Go struct stored through the DAO as a SQL table over the same data and the same indexes. `dao.New()` registers the entity type in the process-wide entity registry, and the SQL provider serving the same process builds an `EntityTable` from that registration.
@@ -148,6 +148,36 @@ In each case `SELECT * FROM users` decodes rows with the marshal and unmarshal f
 | ProtoBuf | `codec_protobuf` | yes | Binary, schema-based |
 
 `dao.New` refuses `dao.CodecProtoBuf` with a `CodecCreationError`: a ProtoBuf codec comes from `dao.NewProtoBufCodec[E]()`, which `dao.New` does not take, so a ProtoBuf entity has no SQL table.
+
+### Secret fields
+
+**Store a secret key in an entity.** Declare the field as `dao.SecretBytes`
+and build the DAO with the MessagePack codec. The key stays in locked,
+protected memory, and you destroy it when you are done with it.
+
+```go
+type Credential struct {
+	ID    uint64          `msgpack:"id"`
+	Label string          `msgpack:"label"`
+	Key   dao.SecretBytes `msgpack:"key"`
+}
+
+credDAO, err := dao.New[*Credential](store, "creds", newCredential,
+	dao.WithCodec(dao.CodecMsgPack))
+
+key, err := dao.NewSecretBytes(raw) // raw is wiped
+err = credDAO.Save(ctx, &Credential{Label: "signing", Key: key})
+key.Destroy()
+
+got, err := credDAO.Get(ctx, id)
+defer got.Key.Destroy()
+err = got.Key.WithBytes(func(k []byte) error { return sign(k) })
+```
+
+Only MessagePack can carry the field. Every other codec, including the default
+JSON, refuses the entity type when the DAO is built. You also cannot index the
+field or query it through SQL. At rest the record is encrypted by the
+database's barrier, the same as any other value.
 
 ## Entity Registry
 

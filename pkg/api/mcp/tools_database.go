@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -158,9 +159,7 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithNumber("barrier_shares_total",
 			mcp.Description("Shamir total share count (N) when barrier_mode is \"shamir\"."),
 		),
-		mcp.WithString("barrier_secret",
-			mcp.Description("Barrier passphrase/credential for the initial Initialize call. Never persisted or echoed back."),
-		),
+		withSecretArg("barrier_secret", "Barrier passphrase/credential for the initial Initialize call. Never persisted or echoed back."),
 		mcp.WithString("sql_concurrency",
 			mcp.Description("The database's SQL concurrency mode: \"optimistic\" (the default) or \"pessimistic\"."),
 		),
@@ -231,8 +230,12 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 				SharesRequired: mcp.ParseInt(req, "barrier_shares_required", 0),
 				SharesTotal:    mcp.ParseInt(req, "barrier_shares_total", 0),
 			}
-			var err error
-			if creds, err = seal.CredentialsFor(ctx, []byte(mcp.ParseString(req, "barrier_secret", ""))); err != nil {
+			secret, err := secretArg(req, "barrier_secret")
+			if err != nil {
+				return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
+			}
+			defer secure.Wipe(secret)
+			if creds, err = seal.CredentialsFor(ctx, secret); err != nil {
 				return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 			}
 			defer seal.DestroyCredentials(creds)
@@ -775,7 +778,8 @@ var createDatabaseKnownArgs = func() map[string]struct{} {
 	names := append([]string{
 		"name", "backend", "data_dir", "mode", "replicas", "mysql", "postgresql",
 		"etcd", "etcd_listen_addr", "etcd_advertise_urls",
-		"barrier_enabled", "barrier_mode", "barrier_shares_required", "barrier_shares_total", "barrier_secret",
+		"barrier_enabled", "barrier_mode", "barrier_shares_required", "barrier_shares_total",
+		"barrier_secret", "barrier_secret" + secretB64Suffix,
 		"sql_concurrency",
 	}, raftArgNames(createRaftArgs)...)
 	known := make(map[string]struct{}, len(names))
@@ -902,9 +906,13 @@ var discoveryBlocks = map[database.DiscoveryMethod]discoveryBlock{
 			if err != nil {
 				return err
 			}
+			secret, _, err := stringArg(req, "static_shared_secret")
+			if err != nil {
+				return err
+			}
 			raftCfg.Static = &database.StaticDiscoveryConfig{
 				Peers:        peers,
-				SharedSecret: mcp.ParseString(req, "static_shared_secret", ""),
+				SharedSecret: secret,
 			}
 			return nil
 		},
@@ -913,8 +921,12 @@ var discoveryBlocks = map[database.DiscoveryMethod]discoveryBlock{
 		args: []string{"multicast_shared_secret", "multicast_group", "multicast_interface",
 			"multicast_min_peers", "multicast_announce_interval", "multicast_discover_timeout"},
 		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			secret, _, err := stringArg(req, "multicast_shared_secret")
+			if err != nil {
+				return err
+			}
 			raftCfg.Multicast = &database.MulticastDiscoveryConfig{
-				SharedSecret:     mcp.ParseString(req, "multicast_shared_secret", ""),
+				SharedSecret:     secret,
 				MulticastGroup:   mcp.ParseString(req, "multicast_group", ""),
 				Interface:        mcp.ParseString(req, "multicast_interface", ""),
 				MinPeers:         mcp.ParseInt(req, "multicast_min_peers", 0),
@@ -939,9 +951,13 @@ var discoveryBlocks = map[database.DiscoveryMethod]discoveryBlock{
 	database.DiscoveryToken: {
 		args: []string{"token_endpoint", "token_value", "token_cluster_size", "token_timeout"},
 		build: func(req mcp.CallToolRequest, raftCfg *database.DatabaseRaftConfig) error {
+			token, _, err := stringArg(req, "token_value")
+			if err != nil {
+				return err
+			}
 			raftCfg.Token = &database.TokenDiscoveryConfig{
 				Endpoint:    mcp.ParseString(req, "token_endpoint", ""),
-				Token:       mcp.ParseString(req, "token_value", ""),
+				Token:       token,
 				ClusterSize: mcp.ParseInt(req, "token_cluster_size", 0),
 				Timeout:     mcp.ParseString(req, "token_timeout", ""),
 			}

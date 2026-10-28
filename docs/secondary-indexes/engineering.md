@@ -1,73 +1,23 @@
 # Secondary Indexes and the Query Planner — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
 
-`sdk/go`:
+`sdk/go` (the `kvstore.KVStore` surface the DAO runs over — `AtomicKVStore`,
+`FencedCreator`, `MemoryKVStore`, `UsableAsMapKey` — is the key-value
+feature's, in [../key-value/engineering.md](../key-value/engineering.md#the-kvstorekvstore-surface--sdkgo)):
 
 ```go
 func (c *Client) Index() transport.IndexClient
 func (c *Client) KVStore() KVStore   // routes index ops to IndexClient
-
-// Store capability, for consumers that must know before they depend on it.
-// PutIfAbsent (take), CompareAndSwap (edit) and CompareAndDelete (release).
-// Discovered by RUNTIME type assertion, so an implementation missing any one
-// of them fails at run time rather than at build time — widening this
-// interface means implementing it everywhere in the same change.
-type AtomicKVStore = kvstore.AtomicKVStore
-var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
-var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
-
-// The store Client.KVStore() returns satisfies AtomicKVStore: it forwards
-// PutIfAbsent/CompareAndSwap/CompareAndDelete to the transport's
-// GuardedKVClient capability, which every production transport (REST, gRPC,
-// QUIC, Unix, MCP, embedded) carries.
-//
-// CompareAndSwapWithCurrent composes CompareAndSwap with a follow-up Get on
-// a failed compare, so a contended counter (a PIN-lockout attempt count)
-// learns the value it should have compared against without a second,
-// separately-written round trip. The read is NOT part of the same atomic
-// step -- see the function's own doc for the window that leaves open.
-var CompareAndSwapWithCurrent = kvstore.CompareAndSwapWithCurrent
-// func(ctx context.Context, store AtomicKVStore, key string, expected, next []byte) (swapped bool, current []byte, err error)
-
-// FencedCreator is kvstore.FencedCreator's alias, for an embedder holding a
-// kvstore.KVStore it did not get from Client.KVStore() (a custom
-// seal.StorageBackend composition, for one) and needs to assert for the
-// same capability AtomicKVStore above is exported for. It has no
-// wire-level implementation on any sdk/go/transport client, so the
-// type alias does not make the capability newly reachable through
-// Client.KVStore() -- only through a store the caller built or received
-// some other way.
-//
-// kvstore.MultiGuardedBatchKVStore (the real atomic multi-key write
-// primitive pkg/dao.UnitOfWork REQUIRES, with no fallback) is different:
-// the store Client.KVStore() returns satisfies it too, by composing
-// the transport's TransactionClient -- see
-// ../transactions/engineering.md#kvstoremultiguardedbatchkvstore-over-clientkvstore.
-type FencedCreator = kvstore.FencedCreator
 
 // DAO.SaveIfAbsent's refusal when the store cannot write atomically, whether
 // it is not an AtomicKVStore at all or refused the call (the store's refusal
 // is then reachable through Unwrap). It matches ErrKVAtomicWriteUnsupported,
 // the one marker for the condition across the stack.
 type DAOAtomicWriteUnsupportedError = dao.AtomicWriteUnsupportedError
-
-// An in-process store with real index maintenance and real atomicity, for
-// unit-testing DAO code without booting a node.
-var NewMemoryKVStore = kvstore.NewMemoryKVStore
-type MemoryKVStore = kvstore.MemoryKVStore
-
-// Ask before caching anything keyed by a resolved store. KVStore is an
-// interface, so its dynamic type need not be comparable, and using a
-// non-comparable one as a map or sync.Map key panics on the first operation.
-// A store that cannot be a key is not an error: skip the cache for it.
-//
-// A func, not a var alias: a safety predicate an importer could reassign is
-// not one canonical judgement.
-func UsableAsMapKey(store KVStore) bool
 
 // DAO options, codec constants and sort directions. Prefixed because the SDK
 // root has ClientOption namesakes — sdk.WithTimeout is a ClientOption.
@@ -407,52 +357,10 @@ A change that relaxes any of these is a security change and needs review under
 
 ## DAO aggregations
 
-The fluent query API can aggregate as well as filter. Aggregation runs on top of
-whatever plan the planner chose, so it inherits index selection.
-
-```go
-result, err := orderDAO.Find(ctx).
-	GroupBy("CustomerID").
-	Aggregate(dao.Count(), dao.Sum("Amount"), dao.Avg("Amount"),
-		dao.Min("Amount"), dao.Max("Amount"))
-```
-
-| Constructor | Result alias | Result type |
-|---|---|---|
-| `dao.Count()` | `count` | `int64` |
-| `dao.Sum(field)` | `sum_{field}` | `float64` |
-| `dao.Avg(field)` | `avg_{field}` | `float64` |
-| `dao.Min(field)` | `min_{field}` | `float64` |
-| `dao.Max(field)` | `max_{field}` | `float64` |
-
-```go
-type AggregateResult struct{ Groups []GroupResult }
-type GroupResult struct {
-	Key    interface{}            // group key value; nil when no GroupBy
-	Values map[string]interface{} // alias -> computed value
-}
-```
-
-**Without `GroupBy`, every matching entity is one group**, so the result is
-`Groups[0]`.
-
-Execution is two-phase: the base query runs under the planner's chosen index,
-then matching entities stream through in-memory accumulators. **Memory is
-proportional to the number of groups, not the number of entities** — 10,000
-unread messages across 50 conversations allocates 50 accumulators.
-
-Aggregation limitations:
-
-- Values are `float64` except `Count`, which is `int64`. **Integer precision is
-  lost above 2^53.**
-- **`GroupBy` supports a single field only.** Multi-field grouping does not
-  exist.
-- Results are unsorted; sort in application code.
-- All matching entities are loaded before grouping, so a wide query is bounded
-  only by its `Where` filters.
-
-Time-series aggregation is a different mechanism with its own functions and
-bucketing — see [../time-series/](../time-series/engineering.md).
+`Find(ctx).GroupBy(...).Aggregate(...)` runs on top of whatever plan the
+planner chose, so it inherits index selection. The aggregation API, its result
+types and its limits are the DAO's, documented in
+[../16-query-planner.md](../16-query-planner.md#dao-aggregations).
 
 ## Secret entity fields
 
@@ -544,7 +452,8 @@ copies and so proves the measurement can fail).
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| `IndexCreate` for a name that exists | `service.IndexExistsError` | yes |
+| `IndexCreate` for a name that exists, same owner | succeeds; the existing definition wins, except that a different value type rebuilds the index | n/a — idempotent |
+| `IndexCreate` for a name that exists, different owner | `index.OwnershipError` | **yes** |
 | Query or scan against an unknown index | not-found | **yes** — never silently falls back to a full scan |
 | Unique constraint violated on entity write | write refused | **yes** |
 | Unknown field in `Where` | parse error | **yes** |

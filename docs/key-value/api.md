@@ -1,6 +1,6 @@
 # Key-Value Store — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
@@ -181,7 +181,8 @@ the `kv:exists` permission is still checked.
   `x-qrdb-database` metadata value on gRPC and Unix, and the equivalent frame
   field on QUIC/MCP. Absent, the server's default database (`system`) is used.
 - **Consistency** travels as the `consistency` query parameter on REST and as a
-  request field elsewhere: `strong`, `linearizable`, `lease_read`, `eventual`.
+  request field elsewhere: `strong`, `linearizable`, `lease_read`, `eventual`,
+  `follower_read`.
 - **Write mode** travels as the `write_mode` query parameter on REST and as a
   request field elsewhere: `sync`, `wal_durable`, `batched`.
 
@@ -222,7 +223,7 @@ and `conflicted`.
 |---|---|---|---|
 | Success | 200 | `OK` | |
 | Key not found | 404 | `NOT_FOUND` | distinct from an empty value. QUIC answers `StatusNotFound`; the SDK reconstitutes `transport.KeyNotFoundError` from the status, never from the message |
-| Bad parameter (`at-revision` unparseable, bad sort key) | 400 | `INVALID_ARGUMENT` | |
+| Bad parameter (`at-revision` unparseable) | 400 | `INVALID_ARGUMENT` | REST does not reject an unknown sort value: an unknown `sort-target` falls back to `key` and an unknown `sort-order` to no ordering |
 | Revision above current | 400 | `INVALID_ARGUMENT` | fails closed, never approximated |
 | Revision at or below the database's compaction floor | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; fails closed, never approximated. QUIC answers `StatusOutOfRange` and MCP `OUT_OF_RANGE`; every SDK transport's `GetAtRevision` reconstitutes the refusal as `transport.RevisionCompactedError` carrying the revision asked for, from the status, never from the message, so a caller can tell it from a transient failure. |
 | `Compact` to a revision below 1, or above the current revision | 400 | `INVALID_ARGUMENT` | `service.CompactRevisionInvalidError`, `service.CompactRevisionFutureError` |

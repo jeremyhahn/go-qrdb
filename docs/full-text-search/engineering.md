@@ -1,6 +1,6 @@
 # Full-Text Search — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26 at main 851fd06fc3
 > Conflicts with this document are defects. Fix them here first.
 
 > **Build-tag gated: `qrdb_fts`** (`WITH_QRDB_FTS=1` in the Makefile). Without
@@ -116,6 +116,7 @@ used.
 | Storage write failure during indexing | error returned; the document is not partially searchable in a way the caller cannot see |
 | Query with only stop words | empty result — every term was removed by the analyzer |
 | `Remove` for an unindexed key | no-op |
+| A term key too short to carry its entity key | `errKeyTooShort` (`fts: key too short`) internally; `Search` and `Remove` skip that key, so no caller sees it |
 
 ## Performance characteristics
 
@@ -138,8 +139,9 @@ used.
   false. These run on every push through `make test` / `make coverage`, under
   the Makefile's default `BUILD_TAGS` (`WITH_QRDB_FTS=0`).
 - **The real implementation is gated separately**, `make coverage-fts`
-  (`go test -race -tags "$BUILD_TAGS qrdb_fts" ./pkg/fts/...` plus a coverage
-  check), run as its own CI job, `coverage-fts`. `make coverage`'s own
+  (`$(GOTEST) -tags "$(FTS_TAGS)" -coverprofile=... $(PKG_FTS)`, where
+  `GOTEST` is `go test -race -count=1 -v` and `FTS_TAGS` is `BUILD_TAGS` plus
+  `qrdb_fts`, followed by the `coverratchet` check), run as its own CI job, `coverage-fts`. `make coverage`'s own
   profile never compiles this package's real code -- only the stub -- so the
   stub tests above do not exercise it, and this is the step that does, on
   every push. Its coverage is ratcheted against

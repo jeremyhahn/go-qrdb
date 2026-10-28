@@ -56,6 +56,15 @@ var WithRegisterPINBackend = qrdbgrpc.WithRegisterPINBackend
 // qrdb gRPC service.
 var WithRegisterCeremonyService = qrdbgrpc.WithRegisterCeremonyService
 
+// WithRegisterCeremonyCA attaches the composer's CeremonyCA to the registered
+// qrdb gRPC service, so CeremonyInitialize issues the bootstrap admin's
+// certificate (CSR-sign and generate paths) from that CA. Without it those
+// paths are refused with *ceremony.AdminCredentialRequiresCAError
+// (FailedPrecondition); the bring-your-own-certificate path needs no CA. The
+// gRPC counterpart of the embedded transport's WithCeremonyCA, and the option
+// a composer serving qrdb's gRPC surface over a Unix socket passes the same way.
+var WithRegisterCeremonyCA = qrdbgrpc.WithRegisterCeremonyCA
+
 // WithRegisterCredentialService attaches a credential service to the
 // registered qrdb gRPC service.
 var WithRegisterCredentialService = qrdbgrpc.WithRegisterCredentialService

@@ -1,8 +1,7 @@
 # Storage Engines — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-21
-> Conflicts with this document are defects. Fix them here first.
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 Test reference: `make integration-test-storage-engines`; coverage row: `test/integration/COVERAGE.md` `[storage-engines](../../docs/storage-engines/)`.
 
@@ -70,18 +69,10 @@ migration.
 ## At-rest encryption
 
 With the seal enabled, the barrier encrypts what each backend leaves on disk.
-The guarantee differs by backend:
-
-| Backend | Encrypted at rest | What stays visible on disk |
-|---|---|---|
-| `pebble` | every file: sstables, WAL, manifest, options | file count and sizes |
-| `file` | every record file and the commit journal, key and value alike | the number of records and each record's size; file names are HMAC-SHA-256 tags of the keys under a key the barrier encrypts, so no name can be matched to a guessed key; the format marker (version and whether the store is encrypted) |
-| `objstore` | — (no file system for the barrier to encrypt) | values and object names, which encode the keys; a standalone `storage.backend: objstore` is not encrypted and the daemon warns at start |
-| `memory` | — | nothing is written |
-
-`pebble` and `file` use the same mechanism: every file goes through the
-barrier's encrypting file system, under a per-file key wrapped by the
-barrier's key. There is no second cipher for `file`.
+The guarantee differs by backend: `pebble` and `file` are encrypted at rest,
+`objstore` and `memory` are not. What each one still leaves visible on disk
+is in the table in
+[architecture.md](architecture.md#at-rest-encryption-one-mechanism-for-every-on-disk-backend).
 
 **While the barrier is sealed** a `pebble` or `file` store opens, but every read
 and write fails with the typed sealed error (`errors.Is(err, sdk.ErrSealed)`
@@ -129,12 +120,11 @@ be opened encrypted"** (or the reverse). The data directory was written with
 the seal in the other state. See "At-rest encryption" above; the engine
 refuses rather than mix the two.
 
-**A `file` store refused to open, saying its "format version 3 does not match
-this build's 4".** The engine reads format version 4 only, and there is no
-migration between on-disk formats. Start the store in an empty directory: a raft
-replica rebuilds from the cluster over raft's restore. A `file`-backed backup is
-in the format of the binary that wrote it, so a version-3 one is refused the same
-way; see [../backup-restore/user.md](../backup-restore/user.md).
+**A `file` store refused to open, saying its format version does not match
+this build's.** A non-empty directory with no format marker, or with a marker
+naming another version, is refused. Start the store in an empty directory: a
+raft replica rebuilds from the cluster over raft's restore. A `file`-backed
+backup in another format version is refused the same way; see [../backup-restore/user.md](../backup-restore/user.md).
 
 **The server would not start, complaining about a directory.** Backing
 directories are opened at startup, not lazily at first write, so a permissions
@@ -168,24 +158,33 @@ the typed value, which means the same thing: retry, or try another node.
 **You want to change a database's backend.** Not possible in place. Create a new
 database and migrate — see [../backup-restore/user.md](../backup-restore/user.md).
 
-## Target design: `objstore` becomes a real backend (not yet shipped)
+## Target design: `objstore` as an LSM in a bucket (not yet shipped)
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
-for the full design — **nothing in this section is implemented yet.**
+for the full design — **nothing in this section is implemented yet**, and
+nothing here is a setting you can use today.
 
-`backend: objstore` moves to the same sorted-segment layout Pebble already uses for the
-`pebble` engine, with the segments themselves living in an object-storage
-bucket rather than on local disk. When this ships:
+Today a standalone node's `storage.backend: objstore` stores one object per
+key, and a database created with `backend: objstore` is refused when it opens
+(see [../databases/user.md](../databases/user.md)). The proposal moves
+`objstore` to the same sorted-segment layout the `pebble` engine uses, with
+the segments living in an object-storage bucket rather than on local disk.
+If it ships:
 
-- `objstore` will pick it when you want a database's durable data in S3, GCS,
-  Azure or a local object-store directory, with capacity that is not
-  bounded by the node's attached disk.
-- A small local directory is still required (WAL, manifest, block cache) —
-  object storage replaces the *bulk* of the data, not every byte on the node.
-- `glacier` and `azurearchive` will remain backup/archive-only destinations
+- You would pick `objstore` when you want a database's durable data in S3,
+  GCS, Azure or a local object-store directory, with capacity that is not
+  bounded by the node's attached disk, encrypted under the seal like every
+  other engine.
+- A small local directory would still be required (WAL, manifest, block
+  cache) — object storage replaces the *bulk* of the data, not every byte on
+  the node.
+- A store written by today's `objstore` engine would not open under the new
+  layout; you would move its data by backup and restore
+  ([../backup-restore/user.md](../backup-restore/user.md)).
+- `glacier` and `azurearchive` would remain backup and archive destinations
   reached through `qrdb backup create`, never a live `objstore` provider —
   their retrieval delays are measured in hours, which is incompatible with
   serving reads.
-- Whether this also becomes available as `raft.sm_storage` (a
-  hot Raft apply path, not only a standalone database backend) is an open
-  question the design defers to a later, separately gated phase.
+- Whether this also becomes available as a Raft hot apply path, not only a
+  standalone or per-database backend, is an open question the design defers
+  to a later, separately gated phase.

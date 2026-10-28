@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -325,6 +326,63 @@ func TestLeaseService_KeepAlive_NotPrimaryFallsBackToTheLog(t *testing.T) {
 	}
 	if len(got.Keys) != 1 || string(got.Keys[0]) != "key1" {
 		t.Fatalf("expected keys [key1], got %v", got.Keys)
+	}
+}
+
+// logRenewalHost is a host whose keep-alive read answers with readErr, nil
+// for a renewal the primary answers from memory, and whose proposal applies
+// the renewal through the log.
+func logRenewalHost(readErr error) *mockHost {
+	return &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			return sm.Result{Value: 42, Data: protocol.EncodeLeaseInfo(42, 60, 60, nil)}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			if readErr != nil {
+				return nil, readErr
+			}
+			return &Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
+		},
+	}
+}
+
+// TestLeaseService_LogRenewals_LocalRenewalIsNotCounted checks a renewal the
+// primary answers from memory leaves the count at zero, however many there are.
+func TestLeaseService_LogRenewals_LocalRenewalIsNotCounted(t *testing.T) {
+	svc := NewLeaseService(logRenewalHost(nil), 1).(*LeaseService)
+	for range 3 {
+		if _, err := svc.KeepAlive(context.Background(), 42); err != nil {
+			t.Fatalf("KeepAlive: %v", err)
+		}
+	}
+	if got := svc.LogRenewals(); got != 0 {
+		t.Fatalf("LogRenewals = %d after three leader-local renewals, want 0", got)
+	}
+}
+
+// TestLeaseService_LogRenewals_CountsEveryRenewalThroughTheLog checks each
+// renewal that falls back to the log is counted once: one answered by a
+// replica that is not the primary, and one clearing a checkpoint.
+func TestLeaseService_LogRenewals_CountsEveryRenewalThroughTheLog(t *testing.T) {
+	cases := []struct {
+		name    string
+		readErr error
+	}{
+		{"not primary", &lease.NotPrimaryError{}},
+		{"checkpointed", &lease.CheckpointedError{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewLeaseService(logRenewalHost(tc.readErr), 1).(*LeaseService)
+			for want := uint64(1); want <= 2; want++ {
+				if _, err := svc.KeepAlive(context.Background(), 42); err != nil {
+					t.Fatalf("KeepAlive: %v", err)
+				}
+				if got := svc.LogRenewals(); got != want {
+					t.Fatalf("LogRenewals = %d, want %d", got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -850,6 +908,64 @@ func TestLeaseService_TimeToLive_FollowerWithoutALeader(t *testing.T) {
 				t.Fatalf("LeaderAddress = %q, want empty", nle.LeaderAddress)
 			}
 		})
+	}
+}
+
+// dataOnlyHost satisfies service.Host and nothing more: it has no
+// SyncGetShardMembership, so it is not a raftadmin.Host. It answers the two
+// calls a stale TimeToLive makes; every other Host method is the embedded nil
+// interface and panics if called, failing the test loudly.
+type dataOnlyHost struct {
+	Host
+	syncReadFn    func(ctx context.Context, shardID uint64, query interface{}) (interface{}, error)
+	getLeaderIDFn func(shardID uint64) (uint64, bool, error)
+}
+
+var _ Host = (*dataOnlyHost)(nil)
+
+func (h *dataOnlyHost) SyncRead(ctx context.Context, shardID uint64, query interface{}) (interface{}, error) {
+	return h.syncReadFn(ctx, shardID, query)
+}
+
+func (h *dataOnlyHost) LeaderID(shardID uint64) (uint64, bool, error) {
+	return h.getLeaderIDFn(shardID)
+}
+
+// TestLeaseService_TimeToLive_DataOnlyHostNamesTheLeaderWithoutAddress pins
+// the refusal on an embedder's host that implements service.Host alone: the
+// service still refuses a follower's stale TTL with the leader's replica ID
+// and the replica's view of the lease, and leaves the address empty because
+// such a host cannot report the shard's membership.
+func TestLeaseService_TimeToLive_DataOnlyHostNamesTheLeaderWithoutAddress(t *testing.T) {
+	held := &Lease{ID: 7, TTL: 10, GrantedTTL: 10, RemainingTTL: 2}
+	var host Host = &dataOnlyHost{
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			return nil, &lease.StaleTTLError{Lease: held}
+		},
+		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
+			if shardID != 3 {
+				t.Fatalf("LeaderID asked about shard %d, want 3", shardID)
+			}
+			return 2, true, nil
+		},
+	}
+	if _, ok := host.(raftadmin.Host); ok {
+		t.Fatal("dataOnlyHost implements raftadmin.Host; the test would not reach the data-only branch")
+	}
+
+	l, err := NewLeaseService(host, 3).TimeToLive(context.Background(), 7)
+	if l != nil {
+		t.Fatalf("follower answered a remaining TTL: %+v", l)
+	}
+	var stale *LeaseTTLNotLeaderError
+	if !errors.As(err, &stale) {
+		t.Fatalf("error = %T: %v, want *LeaseTTLNotLeaderError", err, err)
+	}
+	if stale.Lease != held {
+		t.Fatalf("refusal lease = %+v, want the replica's view %+v", stale.Lease, held)
+	}
+	if stale.ShardID != 3 || stale.LeaderID != 2 || stale.LeaderAddress != "" {
+		t.Fatalf("not-leader = %+v, want shard 3 leader 2 with no address", stale.NotLeaderError)
 	}
 }
 

@@ -162,3 +162,67 @@ func TestInitializeNode_BadMemberIdentityRefusedBeforeHost(t *testing.T) {
 		require.ErrorAs(t, err, &mismatch)
 	})
 }
+
+// singleNodeIdentityFlags is multiNodeIdentityFlags with this node as the one
+// static peer, the shape that runs no Raft transport.
+func singleNodeIdentityFlags(t *testing.T, memberIdentities []string) *startFlags {
+	t.Helper()
+	f := multiNodeIdentityFlags(t, memberIdentities)
+	f.peers = f.peers[:1]
+	require.True(t, isSingleNode(f))
+	return f
+}
+
+// TestResolveMemberIdentities_SingleNodeSeedsItsOwn pins go-qrdb#671: a
+// transportless founder still commits its own identity, so the first member it
+// adds does not refuse it as missing_identity. A single node names no other
+// member, so a configured entry for another replica is not seeded.
+func TestResolveMemberIdentities_SingleNodeSeedsItsOwn(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+	self, err := cluster.MemberIdentityFromPEM(bundle.CertPEM)
+	require.NoError(t, err)
+
+	ids, err := resolveMemberIdentities(singleNodeIdentityFlags(t, []string{"2=" + peerTwoIdentity}), bundle)
+	require.NoError(t, err)
+	require.Equal(t, map[uint64]string{1: self}, ids)
+}
+
+func TestResolveMemberIdentities_SingleNodeWithoutCertificate(t *testing.T) {
+	f := singleNodeIdentityFlags(t, nil)
+
+	ids, err := resolveMemberIdentities(f, nil)
+	require.NoError(t, err)
+	require.Nil(t, ids)
+
+	ids, err = resolveMemberIdentities(f, &TLSBundle{})
+	require.NoError(t, err)
+	require.Nil(t, ids)
+}
+
+func TestResolveMemberIdentities_SingleNodeBadCertificateRefused(t *testing.T) {
+	_, err := resolveMemberIdentities(singleNodeIdentityFlags(t, nil),
+		&TLSBundle{CertPEM: []byte("not a certificate")})
+	require.Error(t, err)
+}
+
+func TestResolveMemberIdentities_MultiNodeMergesConfigured(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+	self, err := cluster.MemberIdentityFromPEM(bundle.CertPEM)
+	require.NoError(t, err)
+
+	ids, err := resolveMemberIdentities(multiNodeIdentityFlags(t, []string{"2=" + peerTwoIdentity}), bundle)
+	require.NoError(t, err)
+	require.Equal(t, map[uint64]string{1: self, 2: peerTwoIdentity}, ids)
+}
+
+func TestResolveMemberIdentities_MultiNodeSelfMismatchRefused(t *testing.T) {
+	bundle, err := generateCATLS()
+	require.NoError(t, err)
+
+	_, err = resolveMemberIdentities(multiNodeIdentityFlags(t, []string{"1=" + peerTwoIdentity}), bundle)
+	var mismatch *cluster.MemberIdentityMismatchError
+	require.ErrorAs(t, err, &mismatch)
+	require.Equal(t, uint64(1), mismatch.ReplicaID)
+}

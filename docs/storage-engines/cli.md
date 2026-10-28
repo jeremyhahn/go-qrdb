@@ -1,8 +1,7 @@
 # Storage Engines — CLI
 
 > **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
-> note below.** · Scope: go-qrdb · Last verified: 2026-10-21
-> Conflicts with this document are defects. Fix them here first.
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
 concern.
@@ -57,14 +56,10 @@ state machine serves KV, batches, the guarded verbs and transactions; see
 
 ### At rest under the seal
 
-With `seal.enabled: true`, what `storage.backend` leaves on disk:
-
-| `storage.backend` | On disk | While sealed |
-|---|---|---|
-| `pebble` | every sstable, WAL, manifest and options file encrypted by the barrier's encrypting file system | record reads and writes fail with the sealed error |
-| `file` | every record file and commit journal encrypted by the same file system; file names are HMAC-SHA-256 tags of the keys under a key the barrier encrypts; only the format marker is plaintext | record reads and writes fail with the sealed error |
-| `objstore` | values and object names in the clear; `qrdbd start` logs a warning naming the gap | — |
-| `memory` | nothing | — |
+With `seal.enabled: true`, `pebble` and `file` are encrypted at rest and fail
+record reads and writes with the sealed error while sealed; `objstore` and
+`memory` are not encrypted. What each leaves on disk is in the table in
+[architecture.md](architecture.md#at-rest-encryption-one-mechanism-for-every-on-disk-backend).
 
 The warning for `objstore` is logged once at start and reported in the
 capability report's `unencryptedAtRest` list:
@@ -119,27 +114,14 @@ no `qrdb` verb. The volume pool verbs are covered in
 [../volume-pools/cli.md](../volume-pools/cli.md); the database verbs that select a backend are covered in
 [../databases/cli.md](../databases/cli.md).
 
-## Target design: configuring the LSM segment layout
+## Target design: no CLI change
 
 See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout).
-**Not implemented.** The `qrdb database create ... --backend objstore` verb
-itself does not change; what changes is what the node does with it:
-
-```yaml
-storage:
-  backend: objstore
-  objstore:
-    provider: s3          # local | memory | s3 | gcs | azure
-    settings:
-      bucket: qrdb-data
-      prefix: "node-a/db-1"   # qrdb-controlled identifier, never a raw key
-    local_dir: /var/lib/qrdb/objstore   # WAL, MANIFEST, local block cache
-    create_on_shared: all    # all | lower | none
-```
-
-`local_dir` is drawn from the same local-only volume pool the `pebble` engine
-already uses (see [../volume-pools/cli.md](../volume-pools/cli.md)); this design adds
-no verb. `glacier` and `azurearchive` remain
-build-tag-gated archive destinations reachable only through
-`qrdb backup create` (see [../backup-restore/cli.md](../backup-restore/cli.md)),
-never through `storage.backend: objstore`.
+**Not implemented** — future work under the SPEC row `object-storage-lsm`.
+The proposed object-storage LSM segment layout adds no `qrdb` verb and no
+flag. `qrdb database create ... --backend objstore` is unchanged as a
+command; what changes is what the node does when such a database opens. The
+proposed configuration is in [engineering.md](engineering.md)'s target
+design, not here, because none of it exists yet. `glacier` and
+`azurearchive` stay archive destinations reached through `qrdb backup create`
+(see [../backup-restore/cli.md](../backup-restore/cli.md)).

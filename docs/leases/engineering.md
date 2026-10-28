@@ -1,6 +1,6 @@
 # Leases — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -294,7 +294,9 @@ are lease-backed.
   deadline; an unknown ID is `*lease.NotFoundError` on every replica. Both
   engines' TimeToLive queries go through it. `LeaseService.TimeToLive` turns
   the refusal into `*service.LeaseTTLNotLeaderError`, which unwraps to
-  `*service.NotLeaderError` naming the shard leader's Raft address, so the
+  `*service.NotLeaderError` naming the shard leader's replica ID and Raft
+  address (the address is empty on a host that implements `service.Host`
+  without `raftadmin.Host`, which cannot report the membership), so the
   gRPC, unix, QUIC and MCP listeners forward it as any not-leader refusal; REST
   forwards it in `handleLeaseTimeToLive`, the embedded `forwardingScope`
   through `ReplicaForwarder.ForwardToLeader`, and the etcd listener answers
@@ -409,20 +411,14 @@ carries, so a gone lease and a broken node never share a status; see
 of any other kind is never reported as a lease condition; see
 [the MCP error vocabulary](../api-server/api.md#the-mcp-error-vocabulary).
 
-**REST is the exception, and it is a partial one.** Only `LeaseTimeToLive` maps
-a typed lease error (`transport/rest/transport_lease.go` turns a 404 into
-`LeaseNotFoundError`). `LeaseRevoke` and `LeaseKeepAlive` go through
-`postJSON`/`postJSONDecode`, whose 404 lands in `decodeErrorResponse` and comes
-back as a generic `RequestError`. And REST emits **no `LeaseExpiredError` at
-all**: `mapHTTPError` sends both the not-found and the expired case to
-`http.StatusNotFound`, so the wire cannot tell them apart without parsing the
-body text, which no client does.
+**REST is the exception.** Only `LeaseTimeToLive` returns a typed
+`LeaseNotFoundError` (from a 404); `LeaseRevoke` and `LeaseKeepAlive` return a
+generic `RequestError` for a 404, and REST never returns `LeaseExpiredError`,
+because the server answers 404 for both not-found and expired.
 
-Closing that gap needs a REST status or body field that distinguishes the two,
-a wire-format change rather than a client-side mapping. `sdk/go`'s
-lease monitor (`coordination.go`) is the reason this matters: it detects
-external revocation at the revoke rather than at the lease's own expiry only
-when the absence arrives typed.
+**Non-goal for now:** telling not-found from expired on REST needs a wire
+change (a distinct status or body field); until then `sdk/go`'s lease monitor
+sees an external revoke over REST only at the lease's own expiry.
 
 ## Configuration
 
@@ -479,156 +475,31 @@ keep-alive starts returning not-found does anyway.
 
 ## Test strategy
 
-- **Unit**: `pkg/lease` — grant, keep-alive resetting `RemainingTTL` to
-  `GrantedTTL`, revoke cascade, list, and expiry sweep. Each function has a
-  happy path and an error path. `bind_test.go` covers re-binding, release,
-  idempotence, unknown leases and write faults; `table_test.go` covers the
-  table round trip, replacement on restore, every corruption the reader
-  refuses, and read faults.
-- **KV state machines**: `pkg/statemachine/kv_lease_test.go` runs grant,
-  keep-alive, revoke deleting exactly the bound keys, re-binding on a later
-  write (plain put, delete, a move to another lease; compare-and-swap keeping
-  it), batch and transaction binding with refusal of an unknown lease,
-  snapshot recovery onto a fresh replica with its next lease id and replica
-  hash, and log-replay determinism on every backend: standard, concurrent,
-  highperf, fast and disk. The disk state machine is also restarted over its
-  own storage, and a corrupt table fails its open. Removing any one of the
-  table restore on snapshot recovery, the restore on open, the release on a
-  plain write, the reset on create, the revoke's deletes, or the client-write
-  refusal turns a case red. `kv_lease_bytes_lookup_test.go` holds the
-  non-allocating point reads to the same rule: go-quicraft routes a `[]byte`
-  query to `BytesLookup`, not `Lookup`, so the disk and highperf adapters'
-  `BytesLookup` (and highperf's `BytesLookupInto`) return nothing for the
-  `seq`, `l/<id>` and `b/<key>` records.
-- **State machine**: `pkg/store/lease_binding_test.go` runs every case against
-  both lease-capable state machines through committed commands only. It covers
-  re-put under another lease, re-put without a lease, base KV put,
-  compare-and-swap keeping the lease, delete then recreate, transaction and
-  batch paths, refusal of a write naming a revoked lease, restart, snapshot
-  recovery onto a replica that held other leases (with a hash comparison),
-  expiry through the real sweeper, and a corrupt table refusing both open and
-  recovery.
-- **Integration** (`test/integration/lease_binding_test.go`): a three-node
-  qrdbd cluster re-puts and revokes, then repeats the check after a full
-  cluster restart over the same data directories, on every replica, on
-  `sm_type: mvcc`. The standalone multi-protocol suite repeats the re-put case
-  over every transport. A three-node cluster on `sm_type: memory`
-  (`TestDEK_Cluster_EveryNodeDecryptsEveryVersion`) and on `sm_type: disk`
-  over file storage (`TestRaftSMOverFileStorage_ThreeNodeCluster`) forms only
-  when its lease-backed membership registrations apply.
-- **No `time.Sleep` in the unit tests of `pkg/lease`.** Expiry, renewal,
-  promotion and checkpointing are exercised by driving the clock seam
-  (`lease.WithClock`), not by waiting — the only way these tests stay
-  deterministic on a loaded runner. `pkg/lease/renew_test.go` covers
-  `RenewLocal` (refused without a leader gate, `NotFound`), `KeepAlive` never
-  shortening a deadline, `Promote` flooring at *now + effective TTL + grace*,
-  counting from a checkpoint and dropping the pending marks, and `RunExpiry`
-  promoting on the leadership edge only, only once `AwaitApplied` succeeds, and
-  checkpointing long leases while it leads. `pkg/lease/checkpoint_test.go`
-  covers a round proposing only leases that outlive the interval, stopping once
-  the checkpoint is inside it, covering every lease on demand, proposing nothing
-  while the feature is disabled, retrying a failed proposal, and clearing a
-  checkpoint a renewal overtook; `RenewLocal` refusing a checkpointed lease;
-  `KeepAlive` and `Revoke` deleting the record; `ApplyCheckpoints` clamping,
-  skipping, clearing and leaving memory unchanged on a write fault; `Restore`
-  counting from the checkpoint; `RequestCheckpoint`; and a follower listing
-  leases past its own deadline.
-- **Service and state machines**: `pkg/service/lease_service_test.go` pins the
-  keep-alive's outcomes — local renewal with no proposal, `NotPrimaryError` and
-  `CheckpointedError` falling back to the replicated proposal, and an unknown
-  lease typed as `LeaseNotFoundError` — and the checkpointer.
-  `pkg/service/lease_expiry_options_test.go` pins the options built from config.
-  Each lease-capable `Lookup` (`pkg/statemachine`, `pkg/engine`, `pkg/store`)
-  has a test for the keep-alive and on-demand checkpoint queries, with and
-  without a lessor, and for applying `OpLeaseCheckpoint`, refusing a malformed
-  one as an apply fault. `TestKVLease_Checkpoint` proves on every KV state
-  machine that a checkpoint is replicated state, that a keep-alive deletes it,
-  and that one naming an unknown lease writes nothing; and
-  `TestDurableLease_RestartCountsFromTheCheckpoint` restarts a durable node over
-  its own data and proves it counts the lease from the checkpoint.
-- **Multi-node failover** (`pkg/service/lease_failover_test.go`): a real
-  three-replica Raft group (`sdk/go/testutil/raftharness`) with one `Lessor` and
-  one production-wired sweeper per replica.
-  `TestLeaseKeepAlive_CheckpointedLeaseRenewsOnEveryReplica` proves a renewal
-  of a checkpointed lease goes through the log and clears the checkpoint on
-  every replica. `TestLeaseFailover_NewLeaderFloorsTheDeadlineAtTTLPlusGrace`
-  moves leadership and proves the new leader floors the deadline at TTL plus
-  grace, keeps the lease past its own TTL, and revokes it on every replica only
-  after the grace. `TestLeaseFailover_NewLeaderCountsFromTheOnDemandCheckpoint`
-  checkpoints every lease on demand before the transfer and proves the new
-  leader counts the lease from what it had left, not from a full TTL. These run
-  in real time, because an election is real; the waits are
-  polls bounded by `raftharness.Bound`, not fixed sleeps standing in for a
-  condition, except the two intervals the assertions are about.
-- **Latency tail** (`sdk/go`'s `TestRaft_LeaseKeepAliveLatencyTail`): 64
-  renewals against a real single-replica group on real disk, asserting p90 stays
-  under 3x the median. Run it under contention as
-  [../../test/performance/lease-keepalive.md](../../test/performance/lease-keepalive.md)
-  describes.
-- **Integration, keep-alive and expiry**: the integration tests run real
-  daemons on the wall clock, so they renew and wait in whole seconds against
-  short TTLs and poll for the outcome with a generous deadline.
-  `lease_cli_test.go`'s `TestLease_CLI_KeepAliveAndExpiry_PerProtocol` renews
-  a 3-second lease through `qrdb lease keep-alive` for twice its TTL on every
-  daemon transport (REST, gRPC, QUIC, MCP, Unix; an embedded node lives for
-  one CLI invocation, shorter than any sweep), checks the bound key survives, then stops and checks the
-  sweeper deletes the key and that `lease ttl` and `lease keep-alive` both
-  report the lease not found. `etcd_test.go`'s
-  `TestEtcd_LeaseKeepAliveAndExpiry` does the same through a stock etcd
-  client, ending in `ErrLeaseNotFound` from the TTL-0 answer.
-- **Integration, leader failover** (`lease_keepalive_test.go`): a three-node
-  qrdbd cluster renews a lease on the leader six seconds into its ten-second
-  TTL, so every follower's copy would lapse four seconds later, then the
-  leader is killed. The test checks the new leader reports the lease at no
-  less than its full TTL, that no survivor deletes the bound key before the
-  deadline the keep-alive reported, that a keep-alive sent to a follower
-  renews it, and that the new leader's sweeper revokes it once keep-alives
-  stop.
-- **Fault injection**: the leader seam allows a leadership change to be forced
-  between grant and expiry.
+Each layer proves the part of the contract it owns:
 
-### Reading a failure from the sub-TTL renewal test
+- **`pkg/lease` unit tests**: the lessor alone — grant, keep-alive, revoke,
+  list, expiry, promotion and checkpointing, plus the lease table's encoding
+  and every corruption its reader refuses.
+- **State machine tests** (`pkg/statemachine`, `pkg/store`): the lease table
+  and key bindings through committed commands on every lease-capable state
+  machine — re-binding and release on later writes, revoke deleting exactly
+  the bound keys, snapshot recovery, restart and log-replay determinism.
+- **Service tests** (`pkg/service`): the keep-alive's local-renewal and
+  replicated fallback paths, the checkpointer, and failover on a real
+  three-replica Raft group (`sdk/go/testutil/raftharness`).
+- **Integration tests** (`test/integration`): real `qrdbd` daemons driven
+  through the CLI on every daemon transport and through a stock etcd client:
+  keep-alive and expiry, binding across a cluster restart, and a renewal that
+  survives a leader kill.
 
-`sdk/go`'s `TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen` can fail for two
-different reasons and **says which**. Read the message before assuming a lease
-defect.
-
-| Message says | Meaning | What to do |
-|---|---|---|
-| `... within the 2s TTL, so the lease should still have been held` | The deadline had **not** passed and renewal failed anyway. A **real defect**. | Investigate the lease path. |
-| `THE ENVIRONMENT COULD NOT VALIDATE the sub-TTL renewal property` | Every attempt exceeded the TTL before a renewal landed. The assertion **never ran**. | Re-run on a quiet host. See below — this is **not** automatically the host's fault. |
-
-**The second message is not a clean bill of health.** Two causes produce it and
-this test cannot tell them apart:
-
-1. **host contention** — the machine could not schedule a 1.5 s cadence inside a
-   2 s deadline, five times running; or
-2. **a renewal-path regression** in which keepalive acknowledgements consistently
-   miss the local deadline.
-
-Both present as "every window overran". If a quiet host still cannot get a clean
-window, suspect the second. This is the sharpest reason the path must **fail**
-rather than skip: under a skip, cause 2 — a genuine regression — would fire the
-skip on every run and CI would report success. **This test is the only end-to-end
-coverage of the property**, so a non-failing silence there is the whole signal
-lost.
-
-**And skipping is forbidden regardless.** The project's testing rules forbid skip
-guards and `-short` flags without exception, and a measured precondition is not
-one.
-
-**Which interval decides it.** Not the sleep. The lease deadline is dated from
-the instant the **previous** confirmation was *sent* (`sent.Add(d)` advances
-`heldUntil` in `sdk/go/coordination.go`), so the quantity that decides expiry is
-`previous renew's round trip + the sleep + this renew's round trip`. A
-discriminator built on the sleep omits the previous round trip — which is exactly
-what consumes the 500 ms of slack between a 1.5 s cadence and a 2 s TTL — and
-will report a slow pair of raft proposals as a lease-renewal defect.
-
-**Why the timing is not widened.** A 2 s TTL renewed at 1.5 s is the exact
-cadence that produces the ~0.999 s remainder the whole-second `RemainingTTL`
-truncation rounds to zero, which is the defect the test exists to catch. A longer
-TTL would make it pass more often and stop testing anything.
+**No `time.Sleep` in the unit tests of `pkg/lease`**: time is driven through
+the clock seam (`lease.WithClock`). Tests on a real Raft group or real daemons
+run on the wall clock and poll for the outcome against a bound
+(`raftharness.Bound`, a generous deadline), never a fixed sleep standing in for
+a condition. `make test-pkg PKG=./pkg/lease/...` runs the unit tests, and
+`make integration-test-leases` the integration tests (below). Contention
+behaviour of the keep-alive latency tail is in
+[../../test/performance/lease-keepalive.md](../../test/performance/lease-keepalive.md).
 
 ## Observability
 
@@ -636,6 +507,14 @@ TTL would make it pass more often and stop testing anything.
   [../audit/](../audit/).
 - Cascade deletes appear as ordinary delete events on
   [../watch/](../watch/) streams, which is how a consumer learns a session ended.
+- Log events, all from `pkg/lease` at `Debug` unless noted:
+  `lease expiry: promotion awaits the previous term` (a new leader's
+  `AwaitApplied` has not succeeded yet; retried next tick),
+  `lease expiry: revoke failed` (retried next sweep),
+  `lease checkpoint: propose failed` (retried next round), and, at `Warn`
+  from `pkg/service`, `lease checkpoint before leader transfer failed;
+  transferring anyway`.
+- There are no lease metrics.
 
 ## Integration testing
 

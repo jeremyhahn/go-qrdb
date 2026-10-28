@@ -20,6 +20,14 @@ func WithPINBackend(backend pin.PINBackend) ServerOption
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
 ```
 
+A composer that registers qrdb's gRPC service on its own `*grpc.Server`
+(`sdk.RegisterGRPCService`, gRPC or the Unix socket) passes its CA with the
+registration option instead:
+
+```go
+var WithRegisterCeremonyCA func(ca CeremonyCA) GRPCRegisterOption // pkg/api/grpc.WithRegisterCeremonyCA
+```
+
 `pkg/ceremony`:
 
 ```go

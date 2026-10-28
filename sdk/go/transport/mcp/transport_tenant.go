@@ -441,10 +441,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	defer func() { _ = client.Close() }()
 
 	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
-		args := map[string]any{
-			"tenant_id":  req.TenantID,
-			"passphrase": secretArg(req.Passphrase),
-		}
+		args := map[string]any{"tenant_id": req.TenantID}
+		putSecret(args, "passphrase", req.Passphrase)
 		if req.Threshold != 0 {
 			args["threshold"] = req.Threshold
 		}

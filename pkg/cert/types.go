@@ -31,12 +31,14 @@ import (
 // generates a client's key: it signs the one the requester proved it holds
 // (ParseCSR), so no private key ever leaves the client.
 type IssueRequest struct {
-	// Username sets the certificate Common Name (CN).
+	// Username sets the certificate Common Name (CN) and the name in its
+	// SPIFFE URI SAN, spiffe://<TenantID>/user/<Username>.
 	Username string
 
-	// TenantID sets the certificate Organizational Unit (OU) and, with a
-	// trust domain configured, its SPIFFE SAN. It also selects the tenant's
-	// own Key B CA that signs.
+	// TenantID sets the certificate Organizational Unit (OU) and the trust
+	// domain of its SPIFFE URI SAN, which every client certificate carries:
+	// the provider issues none without a configured trust domain
+	// (WithTrustDomain). It also selects the tenant's own Key B CA that signs.
 	TenantID string
 
 	// PublicKey is the key the certificate certifies. It must pass
@@ -48,8 +50,8 @@ type IssueRequest struct {
 	TTL time.Duration
 
 	// Delegation, when set, makes the certificate a delegation: it carries
-	// the grant as a critical extension, its SPIFFE SAN (with a trust domain
-	// configured) names the grant's principal as a service, and its lifetime
+	// the grant as a critical extension, its SPIFFE URI SAN is
+	// spiffe://<TenantID>/svc/<principal> rather than a user's, and its lifetime
 	// is capped at delegation.MaxLifetime. Username must then be
 	// auth.ServicePrincipalSubjectPrefix plus the principal, and TenantID the
 	// grant's tenant, which may not be the system tenant.

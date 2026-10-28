@@ -1,6 +1,6 @@
 # Clustering — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-16
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -432,6 +432,7 @@ the cluster CA it signs with is available only once the barrier is unsealed.
 |---|---|
 | `{"token", "csr_der", "node_uri"}` → `{"cert_pem"}` | the single-use token is consumed (CAS-delete) and checked, the CSR's signature verified, and the leaf is issued for the token's BOUND identity -- `node_uri` in the request is never consulted FOR SIGNING; a joiner does not get to assert an identity of its own choosing |
 | `{"token", "csr_der", "node_uri"}` → `{"error"}`, `403` | an unknown, expired, already-consumed, wrong-trust-domain, or retired-identity token, a malformed/unsigned CSR, a CSR whose subject alternative names do not match `node_uri` exactly (one URI SAN, no DNS/IP/email SANs), or a signing failure -- one cause-independent reason for the token itself, so the response carries no token-validity oracle; the CSR-shape checks (weak key, SAN mismatch) report their own specific message before the token is ever touched, so a corrected resubmission with the SAME token still succeeds |
+| `{"csr_der", "node_uri"}` with an empty `token` → `{"pending": true, "request_id"}` | the CSR is queued for operator approval and nothing is signed; `request_id` names the queue entry, and the joining client returns `*clusterenroll.JoinPendingError` |
 | unconfigured (`--cluster-join-enabled` unset) | the path is not registered at all — not a `404`, an absent route |
 | rate-limited or locked out | `429`, shared with the Noise_NK transport by source address — switching transports mid-attack gains nothing |
 

@@ -1,6 +1,6 @@
 # SQL — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 SQL reaches callers two ways, and they are genuinely different surfaces:
@@ -62,7 +62,7 @@ return the protocol's own codes directly.
 | Duplicate key | 409 | `ALREADY_EXISTS` | MySQL **1062** |
 | Transaction conflict | 409 | `ABORTED` | MySQL **1213** / SQLSTATE **40001** |
 | Table truncated or its definition changed under the statement (retry it) | 409 | `ABORTED` | MySQL **1213** / SQLSTATE **40001** |
-| Table created by v0.20.0–v0.21.0 (drop and re-create it) | 412 | `FAILED_PRECONDITION` | MySQL **1459** / SQLSTATE **55000** |
+| Table written under the pre-generation key layout (drop and re-create it) | 412 | `FAILED_PRECONDITION` | MySQL **1459** / SQLSTATE **55000** |
 | Database / table / column access denied | 403 | `PERMISSION_DENIED` | MySQL **1044** / **1142** / **1143** |
 | `CREATE DATABASE` without `databases:create`, `DROP DATABASE` without `databases:delete` or of another tenant's database, or either with no tenant-scoped lifecycle configured | — | — | statement error; nothing is created or dropped |
 | Cached plan result-type change | — | — | SQLSTATE **0A000** (PostgreSQL only) |

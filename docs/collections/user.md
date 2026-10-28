@@ -1,6 +1,6 @@
 # Document Collections — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
 > Conflicts with this document are defects. Fix them here first.
 
 A collection is a named box for JSON documents inside a database. You create the
@@ -47,8 +47,11 @@ where an insert replaces a document instead of refusing.
 
 ## Supplying your own document ID
 
-Put an `_id` in the document and it is used verbatim instead of a generated
-one. This is how you re-import documents under the IDs they already had.
+Put an `_id` in the document and it is used instead of a generated one. This
+is how you re-import documents under the IDs they already had. The `_id` must
+be a positive integer below 2^53: a JSON number decodes as a float, so a
+larger one loses precision. Any other `_id` — a string, `0`, a negative or a
+non-numeric value — is dropped and an ID is allocated instead.
 
 ```bash
 qrdb collection doc insert events --database app \
@@ -114,10 +117,9 @@ Three things to know before you lean on it:
   at the same instant get one success and one duplicate-key error; the insert
   is a guarded write, so it is not possible for both to be told they succeeded.
 - **`REPLACE` and `ON DUPLICATE KEY UPDATE` are one guarded write per row.**
-  Two `REPLACE`s racing on `42` never both report an insert. An
-  `ON DUPLICATE KEY UPDATE` never overwrites a document another writer changed
-  after the statement read it; it fails with 1213 (`SQLSTATE 40001`), which
-  clients retry on. If you need a multi-row
+  Two `REPLACE`s racing on `42` never both report an insert. Neither statement
+  overwrites a document another writer changed after the statement read it;
+  either can fail with 1213 (`SQLSTATE 40001`), which clients retry on. If you need a multi-row
   read-modify-write inside a transaction, use a relational table
   ([../sql/user.md](../sql/user.md)).
 
@@ -207,7 +209,7 @@ counter above: it is your collection's, not the name's.
 
 Collection keys that carry no tenant namespace are not listed, and nothing
 moves them for you; see
-[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change).
+[engineering.md](engineering.md#tenant-less-collection-keys).
 Export them with a binary that still reads them and re-import them as the
 tenant that should own them.
 

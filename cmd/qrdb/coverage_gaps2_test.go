@@ -363,7 +363,7 @@ func TestCeremonyStatus_ServiceError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // ceremony init (removed: collapsed into the root "init" command per
-// docs/08-bootstrap-auth-architecture.md §6)
+// docs/ceremony/cli.md)
 // ---------------------------------------------------------------------------
 
 // TestCeremonyInit_NoLongerRegistered verifies that "ceremony init" is an
