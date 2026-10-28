@@ -225,6 +225,13 @@ func TestNewLocalStorage_SealedBarrierRefusesPebbleWrites(t *testing.T) {
 	if err := barrier.Unseal(ctx, seal.MustCredentials(ctx, []byte("localstore-at-rest-passphrase"))); err != nil {
 		t.Fatalf("Unseal: %v", err)
 	}
+	// No refused write landed: k2 was never written and k is still there.
+	if ok, err := stg.Exists([]byte("k2")); err != nil || ok {
+		t.Fatalf("Exists(k2) after a refused Set = %v, %v; want false", ok, err)
+	}
+	if ok, err := stg.Exists([]byte("k")); err != nil || !ok {
+		t.Fatalf("Exists(k) after a refused Delete = %v, %v; want true", ok, err)
+	}
 	if err := stg.Set([]byte("k2"), []byte("v")); err != nil {
 		t.Fatalf("Set after unseal: %v", err)
 	}
