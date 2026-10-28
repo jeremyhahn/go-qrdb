@@ -36,10 +36,14 @@
 # "No network" is a network namespace holding only loopback, and on its own
 # that namespace has no route for multicast: a socket joining a group on the
 # default interface, as pkg/discovery's multicast tests do, fails with "no such
-# device". So with IN_IMAGE_NETWORK=none the stage joins the namespace of a
-# holder container, given NET_ADMIN and nothing else, that marks loopback
-# multicast-capable and routes 224.0.0.0/4 over it: the multicast a host
-# offers, with nothing leaving the namespace.
+# device". So with IN_IMAGE_NETWORK=none, once the stage has started, a
+# one-shot container joins the stage's own namespace, given NET_ADMIN and
+# nothing else, marks loopback multicast-capable, routes 224.0.0.0/4 over it
+# and exits: the multicast a host offers, with nothing leaving the namespace.
+# The stage's command waits for that route before it runs (MULTICAST_WAIT
+# seconds at most). The namespace is the stage's, so no container holds it
+# but the stage: a holder that slept until the script removed it outlived
+# every job killed before its EXIT trap ran (#1264).
 #
 # A networked stage writes its module cache to the gomod volume, which keeps
 # what it fetched across jobs. With CI_CACHE=off it takes a writable copy of
@@ -79,8 +83,13 @@
 #
 # The container is named <CI_STACK_PREFIX>tc-<pid>-<random>, under the prefix
 # scripts/reap-stale-ci-stacks.sh reaps (default <checkout dir>-ci-, which in CI
-# is <repo>-ci-), and is removed on every exit. IN_IMAGE_UID is the non-root
-# uid the command runs as (default 10001; devcontainer.md §5: any non-root uid).
+# is <repo>-ci-), and is removed on every exit, INT, TERM and HUP included.
+# IN_IMAGE_UID is the non-root uid the command runs as (default 10001;
+# devcontainer.md §5: any non-root uid).
+#
+# CUSTOMIZE (go-qrdb): every container the script starts carries the label
+# qrdb.ci.job=<GITHUB_RUN_ID>-<GITHUB_JOB> (local-local off CI), so a teardown
+# or a sweep tells the job a container belongs to without guessing by age.
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -123,9 +132,19 @@ fi
 case $cpus in
   "" | 0 | *[!0-9]*) echo "IN_IMAGE_CPUS must be a positive integer: $cpus" >&2; exit 2 ;;
 esac
-netns="$name-netns" # CUSTOMIZE (go-qrdb): the multicast namespace holder
+# CUSTOMIZE (go-qrdb) begin: the multicast configurator and the job label.
+netns="$name-netns"
+job="${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-local}"
+# The stage's wait for the multicast route: the configurator's `docker run`
+# on an image the daemon holds, never the stage's own run time.
+mwait=${MULTICAST_WAIT:-60}
+case $mwait in
+  "" | 0 | *[!0-9]*) echo "MULTICAST_WAIT must be a positive integer: $mwait" >&2; exit 2 ;;
+esac
+# CUSTOMIZE (go-qrdb) end.
 args=(
   --name "$name"
+  --label "qrdb.ci.job=$job" # CUSTOMIZE (go-qrdb)
   --cpus "$cpus"
   --env GOMAXPROCS="$cpus"
   --env GOFLAGS="-p=$cpus"
@@ -171,22 +190,24 @@ if [ "$network" = bridge ]; then
     if [ -n "${!v:-}" ]; then args+=(--env "$v"); fi
   done
 else
-  args+=(--network "container:$netns") # CUSTOMIZE (go-qrdb): the holder's namespace
+  # CUSTOMIZE (go-qrdb) begin: the stage's own namespace, which the
+  # configurator below makes multicast-capable once the stage has started.
+  args+=(--network none)
+  gate="i=0; until ip route show dev lo | grep -q '^224\\.0\\.0\\.0/4'; do"
+  gate="$gate i=\$((i + 1)); if [ \$i -gt $((mwait * 10)) ]; then"
+  gate="$gate echo 'in-toolchain-image: no multicast route after $mwait s' >&2; exit 1; fi;"
+  cmd="$gate sleep 0.1; done; $cmd"
+  # CUSTOMIZE (go-qrdb) end.
 fi
 
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() { docker rm -f -v "$name" "$netns" >/dev/null 2>&1 || true; }
+# A signalled script cleans up too: bash runs no EXIT trap on a signal it does
+# not trap, and the stage is a sibling on the host's daemon that would run on.
 trap cleanup EXIT
-
-# CUSTOMIZE (go-qrdb) begin: the multicast namespace holder. It owns the
-# namespace; root in it for the two `ip` commands, with NET_ADMIN its only
-# capability. The stage's container never holds it.
-if [ "$network" = none ]; then
-  docker run -d --name "$netns" --init --network none --read-only \
-    --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges:true \
-    --pids-limit 16 --user 0:0 "$image" sleep infinity >/dev/null
-  docker exec "$netns" sh -c 'ip link set lo multicast on && ip route add 224.0.0.0/4 dev lo'
-fi
-# CUSTOMIZE (go-qrdb) end.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 docker create "${args[@]}" "$image" sh -c "$cmd" >/dev/null
 # DS-3998 (ruling 108): the volume roots go to the run's uid only after the
@@ -205,4 +226,23 @@ if [ "$cache" = on ]; then
 fi
 tar -C "$PWD" --owner="$uid" --group="$uid" --numeric-owner -cf - . |
   docker cp -a - "$name:/src"
-docker start -a "$name"
+docker start "$name" >/dev/null
+# CUSTOMIZE (go-qrdb) begin: the multicast configurator. It joins the stage's
+# namespace, root in it for the two `ip` commands with NET_ADMIN its only
+# capability, and exits; --rm has the daemon remove it on that exit, so it
+# outlives nothing, whatever kills this script. The stage never holds
+# NET_ADMIN.
+if [ "$network" = none ]; then
+  docker run --rm --name "$netns" --label "qrdb.ci.job=$job" \
+    --network "container:$name" --read-only --cap-drop ALL --cap-add NET_ADMIN \
+    --security-opt no-new-privileges:true --pids-limit 16 --user 0:0 \
+    "$image" sh -c 'ip link set lo multicast on && ip route add 224.0.0.0/4 dev lo' >/dev/null
+fi
+# CUSTOMIZE (go-qrdb) end.
+# The stage's output from its start, its exit status after. The stream runs
+# in the background so a signal reaches the traps at once: bash runs a trap
+# only after a foreground command returns.
+docker logs -f "$name" &
+wait "$!" || true
+code=$(docker wait "$name")
+exit "$code"

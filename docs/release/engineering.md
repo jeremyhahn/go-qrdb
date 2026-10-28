@@ -211,11 +211,18 @@ container rather than bind-mounting it. Its files sit where a host's do:
 `/tmp`, which holds `HOME`, go's `$WORK` and every `t.TempDir`, is on the
 container's own layer, not a size-capped tmpfs that a full `make test` fills,
 and `/dev/shm` is 2 GiB, not Docker's 64 MiB. Build and test run with no
-network: the container joins the network namespace of a holder container that
-has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
-marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
-discovery tests join their group as they do on a host and nothing leaves the
-namespace. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
+network: the container's own namespace has only loopback, which a one-shot
+`--rm` container joining it once the stage has started (granted `NET_ADMIN`
+and nothing else) marks multicast-capable and routes `224.0.0.0/4` over before
+it exits; the stage's command waits for that route, `MULTICAST_WAIT` seconds
+at most (default 60). So the multicast discovery tests join their group as
+they do on a host, nothing leaves the namespace, and no container holds the
+namespace but the stage: the holder it replaced slept until the script's EXIT
+trap removed it, and every job killed first left one running. The script
+traps `INT`, `TERM` and `HUP` as well as `EXIT`, and labels both containers
+`qrdb.ci.job=<GITHUB_RUN_ID>-<GITHUB_JOB>`, so a sweep tells a job's leftover
+from a live one without guessing by age; `make test-in-toolchain-image` proves
+each signal path on a stub `docker`. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
 
