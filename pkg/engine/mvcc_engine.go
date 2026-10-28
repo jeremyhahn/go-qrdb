@@ -885,6 +885,18 @@ func decodedOpSupported(op byte) bool {
 	}
 }
 
+// validateTxnOps is validateDecodedOps for a transaction's executed branch,
+// which may also read: a transaction answers an OpMVCCRange op itself
+// (txnRead) rather than dispatching it, so a batch still refuses one.
+func validateTxnOps(ops []protocol.DecodedOp) error {
+	for _, op := range ops {
+		if op.Type != protocol.OpMVCCRange && !decodedOpSupported(op.Type) {
+			return &protocol.UnknownOpError{Op: op.Type}
+		}
+	}
+	return nil
+}
+
 // validateDecodedOps rejects an operation set naming an operation this engine
 // cannot execute, BEFORE any of it is applied.
 //
@@ -1603,7 +1615,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 
 	// Pre-validate the OPCODES of the selected set first: an operation this
 	// engine cannot execute refuses the whole transaction and stages nothing.
-	if verr := validateDecodedOps(ops); verr != nil {
+	if verr := validateTxnOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
 	}
 	// No operation in the selected branch may touch the reserved vector
@@ -1631,22 +1643,75 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 
 	rev := s.CurrentRevision() + 1
 	var notifs []Notification
-	for _, op := range ops {
+	var reads []protocol.TxnReadResult
+	if hasDecodedRead(ops) {
+		reads = make([]protocol.TxnReadResult, len(ops))
+	}
+	wrote := false
+	for i, op := range ops {
+		if op.Type == protocol.OpMVCCRange {
+			read, readErr := txnRead(s, batch, rev, op)
+			if readErr != nil {
+				return sm.Result{}, nil, readErr
+			}
+			reads[i] = read
+			continue
+		}
 		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
 		notifs = append(notifs, opNotifs...)
+		wrote = true
 	}
-	if len(ops) > 0 {
+	// Only a write advances the revision: a branch of reads alone leaves
+	// the store where it was.
+	if wrote {
 		s.SetRevision(rev)
 	}
 
-	var data [1]byte
-	if succeeded {
-		data[0] = 1
+	data, err := protocol.EncodeTransactionResult(succeeded, reads)
+	if err != nil {
+		return sm.Result{}, nil, err
 	}
-	return sm.Result{Value: uint64(rev), Data: data[:]}, notifs, nil
+	return sm.Result{Value: uint64(rev), Data: data}, notifs, nil
+}
+
+// hasDecodedRead reports whether ops holds a read, so a transaction without
+// one keeps its one-byte result.
+func hasDecodedRead(ops []protocol.DecodedOp) bool {
+	for _, op := range ops {
+		if op.Type == protocol.OpMVCCRange {
+			return true
+		}
+	}
+	return false
+}
+
+// txnRead answers one read op of a transaction's executed branch at rev, the
+// revision the branch's writes are staged at, through the batch, so the read
+// sees every write staged before it in the same branch. An empty range end is
+// a single-key get. Reserved and vector-namespace keys are never returned: the
+// read's start key was refused before the branch ran, and a range spanning
+// them answers as though they were absent.
+func txnRead(s *mvcc.Store, batch storage.Batch, rev int64, op protocol.DecodedOp) (protocol.TxnReadResult, error) {
+	var end []byte
+	if len(op.RangeEnd) > 0 {
+		end = op.RangeEnd
+	}
+	kvs, count, _, err := s.RangeInBatchAt(batch, rev, op.Key, end)
+	if err != nil {
+		return protocol.TxnReadResult{}, err
+	}
+	visible := kvs[:0]
+	for _, e := range kvs {
+		if statemachine.IsReservedKey(e.Key) || vector.IsForgedKey(e.Key) {
+			count--
+			continue
+		}
+		visible = append(visible, e)
+	}
+	return protocol.TxnReadResult{Kvs: visible, Count: count}, nil
 }
 
 // handleBatch processes a batch of operations. All operations are executed

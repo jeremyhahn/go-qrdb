@@ -2233,6 +2233,55 @@ func TestRangeInBatch_SeesTheBatchsUncommittedWrites(t *testing.T) {
 	}
 }
 
+func TestRangeInBatchAt_SeesWritesStagedAtTheUnpublishedRevision(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("a"), []byte("v1"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+	// A transaction stages at CurrentRevision()+1 and publishes it only after
+	// its last op, so a read inside it runs before SetRevision.
+	rev := s.CurrentRevision() + 1
+	if _, err := s.PutInBatch(batch, []byte("a"), []byte("v2"), 0, rev); err != nil {
+		t.Fatalf("PutInBatch: %v", err)
+	}
+
+	kvs, count, _, err := s.RangeInBatchAt(batch, rev, []byte("a"), nil)
+	if err != nil {
+		t.Fatalf("RangeInBatchAt: %v", err)
+	}
+	if count != 1 || string(kvs[0].Value) != "v2" || kvs[0].Version != 2 || kvs[0].ModRevision != rev {
+		t.Errorf("RangeInBatchAt = %+v (count %d), want v2 at version 2, mod revision %d", kvs, count, rev)
+	}
+	stale, _, _, err := s.RangeInBatch(batch, []byte("a"), nil)
+	if err != nil {
+		t.Fatalf("RangeInBatch: %v", err)
+	}
+	if string(stale[0].Value) != "v1" {
+		t.Errorf("RangeInBatch at the published revision = %q, want v1", stale[0].Value)
+	}
+}
+
+func TestRangeInBatchAt_RangesThroughTheBatch(t *testing.T) {
+	s := newTestStore(t)
+	batch := s.Storage().Batch()
+	defer func() { _ = batch.Close() }()
+	rev := s.CurrentRevision() + 1
+	for _, k := range []string{"a", "b"} {
+		if _, err := s.PutInBatch(batch, []byte(k), []byte("x"), 0, rev); err != nil {
+			t.Fatalf("PutInBatch: %v", err)
+		}
+	}
+	kvs, count, _, err := s.RangeInBatchAt(batch, rev, []byte("a"), []byte("c"))
+	if err != nil {
+		t.Fatalf("RangeInBatchAt: %v", err)
+	}
+	if got := rangeKeys(kvs); count != 2 || !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("RangeInBatchAt = %v (count %d), want [a b] (count 2)", got, count)
+	}
+}
+
 // TestRangeInBatch_EmptyBatchMatchesTheStore pins that a batch with no
 // writes answers exactly as the committed store does.
 func TestRangeInBatch_EmptyBatchMatchesTheStore(t *testing.T) {
