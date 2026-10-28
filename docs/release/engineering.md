@@ -197,7 +197,10 @@ the job. Each job then runs each stage in a toolchain container through
 holds the job's CPU bound: the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. The jobs also need the `changes` job: on a docs-only pull
+number, and its memory bound: the job container's cgroup `memory.max` (8g
+with no limit; `IN_IMAGE_MEMORY` overrides) becomes `--memory` and
+`--memory-swap`, so the stage cannot swap the runner host. It runs under the
+runner host's `ci.slice` (`CI_CGROUP_PARENT`; empty passes no parent). The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
 or under `docs/`), `lint` runs lint and deps-check and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with the unit-suite jobs and `test-typescript`, the code

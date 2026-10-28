@@ -329,7 +329,8 @@ tier, the linux/arm64 release cross-build and security in its `toolchain`
 stage, then `trivy image` over its `integration` stage; `coverage`,
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` one unit
 suite each. Each stage container is bounded to the job's
-CPU quota (`scripts/in-toolchain-image.sh`).
+CPU quota and memory limit, with no swap, under the runner host's
+`ci.slice` (`scripts/in-toolchain-image.sh`).
 `test-typescript` (the TypeScript SDK and the desktop frontend) and
 `arch-gates` (the import-boundary, public-releasable and compose-target
 gates) run on the runner beside them.
