@@ -130,8 +130,10 @@ func TestOpenDatabaseCatalog_WaitsForTheSystemShardLeader(t *testing.T) {
 	if err := openDatabaseCatalog(context.Background(), leaders, m, cat); err != nil {
 		t.Fatalf("openDatabaseCatalog = %v, want nil once a leader is known", err)
 	}
-	if got := leaders.polls.Load(); got != 6 {
-		t.Fatalf("leader polled %d times, want 6", got)
+	// Six by the leader wait, one by the settling wait asking whether its
+	// budget counts before its first attempt.
+	if got := leaders.polls.Load(); got != 7 {
+		t.Fatalf("leader polled %d times, want 7", got)
 	}
 	if cat.calls != 1 {
 		t.Fatalf("List called %d times, want 1", cat.calls)

@@ -2150,7 +2150,7 @@ func runStart(f *startFlags) (err error) {
 			// closed host, and is only the backstop for an error return.
 			var gateCloser io.Closer = nopCloser{}
 			if host != nil {
-				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode, nodeSeal)
+				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode, rnode, nodeSeal)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					var unsupported *featuregate.UnsupportedFeatureError
@@ -3081,7 +3081,7 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
-				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
+				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
@@ -3602,6 +3602,7 @@ func startDynamicMembership(
 	mvccSvc service.MVCCKVServicer,
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
+	leaders server.LeaderSource,
 	nodeSeal cluster.SealProbe,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
@@ -3633,7 +3634,7 @@ func startDynamicMembership(
 	// Each attempt is bounded: a settling leader drops a registration without
 	// answering it, and the next attempt re-registers the same record. The
 	// manager's loops outlive the attempt; Close ends them.
-	if err := server.WhileSystemShardSettling(ctx, "dynamic membership start", mgr.Start); err != nil {
+	if err := server.WhileSystemShardSettling(ctx, leaders, "dynamic membership start", mgr.Start); err != nil {
 		return nil, err
 	}
 	return mgr, nil

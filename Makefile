@@ -92,7 +92,12 @@ COVER_GOTEST  := $(GO) test -race -v -timeout=$(GOTEST_TIMEOUT)
 # qrdbd count a CI leg starts (GOMAXPROCS=8, go test's default otherwise)
 # within the leg's CPU budget.
 INT_PARALLEL  ?= 5
-INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -parallel $(INT_PARALLEL)
+# INT_PROCS is the per-feature run's -p: how many packages go test builds and
+# runs at once. A feature's tests are one package, so it bounds the build, and
+# 4 keeps a shard's compile within half its GOMAXPROCS=8 on a runner host the
+# other jobs share (#1286).
+INT_PROCS     ?= 4
+INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -p $(INT_PROCS) -parallel $(INT_PARALLEL)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt
@@ -1552,8 +1557,9 @@ INTEGRATION_RUN ?=
 #
 # The stage's resource budget (#682). It applies to the integration-tests
 # compose service: that container holds the `go test` process and every qrdbd
-# and qrdb process the tests spawn. CI's per-feature jobs run outside compose
-# and carry the GOMAXPROCS half of it as job env (ci.yml, integration-features).
+# and qrdb process the tests spawn. CI's per-feature shards (ci.yml,
+# integration-features) run in the compose integration service instead, which
+# carries the GOMAXPROCS half of it in its environment (see IT_CMD).
 #
 # CLUSTER_CPUS caps the container at that many CPUs (`cpus:`, docker --cpus).
 # Every Go process in it then sizes GOMAXPROCS to the cap instead of the host's

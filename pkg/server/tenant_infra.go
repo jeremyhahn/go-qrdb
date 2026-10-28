@@ -218,7 +218,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 			func(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) error {
 				return database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, nil)
 			}),
-			seal.WithStartupReadRetry(WhileSystemShardSettling))
+			seal.WithStartupReadRetry(func(ctx context.Context, op string, read func(context.Context) error) error {
+				return WhileSystemShardSettling(ctx, systemShardLeaders(cfg.Host), op, read)
+			}))
 	}
 
 	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from

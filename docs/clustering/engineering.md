@@ -942,7 +942,8 @@ type ImbalanceReport struct {
   the same fields. If the caller's context ends first, the same error carries
   that context's error as well. The reads are the cluster-CA readback
   (`lifecycle.AwaitClusterCACertificate`, 30s), and the reads made while the
-  system shard settles (`server.WhileSystemShardSettling`, 15s): the
+  system shard settles (`server.WhileSystemShardSettling`, 15s counted only
+  while the shard has a leader that has committed in its term, below): the
   feature-gate start (its activation check and its self-advertisement), the
   boot tenant list, the encryption migrator's entitlement and isolation-mode
   reads, `qrdbd`'s dynamic-membership start (its registration and first
@@ -979,6 +980,29 @@ type ImbalanceReport struct {
   reconcile's budget. A cut-off pass is safe to retry: every read it makes
   fails closed, and the records that name a retired tenant's directories are
   dropped last, so the retry finds whatever the cut-off pass left.
+- **A settling wait outlasts a forming cluster.** The budget of
+  `server.WhileSystemShardSettling` (`server.SystemShardSettleBudget`, 15s)
+  counts only while the system shard has a leader that has committed in its
+  term (decision record
+  [startup-wait-cascade](../decisions/startup-wait-cascade.md), option A).
+  Before the first attempt and after every attempt that fails with a settling
+  answer or is cut off unanswered, the wait asks the shard's `LeaderSource`:
+  a leader must be known, and, on a `quicraft.Host`, a linearizable read
+  probe (`ReadIndex`, 500ms) must answer. The time between two asks counts
+  against the budget only when both found such a leader
+  (`server.StartupRead.Counts`); every other stretch moves the deadline out.
+  While no leader has committed, the wait is the open-ended leader wait: it
+  runs under the boot's context, logs `startup read still waiting`, and ends
+  only when the read succeeds, the read fails with a non-settling error, or
+  the boot's context ends. A node therefore exits for a leader that has
+  committed and still does not answer within the budget, never for an
+  election in progress or peers not yet unsealed. Every caller passes the
+  system shard's leader source: the feature-gate start (and `sdk/go/node`'s
+  activation check before it installs its seal monitor), database
+  provisioning, the dynamic-membership start, the database-catalog open and
+  the volume-tenant restore (through the node's `quicraft.Host`; a node
+  without one counts all of the wait). A source that cannot probe a term (the
+  local backend) counts from the moment it knows a leader.
 - **A startup wait says what it waits for.** While a startup read waits --
   inside an attempt or between two -- it logs `startup read still waiting` at
   WARN every `server.StartupWaitReportInterval` (5s), naming the read, the time

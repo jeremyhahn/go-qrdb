@@ -417,6 +417,7 @@ Nothing was changed; resubmit the plan.
 | Leadership transfer to an observer, witness or removed replica | 409 | `FAILED_PRECONDITION` |
 | Consensus refused the request for now (busy, dropped, shard not ready, no leader yet) | 503 | `UNAVAILABLE` — retry |
 | A consensus proposal or read timed out | 504 | `DEADLINE_EXCEEDED` — retry |
+| Membership change submitted, then its leader stepped down or Raft timed out (`already submitted to raft; it may still commit`) | 503 | `UNAVAILABLE` — outcome unknown: read the membership, retry only if the change is not there |
 
 Cluster enrollment mostly runs at daemon startup, below every transport, so
 most of its failures are startup errors rather than status codes. The one

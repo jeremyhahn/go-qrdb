@@ -1285,12 +1285,13 @@ jobs:
   # together run the whole suite. The lists are balanced longest-first by the
   # per-feature job times of main run 65165, about 550 s a shard
   # (docs/release/engineering.md, "Per-feature integration jobs"); each shard
-  # has its own 30-minute limit, about three times that, and they run in
-  # parallel. The lists are literal because Gitea cannot expand a matrix
+  # has its own limit, 30 minutes on a light fleet, about three times that,
+  # and 45 while one of the two Dell runner hosts is off (#1286), and they
+  # run in parallel. The lists are literal because Gitea cannot expand a matrix
   # computed at run time (devops.md §1). Their union is exactly
   # `make -s print-integration-features`, each feature once:
   # test/buildgates/feature_jobs_gate_test.go fails on a missing, duplicated or
-  # unknown feature, on a limit over 30, on fail-fast, on a tier other than the
+  # unknown feature, on a limit over its featureJobLimit, on fail-fast, on a tier other than the
   # full one, and on a step that narrows the target. fail-fast is off so one
   # red shard does not cancel the others' results; CI Gate reads the aggregate
   # result.
@@ -1305,15 +1306,18 @@ jobs:
   # test/buildgates/integration_image_tag_test.go keeps every compose call
   # behind a make target. Credentials come from the job environment, which
   # the Makefile's $(stage-gomodauth) stages as the gomodauth BuildKit secret.
-  # GOMAXPROCS reaches the spawned processes through the compose service
-  # (#682). The gate holds a shard to exactly the reap, the run and the
+  # GOMAXPROCS=8 reaches go test, the harness's go build and every spawned
+  # qrdbd through the compose service's environment (#682), and the
+  # per-feature go test takes -p 4 (the Makefile's INT_PROCS, #1286), so a
+  # shard builds at most four packages at once on a shared runner host; the
+  # job sets neither. The gate holds a shard to exactly the reap, the run and the
   # teardown.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, arch-gates]
-    timeout-minutes: 30
+    timeout-minutes: 45       # CUSTOMIZE (#1286): 22 min worst shard on a light fleet (main run 70592); in run 70834 five of six shards hit 30 on the one Dell runner host left, at load 494 on 80 cores (claude-agents#452), while the other is off (owner-queue 178). Back to 30, with the gate's featureJobLimit, when it returns
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       IT_HOLD: qrdb-ci-hold-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}

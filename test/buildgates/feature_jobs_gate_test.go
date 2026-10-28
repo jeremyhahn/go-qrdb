@@ -36,7 +36,7 @@ package buildgates
 //     it checks the mapping, not the jobs;
 //   - a feature in two shards, which runs twice, or a listed name whose
 //     features.mk entry is empty or absent, which runs zero tests;
-//   - a limit above 30 minutes, or none at all (GitHub's default is 360);
+//   - a limit above featureJobLimit minutes, or none at all (GitHub's default is 360);
 //   - fail-fast left at its default, true, so one red shard cancels the
 //     others and hides whether they would have passed;
 //   - a shard that runs something other than the multi-feature target, or a job
@@ -74,10 +74,15 @@ const (
 	// featureJob is ci.yml's sharded per-feature integration job.
 	featureJob = "integration-features"
 
-	// featureJobLimit is each shard's timeout-minutes ceiling: about three
-	// times the ~550 s a balanced shard is expected to take (main run 65165's
-	// per-feature times, docs/release/engineering.md).
-	featureJobLimit = 30
+	// featureJobLimit is each shard's timeout-minutes ceiling. On a light
+	// fleet it is 30, about three times the ~550 s a balanced shard is
+	// expected to take (main run 65165's per-feature times,
+	// docs/release/engineering.md). It is 45 while one of the two Dell runner
+	// hosts is off (owner-queue 178): main run 70592's worst shard took 22
+	// minutes, and in run 70834 five of six shards hit 30 on the other,
+	// overloaded host (#1286). It goes back to 30 with ci.yml's limit when
+	// the host returns.
+	featureJobLimit = 45
 
 	// featureShardKey and featureListKey are the two keys of each of the
 	// matrix's include entries: the shard's name and its space-separated
@@ -178,7 +183,7 @@ func featureJobProblems(body []byte, want []string) []string {
 		problems = append(problems, featureJob+" has no timeout-minutes: a shard would get the runner's default, not its own limit")
 	case !featureLimitInRange(*tm):
 		problems = append(problems, featureJob+"'s timeout-minutes is "+*tm+
-			"; want 1.."+strconv.Itoa(featureJobLimit)+": about three times a shard's expected time")
+			"; want 1.."+strconv.Itoa(featureJobLimit)+": the shard ceiling, derived in featureJobLimit's comment")
 	}
 	if ff := job.Strategy.FailFast; ff == nil || *ff {
 		problems = append(problems, featureJob+" does not set fail-fast: false: one red shard would cancel the rest")
@@ -783,7 +788,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "a matrix axis", old: "        include:\n", new: "        feature: [audit]\n        include:\n"},
 		{name: "no include", old: "        include:\n", new: "        shards:\n"},
 		{name: "no matrix", old: "      matrix:\n        include:\n", new: "      other:\n        include:\n"},
-		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 31"},
+		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 46"},
 		{name: "limit zero", old: "timeout-minutes: 30", new: "timeout-minutes: 0"},
 		{name: "no limit", old: "    timeout-minutes: 30\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},

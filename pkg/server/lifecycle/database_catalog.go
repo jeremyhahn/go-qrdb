@@ -38,7 +38,7 @@ func openDatabaseCatalog(ctx context.Context, leaders server.LeaderSource, m *da
 	if err := server.AwaitShardLeader(ctx, leaders, server.SystemShardSettleBudget, shard.ShardKV); err != nil {
 		return &DatabaseCatalogError{Err: err}
 	}
-	if err := server.WhileSystemShardSettling(ctx, "open database catalog", m.OpenAll); err != nil {
+	if err := server.WhileSystemShardSettling(ctx, leaders, "open database catalog", m.OpenAll); err != nil {
 		return &DatabaseCatalogError{Err: err}
 	}
 	return nil

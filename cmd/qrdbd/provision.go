@@ -75,7 +75,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	// attempt's: a cut-off attempt would leave a proposal in flight whose
 	// retry races it.
 	for _, cfg := range configuredDatabases(f) {
-		if err := server.WhileSystemShardSettling(ctx, "provision database "+cfg.Name, func(context.Context) error {
+		if err := server.WhileSystemShardSettling(ctx, node, "provision database "+cfg.Name, func(context.Context) error {
 			_, err := dbs.Provision(ctx, cfg)
 			return err
 		}); err != nil {
@@ -86,7 +86,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		// same way the SQL-database special case below reapplies its
 		// protocol config on every boot.
 		if cfg.SQL != nil {
-			if err := server.WhileSystemShardSettling(ctx, "update SQL settings of database "+cfg.Name, func(context.Context) error {
+			if err := server.WhileSystemShardSettling(ctx, node, "update SQL settings of database "+cfg.Name, func(context.Context) error {
 				return dbs.UpdateSQLForTenant(ctx, cfg.Name, cfg.SQL)
 			}); err != nil {
 				return err
@@ -98,7 +98,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	}
 	_, err := dbs.GetOwned(f.sqlDatabase, tenantid.System)
 	if err == nil {
-		return server.WhileSystemShardSettling(ctx, "update protocol of SQL database "+f.sqlDatabase, func(context.Context) error {
+		return server.WhileSystemShardSettling(ctx, node, "update protocol of SQL database "+f.sqlDatabase, func(context.Context) error {
 			return dbs.UpdateProtocolForTenant(ctx, f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
 		})
 	}
@@ -106,7 +106,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	var dde *database.DroppingError
 	switch {
 	case errors.As(err, &nfe):
-		return server.WhileSystemShardSettling(ctx, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
+		return server.WhileSystemShardSettling(ctx, node, "provision SQL database "+f.sqlDatabase, func(context.Context) error {
 			_, err := dbs.Provision(ctx, sqlDatabaseConfig(f))
 			return err
 		})

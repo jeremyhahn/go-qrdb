@@ -52,7 +52,7 @@ func (n *Node) startClusterSeal(ctx context.Context, host *quicraft.Host, svcNod
 		return nil
 	}
 	if n.featureGate != nil {
-		if err := server.WhileSystemShardSettling(ctx, "feature gate activation check", func(actx context.Context) error {
+		if err := server.WhileSystemShardSettling(ctx, host, "feature gate activation check", func(actx context.Context) error {
 			return n.featureGate.CheckActivated(actx, svcNode.KV)
 		}); err != nil {
 			return err

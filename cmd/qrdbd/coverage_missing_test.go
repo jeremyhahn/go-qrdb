@@ -119,7 +119,7 @@ func TestStartDynamicMembership_EmbeddedNewError(t *testing.T) {
 	}
 
 	// Pass nil for kvSvc so embedded.New returns an error.
-	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil)
+	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil, nil)
 	require.Error(t, err, "startDynamicMembership must propagate embedded.New error")
 }
 

@@ -1282,8 +1282,10 @@ func TestHandler_MembershipRemove_NotLeader_NoResolver(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("POST /membership/remove (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// As on add: the declined forward falls through membershipChangeStatus
+	// to NotLeaderError's ordinary classification, a transient 503.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /membership/remove (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
