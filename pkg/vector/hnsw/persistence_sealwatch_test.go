@@ -86,6 +86,17 @@ func TestSave_SealedBarrierRefuses(t *testing.T) {
 	if !errors.As(err, &sealed) {
 		t.Fatalf("Save under a sealed barrier = %T; want *SealedError", err)
 	}
+
+	// The refused Save committed nothing: the database holds no entry point.
+	if err := barrier.Unseal(context.Background(), seal.Credentials{}); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	if _, closer, err := db.Get([]byte(prefixEntryPoint)); !errors.Is(err, pebble.ErrNotFound) {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		t.Fatalf("entry point after a refused Save: err = %v; want pebble.ErrNotFound", err)
+	}
 }
 
 // Save succeeds once the barrier is unsealed, and the saved index loads.
