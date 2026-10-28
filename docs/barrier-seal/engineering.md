@@ -589,7 +589,9 @@ services and to the server, which wraps the node's sealed-window probe with
   `pkg/server/lifecycle` (`NewLocalStorage`, used by `qrdbd`, the standalone
   server and the embedded node) returns only the `storage.Storage`, never the
   raw `*pebble.DB` beneath it, so every write to that database passes the
-  watch. Read-only opens and read-only `NewFromDB` views carry no watch. The
+  watch. Each writer checks before any part of its write reaches Pebble, so a
+  refused write, batch or index save leaves the database as it was. Read-only
+  opens and read-only `NewFromDB` views carry no watch. The
   node closes its own data-plane store before it seals its barriers, so a
   clean `Close` never meets the refusal. The check and Pebble's next file
   creation are not atomic, so a seal landing between them is still a crash;
