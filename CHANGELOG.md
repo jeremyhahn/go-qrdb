@@ -11,11 +11,36 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **A transaction branch can read** (#1211). A `get` or `range` op in a
+  transaction's success or failure branch is answered inside the transaction:
+  its `OpResponse` carries the key-values with their create and mod revision,
+  version and lease, and `count`, at the transaction's own revision, seeing the
+  writes staged before it in the same branch. A read-then-compare-and-set can
+  read back what it wrote, and a failed compare can report what beat it, in
+  one round trip. Through REST, gRPC, QUIC, MCP, Unix, embedded and `qrdb tx`.
+  Reads need an MVCC state machine, and a transaction carrying one is refused
+  whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
+  feature `transaction-reads` is active on every member. A branch that only
+  reads does not advance the revision.
+
 ### Fixed
 
 - **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
 - **A tenant Security Officer's PIN is held sealed while it is being onboarded**: `bootstrap.TenantSOConfig.PIN` is a `*secure.Secret`. The onboarding service seals the request's PIN bytes into it and wipes them. The Secret is opened only for the `SetSOPIN` commit, and `ProvisionTenant` destroys it on every return, whether the PIN was committed, the commit failed or the request was refused. The secure analyzer no longer flags the two `[]byte` PIN fields.
 - **CI's devcontainer images build on `bigdisk` again and the forge publishes nothing**: a push to `main` on the forge no longer pushes them to a registry namespace the release runner's credential cannot write; every job there builds or reuses the content-hash image on its own runner, and github.com still publishes to GHCR.
+- **An unknown op type in a transaction or batch is refused, not applied as
+  a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
+  and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
+  with the op's value; the batch service dropped an op type it did not know
+  while applying the rest. Each is now refused before anything is proposed:
+  REST answers 400 (`rest.UnknownOpTypeError`), MCP a tool error
+  (`mcp.UnknownOpTypeError`), and gRPC and QUIC, which now pass the value as
+  `service.OpUnknown`, `INVALID_ARGUMENT`
+  (`service.UnsupportedTransactionOpError`, which a batch now also returns for
+  an unmapped type).
+
 - **A certificate a node issues or enrolls is admitted on its next
   handshake** (#1128). A tenant's first certificate brings its login CA into
   use. Until now the TLS client trust learned of that CA only through an

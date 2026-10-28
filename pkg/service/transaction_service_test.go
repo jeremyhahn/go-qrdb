@@ -923,44 +923,51 @@ func TestEncodeServiceOp_UnknownOpType(t *testing.T) {
 	}
 }
 
-func TestEncodeServiceOp_OpGetIsRejected(t *testing.T) {
-	// OpGet is a read: it must never be silently coerced into a write.
+func TestEncodeServiceOp_OpGetEncodesAKeyOnlyRead(t *testing.T) {
+	// A get is a read of one key: whatever value, range end or lease the
+	// caller set, it must never be coerced into a write or widen into a range.
 	op := Op{
-		Type:  OpGet,
-		Key:   []byte("getkey"),
-		Value: []byte("getval"),
+		Type:     OpGet,
+		Key:      []byte("getkey"),
+		Value:    []byte("getval"),
+		RangeEnd: []byte("getkez"),
+		LeaseID:  7,
 	}
 
 	encoded, err := encodeServiceOp(op)
-	if encoded != nil {
-		t.Fatalf("expected nil encoding on error, got %v", encoded)
+	if err != nil {
+		t.Fatalf("encodeServiceOp: %v", err)
 	}
-	var utoe *UnsupportedTransactionOpError
-	if !errors.As(err, &utoe) {
-		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	got, _, err := protocol.DecodeOp(encoded)
+	if err != nil {
+		t.Fatalf("DecodeOp: %v", err)
 	}
-	if utoe.OpType != OpGet {
-		t.Fatalf("expected OpType OpGet in error, got %d", utoe.OpType)
+	if got.Type != protocol.OpMVCCRange || string(got.Key) != "getkey" ||
+		len(got.Value) != 0 || len(got.RangeEnd) != 0 || got.LeaseID != 0 {
+		t.Fatalf("decoded = %+v, want a key-only OpMVCCRange of getkey", got)
 	}
 }
 
-func TestEncodeServiceOp_OpRangeIsRejected(t *testing.T) {
+func TestEncodeServiceOp_OpRangeEncodesARangeRead(t *testing.T) {
 	op := Op{
 		Type:     OpRange,
 		Key:      []byte("a"),
+		Value:    []byte("ignored"),
 		RangeEnd: []byte("z"),
+		LeaseID:  7,
 	}
 
 	encoded, err := encodeServiceOp(op)
-	if encoded != nil {
-		t.Fatalf("expected nil encoding on error, got %v", encoded)
+	if err != nil {
+		t.Fatalf("encodeServiceOp: %v", err)
 	}
-	var utoe *UnsupportedTransactionOpError
-	if !errors.As(err, &utoe) {
-		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	got, _, err := protocol.DecodeOp(encoded)
+	if err != nil {
+		t.Fatalf("DecodeOp: %v", err)
 	}
-	if utoe.OpType != OpRange {
-		t.Fatalf("expected OpType OpRange in error, got %d", utoe.OpType)
+	if got.Type != protocol.OpMVCCRange || string(got.Key) != "a" || string(got.RangeEnd) != "z" ||
+		len(got.Value) != 0 || got.LeaseID != 0 {
+		t.Fatalf("decoded = %+v, want an OpMVCCRange over [a, z) without value or lease", got)
 	}
 }
 
@@ -1016,11 +1023,32 @@ func TestOpTypeMap_ContainsExpectedEntries(t *testing.T) {
 	}
 }
 
-func TestOpTypeMap_DoesNotContainUnmappedTypes(t *testing.T) {
-	if _, ok := opTypeMap[OpGet]; ok {
-		t.Fatal("OpGet should not be in opTypeMap")
+func TestOpTypeMap_ReadsMapToTheMVCCRangeOp(t *testing.T) {
+	for _, op := range []OpType{OpGet, OpRange} {
+		if got, ok := opTypeMap[op]; !ok || got != protocol.OpMVCCRange {
+			t.Fatalf("opTypeMap[%d] = (%d, %v), want OpMVCCRange", op, got, ok)
+		}
 	}
-	if _, ok := opTypeMap[OpRange]; ok {
-		t.Fatal("OpRange should not be in opTypeMap")
+	if _, ok := opTypeMap[OpType(0xEE)]; ok {
+		t.Fatal("an unknown op type is mapped")
+	}
+}
+
+// OpUnknown, the value a transport gives an op type it cannot map, is refused
+// before anything is proposed.
+func TestTransactionService_Execute_OpUnknownIsRefused(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{}, nil
+		},
+	}
+	svc := NewTransactionService(host, 1)
+	_, err := svc.Execute(context.Background(), nil,
+		[]Op{{Type: OpUnknown, Key: []byte("k"), Value: []byte("v")}}, nil)
+	var unsupported *UnsupportedTransactionOpError
+	if !errors.As(err, &unsupported) || proposed {
+		t.Fatalf("err = %v, proposed = %v; want *UnsupportedTransactionOpError, nothing proposed", err, proposed)
 	}
 }

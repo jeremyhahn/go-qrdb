@@ -138,7 +138,8 @@ var (
 	OpPut    = lock.OpPut
 	OpGet    = lock.OpGet
 	OpDelete = lock.OpDelete
-	OpRange  = lock.OpRange
+	OpRange   = lock.OpRange
+	OpUnknown = lock.OpUnknown
 )
 
 // Op is a single operation within a transaction or batch.
