@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -115,7 +116,7 @@ func (s *MVCCKVService) proposeCompactionState(ctx context.Context, cmd protocol
 		return &CompactPrefixInvalidError{Prefix: cmd.Scope}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {
-		return &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
 	}
 	encoded, err := protocol.EncodeCompactionState(cmd)
 	if err != nil {

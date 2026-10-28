@@ -191,6 +191,14 @@ func (b *StorageBarrier) lockRedistribution(ctx context.Context, domain QuorumDo
 // (key-material-free) sealed envelope and replaces the in-memory
 // ShamirStrategy and config, so Status reports the share set in force.
 func (b *StorageBarrier) recordShamirParams(ctx context.Context, threshold, total int) error {
+	// The read, the write and the live barrier's adoption below are one
+	// operation (see rootKeyRewrap): a rotation persisting between the read
+	// and the write would have its new epoch overwritten, and one after the
+	// write would put the old parameters back from the live state. Nothing
+	// here holds a barrier lock, so it waits rather than refuses.
+	b.rootKeyRewrap.Lock()
+	defer b.rootKeyRewrap.Unlock()
+
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return err
@@ -208,6 +216,18 @@ func (b *StorageBarrier) recordShamirParams(ctx context.Context, threshold, tota
 		}
 		if err := b.base.Put(ctx, b.config.RootKeyPath, updated); err != nil {
 			return err
+		}
+		if hook := b.rootKeyWritten; hook != nil {
+			hook()
+		}
+		// The persister writes a clone of the live state, so the live state
+		// must carry the parameters too.
+		if live := b.barrier.SealedRootKeyData(); live != nil {
+			live.ShamirThreshold = threshold
+			live.ShamirTotal = total
+			if err := b.barrier.SetSealedRootKey(live); err != nil {
+				return err
+			}
 		}
 	}
 	shamirStrategy, err := NewShamirStrategy(threshold, total)

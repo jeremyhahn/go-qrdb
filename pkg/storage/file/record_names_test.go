@@ -25,8 +25,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
 
@@ -48,8 +47,8 @@ func mustRecordPaths(t testing.TB, e *Engine, key []byte) (dir, path string) {
 // ciphertext is proved in encrypted_test.go.
 type identityEncryptor struct{}
 
-func (identityEncryptor) Enabled() bool           { return true }
-func (identityEncryptor) Wrap(base vfs.FS) vfs.FS { return base }
+func (identityEncryptor) Enabled() bool                   { return true }
+func (identityEncryptor) Wrap(base filesys.FS) filesys.FS { return base }
 
 var _ Encryptor = identityEncryptor{}
 

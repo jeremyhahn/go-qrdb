@@ -20,8 +20,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -82,8 +82,8 @@ func (k *reunsealKV) ScanStale(ctx context.Context, prefix string) (map[string][
 // reunsealGate reports every feature activated.
 type reunsealGate struct{}
 
-func (reunsealGate) Activated(featuregate.Feature) bool { return true }
-func (reunsealGate) ActivationsLoaded() bool            { return true }
+func (reunsealGate) Activated(feature.Feature) bool { return true }
+func (reunsealGate) ActivationsLoaded() bool        { return true }
 
 // TestNodeUnseal_LeavesAClusterSealedTenantSealed (from the final review):
 // a system-managed tenant sealed cluster-wide by its own record before a node

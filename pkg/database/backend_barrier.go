@@ -45,8 +45,8 @@ type BarrierEncryptor interface {
 // This is Manager's at-rest encryption mechanism for every per-database
 // encryption barrier (see Manager.CreateWithCredentials / Manager.Open):
 // unlike the system/tenant barrier's FS-level pkg/atrest.Encryptor (which
-// wraps Pebble's vfs.FS and therefore only applies to Pebble-backed
-// stores), a per-database store may be memory-, file-, or Pebble-backed, so
+// wraps a filesys.FS and therefore only applies to stores that write
+// through one), a per-database store may be memory-, file-, or Pebble-backed, so
 // encryption is applied uniformly at the value layer instead.
 type BarrierBackend struct {
 	inner   Backend

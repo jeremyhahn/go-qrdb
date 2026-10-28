@@ -12,32 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config
+package cluster
 
 import (
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 // TestAdvertisedAPIEndpoints_ServedProtocolsOnTheAdvertiseHost: every served
 // protocol is published on the advertise host with its own port; a disabled
 // one is not.
 func TestAdvertisedAPIEndpoints_ServedProtocolsOnTheAdvertiseHost(t *testing.T) {
-	c := &Config{
-		Server:    ServerConfig{AdvertiseHost: "db1.example.com", AdminPort: 63002, GRPCPort: 63003, QUICPort: 63004},
-		Protocols: ProtocolsConfig{REST: true, GRPC: true, QUIC: true, MCP: false},
-		MCP:       MCPConfig{Port: 63005},
-		Raft:      RaftConfig{RaftAddress: "192.0.2.1:63001"},
+	c := &config.Config{
+		Server:    config.ServerConfig{AdvertiseHost: "db1.example.com", AdminPort: 63002, GRPCPort: 63003, QUICPort: 63004},
+		Protocols: config.ProtocolsConfig{REST: true, GRPC: true, QUIC: true, MCP: false},
+		MCP:       config.MCPConfig{Port: 63005},
+		Raft:      config.RaftConfig{RaftAddress: "192.0.2.1:63001"},
 	}
-	got, err := c.AdvertisedAPIEndpoints()
+	got, err := AdvertisedAPIEndpoints(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[cluster.APIProtocol]string{
-		cluster.APIProtocolREST: "db1.example.com:63002",
-		cluster.APIProtocolGRPC: "db1.example.com:63003",
-		cluster.APIProtocolQUIC: "db1.example.com:63004",
+	want := map[APIProtocol]string{
+		APIProtocolREST: "db1.example.com:63002",
+		APIProtocolGRPC: "db1.example.com:63003",
+		APIProtocolQUIC: "db1.example.com:63004",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("endpoints = %v; want %v", got, want)
@@ -52,18 +52,18 @@ func TestAdvertisedAPIEndpoints_ServedProtocolsOnTheAdvertiseHost(t *testing.T) 
 // TestAdvertisedAPIEndpoints_FallsBackToTheRaftHost: with no advertise host
 // the Raft address's host is used, and a wildcard there publishes nothing.
 func TestAdvertisedAPIEndpoints_FallsBackToTheRaftHost(t *testing.T) {
-	c := &Config{
-		Server:    ServerConfig{GRPCPort: 63003},
-		Protocols: ProtocolsConfig{GRPC: true, MCP: true},
-		MCP:       MCPConfig{Port: 63005},
-		Raft:      RaftConfig{RaftAddress: "192.0.2.7:63001"},
+	c := &config.Config{
+		Server:    config.ServerConfig{GRPCPort: 63003},
+		Protocols: config.ProtocolsConfig{GRPC: true, MCP: true},
+		MCP:       config.MCPConfig{Port: 63005},
+		Raft:      config.RaftConfig{RaftAddress: "192.0.2.7:63001"},
 	}
-	got, err := c.AdvertisedAPIEndpoints()
-	if err != nil || got[cluster.APIProtocolGRPC] != "192.0.2.7:63003" || got[cluster.APIProtocolMCP] != "192.0.2.7:63005" {
+	got, err := AdvertisedAPIEndpoints(c)
+	if err != nil || got[APIProtocolGRPC] != "192.0.2.7:63003" || got[APIProtocolMCP] != "192.0.2.7:63005" {
 		t.Fatalf("endpoints = %v, %v; want gRPC and MCP on the Raft host", got, err)
 	}
 	c.Raft.RaftAddress = "0.0.0.0:63001"
-	if got, err := c.AdvertisedAPIEndpoints(); err != nil || got != nil {
+	if got, err := AdvertisedAPIEndpoints(c); err != nil || got != nil {
 		t.Fatalf("a wildcard host published %v, %v; want nothing", got, err)
 	}
 }

@@ -70,6 +70,8 @@ var tenantClientAuthorizationSurface = map[string]string{
 	"UpdateTenantQuotas":              "target: " + string(permission.TenantsSetQuotas),
 	"UpdateTenantEntitlements":        "target: " + string(permission.TenantsSetEntitlements),
 	"TenantBarrierInit":               "bootstrap: " + string(permission.TenantBarrierInit) + " (trust-on-first-init fallback)",
+	"TenantBarrierSignedInitBegin":    "bootstrap: " + string(permission.TenantBarrierInit) + " (trust-on-first-init fallback)",
+	"TenantBarrierSignedInitComplete": "bootstrap: " + string(permission.TenantBarrierInit) + " (trust-on-first-init fallback)",
 	"TenantBarrierUnseal":             "sealed-window: " + string(permission.TenantBarrierUnseal),
 	"TenantBarrierSeal":               "target: " + string(permission.TenantBarrierSeal),
 	"TenantBarrierStatus":             "sealed-window: " + string(permission.TenantBarrierStatus),

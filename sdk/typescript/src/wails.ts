@@ -1303,6 +1303,11 @@ export class WailsClient implements Client {
             unseal: async (secret: string): Promise<UnsealProgress> => {
                 return b.Unseal(secret) as Promise<UnsealProgress>;
             },
+            changePassphrase: async (current: string, next: string, soPin?: string): Promise<void> => {
+                // SealBinding.ChangePassphrase(current, next, soPin): an empty
+                // PIN binds none.
+                await b.ChangePassphrase(current, next, soPin ?? '');
+            },
             seal: async (soPin?: string): Promise<void> => {
                 // SealBinding.Seal(soPin): an empty PIN binds none.
                 await b.Seal(soPin ?? '');

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -392,6 +393,58 @@ func TestBarrierUnsealCmd_NoPassphraseKeyedBarrierRefused(t *testing.T) {
 	}
 }
 
+func TestBarrierChangePassphraseCmd_Success(t *testing.T) {
+	var gotCurrent, gotNext, gotPIN string
+	svc := &mockBarrierService{changePassphraseFn: func(ctx context.Context, current, next []byte) error {
+		pin, _, err := transport.SOPINFromContext(ctx)
+		if err != nil {
+			return err
+		}
+		gotCurrent, gotNext, gotPIN = string(current), string(next), string(pin)
+		return nil
+	}}
+	root := newBarrierTestRoot(t, svc)
+	out, err := executeCommand(root, "barrier", "change-passphrase",
+		"--current", "old-passphrase", "--next", "new-passphrase", "--so-pin", "SO123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "OK") {
+		t.Errorf("expected OK in output: %q", out)
+	}
+	if gotCurrent != "old-passphrase" || gotNext != "new-passphrase" || gotPIN != "SO123" {
+		t.Fatalf("service got (%q, %q, so-pin %q), want (old-passphrase, new-passphrase, SO123)",
+			gotCurrent, gotNext, gotPIN)
+	}
+}
+
+func TestBarrierChangePassphraseCmd_MissingFlags(t *testing.T) {
+	cases := map[string][]string{
+		"no --current": {"barrier", "change-passphrase", "--next", "n"},
+		"no --next":    {"barrier", "change-passphrase", "--current", "c"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := newBarrierTestRoot(t, &mockBarrierService{})
+			if _, err := executeCommand(root, args...); err == nil {
+				t.Fatal("expected an error for a missing required flag")
+			}
+		})
+	}
+}
+
+func TestBarrierChangePassphraseCmd_WrongCurrentIsTyped(t *testing.T) {
+	svc := &mockBarrierService{changePassphraseFn: func(context.Context, []byte, []byte) error {
+		return seal.ErrCredentialMismatch
+	}}
+	root := newBarrierTestRoot(t, svc)
+	_, err := executeCommand(root, "barrier", "change-passphrase",
+		"--current", "wrong", "--next", "new-passphrase")
+	if !errors.Is(err, seal.ErrCredentialMismatch) {
+		t.Fatalf("err = %v, want seal.ErrCredentialMismatch", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Canonical surface: barrier seal
 // ---------------------------------------------------------------------------
@@ -612,6 +665,10 @@ var canonicalBarrierVerbs = []struct {
 	{
 		path:  []string{"barrier", "unseal"},
 		flags: []string{"passphrase"},
+	},
+	{
+		path:  []string{"barrier", "change-passphrase"},
+		flags: []string{"current", "next", "so-pin"},
 	},
 	{
 		path:  []string{"barrier", "seal"},

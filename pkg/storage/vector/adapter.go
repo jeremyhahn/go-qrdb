@@ -65,13 +65,15 @@ type PebbleVectorStorage struct {
 // StorageOption configures a PebbleVectorStorage instance.
 type StorageOption func(*pebble.Options)
 
-// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
-// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
-// barrier is nil is a no-op, so plaintext deployments and tests are
-// unaffected.
+// WithEncryptor applies enc to the Pebble options, wrapping their FS with
+// barrier-driven AES-256-GCM encryption through pkg/storage/pebble's
+// adapter. A nil enc or an enc whose barrier is nil is a no-op, so
+// plaintext deployments and tests are unaffected.
 func WithEncryptor(enc *atrest.Encryptor) StorageOption {
 	return func(o *pebble.Options) {
-		enc.Apply(o)
+		if enc.Enabled() {
+			o.FS = pebblestore.WrapVFS(o.FS, enc.Wrap)
+		}
 	}
 }
 

@@ -83,6 +83,35 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return nil
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient via the
+// qrdb_barrier_change_passphrase tool.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	// The server verifies the SO PIN the arguments carry, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
+	}
+	args := map[string]any{}
+	putSecret(args, "current", req.Current)
+	putSecret(args, "next", req.Next)
+	if soPIN != "" {
+		putStringSecret(args, "so_pin", soPIN)
+	}
+	if _, err := t.callTool(ctx, "qrdb_barrier_change_passphrase", args); err != nil {
+		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
+	}
+
+	return nil
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again. Calls the qrdb_barrier_seal MCP tool.
 func (t *Transport) BarrierSeal(ctx context.Context) error {

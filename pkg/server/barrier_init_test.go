@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -37,7 +38,7 @@ type barrierInitGatedHost struct {
 
 var _ service.Host = (*barrierInitGatedHost)(nil)
 
-func (h barrierInitGatedHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool {
+func (h barrierInitGatedHost) FeatureEnabled(_ uint64, f feature.Feature) bool {
 	return f == featuregate.GuardedWrites && h.guarded
 }
 

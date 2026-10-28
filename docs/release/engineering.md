@@ -288,7 +288,10 @@ Each job then runs each stage in a toolchain container through
 holds the job's CPU bound: the job container's cgroup
 `cpu.max`, rounded up (`nproc` with no quota; `IN_IMAGE_CPUS` overrides),
 becomes `--cpus N`, `GOMAXPROCS=N` and `GOFLAGS=-p=N`, never a hardcoded
-number. The jobs also need the `changes` job: on a docs-only pull
+number, and its memory bound: the job container's cgroup `memory.max` (8g
+with no limit; `IN_IMAGE_MEMORY` overrides) becomes `--memory` and
+`--memory-swap`, so the stage cannot swap the runner host. It runs under the
+runner host's `ci.slice` (`CI_CGROUP_PARENT`; empty passes no parent). The jobs also need the `changes` job: on a docs-only pull
 request, one whose every changed file matches `DOCS_ONLY_PATTERN` (markdown,
 or under `docs/`), `lint` runs lint and deps-check and `lint-gates` the lint gates, both succeed, and
 `image` is skipped with the unit-suite jobs and `test-typescript`, the code
@@ -302,13 +305,35 @@ container rather than bind-mounting it. Its files sit where a host's do:
 `/tmp`, which holds `HOME`, go's `$WORK` and every `t.TempDir`, is on the
 container's own layer, not a size-capped tmpfs that a full `make test` fills,
 and `/dev/shm` is 2 GiB, not Docker's 64 MiB. Build and test run with no
-network: the container joins the network namespace of a holder container that
-has only loopback, which the holder (granted `NET_ADMIN` and nothing else)
-marks multicast-capable and routes `224.0.0.0/4` over, so the multicast
-discovery tests join their group as they do on a host and nothing leaves the
-namespace. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
+network: the container's own namespace has only loopback, which a one-shot
+`--rm` container joining it once the stage has started (granted `NET_ADMIN`
+and nothing else) marks multicast-capable and routes `224.0.0.0/4` over before
+it exits; the stage's command waits for that route, `MULTICAST_WAIT` seconds
+at most (default 60). So the multicast discovery tests join their group as
+they do on a host, nothing leaves the namespace, and no container holds the
+namespace but the stage: the holder it replaced slept until the script's EXIT
+trap removed it, and every job killed first left one running. The script
+traps `INT`, `TERM` and `HUP` as well as `EXIT`, and labels both containers
+`qrdb.ci.job=<GITHUB_RUN_ID>-<GITHUB_JOB>`, so a sweep tells a job's leftover
+from a live one without guessing by age; `make test-in-toolchain-image` proves
+each signal path on a stub `docker`. `make security`, full tier only, and `make deps-check`, every run, run on the bridge network, because
 govulncheck reads the vulnerability database and deps-check asks the module
 proxy.
+
+**The Docker integration stack has one network namespace and, by default, no
+network** (`test/integration/api/docker-compose.yml`, run by
+`make integration-test-standalone`, `-cluster` and `-docker`). Its `netns`
+service holds the namespace with `network_mode: none`. The two servers and
+the test runner join it with `network_mode: "service:netns"` and talk over
+loopback: `qrdbd` on 63001-63005, `qrdbd-shamir` on 64001-64005, and the
+runner reaches them at `127.0.0.1:<port>`. Nothing in the stack needs a
+network at run time, because the image fetched its modules at build. A
+service per bridge attachment gave the host one veth per container start and
+stop. On a many-core runner each veth add or remove is a storm of hundreds of
+uevents, one per tx and rx queue. The stack now creates no veth. The opt-in
+Ollama overlay (`docker-compose.embedding.yml`) pulls its model at run time,
+so it gives the holder one bridge attachment, which is one veth for the
+stack.
 
 **The stage caches live in named volumes on the runner's Docker host,** never
 in a stage container's layer or its `/tmp` (handbook `ci-standard.md` §6). Every stage mounts `<prefix>cache-<class>-gobuild` as

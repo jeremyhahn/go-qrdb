@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -54,6 +55,24 @@ func TestRefusal_userConcurrentUpdate(t *testing.T) {
 	}
 	if got := Classify(want); got != Aborted {
 		t.Fatalf("Classify(lost race) = %v, want Aborted", got)
+	}
+}
+
+func TestRefusal_barrierSentinels(t *testing.T) {
+	cases := map[error]string{
+		seal.ErrNotInitialized:           transport.ReasonBarrierNotInitialized,
+		seal.ErrCredentialMismatch:       transport.ReasonBarrierCredentialMismatch,
+		seal.ErrPassphraseChangeConflict: transport.ReasonBarrierPassphraseChangeConflict,
+		seal.ErrRootKeyWriteInProgress:   transport.ReasonBarrierRootKeyWriteInProgress,
+	}
+	for sentinel, want := range cases {
+		reason, md, ok := Refusal(&wrappedError{sentinel})
+		if !ok || reason != want || md != nil {
+			t.Fatalf("Refusal(%v) = %q, %v, %v; want %q, nil, true", sentinel, reason, md, ok, want)
+		}
+		if got := transport.RefusalError(reason, md); !errors.Is(got, sentinel) {
+			t.Fatalf("RefusalError(%q) = %v, want %v", reason, got, sentinel)
+		}
 	}
 }
 

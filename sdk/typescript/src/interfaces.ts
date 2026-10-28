@@ -1517,6 +1517,20 @@ export interface SealClient {
     unseal(secret: string): Promise<UnsealProgress>;
 
     /**
+     * Changes the passphrase of the unsealed, passphrase-sealed barrier. The
+     * root key is re-wrapped under `next` once `current` opens it, so the
+     * next unseal takes `next` and `current` is refused. A wrong `current`
+     * is refused (403) and nothing is written; a concurrent root-key write
+     * is refused (409). Requires `seal:rekey`.
+     *
+     * @param current - The passphrase the barrier is sealed under now.
+     * @param next - The passphrase to seal it under.
+     * @param soPin - The Security Officer PIN. Required once an SO PIN is
+     *   provisioned; omit it otherwise.
+     */
+    changePassphrase(current: string, next: string, soPin?: string): Promise<void>;
+
+    /**
      * Transitions the server back to sealed state, zeroing the master
      * key. A Shamir barrier is sealed by a holder quorum instead; the
      * server refuses this request for it.

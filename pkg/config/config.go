@@ -817,8 +817,41 @@ type ObjstoreConfig struct {
 	// Settings carries provider-specific configuration passed verbatim to the
 	// go-objstore factory (for example "bucket", "region", "endpoint",
 	// "path"). For the local provider an empty "path" defaults to the node
-	// data directory.
+	// data directory. A credential is never a setting: one found here is
+	// refused at validation; reference it under Credentials.
 	Settings map[string]string `yaml:"settings,omitempty"`
+
+	// Credentials references the provider credential by file. Empty means
+	// the provider authenticates through its SDK's default credential chain.
+	Credentials ObjstoreCredentialsConfig `yaml:"credentials,omitempty"`
+}
+
+// ObjstoreCredentialsConfig references the object-storage credential by file,
+// never by value: the configuration holds paths, and the storage engine reads
+// each file into a protected-memory handle only while it opens the provider.
+// Each file must be a regular file owned by the daemon's user and accessible
+// by nobody else (mode 0600 or 0400); one trailing line ending is ignored.
+type ObjstoreCredentialsConfig struct {
+	// KeyFile is the path to the access key identifier (an S3 access key
+	// ID). It requires SecretFile.
+	KeyFile string `yaml:"key_file,omitempty"`
+
+	// SecretFile is the path to the secret access key, or to the one key a
+	// provider authenticates with alone (an Azure storage account key).
+	SecretFile string `yaml:"secret_file,omitempty"`
+}
+
+// validate refuses a key file without a secret file. field is the
+// dot-separated path of the ObjstoreConfig, for the error. A credential
+// inline in Settings is refused by go-objstore's own
+// common.RejectCredentialSettings, which this package does not import: a
+// lean standalone embedder compiles pkg/config without go-objstore. qrdbd
+// start runs it at load, and objstore.New runs it at every open.
+func (c ObjstoreConfig) validate(field string) error {
+	if c.Credentials.KeyFile != "" && c.Credentials.SecretFile == "" {
+		return &ValidationError{Field: field + ".credentials.secret_file", Reason: "is required when key_file is set"}
+	}
+	return nil
 }
 
 // VolumePoolConfig maps one catalog pool name to this node's local mount
@@ -2278,6 +2311,9 @@ func (c *Config) Validate() error {
 		if _, ok := validBackends[c.Storage.Backend]; !ok {
 			return &ValidationError{Field: "storage.backend", Reason: "must be one of: pebble, memory, file, objstore"}
 		}
+	}
+	if err := c.Storage.Objstore.validate("storage.objstore"); err != nil {
+		return err
 	}
 	if c.Storage.CacheSize < 0 {
 		return &ValidationError{Field: "storage.cache_size", Reason: "must not be negative"}

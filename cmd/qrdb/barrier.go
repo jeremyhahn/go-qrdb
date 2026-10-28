@@ -80,6 +80,8 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
   init           Initialize barrier with passphrase or none
   init-shamir    Initialize Shamir custody over the enrolled share holders
   unseal         Unseal using a passphrase
+  change-passphrase
+                 Re-wrap the root key under a new passphrase
   seal           Seal the barrier
   officer        Enrol, list, claim and revoke share holders
   quorum         Submit an authenticated holder's share to a quorum round
@@ -93,6 +95,7 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
 		newBarrierInitCmd(),
 		newBarrierInitShamirCmd(),
 		newBarrierUnsealCmd(),
+		newBarrierChangePassphraseCmd(),
 		newBarrierSealCmd(),
 		newBarrierClusterUnsealCmd(),
 		newHolderRekeyCmd("rekey", holderSystem),
@@ -434,6 +437,60 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&passphrase, "passphrase", "", "Master passphrase (omit for a none barrier)")
+
+	return cmd
+}
+
+func newBarrierChangePassphraseCmd() *cobra.Command {
+	var current, next, soPin string
+
+	cmd := &cobra.Command{
+		Use:   "change-passphrase",
+		Short: "Change the passphrase of the unsealed barrier",
+		Long: `Change the passphrase that seals the barrier's root key.
+
+The barrier must be unsealed and passphrase-sealed. The current passphrase
+must open the persisted root key; a wrong one is refused and nothing is
+written. The root key itself is unchanged: it is re-wrapped under the new
+passphrase and replaced atomically, so the next unseal takes the new
+passphrase and the old one is refused.
+
+Requires seal:rekey and the Security Officer PIN, verified on every transport
+before the barrier is reached, as for seal and rekey: once an SO PIN is
+provisioned --so-pin MUST carry it, and a missing or wrong one is refused. A
+node with no PIN backend refuses the change outright.
+
+Example:
+  qrdb barrier change-passphrase --current '<current>' --next '<next>' --so-pin '<so-pin>'`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Every network transport reads the SO PIN from the context
+			// (transport.WithSOPIN). An empty --so-pin binds nothing.
+			ctx, release, err := transport.WithSOPIN(cmd.Context(), []byte(soPin))
+			if err != nil {
+				return err
+			}
+			defer release()
+			req := &transport.BarrierChangePassphraseRequest{
+				Current: secretBytes(current),
+				Next:    secretBytes(next),
+			}
+			defer secure.Wipe(req.Current)
+			defer secure.Wipe(req.Next)
+			if err := client.Barrier().BarrierChangePassphrase(ctx, req); err != nil {
+				return err
+			}
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&current, "current", "", "Current passphrase")
+	cmd.Flags().StringVar(&next, "next", "", "New passphrase")
+	cmd.Flags().StringVar(&soPin, "so-pin", "",
+		"Security Officer PIN (required once an SO PIN is provisioned)")
+	_ = cmd.MarkFlagRequired("current")
+	_ = cmd.MarkFlagRequired("next")
 
 	return cmd
 }

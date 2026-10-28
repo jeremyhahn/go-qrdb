@@ -17,7 +17,6 @@ package seal
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"time"
 )
@@ -34,15 +33,9 @@ import (
 //
 // Returns ErrNotInitialized when no root-key blob has been persisted yet.
 func (b *StorageBarrier) ExportSealedBlob(ctx context.Context) ([]byte, error) {
-	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	blob, err := b.persistedRootKeyBlob(ctx)
 	if err != nil {
-		if errors.Is(err, ErrSecretNotFound) {
-			return nil, ErrNotInitialized
-		}
 		return nil, err
-	}
-	if blob == nil {
-		return nil, ErrNotInitialized
 	}
 	return blob, nil
 }

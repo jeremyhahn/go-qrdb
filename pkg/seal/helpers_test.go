@@ -33,12 +33,17 @@ func testLogger() *slog.Logger {
 // Shared across multiple test files.
 func testSoftwareStrategy(t *testing.T) *SoftwareStrategy {
 	t.Helper()
-	s, err := NewSoftwareStrategy(t.Context(), []byte("test-master-password"))
+	s, err := NewSoftwareStrategy(t.Context(), []byte(testMasterPassword))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
 	return s
 }
+
+// testMasterPassword is the passphrase testSoftwareStrategy is BOUND to. A
+// bound strategy ignores the credentials Initialize is handed, so this, and
+// not those, is the passphrase a blob it seals is wrapped under.
+const testMasterPassword = "test-master-password"
 
 // newRecoveryStrategyForTest builds a recovery strategy from a copy of an
 // ordinary key slice, leaving the caller's slice untouched.

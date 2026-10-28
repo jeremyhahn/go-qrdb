@@ -16,6 +16,8 @@ package barrierinit
 
 import (
 	"context"
+	"crypto/x509"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -66,6 +68,51 @@ func (c *Claimer) ClaimTenantShamirInit(ctx context.Context, tenantID string, pr
 		Barrier: clusterseal.TenantBarrier(tenantID), Epoch: 1, StrategyID: seal.StrategyShamir,
 		Threshold: prepared.Threshold, Roster: prepared.Roster, UnsealKeyCheck: prepared.UnsealKeyCheck,
 	}, raw)
+}
+
+// PrepareTenantInit returns tenantID's unsigned epoch-1 statement naming the
+// signing key signerSPKI (a DER SubjectPublicKeyInfo), encoded, and the
+// message that key's holder signs: the first half of a two-phase init, whose
+// signature is made away from this node. prepared is the Shamir split this
+// node prepared, nil for every other strategy, which keyRef then names the
+// key of. An unusable key or ill-formed statement is refused with
+// *InitStatementError.
+func (c *Claimer) PrepareTenantInit(tenantID string, strategyID seal.StrategyID, keyRef string, prepared *seal.ShamirInitParams, signerSPKI []byte, issuedAt time.Time) (statement, message []byte, err error) {
+	s := NewTenantInit(tenantID, string(strategyID), keyRef, issuedAt)
+	if prepared != nil {
+		s = NewTenantShamirInit(tenantID, prepared.Threshold, prepared.Roster, prepared.UnsealKeyCheck, issuedAt)
+	}
+	pub, err := x509.ParsePKIXPublicKey(signerSPKI)
+	if err != nil {
+		return nil, nil, s.refuse(ReasonMalformedKey, err)
+	}
+	if s, err = ForSigner(s, pub); err != nil {
+		return nil, nil, err
+	}
+	if statement, err = s.Marshal(); err != nil {
+		return nil, nil, s.refuse(ReasonMalformed, err)
+	}
+	return statement, s.Message(), nil
+}
+
+// AttachTenantInit returns the encoded statement PrepareTenantInit returned,
+// carrying signature, once signature verifies over its message under the key
+// it names; one that does not is refused with *InitStatementError naming
+// ReasonBadSignature. Whether that key may sign for the barrier is decided
+// when the statement is claimed, against the barrier's anchors.
+func (c *Claimer) AttachTenantInit(statement, signature []byte) ([]byte, error) {
+	s, err := Parse(statement)
+	if err != nil {
+		return nil, err
+	}
+	if s, err = Attach(s, signature); err != nil {
+		return nil, err
+	}
+	raw, err := s.Marshal()
+	if err != nil {
+		return nil, s.refuse(ReasonMalformed, err)
+	}
+	return raw, nil
 }
 
 // claimTenant claims raw for the tenant barrier e names once it matches e.

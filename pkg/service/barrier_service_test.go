@@ -253,6 +253,66 @@ func TestBarrierService_BarrierUnseal_AlreadyUnsealed(t *testing.T) {
 	}
 }
 
+func newPassphraseServiceBarrier(t *testing.T, passphrase string) *seal.StorageBarrier {
+	t.Helper()
+	strategy := seal.NewDeferredSoftwareStrategy()
+	barrier, err := seal.NewStorageBarrier(testLogger(), seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	t.Cleanup(func() { _ = barrier.Close() })
+	if err := NewBarrierService(barrier).BarrierInitialize(context.Background(), []byte(passphrase)); err != nil {
+		t.Fatalf("BarrierInitialize: %v", err)
+	}
+	return barrier
+}
+
+func TestBarrierService_BarrierChangePassphrase_ReunsealsUnderNext(t *testing.T) {
+	ctx := context.Background()
+	barrier := newPassphraseServiceBarrier(t, "first-passphrase")
+	svc := NewBarrierService(barrier)
+
+	if err := svc.BarrierChangePassphrase(ctx, []byte("first-passphrase"), []byte("second-passphrase")); err != nil {
+		t.Fatalf("BarrierChangePassphrase: %v", err)
+	}
+	if err := svc.BarrierSeal(ctx); err != nil {
+		t.Fatalf("BarrierSeal: %v", err)
+	}
+	if err := svc.BarrierUnseal(ctx, []byte("first-passphrase")); err == nil {
+		t.Fatal("the replaced passphrase still unseals the barrier")
+	}
+	if err := svc.BarrierUnseal(ctx, []byte("second-passphrase")); err != nil {
+		t.Fatalf("BarrierUnseal under the new passphrase: %v", err)
+	}
+}
+
+func TestBarrierService_BarrierChangePassphrase_Refusals(t *testing.T) {
+	ctx := context.Background()
+	tests := map[string]struct {
+		current, next []byte
+		sealed        bool
+		want          error
+	}{
+		"wrong current": {current: []byte("not-it"), next: []byte("second"), want: seal.ErrCredentialMismatch},
+		"empty next":    {current: []byte("first-passphrase"), want: seal.ErrInvalidPassphrase},
+		"empty current": {next: []byte("second"), want: seal.ErrInvalidPassphrase},
+		"sealed":        {current: []byte("first-passphrase"), next: []byte("second"), sealed: true, want: seal.ErrSealed},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			svc := NewBarrierService(newPassphraseServiceBarrier(t, "first-passphrase"))
+			if tc.sealed {
+				if err := svc.BarrierSeal(ctx); err != nil {
+					t.Fatalf("BarrierSeal: %v", err)
+				}
+			}
+			if err := svc.BarrierChangePassphrase(ctx, tc.current, tc.next); !errors.Is(err, tc.want) {
+				t.Fatalf("BarrierChangePassphrase = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestBarrierService_BarrierSeal(t *testing.T) {
 	svc := initAndUnsealSoftwareBarrier(t)
 	ctx := context.Background()

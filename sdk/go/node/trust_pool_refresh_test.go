@@ -19,11 +19,8 @@ package node
 import (
 	"context"
 	"crypto/x509"
-	"runtime"
-	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -116,77 +113,54 @@ func TestNode_StopTrustPoolIsIdempotent(t *testing.T) {
 // every rebuild started one more.
 func TestNode_TeardownDataPlaneStopsTrustPoolRefresh(t *testing.T) {
 	cfg := sealedStandaloneConfig(t, t.TempDir())
-	before := trustPoolRefreshes()
 	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("teardown-trust-pool")))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
-	require.Equal(t, before+1, trustPoolRefreshes(), "the booted data plane runs one trust-pool refresh loop")
+	done := requireTrustPoolRefreshRunning(t, n)
 
 	n.teardownDataPlane()
-	requireTrustPoolRefreshes(t, before)
+	requireTrustPoolRefreshExited(t, done)
 }
 
 // TestNode_CloseStopsTrustPoolRefresh pins the same for Close on a booted
 // node.
 func TestNode_CloseStopsTrustPoolRefresh(t *testing.T) {
 	cfg := sealedStandaloneConfig(t, t.TempDir())
-	before := trustPoolRefreshes()
 	n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("close-trust-pool")))
 	require.NoError(t, err)
-	require.Equal(t, before+1, trustPoolRefreshes(), "the booted data plane runs one trust-pool refresh loop")
+	done := requireTrustPoolRefreshRunning(t, n)
 
 	require.NoError(t, n.Close())
-	requireTrustPoolRefreshes(t, before)
+	requireTrustPoolRefreshExited(t, done)
 }
 
-// trustPoolRefreshOrigins are the stack lines a trust-pool refresh goroutine
-// carries: the Run frame, and the starter's created-by line for one that has
-// not reached Run yet.
-var trustPoolRefreshOrigins = []string{
-	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust.(*Pool).Run(",
-	"created by github.com/jeremyhahn/go-qrdb/sdk/go/node.(*Node).startTrustPoolRefresh",
-}
-
-// trustPoolRefreshes counts the goroutines running, or about to run, a trust
-// pool's refresh loop.
-func trustPoolRefreshes() int {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			buf = buf[:n]
-			break
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-	count := 0
-	for _, g := range strings.Split(string(buf), "\n\n") {
-		for _, origin := range trustPoolRefreshOrigins {
-			if strings.Contains(g, origin) {
-				count++
-				break
-			}
-		}
-	}
-	return count
-}
-
-// requireTrustPoolRefreshes waits at most sweeperExitBound for the refresh
-// goroutines to drop to want. A stopped refresh has already returned from Run
-// when its stop function returns; the bound covers only the goroutine's own
-// exit after that, and matters only to a loop that was never stopped.
-func requireTrustPoolRefreshes(t *testing.T, want int) {
+// requireTrustPoolRefreshRunning asserts that n's booted data plane runs its
+// own trust-pool refresh loop and returns the channel closed when that loop
+// exits. It reads n's loop alone: a process-wide goroutine count would also
+// see loops of other tests' nodes, which exit asynchronously and some of
+// which run in parallel.
+func requireTrustPoolRefreshRunning(t *testing.T, n *Node) <-chan struct{} {
 	t.Helper()
-	deadline := time.Now().Add(sweeperExitBound)
-	for {
-		got := trustPoolRefreshes()
-		if got <= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d trust-pool refresh loops still running, want %d: one outlived the data plane it reads", got, want)
-		}
-		runtime.Gosched()
+	require.NotNil(t, n.stopTrustPoolRefresh, "the booted data plane has a trust-pool refresh to stop")
+	done := n.trustPoolRefreshDone
+	require.NotNil(t, done, "the booted data plane started a trust-pool refresh loop")
+	select {
+	case <-done:
+		t.Fatal("the booted data plane's trust-pool refresh loop has already exited")
+	default:
+	}
+	return done
+}
+
+// requireTrustPoolRefreshExited asserts that the refresh loop whose exit done
+// signals has ended. A stopped refresh has returned when its stop function
+// returns, so no wait is needed: a loop still running was never stopped.
+func requireTrustPoolRefreshExited(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	default:
+		t.Fatal("the trust-pool refresh loop outlived the data plane it reads")
 	}
 }
 

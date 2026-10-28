@@ -26,7 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -339,7 +339,7 @@ func keepsRevisionHistory(svc service.MVCCKVServicer) bool {
 // them -- reads it exactly as it would from etcd: a revision at or below the
 // database's compaction floor is rpctypes.ErrGRPCCompacted, and a compaction
 // above the current revision rpctypes.ErrGRPCFutureRev. A compaction before
-// the cluster activated the feature it needs (featuregate.NotActiveError) is
+// the cluster activated the feature it needs (feature.NotActiveError) is
 // codes.Unavailable: it clears once every node runs a supporting release, and
 // the compactor retries Unavailable where it would give up on Internal. Any
 // other failure keeps the listener's existing Internal answer, prefixed with
@@ -353,7 +353,7 @@ func revisionStatus(op string, err error) error {
 	if errors.As(err, &future) {
 		return rpctypes.ErrGRPCFutureRev
 	}
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if errors.As(err, &inactive) {
 		return status.Error(codes.Unavailable, op+": "+err.Error())
 	}

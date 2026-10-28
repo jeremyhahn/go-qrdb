@@ -36,7 +36,9 @@ OpenAI, vLLM, or anything else with that shape.
   facto interface every serving stack already implements.
 - **Caching by text alone.** Rejected: the cache key is the `(model, text)`
   pair, because the same text under a different model is a different vector and
-  returning one for the other is silently wrong.
+  returning one for the other is silently wrong. The model in the key is the
+  effective one, resolved once before the lookup: the request's model, else the
+  provider's default, so the lookup and the store always use the same key.
 
 ## Component boundaries
 

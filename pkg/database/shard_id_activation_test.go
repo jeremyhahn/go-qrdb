@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -45,9 +46,9 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 
 	cfg := DatabaseConfig{Name: "early", Backend: BackendMemory, Raft: validRaftConfig(0)}
 	_, err = m.Create(cfg)
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
-		t.Fatalf("raft create before activation = %v, want *featuregate.NotActiveError", err)
+		t.Fatalf("raft create before activation = %v, want *feature.NotActiveError", err)
 	}
 	if inactive.Error() == "" {
 		t.Fatal("empty error text")

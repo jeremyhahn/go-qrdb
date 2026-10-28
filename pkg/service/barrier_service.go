@@ -40,6 +40,15 @@ type BarrierServicer interface {
 	// a borrow the caller may wipe on return; see BarrierInitialize.
 	BarrierUnseal(ctx context.Context, secret []byte) error
 
+	// BarrierChangePassphrase re-wraps the root key of an unsealed,
+	// passphrase-sealed barrier under next. current must open the persisted
+	// root key: a wrong one returns seal.ErrCredentialMismatch and writes
+	// nothing. The re-wrapped blob replaces the old one through a guarded
+	// swap (seal.ErrPassphraseChangeConflict when another writer won). Both
+	// secrets are borrows the caller may wipe on return; see
+	// BarrierInitialize.
+	BarrierChangePassphrase(ctx context.Context, current, next []byte) error
+
 	// BarrierSeal transitions the barrier to the sealed state. Returns
 	// ErrShamirBarrierRequiresQuorum when the active strategy is Shamir; a
 	// seal quorum (BarrierQuorumSubmit, seal.OpSeal) seals instead. Once the cluster has
@@ -387,6 +396,21 @@ func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error
 	}
 	defer seal.DestroyCredentials(creds)
 	return s.barrier.Unseal(ctx, creds)
+}
+
+// BarrierChangePassphrase implements BarrierServicer.
+func (s *BarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error {
+	currentCreds, err := seal.CredentialsFor(ctx, current)
+	if err != nil {
+		return err
+	}
+	defer seal.DestroyCredentials(currentCreds)
+	nextCreds, err := seal.CredentialsFor(ctx, next)
+	if err != nil {
+		return err
+	}
+	defer seal.DestroyCredentials(nextCreds)
+	return s.barrier.ChangePassword(ctx, currentCreds, nextCreds)
 }
 
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected

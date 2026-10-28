@@ -88,10 +88,6 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/apimodule -> github.com/go-chi/chi/v5":           true,
 	"pkg/apimodule -> github.com/mark3labs/mcp-go/server": true,
 
-	// At-rest encryption is a pebble vfs.FS wrapper.
-	"pkg/atrest -> github.com/cockroachdb/pebble/v2":     true,
-	"pkg/atrest -> github.com/cockroachdb/pebble/v2/vfs": true,
-
 	// Sealed-window contract types.
 	"pkg/auth -> pkg/api/sealedwindow": true,
 
@@ -115,21 +111,15 @@ var leanStandaloneEdges = map[string]bool{
 	"pkg/joinadvertise -> pkg/cluster":             true,
 	"pkg/joinadvertise -> pkg/cluster/featuregate": true,
 	"pkg/replicaforward -> pkg/cluster":            true,
-	"pkg/shard -> pkg/cluster/featuregate":         true,
-
-	// Cluster topology types in the config schema.
-	"pkg/config -> pkg/cluster": true,
 
 	// The per-database barrier WAL is quicraft logdb on pebble, opened through
 	// the NodeHost package.
 	"pkg/database -> github.com/cockroachdb/pebble/v2":      true,
-	"pkg/database -> github.com/cockroachdb/pebble/v2/vfs":  true,
 	"pkg/database -> github.com/jeremyhahn/go-quicraft/pkg": true,
 
-	// Pebble vfs; vector and time-series engines.
-	"pkg/engine -> github.com/cockroachdb/pebble/v2/vfs": true,
-	"pkg/engine -> pkg/timeseries":                       true,
-	"pkg/engine -> pkg/vector":                           true,
+	// Vector and time-series engines.
+	"pkg/engine -> pkg/timeseries": true,
+	"pkg/engine -> pkg/vector":     true,
 
 	// The pebble.DB index the Raft state machine in pkg/store builds; reached
 	// only through pkg/store.
@@ -140,9 +130,6 @@ var leanStandaloneEdges = map[string]bool{
 	// into AdminService, so a lean embedder compiles it until the admin
 	// services leave pkg/service.
 	"pkg/raftadmin -> github.com/jeremyhahn/go-quicraft/pkg": true,
-
-	// The encrypted file system is a pebble vfs.FS.
-	"pkg/seal/encfs -> github.com/cockroachdb/pebble/v2/vfs": true,
 
 	// Every feature service is compiled into one package.
 	"pkg/service -> github.com/jeremyhahn/go-quicraft/pkg":          true,
@@ -160,9 +147,6 @@ var leanStandaloneEdges = map[string]bool{
 	// The object-store backend, compiled by server/lifecycle.
 	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/common":  true,
 	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/factory": true,
-
-	// At-rest encryption of the file backend goes through a pebble vfs.FS.
-	"pkg/storage/file -> github.com/cockroachdb/pebble/v2/vfs": true,
 
 	// The pebble storage backend, compiled by every node.
 	"pkg/storage/pebble -> github.com/cockroachdb/pebble/v2":         true,

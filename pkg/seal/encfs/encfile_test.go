@@ -17,21 +17,21 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 )
 
 // newMemFS returns a fresh in-memory base FS and a corresponding
 // encfs.FS wrapper using a unique fakeBarrier.
-func newMemFS(t *testing.T) (vfs.FS, *fakeBarrier, vfs.FS) {
+func newMemFS(t *testing.T) (filesys.LockFS, *fakeBarrier, filesys.FS) {
 	t.Helper()
-	mem := vfs.NewMem()
+	mem := newBaseFS()
 	b := newFakeBarrier(t)
 	return mem, b, New(mem, b)
 }
 
 func TestEncFile_WriteThenReadSequential(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, err := fs.Create("a.dat", vfs.WriteCategoryUnspecified)
+	f, err := fs.Create("a.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestEncFile_WriteThenReadSequential(t *testing.T) {
 func TestEncFile_OnDiskHasNoPlaintext(t *testing.T) {
 	mem, _, fs := newMemFS(t)
 	pt := []byte("super secret payload that should never appear in ciphertext")
-	f, err := fs.Create("secret.dat", vfs.WriteCategoryUnspecified)
+	f, err := fs.Create("secret.dat")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEncFile_OnDiskHasNoPlaintext(t *testing.T) {
 
 func TestEncFile_RandomReadAtBlockBoundaries(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("blob.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("blob.dat")
 	pt := make([]byte, 5*BlockSize+123)
 	if _, err := rand.Read(pt); err != nil {
 		t.Fatalf("rand: %v", err)
@@ -136,7 +136,7 @@ func TestEncFile_RandomReadAtBlockBoundaries(t *testing.T) {
 
 func TestEncFile_ReadEOF(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("e.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("e.dat")
 	if _, err := f.Write([]byte("0123456789")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestEncFile_ReadEOF(t *testing.T) {
 
 func TestEncFile_SequentialReadAdvancesCursor(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("s.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("s.dat")
 	if _, err := f.Write([]byte("abcdefghij")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestEncFile_SequentialReadAdvancesCursor(t *testing.T) {
 
 func TestEncFile_StatReportsLogicalSize(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("x.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("x.dat")
 	const N = 12345
 	if _, err := f.Write(make([]byte, N)); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -202,7 +202,7 @@ func TestEncFile_StatReportsLogicalSize(t *testing.T) {
 
 func TestEncFile_FSStatReportsLogicalSize(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("y.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("y.dat")
 	const N = 9999
 	_, _ = f.Write(make([]byte, N))
 	_ = f.Close()
@@ -218,7 +218,7 @@ func TestEncFile_FSStatReportsLogicalSize(t *testing.T) {
 func TestEncFile_FSStatPassthroughForNonEncrypted(t *testing.T) {
 	mem, _, fs := newMemFS(t)
 	// Write a plain (non-encrypted) file directly to the base FS.
-	f, err := mem.Create("plain.txt", vfs.WriteCategoryUnspecified)
+	f, err := mem.Create("plain.txt")
 	if err != nil {
 		t.Fatalf("base Create: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestEncFile_FSStatPassthroughForNonEncrypted(t *testing.T) {
 func TestEncFile_OpenPassthroughForNonEncrypted(t *testing.T) {
 	mem, _, fs := newMemFS(t)
 	const payload = "plain bytes, no encryption"
-	f, _ := mem.Create("p.txt", vfs.WriteCategoryUnspecified)
+	f, _ := mem.Create("p.txt")
 	_, _ = f.Write([]byte(payload))
 	_ = f.Close()
 	r, err := fs.Open("p.txt")
@@ -258,14 +258,14 @@ func TestEncFile_OpenPassthroughForNonEncrypted(t *testing.T) {
 func TestEncFile_BarrierSealedRejectsCreate(t *testing.T) {
 	_, b, fs := newMemFS(t)
 	b.seal()
-	if _, err := fs.Create("z.dat", vfs.WriteCategoryUnspecified); err == nil {
+	if _, err := fs.Create("z.dat"); err == nil {
 		t.Error("Create on sealed barrier must fail")
 	}
 }
 
 func TestEncFile_BarrierSealedRejectsOpen(t *testing.T) {
 	_, b, fs := newMemFS(t)
-	f, _ := fs.Create("z.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("z.dat")
 	_, _ = f.Write([]byte("x"))
 	_ = f.Close()
 	b.seal()
@@ -276,7 +276,7 @@ func TestEncFile_BarrierSealedRejectsOpen(t *testing.T) {
 
 func TestEncFile_UnsealRestoresOps(t *testing.T) {
 	_, b, fs := newMemFS(t)
-	f, _ := fs.Create("u.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("u.dat")
 	_, _ = f.Write([]byte("data"))
 	_ = f.Close()
 	b.seal()
@@ -300,7 +300,7 @@ func TestEncFile_UnsealRestoresOps(t *testing.T) {
 
 func TestEncFile_SyncFlushesPartialThenExtension(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("p.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("p.dat")
 	if _, err := f.Write([]byte("first")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestEncFile_SyncFlushesPartialThenExtension(t *testing.T) {
 
 func TestEncFile_ManyBlocksRoundTrip(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("big.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("big.dat")
 	pt := make([]byte, 8*BlockSize)
 	if _, err := rand.Read(pt); err != nil {
 		t.Fatalf("rand: %v", err)
@@ -353,7 +353,7 @@ func TestEncFile_ManyBlocksRoundTrip(t *testing.T) {
 
 func TestEncFile_ZeroLengthFile(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("zero.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("zero.dat")
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestEncFile_ZeroLengthFile(t *testing.T) {
 
 func TestEncFile_ReadOnlyRejectsWrite(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("ro.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("ro.dat")
 	_, _ = f.Write([]byte("payload"))
 	_ = f.Close()
 	r, _ := fs.Open("ro.dat")
@@ -392,7 +392,7 @@ func TestEncFile_ReadOnlyRejectsWrite(t *testing.T) {
 
 func TestEncFile_WriteAtAtEndAppends(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("at.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("at.dat")
 	if _, err := f.WriteAt([]byte("alpha"), 0); err != nil {
 		t.Fatalf("WriteAt 0: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestEncFile_WriteAtAtEndAppends(t *testing.T) {
 
 func TestEncFile_WriteAtMidFileFails(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("mw.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("mw.dat")
 	if _, err := f.Write([]byte("0123456789")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestEncFile_WriteAtMidFileFails(t *testing.T) {
 
 func TestEncFile_CloseIsIdempotent(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("c.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("c.dat")
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close 1: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestEncFile_CloseIsIdempotent(t *testing.T) {
 
 func TestEncFile_OperationsAfterCloseFail(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("dead.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("dead.dat")
 	_ = f.Close()
 	if _, err := f.Write([]byte("x")); !errors.Is(err, ErrFileClosed) {
 		t.Errorf("Write after close err = %v, want ErrFileClosed", err)
@@ -452,18 +452,9 @@ func TestEncFile_OperationsAfterCloseFail(t *testing.T) {
 	}
 }
 
-func TestEncFile_FdReturnsInvalid(t *testing.T) {
-	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("fd.dat", vfs.WriteCategoryUnspecified)
-	defer func() { _ = f.Close() }()
-	if f.Fd() != vfs.InvalidFd {
-		t.Errorf("Fd = %d, want InvalidFd", f.Fd())
-	}
-}
-
 func TestEncFile_NegativeOffsetRejected(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("n.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("n.dat")
 	_, _ = f.Write([]byte("payload"))
 	_ = f.Close()
 	r, _ := fs.Open("n.dat")
@@ -475,7 +466,7 @@ func TestEncFile_NegativeOffsetRejected(t *testing.T) {
 
 func TestEncFile_OpenReadWriteCreatesNew(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, err := fs.OpenReadWrite("rw.dat", vfs.WriteCategoryUnspecified)
+	f, err := fs.OpenReadWrite("rw.dat")
 	if err != nil {
 		t.Fatalf("OpenReadWrite: %v", err)
 	}
@@ -498,10 +489,10 @@ func TestEncFile_OpenReadWriteCreatesNew(t *testing.T) {
 
 func TestEncFile_OpenReadWriteAppendsExisting(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("rw2.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("rw2.dat")
 	_, _ = f.Write([]byte("alpha"))
 	_ = f.Close()
-	g, err := fs.OpenReadWrite("rw2.dat", vfs.WriteCategoryUnspecified)
+	g, err := fs.OpenReadWrite("rw2.dat")
 	if err != nil {
 		t.Fatalf("OpenReadWrite existing: %v", err)
 	}
@@ -524,17 +515,17 @@ func TestEncFile_OpenReadWriteAppendsExisting(t *testing.T) {
 
 func TestEncFile_OpenReadWriteRejectsNonEncrypted(t *testing.T) {
 	mem, _, fs := newMemFS(t)
-	f, _ := mem.Create("plain.dat", vfs.WriteCategoryUnspecified)
+	f, _ := mem.Create("plain.dat")
 	_, _ = f.Write([]byte("plain"))
 	_ = f.Close()
-	if _, err := fs.OpenReadWrite("plain.dat", vfs.WriteCategoryUnspecified); !errors.Is(err, ErrInvalidHeader) {
+	if _, err := fs.OpenReadWrite("plain.dat"); !errors.Is(err, ErrInvalidHeader) {
 		t.Errorf("err = %v, want ErrInvalidHeader", err)
 	}
 }
 
 func TestEncFile_RenameAndRemove(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("a.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("a.dat")
 	_, _ = f.Write([]byte("x"))
 	_ = f.Close()
 	if err := fs.Rename("a.dat", "b.dat"); err != nil {
@@ -559,7 +550,7 @@ func TestEncFile_MkdirAllListGetUsage(t *testing.T) {
 	if err := fs.MkdirAll(filepath.Join("d", "e"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	f, _ := fs.Create(filepath.Join("d", "e", "x.dat"), vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create(filepath.Join("d", "e", "x.dat"))
 	_, _ = f.Write([]byte("z"))
 	_ = f.Close()
 	names, err := fs.List(filepath.Join("d", "e"))
@@ -575,29 +566,34 @@ func TestEncFile_MkdirAllListGetUsage(t *testing.T) {
 	if !found {
 		t.Errorf("List did not include x.dat: %v", names)
 	}
-	if _, err := fs.GetDiskUsage("d"); err != nil {
-		// vfs.MemFS may not implement disk usage; tolerate either.
-		t.Logf("GetDiskUsage on memfs: %v", err)
+}
+
+// diskUsageFS is a base FS that reports a fixed disk usage.
+type diskUsageFS struct {
+	filesys.FS
+	usage filesys.DiskUsage
+}
+
+func (d diskUsageFS) DiskUsage(string) (filesys.DiskUsage, error) { return d.usage, nil }
+
+func TestFS_DiskUsage(t *testing.T) {
+	want := filesys.DiskUsage{AvailBytes: 1, TotalBytes: 3, UsedBytes: 2}
+	fs := New(diskUsageFS{FS: newBaseFS(), usage: want}, newFakeBarrier(t))
+	got, err := fs.(filesys.DiskUsageFS).DiskUsage("d")
+	if err != nil {
+		t.Fatalf("DiskUsage: %v", err)
+	}
+	if got != want {
+		t.Errorf("DiskUsage = %+v, want the base's %+v", got, want)
 	}
 }
 
-func TestEncFile_PathHelpers(t *testing.T) {
-	_, _, fs := newMemFS(t)
-	if got := fs.PathBase("/a/b.txt"); got != "b.txt" {
-		t.Errorf("PathBase = %q", got)
-	}
-	if got := fs.PathDir("/a/b.txt"); got != "/a" {
-		t.Errorf("PathDir = %q", got)
-	}
-	if got := fs.PathJoin("a", "b"); got != filepath.Join("a", "b") {
-		t.Errorf("PathJoin = %q", got)
-	}
-}
-
-func TestEncFile_UnwrapReturnsNil(t *testing.T) {
-	_, _, fs := newMemFS(t)
-	if got := fs.(*FS).Unwrap(); got != nil {
-		t.Errorf("Unwrap = %v, want nil", got)
+func TestFS_DiskUsageUnsupportedBase(t *testing.T) {
+	fs := New(struct{ filesys.FS }{newBaseFS()}, newFakeBarrier(t))
+	_, err := fs.(filesys.DiskUsageFS).DiskUsage("d")
+	var ue *filesys.UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("DiskUsage on a base without disk usage: err = %v, want UnsupportedError", err)
 	}
 }
 
@@ -608,7 +604,7 @@ func TestEncFile_NewWithNilBaseUsesDefault(t *testing.T) {
 }
 
 func TestEncFile_NewWithNilBarrierReturnsNil(t *testing.T) {
-	if got := New(vfs.NewMem(), nil); got != nil {
+	if got := New(newBaseFS(), nil); got != nil {
 		t.Errorf("New(_, nil) = %v, want nil", got)
 	}
 }
@@ -629,7 +625,7 @@ func TestEncFile_OpenNonExistentReturnsError(t *testing.T) {
 
 func TestFS_Link(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("orig.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("orig.dat")
 	_, _ = f.Write([]byte("payload"))
 	_ = f.Close()
 	if err := fs.Link("orig.dat", "linked.dat"); err != nil {
@@ -657,7 +653,7 @@ func TestFS_RemoveAll(t *testing.T) {
 	if err := fs.MkdirAll("rm/sub", 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	f, _ := fs.Create("rm/sub/x.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("rm/sub/x.dat")
 	_ = f.Close()
 	if err := fs.RemoveAll("rm"); err != nil {
 		t.Fatalf("RemoveAll: %v", err)
@@ -667,38 +663,9 @@ func TestFS_RemoveAll(t *testing.T) {
 	}
 }
 
-func TestFS_ReuseForWrite(t *testing.T) {
-	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("old.dat", vfs.WriteCategoryUnspecified)
-	_, _ = f.Write([]byte("stale"))
-	_ = f.Close()
-	g, err := fs.ReuseForWrite("old.dat", "new.dat", vfs.WriteCategoryUnspecified)
-	if err != nil {
-		t.Fatalf("ReuseForWrite: %v", err)
-	}
-	if _, err := g.Write([]byte("fresh")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := g.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	r, _ := fs.Open("new.dat")
-	defer func() { _ = r.Close() }()
-	buf := make([]byte, 5)
-	if _, err := r.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
-		t.Fatalf("ReadAt: %v", err)
-	}
-	if string(buf) != "fresh" {
-		t.Errorf("got %q, want fresh", buf)
-	}
-	if _, err := fs.Stat("old.dat"); err == nil {
-		t.Error("ReuseForWrite must remove the old name")
-	}
-}
-
 func TestFS_Lock(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	c, err := fs.Lock("LOCK")
+	c, err := fs.(filesys.LockFS).Lock("LOCK")
 	if err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
@@ -707,39 +674,44 @@ func TestFS_Lock(t *testing.T) {
 	}
 }
 
-func TestEncFile_SyncDataAndSyncTo(t *testing.T) {
+func TestFS_LockUnsupportedBase(t *testing.T) {
+	fs := New(struct{ filesys.FS }{newBaseFS()}, newFakeBarrier(t))
+	_, err := fs.(filesys.LockFS).Lock("LOCK")
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("Lock on a base without locking: err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestFS_OnHostOverHostBase(t *testing.T) {
+	fs := New(filesys.Default, newFakeBarrier(t))
+	if !fs.(filesys.HostFS).OnHost() {
+		t.Error("OnHost over filesys.Default = false, want true: its ciphertext is at host paths")
+	}
+}
+
+func TestFS_OnHostOverNonHostBase(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("sync.dat", vfs.WriteCategoryUnspecified)
-	if _, err := f.Write([]byte("payload")); err != nil {
-		t.Fatalf("Write: %v", err)
+	if fs.(filesys.HostFS).OnHost() {
+		t.Error("OnHost over an in-memory base = true, want false")
 	}
-	if err := f.SyncData(); err != nil {
-		t.Errorf("SyncData: %v", err)
-	}
-	full, err := f.SyncTo(3)
-	if err != nil {
-		t.Fatalf("SyncTo: %v", err)
-	}
-	if !full {
-		t.Error("SyncTo expected to return fullSync=true")
-	}
-	_ = f.Close()
 }
 
 func TestEncFile_PreallocateAndPrefetch(t *testing.T) {
 	_, _, fs := newMemFS(t)
-	f, _ := fs.Create("hint.dat", vfs.WriteCategoryUnspecified)
+	f, _ := fs.Create("hint.dat")
 	defer func() { _ = f.Close() }()
-	// MemFS does not implement Preallocate/Prefetch meaningfully; just
-	// confirm the calls do not panic and surface the underlying error
-	// path (or nil) cleanly.
-	_ = f.Preallocate(0, 4096)
-	_ = f.Prefetch(0, 4096)
+	// Both hints forward to the base file, which accepts them.
+	if err := f.(filesys.Preallocator).Preallocate(0, 4096); err != nil {
+		t.Errorf("Preallocate: %v", err)
+	}
+	if err := f.(filesys.Prefetcher).Prefetch(0, 4096); err != nil {
+		t.Errorf("Prefetch: %v", err)
+	}
 }
 
 func TestFS_PassthroughForFileSmallerThanHeader(t *testing.T) {
 	mem, _, fs := newMemFS(t)
-	f, _ := mem.Create("tiny", vfs.WriteCategoryUnspecified)
+	f, _ := mem.Create("tiny")
 	_, _ = f.Write([]byte{0x01})
 	_ = f.Close()
 	fi, err := fs.Stat("tiny")

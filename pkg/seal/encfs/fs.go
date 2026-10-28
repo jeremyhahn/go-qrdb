@@ -13,23 +13,30 @@ import (
 	"io"
 	"os"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 )
 
-// FS is a Pebble vfs.FS implementation that transparently encrypts
-// file contents using a seal.StorageBarrier as the key-encryption-key.
-// Wraps a base FS (typically vfs.Default).
+// FS is a filesys.FS that transparently encrypts file contents using a
+// seal.StorageBarrier as the key-encryption-key. It wraps a base FS
+// (typically filesys.Default, or Pebble's FS bridged by pkg/storage/pebble).
 type FS struct {
-	base    vfs.FS
+	base    filesys.FS
 	barrier barrierKEK
 }
 
+// FS implements the optional capabilities by forwarding them to its base.
+var (
+	_ filesys.LockFS      = (*FS)(nil)
+	_ filesys.HostFS      = (*FS)(nil)
+	_ filesys.DiskUsageFS = (*FS)(nil)
+)
+
 // New returns an encrypting FS wrapping base. If base is nil,
-// vfs.Default is used. The barrier provides the master key that wraps
+// filesys.Default is used. The barrier provides the master key that wraps
 // each file's per-file DEK; if barrier is nil New returns nil.
-func New(base vfs.FS, barrier barrierKEK) vfs.FS {
+func New(base filesys.FS, barrier barrierKEK) filesys.FS {
 	if base == nil {
-		base = vfs.Default
+		base = filesys.Default
 	}
 	if barrier == nil {
 		return nil
@@ -39,12 +46,12 @@ func New(base vfs.FS, barrier barrierKEK) vfs.FS {
 
 // Create creates a new encrypted file at the given path. If a file
 // already exists at the path it is replaced.
-func (fs *FS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (fs *FS) Create(name string) (filesys.File, error) {
 	h, err := newHeader(fs.barrier)
 	if err != nil {
 		return nil, err
 	}
-	base, err := fs.base.Create(name, category)
+	base, err := fs.base.Create(name)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +68,8 @@ func (fs *FS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, err
 // file for passthrough access. This handles Pebble's LOCK and other
 // non-content files that may not have been written through the
 // encrypting FS.
-func (fs *FS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
-	base, err := fs.base.Open(name, opts...)
+func (fs *FS) Open(name string) (filesys.File, error) {
+	base, err := fs.base.Open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +88,8 @@ func (fs *FS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 // V1 limitation: only append-style writes are supported; mid-file
 // rewrites return ErrWriteAtUnsupported. If Pebble's I/O patterns
 // require mid-file WriteAt this will be lifted in a follow-up.
-func (fs *FS) OpenReadWrite(name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption) (vfs.File, error) {
-	base, err := fs.base.OpenReadWrite(name, category, opts...)
+func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
+	base, err := fs.base.OpenReadWrite(name)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +123,7 @@ func (fs *FS) OpenReadWrite(name string, category vfs.DiskWriteCategory, opts ..
 // openEncryptedRO reads the header from a base file and returns a
 // read-only encryptedFile. If the magic does not match, the base file
 // is returned directly (passthrough path).
-func (fs *FS) openEncryptedRO(base vfs.File) (vfs.File, error) {
+func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 	fi, err := base.Stat()
 	if err != nil {
 		return nil, err
@@ -147,7 +154,7 @@ func (fs *FS) openEncryptedRO(base vfs.File) (vfs.File, error) {
 // current logical end. If the file ends with a partial trailing
 // block, that block is decrypted and reloaded into the in-memory
 // tail so a subsequent Write extends it rather than replacing it.
-func (fs *FS) openEncryptedRW(base vfs.File, physicalSize int64) (*encryptedFile, error) {
+func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64) (*encryptedFile, error) {
 	var magic [lenMagic]byte
 	if _, err := base.ReadAt(magic[:], 0); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -180,10 +187,10 @@ func (fs *FS) openEncryptedRW(base vfs.File, physicalSize int64) (*encryptedFile
 	return rf, nil
 }
 
-// offsetReader adapts a vfs.File's ReadAt into io.Reader for use with
+// offsetReader adapts a filesys.File's ReadAt into io.Reader for use with
 // readHeader.
 type offsetReader struct {
-	base vfs.File
+	base filesys.File
 	off  int64
 }
 
@@ -193,45 +200,53 @@ func (r *offsetReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Link, Remove, RemoveAll, Rename, MkdirAll, Lock, List, Path*,
-// GetDiskUsage are simple passthroughs: they operate on filenames or
+// OpenDir, Link, Remove, RemoveAll, Rename, MkdirAll, List, Lock and
+// DiskUsage are simple passthroughs: they operate on filenames or
 // directory entries, not file contents.
 
-func (fs *FS) Link(oldname, newname string) error { return fs.base.Link(oldname, newname) }
-func (fs *FS) OpenDir(name string) (vfs.File, error) {
-	return fs.base.OpenDir(name)
-}
-func (fs *FS) Remove(name string) error    { return fs.base.Remove(name) }
-func (fs *FS) RemoveAll(name string) error { return fs.base.RemoveAll(name) }
+func (fs *FS) OpenDir(name string) (filesys.File, error) { return fs.base.OpenDir(name) }
+func (fs *FS) Link(oldname, newname string) error        { return fs.base.Link(oldname, newname) }
+func (fs *FS) Remove(name string) error                  { return fs.base.Remove(name) }
+func (fs *FS) RemoveAll(name string) error               { return fs.base.RemoveAll(name) }
 func (fs *FS) Rename(oldname, newname string) error {
 	return fs.base.Rename(oldname, newname)
-}
-func (fs *FS) ReuseForWrite(oldname, newname string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	// Reusing an existing file's data in encfs is non-trivial because
-	// the new write needs a fresh header (DEK rotation). Treat
-	// ReuseForWrite as a Rename+Create which discards the old contents
-	// — Pebble's contract permits this.
-	if err := fs.base.Remove(newname); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if err := fs.base.Rename(oldname, newname); err != nil {
-		return nil, err
-	}
-	if err := fs.base.Remove(newname); err != nil {
-		return nil, err
-	}
-	return fs.Create(newname, category)
 }
 func (fs *FS) MkdirAll(dir string, perm os.FileMode) error {
 	return fs.base.MkdirAll(dir, perm)
 }
-func (fs *FS) Lock(name string) (io.Closer, error) { return fs.base.Lock(name) }
-func (fs *FS) List(dir string) ([]string, error)   { return fs.base.List(dir) }
+func (fs *FS) List(dir string) ([]string, error) { return fs.base.List(dir) }
+
+// Lock locks name through the base FS, or reports an UnsupportedError
+// when the base cannot lock.
+func (fs *FS) Lock(name string) (io.Closer, error) {
+	l, ok := fs.base.(filesys.LockFS)
+	if !ok {
+		return nil, &filesys.UnsupportedError{Op: "lock"}
+	}
+	return l.Lock(name)
+}
+
+// OnHost reports whether the base FS's names are host paths. Ciphertext
+// lives at the name the caller gives, so they are this FS's too.
+func (fs *FS) OnHost() bool {
+	h, ok := fs.base.(filesys.HostFS)
+	return ok && h.OnHost()
+}
+
+// DiskUsage reports the base FS's disk usage, or an UnsupportedError
+// when the base cannot.
+func (fs *FS) DiskUsage(path string) (filesys.DiskUsage, error) {
+	d, ok := fs.base.(filesys.DiskUsageFS)
+	if !ok {
+		return filesys.DiskUsage{}, &filesys.UnsupportedError{Op: "disk usage"}
+	}
+	return d.DiskUsage(path)
+}
 
 // Stat returns a FileInfo whose Size reports the logical (plaintext)
 // length when the file is encfs-formatted, and the raw physical size
 // otherwise.
-func (fs *FS) Stat(name string) (vfs.FileInfo, error) {
+func (fs *FS) Stat(name string) (os.FileInfo, error) {
 	fi, err := fs.base.Stat(name)
 	if err != nil {
 		return nil, err
@@ -265,15 +280,3 @@ func (fs *FS) Stat(name string) (vfs.FileInfo, error) {
 	}
 	return &encFileInfo{FileInfo: fi, logicalSize: logicalSize}, nil
 }
-
-func (fs *FS) PathBase(path string) string    { return fs.base.PathBase(path) }
-func (fs *FS) PathJoin(elem ...string) string { return fs.base.PathJoin(elem...) }
-func (fs *FS) PathDir(path string) string     { return fs.base.PathDir(path) }
-func (fs *FS) GetDiskUsage(path string) (vfs.DiskUsage, error) {
-	return fs.base.GetDiskUsage(path)
-}
-
-// Unwrap returns nil to declare this FS as the root of any
-// vfs.Root walk; returning the base would let callers bypass
-// encryption.
-func (fs *FS) Unwrap() vfs.FS { return nil }

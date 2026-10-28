@@ -274,6 +274,10 @@ var ErrNilWrappedAuthorizer = errors.New("node: authorizer wrapper returned nil"
 // after Close has retracted it.
 var ErrTrustPoolNotWired = errors.New("node: client-auth trust pool is not wired")
 
+// ErrSealNotEnabled is returned by Node.ChangePassphrase on a node built
+// without a seal barrier: there is no passphrase to change.
+var ErrSealNotEnabled = errors.New("node: seal barrier is not enabled")
+
 // AuthMiddlewareWiringError indicates that the multi-protocol server's
 // production auth-enforcement middleware (pkg/auth/wiring.BuildAuthMiddleware
 // — the RBAC[+ABAC] authorizer, mTLS authenticator, and user-store

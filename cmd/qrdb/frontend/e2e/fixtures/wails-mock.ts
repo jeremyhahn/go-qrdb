@@ -561,6 +561,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.unsealProgress.sealed = false;
             return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
           },
+          // SealBinding.ChangePassphrase(current, next, soPin): a Shamir
+          // barrier has no passphrase, and the real binding refuses it.
+          ChangePassphrase: async (_current: string, _next: string, _soPin: string) => {
+            maybeReject("SealBinding.ChangePassphrase");
+            if (getState().sealStatus.strategy === "shamir") {
+              throw new Error("qrdb/seal: a Shamir barrier has no passphrase to change");
+            }
+          },
           // SealBinding.Seal(soPin): the PIN is recorded so a test can
           // assert what the Seal Manager sent.
           Seal: async (soPin: string) => {

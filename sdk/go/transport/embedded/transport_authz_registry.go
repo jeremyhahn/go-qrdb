@@ -301,6 +301,7 @@ var operationPermissions = map[string]permission.Permission{
 	// tenant owns). Share-claim and quorum routes are IdentityGated, not
 	// here -- see transport_barrier.go.
 	"BarrierSeal":                 permission.SealSeal,
+	"BarrierChangePassphrase":     permission.SealRekey,
 	"BarrierClusterUnseal":        permission.SealUnseal,
 	"BarrierStatus":               permission.SealStatus,
 	"BarrierGenerateRecoveryKeys": permission.SealGenerateRecovery,

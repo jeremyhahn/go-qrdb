@@ -525,6 +525,7 @@ var requestHandlers = map[string]requestHandler{
 	"BarrierInitialize":           handleBarrierInitialize,
 	"BarrierUnseal":               handleBarrierUnseal,
 	"BarrierSeal":                 handleBarrierSeal,
+	"BarrierChangePassphrase":     handleBarrierChangePassphrase,
 	"BarrierStatus":               handleBarrierStatus,
 	"BarrierInitializeShamir":     handleBarrierInitializeShamir,
 	"BarrierGenerateRecoveryKeys": handleBarrierGenerateRecoveryKeys,

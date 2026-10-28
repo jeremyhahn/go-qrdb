@@ -41,6 +41,13 @@ discovery:
 # resolveTLS Path 3 (single-node mode). It writes no admin credential: the
 # compose bootstrap issues one with `qrdb init --admin-csr`.
 
+# Noise bootstrap (trust-anchor) server. Every admitted, unsealed member runs
+# one, on bootstrap.noise_port (default 63006). This server shares the stack's
+# network namespace with the software-seal server, which takes the default,
+# so it binds the next port of its own 64001-64006 set.
+bootstrap:
+  noise_port: 64006
+
 # Authentication enabled for mTLS integration testing.
 auth:
   enabled: true

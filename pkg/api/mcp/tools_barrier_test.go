@@ -17,7 +17,9 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -25,6 +27,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -37,6 +41,7 @@ type mockBarrierService struct {
 	service.BarrierServicer
 	initializeFn           func(ctx context.Context, secret []byte) error
 	unsealFn               func(ctx context.Context, secret []byte) error
+	changePassphraseFn     func(ctx context.Context, current, next []byte) error
 	sealFn                 func(ctx context.Context) error
 	statusFn               func(ctx context.Context) (*service.BarrierStatusInfo, error)
 	initializeShamirFn     func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
@@ -44,6 +49,13 @@ type mockBarrierService struct {
 	deleteRecoveryKeysFn   func(ctx context.Context) error
 	hasRecoveryKeysFn      func(ctx context.Context) (bool, error)
 	clusterUnsealFn        func(ctx context.Context) (*clusterseal.Report, error)
+}
+
+func (m *mockBarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error {
+	if m.changePassphraseFn != nil {
+		return m.changePassphraseFn(ctx, current, next)
+	}
+	return nil
 }
 
 func newMockBarrierService() *mockBarrierService {
@@ -175,6 +187,7 @@ func TestBarrierTools_Registration(t *testing.T) {
 	expectedNames := []string{
 		"qrdb_barrier_initialize",
 		"qrdb_barrier_unseal",
+		"qrdb_barrier_change_passphrase",
 		"qrdb_barrier_seal",
 		"qrdb_barrier_status",
 		"qrdb_barrier_cluster_unseal",
@@ -375,6 +388,162 @@ func TestHandleBarrierUnseal_ServiceError(t *testing.T) {
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) {
 		t.Errorf("expected *ToolError, got %T", err)
+	}
+}
+
+func TestHandleBarrierChangePassphrase_Success(t *testing.T) {
+	svc := newMockBarrierService()
+	var seenCurrent, seenNext []byte
+	svc.changePassphraseFn = func(_ context.Context, current, next []byte) error {
+		if string(current) != "old-pass" || string(next) != "new-pass" {
+			t.Errorf("got current %q next %q, want old-pass / new-pass", current, next)
+		}
+		seenCurrent, seenNext = current, next
+		return nil
+	}
+	handler := handleBarrierChangePassphrase(svc, pintest.NewBackend(t))
+
+	req := buildCallToolRequest(t, "qrdb_barrier_change_passphrase", map[string]any{
+		"current": "old-pass",
+		"next":    "new-pass",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handleBarrierChangePassphrase: %v", err)
+	}
+	if text := resultText(t, result); text != "barrier passphrase changed" {
+		t.Errorf("expected 'barrier passphrase changed', got %q", text)
+	}
+	for _, b := range [][]byte{seenCurrent, seenNext} {
+		if len(b) == 0 || !bytes.Equal(b, make([]byte, len(b))) {
+			t.Fatalf("passphrase %q not wiped", b)
+		}
+	}
+}
+
+func TestHandleBarrierChangePassphrase_MissingArgument(t *testing.T) {
+	handler := handleBarrierChangePassphrase(newMockBarrierService(), pintest.NewBackend(t))
+	for _, args := range []map[string]any{{}, {"current": "old"}, {"next": "new"}} {
+		result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_barrier_change_passphrase", args))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result.IsError {
+			t.Errorf("args %v: expected an error result", args)
+		}
+	}
+}
+
+func TestHandleBarrierChangePassphrase_ServiceError(t *testing.T) {
+	svc := newMockBarrierService()
+	svc.changePassphraseFn = func(context.Context, []byte, []byte) error { return seal.ErrCredentialMismatch }
+	handler := handleBarrierChangePassphrase(svc, pintest.NewBackend(t))
+
+	_, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_barrier_change_passphrase", map[string]any{
+		"current": "wrong",
+		"next":    "new-pass",
+	}))
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) || !errors.Is(err, seal.ErrCredentialMismatch) {
+		t.Fatalf("err = %v, want a *ToolError wrapping ErrCredentialMismatch", err)
+	}
+}
+
+// TestHandleBarrierChangePassphrase_RequiresSOPIN verifies the passphrase
+// change is SO-gated like every other custody operation: no PIN backend fails
+// closed, a missing or wrong SO PIN is refused, and in none of those is the
+// barrier service reached; the right SO PIN reaches it.
+func TestHandleBarrierChangePassphrase_RequiresSOPIN(t *testing.T) {
+	cases := map[string]struct {
+		noBackend bool
+		soPIN     string
+		want      error
+	}{
+		"no pin backend": {noBackend: true, soPIN: pintest.ThrottledSOPIN, want: pin.ErrBackendNotConfigured},
+		"missing pin":    {soPIN: "", want: pin.ErrPINInvalid},
+		"wrong pin":      {soPIN: "wrong-pin-0000", want: pin.ErrPINInvalid},
+		"right pin":      {soPIN: pintest.ThrottledSOPIN},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := newMockBarrierService()
+			svc.changePassphraseFn = func(context.Context, []byte, []byte) error {
+				called = true
+				return nil
+			}
+			var backend pin.PINBackend
+			if !tc.noBackend {
+				backend = pintest.NewSOPINBackend(t)
+			}
+			handler := handleBarrierChangePassphrase(svc, backend)
+
+			_, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_barrier_change_passphrase", map[string]any{
+				"current": "old-pass",
+				"next":    "new-pass",
+				"so_pin":  tc.soPIN,
+			}))
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if reached := tc.want == nil; called != reached {
+				t.Fatalf("service reached = %v, want %v", called, reached)
+			}
+		})
+	}
+}
+
+// TestHandleBarrierChangePassphrase_B64Forms verifies current, next and
+// so_pin are declared in both forms and that the base64 forms carry bytes
+// that are not UTF-8 exactly.
+func TestHandleBarrierChangePassphrase_B64Forms(t *testing.T) {
+	tool := toolBarrierChangePassphrase()
+	for _, name := range []string{"current", "next", "so_pin"} {
+		requireBothForms(t, tool, name)
+	}
+
+	svc := newMockBarrierService()
+	var seenCurrent, seenNext []byte
+	svc.changePassphraseFn = func(_ context.Context, current, next []byte) error {
+		seenCurrent, seenNext = bytes.Clone(current), bytes.Clone(next)
+		return nil
+	}
+	handler := handleBarrierChangePassphrase(svc, pintest.NewSOPINBackend(t))
+	_, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_barrier_change_passphrase", map[string]any{
+		"current_b64": "/4A=",
+		"next_b64":    "gP8=",
+		"so_pin_b64":  base64.StdEncoding.EncodeToString([]byte(pintest.ThrottledSOPIN)),
+	}))
+	if err != nil {
+		t.Fatalf("handleBarrierChangePassphrase: %v", err)
+	}
+	if string(seenCurrent) != "\xff\x80" || string(seenNext) != "\x80\xff" {
+		t.Fatalf("current, next = %x, %x, want ff80, 80ff", seenCurrent, seenNext)
+	}
+}
+
+// TestHandleBarrierChangePassphrase_RefusesBadSecretForms verifies a secret
+// sent in both forms, or as malformed base64, is refused before the service.
+func TestHandleBarrierChangePassphrase_RefusesBadSecretForms(t *testing.T) {
+	for _, tc := range []struct {
+		args     map[string]any
+		conflict bool
+	}{
+		{map[string]any{"current": "a", "current_b64": "YQ==", "next": "b"}, true},
+		{map[string]any{"current": "a", "next_b64": "%%%"}, false},
+		{map[string]any{"current": "a", "next": "b", "so_pin": "1", "so_pin_b64": "MQ=="}, true},
+	} {
+		called := false
+		svc := newMockBarrierService()
+		svc.changePassphraseFn = func(context.Context, []byte, []byte) error {
+			called = true
+			return nil
+		}
+		_, err := handleBarrierChangePassphrase(svc, pintest.NewSOPINBackend(t))(context.Background(), buildCallToolRequest(t, "qrdb_barrier_change_passphrase", tc.args))
+		requireSecretArgError(t, err, tc.conflict)
+		if called {
+			t.Fatal("a refused call reached the service")
+		}
 	}
 }
 

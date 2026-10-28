@@ -196,6 +196,7 @@ const (
 	QRDBService_DatabaseUpdateCompaction_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
 	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
 	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
+	QRDBService_BarrierChangePassphrase_FullMethodName           = "/qrdb.v1.QRDBService/BarrierChangePassphrase"
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
 	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
 	QRDBService_BarrierClusterUnseal_FullMethodName              = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
@@ -717,6 +718,11 @@ type QRDBServiceClient interface {
 	BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierChangePassphrase re-wraps the root key of the unsealed,
+	// passphrase-sealed barrier under the next passphrase once the current
+	// one opens it. A wrong current passphrase is PERMISSION_DENIED and
+	// changes nothing; a concurrent root-key write is ABORTED.
+	BarrierChangePassphrase(ctx context.Context, in *BarrierChangePassphraseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
 	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
@@ -2591,6 +2597,16 @@ func (c *qRDBServiceClient) BarrierUnseal(ctx context.Context, in *BarrierUnseal
 	return out, nil
 }
 
+func (c *qRDBServiceClient) BarrierChangePassphrase(ctx context.Context, in *BarrierChangePassphraseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierChangePassphrase_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -3911,6 +3927,11 @@ type QRDBServiceServer interface {
 	BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error)
+	// BarrierChangePassphrase re-wraps the root key of the unsealed,
+	// passphrase-sealed barrier under the next passphrase once the current
+	// one opens it. A wrong current passphrase is PERMISSION_DENIED and
+	// changes nothing; a concurrent root-key write is ABORTED.
+	BarrierChangePassphrase(context.Context, *BarrierChangePassphraseRequest) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
 	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
@@ -4641,6 +4662,9 @@ func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *Barrie
 }
 func (UnimplementedQRDBServiceServer) BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierUnseal not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierChangePassphrase(context.Context, *BarrierChangePassphraseRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierChangePassphrase not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierSeal not implemented")
@@ -7839,6 +7863,24 @@ func _QRDBService_BarrierUnseal_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_BarrierChangePassphrase_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierChangePassphraseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierChangePassphrase(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierChangePassphrase_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierChangePassphrase(ctx, req.(*BarrierChangePassphraseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_BarrierSeal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(BarrierSealRequest)
 	if err := dec(in); err != nil {
@@ -10093,6 +10135,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_BarrierUnseal_Handler,
 		},
 		{
+			MethodName: "BarrierChangePassphrase",
+			Handler:    _QRDBService_BarrierChangePassphrase_Handler,
+		},
+		{
 			MethodName: "BarrierSeal",
 			Handler:    _QRDBService_BarrierSeal_Handler,
 		},
@@ -10462,6 +10508,8 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 const (
 	TenantBarrierService_InitBegin_FullMethodName          = "/qrdb.v1.TenantBarrierService/InitBegin"
 	TenantBarrierService_InitComplete_FullMethodName       = "/qrdb.v1.TenantBarrierService/InitComplete"
+	TenantBarrierService_SignedInitBegin_FullMethodName    = "/qrdb.v1.TenantBarrierService/SignedInitBegin"
+	TenantBarrierService_SignedInitComplete_FullMethodName = "/qrdb.v1.TenantBarrierService/SignedInitComplete"
 	TenantBarrierService_Unseal_FullMethodName             = "/qrdb.v1.TenantBarrierService/Unseal"
 	TenantBarrierService_Seal_FullMethodName               = "/qrdb.v1.TenantBarrierService/Seal"
 	TenantBarrierService_Status_FullMethodName             = "/qrdb.v1.TenantBarrierService/Status"
@@ -10507,6 +10555,19 @@ type TenantBarrierServiceClient interface {
 	// reason; the handler authorizes through
 	// middleware.AuthorizeTenantBarrierInitProof.
 	InitComplete(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
+	// SignedInitBegin is the first half of a two-phase signed initialization,
+	// for a client whose first admin signs away from the connection: it
+	// prepares the barrier's epoch-1 init statement naming public_key and
+	// returns the exact message to sign with a single-use reference. A Shamir
+	// init prepares its split here. identity:gated for InitBegin's reason; the
+	// handler authorizes through middleware.AuthorizeTenantBarrierInit. The
+	// signed statement, anchored to the tenant's first admin, is the proof of
+	// possession, so no channel-bound nonce is needed.
+	SignedInitBegin(ctx context.Context, in *TenantBarrierSignedInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierSignedInitBeginResponse, error)
+	// SignedInitComplete redeems SignedInitBegin's reference with the detached
+	// signature over its statement and initializes the barrier under it.
+	// identity:gated for InitBegin's reason; authorized as SignedInitBegin.
+	SignedInitComplete(ctx context.Context, in *TenantBarrierSignedInitCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -10566,6 +10627,26 @@ func (c *tenantBarrierServiceClient) InitComplete(ctx context.Context, in *Tenan
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantBarrierInitResponse)
 	err := c.cc.Invoke(ctx, TenantBarrierService_InitComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) SignedInitBegin(ctx context.Context, in *TenantBarrierSignedInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierSignedInitBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierSignedInitBeginResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_SignedInitBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) SignedInitComplete(ctx context.Context, in *TenantBarrierSignedInitCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierInitResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_SignedInitComplete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -10714,6 +10795,19 @@ type TenantBarrierServiceServer interface {
 	// reason; the handler authorizes through
 	// middleware.AuthorizeTenantBarrierInitProof.
 	InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
+	// SignedInitBegin is the first half of a two-phase signed initialization,
+	// for a client whose first admin signs away from the connection: it
+	// prepares the barrier's epoch-1 init statement naming public_key and
+	// returns the exact message to sign with a single-use reference. A Shamir
+	// init prepares its split here. identity:gated for InitBegin's reason; the
+	// handler authorizes through middleware.AuthorizeTenantBarrierInit. The
+	// signed statement, anchored to the tenant's first admin, is the proof of
+	// possession, so no channel-bound nonce is needed.
+	SignedInitBegin(context.Context, *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error)
+	// SignedInitComplete redeems SignedInitBegin's reference with the detached
+	// signature over its statement and initializes the barrier under it.
+	// identity:gated for InitBegin's reason; authorized as SignedInitBegin.
+	SignedInitComplete(context.Context, *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -10764,6 +10858,12 @@ func (UnimplementedTenantBarrierServiceServer) InitBegin(context.Context, *Tenan
 }
 func (UnimplementedTenantBarrierServiceServer) InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InitComplete not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) SignedInitBegin(context.Context, *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignedInitBegin not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) SignedInitComplete(context.Context, *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignedInitComplete not implemented")
 }
 func (UnimplementedTenantBarrierServiceServer) Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unseal not implemented")
@@ -10851,6 +10951,42 @@ func _TenantBarrierService_InitComplete_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TenantBarrierServiceServer).InitComplete(ctx, req.(*TenantBarrierInitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_SignedInitBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierSignedInitBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).SignedInitBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_SignedInitBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).SignedInitBegin(ctx, req.(*TenantBarrierSignedInitBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_SignedInitComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierSignedInitCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).SignedInitComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_SignedInitComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).SignedInitComplete(ctx, req.(*TenantBarrierSignedInitCompleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -11067,6 +11203,14 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InitComplete",
 			Handler:    _TenantBarrierService_InitComplete_Handler,
+		},
+		{
+			MethodName: "SignedInitBegin",
+			Handler:    _TenantBarrierService_SignedInitBegin_Handler,
+		},
+		{
+			MethodName: "SignedInitComplete",
+			Handler:    _TenantBarrierService_SignedInitComplete_Handler,
 		},
 		{
 			MethodName: "Unseal",

@@ -11,7 +11,6 @@ package seal
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -90,6 +89,25 @@ func (b *StorageBarrier) loadInitializedAt(ctx context.Context) (time.Time, erro
 		return time.Time{}, jsonErr
 	}
 	return meta.InitializedAt, nil
+}
+
+// persistedRootKeyBlob reads the persisted root-key blob, returning
+// ErrNotInitialized when none exists. A missing blob reads as
+// ErrSecretNotFound from MemoryBackend but as (nil, nil) from PebbleStorage
+// via StorageAdapter; both are a barrier that was never initialized, not a
+// corrupt one.
+func (b *StorageBarrier) persistedRootKeyBlob(ctx context.Context) ([]byte, error) {
+	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	if err != nil {
+		if errors.Is(err, ErrSecretNotFound) {
+			return nil, ErrNotInitialized
+		}
+		return nil, err
+	}
+	if blob == nil {
+		return nil, ErrNotInitialized
+	}
+	return blob, nil
 }
 
 // Compile-time interface check.
@@ -195,6 +213,58 @@ type StorageBarrier struct {
 	// long-lived ciphertext still needs (see epoch_pins.go).
 	epochPins sync.Map
 
+	// rootKeyRewrap is held by every read-modify-write of the root-key blob
+	// outside the state persister, from its read through its write to the
+	// live barrier's adoption of what it wrote: ChangePassword,
+	// recordShamirParams and AdoptMigratedRootKey. The state persister
+	// go-quicraft calls from Rotate, PurgeEpochsBefore and its backoff write,
+	// and a second ChangePassword, refuse with ErrRootKeyWriteInProgress
+	// rather than wait while it is held. The persister holds the
+	// EpochBarrier's write lock, and a holder adopting its state needs that
+	// lock, so waiting there would deadlock; failing the persister instead is
+	// go-quicraft's documented "nothing committed" path. recordShamirParams
+	// and AdoptMigratedRootKey hold no barrier lock when they take it, so
+	// they wait for it rather than refuse: each runs after shares or a
+	// migrated keyspace are already committed. An unseal waits for it too and
+	// holds it from its read of the blob through its adoption and the persist
+	// Barrier.Unseal makes (see lockRootKeyForUnseal): an unseal that read the
+	// blob a passphrase change was replacing and adopted it after the change
+	// would have its persister write the revoked wrapper back. Lock order is
+	// rootKeyRewrap, then the EpochBarrier's lock, for every holder; the
+	// persister, the one path entered with the EpochBarrier's lock held,
+	// never waits for rootKeyRewrap. Shared by pointer with the persister
+	// closure built before the barrier.
+	rootKeyRewrap *sync.Mutex
+
+	// rootKeyAdopted is set once AdoptMigratedRootKey has written a migration
+	// target's root key over this barrier's. This barrier's live state then
+	// wraps a key the canonical blob no longer names, so the persister
+	// refuses every later write of it with ErrRootKeyAdopted. Shared by
+	// pointer with the persister closure, which reads it only while holding
+	// rootKeyRewrap.
+	rootKeyAdopted *atomic.Bool
+
+	// rootKeyPersisting, when it points at a non-nil func, runs as the state
+	// persister is entered, before it takes rootKeyRewrap. A test seam only:
+	// it points at nil in production. Shared by pointer with the persister
+	// closure.
+	rootKeyPersisting *func()
+
+	// rootKeyWritten, when set, runs between a guarded read-modify-write's
+	// write of the root-key blob and the live barrier's adoption of the new
+	// state. A test seam only: nil in production.
+	rootKeyWritten func()
+
+	// rootKeyUnsealing is set while an unseal holding rootKeyRewrap is inside
+	// the EpochBarrier's Unseal, whose state persister then writes under the
+	// unseal's hold of rootKeyRewrap instead of refusing for it. Shared by
+	// pointer with the persister closure.
+	rootKeyUnsealing *atomic.Bool
+
+	// rootKeyUnsealWaiting, when set, runs when an unseal finds rootKeyRewrap
+	// held, before it waits for it. A test seam only: nil in production.
+	rootKeyUnsealWaiting func()
+
 	// quorumState holds the share-holder quorum rounds and the holder
 	// verifier (see quorum.go).
 	quorumState
@@ -254,9 +324,33 @@ func NewStorageBarrier(
 	// itself — the persister runs with the quicraft barrier lock held and
 	// must not re-enter it, and the root-key blob is by definition the one
 	// value that cannot be barrier-encrypted.
+	rootKeyRewrap := new(sync.Mutex)
+	rootKeyAdopted := new(atomic.Bool)
+	rootKeyPersisting := new(func())
+	rootKeyUnsealing := new(atomic.Bool)
 	epochConfig.StatePersister = func(sealed *quicraftseal.SealedRootKey) error {
 		if sealed == nil {
 			return ErrNilSealedData
+		}
+		if hook := *rootKeyPersisting; hook != nil {
+			hook()
+		}
+		// See StorageBarrier.rootKeyRewrap: a clone of the live state written
+		// while a passphrase change is mid-flight would restore the revoked
+		// wrapper, and blocking here would deadlock against its adoption.
+		// An unseal holds rootKeyRewrap across the Barrier.Unseal that called
+		// this, so its own persist proceeds under that hold.
+		if rootKeyRewrap.TryLock() {
+			defer rootKeyRewrap.Unlock()
+		} else if !rootKeyUnsealing.Load() {
+			return ErrRootKeyWriteInProgress
+		}
+		// Read only under rootKeyRewrap, which AdoptMigratedRootKey holds
+		// across its write and the flag: read before the lock, an adoption
+		// completing in between would let this write the pre-migration key
+		// back over the migrated one.
+		if rootKeyAdopted.Load() {
+			return ErrRootKeyAdopted
 		}
 		blob, err := json.Marshal(sealed)
 		if err != nil {
@@ -274,13 +368,17 @@ func NewStorageBarrier(
 	}
 
 	b := &StorageBarrier{
-		logger:      logger,
-		base:        base,
-		barrier:     epochBarrier,
-		config:      config,
-		strategies:  stratMap,
-		prefOrder:   prefOrder,
-		quorumState: quorumState{rounds: newQuorumRounds()},
+		logger:            logger,
+		base:              base,
+		barrier:           epochBarrier,
+		rootKeyRewrap:     rootKeyRewrap,
+		rootKeyAdopted:    rootKeyAdopted,
+		rootKeyPersisting: rootKeyPersisting,
+		rootKeyUnsealing:  rootKeyUnsealing,
+		config:            config,
+		strategies:        stratMap,
+		prefOrder:         prefOrder,
+		quorumState:       quorumState{rounds: newQuorumRounds()},
 	}
 	// Start sealed (state = 0 is zero value).
 	return b, nil
@@ -475,11 +573,16 @@ func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, cre
 		return ErrAlreadyUnsealed
 	}
 
-	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	// The blob's read, its adoption and the persist Barrier.Unseal makes
+	// are one operation against every root-key rewrite (see rootKeyRewrap).
+	release := b.lockRootKeyForUnseal()
+	defer release()
+	if b.state.Load() == stateUnsealed {
+		return ErrAlreadyUnsealed
+	}
+
+	blob, err := b.persistedRootKeyBlob(ctx)
 	if err != nil {
-		if errors.Is(err, ErrSecretNotFound) {
-			return ErrNotInitialized
-		}
 		return err
 	}
 
@@ -515,11 +618,12 @@ func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, cre
 	b.pinKnownEpochs(&sealed)
 
 	// Delegate unseal to the EpochBarrier.
-	if err := b.barrier.Unseal(ctx, strategy, creds); err != nil {
+	if err := b.unsealEpochBarrier(ctx, strategy, creds); err != nil {
 		emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
 			"deny", map[string]string{"error": err.Error(), "strategy": string(sealed.Strategy)})
 		return err
 	}
+	release()
 
 	if chosen != nil {
 		b.setStrategy(sealed.Strategy, chosen)
@@ -557,6 +661,29 @@ func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, cre
 		slog.String("strategy", string(sealed.Strategy)))
 
 	return nil
+}
+
+// lockRootKeyForUnseal takes rootKeyRewrap for an unseal, waiting for a
+// rewrite in flight to finish, and returns its idempotent release. The unseal
+// holds no EpochBarrier lock when it takes it, so waiting is safe; it then
+// reads the blob only after the rewrite has written and adopted its own.
+func (b *StorageBarrier) lockRootKeyForUnseal() func() {
+	if !b.rootKeyRewrap.TryLock() {
+		if hook := b.rootKeyUnsealWaiting; hook != nil {
+			hook()
+		}
+		b.rootKeyRewrap.Lock()
+	}
+	return sync.OnceFunc(b.rootKeyRewrap.Unlock)
+}
+
+// unsealEpochBarrier runs the EpochBarrier's Unseal for an unseal holding
+// rootKeyRewrap, marking the hold so the state persister that Unseal calls
+// writes under it rather than refusing.
+func (b *StorageBarrier) unsealEpochBarrier(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	b.rootKeyUnsealing.Store(true)
+	defer b.rootKeyUnsealing.Store(false)
+	return b.barrier.Unseal(ctx, strategy, creds)
 }
 
 // restoreInitializedAt populates the in-memory initialization timestamp on an
@@ -656,11 +783,8 @@ func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credential
 		return ErrSealed
 	}
 
-	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
+	blob, err := b.persistedRootKeyBlob(ctx)
 	if err != nil {
-		if errors.Is(err, ErrSecretNotFound) {
-			return ErrNotInitialized
-		}
 		return err
 	}
 
@@ -674,23 +798,12 @@ func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credential
 		return ErrStrategyNotFound
 	}
 
-	candidate, err := strategy.UnsealRootKey(ctx, &sealed, creds)
-	if err != nil {
-		return ErrCredentialMismatch
-	}
-	defer secure.Wipe(candidate)
-
 	live, err := b.barrier.RootKey(ctx)
 	if err != nil {
 		return err
 	}
 	defer secure.Wipe(live)
-
-	if len(candidate) == 0 || len(candidate) != len(live) ||
-		subtle.ConstantTimeCompare(candidate, live) != 1 {
-		return ErrCredentialMismatch
-	}
-	return nil
+	return openedToLiveKey(ctx, strategy, &sealed, creds, live)
 }
 
 // Encryptor returns nil for the refactored barrier. Encryption is now

@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // newRecodeSourceBarrier returns an initialised StrategyNone system barrier
@@ -66,7 +67,7 @@ func newRecodeSourceBarrierOn(t *testing.T, backend seal.StorageBackend) *seal.S
 func writeRecodePebbleStore(t *testing.T, dir string, enc *atrest.Encryptor, pairs map[string]string) {
 	t.Helper()
 	opts := &pebble.Options{}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open pebble store %s: %v", dir, err)
@@ -86,7 +87,7 @@ func writeRecodePebbleStore(t *testing.T, dir string, enc *atrest.Encryptor, pai
 func readRecodePebbleStore(t *testing.T, dir string, enc *atrest.Encryptor, key string) string {
 	t.Helper()
 	opts := &pebble.Options{}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open pebble store %s: %v", dir, err)

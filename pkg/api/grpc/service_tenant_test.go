@@ -40,17 +40,19 @@ import (
 
 type mockTenantService struct {
 	tenant.TenantServicer
-	createFn        func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
-	getFn           func(ctx context.Context, id string) (*tenant.TenantInfo, error)
-	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
-	updateFn        func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
-	deleteFn        func(ctx context.Context, id string) error
-	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
-	quotasFn        func(ctx context.Context, id string) (*quota.Quotas, error)
-	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
-	barrierUnsealFn func(ctx context.Context, id string, share []byte) error
-	barrierSealFn   func(ctx context.Context, id string) error
-	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
+	createFn         func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
+	getFn            func(ctx context.Context, id string) (*tenant.TenantInfo, error)
+	listFn           func(ctx context.Context) ([]tenant.TenantInfo, error)
+	updateFn         func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
+	deleteFn         func(ctx context.Context, id string) error
+	updateQuotasFn   func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
+	quotasFn         func(ctx context.Context, id string) (*quota.Quotas, error)
+	barrierInitFn    func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
+	barrierUnsealFn  func(ctx context.Context, id string, share []byte) error
+	barrierSealFn    func(ctx context.Context, id string) error
+	barrierStatusFn  func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
+	signedBeginFn    func(ctx context.Context, req *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error)
+	signedCompleteFn func(ctx context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error)
 }
 
 var _ tenant.TenantServicer = (*mockTenantService)(nil)
@@ -136,6 +138,20 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, pa
 
 func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+
+func (m *mockTenantService) TenantBarrierInitBegin(ctx context.Context, req *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	if m.signedBeginFn != nil {
+		return m.signedBeginFn(ctx, req)
+	}
+	return &tenant.TenantBarrierInitBeginResult{TenantID: req.TenantID, Strategy: string(req.Strategy), Reference: []byte("ref"), Statement: []byte("statement")}, nil
+}
+
+func (m *mockTenantService) TenantBarrierInitComplete(ctx context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	if m.signedCompleteFn != nil {
+		return m.signedCompleteFn(ctx, req)
+	}
+	return &tenant.TenantBarrierInitResult{TenantID: req.TenantID}, nil
 }
 
 func (m *mockTenantService) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {

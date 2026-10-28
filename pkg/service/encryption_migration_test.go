@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // fakeMigrationProvider drives the real migration engine over temp store dirs,
@@ -146,7 +147,7 @@ func readFileStore(t *testing.T, dir string, enc *atrest.Encryptor) map[string]s
 func writeNoneStore(t *testing.T, dir string, pairs map[string]string) {
 	t.Helper()
 	opts := &pebble.Options{}
-	atrest.New(newNoneBarrier(t)).Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, atrest.New(newNoneBarrier(t)).Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open none store: %v", err)
@@ -331,7 +332,7 @@ func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPa
 func readStore(t *testing.T, dir string, enc *atrest.Encryptor) map[string]string {
 	t.Helper()
 	opts := &pebble.Options{ReadOnly: true}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open: %v", err)

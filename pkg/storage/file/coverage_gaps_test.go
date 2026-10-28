@@ -22,8 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -271,7 +270,7 @@ func regularFileRoot(t *testing.T) string {
 // TestEnsureFormatMarker_ReadDirErrorPropagates covers ensureFormatMarker's
 // first os.ReadDir error path.
 func TestEnsureFormatMarker_ReadDirErrorPropagates(t *testing.T) {
-	e := &Engine{dir: regularFileRoot(t), fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: regularFileRoot(t), fs: filesys.Default, atRest: atRestPlaintext}
 	err := e.ensureFormatMarker()
 	if err == nil {
 		t.Fatal("expected an error reading an engine root that is a file")
@@ -284,7 +283,7 @@ func TestEnsureFormatMarker_ReadDirErrorPropagates(t *testing.T) {
 // TestRecoverJournal_ReadDirErrorPropagates covers recoverJournal's own
 // os.ReadDir error path.
 func TestRecoverJournal_ReadDirErrorPropagates(t *testing.T) {
-	e := &Engine{dir: regularFileRoot(t), fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: regularFileRoot(t), fs: filesys.Default, atRest: atRestPlaintext}
 	err := e.recoverJournal()
 	if err == nil {
 		t.Fatal("expected an error reading an engine root that is a file")
@@ -303,7 +302,7 @@ func TestRecoverJournal_ReadFileErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext}
 	err := e.recoverJournal()
 	if err == nil {
 		t.Fatal("expected an error reading a journal that is a directory")
@@ -323,7 +322,7 @@ func TestRecoverJournal_ApplyBufferedOpsErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext}
 	if err := e.recoverJournal(); err == nil {
 		t.Fatal("expected the empty-key refusal from applyBufferedOps to propagate")
 	}
@@ -389,14 +388,14 @@ func TestDecodeJournal_RejectsTruncatedRecords(t *testing.T) {
 // errCreateRefused is what createRefusingFS returns from Create.
 var errCreateRefused = errors.New("create refused")
 
-// createRefusingFS is a vfs.FS that refuses every Create and passes every
+// createRefusingFS is a filesys.FS that refuses every Create and passes every
 // other operation through. A commit reads the journal left by a crashed
 // commit before it writes its own, so the fault has to spare reads: a root
 // that is not a directory fails that read first and never reaches the write.
-type createRefusingFS struct{ vfs.FS }
+type createRefusingFS struct{ filesys.FS }
 
 // Create refuses the file.
-func (createRefusingFS) Create(string, vfs.DiskWriteCategory) (vfs.File, error) {
+func (createRefusingFS) Create(string) (filesys.File, error) {
 	return nil, errCreateRefused
 }
 

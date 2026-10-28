@@ -4,6 +4,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { assertFreshBundle } from "./playwright.bundle.ts";
 import { HOST, PORT_ENV, PROXY_PORT_ENV, resolvePorts } from "./playwright.port.ts";
+import { resolveTLS } from "./playwright.tls.ts";
 
 assertFreshBundle();
 
@@ -12,7 +13,12 @@ assertFreshBundle();
 // this tier has no backend — so an unmocked request is refused rather than
 // reaching another job's qrdbd.
 const [port, proxyPort] = await resolvePorts(PORT_ENV, PROXY_PORT_ENV);
-const origin = `http://${HOST}:${port}`;
+// The origin is https, as web mode's is: qrdbd serves the UI over TLS only,
+// and every secret-bearing SDK call refuses an http base URL. The certificate
+// is self-signed and generated per run in memory (playwright.tls.ts); only
+// this tier's `ignoreHTTPSErrors` makes the browser accept it.
+resolveTLS();
+const origin = `https://${HOST}:${port}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -26,6 +32,7 @@ export default defineConfig({
   reporter: "html",
   use: {
     baseURL: origin,
+    ignoreHTTPSErrors: true,
     trace: "on-first-retry",
   },
   projects: [
@@ -48,8 +55,12 @@ export default defineConfig({
     //
     // --strictPort: if another process takes the port first, fail rather than
     // let Vite pick a different one that baseURL does not point at.
+    //
+    // The server takes its certificate from the environment resolveTLS set,
+    // which Playwright passes to the command (vite.config.ts serverTLS).
     command: `npx vite preview --host ${HOST} --port ${port} --strictPort`,
     url: origin,
+    ignoreHTTPSErrors: true,
     reuseExistingServer: !process.env.CI,
     env: { QRDB_PROXY_TARGET: `https://${HOST}:${proxyPort}` },
   },

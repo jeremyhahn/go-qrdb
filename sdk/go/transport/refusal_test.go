@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
@@ -44,6 +45,26 @@ func TestRefusalError_unknownReasonIsNil(t *testing.T) {
 	for _, reason := range []string{"", "NOT_A_REPLICA", "NOT_LEADER", "SOMETHING_NEWER"} {
 		if err := RefusalError(reason, map[string]string{"k": "v"}); err != nil {
 			t.Fatalf("RefusalError(%q) = %v, want nil", reason, err)
+		}
+	}
+}
+
+func TestBarrierRefusal_roundTripsEverySentinel(t *testing.T) {
+	for _, sentinel := range []error{seal.ErrNotInitialized, seal.ErrCredentialMismatch, seal.ErrPassphraseChangeConflict, seal.ErrRootKeyWriteInProgress} {
+		reason, ok := BarrierRefusal(errors.Join(errors.New("context"), sentinel))
+		if !ok || reason == "" {
+			t.Fatalf("BarrierRefusal(%v) = %q, %v; want a reason", sentinel, reason, ok)
+		}
+		if got := RefusalError(reason, nil); !errors.Is(got, sentinel) {
+			t.Fatalf("RefusalError(%q) = %v, want %v", reason, got, sentinel)
+		}
+	}
+}
+
+func TestBarrierRefusal_otherErrorsCarryNone(t *testing.T) {
+	for _, err := range []error{nil, errors.New("other"), seal.ErrSealed} {
+		if reason, ok := BarrierRefusal(err); ok {
+			t.Fatalf("BarrierRefusal(%v) = %q, want none", err, reason)
 		}
 	}
 }

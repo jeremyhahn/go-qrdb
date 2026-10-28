@@ -122,6 +122,48 @@ func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// barrierChangePassphraseRequest is the JSON payload for
+// POST /v1/barrier/change-passphrase. SOPin is verified by pin.RequireSOPIN
+// exactly as for POST /v1/barrier/seal.
+type barrierChangePassphraseRequest struct {
+	Current []byte `json:"current"`
+	Next    []byte `json:"next"`
+	SOPin   string `json:"so_pin,omitempty"`
+}
+
+// handleBarrierChangePassphrase handles POST /v1/barrier/change-passphrase --
+// re-wraps the root key of the unsealed, passphrase-sealed barrier under the
+// next passphrase once the current one opens it, under the SO PIN; without a
+// PIN backend it fails closed. Both passphrases are wiped on return.
+func (s *Server) handleBarrierChangePassphrase(w http.ResponseWriter, r *http.Request) {
+	if s.barrierSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
+		return
+	}
+
+	var req barrierChangePassphraseRequest
+	defer func() {
+		secure.Wipe(req.Current)
+		secure.Wipe(req.Next)
+	}()
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, req.SOPin); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	if err := s.barrierSvc.BarrierChangePassphrase(r.Context(), req.Current, req.Next); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleBarrierSeal handles POST /v1/barrier/seal -- transitions the barrier
 // to the sealed state. When a request body is present it is decoded into a
 // barrierSealRequest carrying the SO PIN; when absent SOPin is empty, which

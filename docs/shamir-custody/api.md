@@ -93,6 +93,21 @@ two-round init:
 | Begin | `POST /v1/tenants/{id}/barrier/init/begin` | `InitBegin` | `tenant.BarrierInitBegin` | `qrdb_tenant_barrier_init_begin` |
 | Complete | `POST /v1/tenants/{id}/barrier/init/complete` | `InitComplete` | `tenant.BarrierInitComplete` | `qrdb_tenant_barrier_init_complete` |
 
+A first admin whose key signs away from the node uses the signed pair instead
+([../multi-tenancy/api.md](../multi-tenancy/api.md#signed-barrier-init-a-first-admins-key-that-signs-elsewhere)):
+
+| Round | REST | gRPC / Unix (`TenantBarrierService`) | QUIC | MCP tool |
+|---|---|---|---|---|
+| Begin | `POST /v1/tenants/{id}/barrier/signed-init/begin` | `SignedInitBegin` | `tenant.BarrierSignedInitBegin` | `qrdb_tenant_barrier_signed_init_begin` |
+| Complete | `POST /v1/tenants/{id}/barrier/signed-init/complete` | `SignedInitComplete` | `tenant.BarrierSignedInitComplete` | `qrdb_tenant_barrier_signed_init_complete` |
+
+A Shamir signed begin takes the same `officers` and `policy` roster, validates
+it and prepares the split before it returns the statement, and answers with
+`threshold`, `total_shares`, `share_count` and the issued `holders`; its
+complete answers like `InitComplete`, `admin_pending` included.
+`qrdb tenant barrier-init-begin` takes `--officers`, `--custodians` and
+`--policy` as `barrier-init` does.
+
 The completion answers with the holder certificates the init issued, and with
 `admin_pending` on every transport: the JSON field `admin_pending` on REST,
 QUIC and MCP, omitted when false, and field 10, `admin_pending`, of

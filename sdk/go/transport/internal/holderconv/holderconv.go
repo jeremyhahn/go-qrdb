@@ -385,6 +385,52 @@ func TenantBarrierInitResponseFromPB(resp *pb.TenantBarrierInitResponse) *transp
 	}
 }
 
+// TenantBarrierSignedInitBeginToPB converts a signed init's begin request to
+// its wire form.
+func TenantBarrierSignedInitBeginToPB(req *transport.TenantBarrierSignedInitBeginRequest) (*pb.TenantBarrierSignedInitBeginRequest, error) {
+	officers, err := TenantBarrierRosterToPB(req.Officers)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.TenantBarrierSignedInitBeginRequest{
+		TenantId:  req.TenantID,
+		Strategy:  req.Strategy,
+		KeyRef:    req.KeyRef,
+		Threshold: int32(req.Threshold), //nolint:gosec // share threshold is a small count
+		Shares:    int32(req.Shares),    //nolint:gosec // share count is small
+		Officers:  officers,
+		Policy:    req.Policy,
+		PublicKey: req.PublicKey,
+	}, nil
+}
+
+// TenantBarrierSignedInitBeginFromPB converts a signed init's begin response
+// from its wire form.
+func TenantBarrierSignedInitBeginFromPB(resp *pb.TenantBarrierSignedInitBeginResponse) *transport.TenantBarrierSignedInitBeginResponse {
+	return &transport.TenantBarrierSignedInitBeginResponse{
+		TenantID:    resp.GetTenantId(),
+		Strategy:    resp.GetStrategy(),
+		Reference:   resp.GetReference(),
+		Statement:   resp.GetStatement(),
+		ExpiresAt:   time.Unix(resp.GetExpires(), 0),
+		Threshold:   int(resp.GetThreshold()),
+		TotalShares: int(resp.GetTotalShares()),
+		ShareCount:  int(resp.GetShareCount()),
+		Holders:     TenantBarrierHoldersFromPB(resp.GetHolders()),
+	}
+}
+
+// TenantBarrierSignedInitCompleteToPB converts a signed init's complete
+// request to its wire form.
+func TenantBarrierSignedInitCompleteToPB(req *transport.TenantBarrierSignedInitCompleteRequest) *pb.TenantBarrierSignedInitCompleteRequest {
+	return &pb.TenantBarrierSignedInitCompleteRequest{
+		TenantId:   req.TenantID,
+		Reference:  req.Reference,
+		Signature:  req.Signature,
+		Passphrase: req.Passphrase,
+	}
+}
+
 // TenantBarrierNodesFromPB converts the nodes serving a tenant barrier from
 // a gRPC or Unix status response.
 func TenantBarrierNodesFromPB(nodes []*pb.TenantBarrierNode) []transport.TenantBarrierNode {

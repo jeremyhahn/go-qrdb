@@ -216,6 +216,13 @@ func (r *BarrierUnsealRequest) barrierSecret() BarrierSecretKind {
 	return secretIf(len(r.Secret) > 0, BarrierSecretUnsealKey)
 }
 
+func (r *BarrierChangePassphraseRequest) barrierSecret() BarrierSecretKind {
+	if r == nil {
+		return ""
+	}
+	return secretIf(len(r.Current) > 0 || len(r.Next) > 0, BarrierSecretPassphrase)
+}
+
 func (r *BarrierInitializeShamirRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
@@ -286,6 +293,13 @@ func (r *TenantBarrierInitRequest) barrierSecret() BarrierSecretKind {
 	return secretIf(len(r.Passphrase) > 0, BarrierSecretPassphrase)
 }
 
+func (r *TenantBarrierSignedInitCompleteRequest) barrierSecret() BarrierSecretKind {
+	if r == nil {
+		return ""
+	}
+	return secretIf(len(r.Passphrase) > 0, BarrierSecretPassphrase)
+}
+
 func (r *TenantBarrierUnsealRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
@@ -344,6 +358,7 @@ var (
 	_ BarrierSecretCarrier = (*DatabaseBarrierConfig)(nil)
 	_ BarrierSecretCarrier = (*BarrierInitializeRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierUnsealRequest)(nil)
+	_ BarrierSecretCarrier = (*BarrierChangePassphraseRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierInitializeShamirRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierEnableEncryptionRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierGenerateRecoveryKeysRequest)(nil)

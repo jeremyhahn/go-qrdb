@@ -107,6 +107,41 @@ After a restart:
 qrdb barrier unseal --passphrase '<passphrase>'
 ```
 
+Unsealing a barrier that was never initialized is refused with a typed
+"barrier not initialized" error (`seal.ErrNotInitialized`): run `qrdb init`
+first.
+
+### Embedding qrdb: a passphrase-sealed system barrier
+
+An application that embeds a node through `sdk/go/node` brings its system
+barrier up without the sealed-window listener. Set `seal.enabled: true` and
+`seal.strategy: passphrase` in the node's configuration, then either:
+
+- pass the passphrase at construction, and the node initializes the barrier
+  on first boot and unseals it on every later one:
+
+  ```go
+  n, err := node.NewStandaloneNode(ctx, cfg, nil, node.WithSealPassphrase(passphrase))
+  ```
+
+- or construct the node without it. The node starts sealed, and
+  `Node.Unseal` initializes the barrier the first time and unseals it after
+  that:
+
+  ```go
+  n, err := node.NewStandaloneNode(ctx, cfg, nil)
+  // ...
+  err = n.Unseal(ctx, seal.MustCredentials(ctx, passphrase))
+  ```
+
+On a node that runs the first-boot ceremony, `BarrierInitialize` over any
+transport is refused on the system barrier with
+`service.SystemBarrierInitRefusedError`: the ceremony (`qrdb init`,
+`Node.FirstBoot`) owns that barrier. Without a ceremony, the node's own
+constructor or `Node.Unseal` is the path; do not mix the two. A wrong passphrase on a
+later unseal returns an `*node.UnsealError` wrapping
+`seal.ErrDecryptionFailed`.
+
 ## Common tasks
 
 **Check state before anything else.**
@@ -141,6 +176,24 @@ unseal the node:
 
 A node that loses touch with the cluster is different: it stops serving but
 keeps its keys (see below).
+
+**Change the passphrase** of a passphrase-sealed barrier. The barrier must be
+unsealed; the current passphrase must open it, and a wrong one is refused
+with a typed credential mismatch and changes nothing. The root key is not
+rotated: it is re-wrapped under the new passphrase, and the stored blob is
+replaced in one guarded swap, so the next unseal takes the new passphrase and
+the old one is refused. Data is not re-encrypted. It needs `seal:rekey` and
+the Security Officer PIN, checked before the barrier is touched exactly as for
+a seal or a rekey: a missing or wrong PIN is refused and changes nothing, and
+a node with no PIN backend configured refuses the change outright.
+
+```bash
+qrdb barrier change-passphrase --current '<current>' --next '<next>' --so-pin "$SO_PIN"
+```
+
+An embedder calls `Node.ChangePassphrase(ctx, current, next)`, which returns
+`seal.ErrCredentialMismatch` for a wrong current passphrase and
+`node.ErrSealNotEnabled` on a node without a seal barrier.
 
 **Set up M-of-N custody.** Enrol the share holders first, then initialize;
 one envelope is sealed to each holder and each claims theirs once. The full

@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -347,7 +348,7 @@ func TestStandaloneHost(t *testing.T) {
 
 // perNodeBarrierKeysActive is a gated host on which per-node-barrier-keys is
 // active.
-var perNodeBarrierKeysActive = gatedHost{enabled: map[featuregate.Feature]bool{featuregate.PerNodeBarrierKeys: true}}
+var perNodeBarrierKeysActive = gatedHost{enabled: map[feature.Feature]bool{featuregate.PerNodeBarrierKeys: true}}
 
 func TestPerNodeBarrierKeysRequired_NilOnAHostThatGatesNothing(t *testing.T) {
 	for name, host := range map[string]service.Host{"standalone": newStandaloneHost(), "no host": nil} {
@@ -361,8 +362,8 @@ func TestPerNodeBarrierKeysRequired_NilOnAHostThatGatesNothing(t *testing.T) {
 
 func TestPerNodeBarrierKeysRequired_FollowsTheGate(t *testing.T) {
 	// Another feature being active does not stand in for this one.
-	before := gatedHost{enabled: map[featuregate.Feature]bool{featuregate.GuardedWrites: true}}
-	var notActive *featuregate.NotActiveError
+	before := gatedHost{enabled: map[feature.Feature]bool{featuregate.GuardedWrites: true}}
+	var notActive *feature.NotActiveError
 	err := perNodeBarrierKeysRequired(before)()
 	if !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys || notActive.ShardID != 0 {
 		t.Fatalf("required before activation = %v, want cluster-wide NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)
@@ -381,7 +382,7 @@ func TestBarrierInitClaimer_RecordsNothingBeforeActivation(t *testing.T) {
 	bi, _, raw := newSignedBarrierInit(t, tenantID)
 	ctx := context.Background()
 
-	var notActive *featuregate.NotActiveError
+	var notActive *feature.NotActiveError
 	err := bi.claimer(perNodeBarrierKeysRequired(gatedHost{})).ClaimTenantInit(ctx, tenantID, seal.StrategyNone, "", raw)
 	if !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
 		t.Fatalf("ClaimTenantInit before activation = %v, want NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)

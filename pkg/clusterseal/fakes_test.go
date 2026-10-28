@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 // memKV is a faithful in-memory KV: PutIfAbsent refuses a present key,
@@ -331,7 +332,7 @@ type fakeGate struct {
 	unloaded bool
 }
 
-func (g *fakeGate) Activated(f featuregate.Feature) bool {
+func (g *fakeGate) Activated(f feature.Feature) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return !g.unloaded && g.activated && f == featuregate.ClusterSeal

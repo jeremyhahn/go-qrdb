@@ -18,6 +18,7 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Initialize | `POST /v1/barrier/initialize` | `BarrierInitialize` | `barrier.Initialize` | `qrdb_barrier_initialize` | `BarrierInitialize` | `seal:bootstrap` |
 | Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
 | Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `BarrierUnseal` | `seal:unseal` |
+| Change passphrase | `POST /v1/barrier/change-passphrase` | `BarrierChangePassphrase` | `barrier.ChangePassphrase` | `qrdb_barrier_change_passphrase` | `BarrierChangePassphrase` | `seal:rekey` + SO PIN |
 | Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `BarrierSeal` | `seal:seal` + SO PIN |
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `BarrierEnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
 | Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `BarrierClusterUnseal` | `seal:unseal` |
@@ -40,6 +41,45 @@ on every transport:
 | Go SDK | `BarrierSeal(ctx)` with the PIN bound by `transport.WithSOPIN(ctx, pin)`; every network transport fills `so_pin` from it |
 | TypeScript SDK | `client.seal.seal(soPin)` |
 | Desktop binding | `SealBinding.Seal(soPin)` |
+
+**Change passphrase re-wraps, it does not rotate.** The request carries the
+current and the next passphrase, both bytes (base64 in REST JSON:
+`{"current": "...", "next": "..."}`). The barrier must be unsealed and
+passphrase-sealed; the current passphrase must open the persisted root key.
+The root key is re-wrapped under the next passphrase and the stored blob is
+replaced by a guarded swap; the data is not re-encrypted and the barrier stays
+unsealed. Both passphrases are wiped on return, on the client and the server.
+`seal:rekey` is SO-gated by the dual-factor gate, so the PIN travels as every
+SO-gated call's does: the `X-QRDB-SO-PIN` header on REST and MCP, metadata on
+gRPC and the Unix socket, and the request's `so_pin` field on QUIC, whose
+frames have no header section. Every transport also verifies the request's
+`so_pin` against the barrier PIN backend before the barrier is reached, as
+for seal and rekey: no PIN backend is `412` / `FailedPrecondition`
+(`pin.ErrBackendNotConfigured`), a missing or wrong SO PIN is `401` /
+`Unauthenticated`, and the embedded transport verifies the PIN bound by
+`transport.WithSOPIN` the same way. The SDK clients fill `so_pin` from that
+bound PIN; on REST a client sends the PIN twice, in the header for the gate
+and in the body's `so_pin` for the handler, and a request carrying only one of
+them is `401`. The CLI takes `--so-pin`, the Go SDK the PIN
+bound by `transport.WithSOPIN`, the TypeScript SDK
+`client.seal.changePassphrase(current, next, soPin)`, and the desktop binding
+`SealBinding.ChangePassphrase`. The TypeScript SDK sends this and every other
+secret-bearing barrier call only to an `https://` base URL and refuses every
+redirect ([TypeScript SDK API](../typescript-sdk/api.md#secret-bearing-calls)).
+
+| Refusal | Sentinel | REST | gRPC / Unix | Reason (QUIC, MCP) |
+|---|---|---|---|---|
+| Current passphrase does not open the barrier | `seal.ErrCredentialMismatch` | `403` | `PermissionDenied` | `BARRIER_CREDENTIAL_MISMATCH` |
+| Empty current or next passphrase | `seal.ErrInvalidPassphrase` | `400` | `InvalidArgument` | — |
+| The blob changed under the swap | `seal.ErrPassphraseChangeConflict` | `409` | `Aborted` | `BARRIER_PASSPHRASE_CHANGE_CONFLICT` |
+| Another rewrite of the root key, such as a second passphrase change, is in flight | `seal.ErrRootKeyWriteInProgress` | `409` | `Aborted` | `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` |
+| Not a passphrase barrier, or the store has no guarded swap | `seal.ErrPassphraseStrategyNotSoftware`, `seal.ErrGuardedSwapUnsupported` | `409` | `FailedPrecondition` | — |
+| Barrier sealed | `seal.ErrSealed` | `503` | `Unavailable` | — |
+
+Unsealing an uninitialized barrier is refused with `seal.ErrNotInitialized`
+(`409` / `FailedPrecondition`, reason `BARRIER_NOT_INITIALIZED`), on every
+transport, so `errors.Is` holds
+in the Go SDK whichever transport carried it.
 
 ### Who may call these
 
@@ -127,6 +167,7 @@ of them stub the call locally.
 | Database seal / unseal | `POST /v1/databases/{name}/seal` · `/unseal` | `databases:seal` · `databases:unseal` |
 | Database barrier config | `PATCH /v1/databases/{name}/barrier` | `databases:update` |
 | Tenant barrier init | `POST /v1/tenants/{id}/barrier/init/begin` · `/init/complete`, on one connection, with proof of possession of the first admin's key ([../multi-tenancy/api.md](../multi-tenancy/api.md#barrier-init-proof-of-possession)) | identity-gated |
+| Tenant barrier signed init | `POST /v1/tenants/{id}/barrier/signed-init/begin` · `/signed-init/complete`: the node returns the statement, a key away from the node signs it, and a single-use reference redeems the detached signature ([../multi-tenancy/api.md](../multi-tenancy/api.md#signed-barrier-init-a-first-admins-key-that-signs-elsewhere)) | identity-gated |
 | Tenant barrier status | `GET /v1/tenants/{id}/barrier/status` | identity-gated |
 | Tenant barrier seal | `POST /v1/tenants/{id}/barrier/seal` | `tenant_barrier:seal` |
 | Tenant barrier unseal | `POST /v1/tenants/{id}/barrier/unseal` | identity-gated |
@@ -312,11 +353,13 @@ ceremony tools takes one of two forms:
 | `<name>` | the JSON string as UTF-8 text | text only |
 | `<name>_b64` | standard base64, RFC 4648 §4, padded | any bytes, exactly |
 
-The arguments are `passphrase` on `qrdb_barrier_enable_encryption` and
-`qrdb_tenant_barrier_init_complete`; `secret` on `qrdb_barrier_initialize`,
+The arguments are `passphrase` on `qrdb_barrier_enable_encryption`,
+`qrdb_tenant_barrier_init_complete` and
+`qrdb_tenant_barrier_signed_init_complete`; `current` and `next` on
+`qrdb_barrier_change_passphrase`; `secret` on `qrdb_barrier_initialize`,
 `qrdb_barrier_unseal`, `qrdb_database_unseal` and `qrdb_ceremony_initialize`;
 `barrier_secret` on `qrdb_database_create`; and `so_pin` and `user_pin`
-wherever those tools, `qrdb_barrier_seal`, `qrdb_barrier_shamir_initialize`,
+wherever those tools, `qrdb_barrier_change_passphrase`, `qrdb_barrier_seal`, `qrdb_barrier_shamir_initialize`,
 `qrdb_barrier_recovery_generate`, `qrdb_barrier_rekey_start`,
 `qrdb_barrier_officer_revoke` and `qrdb_ceremony_sign_csr` take them. A JSON string cannot hold bytes that are
 not UTF-8 — a decoder replaces them with U+FFFD — so a passphrase sent as text
@@ -493,7 +536,15 @@ A tenant barrier init carries the owner's signed epoch-1 statement, encoded as
 | Embedded | `Tenants().TenantBarrierInit` signs it from the request's `Signer` and passes it in process |
 
 The Go SDK signs it from `TenantBarrierInitRequest.Signer`
-(`barrierinit.SignTenantInit`); a request without a signer sends none. The
+(`barrierinit.SignTenantInit`); a request without a signer sends none.
+
+A signed init never sends the statement in: `signed-init/begin`
+(`SignedInitBegin`, `tenant.BarrierSignedInitBegin`,
+`qrdb_tenant_barrier_signed_init_begin`) has the node prepare it
+(`barrierinit.Claimer.PrepareTenantInit`) and return the bytes to sign, and
+`signed-init/complete` attaches the detached signature to the statement the
+node kept and claims it through the same init book, so the conditions below
+answer it alike. The
 TypeScript SDK cannot sign and sends none, so it initialises only barriers
 served by one node.
 
@@ -505,7 +556,7 @@ gates neither.
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Isolated tenant create, update to an isolated type, or a statement recorded, before `per-node-barrier-keys` is activated | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`; retry after the rollout |
+| Isolated tenant create, update to an isolated type, or a statement recorded, before `per-node-barrier-keys` is activated | 503 | `UNAVAILABLE` — `feature.NotActiveError`; retry after the rollout |
 | Init statement not signed by the barrier's owner, or malformed | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` |
 | The barrier's first epoch is already claimed by another statement | 409 | `ALREADY_EXISTS` — `barrierinit.BarrierAlreadyInitializedError` |
 | The statement's epoch does not follow the recorded one, or lost a race | 409 | `ABORTED` — `barrierinit.EpochConflictError`; read the record and retry |
