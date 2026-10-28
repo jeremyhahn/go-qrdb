@@ -403,6 +403,14 @@ func (s *Store) RangeInBatch(batch storage.Batch, start, end []byte, opts ...ser
 	return s.rangeFrom(batch, s.CurrentRevision(), start, end, opts...)
 }
 
+// RangeInBatchAt is RangeInBatch read at rev rather than the store's current
+// revision. A transaction stages its writes at CurrentRevision()+1 before
+// SetRevision publishes it, so a read in the same transaction passes that
+// revision to see the writes staged before it.
+func (s *Store) RangeInBatchAt(batch storage.Batch, rev int64, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return s.rangeFrom(batch, rev, start, end, opts...)
+}
+
 // rangeFrom implements Range against an arbitrary reader. currentRev is the
 // newest revision r can see: the read's default target and the revision it
 // reports.
