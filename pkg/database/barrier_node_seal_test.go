@@ -44,7 +44,7 @@ func newNodeSealDatabases(t *testing.T) *nodeSealDatabases {
 	if err := system.Initialize(ctx, testCreds()); err != nil {
 		t.Fatalf("system Initialize: %v", err)
 	}
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	pass := validDedicatedMemoryConfig(t, "pass")
@@ -58,11 +58,11 @@ func newNodeSealDatabases(t *testing.T) *nodeSealDatabases {
 	}
 	holders := []*dbHolder{newDBHolder(t, "alice"), newDBHolder(t, "bob")}
 	enrolAndClaim(t, bm, "vault", holders...)
-	if _, err := bm.registry.RegisterTenant(ctx, "auto", seal.NewMemoryBackend(),
+	if _, err := bm.registry.RegisterTenant(ctx, barrierKey("auto", "acme"), seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "db/auto/root-key"}, seal.NewSystemBarrierStrategy(system)); err != nil {
 		t.Fatalf("register auto: %v", err)
 	}
-	if err := bm.registry.InitializeTenant(ctx, "auto", seal.Credentials{}); err != nil {
+	if err := bm.registry.InitializeTenant(ctx, barrierKey("auto", "acme"), seal.Credentials{}); err != nil {
 		t.Fatalf("initialize auto: %v", err)
 	}
 	return &nodeSealDatabases{bm: bm, mgr: mgr, system: system, holders: holders}
@@ -71,7 +71,7 @@ func newNodeSealDatabases(t *testing.T) *nodeSealDatabases {
 // keyWiped reports whether name's barrier is sealed with its key wiped.
 func (f *nodeSealDatabases) keyWiped(t *testing.T, name string) bool {
 	t.Helper()
-	tb, err := f.bm.registry.GetTenant(name)
+	tb, err := f.bm.registry.GetTenant(barrierKey(name, "acme"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestNodeUnseal_BringsBackOnlySystemManagedDatabases(t *testing.T) {
 			t.Fatalf("the node unseal unsealed %s, which its owner or quorum must unseal", name)
 		}
 	}
-	if err := f.bm.UnsealDatabase(ctx, "pass", testCreds()); err != nil {
+	if err := f.bm.UnsealDatabase(ctx, "pass", "acme", testCreds()); err != nil {
 		t.Fatalf("owner unseal of pass: %v", err)
 	}
 	if f.keyWiped(t, "pass") {
@@ -160,7 +160,7 @@ func TestNodeUnseal_BringsBackOnlySystemManagedDatabases(t *testing.T) {
 func TestNodeUnseal_LeavesAnExplicitlySealedDatabaseSealed(t *testing.T) {
 	f := newNodeSealDatabases(t)
 	f.nodeSeal(t)
-	if err := f.bm.SealAuthorized("auto"); err != nil {
+	if err := f.bm.SealAuthorized("auto", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	f.nodeUnseal(t)
@@ -169,7 +169,7 @@ func TestNodeUnseal_LeavesAnExplicitlySealedDatabaseSealed(t *testing.T) {
 	}
 
 	g := newNodeSealDatabases(t)
-	g.bm.SetUnsealGate(func(name string) bool { return name == "auto" })
+	g.bm.SetUnsealGate(func(name, _ string) bool { return name == "auto" })
 	g.nodeSeal(t)
 	g.nodeUnseal(t)
 	if !g.keyWiped(t, "auto") {
@@ -185,7 +185,7 @@ func TestNodeUnseal_LeavesAnExplicitlySealedDatabaseSealed(t *testing.T) {
 func TestDatabaseBarrierManager_SubmitHolderShareRefusesANonShamirDatabase(t *testing.T) {
 	f := newNodeSealDatabases(t)
 	share := []byte("share")
-	_, err := f.bm.SubmitHolderShare(context.Background(), "pass", &seal.HolderSubmission{Op: seal.OpUnseal, Share: share}, nil)
+	_, err := f.bm.SubmitHolderShare(context.Background(), "pass", "acme", &seal.HolderSubmission{Op: seal.OpUnseal, Share: share}, nil)
 	var notShamir *NotShamirBarrierError
 	if !errors.As(err, &notShamir) {
 		t.Fatalf("err = %v, want *NotShamirBarrierError", err)
@@ -215,7 +215,7 @@ func TestManagerClose_WipesEveryDatabaseKey(t *testing.T) {
 // TestManagerClose_WithoutABarrierManager closes a manager that holds no
 // barrier at all.
 func TestManagerClose_WithoutABarrierManager(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	if _, err := mgr.Create(validMemoryConfig("plain")); err != nil {
 		t.Fatal(err)
 	}
@@ -228,11 +228,11 @@ func TestManagerClose_WithoutABarrierManager(t *testing.T) {
 // verdict is reported per database; without a gate none is refused.
 func TestDatabaseBarrierManager_UnsealRefusedFollowsTheGate(t *testing.T) {
 	f := newNodeSealDatabases(t)
-	if f.bm.UnsealRefused("auto") {
+	if f.bm.UnsealRefused("auto", "acme") {
 		t.Fatal("a manager without a gate refused a database")
 	}
-	f.bm.SetUnsealGate(func(name string) bool { return name == "auto" })
-	if !f.bm.UnsealRefused("auto") || f.bm.UnsealRefused("pass") {
+	f.bm.SetUnsealGate(func(name, _ string) bool { return name == "auto" })
+	if !f.bm.UnsealRefused("auto", "acme") || f.bm.UnsealRefused("pass", "acme") {
 		t.Fatal("UnsealRefused does not follow the gate")
 	}
 }

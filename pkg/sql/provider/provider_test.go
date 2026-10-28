@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -386,7 +387,7 @@ func TestProvider_WithPrescopedKV_UsesBareKeys(t *testing.T) {
 func newTestManager(t *testing.T) *database.Manager {
 	t.Helper()
 	dir := t.TempDir()
-	return database.NewManager(nil, dir)
+	return databasetest.NewManager(nil, dir)
 }
 
 func TestNewManagerProvider(t *testing.T) {

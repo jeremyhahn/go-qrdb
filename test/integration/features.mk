@@ -103,7 +103,7 @@ INTTEST_configuration       :=
 # conformance coverage also lives in sdk/go/conformance/coordination_parity_test.go.
 INTTEST_coordination        := coordination_sdk_test.go
 INTTEST_credentials         := credential_cli_test.go
-INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_lifecycle_cli_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go
+INTTEST_databases           := database_barrier_cli_test.go database_barrier_holders_cli_test.go database_catalog_cli_test.go database_lifecycle_cli_test.go database_owner_forwarding_test.go multidb_scope_test.go dao_cluster_test.go vlog_cli_test.go
 INTTEST_deployment          :=
 INTTEST_desktop_gui         :=
 INTTEST_distributed_locks   := lock_cli_test.go
@@ -126,7 +126,7 @@ INTTEST_row_locking         := sql_row_lock_test.go
 INTTEST_run_modes           := run_modes_standalone_cli_test.go qrdbd_cli_test.go completion_cli_test.go
 INTTEST_secondary_indexes   := index_cli_test.go dao_cluster_test.go
 INTTEST_shamir_custody      := barrier_cli_test.go tenant_barrier_officer_cli_test.go tenant_barrier_shamir_cluster_cli_test.go operator_tls_holder_cli_test.go
-INTTEST_sql                 := sql_alter_rewrite_test.go sql_autoincrement_test.go sql_ddl_test.go sql_pgsql_literals_test.go sql_query_cli_test.go sql_query_tenant_scope_test.go sql_readonly_ddl_test.go sql_test.go entity_bridge_test.go
+INTTEST_sql                 := sql_alter_rewrite_test.go sql_autoincrement_test.go sql_catalog_enumeration_test.go sql_ddl_test.go sql_pgsql_literals_test.go sql_query_cli_test.go sql_query_tenant_scope_test.go sql_readonly_ddl_test.go sql_test.go entity_bridge_test.go
 # sqlite-vfs: a future feature, not implemented; nothing to select yet.
 INTTEST_sqlite_vfs          :=
 INTTEST_storage_engines     := admin_node_compaction_cli_test.go objstore_credentials_cli_test.go sm_storage_file_test.go

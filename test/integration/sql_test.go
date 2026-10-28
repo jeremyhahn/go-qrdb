@@ -185,6 +185,7 @@ type sqlClusterNode struct {
 	replicaID int
 	adminPort int
 	mysqlPort int
+	pgsqlPort int
 	dataDir   string
 	cmd       *exec.Cmd
 
@@ -230,6 +231,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 	adminPorts := allocateTCPPorts(t, 3)
 	grpcPorts := allocateTCPPorts(t, 3)
 	mysqlPorts := allocateTCPPorts(t, 3)
+	pgsqlPorts := allocateTCPPorts(t, 3)
 	peersFlag := buildPeersFlag(raftPorts)
 	nodeTLS, memberIDs := ca.clusterNodeTLS(t, len(raftPorts))
 
@@ -251,6 +253,8 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
 			"--enable-mysql",
 			"--mysql-port", fmt.Sprintf("%d", mysqlPorts[i]),
+			"--enable-pgsql",
+			"--pgsql-port", fmt.Sprintf("%d", pgsqlPorts[i]),
 			"--sql-database", sqlClusterDatabase,
 		}
 		args = append(args, nodeTLS[i]...)
@@ -260,6 +264,7 @@ func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
 			replicaID: i + 1,
 			adminPort: adminPorts[i],
 			mysqlPort: mysqlPorts[i],
+			pgsqlPort: pgsqlPorts[i],
 			dataDir:   dataDir,
 			cmd:       cmd,
 		})
@@ -335,6 +340,12 @@ func (c *sqlCluster) liveIndexes() []int {
 func (c *sqlCluster) mysql(t *testing.T, idx int) *sql.DB {
 	t.Helper()
 	return waitForMySQL(t, c.ca, c.clientCert, c.clientKey, c.nodes[idx].mysqlPort, adminUser)
+}
+
+// pgsql returns a PostgreSQL connection to replica idx as the bound admin.
+func (c *sqlCluster) pgsql(t *testing.T, idx int) *pgx.Conn {
+	t.Helper()
+	return waitForPgSQL(t, c.ca, c.clientCert, c.clientKey, c.nodes[idx].pgsqlPort, adminUser)
 }
 
 // kill terminates replica idx immediately (SIGKILL, no graceful shutdown) and

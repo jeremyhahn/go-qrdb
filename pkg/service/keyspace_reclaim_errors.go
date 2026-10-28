@@ -211,9 +211,9 @@ func (e *MarkerContendedError) Error() string {
 // MarkerReleaseError reports that a create's claim of a database's fence
 // marker failed with an unknown outcome -- the guarded write may still have
 // been applied -- and that releasing the claim back to the tombstone failed
-// too. The marker may then hold an incarnation no catalog entry names, and a
-// re-create of the name is refused as existing elsewhere until a drop of the
-// name fences it again.
+// too. The marker may then hold an incarnation no catalog entry names; no drop
+// can fence it, since a drop fences only the incarnation its catalog entry
+// records, and a re-create of the name is refused as existing elsewhere.
 type MarkerReleaseError struct {
 	Key string
 	// Err is the failure of the claim itself.

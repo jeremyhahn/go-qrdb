@@ -104,7 +104,7 @@ func TestKeyspaceReclaim_VectorReclaimWaitsForAnInFlightWrite(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- reclaimer.ReclaimDatabaseKeyspace(context.Background(), "acme", "orders", "")
+		done <- reclaimer.ReclaimDatabaseKeyspace(context.Background(), "acme", "orders", "", "")
 	}()
 
 	select {

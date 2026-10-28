@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -169,7 +170,8 @@ func (f *replicaForwarder) forward(ctx context.Context, req mcpgo.CallToolReques
 	target, ferr := f.cfg.Locator.Forward(ctx, refusal, cluster.APIProtocolMCP, send)
 	if ferr != nil {
 		var sendErr *replicaforward.SendError
-		if errors.As(ferr, &sendErr) {
+		var ownerErr *database.BindingOwnerUnavailableError
+		if errors.As(ferr, &sendErr) || errors.As(ferr, &ownerErr) {
 			return nil, ferr, true
 		}
 		return nil, nil, false

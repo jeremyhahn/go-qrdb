@@ -105,6 +105,10 @@ Shipped:
 Response — `DatabaseInfo`, which adds `tenantId`, `status`, `shardId`,
 `storageCodec` (absent for the node's default codec) and `dedicatedWal`. A
 Raft block reports no shard ID of its own: the database's is `shardId`.
+`status` is `remote` on a node that does not hold a non-replicated database
+(OD-2): another node, the catalog record's `owner_node`, holds it, and this
+node forwards its requests there. The Go `database.DatabaseInfo` carries that
+node as `OwnerNode`; the transport shape below does not.
 Every transport sends the same shape: REST, QUIC, MCP, the embedded transport and the desktop bindings emit the JSON form, gRPC and the
 Unix socket the protobuf `DatabaseInfoResponse`, both produced by one converter
 (`pkg/api/dbwire`). Its keys are pinned by a recorded REST response that the Go
@@ -487,8 +491,8 @@ allow it `FailedPrecondition`.
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Success | 200 | `OK` |
-| Database already exists | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` |
-| Database already live on another node (the catalog is node-local until it is replicated) | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` with `Elsewhere` set; the other node's database is untouched |
+| Database already exists in the caller's tenant | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError`; another tenant's database of the same name is not a conflict, and the create makes the caller's own |
+| Name held in the store by another database's incarnation that the catalog does not record | 409 | `ALREADY_EXISTS` — `database.AlreadyExistsError` with `Elsewhere` set; that database is untouched |
 | Name reserved for node or tenant state (`wal`, `nodehost`, `__home`) or otherwise invalid | 400 | `INVALID_ARGUMENT` — `database.ReservedNameError` / `database.InvalidNameError` |
 | Unknown database, or another tenant's database | 404 | `NOT_FOUND` — never implicitly created; another tenant's database is indistinguishable from a missing one |
 | Barrier enabled on a shared store | 422 | `FAILED_PRECONDITION` — `database.SharedStoreBarrierUnsupportedError` |
@@ -513,6 +517,7 @@ allow it `FailedPrecondition`.
 | Operating on a database whose drop is in flight | 409 | `ABORTED` — `database.DroppingError` |
 | A second `DROP DATABASE` for the same database while one is already running on this node | 409 | `ABORTED` — `database.DropInProgressError` |
 | A write that was accepted before a drop and reached the store after it | 409 | `ABORTED` — `database.DroppingError`; nothing was written |
+| Any request naming a dropped database once the drop has removed its catalog record, on any node | 404 | `NOT_FOUND` — the database does not exist; the catalog is replicated, so every node releases it |
 | `DROP DATABASE` of the default database (`system`) | 400 | `INVALID_ARGUMENT` — `database.DefaultDatabaseDropError`; it can never be dropped |
 | A create or Raft update that names a shard ID (reachable only through a library call; no transport carries one) | 400 | `INVALID_ARGUMENT` — `database.CallerShardIDError` |
 | A cluster-wide shard ID could not be claimed (store unavailable, sustained contention) | 503 | `UNAVAILABLE` — `database.ShardIDClaimError` / `shard.ClaimContentionError`; nothing was created, retry |
@@ -522,14 +527,13 @@ allow it `FailedPrecondition`.
 | Compaction policy on another tenant's database (the system tenant included) | 404 | `NOT_FOUND` — indistinguishable from a missing database |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | A create carrying `engine` on REST, QUIC or MCP; gRPC/Unix have no field to set (OD-13) | 400 | `INVALID_ARGUMENT` |
-| A `meta.json` still carrying `"engine"` | 409 | `FAILED_PRECONDITION` — `database.LegacyMetadataError`; the database must be recreated |
 | Target: `backend: raft` on a standalone node | 400 | `FAILED_PRECONDITION` — `database.RaftBackendUnavailableError` |
 | Target: raft options on a non-raft backend | 400 | `INVALID_ARGUMENT` — `database.RaftOptionsRequireRaftBackendError` |
 | Target: barrier on `backend: memory` | 400 | `FAILED_PRECONDITION` — `database.BarrierRequiresPersistentBackendError` |
 | Target: `data_dir` outside a volume/raft tenant's root | 400 | `INVALID_ARGUMENT` — `database.DataDirOutsideTenantRootError` |
 | Target: backend conflicts with the tenant's isolation (OD-7) | 400 | `FAILED_PRECONDITION` — `database.BackendIsolationConflictError` |
 | Target: a database's binding cannot be opened | 503 | `UNAVAILABLE` — `database.BindingUnavailableError` |
-| Target: a local-binding database's owning node is unreachable (OD-2) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError` |
+| A non-replicated database held by another node, forwarded there, and the owner did not serve the request (OD-2) | 503 | `UNAVAILABLE` — `database.BindingOwnerUnavailableError`, naming the owner. QUIC and MCP return their Unavailable code; the PostgreSQL and MySQL wire protocols do not forward and return the `placement.NotAReplicaError` refusal, also Unavailable |
 | Target: the cluster feature gate for a command is not yet open on every member | 503 | `UNAVAILABLE` — `feature.NotActiveError`, the one feature-gate refusal |
 
 ## Pagination

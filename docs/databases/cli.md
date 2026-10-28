@@ -116,6 +116,9 @@ the directory that holds its configuration. The name is released last, so:
   delayed past the drop gets "database is being dropped" and stores nothing,
   however long it was delayed. Vector writes are the exception: they are
   checked just before they are written, not refused by the store.
+- **A dropped database is not found.** Once the drop has finished, every node
+  answers a command naming it with "database not found", whichever node ran
+  the drop.
 - **The default database (`system`) cannot be dropped.** The command is
   refused before anything is touched.
 

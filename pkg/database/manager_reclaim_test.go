@@ -18,13 +18,15 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // This file covers the drop-ordering half of go-qrdb#412. The reclamation
@@ -64,24 +66,44 @@ type spyReclaimer struct {
 	events     []string
 	marker     map[string]string
 
+	// reclaimed records each reclamation whose deletes the store applied:
+	// the marker held the tombstone when they reached it.
+	reclaimed []string
+
 	// unfenceHonorsCtx makes UnfenceDatabaseKeyspace fail on a done
 	// context, as a real replicated store does.
 	unfenceHonorsCtx bool
+
+	// beforeUnfence runs at the start of UnfenceDatabaseKeyspace, before
+	// the store applies it: where a test interleaves another node's drop
+	// taking this one over.
+	beforeUnfence func()
 }
 
 // spyTombstone is the value the spy's fence leaves in its marker.
 const spyTombstone = "<dropped>"
 
-func (s *spyReclaimer) FenceDatabaseKeyspace(_ context.Context, tenantID, database string) error {
+func (s *spyReclaimer) FenceDatabaseKeyspace(_ context.Context, tenantID, database, incarnation, claim string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fenced = append(s.fenced, tenantID+"/"+database)
 	s.events = append(s.events, "fence")
-	s.setMarker(tenantID+"/"+database, spyTombstone)
+	// The store swaps the marker to this claim's tombstone only from
+	// incarnation (absent, for the empty one) or from a tombstone, which
+	// a takeover re-stamps with its own claim; any other value is a
+	// successor's live incarnation and nothing is written.
+	key := tenantID + "/" + database
+	if current := s.marker[key]; current != incarnation && !strings.HasPrefix(current, spyTombstone) {
+		return &DropSupersededError{Name: database, TenantID: tenantID}
+	}
+	s.setMarker(key, spyTombstone+claim)
 	return s.fenceErr
 }
 
-func (s *spyReclaimer) UnfenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation string) error {
+func (s *spyReclaimer) UnfenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation, claim string) error {
+	if s.beforeUnfence != nil {
+		s.beforeUnfence()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unfenced = append(s.unfenced, tenantID+"/"+database)
@@ -92,12 +114,18 @@ func (s *spyReclaimer) UnfenceDatabaseKeyspace(ctx context.Context, tenantID, da
 	if s.unfenceErr != nil {
 		return s.unfenceErr
 	}
-	// The store claims the marker only from absent or the tombstone, or
+	// The store claims the marker only from absent or a tombstone, or
 	// re-marks the incarnation it already holds; another live incarnation
-	// is a database of this name created elsewhere and is left alone.
+	// is a database of this name created elsewhere and is left alone. A
+	// rollback (a non-empty claim) takes the marker out of its own claim's
+	// tombstone only: another claim's is a drop that took it over.
 	key := tenantID + "/" + database
-	if current := s.marker[key]; current != "" && current != spyTombstone && current != incarnation {
+	current := s.marker[key]
+	if current != "" && !strings.HasPrefix(current, spyTombstone) && current != incarnation {
 		return &AlreadyExistsError{Name: database, Elsewhere: true}
+	}
+	if claim != "" && strings.HasPrefix(current, spyTombstone) && current != spyTombstone+claim {
+		return &DropSupersededError{Name: database, TenantID: tenantID}
 	}
 	s.setMarker(key, incarnation)
 	return nil
@@ -118,13 +146,19 @@ func (s *spyReclaimer) markerOf(key string) string {
 	return s.marker[key]
 }
 
+// isFenced reports whether key's marker holds a tombstone, of any drop's
+// claim.
+func (s *spyReclaimer) isFenced(key string) bool {
+	return strings.HasPrefix(s.markerOf(key), spyTombstone)
+}
+
 func (s *spyReclaimer) fenceCalls() (fenced, unfenced, events []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.fenced...), append([]string(nil), s.unfenced...), append([]string(nil), s.events...)
 }
 
-func (s *spyReclaimer) ReclaimDatabaseKeyspace(_ context.Context, tenantID, database, incarnation string) error {
+func (s *spyReclaimer) ReclaimDatabaseKeyspace(_ context.Context, tenantID, database, incarnation, claim string) error {
 	s.mu.Lock()
 	s.incarnations = append(s.incarnations, incarnation)
 	s.events = append(s.events, "reclaim")
@@ -134,6 +168,19 @@ func (s *spyReclaimer) ReclaimDatabaseKeyspace(_ context.Context, tenantID, data
 	s.mu.Unlock()
 	if before != nil {
 		before()
+	}
+	// Every delete carries the guard that the marker holds this drop's
+	// claim's tombstone, evaluated where the delete applies: read it after
+	// before(), which is where a test interleaves another node's drop and
+	// create.
+	s.mu.Lock()
+	fenced := s.marker[tenantID+"/"+database] == spyTombstone+claim
+	if fenced && err == nil {
+		s.reclaimed = append(s.reclaimed, tenantID+"/"+database)
+	}
+	s.mu.Unlock()
+	if !fenced {
+		return &DropSupersededError{Name: database, TenantID: tenantID}
 	}
 	return err
 }
@@ -148,7 +195,7 @@ func (s *spyReclaimer) calls() (tenants, names []string) {
 // memory-backed database, together with the reclaimer wired into it.
 func newReclaimManager(t *testing.T, name string) (*Manager, *spyReclaimer) {
 	t.Helper()
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{Name: name, Backend: BackendMemory})
@@ -192,7 +239,7 @@ func TestManager_Drop_ReclaimsTheDroppedIncarnation(t *testing.T) {
 // keys are addressed by the composite (tenant, database) namespace, so a
 // reclamation handed the wrong tenant deletes nothing and reports success.
 func TestManager_Drop_ReclaimsUnderTheDatabasesOwnTenant(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{
@@ -232,7 +279,7 @@ func TestManager_Drop_ReclaimsBeforeRemovingTheCatalogRecord(t *testing.T) {
 	var dirPresentDuringReclaim bool
 	spy.before = func() {
 		_, getErrDuringReclaim = mgr.Get("reports")
-		_, statErr := os.Stat(mgr.dbDir("reports"))
+		_, statErr := os.Stat(mgr.dbDir("", "reports"))
 		dirPresentDuringReclaim = statErr == nil
 	}
 
@@ -248,7 +295,7 @@ func TestManager_Drop_ReclaimsBeforeRemovingTheCatalogRecord(t *testing.T) {
 	_, err := mgr.Get("reports")
 	var notFound *NotFoundError
 	assert.ErrorAs(t, err, &notFound, "the catalog entry must be gone once the drop completes")
-	_, statErr := os.Stat(mgr.dbDir("reports"))
+	_, statErr := os.Stat(mgr.dbDir("", "reports"))
 	assert.True(t, os.IsNotExist(statErr))
 }
 
@@ -271,7 +318,7 @@ func TestManager_Drop_ReclaimFailureLeavesEverythingIntact(t *testing.T) {
 	db, getErr := mgr.Get("reports")
 	require.NoError(t, getErr, "a failed drop must leave the database resolvable")
 	assert.Equal(t, StatusOpen, db.Status(), "a failed drop must not have closed the database")
-	_, statErr := os.Stat(mgr.dbDir("reports"))
+	_, statErr := os.Stat(mgr.dbDir("", "reports"))
 	assert.NoError(t, statErr, "a failed drop must not have removed the directory")
 }
 
@@ -344,7 +391,7 @@ func TestManager_Drop_ConcurrentDropsProduceExactlyOneSuccess(t *testing.T) {
 // for a Manager with no shared store behind it -- a standalone
 // single-database embedding, where the directory IS the data.
 func TestManager_Drop_WithoutAReclaimerStillRemovesTheDirectory(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	require.Nil(t, mgr.KeyspaceReclaimer())
 	_, err := mgr.Create(DatabaseConfig{Name: "solo", Backend: BackendMemory})
 	require.NoError(t, err)
@@ -353,7 +400,7 @@ func TestManager_Drop_WithoutAReclaimerStillRemovesTheDirectory(t *testing.T) {
 
 	_, getErr := mgr.Get("solo")
 	assert.Error(t, getErr)
-	_, statErr := os.Stat(mgr.dbDir("solo"))
+	_, statErr := os.Stat(mgr.dbDir("", "solo"))
 	assert.True(t, os.IsNotExist(statErr))
 }
 
@@ -374,7 +421,7 @@ func TestManager_Drop_UnknownDatabaseDoesNotReclaim(t *testing.T) {
 // peer of SetKeyspaceReclaimer.
 func TestManager_WithKeyspaceReclaimer(t *testing.T) {
 	spy := &spyReclaimer{}
-	mgr := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
+	mgr := newCatalogManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
 	require.Same(t, spy, mgr.KeyspaceReclaimer())
 
 	_, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
@@ -390,7 +437,7 @@ func TestManager_WithKeyspaceReclaimer(t *testing.T) {
 // go-qrdb#413's refusal will rest on: "no databases left" has to mean
 // "nothing of this tenant's data remains under that database".
 func TestManager_DropForTenant_ReclaimsTheKeyspace(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{
@@ -483,7 +530,7 @@ func TestManager_Get_RefusesDroppingDatabase(t *testing.T) {
 // open database a write could reach.
 func TestManager_Drop_PersistsFenceAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
@@ -491,8 +538,8 @@ func TestManager_Drop_PersistsFenceAcrossRestart(t *testing.T) {
 
 	var restartErr error
 	spy.before = func() {
-		restarted := NewManager(nil, dir)
-		require.NoError(t, restarted.OpenAll())
+		restarted := newCatalogManager(nil, dir)
+		require.NoError(t, restarted.OpenAll(context.Background()))
 		_, restartErr = restarted.Get("reports")
 	}
 
@@ -532,7 +579,7 @@ func TestManager_Drop_ReclaimFailureRestoresPriorStatusEvenWhenSealed(t *testing
 // that failed.
 func TestManager_Drop_ReclaimFailureClearsThePersistedFence(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	spy.err = errors.New("store unreachable")
@@ -541,11 +588,56 @@ func TestManager_Drop_ReclaimFailureClearsThePersistedFence(t *testing.T) {
 
 	require.Error(t, mgr.Drop(context.Background(), "reports"))
 
-	restarted := NewManager(nil, dir)
-	require.NoError(t, restarted.OpenAll())
+	restarted := newCatalogManager(nil, dir)
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	got, getErr := restarted.Get("reports")
 	require.NoError(t, getErr, "a restart after a failed drop must not still see the database fenced")
 	assert.Equal(t, StatusOpen, got.Status())
+}
+
+// A failed drop reads its own claim from the catalog, and another node's
+// drop takes the claim over and re-fences the store before the rollback's
+// unfence lands. The unfence names the failed drop's claim, so the store
+// refuses it: the takeover's fence stays, and the failed drop reports that
+// it did not roll back and leaves the database fenced (go-qrdb#893).
+func TestManager_Drop_RollbackAfterATakeoverLeavesItsFence(t *testing.T) {
+	mgr, spy := newReclaimManager(t, "reports")
+	db, err := mgr.Get("reports")
+	require.NoError(t, err)
+	incarnation := db.Incarnation()
+	spy.err = errors.New("store unreachable")
+	var once sync.Once
+	spy.beforeUnfence = func() {
+		once.Do(func() {
+			require.NoError(t, spy.FenceDatabaseKeyspace(context.Background(), "", "reports", incarnation, "claim-b"))
+		})
+	}
+
+	err = mgr.Drop(context.Background(), "reports")
+	var reclaimErr *KeyspaceReclaimError
+	require.ErrorAs(t, err, &reclaimErr)
+	assert.False(t, reclaimErr.RolledBack, "a rollback the store refused is not a rollback")
+	assert.Equal(t, spyTombstone+"claim-b", spy.markerOf("/reports"), "the takeover's fence must survive the rollback")
+	var dropping *DroppingError
+	_, err = mgr.Get("reports")
+	assert.ErrorAs(t, err, &dropping, "the database stays fenced for the drop that took it over")
+}
+
+// Without a takeover the rollback clears the fence this drop stamped.
+func TestManager_Drop_RollbackClearsItsOwnClaimsFence(t *testing.T) {
+	mgr, spy := newReclaimManager(t, "reports")
+	db, err := mgr.Get("reports")
+	require.NoError(t, err)
+	incarnation := db.Incarnation()
+	spy.err = errors.New("store unreachable")
+
+	err = mgr.Drop(context.Background(), "reports")
+	var reclaimErr *KeyspaceReclaimError
+	require.ErrorAs(t, err, &reclaimErr)
+	assert.True(t, reclaimErr.RolledBack)
+	assert.Equal(t, incarnation, spy.markerOf("/reports"))
+	_, err = mgr.Get("reports")
+	assert.NoError(t, err)
 }
 
 // TestManager_Drop_RetryAfterRestartCompletesTheDrop is the go-qrdb#482
@@ -559,7 +651,7 @@ func TestManager_Drop_ReclaimFailureClearsThePersistedFence(t *testing.T) {
 // because Status reads as though a drop already got that far.
 func TestManager_Drop_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
@@ -568,12 +660,12 @@ func TestManager_Drop_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	// Simulate the crash directly, rather than through a failing
 	// reclaimer: set the fence exactly as Drop's step 0 does and stop,
 	// never running reclaim, close, or Drop's own rollback.
-	require.NoError(t, mgr.setDroppingFlag("reports", db, true))
+	require.NoError(t, mgr.claimDrop(context.Background(), db, "test-claim"))
 	db.SetDropping(true)
 
-	restarted := NewManager(nil, dir)
+	restarted := newCatalogManager(nil, dir)
 	restarted.SetKeyspaceReclaimer(spy)
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 
 	_, err = restarted.Get("reports")
 	var dropping *DroppingError
@@ -588,7 +680,7 @@ func TestManager_Drop_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	_, err = restarted.Get("reports")
 	var notFound *NotFoundError
 	require.ErrorAs(t, err, &notFound, "the retried drop must complete: the catalog entry is gone")
-	_, statErr := os.Stat(restarted.dbDir("reports"))
+	_, statErr := os.Stat(restarted.dbDir("", "reports"))
 	assert.True(t, os.IsNotExist(statErr))
 }
 
@@ -598,19 +690,19 @@ func TestManager_Drop_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 // Get refuses a dropping database for everyone, owner included.
 func TestManager_DropForTenant_RetryAfterRestartCompletesTheDrop(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	db, err := mgr.Create(DatabaseConfig{
 		Name: "reports", Backend: BackendMemory, TenantID: "acme",
 	})
 	require.NoError(t, err)
-	require.NoError(t, mgr.setDroppingFlag("reports", db, true))
+	require.NoError(t, mgr.claimDrop(context.Background(), db, "test-claim"))
 	db.SetDropping(true)
 
-	restarted := NewManager(nil, dir)
+	restarted := newCatalogManager(nil, dir)
 	restarted.SetKeyspaceReclaimer(spy)
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 
 	ctx := tenantContext("acme")
 
@@ -665,7 +757,7 @@ func TestManager_UpdateMethods_RefuseWhileDropping(t *testing.T) {
 			return mgr.UpdateRaft("reports", nil)
 		}},
 		{"UpdateReplicas", func(mgr *Manager) error {
-			return mgr.UpdateReplicas("reports", 3)
+			return mgr.UpdateReplicasForTenant(context.Background(), "reports", 3)
 		}},
 		{"UpdateBarrier", func(mgr *Manager) error {
 			return mgr.UpdateBarrier("reports", nil)
@@ -679,7 +771,10 @@ func TestManager_UpdateMethods_RefuseWhileDropping(t *testing.T) {
 			mgr := newTestManager(t)
 			db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 			require.NoError(t, err)
+			// A drop fences in memory and in the catalog, which a
+			// tenant-scoped lookup revalidates against.
 			db.SetDropping(true)
+			require.NoError(t, mgr.claimDrop(context.Background(), db, "claim"))
 
 			err = tt.call(mgr)
 			var dropping *DroppingError
@@ -690,20 +785,25 @@ func TestManager_UpdateMethods_RefuseWhileDropping(t *testing.T) {
 
 // TestManager_RewriteMeta_PreservesTheDropFence is go-qrdb#482 finding (e)'s
 // data-loss half, isolated from the refusal added above: even if something
-// calls rewriteMeta directly on a fenced database, it must not silently
-// persist Dropping=false, or a crash immediately afterward would restart
-// into a database that looks like an ordinary open one.
+// calls rewriteMeta directly through a handle that does not know the
+// database is fenced -- another node's, or one that resolved it before the
+// fence -- it must not persist Dropping=false, or a crash immediately
+// afterward would restart into a database that looks like an ordinary open
+// one. It refuses, and fences the handle.
 func TestManager_RewriteMeta_PreservesTheDropFence(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	db, err := mgr.Create(DatabaseConfig{Name: "reports", Backend: BackendMemory})
 	require.NoError(t, err)
-	db.SetDropping(true)
+	require.NoError(t, mgr.claimDrop(context.Background(), db, "test-claim"))
 
-	require.NoError(t, mgr.rewriteMeta("reports", db))
+	err = mgr.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Replicas = 3 })
+	var refused *DroppingError
+	require.ErrorAs(t, err, &refused)
+	require.True(t, db.Dropping(), "a refused rewrite fences the handle that made it")
 
-	restarted := NewManager(nil, dir)
-	require.NoError(t, restarted.OpenAll())
+	restarted := newCatalogManager(nil, dir)
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	_, err = restarted.Get("reports")
 	var dropping *DroppingError
 	require.ErrorAs(t, err, &dropping, "rewriteMeta must not clear a fence it did not set")
@@ -711,7 +811,7 @@ func TestManager_RewriteMeta_PreservesTheDropFence(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // go-qrdb#482 round 3's second review, finding 10: Drop's step 0 used to
-// write the DURABLE fence (meta.json) before the IN-MEMORY one
+// write the DURABLE fence (the catalog record) before the IN-MEMORY one
 // (db.SetDropping), leaving a window in which a concurrent Update* call
 // that had already passed loadDatabase (observing Dropping()==false) could
 // run rewriteMeta -- which always reads db.Dropping() fresh, never a cached
@@ -735,7 +835,7 @@ func TestManager_Drop_InMemoryFenceAloneAlreadyRefusesUpdates(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate the instant immediately after Drop's step 0 flips the
-	// in-memory flag, before its own durable write (setDroppingFlag) has
+	// in-memory flag, before its own durable write (claimDrop) has
 	// run at all.
 	db.SetDropping(true)
 
@@ -744,74 +844,92 @@ func TestManager_Drop_InMemoryFenceAloneAlreadyRefusesUpdates(t *testing.T) {
 	require.ErrorAs(t, err, &dropping, "an Update* call must already be refused before any durable write for this drop has committed")
 }
 
-// TestManager_WriteMeta_ConcurrentWritesProduceValidJSON proves writeMeta's
-// temp-file/fsync/rename sequence: N goroutines racing to write different
-// DatabaseMeta values to the SAME meta.json must never leave it torn,
-// truncated, or otherwise invalid -- only ever the complete content of
-// whichever writer's atomic rename landed last.
-func TestManager_WriteMeta_ConcurrentWritesProduceValidJSON(t *testing.T) {
-	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
-	dbDir := t.TempDir()
-
-	const writers = 20
-	var wg sync.WaitGroup
-	wg.Add(writers)
-	for i := 0; i < writers; i++ {
-		go func(i int) {
-			defer wg.Done()
-			meta := DatabaseMeta{Name: "reports", Backend: BackendMemory, Dropping: i%2 == 0}
-			_ = mgr.writeMeta(dbDir, meta)
-		}(i)
-	}
-	wg.Wait()
-
-	got, err := mgr.readMeta(dbDir)
-	require.NoError(t, err, "meta.json must still be valid JSON after concurrent writers")
-	assert.Equal(t, "reports", got.Name)
-
-	entries, err := os.ReadDir(dbDir)
+// TestManager_Drop_StaleDropperLeavesTheSuccessorIntact drives the takeover
+// go-qrdb#893 describes through two managers sharing one catalog and one
+// store: node A fences "orders" and stalls before its reclamation reaches
+// the store; meanwhile node B takes the drop over, finishes it, and creates
+// the name again. A resumes into a store whose marker holds B's
+// incarnation, and nothing of B's is deleted, closed or uncatalogued.
+func TestManager_Drop_StaleDropperLeavesTheSuccessorIntact(t *testing.T) {
+	cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
 	require.NoError(t, err)
-	for _, e := range entries {
-		assert.NotContains(t, e.Name(), ".tmp", "no temp file should survive a completed writeMeta call")
+	spy := &spyReclaimer{}
+	a := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
+	a.SetCatalog(cat)
+	defer func() { _ = a.Close() }()
+	b := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
+	b.SetCatalog(cat)
+	defer func() { _ = b.Close() }()
+
+	ctx := tenantContext("tenant-a")
+	stale, err := a.CreateForTenant(ctx, validMemoryConfig("orders"))
+	require.NoError(t, err)
+
+	var successor *Database
+	spy.before = func() {
+		spy.mu.Lock()
+		spy.before = nil
+		spy.mu.Unlock()
+		require.NoError(t, b.DropForTenant(ctx, "orders"), "B takes the drop over and finishes it")
+		successor, err = b.CreateForTenant(ctx, validMemoryConfig("orders"))
+		require.NoError(t, err, "B creates the name again")
 	}
+
+	err = a.DropForTenant(ctx, "orders")
+	var superseded *DropSupersededError
+	require.ErrorAs(t, err, &superseded, "the stale drop must learn it was superseded")
+	require.NotEqual(t, stale.Incarnation(), successor.Incarnation())
+
+	spy.mu.Lock()
+	reclaimed, marker := append([]string(nil), spy.reclaimed...), spy.marker["tenant-a/orders"]
+	spy.mu.Unlock()
+	assert.Equal(t, []string{"tenant-a/orders"}, reclaimed, "only B's drop may reach the store")
+	assert.Equal(t, successor.Incarnation(), marker, "the successor's incarnation must stay live")
+
+	meta, err := cat.Get(ctx, "tenant-a", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, successor.Incarnation(), meta.Incarnation, "the successor's record must survive")
+	assert.False(t, meta.Dropping, "the stale drop must not fence the successor's record")
+	got, err := b.GetForTenant(ctx, "orders")
+	require.NoError(t, err)
+	assert.Equal(t, StatusOpen, got.Status(), "the successor must stay open")
 }
 
-// TestManager_WriteMeta_CreateTempFailsWhenDirMissing proves writeMeta
-// reports a *MetaWriteError, not a panic or a silent success, when it
-// cannot even create the temp file it writes through -- here because dbDir
-// itself does not exist.
-func TestManager_WriteMeta_CreateTempFailsWhenDirMissing(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
-	missing := filepath.Join(t.TempDir(), "does-not-exist")
+// TestManager_Drop_SupersededLocallyLeavesTheNameAlone covers the window
+// after the store: a drop whose reclamation finished, but whose catalog
+// record was meanwhile finished by another drop and created again, takes
+// none of the node-local steps that act by name.
+func TestManager_Drop_SupersededLocallyLeavesTheNameAlone(t *testing.T) {
+	cat, err := NewKVCatalog(kvstore.NewMemoryKVStore(), nil)
+	require.NoError(t, err)
+	spy := &spyReclaimer{}
+	m := NewManager(nil, t.TempDir(), WithKeyspaceReclaimer(spy))
+	m.SetCatalog(cat)
+	defer func() { _ = m.Close() }()
 
-	err := mgr.writeMeta(missing, DatabaseMeta{Name: "reports", Backend: BackendMemory})
-	var mwe *MetaWriteError
-	require.ErrorAs(t, err, &mwe)
-}
+	ctx := tenantContext("tenant-a")
+	stale, err := m.CreateForTenant(ctx, validMemoryConfig("orders"))
+	require.NoError(t, err)
+	dir := m.dbDir("tenant-a", "orders")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
 
-// TestManager_WriteMeta_RenameFailsWhenTargetIsANonEmptyDirectory proves
-// the final atomic-rename step's own failure path: a rename onto an
-// existing, non-empty directory fails, and writeMeta reports it as a
-// *MetaWriteError rather than silently leaving the temp file as the only
-// record of the write.
-func TestManager_WriteMeta_RenameFailsWhenTargetIsANonEmptyDirectory(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
-	dbDir := t.TempDir()
-	metaAsDir := filepath.Join(dbDir, metaFile)
-	require.NoError(t, os.MkdirAll(filepath.Join(metaAsDir, "occupied"), 0o750))
-
-	err := mgr.writeMeta(dbDir, DatabaseMeta{Name: "reports", Backend: BackendMemory})
-	var mwe *MetaWriteError
-	require.ErrorAs(t, err, &mwe)
-
-	// The failed rename must not have left a stray temp file behind either.
-	entries, rerr := os.ReadDir(dbDir)
-	require.NoError(t, rerr)
-	for _, e := range entries {
-		if e.Name() == metaFile {
-			continue
-		}
-		assert.NotContains(t, e.Name(), ".tmp", "the temp file must be cleaned up even when the rename fails")
+	// Another drop finishes the record and a create catalogs the name again
+	// while this drop's reclamation is in flight; the successor's store
+	// marker is not written yet, so the store still admits the reclamation.
+	spy.before = func() {
+		meta, err := cat.Get(ctx, "tenant-a", "orders")
+		require.NoError(t, err)
+		require.NoError(t, cat.Delete(ctx, "tenant-a", "orders", meta.Incarnation, meta.DropClaim))
+		require.NoError(t, cat.Create(ctx, DatabaseMeta{TenantID: "tenant-a", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
 	}
+
+	var superseded *DropSupersededError
+	require.ErrorAs(t, m.DropForTenant(ctx, "orders"), &superseded)
+
+	_, statErr := os.Stat(dir)
+	assert.NoError(t, statErr, "the superseded drop removed the directory the name now belongs to")
+	meta, err := cat.Get(ctx, "tenant-a", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, "successor", meta.Incarnation, "the superseded drop removed the successor's record")
+	assert.NotEqual(t, StatusClosed, stale.Status(), "the superseded drop went on to the node-local steps")
 }

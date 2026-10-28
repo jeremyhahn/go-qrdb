@@ -61,68 +61,6 @@ func countSyncDir(t *testing.T) *[]string {
 	return &seen
 }
 
-// seedPebbleDir builds the pre-migration flat layout MigrateIfNeeded expects.
-func seedPebbleDir(t *testing.T, dataDir string) {
-	t.Helper()
-	pebbleDir := filepath.Join(dataDir, "pebble")
-	if err := os.MkdirAll(pebbleDir, 0o750); err != nil {
-		t.Fatalf("seed pebble dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pebbleDir, "CURRENT"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("seed pebble contents: %v", err)
-	}
-}
-
-// TestMigrateIfNeeded_DoesNotReportSuccessBeforeTheMoveIsDurable.
-//
-// The move of pebble/ into databases/default/data IS the migration. It is
-// guarded by "databases/ exists => already migrated", so a crash that keeps
-// the destination's new entry while losing the source's removal leaves the
-// data reachable under two names and the re-run returning early -- the old
-// layout sitting beside the new one, both live.
-func TestMigrateIfNeeded_DoesNotReportSuccessBeforeTheMoveIsDurable(t *testing.T) {
-	dataDir := t.TempDir()
-	seedPebbleDir(t, dataDir)
-	sentinel, synced := failSyncDir(t)
-
-	err := MigrateIfNeeded(newTestLogger(), dataDir)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("MigrateIfNeeded = %v; want the directory-sync failure. Reporting the "+
-			"migration complete before its directory entries are durable lets a crash "+
-			"recover the data under the old name, the new name, or neither", err)
-	}
-	if len(*synced) == 0 {
-		t.Error("no directory sync was attempted; the move is not a commit point without one")
-	}
-}
-
-// TestMigrateIfNeeded_SyncsBothSidesOfTheCrossDirectoryMove: the move crosses
-// parents, so the source directory (losing "pebble") and the destination
-// (gaining "data") are different directories and BOTH need syncing.
-func TestMigrateIfNeeded_SyncsBothSidesOfTheCrossDirectoryMove(t *testing.T) {
-	dataDir := t.TempDir()
-	seedPebbleDir(t, dataDir)
-	synced := countSyncDir(t)
-
-	if err := MigrateIfNeeded(newTestLogger(), dataDir); err != nil {
-		t.Fatalf("MigrateIfNeeded: %v", err)
-	}
-
-	wantDst := filepath.Join(dataDir, databasesDir, "default")
-	got := map[string]bool{}
-	for _, d := range *synced {
-		got[d] = true
-	}
-	if !got[dataDir] {
-		t.Errorf("source directory %s never synced (saw %v); the removal of the old "+
-			"pebble/ entry is undurable, so a crash can recover it alongside the new layout",
-			dataDir, *synced)
-	}
-	if !got[wantDst] {
-		t.Errorf("destination directory %s never synced (saw %v)", wantDst, *synced)
-	}
-}
-
 // TestSwapStoreDir_DoesNotReportSuccessBeforeTheSwapIsDurable.
 //
 // The swap is two renames with an intermediate state in which NO directory

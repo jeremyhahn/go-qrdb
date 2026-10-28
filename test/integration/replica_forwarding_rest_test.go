@@ -59,6 +59,8 @@ func (restFwdTransport) do(t *testing.T, c *fwdCluster, i int, caller fwdCaller,
 		denied:   resp.StatusCode == http.StatusForbidden,
 		notFound: resp.StatusCode == http.StatusNotFound,
 		detail:   fmt.Sprintf("%d %s", resp.StatusCode, raw),
+
+		unavailable: resp.StatusCode == http.StatusServiceUnavailable,
 	}
 	var e struct {
 		Code     string            `json:"code"`

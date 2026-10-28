@@ -1740,13 +1740,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(pending.dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		n.stg = nil
-		return err
-	}
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1914,22 +1908,17 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 	n.stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(n.background(), lr, leaseSvc, n.logger)
 }
 
-// openStandaloneDatabaseManager opens the standalone node's database catalog
-// under dataDir, reopening every database a previous run created, and records
-// it on the node, which owns its lifetime. It is the standalone counterpart of
-// the clustered boot's manager: the manager is handed to BuildServices and to
-// the server, so a named database resolves through the server's registry, is
-// confined to its owning tenant, and is refused while sealed. It used to be
-// built inside BuildServices, which never reopened a previous run's databases
-// and which the server never saw.
-func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
+// newStandaloneDatabaseManager builds the standalone node's database manager
+// under dataDir and records it on the node, which owns its lifetime. It is the
+// standalone counterpart of the clustered boot's manager: the manager is
+// handed to BuildServices, which attaches the database catalog and opens every
+// database it records, and to the server, so a named database resolves
+// through the server's registry, is confined to its owning tenant, and is
+// refused while sealed.
+func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
 	dbManager := database.NewManager(n.logger, dataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = dbManager.Close()
-		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
-	return dbManager, nil
+	return dbManager
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2326,20 +2315,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.host = host
 
-	// Build the database manager. OpenAll re-scans the databases directory and
-	// loads persisted meta.json records -- the same sequence the daemon
-	// performs before BuildServices. Shard IDs are claimed from the replicated
+	// Build the database manager. lifecycle.BuildServices attaches the
+	// replicated database catalog and opens every database it records, as it
+	// does for the daemon. Shard IDs are claimed from the replicated
 	// store (lifecycle.BuildServices wires the claimer), not from this node. The manager is shared with
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = host.Close()
-		_ = dbManager.Close()
-		return &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3124,12 +3108,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		return nil, err
-	}
+	dbManager := n.newStandaloneDatabaseManager(dataDir)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).

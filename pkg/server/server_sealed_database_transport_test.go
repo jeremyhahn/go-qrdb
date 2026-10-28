@@ -16,15 +16,16 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -134,18 +135,17 @@ func dialTransports(t *testing.T, srv *Server) map[string]transport.Transport {
 func openLegacyVault(t *testing.T) (*database.Manager, *database.Database) {
 	t.Helper()
 	dataDir := t.TempDir()
-	mgr := database.NewManager(nil, dataDir, database.WithBarrierManager(newSealedDBBarrierManager(t)))
+	mgr := databasetest.NewManager(nil, dataDir, database.WithBarrierManager(newSealedDBBarrierManager(t)))
 	t.Cleanup(func() { _ = mgr.Close() })
 
-	meta := []byte(`{"name":"legacyvault","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`)
-	dbDir := filepath.Join(dataDir, "databases", "legacyvault")
-	if err := os.MkdirAll(dbDir, 0o750); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
+	var meta database.DatabaseMeta
+	if err := json.Unmarshal([]byte(`{"name":"legacyvault","backend":"raft","protocol":{"mysql":true,"postgresql":true},"raft":{"clusterMode":"local"},"barrier":{"enabled":true,"mode":"passphrase"}}`), &meta); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dbDir, "meta.json"), meta, 0o600); err != nil {
-		t.Fatalf("WriteFile(meta.json): %v", err)
+	if err := databasetest.Catalog(dataDir).Create(context.Background(), meta); err != nil {
+		t.Fatalf("catalog Create: %v", err)
 	}
-	if err := mgr.OpenAll(); err != nil {
+	if err := mgr.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll: %v", err)
 	}
 	db, err := mgr.Get("legacyvault")

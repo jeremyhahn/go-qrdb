@@ -282,7 +282,7 @@ func newClusterDatabase(t *testing.T, sealer *clustersealtest.Sealer, name strin
 	svc, mgr := newTestDatabaseServiceWithBarrier(t)
 	svc.sealer = sealer
 	sealer.OnSeal(func(b clusterseal.Barrier) error {
-		if err := svc.barrierMgr.SealDatabase(b.Database()); err != nil {
+		if err := svc.barrierMgr.SealDatabase(b.Database(), b.Tenant()); err != nil {
 			return err
 		}
 		db, err := mgr.Get(b.Database())

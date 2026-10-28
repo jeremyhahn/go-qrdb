@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
@@ -209,7 +210,8 @@ func (f *restReplicaForwarder) forward(w http.ResponseWriter, r *http.Request, p
 	target, ferr := f.cfg.Locator.Forward(ctx, refusal, cluster.APIProtocolREST, send)
 	if ferr != nil {
 		var sendErr *replicaforward.SendError
-		if errors.As(ferr, &sendErr) {
+		var ownerErr *database.BindingOwnerUnavailableError
+		if errors.As(ferr, &sendErr) || errors.As(ferr, &ownerErr) {
 			writeErrorJSON(w, mapHTTPError(ferr), ferr)
 			return
 		}

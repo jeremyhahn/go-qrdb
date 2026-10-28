@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -37,7 +38,7 @@ func TestBuildServices_DatabaseBarrierResolvesStrategiesThroughTheRegistry(t *te
 		t.Fatalf("Register: %v", err)
 	}
 	barrier, registry, credSvc := newTestBarrier(t)
-	dbs := database.NewManager(nil, t.TempDir())
+	dbs := databasetest.NewManager(nil, t.TempDir())
 
 	node := buildSeamNode(t, lifecycle.Infra{
 		SealBarrier:       barrier,
@@ -63,7 +64,7 @@ func TestBuildServices_DatabaseBarrierResolvesStrategiesThroughTheRegistry(t *te
 
 func TestBuildServices_DatabaseBarrierWithoutARegistryKeepsTheBuiltInModes(t *testing.T) {
 	barrier, registry, credSvc := newTestBarrier(t)
-	dbs := database.NewManager(nil, t.TempDir())
+	dbs := databasetest.NewManager(nil, t.TempDir())
 
 	buildSeamNode(t, lifecycle.Infra{
 		SealBarrier:       barrier,

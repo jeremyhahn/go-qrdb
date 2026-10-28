@@ -19,39 +19,29 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
-// TestDatabaseUnsealGate_VetoesASealedRecordOrAnUnknownDatabase: the node
-// unseal's database veto follows the database's own cluster seal record,
-// named by its owner (the system tenant for an unowned database), and refuses
-// a database this node cannot name an owner for.
-func TestDatabaseUnsealGate_VetoesASealedRecordOrAnUnknownDatabase(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
-	t.Cleanup(func() { _ = mgr.Close() })
-	for _, cfg := range []database.DatabaseConfig{
-		{TenantID: "acme", Name: "orders", Backend: database.BackendMemory},
-		{Name: "platform", Backend: database.BackendMemory},
-	} {
-		if _, err := mgr.Create(cfg); err != nil {
-			t.Fatalf("create %s: %v", cfg.Name, err)
-		}
-	}
+// TestDatabaseUnsealGate_VetoesASealedRecord: the node unseal's database veto
+// follows the cluster seal record of the database its barrier is keyed by,
+// named by its tenant (the system tenant for an unowned database), so one
+// tenant's sealed record never vetoes another tenant's database of the same
+// name.
+func TestDatabaseUnsealGate_VetoesASealedRecord(t *testing.T) {
 	sealer := clustersealtest.New(true)
-	gate := databaseUnsealGate(mgr, sealer)
+	gate := databaseUnsealGate(sealer)
 
-	if gate("orders") || gate("platform") {
+	if gate("orders", "acme") || gate("orders", "beta") || gate("platform", "") {
 		t.Fatal("a database with no sealed record was vetoed")
 	}
 	sealer.Put(clusterseal.Record{Barrier: clusterseal.DatabaseBarrier("acme", "orders"), Epoch: 1, Sealed: true})
 	sealer.Put(clusterseal.Record{Barrier: clusterseal.DatabaseBarrier("system", "platform"), Epoch: 1, Sealed: true})
-	if !gate("orders") {
+	if !gate("orders", "acme") {
 		t.Fatal("a database whose record is sealed was not vetoed")
 	}
-	if !gate("platform") {
-		t.Fatal("an unowned database's record, the system tenant's, was not consulted")
+	if gate("orders", "beta") {
+		t.Fatal("another tenant's sealed record vetoed a database of the same name")
 	}
-	if !gate("ghost") {
-		t.Fatal("a database this node cannot name an owner for was not vetoed")
+	if !gate("platform", "") {
+		t.Fatal("an unowned database's record, the system tenant's, was not consulted")
 	}
 }

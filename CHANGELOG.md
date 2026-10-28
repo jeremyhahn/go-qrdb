@@ -11,6 +11,21 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+- **A non-replicated database is held by the node that created it, and every
+  other node forwards to it** (#893, OD-2). The catalog record carries
+  `owner_node`, the creating node's Raft address, for a memory, file, pebble or
+  objstore database. Other nodes open no store for it. They list it as
+  `remote`, and REST, gRPC, the Unix socket, QUIC and MCP forward its requests
+  to the owner. An owner that does not serve gives
+  `database.BindingOwnerUnavailableError` (Unavailable), which names it. The
+  PostgreSQL and MySQL wire protocols do not forward and return the refusal.
+  The catalog is the one record of databases: a node reads no `meta.json`, and
+  one whose data directory still holds such a record refuses to start with
+  `database.UnmigratedDatabasesError`, naming every file, rather than starting
+  with those databases unlisted. A create releases an entry this node holds
+  for a database another node dropped before refusing the name as a duplicate.
+
 ### Security
 - **mcp-secret-argument-types** (#1129, #1130): an MCP secret, PIN or
   credential argument sent as anything but a JSON string (an array, object,
@@ -176,6 +191,25 @@ are not reconstructed here — their history is in the git log.
   ([docs/databases/architecture.md](docs/databases/architecture.md)).
 
 ### Fixed
+- **A drop taken over by another no longer unfences its database on rollback**
+  (#893): the drop-fence tombstone carries the drop's claim, and the store
+  refuses a rollback, reclamation or clear whose claim a takeover replaced,
+  in the same Raft-applied compare-and-swap, so the takeover's fence and
+  reclamation stand.
+- **A drop whose claim another drop took over is not reported as success**
+  (#893): it returns `database.DropSupersededError`, and only the drop that
+  removed the record releases the Raft-group and replica quotas.
+- **A resumed drop of a dedicated-raft database cannot delete its
+  successor's data** (#893): creating a dedicated-raft database claims its
+  incarnation in the drop-fence marker of the store its keyspace is reclaimed
+  from, and a drop tombstones that marker only from the incarnation it is
+  dropping, so a reclamation resumed after the name was created again returns
+  `database.DropSupersededError` and deletes none of the successor's keys,
+  indexes or vectors.
+- **Scaling a database records its replica count when two tenants hold the
+  same name** (#893): `Manager.UpdateReplicasForTenant` resolves the caller's
+  tenant's database, so the replica count no longer goes stale and a later
+  drop releases the right replica quota.
 
 - **Every node logs a feature activation, whichever path learns of it**: a
   node that adopted an activation from its replica's applied record, or from
@@ -233,6 +267,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Database names belong to a tenant** (#893): a database is identified by
+  its tenant and its name, so two tenants can each create a database of the
+  same name and each reaches only its own. Creating a name another tenant uses
+  succeeds and makes the caller's own database instead of returning
+  `database.AlreadyExistsError` (409, `ALREADY_EXISTS`), which disclosed that
+  the other tenant held the name; `AlreadyExistsError` now means the name is
+  taken in the caller's own tenant.
 - **`qrdb users cert-binding add|list|remove`** (#671). The CLI had no verb
   for enrolling a certificate binding, though the default
   `auth.mtls_binding_policy: required` refuses a certificate until one is
@@ -273,6 +314,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A node no longer fails its boot on a system shard that is still
+  settling when it opens the database catalog.** Listing the catalog is a
+  linearizable read, and it ran before the boot waited for a leader, so an
+  election in progress, or a new leader's ReadIndex warm-up, failed the boot.
+  The open now waits out the settling within the same bounded budget as the
+  other boot reads (`server.SystemShardSettleBudget`). Any other failure still
+  fails the boot at once.
+- **A create whose catalog record cannot be removed during its rollback
+  keeps its data directories.** If a create fails after its catalog record
+  committed, and the rollback then cannot delete that record, the create now
+  returns `database.CatalogOrphanError`, carrying both failures, and leaves
+  the directories in place for the record that still names them. Before this
+  change the directories were removed and the failure was only logged.
+- **A create that fails clearing its predecessor's seal record rolls back
+  its own tenant's database.** The rollback dropped the database by name
+  alone. When another tenant held a database of the same name, the drop was
+  refused as ambiguous and the failed create stayed open and recorded. It
+  now drops by tenant and name.
 - **`qrdb users cert-binding add|remove` document `--` before a thumbprint**
   (#671). A thumbprint is base64url (RFC 8705 `x5t#S256`), so about one in 64
   begins with `-` and the CLI read it as a flag (`unknown shorthand flag`).

@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -188,7 +189,7 @@ func newPassphraseDatabases(t *testing.T, system *seal.StorageBarrier) *database
 	t.Helper()
 	bm, err := database.NewDatabaseBarrierManager(testLogger(), system)
 	require.NoError(t, err)
-	mgr := database.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBarrierManager(bm))
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err = mgr.CreateWithCredentials(context.Background(), database.DatabaseConfig{
 		TenantID: "acme", Name: "secure", Backend: database.BackendMemory,
@@ -203,8 +204,10 @@ func newPassphraseDatabases(t *testing.T, system *seal.StorageBarrier) *database
 func databaseKeyWiped(t *testing.T, mgr *database.Manager, name string) bool {
 	t.Helper()
 	bm := mgr.BarrierManager()
-	st, err := bm.BarrierStatus(name)
+	db, err := mgr.Get(name)
 	require.NoError(t, err)
-	enc := bm.GetBarrier(name)
+	st, err := bm.BarrierStatus(name, db.TenantID())
+	require.NoError(t, err)
+	enc := bm.GetBarrier(name, db.TenantID())
 	return st.Sealed && enc != nil && enc.IsSealed()
 }

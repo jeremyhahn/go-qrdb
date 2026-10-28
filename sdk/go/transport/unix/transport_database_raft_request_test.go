@@ -22,7 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest"
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -32,7 +32,7 @@ import (
 // request converter (dbconv.RaftConfig) with this transport.
 func TestUnixRT_RaftRequestReachesTheService(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := service.NewDatabaseService(mgr)
 	dbwiretest.Seed(t, svc)

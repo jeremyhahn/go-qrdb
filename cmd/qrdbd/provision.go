@@ -24,15 +24,19 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // databaseProvisioner is the slice of *database.Manager boot provisioning
-// uses.
+// uses. The databases it provisions are the system tenant's, so every
+// lookup resolves the (system tenant, name) pair: a tenant's database of the
+// same name is neither reached nor makes the name ambiguous.
 type databaseProvisioner interface {
-	Get(name string) (*database.Database, error)
+	GetOwned(name, tenantID string) (*database.Database, error)
 	Provision(ctx context.Context, cfg database.DatabaseConfig) (*database.Database, error)
-	UpdateProtocol(name string, protocol database.ProtocolConfig) error
-	UpdateSQL(name string, sqlCfg *database.SQLConfig) error
+	UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) error
+	UpdateSQLForTenant(ctx context.Context, name string, sqlCfg *database.SQLConfig) error
 }
 
 var _ databaseProvisioner = (*database.Manager)(nil)
@@ -54,18 +58,19 @@ var _ databaseProvisioner = (*database.Manager)(nil)
 // where to. The wait runs in rounds of leaderWaitBudget(f) and ends only
 // with ctx.
 //
-// awaitLeader only confirms a leader is locally KNOWN, not that the shard
+// server.AwaitShardLeader only confirms a leader is locally KNOWN, not that the shard
 // has finished settling onto it (the same ReadIndex warm-up / election
 // churn server.WhileSystemShardSettling exists for elsewhere in this
 // daemon's boot): the drop-fence write itself can still race that window
 // and come back *service.NotLeaderError with no leader named, immediately
-// after awaitLeader returned successfully. Every write below is retried
+// after server.AwaitShardLeader returned successfully. Every write below is retried
 // through WhileSystemShardSettling for exactly that reason; any other
 // error class is returned at once.
 func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisioner, node server.LeaderSource) error {
-	if err := awaitLeader(ctx, node, leaderWaitBudget(f), shard.ShardKV); err != nil {
+	if err := server.AwaitShardLeader(ctx, node, leaderWaitBudget(f), shard.ShardKV); err != nil {
 		return &DatabaseProvisionError{Step: "wait for leader", Err: err}
 	}
+	ctx = tenant.WithTenantID(ctx, tenantid.System)
 	// Every step below is a write and runs on the boot's context, not the
 	// attempt's: a cut-off attempt would leave a proposal in flight whose
 	// retry races it.
@@ -82,7 +87,7 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 		// protocol config on every boot.
 		if cfg.SQL != nil {
 			if err := server.WhileSystemShardSettling(ctx, "update SQL settings of database "+cfg.Name, func(context.Context) error {
-				return dbs.UpdateSQL(cfg.Name, cfg.SQL)
+				return dbs.UpdateSQLForTenant(ctx, cfg.Name, cfg.SQL)
 			}); err != nil {
 				return err
 			}
@@ -91,10 +96,10 @@ func provisionDatabases(ctx context.Context, f *startFlags, dbs databaseProvisio
 	if f.sqlDatabase == "" || (!f.enableMySQL && !f.enablePgSQL) {
 		return nil
 	}
-	_, err := dbs.Get(f.sqlDatabase)
+	_, err := dbs.GetOwned(f.sqlDatabase, tenantid.System)
 	if err == nil {
 		return server.WhileSystemShardSettling(ctx, "update protocol of SQL database "+f.sqlDatabase, func(context.Context) error {
-			return dbs.UpdateProtocol(f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
+			return dbs.UpdateProtocolForTenant(ctx, f.sqlDatabase, sqlDatabaseConfig(f).Protocol)
 		})
 	}
 	var nfe *database.NotFoundError

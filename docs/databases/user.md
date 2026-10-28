@@ -32,6 +32,10 @@ qrdb --database app kv put hello world
 The root `--database` flag scopes data-plane commands. Without it you are
 talking to the server's default database, `system`.
 
+Database names belong to your tenant. Another tenant can have a database
+called `app` too: yours and theirs are separate databases, and neither tenant
+can see, reach or learn of the other's.
+
 ## Choosing a backend
 
 **There is no engine to choose.** There is no `--engine` flag; passing one is
@@ -47,6 +51,13 @@ You pick the backend at creation and cannot change it afterwards.
 | `memory` | nothing survives a restart | tests, caches |
 | `file` | filesystem-mapped store | small metadata sets |
 | `raft` | its own Raft group, replicated | you need replication or etcd |
+
+**In a cluster, a non-raft database lives on the node that created it.** You
+can still reach it through any node. That node sends the request to the owner
+and returns the owner's answer. `qrdb database list` shows the database on every
+node, with status `remote` on the nodes that do not hold it. While the owner
+is down, the database is unavailable. This holds for `pebble`, `memory`,
+`file` and `objstore` databases.
 
 **Know what the backend does today.** For most databases the backend you choose
 is recorded but is not where the data goes: the tenant's isolation mode and the
@@ -157,7 +168,8 @@ qrdb database drop scratch
 Creating a database under a name you dropped gives you an empty one. It does
 not pick up anything the old database left — including writes that were still
 in flight when the drop began: those are refused with "database is being
-dropped" rather than stored.
+dropped" rather than stored. Once the drop has finished, a request naming the
+database gets "database not found" from every node: it no longer exists.
 
 The default database, `system`, cannot be dropped.
 
@@ -247,6 +259,16 @@ with the new release, creating a raft-backed database is refused with
 `cluster-shard-ids` is not active yet. Retry once every node runs the new
 release.
 
+## Upgrading a node whose databases predate the catalog
+
+A release before the catalog recorded each database in a `meta.json` file in
+the database's directory under the node's data directory. This release reads
+the replicated catalog alone and never that file, so a node that still holds
+one refuses to start with `database.UnmigratedDatabasesError`, which names
+every such file, rather than starting with those databases missing from every
+listing. Move the data out with the release that wrote it, remove the old
+database directories, start the node, and create the databases again.
+
 ## Troubleshooting
 
 **`--barrier-enabled` was rejected.** The database would be served from a store
@@ -266,6 +288,13 @@ run the same command again.
 while the write was on its way, and the write was refused so it could not
 reappear in the dropped database. Nothing was stored. If you meant to keep
 writing, create the database again.
+
+**A request failed with "is held by node ..., which did not serve the
+request".** The database is not replicated. The node named in the message holds
+it, and that node did not answer. Bring that node back, or send the request to
+it directly. Nothing was written on the node you asked. A PostgreSQL or MySQL
+client connected to another node gets a "not a replica" refusal instead,
+because those protocols do not forward. Connect to the owner.
 
 **`qrdb database drop` refused the `system` database.** The default database
 holds the bootstrap records every request falls back to and cannot be

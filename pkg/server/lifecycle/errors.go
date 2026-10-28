@@ -216,6 +216,22 @@ func (e *DatabaseBarrierManagerError) Unwrap() error {
 	return e.Err
 }
 
+// DatabaseCatalogError is returned when the database catalog cannot be
+// built, or the databases it records cannot be listed, at boot.
+type DatabaseCatalogError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseCatalogError) Error() string {
+	return "lifecycle: database catalog initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *DatabaseCatalogError) Unwrap() error {
+	return e.Err
+}
+
 // RoleServiceError is returned when the role store fails to initialize.
 type RoleServiceError struct {
 	Err error

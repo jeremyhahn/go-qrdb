@@ -208,31 +208,33 @@ func (s *DatabaseService) clearPredecessorSeal(ctx context.Context, db *database
 func (s *DatabaseService) rollBackCreate(ctx context.Context, db *database.Database, cause error) {
 	name := db.Name()
 	if s.barrierMgr != nil {
-		if _, err := s.barrierMgr.BarrierStatus(name); err == nil {
-			if serr := s.sealDatabaseHere(name); serr != nil {
+		if _, err := s.barrierMgr.BarrierStatus(name, db.TenantID()); err == nil {
+			if serr := s.sealDatabaseHere(db); serr != nil {
 				s.logger.Error("failed to seal database while rolling back its create",
 					"database", name, "cause", cause, "error", serr)
 			}
 		}
 	}
-	if err := s.manager.Drop(ctx, name); err != nil {
+	// Dropped by its own tenant and name: another tenant may hold a
+	// database of the same name, which a name-only drop refuses.
+	if err := s.manager.DropForTenant(tenant.WithTenantID(ctx, db.TenantID()), name); err != nil {
 		s.logger.Error("failed to roll back database create",
 			"database", name, "cause", cause, "error", err)
 	}
 }
 
-// clearDatabaseSeal ends a cluster seal of name after this node has unsealed
+// clearDatabaseSeal ends a cluster seal of db after this node has unsealed
 // it. If the clear record cannot be written the database is sealed again
 // here, so this node never serves a database whose record still says sealed.
-func (s *DatabaseService) clearDatabaseSeal(ctx context.Context, name string) error {
-	b := s.databaseBarrier(ctx, name)
+func (s *DatabaseService) clearDatabaseSeal(ctx context.Context, db *database.Database) error {
+	b := s.databaseBarrier(ctx, db.Name())
 	if !clusterseal.ActiveIn(s.sealer) {
 		return nil
 	}
 	if _, err := s.sealer.Clear(ctx, b, clusterseal.PrincipalFrom(ctx)); err != nil {
-		if serr := s.sealDatabaseHere(name); serr != nil {
+		if serr := s.sealDatabaseHere(db); serr != nil {
 			s.logger.Error("database barrier could not be sealed again after a failed cluster unseal",
-				"database", name, "error", serr)
+				"database", db.Name(), "error", serr)
 		}
 		return err
 	}

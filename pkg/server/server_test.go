@@ -47,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -1249,7 +1250,7 @@ func TestWithDatabaseManager(t *testing.T) {
 
 func TestWithDatabaseManager_NonNil(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := database.NewManager(nil, dataDir)
+	mgr := databasetest.NewManager(nil, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	var opts serverOptions
@@ -2282,14 +2283,14 @@ func TestStartEtcd_NilFn(t *testing.T) {
 	// StartEtcd refuses with a typed capability error when startEtcdServerFn
 	// is nil (etcd support not compiled in), rather than silently accepting
 	// a configuration it can never serve.
-	err := srv.StartEtcd("testdb", &database.EtcdConfig{})
+	err := srv.StartEtcd("acme", "testdb", &database.EtcdConfig{})
 	var capErr *service.CapabilityUnsupportedError
 	if !errors.As(err, &capErr) {
 		t.Fatalf("StartEtcd() error = %v, want *service.CapabilityUnsupportedError", err)
 	}
 
 	// EtcdAddr should still return empty.
-	if addr := srv.EtcdAddr("testdb"); addr != "" {
+	if addr := srv.EtcdAddr("acme", "testdb"); addr != "" {
 		t.Fatalf("expected empty EtcdAddr, got %q", addr)
 	}
 }
@@ -2299,8 +2300,8 @@ func TestServerStartEtcd_Success(t *testing.T) {
 	defer restore()
 
 	mockSrv := &mockEtcdServer{addr: "127.0.0.1:2379"}
-	startEtcdServerFn = func(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error) {
-		s.etcdServers.Store(dbName, EtcdProtocolServer(mockSrv))
+	startEtcdServerFn = func(s *Server, tenantID, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error) {
+		s.etcdServers.Store(newEtcdServerKey(tenantID, dbName), EtcdProtocolServer(mockSrv))
 		return mockSrv, nil
 	}
 	stopEtcdServerFn = func(srv EtcdProtocolServer) {
@@ -2310,11 +2311,11 @@ func TestServerStartEtcd_Success(t *testing.T) {
 	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
-	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
+	if err := srv.StartEtcd("acme", "testdb", &database.EtcdConfig{}); err != nil {
 		t.Fatalf("StartEtcd failed: %v", err)
 	}
 
-	addr := srv.EtcdAddr("testdb")
+	addr := srv.EtcdAddr("acme", "testdb")
 	if addr != "127.0.0.1:2379" {
 		t.Fatalf("expected EtcdAddr %q, got %q", "127.0.0.1:2379", addr)
 	}
@@ -2330,7 +2331,7 @@ func TestStopEtcd_NilFn(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// StopEtcd should not panic when stopEtcdServerFn is nil.
-	srv.StopEtcd("testdb")
+	srv.StopEtcd("acme", "testdb")
 }
 
 func TestStopEtcd_NotRunning(t *testing.T) {
@@ -2347,7 +2348,7 @@ func TestStopEtcd_NotRunning(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// StopEtcd for a non-existent database should not call stopEtcdServerFn.
-	srv.StopEtcd("nonexistent")
+	srv.StopEtcd("acme", "nonexistent")
 
 	if stopped {
 		t.Fatal("expected stopEtcdServerFn not to be called for non-existent database")
@@ -2368,16 +2369,16 @@ func TestStopEtcd_Running(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Manually inject a running etcd server into the map.
-	srv.etcdServers.Store("testdb", EtcdProtocolServer(mockSrv))
+	srv.etcdServers.Store(newEtcdServerKey("acme", "testdb"), EtcdProtocolServer(mockSrv))
 
-	srv.StopEtcd("testdb")
+	srv.StopEtcd("acme", "testdb")
 
 	if !mockSrv.stopped {
 		t.Fatal("expected etcd mock server to be stopped")
 	}
 
 	// Verify the entry was removed from the map.
-	if addr := srv.EtcdAddr("testdb"); addr != "" {
+	if addr := srv.EtcdAddr("acme", "testdb"); addr != "" {
 		t.Fatalf("expected EtcdAddr to be empty after StopEtcd, got %q", addr)
 	}
 }
@@ -2408,8 +2409,8 @@ func TestStopAllEtcd_MultipleServers(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Inject two etcd servers directly into the sync.Map.
-	srv.etcdServers.Store("db1", EtcdProtocolServer(mock1))
-	srv.etcdServers.Store("db2", EtcdProtocolServer(mock2))
+	srv.etcdServers.Store(newEtcdServerKey("acme", "db1"), EtcdProtocolServer(mock1))
+	srv.etcdServers.Store(newEtcdServerKey("acme", "db2"), EtcdProtocolServer(mock2))
 
 	// Stop() calls stopAllEtcd internally.
 	srv.Stop()
@@ -2422,10 +2423,10 @@ func TestStopAllEtcd_MultipleServers(t *testing.T) {
 	}
 
 	// Both entries should have been removed from the map.
-	if addr := srv.EtcdAddr("db1"); addr != "" {
+	if addr := srv.EtcdAddr("acme", "db1"); addr != "" {
 		t.Fatalf("expected EtcdAddr for db1 to be empty after Stop, got %q", addr)
 	}
-	if addr := srv.EtcdAddr("db2"); addr != "" {
+	if addr := srv.EtcdAddr("acme", "db2"); addr != "" {
 		t.Fatalf("expected EtcdAddr for db2 to be empty after Stop, got %q", addr)
 	}
 }

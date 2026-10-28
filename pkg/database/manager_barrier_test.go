@@ -62,7 +62,7 @@ func TestManager_Create_BarrierEnabled_WithoutBarrierManager(t *testing.T) {
 
 func TestManager_WithBarrierManager_NilOption(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir, WithBarrierManager(nil))
+	mgr := newCatalogManager(nil, dataDir, WithBarrierManager(nil))
 	defer func() { _ = mgr.Close() }()
 
 	if mgr.BarrierManager() != nil {
@@ -72,7 +72,7 @@ func TestManager_WithBarrierManager_NilOption(t *testing.T) {
 
 func TestManager_Open_BarrierEnabled_NoBarrierManager(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr1 := NewManager(nil, dataDir)
+	mgr1 := newCatalogManager(nil, dataDir)
 
 	cfg := validDedicatedMemoryConfig(t, "barrier-open-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
@@ -83,10 +83,10 @@ func TestManager_Open_BarrierEnabled_NoBarrierManager(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mgr2 := NewManager(nil, dataDir)
+	mgr2 := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("barrier-open-db")
+	db, err := mgr2.Open(context.Background(), "", "barrier-open-db")
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -100,7 +100,7 @@ func TestManager_Open_BarrierEnabled_WithBarrierManager(t *testing.T) {
 	dataDir := t.TempDir()
 
 	// Create with barrier config but no barrier manager.
-	mgr1 := NewManager(nil, dataDir)
+	mgr1 := newCatalogManager(nil, dataDir)
 	cfg := validDedicatedMemoryConfig(t, "barrier-sealed-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	if _, err := mgr1.Create(cfg); err != nil {
@@ -112,10 +112,10 @@ func TestManager_Open_BarrierEnabled_WithBarrierManager(t *testing.T) {
 
 	// Reopen with a barrier manager set (using a real test barrier manager).
 	bm := newTestBarrierManager(t)
-	mgr2 := NewManager(nil, dataDir, WithBarrierManager(bm))
+	mgr2 := newCatalogManager(nil, dataDir, WithBarrierManager(bm))
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("barrier-sealed-db")
+	db, err := mgr2.Open(context.Background(), "", "barrier-sealed-db")
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
@@ -234,7 +234,7 @@ func TestManager_BarrierManager_Default(t *testing.T) {
 func TestManager_BarrierManager_Set(t *testing.T) {
 	bm := newTestBarrierManager(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir, WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, dataDir, WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	if mgr.BarrierManager() != bm {
@@ -248,7 +248,7 @@ func TestManager_BarrierManager_Set(t *testing.T) {
 
 func TestManager_Create_BarrierEnabled_SharedStoreRejected(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validMemoryConfig("shared-barrier-db") // no DataDir, non-raft backend
@@ -284,9 +284,9 @@ func TestManager_Open_BarrierEnabled_SharedStoreRejected(t *testing.T) {
 	dataDir := t.TempDir()
 
 	// Create WITHOUT a barrier manager present so the shared-store guard at
-	// create time never fires, and hand-write meta.json to simulate
-	// inconsistent on-disk state predating the guard.
-	mgr1 := NewManager(nil, dataDir)
+	// create time never fires, and hand-write the catalog record to
+	// simulate an inconsistent record predating the guard.
+	mgr1 := newCatalogManager(nil, dataDir)
 	cfg := validMemoryConfig("shared-open-db")
 	if _, err := mgr1.Create(cfg); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -298,21 +298,21 @@ func TestManager_Open_BarrierEnabled_SharedStoreRejected(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	// Directly rewrite meta.json with Barrier.Enabled=true to simulate a
-	// pre-guard on-disk record, then confirm Open fails closed rather than
+	// Directly rewrite the catalog record with Barrier.Enabled=true to
+	// simulate a pre-guard record, then confirm Open fails closed rather than
 	// silently registering an inert barrier.
 	meta := DatabaseMeta{
 		Name:    "shared-open-db",
 		Backend: BackendMemory,
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},
 	}
-	mgr2 := NewManager(nil, dataDir, WithBarrierManager(newTestBarrierManager(t)))
+	mgr2 := newCatalogManager(nil, dataDir, WithBarrierManager(newTestBarrierManager(t)))
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.writeMeta(mgr2.dbDir("shared-open-db"), meta); err != nil {
-		t.Fatalf("writeMeta: %v", err)
+	if err := testCatalogFor(mgr2.dataDir).Update(context.Background(), meta.TenantID, meta.Name, meta.Incarnation, replaceRecord(meta)); err != nil {
+		t.Fatalf("catalog Update: %v", err)
 	}
 
-	_, err := mgr2.Open("shared-open-db")
+	_, err := mgr2.Open(context.Background(), "", "shared-open-db")
 	if err == nil {
 		t.Fatal("Open() on shared-store barrier-enabled meta = nil, want *SharedStoreBarrierUnsupportedError")
 	}
@@ -430,7 +430,7 @@ func TestManager_SetBarrierManager_ReregistersAlreadyOpenDatabases(t *testing.T)
 	// First run: create a dedicated-store, barrier-enabled database with a
 	// barrier manager present (as Create requires).
 	bm1 := newTestBarrierManager(t)
-	mgr1 := NewManager(nil, dataDir, WithBarrierManager(bm1))
+	mgr1 := newCatalogManager(nil, dataDir, WithBarrierManager(bm1))
 	cfg := validDedicatedMemoryConfig(t, "reopen-barrier-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	if _, err := mgr1.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
@@ -442,9 +442,9 @@ func TestManager_SetBarrierManager_ReregistersAlreadyOpenDatabases(t *testing.T)
 
 	// Second run: simulate the daemon boot ordering -- construct the Manager
 	// and OpenAll BEFORE any barrier manager is available.
-	mgr2 := NewManager(nil, dataDir)
+	mgr2 := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() error = %v", err)
 	}
 	db, err := mgr2.Get("reopen-barrier-db")
@@ -469,7 +469,7 @@ func TestManager_SetBarrierManager_ReregistersAlreadyOpenDatabases(t *testing.T)
 	if db.Status() != StatusSealed {
 		t.Errorf("Status() after SetBarrierManager = %q, want %q", db.Status(), StatusSealed)
 	}
-	status, statusErr := bm2.BarrierStatus("reopen-barrier-db")
+	status, statusErr := bm2.BarrierStatus("reopen-barrier-db", "")
 	if statusErr != nil {
 		t.Fatalf("BarrierStatus() after SetBarrierManager error = %v", statusErr)
 	}
@@ -489,7 +489,7 @@ func TestManager_SetBarrierManager_DoesNotClearTheDropFlag(t *testing.T) {
 	dataDir := t.TempDir()
 
 	bm1 := newTestBarrierManager(t)
-	mgr1 := NewManager(nil, dataDir, WithBarrierManager(bm1))
+	mgr1 := newCatalogManager(nil, dataDir, WithBarrierManager(bm1))
 	cfg := validDedicatedMemoryConfig(t, "sealed-dropping-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	if _, err := mgr1.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
@@ -499,9 +499,9 @@ func TestManager_SetBarrierManager_DoesNotClearTheDropFlag(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mgr2 := NewManager(nil, dataDir)
+	mgr2 := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() error = %v", err)
 	}
 	db, err := mgr2.Get("sealed-dropping-db")
@@ -530,7 +530,7 @@ func TestManager_SetBarrierManager_DoesNotClearTheDropFlag(t *testing.T) {
 func TestManager_SetBarrierManager_CalledTwice_RewrapsWithoutNesting(t *testing.T) {
 	dataDir := t.TempDir()
 
-	mgr1 := NewManager(nil, dataDir)
+	mgr1 := newCatalogManager(nil, dataDir)
 	cfg := validDedicatedMemoryConfig(t, "rewrap-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	if _, err := mgr1.Create(cfg); err != nil {
@@ -540,9 +540,9 @@ func TestManager_SetBarrierManager_CalledTwice_RewrapsWithoutNesting(t *testing.
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mgr2 := NewManager(nil, dataDir)
+	mgr2 := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() error = %v", err)
 	}
 	db, err := mgr2.Get("rewrap-db")
@@ -576,7 +576,7 @@ func TestManager_SetBarrierManager_CalledTwice_RewrapsWithoutNesting(t *testing.
 		t.Error("rawDataBackend() changed across SetBarrierManager calls, want stable")
 	}
 
-	status, statusErr := bmB.BarrierStatus("rewrap-db")
+	status, statusErr := bmB.BarrierStatus("rewrap-db", "")
 	if statusErr != nil {
 		t.Fatalf("BarrierStatus() on the second registry error = %v", statusErr)
 	}
@@ -617,7 +617,7 @@ func TestManager_openBarrierMetaBackend_MkdirFails(t *testing.T) {
 // leaves no half-created database registered.
 func TestManager_CreateWithCredentials_EnsureBarrierFails_CleansUp(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validDedicatedMemoryConfig(t, "hardware-fail-db")
@@ -646,7 +646,7 @@ func TestManager_Open_RegisterBarrierFails_CleansUp(t *testing.T) {
 
 	// Register "collide-db" in the shared registry via a normal create on a
 	// throwaway manager instance.
-	mgr1 := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr1 := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	cfg := validDedicatedMemoryConfig(t, "collide-db")
 	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
 	if _, err := mgr1.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
@@ -657,12 +657,12 @@ func TestManager_Open_RegisterBarrierFails_CleansUp(t *testing.T) {
 	// called, which it is not here; the registration must persist so the
 	// second manager's Open collides with it.
 
-	// A second manager, at a different data root, whose on-disk meta.json
-	// happens to name the same database. Sharing the barrier manager's
+	// A second manager, at a different data root, whose catalog records a
+	// database of the same name. Sharing the barrier manager's
 	// registry (as SetBarrierManager wiring does across an in-process
 	// migration) means RegisterBarrier for "collide-db" fails with
 	// ErrTenantAlreadyExists.
-	mgr2 := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr2 := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr2.Close() }()
 	meta := DatabaseMeta{
 		Name:    "collide-db",
@@ -670,14 +670,14 @@ func TestManager_Open_RegisterBarrierFails_CleansUp(t *testing.T) {
 		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},
 	}
-	if err := os.MkdirAll(mgr2.dbDir("collide-db"), 0o750); err != nil {
+	if err := os.MkdirAll(mgr2.dbDir("", "collide-db"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := mgr2.writeMeta(mgr2.dbDir("collide-db"), meta); err != nil {
-		t.Fatalf("writeMeta: %v", err)
+	if err := testCatalogFor(mgr2.dataDir).Create(context.Background(), meta); err != nil {
+		t.Fatalf("catalog Create: %v", err)
 	}
 
-	_, err := mgr2.Open("collide-db")
+	_, err := mgr2.Open(context.Background(), "", "collide-db")
 	if err == nil {
 		t.Fatal("Open() with a barrier name collision = nil, want error")
 	}
@@ -704,7 +704,7 @@ func TestManager_SetBarrierManager_SkipsNonBarrierDatabases(t *testing.T) {
 	bm := newTestBarrierManager(t)
 	mgr.SetBarrierManager(bm)
 
-	if _, statusErr := bm.BarrierStatus("no-barrier-db"); statusErr == nil {
+	if _, statusErr := bm.BarrierStatus("no-barrier-db", ""); statusErr == nil {
 		t.Error("BarrierStatus() succeeded for a database that never had a barrier enabled, want error")
 	}
 }

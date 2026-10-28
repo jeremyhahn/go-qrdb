@@ -147,7 +147,7 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 		// RaftBackendFactory (IsolationRaft): the shard's state-machine data lives
 		// under the tenant's DataRoot ({DataRoot}/databases/{db}/shard-<N>) and is
 		// reached through the request resolver, not through this Backend. The
-		// Manager still opens a Backend so the database's meta.json, catalog
+		// Manager still opens a Backend so the database's catalog record, open-map
 		// membership, and shard-ID allocation are tracked uniformly with every
 		// other backend; that bookkeeping role is served by a lightweight
 		// in-memory placeholder. The placeholder is never used for the data plane.

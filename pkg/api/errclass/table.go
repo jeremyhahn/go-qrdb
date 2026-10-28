@@ -150,6 +150,9 @@ var dominantRules = []rule{
 	// WAL could not be opened: it never falls back to the shared WAL, and the
 	// request is retryable once the volume or the tenant barrier is back.
 	as(&database.TenantWALUnavailableError{}, Unavailable),
+	// The node holding a single-node database did not serve a request
+	// forwarded to it: retryable once the owner is back.
+	as(&database.BindingOwnerUnavailableError{}, Unavailable),
 	// A placement record names a path for a replica: refused, never opened;
 	// the database must be dropped and re-created.
 	as(&placement.ReplicaDataRootError{}, FailedPrecondition),
@@ -503,13 +506,10 @@ var databaseRules = []rule{
 	as(&service.IsolationBackendUnavailableError{}, Unavailable),
 	as(&database.AlreadyExistsError{}, AlreadyExists),
 	as(&database.NotFoundError{}, NotFound),
+	as(&database.AmbiguousNameError{}, FailedPrecondition),
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.ReservedNameError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
-	// A database's on-disk meta.json carries a field this version no longer
-	// understands (a pre-v0.45 "engine" key): refused outright, never
-	// migrated (no-backward-compat ruling, 2026-10-02).
-	as(&database.LegacyMetadataError{}, FailedPrecondition),
 	// A per-database barrier requested where it would not wrap the store the
 	// database is served from. The caller cannot change a database's backend
 	// or data_dir, so this is the configuration refusing the feature, as
@@ -552,6 +552,11 @@ var databaseRules = []rule{
 	// (the name is free) or once a failed drop restores the database
 	// (go-qrdb#482).
 	as(&database.DroppingError{}, Aborted),
+	// A local copy of a database the catalog moved on from (dropped, or
+	// created again, through another node) that this node could not yet
+	// release: the copy is refused, never served, and a retry succeeds once
+	// the release completes (go-qrdb#893).
+	as(&database.StaleDatabaseError{}, Unavailable),
 	// A second DROP for the same database while one is already running on
 	// this node (Manager.Drop's own in-flight guard): the identical shape as
 	// DroppingError above -- a well-formed, retryable request whose target is

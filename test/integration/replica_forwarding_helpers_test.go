@@ -86,6 +86,10 @@ type fwdCluster struct {
 	otherCert, otherKey   string
 	tenant                *http.Client
 
+	// sysCert/sysKey authenticate the system tenant's bootstrap admin, the
+	// identity sys presents.
+	sysCert, sysKey string
+
 	// writerID and writerRole are fwdWriter's user and role.
 	writerID   uint64
 	writerRole string
@@ -262,6 +266,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	}
 
 	c.sys = mtlsHTTPClient(t, ca, 15*time.Second)
+	_, c.sysCert, c.sysKey = ca.adminIdentity(t, t.TempDir())
 	base := fmt.Sprintf("https://127.0.0.1:%d", adminPorts[c.creator])
 	// A raft tenant is placed on a catalog pool (docs/volume-pools, D2):
 	// every node maps "default" to a directory, but only the operator's

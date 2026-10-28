@@ -1476,24 +1476,12 @@ func runStart(f *startFlags) (err error) {
 	lr := lease.NewLessor()
 	watchHub := watch.NewHub()
 
-	// Run one-time migration from flat layout to per-database structure.
-	if err := database.MigrateIfNeeded(slog.Default(), f.dataDir); err != nil {
-		return err
-	}
-
 	// Initialize the database manager. A raft database's shard ID is claimed
-	// from the replicated store (lifecycle.BuildServices wires the claimer),
-	// never issued from anything on this node's disk.
+	// from the replicated store, and its record is kept in the replicated
+	// catalog (lifecycle.BuildServices wires both and opens every recorded
+	// database), never in anything on this node's disk.
 	dbManager := database.NewManager(slog.Default(), f.dataDir)
 	defer func() { _ = dbManager.Close() }()
-
-	// Rehydrate every database persisted under {dataDir}/databases so that
-	// databases created in a prior run are known after restart. This is
-	// idempotent with the config-listed open loop below (Open/Create are
-	// no-ops for already-open databases).
-	if err := dbManager.OpenAll(); err != nil {
-		return err
-	}
 
 	// Use default database configs when no YAML config was provided.
 	if len(f.databases) == 0 {
@@ -4998,9 +4986,9 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 }
 
 // waitForLeaderElection waits, within leaderWait, until shardID has a known
-// leader, reporting a failure as an auth-bootstrap step (see awaitLeader).
+// leader, reporting a failure as an auth-bootstrap step (see server.AwaitShardLeader).
 func waitForLeaderElection(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64) error {
-	if err := awaitLeader(ctx, node, leaderWait, shardID); err != nil {
+	if err := server.AwaitShardLeader(ctx, node, leaderWait, shardID); err != nil {
 		return &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 	return nil
@@ -5037,35 +5025,6 @@ func leaderWaitBudget(f *startFlags) time.Duration {
 	sc.SetDefaults()
 	electionTimeout := time.Duration(sc.ElectionRTT*hc.RTTMillisecond) * time.Millisecond
 	return leaderWaitElections * electionTimeout
-}
-
-// awaitLeader waits until shardID has a known leader for as long as ctx lives,
-// and returns ctx's error if it ends first. The wait has no budget of its own:
-// each node is unsealed by its own operator, so a quorum can form minutes
-// after this node is ready -- and after a system encryption migration's
-// in-process restart, only once the peers have restarted and been unsealed
-// too. A node that gave up instead would exit, and its peers would then be
-// waiting on it.
-//
-// leaderWait (leaderWaitBudget) is the length of one round of the wait. A
-// round that ends without a leader is logged with its
-// *server.ShardLeaderWaitError -- naming the shard, the budget and the time
-// actually spent -- and the next round begins.
-func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
-	if _, ok, err := node.LeaderID(shardID); err == nil && ok {
-		return nil
-	}
-	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",
-		"shard_id", shardID)
-	for {
-		err := server.WaitForShardLeader(ctx, node, shardID, leaderWait)
-		var we *server.ShardLeaderWaitError
-		if !errors.As(err, &we) {
-			return err
-		}
-		slog.Warn("still waiting for a Raft leader; a quorum of members must be running and unsealed",
-			"shard_id", shardID, "error", err)
-	}
 }
 
 // adminExists checks whether the admin user already exists using a local

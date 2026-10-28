@@ -1457,7 +1457,7 @@ func TestScaleForTenant_ScaleDown_LeaderNeverKnownTimesOut(t *testing.T) {
 
 // bumpPlacementRF loads the placement entry for (scaleTenantID, name),
 // overwrites RF directly (bypassing ScaleForTenant and, therefore, the local
-// manager's meta.json), and persists it -- simulating a scale that executed
+// manager's catalog record), and persists it -- simulating a scale that executed
 // on a different node's placement view, exactly as a real ScaleForTenant
 // call forwarded to the dedicated group's leader would leave this node's own
 // manager meta.

@@ -38,6 +38,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
@@ -48,6 +49,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -968,7 +970,7 @@ func TestBuildServices_WithSuppliedDatabaseManager(t *testing.T) {
 	defer hub.Close()
 
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
@@ -984,6 +986,41 @@ func TestBuildServices_WithSuppliedDatabaseManager(t *testing.T) {
 
 	if node.Database == nil {
 		t.Error("Database is nil")
+	}
+}
+
+// TestBuildServices_UnreadableDatabaseCatalogFails pins that a node whose
+// database catalog cannot be read refuses to start rather than serving
+// without the databases the catalog records.
+func TestBuildServices_UnreadableDatabaseCatalogFails(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	ctx := context.Background()
+	key := database.CatalogKey("", "orders")
+	if err := service.NewKVService(host, shard.ShardKV).Put(ctx, key, []byte("{not json")); err != nil {
+		t.Fatalf("seed catalog record: %v", err)
+	}
+
+	dataDir := t.TempDir()
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
+	defer func() { _ = mgr.Close() }()
+
+	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+		Host:            host,
+		WatchHub:        hub,
+		DataDir:         dataDir,
+		DatabaseManager: mgr,
+	})
+	if node != nil {
+		_ = node.Stop(ctx)
+	}
+	var catErr *lifecycle.DatabaseCatalogError
+	var readErr *database.CatalogReadError
+	if node != nil || !errors.As(err, &catErr) || !errors.As(err, &readErr) || readErr.Key != key {
+		t.Fatalf("node = %v, err = %v; want *DatabaseCatalogError wrapping *database.CatalogReadError for %q", node, err, key)
 	}
 }
 
@@ -1685,7 +1722,7 @@ func TestBuildServices_WiresTheKeyspaceReclaimerIntoTheManager(t *testing.T) {
 	hub := watch.NewHub()
 	defer hub.Close()
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
 		Host:            host,
 		WatchHub:        hub,
@@ -1723,7 +1760,7 @@ func TestBuildServices_WiresTheHomeRetirerIntoTheTenantService(t *testing.T) {
 		Host:            host,
 		WatchHub:        hub,
 		DataDir:         t.TempDir(),
-		DatabaseManager: database.NewManager(nil, t.TempDir()),
+		DatabaseManager: databasetest.NewManager(nil, t.TempDir()),
 	})
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
@@ -1773,7 +1810,7 @@ func TestBuildServices_ReclaimerReachesEveryShapeADatabaseOwns(t *testing.T) {
 	hub := watch.NewHub()
 	defer hub.Close()
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:            host,
 		WatchHub:        hub,

@@ -332,12 +332,13 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 			return nil, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(tenant.IsolationRaft)}
 		}
 		// A dedicated-raft database's existence and ownership are authoritative in
-		// the REPLICATED placement table, not the node-local database catalog. The
+		// the REPLICATED placement table, not this node's database manager. The
 		// reconciler attaches the shard on every assigned node from the placement
-		// entry, but only the creating node holds a local catalog (meta.json)
-		// record. Gating on the local catalog (databaseExists) here would 404 the
-		// database on every other node after a leader change or restart even
-		// though its shard is attached and holds the data. The RaftBackendFactory
+		// entry, but the manager may not have the database open: a raft-isolated
+		// tenant's catalog records live in its home store and its databases are
+		// opened on first access. Gating on the manager (databaseExists) here
+		// would 404 the database on a node that has not opened it even though
+		// its shard is attached and holds the data. The RaftBackendFactory
 		// resolves (and lazily attaches) the shard from the placement entry keyed
 		// by (tenantID, db) — which preserves tenant ownership — so it is the
 		// correct existence authority. A genuinely unknown database surfaces as
@@ -649,11 +650,11 @@ func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 // the name's next incarnation. incarnation is compared only when the pinned
 // record found one still live: an empty incarnation has nothing to compare,
 // but a pinned caller whose database is simply gone is refused regardless.
-func (r *restServiceRegistry) refuseIfDropping(db string, pinned bool, incarnation string) error {
+func (r *restServiceRegistry) refuseIfDropping(tenantID, db string, pinned bool, incarnation string) error {
 	if db == "" || r.dbManager == nil {
 		return nil
 	}
-	current, err := r.dbManager.Get(db)
+	current, err := r.dbManager.GetOwned(db, tenantID)
 	if err != nil {
 		var dropping *database.DroppingError
 		if errors.As(err, &dropping) {
@@ -851,7 +852,7 @@ func (r *restServiceRegistry) sharedStoreFence(tenantID, db string, managed mana
 		return databaseFence{binding: compaction.Binding{Tenant: tenantID, Database: db}}, nil
 	}
 	incarnation := managed.db.Incarnation()
-	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(db, true, incarnation) })
+	return newDatabaseFence(tenantID, db, incarnation, func() error { return r.refuseIfDropping(tenantID, db, true, incarnation) })
 }
 
 // managedDatabase returns db's catalog record when tenantID owns it, or the
@@ -880,11 +881,8 @@ func (r *restServiceRegistry) managedDatabase(tenantID, db string) (managedRecor
 	if db == "" || r.dbManager == nil {
 		return managedRecord{}, nil
 	}
-	dbase, err := r.dbManager.GetIgnoringFence(db)
+	dbase, err := r.dbManager.GetOwnedIgnoringFence(db, tenantID)
 	if err == nil {
-		if !database.OwnedBy(dbase.TenantID(), tenantID) {
-			return managedRecord{}, nil
-		}
 		if dbase.Dropping() {
 			return managedRecord{}, &database.DroppingError{Name: db, TenantID: tenantID}
 		}
@@ -894,7 +892,7 @@ func (r *restServiceRegistry) managedDatabase(tenantID, db string) (managedRecor
 	if !errors.As(err, &notFound) {
 		return managedRecord{}, err
 	}
-	dropped, derr := r.dbManager.WasDropped(db)
+	dropped, derr := r.dbManager.WasDropped(tenantID, db)
 	if derr != nil {
 		return managedRecord{}, derr
 	}

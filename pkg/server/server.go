@@ -108,8 +108,22 @@ var (
 )
 
 // startEtcdFn is a function that creates and starts an etcd protocol server
-// for a specific database.
-type startEtcdFn func(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error)
+// for a specific tenant's database.
+type startEtcdFn func(s *Server, tenantID, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error)
+
+// etcdServerKey identifies a running etcd protocol server by the tenant
+// owning its database and the database's name: two tenants may each hold a
+// database of the same name, and each gets its own listener.
+type etcdServerKey struct {
+	tenantID string
+	database string
+}
+
+// newEtcdServerKey returns the key for tenantID's database dbName, with the
+// empty tenant read as the system tenant.
+func newEtcdServerKey(tenantID, dbName string) etcdServerKey {
+	return etcdServerKey{tenantID: tenantid.Normalize(tenantID), database: dbName}
+}
 
 // stopEtcdFn is a function that stops an etcd protocol server.
 type stopEtcdFn func(srv EtcdProtocolServer)
@@ -164,7 +178,7 @@ type Server struct {
 	mcpSrv      *mcpapi.Server
 	mysqlSrv    SQLProtocolServer
 	pgsqlSrv    SQLProtocolServer
-	etcdServers sync.Map // database name (string) -> EtcdProtocolServer
+	etcdServers sync.Map // etcdServerKey -> EtcdProtocolServer
 	wg          sync.WaitGroup
 	logger      *slog.Logger
 	opts        serverOptions
@@ -2206,8 +2220,8 @@ func (s *Server) startREST() error {
 	if len(s.opts.caBootstrapCert) > 0 {
 		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert))
 	}
-	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(dbName string, cfg *database.EtcdConfig) error {
-		return s.StartEtcd(dbName, cfg)
+	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(tenantID, dbName string, cfg *database.EtcdConfig) error {
+		return s.StartEtcd(tenantID, dbName, cfg)
 	}))
 	if s.opts.webUI != nil {
 		restOpts = append(restOpts, rest.WithWebUI(s.opts.webUI))
@@ -3140,35 +3154,35 @@ func (s *Server) PgSQLAddr() string {
 	return ""
 }
 
-// StartEtcd starts an etcd protocol server for the named database. If etcd
-// support is not compiled into this binary, it refuses with the same
-// service.CapabilityUnsupportedError every transport already maps to
+// StartEtcd starts an etcd protocol server for tenantID's database dbName.
+// If etcd support is not compiled into this binary, it refuses with the
+// same service.CapabilityUnsupportedError every transport already maps to
 // Unimplemented, naming the missing build tag, rather than silently
 // accepting a configuration it can never serve.
-func (s *Server) StartEtcd(dbName string, cfg *database.EtcdConfig) error {
+func (s *Server) StartEtcd(tenantID, dbName string, cfg *database.EtcdConfig) error {
 	if startEtcdServerFn == nil {
 		return notImplemented("etcd", "requires build tag qrdb_etcd")
 	}
-	_, err := startEtcdServerFn(s, dbName, cfg)
+	_, err := startEtcdServerFn(s, tenantID, dbName, cfg)
 	return err
 }
 
-// StopEtcd stops the etcd protocol server for the named database if one
-// is running.
-func (s *Server) StopEtcd(dbName string) {
+// StopEtcd stops the etcd protocol server for tenantID's database dbName if
+// one is running.
+func (s *Server) StopEtcd(tenantID, dbName string) {
 	if stopEtcdServerFn == nil {
 		return
 	}
-	val, ok := s.etcdServers.LoadAndDelete(dbName)
+	val, ok := s.etcdServers.LoadAndDelete(newEtcdServerKey(tenantID, dbName))
 	if ok {
 		stopEtcdServerFn(val.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 }
 
-// EtcdAddr returns the etcd server's listener address for the given
-// database, or empty string if etcd is not running for that database.
-func (s *Server) EtcdAddr(dbName string) string {
-	val, ok := s.etcdServers.Load(dbName)
+// EtcdAddr returns the listener address of the etcd server for tenantID's
+// database dbName, or empty string if etcd is not running for it.
+func (s *Server) EtcdAddr(tenantID, dbName string) string {
+	val, ok := s.etcdServers.Load(newEtcdServerKey(tenantID, dbName))
 	if !ok {
 		return ""
 	}

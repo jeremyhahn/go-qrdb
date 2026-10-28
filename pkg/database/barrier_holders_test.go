@@ -81,7 +81,7 @@ func shamirDBConfig(t *testing.T, name string) DatabaseConfig {
 func enrolAndClaim(t *testing.T, bm *DatabaseBarrierManager, dbName string, holders ...*dbHolder) {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, err := bm.Holders(dbName)
+	svc, _, err := bm.Holders(dbName, "acme")
 	if err != nil {
 		t.Fatalf("Holders: %v", err)
 	}
@@ -96,7 +96,7 @@ func enrolAndClaim(t *testing.T, bm *DatabaseBarrierManager, dbName string, hold
 		}
 		h.thumb = mtls.Thumbprint(cert.Raw)
 	}
-	if _, err := bm.InitializeShamir(ctx, dbName, ""); err != nil {
+	if _, err := bm.InitializeShamir(ctx, dbName, "acme", ""); err != nil {
 		t.Fatalf("InitializeShamir: %v", err)
 	}
 	for _, h := range holders {
@@ -120,7 +120,7 @@ func enrolAndClaim(t *testing.T, bm *DatabaseBarrierManager, dbName string, hold
 func submitDB(t *testing.T, bm *DatabaseBarrierManager, dbName string, op seal.QuorumOp, h *dbHolder) (*seal.QuorumOutcome, error) {
 	t.Helper()
 	ctx := context.Background()
-	svc, barrier, err := bm.Holders(dbName)
+	svc, barrier, err := bm.Holders(dbName, "acme")
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func submitDB(t *testing.T, bm *DatabaseBarrierManager, dbName string, op seal.Q
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bm.SubmitHolderShare(ctx, dbName, &seal.HolderSubmission{
+	return bm.SubmitHolderShare(ctx, dbName, "acme", &seal.HolderSubmission{
 		Domain: seal.DomainUnseal, Op: op, Holder: h.name, Share: share,
 		Proof: seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: sig},
 	}, nil)
@@ -156,7 +156,7 @@ func TestShamirDatabase_Lifecycle(t *testing.T) {
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
 	dataDir := t.TempDir()
 	bm := holderBarrierManager(t, ca)
-	mgr := NewManager(nil, dataDir, WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, dataDir, WithBarrierManager(bm))
 
 	cfg := shamirDBConfig(t, "vault")
 	db, err := mgr.CreateWithCredentials(ctx, cfg, seal.Credentials{})
@@ -173,7 +173,7 @@ func TestShamirDatabase_Lifecycle(t *testing.T) {
 		t.Fatalf("write after initialization: %v", err)
 	}
 
-	if err := bm.SealDatabase("vault"); !errors.Is(err, seal.ErrShamirBarrierRequiresQuorum) {
+	if err := bm.SealDatabase("vault", "acme"); !errors.Is(err, seal.ErrShamirBarrierRequiresQuorum) {
 		t.Fatalf("single-caller seal = %v, want ErrShamirBarrierRequiresQuorum", err)
 	}
 	if _, err := submitDB(t, bm, "vault", seal.OpSeal, alice); err != nil {
@@ -186,7 +186,7 @@ func TestShamirDatabase_Lifecycle(t *testing.T) {
 	if _, err := db.Backend().Get(ctx, []byte("k")); err == nil {
 		t.Fatal("a read reached a sealed database")
 	}
-	if err := bm.UnsealDatabase(ctx, "vault", testCreds()); !errors.Is(err, seal.ErrShamirUnsealRequiresQuorum) {
+	if err := bm.UnsealDatabase(ctx, "vault", "acme", testCreds()); !errors.Is(err, seal.ErrShamirUnsealRequiresQuorum) {
 		t.Fatalf("credential unseal = %v, want ErrShamirUnsealRequiresQuorum", err)
 	}
 
@@ -195,9 +195,9 @@ func TestShamirDatabase_Lifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	bm2 := holderBarrierManager(t, ca)
-	mgr2 := NewManager(nil, dataDir, WithBarrierManager(bm2))
+	mgr2 := newCatalogManager(nil, dataDir, WithBarrierManager(bm2))
 	defer func() { _ = mgr2.Close() }()
-	db2, err := mgr2.Open("vault")
+	db2, err := mgr2.Open(context.Background(), "acme", "vault")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestShamirDatabase_Lifecycle(t *testing.T) {
 	if err := mgr2.Drop(ctx, "vault"); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
-	if _, _, err := bm2.Holders("vault"); err == nil {
+	if _, _, err := bm2.Holders("vault", "acme"); err == nil {
 		t.Fatal("a dropped database still has a holder authority")
 	}
 }
@@ -248,10 +248,10 @@ func TestShamirDatabase_Refusals(t *testing.T) {
 	}
 
 	var notShamir *NotShamirBarrierError
-	if _, _, err := bm.Holders("absent"); !errors.As(err, &notShamir) {
+	if _, _, err := bm.Holders("absent", "acme"); !errors.As(err, &notShamir) {
 		t.Fatalf("Holders(absent) = %v, want NotShamirBarrierError", err)
 	}
-	if _, err := bm.InitializeShamir(ctx, "absent", ""); !errors.As(err, &notShamir) {
+	if _, err := bm.InitializeShamir(ctx, "absent", "acme", ""); !errors.As(err, &notShamir) {
 		t.Fatalf("InitializeShamir(absent) = %v, want NotShamirBarrierError", err)
 	}
 	for _, msg := range []string{secretErr.Error(), custodyErr.Error(), notShamir.Error()} {
@@ -268,14 +268,14 @@ func TestShamirDatabase_InitializeNeedsEveryHolder(t *testing.T) {
 	ctx := context.Background()
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
 	bm := holderBarrierManager(t, ca)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 	cfg := shamirDBConfig(t, "short")
 	cfg.Barrier.SharesTotal = 3
 	if _, err := mgr.CreateWithCredentials(ctx, cfg, seal.Credentials{}); err != nil {
 		t.Fatal(err)
 	}
-	svc, _, err := bm.Holders("short")
+	svc, _, err := bm.Holders("short", "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestShamirDatabase_InitializeNeedsEveryHolder(t *testing.T) {
 		}
 	}
 	var mismatch *seal.HolderCountMismatchError
-	if _, err := bm.InitializeShamir(ctx, "short", ""); !errors.As(err, &mismatch) {
+	if _, err := bm.InitializeShamir(ctx, "short", "acme", ""); !errors.As(err, &mismatch) {
 		t.Fatalf("InitializeShamir with 2 of 3 holders = %v, want HolderCountMismatchError", err)
 	}
 }
@@ -297,7 +297,7 @@ func TestShamirDatabase_InitializeNeedsEveryHolder(t *testing.T) {
 func TestShamirDatabase_CreatedSealed(t *testing.T) {
 	ctx := context.Background()
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(holderBarrierManager(t, ca)))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(holderBarrierManager(t, ca)))
 
 	db, err := mgr.CreateWithCredentials(ctx, shamirDBConfig(t, "vault"), seal.Credentials{})
 	if err != nil {
@@ -316,7 +316,7 @@ func TestDatabaseBarrierManager_SealAuthorizedSealsAQuorumBarrier(t *testing.T) 
 	ctx := context.Background()
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
 	bm := holderBarrierManager(t, ca)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	t.Cleanup(func() { _ = mgr.Close() })
 	db, err := mgr.CreateWithCredentials(ctx, shamirDBConfig(t, "vault"), seal.Credentials{})
 	if err != nil {
@@ -324,10 +324,10 @@ func TestDatabaseBarrierManager_SealAuthorizedSealsAQuorumBarrier(t *testing.T) 
 	}
 	enrolAndClaim(t, bm, "vault", newDBHolder(t, "alice"), newDBHolder(t, "bob"))
 
-	if !bm.RequiresQuorum("vault") {
+	if !bm.RequiresQuorum("vault", "acme") {
 		t.Fatal("a shamir database barrier does not require a quorum")
 	}
-	if err := bm.SealAuthorized("vault"); err != nil {
+	if err := bm.SealAuthorized("vault", "acme"); err != nil {
 		t.Fatalf("SealAuthorized: %v", err)
 	}
 	if _, err := db.Backend().Get(ctx, []byte("k")); err == nil {
@@ -340,10 +340,10 @@ func TestDatabaseBarrierManager_SealAuthorizedSealsAQuorumBarrier(t *testing.T) 
 func TestDatabaseBarrierManager_RequiresQuorumOnlyForShamir(t *testing.T) {
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
 	bm := holderBarrierManager(t, ca)
-	if bm.RequiresQuorum("absent") {
+	if bm.RequiresQuorum("absent", "acme") {
 		t.Fatal("a database with no holders requires a quorum")
 	}
-	if err := bm.SealAuthorized("absent"); err == nil {
+	if err := bm.SealAuthorized("absent", "acme"); err == nil {
 		t.Fatal("sealing a database with no barrier succeeded")
 	}
 }

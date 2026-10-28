@@ -40,7 +40,7 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 		t.Fatalf("shard.NewClaimer: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -56,7 +56,7 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 	if _, err := m.Get("early"); err == nil {
 		t.Fatal("a refused raft create left a catalog entry")
 	}
-	if _, err := os.Stat(m.dbDir("early")); !os.IsNotExist(err) {
+	if _, err := os.Stat(m.dbDir("", "early")); !os.IsNotExist(err) {
 		t.Fatalf("a refused raft create left its directory: %v", err)
 	}
 

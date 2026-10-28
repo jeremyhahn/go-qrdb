@@ -30,20 +30,20 @@
 // an override flag -- exactly matching how a real multi-tenant deployment
 // works.
 //
-// Four isolation properties are proven, all through the CLI. (Database
-// NAMES turn out to be a single flat, globally-unique catalog resource with
-// exactly one OWNING tenant recorded at create time -- verified empirically,
-// see testTenantIsolationOverProtocol's dbA/dbB/dbSys comment -- so proofs
+// Four isolation properties are proven, all through the CLI. (A database
+// is identified by its owning tenant AND its name -- see
+// testTenantIsolationOverProtocol's dbA/dbB/dbSys comment -- so proofs
 // (1)/(2) use per-tenant-owned databases holding the IDENTICAL key, and
-// proofs (3)/(4) separately confirm neither the catalog nor the KV data
-// plane can be name-squatted or read/written cross-tenant at all.)
+// proofs (3)/(4) separately confirm that reusing another tenant's database
+// name reaches neither that tenant's catalog entry nor its KV data.)
 //
 //  1. Cross-tenant KV disjointness: two tenants, each owning their own
 //     database, writing the SAME key never observe each other's value.
 //  2. System-vs-tenant KV disjointness: the system identity's own database,
 //     with the SAME key, holds a third disjoint value.
-//  3. A tenant cannot name-squat another tenant's (or the system's)
-//     already-owned database name.
+//  3. A tenant creating a database under another tenant's database name
+//     gets a new database of its own: no conflict discloses the name, and
+//     the other tenant's database is untouched.
 //  4. A tenant cannot read OR write another tenant's (or the system's)
 //     database by name at all -- it fails closed to "not found," never
 //     revealing whether the name exists under another owner.
@@ -327,23 +327,19 @@ func testTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	// protocol so the five protocol subtests (sharing one node) never
 	// collide with EACH OTHER across iterations.
 	//
-	// A database's NAME is a single flat, system-wide catalog key
-	// (pkg/database/manager.go's m.databases map), but every database has
-	// exactly one OWNING tenant recorded at create time
-	// (pkg/database/manager_tenant.go db.TenantID()), and every
-	// tenant-scoped lookup (GetForTenant, and the KV service resolved from
-	// it) fails closed to "not found" for a database it does not own --
-	// verified empirically against a live server: a second tenant calling
-	// `database create` on an ALREADY-OWNED name gets a real 409 conflict
-	// (no per-tenant namespace at the catalog layer), and attempting `kv`
-	// I/O against a database another tenant created gets "database not
-	// found" (deliberately indistinguishable from "does not exist", so a
-	// tenant cannot even enumerate another tenant's database names by
-	// probing for 403-vs-404). So EACH tenant below creates and owns its
-	// OWN uniquely-named database; the isolation proof is that the
-	// IDENTICAL key inside each is never visible cross-tenant, PLUS the
-	// two direct-denial proofs (3)/(4) that a tenant cannot even name-squat
-	// or read/write another tenant's database at all.
+	// A database is identified by its owning tenant AND its name: the
+	// catalog record is __sys:dbcatalog/<tenant>/<name> and the manager's
+	// open map is keyed by the (tenant, name) pair (pkg/database/manager.go
+	// dbKey). Every tenant-scoped lookup (GetForTenant, and the KV service
+	// resolved from it) resolves the caller's own database and fails closed
+	// to "not found" for a name the caller does not own. So no route reveals
+	// another tenant's database names (docs/databases/architecture.md): a
+	// second tenant creating a name another tenant already uses gets a
+	// database of its OWN, not a conflict that would confirm the name
+	// exists. The isolation proof is that the IDENTICAL key inside each
+	// database is never visible cross-tenant, PLUS the direct proofs (3)/(4)
+	// that a tenant reusing another tenant's database name reaches only its
+	// own database, never the other tenant's data.
 	dbA := "appdata-a-" + suffix
 	dbB := "appdata-b-" + suffix
 	dbSys := "appdata-sys-" + suffix
@@ -400,33 +396,39 @@ func testTenantIsolationOverProtocol(t *testing.T, node *multiProtoNode, proto m
 		t.Fatalf("[%s] system kv get %s = %q (err=%v), want %q", proto.name, key, outSys, err, sysValue)
 	}
 
-	// PROOF (3): a tenant cannot name-squat another tenant's (or the
-	// system's) already-owned database name -- the catalog's global
-	// uniqueness constraint is enforced regardless of which identity is
-	// asking, so a tenant can never "claim" a name it doesn't already own
-	// out from under its rightful owner.
-	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbA, "--backend", "pebble"); err == nil {
-		t.Fatalf("[%s] tenant B re-creating tenant A's database name %q should be rejected as already-owned, got: %s", proto.name, dbA, out)
+	// PROOF (3): a tenant reusing another tenant's database name creates a
+	// database it owns -- the create is neither refused (a conflict would
+	// disclose that tenant A uses the name) nor attached to tenant A's
+	// database. Reading the shared key from it right away finds nothing:
+	// it is a new, empty database, not tenant A's.
+	if out, err := runQRDB(t, node.cli, connB, "database", "create", dbA, "--backend", "pebble"); err != nil {
+		t.Fatalf("[%s] tenant B creating its own database named %q (tenant A's name): %v\noutput: %s", proto.name, dbA, err, out)
+	}
+	if out, err := runQRDB(t, node.cli, connB, "--database", dbA, "kv", "get", key); err == nil || strings.Contains(out, valueA) {
+		t.Fatalf("[%s] tenant B reading its own new database %q = %q (err=%v), want not found -- it resolved tenant A's database", proto.name, dbA, out, err)
 	}
 
 	// PROOF (4): a tenant cannot read OR write another tenant's (or the
-	// system's) database by name at all -- ownership is checked before any
-	// KV dispatch, failing closed to "not found" (never leaking the other
-	// tenant's data, and not distinguishing "exists but forbidden" from
-	// "does not exist").
-	if out, err := runQRDB(t, node.cli, connB, "--database", dbA, "kv", "get", key); err == nil {
-		t.Fatalf("[%s] tenant B reading tenant A's database %q should fail, got: %s", proto.name, dbA, out)
-	}
+	// system's) database by name -- every name resolves within the caller's
+	// own tenant, failing closed to "not found" for a name it does not own
+	// (never leaking the other tenant's data, and not distinguishing
+	// "exists but forbidden" from "does not exist"). Tenant B's write under
+	// tenant A's name lands in tenant B's own database.
 	if out, err := runQRDB(t, node.cli, connA, "--database", dbSys, "kv", "get", key); err == nil {
 		t.Fatalf("[%s] tenant A reading the system database %q should fail, got: %s", proto.name, dbSys, out)
 	}
-	if out, err := runQRDB(t, node.cli, connB, "--database", dbA, "kv", "put", key, "hostile-overwrite"); err == nil {
-		t.Fatalf("[%s] tenant B writing to tenant A's database %q should fail, got: %s", proto.name, dbA, out)
+	const hostile = "hostile-overwrite"
+	if out, err := runQRDB(t, node.cli, connB, "--database", dbA, "kv", "put", key, hostile); err != nil {
+		t.Fatalf("[%s] tenant B writing to its own database %q: %v\noutput: %s", proto.name, dbA, err, out)
 	}
-	// Confirm the hostile write attempt truly had no effect.
+	outB, err = runQRDB(t, node.cli, connB, "--database", dbA, "kv", "get", key)
+	if err != nil || strings.TrimSpace(outB) != hostile {
+		t.Fatalf("[%s] tenant B kv get %s from its own database %q = %q (err=%v), want %q", proto.name, key, dbA, outB, err, hostile)
+	}
+	// Confirm tenant B's write never reached tenant A's database.
 	outA, err = runQRDB(t, node.cli, connA, "--database", dbA, "kv", "get", key)
 	if err != nil || strings.TrimSpace(outA) != valueA {
-		t.Fatalf("[%s] tenant A kv get %s after tenant B's rejected hostile write = %q (err=%v), want unchanged %q", proto.name, key, outA, err, valueA)
+		t.Fatalf("[%s] tenant A kv get %s after tenant B wrote under the same database name = %q (err=%v), want unchanged %q", proto.name, key, outA, err, valueA)
 	}
 
 	// System-scope and tenant-scope data-plane commands are proven still

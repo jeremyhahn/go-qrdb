@@ -508,8 +508,8 @@ func reattachRaftTenants(
 		}
 		// Eagerly re-start every dedicated raft database shard owned by this
 		// tenant that the local manager knows about. The databases were
-		// re-opened by dbManager.OpenAll (placeholder backend + meta.json
-		// carrying the persisted shard ID); here we re-bind the live shard on
+		// opened from the database catalog (placeholder backend + the
+		// catalog record carrying the persisted shard ID); here we re-bind the live shard on
 		// the shared host. Databases not present locally are attached by the
 		// reconciler instead.
 		for _, info := range allDatabases {

@@ -101,9 +101,9 @@ func sqlConfigFromJSON(c *sqlConfigJSON) *database.SQLConfig {
 // barrierConfigRequest is the JSON representation of encryption barrier
 // configuration in a database creation request. Secret carries the barrier
 // passphrase for the initial Initialize call; it is never persisted (the
-// on-disk DatabaseBarrierConfig / meta.json has no secret field) and is
-// zeroed as soon as it has been copied into the seal.Credentials passed to
-// EnsureBarrier.
+// DatabaseBarrierConfig in the database's catalog record has no secret
+// field) and is zeroed as soon as it has been copied into the
+// seal.Credentials passed to EnsureBarrier.
 type barrierConfigRequest struct {
 	Enabled        bool   `json:"enabled"`
 	Mode           string `json:"mode,omitempty"`
@@ -476,7 +476,10 @@ func (s *Server) handleUpdateDatabaseEtcd(w http.ResponseWriter, r *http.Request
 	}
 
 	if s.onEtcdUpdated != nil && cfg.Enabled {
-		if err := s.onEtcdUpdated(name, cfg); err != nil {
+		// The listener is for the database the update was applied to: the
+		// caller's own, which another tenant may also hold a database named
+		// after.
+		if err := s.onEtcdUpdated(info.TenantID, name, cfg); err != nil {
 			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}

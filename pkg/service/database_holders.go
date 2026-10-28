@@ -69,13 +69,25 @@ var _ DatabaseHolderServicer = (*DatabaseService)(nil)
 // shares: a non-owning tenant is refused before it learns whether the
 // database or its barrier exists.
 func (s *DatabaseService) databaseHolders(ctx context.Context, name string) (*ceremony.ScopedCeremonyService, *seal.StorageBarrier, error) {
-	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+	db, err := s.barrierDatabase(ctx, name)
+	if err != nil {
 		return nil, nil, err
 	}
-	if s.barrierMgr == nil {
-		return nil, nil, &BarrierManagerNotConfiguredError{}
+	return s.barrierMgr.Holders(name, db.TenantID())
+}
+
+// barrierDatabase resolves the named database for a holder operation: the
+// ownership check every one of them shares, then a barrier manager to reach
+// its barrier through.
+func (s *DatabaseService) barrierDatabase(ctx context.Context, name string) (*database.Database, error) {
+	db, err := s.authorizeDatabaseTenant(ctx, name)
+	if err != nil {
+		return nil, err
 	}
-	return s.barrierMgr.Holders(name)
+	if s.barrierMgr == nil {
+		return nil, &BarrierManagerNotConfiguredError{}
+	}
+	return db, nil
 }
 
 // DatabaseBarrierOfficerRegister implements DatabaseHolderServicer.
@@ -112,15 +124,16 @@ func (s *DatabaseService) DatabaseBarrierOfficerList(ctx context.Context, name s
 
 // DatabaseBarrierShamirInitialize implements DatabaseHolderServicer.
 func (s *DatabaseService) DatabaseBarrierShamirInitialize(ctx context.Context, name string, policy seal.FactorPolicy) (*ShamirInitInfo, error) {
-	if _, _, err := s.databaseHolders(ctx, name); err != nil {
+	db, err := s.barrierDatabase(ctx, name)
+	if err != nil {
 		return nil, err
 	}
-	params, err := s.barrierMgr.InitializeShamir(ctx, name, policy)
+	params, err := s.barrierMgr.InitializeShamir(ctx, name, db.TenantID(), policy)
 	if err != nil {
 		return nil, err
 	}
 	// Initialization leaves the barrier unsealed: the database is usable.
-	s.setDatabaseStatus(name, database.StatusOpen)
+	db.SetStatus(database.StatusOpen)
 	return &ShamirInitInfo{Threshold: params.Threshold, TotalShares: params.TotalShares, ShareCount: params.ShareCount}, nil
 }
 
@@ -174,15 +187,19 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 	if req != nil {
 		defer secure.Wipe(req.Share)
 	}
-	if _, _, err := s.databaseHolders(ctx, name); err != nil {
+	db, err := s.barrierDatabase(ctx, name)
+	if err != nil {
 		return nil, err
+	}
+	if !s.barrierMgr.RequiresQuorum(name, db.TenantID()) {
+		return nil, &database.NotShamirBarrierError{Name: name}
 	}
 	if req == nil || len(req.Share) == 0 {
 		return nil, ErrNilRequest
 	}
 	// Through the barrier manager's registry: an unseal is ordered against
 	// the node seal and clears the database's pending node unseal.
-	out, err := s.barrierMgr.SubmitHolderShare(ctx, name, &seal.HolderSubmission{
+	out, err := s.barrierMgr.SubmitHolderShare(ctx, name, db.TenantID(), &seal.HolderSubmission{
 		Domain: seal.DomainUnseal,
 		Op:     req.Op,
 		Holder: req.Username,
@@ -194,22 +211,22 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 			PeerCertThumbprint: req.PeerCertThumbprint,
 		},
 		Share: req.Share,
-	}, func() error { return s.sealOwnedDatabase(ctx, name) })
+	}, func() error { return s.sealOwnedDatabase(ctx, db) })
 	if err != nil {
 		return nil, err
 	}
 	if out.Complete {
 		switch out.Op {
 		case seal.OpUnseal:
-			s.setDatabaseStatus(name, database.StatusOpen)
+			db.SetStatus(database.StatusOpen)
 			// An unseal quorum clears the database's cluster seal record, as
 			// UnsealDatabase does; if the clear cannot be written the barrier
 			// is sealed again here.
-			if err := s.clearDatabaseSeal(ctx, name); err != nil {
+			if err := s.clearDatabaseSeal(ctx, db); err != nil {
 				return nil, err
 			}
 		case seal.OpSeal:
-			s.setDatabaseStatus(name, database.StatusSealed)
+			db.SetStatus(database.StatusSealed)
 		case seal.OpRekey:
 			// The rekey has completed: the barrier holds the new key and the
 			// old shares are dead. Recording the new M-of-N in the catalog
@@ -218,7 +235,7 @@ func (s *DatabaseService) DatabaseBarrierQuorumSubmit(ctx context.Context, name 
 			// did not count. The barrier's own record of the scheme is
 			// already the new one; the catalog's is logged as stale.
 			if out.Rekey != nil {
-				if rerr := s.manager.RecordShamirScheme(name, out.Rekey.Threshold, out.Rekey.TotalShares); rerr != nil {
+				if rerr := s.manager.RecordShamirScheme(db, out.Rekey.Threshold, out.Rekey.TotalShares); rerr != nil {
 					s.holderWarn("database barrier rekey completed but its scheme was not recorded in the catalog", name,
 						slog.Int("threshold", out.Rekey.Threshold), slog.Int("total", out.Rekey.TotalShares),
 						slog.String("error", rerr.Error()))
@@ -266,13 +283,6 @@ func (s *DatabaseService) DatabaseBarrierOfficerUnenrol(ctx context.Context, nam
 	}
 	s.holderLog("database share holder unenrolled", name, slog.String("username", username))
 	return nil
-}
-
-// setDatabaseStatus reflects a barrier transition on the database's status.
-func (s *DatabaseService) setDatabaseStatus(name string, status database.StatusType) {
-	if db, err := s.manager.Get(name); err == nil {
-		db.SetStatus(status)
-	}
 }
 
 // holderLog logs a database holder event when a logger is configured.

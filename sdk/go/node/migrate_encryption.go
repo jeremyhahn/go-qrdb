@@ -524,7 +524,7 @@ func (n *Node) teardownDataPlane() {
 		n.stg = nil
 		n.pebbleDB = nil
 	}
-	// The standalone rebuild reopens the catalog (openStandaloneDatabaseManager)
+	// The standalone rebuild reopens the catalog (newStandaloneDatabaseManager)
 	// against the rebuilt barrier.
 	n.closeDatabaseManager()
 }

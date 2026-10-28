@@ -370,46 +370,6 @@ func TestInit_MVCCFactoryClosure_InvokedWhenResolved(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart: MigrateIfNeeded failure (line 783-785)
-// ---------------------------------------------------------------------------
-
-func TestRunStart_MigrateIfNeededFails(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Write TLS files to a separate dir.
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	tlsDir := t.TempDir()
-	caFile := filepath.Join(tlsDir, "ca.pem")
-	certFile := filepath.Join(tlsDir, "cert.pem")
-	keyFile := filepath.Join(tlsDir, "key.pem")
-	require.NoError(t, os.WriteFile(caFile, bundle.CACertPEM, 0o600))
-	require.NoError(t, os.WriteFile(certFile, bundle.CertPEM, 0o600))
-	require.NoError(t, os.WriteFile(keyFile, bundle.KeyPEM, 0o600))
-
-	// Create a FILE (not a dir) at the dataDir path.
-	dataDirFile := filepath.Join(tmpDir, "data-as-file")
-	require.NoError(t, os.WriteFile(dataDirFile, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dataDirFile,
-		smType:          "memory",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		tlsCAFile:       caFile,
-		tlsCertFile:     certFile,
-		tlsKeyFile:      keyFile,
-		host:            testBindHost,
-	}
-
-	err = runStart(f)
-	require.Error(t, err, "runStart must fail when dataDir is a file")
-}
-
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // runStart: smType "mvcc" and "pebble" switch cases (lines 923-936)
 //

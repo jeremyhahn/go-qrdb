@@ -253,7 +253,7 @@ type Server struct {
 	// means this signing member cannot (no lease-capable store).
 	clusterJoinAdvertiser clusterenroll.FeatureAdvertiser
 
-	onEtcdUpdated func(dbName string, cfg *database.EtcdConfig) error
+	onEtcdUpdated func(tenantID, dbName string, cfg *database.EtcdConfig) error
 	webUI         http.Handler      // optional embedded web UI file server
 	auditLogger   audit.AuditLogger // optional compliance-grade audit logger
 
@@ -601,9 +601,11 @@ func WithSQLService(svc service.SQLServicer) ServerOption {
 }
 
 // WithOnEtcdUpdated registers a callback invoked after the etcd
-// configuration for a database is updated. The orchestrator typically
-// uses this to start or restart the etcd protocol server.
-func WithOnEtcdUpdated(fn func(dbName string, cfg *database.EtcdConfig) error) ServerOption {
+// configuration for a database is updated, with the tenant owning the
+// database: two tenants may each hold a database of the same name. The
+// orchestrator typically uses this to start or restart the etcd protocol
+// server.
+func WithOnEtcdUpdated(fn func(tenantID, dbName string, cfg *database.EtcdConfig) error) ServerOption {
 	return func(s *Server) { s.onEtcdUpdated = fn }
 }
 

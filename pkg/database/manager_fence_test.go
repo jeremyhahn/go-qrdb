@@ -99,7 +99,7 @@ func TestManager_Drop_UnclearableFenceKeepsTheDatabaseFenced(t *testing.T) {
 	require.ErrorAs(t, mgr.Drop(context.Background(), "orders"), &reclaimErr)
 	assert.ErrorIs(t, reclaimErr, spy.err)
 
-	assert.Equal(t, spyTombstone, spy.markerOf("/orders"))
+	assert.True(t, spy.isFenced("/orders"))
 	_, getErr := mgr.Get("orders")
 	var dropping *DroppingError
 	assert.ErrorAs(t, getErr, &dropping, "a database whose store fence is still set must stay refused")
@@ -137,9 +137,9 @@ func TestManager_Create_MarksANewIncarnationLive(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, orders.Incarnation(), db.Incarnation(), "two databases must not share an incarnation")
 
-	restarted := NewManager(nil, mgr.DataDir())
+	restarted := newCatalogManager(nil, mgr.DataDir())
 	t.Cleanup(func() { _ = restarted.Close() })
-	reopened, err := restarted.Open("billing")
+	reopened, err := restarted.Open(context.Background(), "", "billing")
 	require.NoError(t, err)
 	assert.Equal(t, db.Incarnation(), reopened.Incarnation(), "the incarnation must survive a restart")
 }
@@ -151,7 +151,7 @@ func TestManager_Create_ReCreateIsANewIncarnation(t *testing.T) {
 	old, err := mgr.Get("orders")
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
-	assert.Equal(t, spyTombstone, spy.markerOf("/orders"))
+	assert.True(t, spy.isFenced("/orders"))
 
 	fresh, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestManager_Create_ReCreateIsANewIncarnation(t *testing.T) {
 // name with no database for the dropped incarnation's handles.
 func TestManager_Create_FailureBeforeMarkingLeavesTheFence(t *testing.T) {
 	failing := &failingBackendFactory{BackendFactory: NewEmbeddedBackendFactory()}
-	mgr := NewManager(nil, t.TempDir(), WithBackendFactory(failing))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBackendFactory(failing))
 	spy := &spyReclaimer{}
 	mgr.SetKeyspaceReclaimer(spy)
 	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
@@ -174,7 +174,7 @@ func TestManager_Create_FailureBeforeMarkingLeavesTheFence(t *testing.T) {
 	failing.err = errors.New("disk full")
 	_, err = mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.ErrorIs(t, err, failing.err)
-	assert.Equal(t, spyTombstone, spy.markerOf("/orders"), "a failed create must not unfence the dropped name")
+	assert.True(t, spy.isFenced("/orders"), "a failed create must not unfence the dropped name")
 }
 
 // A marker that cannot be written fails the create, and nothing of it is
@@ -189,14 +189,14 @@ func TestManager_Create_UnfenceFailureCreatesNothing(t *testing.T) {
 	_, getErr := mgr.Get("billing")
 	var notFound *NotFoundError
 	assert.ErrorAs(t, getErr, &notFound)
-	_, statErr := os.Stat(mgr.dbDir("billing"))
+	_, statErr := os.Stat(mgr.dbDir("", "billing"))
 	assert.True(t, os.IsNotExist(statErr), "a failed create must not leave its directory behind")
 }
 
 // With no reclaimer there is no store to mark, so the database has no
 // incarnation of its own and is live while its marker is absent.
 func TestManager_Create_WithoutAReclaimerHasNoIncarnation(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	db, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	assert.Empty(t, db.Incarnation())

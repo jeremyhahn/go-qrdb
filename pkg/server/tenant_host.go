@@ -298,6 +298,30 @@ func WaitForShardLeader(ctx context.Context, src LeaderSource, shardID uint64, b
 	return awaitShardLeader(ctx, src, shardID, clock.Now(), budget, shardLeaderPollInterval, clock)
 }
 
+// AwaitShardLeader waits until shardID has a known leader for as long as ctx
+// lives. A boot waits for a leader with no budget of its own: each node is
+// unsealed by its own operator, so a quorum may come up long after this node
+// does. leaderWait is one round of WaitForShardLeader; a round that runs out is
+// logged and the wait goes on, so the operator sees why the boot has not
+// finished. It returns nil once a leader is known and ctx's error when ctx
+// ends first.
+func AwaitShardLeader(ctx context.Context, src LeaderSource, leaderWait time.Duration, shardID uint64) error {
+	if _, ok, err := src.LeaderID(shardID); err == nil && ok {
+		return nil
+	}
+	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",
+		"shard_id", shardID)
+	for {
+		err := WaitForShardLeader(ctx, src, shardID, leaderWait)
+		var we *ShardLeaderWaitError
+		if !errors.As(err, &we) {
+			return err
+		}
+		slog.Warn("still waiting for a Raft leader; a quorum of members must be running and unsealed",
+			"shard_id", shardID, "error", err)
+	}
+}
+
 // shardLeaderClock is the time source waitForShardServingWithin reads. It is
 // exactly the two operations the poll loop performs on time and no more:
 // reading the instant, and pausing between polls.

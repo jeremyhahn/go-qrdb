@@ -43,8 +43,8 @@ func init() {
 	stopEtcdServerFn = stopEtcd
 }
 
-// startEtcd creates and starts an etcd protocol server for the named
-// database.
+// startEtcd creates and starts an etcd protocol server for tenantID's
+// database dbName.
 //
 // The listener is confined to exactly that database: its MVCC, transaction,
 // watch and lease services are resolved through the same per-(tenant,
@@ -54,7 +54,7 @@ func init() {
 // nothing else. It refuses to start when that confinement or the node's
 // authentication is unavailable, rather than serve the raw store or an
 // unauthenticated port.
-func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error) {
+func startEtcd(s *Server, tenantID, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error) {
 	if err := etcd.ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -64,7 +64,10 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 	if s.opts.dbManager == nil {
 		return nil, &etcd.ScopeUnavailableError{Database: dbName, Reason: "no database catalog is configured"}
 	}
-	db, err := s.opts.dbManager.Get(dbName)
+	// The listener serves one tenant's database, so it is looked up as that
+	// tenant's: by name alone it is ambiguous once another tenant holds a
+	// database of the same name.
+	db, err := s.opts.dbManager.GetOwned(dbName, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +100,7 @@ func startEtcd(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocol
 		return nil, err
 	}
 
-	s.etcdServers.Store(dbName, srv)
+	s.etcdServers.Store(newEtcdServerKey(owner, dbName), srv)
 	s.logger.Info("etcd server started", "database", dbName, "tenant", owner, "addr", srv.Addr())
 
 	return srv, nil
@@ -190,7 +193,7 @@ var (
 // ends, with the sealed refusal or the dropped database's not-found, the
 // moment the listener's database stops serving.
 func (a *etcdRequestAuthorizer) GuardStream(ctx context.Context) (<-chan struct{}, func() error, error) {
-	dbase, err := a.mgr.Get(a.db)
+	dbase, err := a.mgr.GetOwned(a.db, a.owner)
 	if err != nil {
 		return nil, nil, status.Error(grpcapi.ServiceErrorCode(err), err.Error())
 	}

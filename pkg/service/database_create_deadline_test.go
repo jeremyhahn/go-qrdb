@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -186,13 +187,13 @@ func TestCreateForTenant_CallerCancelled_ReturnsCallerError(t *testing.T) {
 // the stalled seal-record write: the watchdog judges that, from the moment
 // the write starts, so the manager's create before it is not on its clock. The rollback
 // that follows is deliberately not under that deadline -- it runs under
-// database.DropRollbackContext, and the manager's create and drop write
-// meta.json through a file and directory fsync that no context bounds -- so
+// database.DropRollbackContext, and the manager's drop writes its drop-ledger
+// entry through a file and directory fsync that no context bounds -- so
 // the answer is awaited under the rollback's own bound, and the test's verdict
 // does not depend on the host disk's latency.
 func TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	entered := make(chan struct{}, 1)
 	released := make(chan error, 1)
@@ -247,7 +248,7 @@ func TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers(t *testing.
 
 func TestWithDatabaseCreateTimeout_DefaultsAndIgnoresNonPositive(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	for _, tc := range []struct {

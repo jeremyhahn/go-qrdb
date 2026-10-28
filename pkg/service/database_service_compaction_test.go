@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -76,7 +77,7 @@ func (r *policyRegistry) MVCCService(tenantID, db string) (MVCCKVServicer, error
 
 func newCompactionDatabaseService(t *testing.T) (*DatabaseService, *policyRegistry, *database.Manager) {
 	t.Helper()
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, cfg := range []database.DatabaseConfig{
 		{Name: "acme-db", TenantID: "acme", Backend: database.BackendMemory},

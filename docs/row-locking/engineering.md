@@ -323,8 +323,10 @@ databases:
 An empty or absent value means `optimistic`. Any other value is refused with
 `database.InvalidConcurrencyError` (and, in YAML, with
 `config.DatabaseConfigError` at load time). Like every other per-database
-setting, it is recorded in the database catalog of the node that applied it. A
-database declared in YAML with an `sql` section takes that setting at every
+setting, it is recorded in the database's record in the replicated database
+catalog, and every node holding the database open takes a changed setting on
+its next lookup (`Manager.GetOwned` reconciles the open entry with the
+record). A database declared in YAML with an `sql` section takes that setting at every
 start; one without it keeps whatever `UpdateDatabaseSQL` last set.
 
 The in-process `node://` driver serves a database registered with its node

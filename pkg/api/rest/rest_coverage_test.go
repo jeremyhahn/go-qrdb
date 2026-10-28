@@ -266,7 +266,7 @@ func TestServerOption_WithRAG(t *testing.T) {
 
 func TestServerOption_WithOnEtcdUpdated(t *testing.T) {
 	called := false
-	fn := func(_ string, _ *database.EtcdConfig) error {
+	fn := func(_, _ string, _ *database.EtcdConfig) error {
 		called = true
 		return nil
 	}
@@ -274,7 +274,7 @@ func TestServerOption_WithOnEtcdUpdated(t *testing.T) {
 	if s.onEtcdUpdated == nil {
 		t.Fatal("onEtcdUpdated not set")
 	}
-	_ = s.onEtcdUpdated("db", &database.EtcdConfig{})
+	_ = s.onEtcdUpdated("acme", "db", &database.EtcdConfig{})
 	if !called {
 		t.Error("onEtcdUpdated callback not called")
 	}
@@ -684,10 +684,15 @@ func TestHandleUpdateDatabaseEtcd_WithCallback(t *testing.T) {
 
 	// Provide a dbSvc that returns a non-nil info to avoid nil dereference.
 	dbSvc := &mockDatabaseServiceWithEtcd{
-		updateEtcdResult: &database.DatabaseInfo{Name: "mydb", Backend: database.BackendPebble},
+		updateEtcdResult: &database.DatabaseInfo{TenantID: "acme", Name: "mydb", Backend: database.BackendPebble},
 	}
-	fn := func(_ string, _ *database.EtcdConfig) error {
+	// The callback names the database the update was applied to, with its
+	// owning tenant: another tenant may hold a database named mydb too.
+	fn := func(tenantID, dbName string, _ *database.EtcdConfig) error {
 		called = true
+		if tenantID != "acme" || dbName != "mydb" {
+			t.Errorf("onEtcdUpdated(%q, %q), want (acme, mydb)", tenantID, dbName)
+		}
 		return nil
 	}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",

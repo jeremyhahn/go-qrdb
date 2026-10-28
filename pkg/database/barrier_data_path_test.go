@@ -28,7 +28,7 @@ import (
 // would wrap that placeholder, so creation must refuse it rather than accept
 // a barrier that encrypts nothing and whose seal protects nothing.
 func TestManager_Create_BarrierOnRaftBackend_RefusedOffDataPath(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(newTestBarrierManager(t)))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(newTestBarrierManager(t)))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -54,7 +54,7 @@ func TestManager_Create_BarrierOnRaftBackend_RefusedOffDataPath(t *testing.T) {
 // is the barrier-wrapped store, so the refusal must not reach it.
 func TestManager_Create_BarrierOnOwnStore_Accepted(t *testing.T) {
 	root := t.TempDir()
-	mgr := NewManager(nil, filepath.Join(root, "node"), WithBarrierManager(newTestBarrierManager(t)))
+	mgr := newCatalogManager(nil, filepath.Join(root, "node"), WithBarrierManager(newTestBarrierManager(t)))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -98,7 +98,7 @@ func TestManager_UpdateBarrier_RaftBackend_RefusedOffDataPath(t *testing.T) {
 // sealed database, so keeping it in the catalog keeps it fail-closed.
 func TestManager_Open_LegacyRaftBarrier_OpensSealed(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir, WithBarrierManager(newTestBarrierManager(t)))
+	mgr := newCatalogManager(nil, dataDir, WithBarrierManager(newTestBarrierManager(t)))
 	defer func() { _ = mgr.Close() }()
 
 	meta := DatabaseMeta{
@@ -107,13 +107,13 @@ func TestManager_Open_LegacyRaftBarrier_OpensSealed(t *testing.T) {
 		Raft:    &DatabaseRaftConfig{ClusterMode: RaftLocal},
 		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: BarrierModePassphrase},
 	}
-	if err := os.MkdirAll(mgr.dbDir("legacyraft"), 0o750); err != nil {
+	if err := os.MkdirAll(mgr.dbDir("", "legacyraft"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := mgr.writeMeta(mgr.dbDir("legacyraft"), meta); err != nil {
-		t.Fatalf("writeMeta: %v", err)
+	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), meta); err != nil {
+		t.Fatalf("catalog Create: %v", err)
 	}
-	db, err := mgr.Open("legacyraft")
+	db, err := mgr.Open(context.Background(), "", "legacyraft")
 	if err != nil {
 		t.Fatalf("Open(legacy raft + barrier) error = %v, want nil", err)
 	}
