@@ -442,7 +442,12 @@ middle decided nowhere.
   | `pebble` (default) | yes | yes | yes | refused |
   | `memory`, `standard`, `concurrent`, `highperf`, `fast`, `disk`, `regular` | yes | yes | yes | refused |
 
-  There is no row that declines a guarded verb.
+  There is no row that declines a guarded verb. A `get` or `range` inside a
+  transaction branch is the one transaction capability that is `mvcc` only:
+  the service encodes it as `OpMVCCRange`, answered by
+  `mvcc.Store.RangeInBatchAt` over the branch's staged writes, and every other
+  state machine refuses it (see
+  [../transactions/engineering.md](../transactions/engineering.md)).
 - **Every state machine runs transactions against its OWN keyspace.** The
   `pkg/statemachine` state machines have no MVCC store; `OpTransaction` and
   `OpBatch` are decided against, and committed to, the same keyspace `Put`,

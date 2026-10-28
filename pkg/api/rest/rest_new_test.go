@@ -1210,6 +1210,19 @@ func TestParseOpType_AllValues(t *testing.T) {
 	}
 }
 
+func TestUnknownOpTypeError_IsABadRequest(t *testing.T) {
+	_, err := jsonToOps([]opJSON{{Type: "upsert", Key: "k"}})
+	if err == nil {
+		t.Fatal("jsonToOps accepted an unknown op type")
+	}
+	if got := mapHTTPError(err); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(%v) = %d, want %d", err, got, http.StatusBadRequest)
+	}
+	if got := mapHTTPError(&UnknownOpTypeError{}); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(empty UnknownOpTypeError) = %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handlers_batch.go
 // ---------------------------------------------------------------------------

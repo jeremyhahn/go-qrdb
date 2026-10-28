@@ -59,7 +59,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	ops, err := jsonToOps(req.Ops)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
