@@ -61,6 +61,10 @@ are not reconstructed here — their history is in the git log.
   shared secrets and token, the credential values, the user auth-factor
   credentials, the tenant-barrier unseal key and the invitation token
   (`docs/barrier-seal/api.md`, "Secret arguments over MCP").
+
+### Changed
+- **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
+  `make deps-check` passes on `main` and every pull request.
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added

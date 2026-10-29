@@ -15,7 +15,7 @@ require (
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
 	github.com/jeremyhahn/go-quicraft v0.24.2-alpha
-	github.com/mark3labs/mcp-go v1.3.0
+	github.com/mark3labs/mcp-go v1.4.0
 	github.com/quic-go/quic-go v0.64.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/tools v0.52.0

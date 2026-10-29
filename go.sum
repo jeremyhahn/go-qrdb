@@ -306,8 +306,8 @@ github.com/lestrrat-go/strftime v1.2.0 h1:8fAUYOeaJKCuLzNvUWBAo8t6I6hkFfodDTndEz
 github.com/lestrrat-go/strftime v1.2.0/go.mod h1:GtsIA/7ddIGJjEdfadUafEb1sbutvlvpMdPCMglykYo=
 github.com/lib/pq v1.10.9 h1:YXG7RB+JIjhP29X+OtkiDnYaXQwpS4JEWq7dtCCRUEw=
 github.com/lib/pq v1.10.9/go.mod h1:AlVN5x4E4T544tWzH6hKfbfQvm3HdbOxrmggDNAPY9o=
-github.com/mark3labs/mcp-go v1.3.0 h1:0nqegnwaTULVV1pCQLBmDjD2+0/lSXRt6eTHS7bH1o0=
-github.com/mark3labs/mcp-go v1.3.0/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
+github.com/mark3labs/mcp-go v1.4.0 h1:gEWEv7YOTJjW4K9cxuwfr0FLRFgSWOE1Bju1SxPlctI=
+github.com/mark3labs/mcp-go v1.4.0/go.mod h1:6L8eBboqlAMnYrvl8rpbUeV2qE/SJh52aVGrXIomVb0=
 github.com/matryer/is v1.4.0/go.mod h1:8I/i5uYgLzgsgEloJE1U6xx5HkBQpAZvepWuujKwMRU=
 github.com/matryer/is v1.4.1 h1:55ehd8zaGABKLXQUe2awZ99BD/PTc2ls+KV/dXphgEQ=
 github.com/matryer/is v1.4.1/go.mod h1:8I/i5uYgLzgsgEloJE1U6xx5HkBQpAZvepWuujKwMRU=

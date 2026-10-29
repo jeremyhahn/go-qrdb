@@ -41,7 +41,7 @@ require (
 	github.com/jeremyhahn/go-quicraft v0.24.2-alpha
 	github.com/jeremyhahn/go-truststrap v0.7.0-alpha
 	github.com/jeroenrinzema/psql-wire v0.20.0
-	github.com/mark3labs/mcp-go v1.3.0
+	github.com/mark3labs/mcp-go v1.4.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.64.1

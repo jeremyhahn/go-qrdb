@@ -135,7 +135,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lestrrat-go/strftime v1.2.0 // indirect
 	github.com/lib/pq v1.12.3 // indirect
-	github.com/mark3labs/mcp-go v1.3.0 // indirect
+	github.com/mark3labs/mcp-go v1.4.0 // indirect
 	github.com/mattn/go-ieproxy v0.0.12 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/minio/minlz v1.1.0 // indirect
