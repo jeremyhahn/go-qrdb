@@ -501,6 +501,53 @@ Invariants:
   fault as a `*config.ValidationError` naming the field; it refuses an enabled
   configuration with gRPC or REST off (`*server.GRPCWebUnavailableError`).
 
+### WebTransport
+
+`pkg/api/rest` serves WebTransport sessions (draft-ietf-webtrans-http3-16,
+`docs/reference/draft-ietf-webtrans-http3-16.txt`) on the HTTP/3 listener
+through `github.com/quic-go/webtransport-go` v0.13.0:
+
+```go
+type WebTransportSession = webtransport.Session
+type WebTransportHandler func(sess *WebTransportSession, caller *auth.Identity, tenantID string)
+
+func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption
+```
+
+`server.WithWebTransportHandler(path, h)` passes it through `pkg/server`, and
+the SDK re-exports the option and the types (`sdkserver.WithWebTransportHandler`,
+`sdkserver.WebTransportSession`, `sdkserver.WebTransportHandler`,
+`sdkserver.InvalidWebTransportHandlerError`). There is one handler, for one
+path.
+
+Invariants:
+
+- **Authenticated before the upgrade.** The session's extended CONNECT is
+  registered as an authenticated REST route on the same chi router, so it
+  passes the same handler chain as every REST request: authentication, tenant
+  binding, authorization and the sealed-window gate. A CONNECT the chain refuses gets
+  the status REST would give: 401 with no caller, and so on. The handler is
+  then not called and nothing is upgraded. A CONNECT on another path is not
+  upgraded.
+- **HTTP/3 only.** The route on the HTTP/1.1 or HTTP/2 listener answers 400
+  (`*rest.WebTransportUpgradeError` over `*rest.WebTransportNotHTTP3Error`),
+  as does a failed upgrade (`*rest.WebTransportUpgradeError`).
+- **Nothing changes without a handler.** Only with a handler does the HTTP/3
+  listener set `EnableDatagrams` and `EnableStreamResetPartialDelivery` in its
+  QUIC configuration (-16 section 3), and only then does it send the
+  WebTransport SETTINGS. Without one, the path is an unknown route (404). The
+  SETTINGS the libraries send whether or not this applies are recorded as
+  deviations in [docs/reference/README.md](../reference/README.md).
+- **One accept loop.** webtransport-go has no `ServeListener`, so
+  `pkg/api/rest` accepts from the connection-limited QUIC listener itself and
+  hands each connection to `ServeQUICConn`. The per-peer cap holds for
+  WebTransport too.
+- **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
+  applies its default: a request carrying an `Origin` header must match the
+  request's host. The REST authentication chain is the access control.
+- **Invalid options fail Start.** A nil handler, or a path not starting with
+  `/`, makes `Start` return `*rest.InvalidWebTransportHandlerError`.
+
 **One path per request on every HTTP surface.** The REST handler chain opens
 with `canonicalPathMiddleware`, which clears `r.URL.RawPath` so chi routes on
 the same decoded `r.URL.Path` that authorization, the sealed-window allowlist,

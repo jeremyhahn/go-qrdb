@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route.
+
 ### Fixed
 
 - **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
