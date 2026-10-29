@@ -226,6 +226,24 @@ type (
 // WithGRPCWeb enables gRPC-Web with cfg; see GRPCWebConfig.
 var WithGRPCWeb = qrdbserver.WithGRPCWeb
 
+type (
+	// WebTransportSession is a WebTransport session
+	// (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener.
+	WebTransportSession = restapi.WebTransportSession
+	// WebTransportHandler serves one WebTransport session, given the caller
+	// the REST authentication chain admitted and the tenant it bound.
+	WebTransportHandler = restapi.WebTransportHandler
+	// InvalidWebTransportHandlerError is Start's refusal of a
+	// WithWebTransportHandler given a nil handler or a relative path.
+	InvalidWebTransportHandlerError = restapi.InvalidWebTransportHandlerError
+)
+
+// WithWebTransportHandler serves WebTransport sessions on path of the REST
+// HTTP/3 listener, handing each to h once its CONNECT has passed the REST
+// authentication and tenant-binding chain. Without it the listener
+// advertises no WebTransport SETTINGS.
+var WithWebTransportHandler = qrdbserver.WithWebTransportHandler
+
 // NewModuleHTTPRegistrar builds the permission-recording registrar the server
 // passes to ServiceModule.RegisterHTTP. Exported for module hosts and module
 // tests that need a capture registrar without importing pkg/apimodule.

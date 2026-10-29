@@ -16,9 +16,16 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek/dektest"
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -117,5 +124,63 @@ func TestResolveCryptoOptions_CompositionSeamsAbsentKeepTheDefaults(t *testing.T
 	if got.Clock != nil || got.DEKProvider != nil || got.HeadSignerProvider != nil || got.BackupSink != nil ||
 		got.StorageFactory != nil || got.InvitationRedeemLimiter != nil || got.HolderActLimiter != nil {
 		t.Fatalf("a seam is set with no option given: %+v", got)
+	}
+}
+
+// settingsWTEnabled is SETTINGS_WT_ENABLED, draft-ietf-webtrans-http3-16
+// section 9.2.
+const settingsWTEnabled = 0x2c7cf000
+
+// restHTTP3Settings returns the HTTP/3 SETTINGS srv's REST listener sends.
+func restHTTP3Settings(t *testing.T, srv *Server) *http3.Settings {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tlsCfg := &tls.Config{RootCAs: testServerCAPool(t), ServerName: "localhost", MinVersion: tls.VersionTLS13, NextProtos: []string{http3.NextProtoH3}}
+	conn, err := quic.DialAddr(ctx, srv.RESTAddr(), tlsCfg, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	if err != nil {
+		t.Fatalf("DialAddr: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
+	cc := (&http3.Transport{EnableDatagrams: true}).NewClientConn(conn)
+	select {
+	case <-cc.ReceivedSettings():
+	case <-ctx.Done():
+		t.Fatal("no SETTINGS from the REST listener")
+	}
+	return cc.Settings()
+}
+
+func TestWithWebTransportHandler_ReachesTheRESTListener(t *testing.T) {
+	handler := func(sess *rest.WebTransportSession, _ *auth.Identity, _ string) { _ = sess.CloseWithError(0, "") }
+	for name, tc := range map[string]struct {
+		opts []ServerOption
+		want uint64
+	}{
+		"with a handler": {opts: []ServerOption{WithWebTransportHandler("/wt", handler)}, want: 1},
+		"without":        {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, append([]ServerOption{WithCeremonyCA(testServerCA)}, tc.opts...)...)
+			if err := srv.Start(); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			t.Cleanup(srv.Stop)
+			if got := restHTTP3Settings(t, srv).Other[settingsWTEnabled]; got != tc.want {
+				t.Fatalf("SETTINGS_WT_ENABLED = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWithWebTransportHandler_InvalidRefusedAtStart(t *testing.T) {
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/wt", nil))
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+	}
+	var target *rest.InvalidWebTransportHandlerError
+	if !errors.As(err, &target) || !target.NilHandler {
+		t.Fatalf("Start = %v, want *rest.InvalidWebTransportHandlerError for the nil handler", err)
 	}
 }
