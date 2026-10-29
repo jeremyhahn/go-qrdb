@@ -146,6 +146,7 @@ func TestWipeAll_DestroysLiveEnclavesThroughTheSDK(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWipeAll_DestroysLiveEnclavesThroughTheSDK$", "-test.count=1")
 	cmd.Env = append(os.Environ(), wipeAllChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
