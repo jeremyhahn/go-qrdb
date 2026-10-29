@@ -36,9 +36,11 @@
 #   RELEASE_REGISTRY_TOKEN   the login's password, fed to docker on stdin
 #
 # A name change to the contract is an Infrastructure PR to claude-agents,
-# announced on claude-agents#329 before it lands. A pull, and a push to GHCR,
-# log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the run's own token that
-# the workflow step supplies. No credential value is ever printed: an empty
+# announced on claude-agents#329 before it lands. A pull from, and a push to,
+# GHCR log in with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, the run's own token
+# that the workflow step supplies. A pull from the Gitea registry logs in with
+# nothing: the release credential's namespace is public and reads
+# anonymously, and the run's token cannot log in there (ruling 216(5)). No credential value is ever printed: an empty
 # name fails naming the variable, never a value. The login lives in a private
 # DOCKER_CONFIG that is deleted on exit, so the credential outlives neither
 # this process nor reaches another job on the same Docker host. local never
@@ -116,25 +118,61 @@ registry_name() {
 	esac
 }
 
+# registry_owner prints the namespace the images go under, the one the
+# credential that pushes owns, for the credential source $1 names: the release
+# runner's credential pushes under its own user, RELEASE_REGISTRY_USER (a
+# Gitea user cannot write another user's namespace), and the run's token under
+# the repository owner. It names the variable, never its value.
 registry_owner() {
-	local owner=${GITHUB_REPOSITORY_OWNER:-}
+	local var
+	case $1 in
+	"the release runner's credential") var=RELEASE_REGISTRY_USER ;;
+	*) var=GITHUB_REPOSITORY_OWNER ;;
+	esac
+	local owner=${!var:-}
+	[ -n "$owner" ] || die "$var is empty: $1 is not in the job's environment"
 	owner=${owner,,}
-	[[ $owner =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "GITHUB_REPOSITORY_OWNER does not name a registry owner"
+	[[ $owner =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "$var does not name a registry owner"
 	printf '%s\n' "$owner"
 }
 
-check_ref() {
+# check_shape refuses $1 unless it is a digest reference.
+check_shape() {
 	[[ $1 =~ $ref_re ]] || die "'$1' is not a digest reference (<registry>/<owner>/<name>@sha256:<64 hex>)"
+}
+
+# check_ref refuses $1 unless it is a digest reference under an owner a push
+# may write: the repository owner, or RELEASE_REGISTRY_USER when the release
+# runner's credential is in the environment. A consumer, which the release
+# runner's env file never reaches, takes the reference docker-build handed on
+# with check_shape alone.
+check_ref() {
+	check_shape "$1"
+	local path=${1#*/} owner allowed
+	owner=${path%%/*}
+	allowed=$(registry_owner "the run's token")
+	[ "$owner" = "$allowed" ] && return 0
+	if [ -n "${RELEASE_REGISTRY_USER:-}" ]; then
+		allowed=$(registry_owner "the release runner's credential")
+		[ "$owner" = "$allowed" ] && return 0
+	fi
+	die "'$1' is not under the repository owner's or the release runner credential's own namespace"
 }
 
 # credential_source names, in a message, the credential a login with
 # operation $2 at host $1 uses: a push to the Gitea registry uses the release
 # runner's own, which its runner env file puts in the job's environment
-# (rulings 169 and 173); a pull, and any login to GHCR, uses the run's token.
-# It names the credential, never its value.
+# (rulings 169 and 173); any login to GHCR uses the run's token; a pull from
+# the Gitea registry uses no credential and is anonymous, because the run's
+# token carries an empty scope there and the registry refuses its login
+# (ruling 216(5)), while the release credential's user, whose namespace the
+# images go under, is public, so its container packages read anonymously.
+# It names the credential, never its value, and is the one place that decides
+# whether a pull logs in.
 credential_source() {
 	case $1:$2 in
-	ghcr.io:* | *:pull) printf "the run's token\n" ;;
+	ghcr.io:*) printf "the run's token\n" ;;
+	*:pull) printf 'no credential\n' ;;
 	*) printf "the release runner's credential\n" ;;
 	esac
 }
@@ -148,7 +186,8 @@ credential_names() {
 	esac
 }
 
-# login logs in to host $1 for operation $2, push or pull.
+# login logs in to host $1 for operation $2, push or pull, of owner $3's
+# container packages.
 login() {
 	local host=$1 src user token
 	src=$(credential_source "$1" "$2")
@@ -159,7 +198,7 @@ login() {
 	export DOCKER_CONFIG
 	trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 	if ! printf '%s' "${!token}" | docker login "$host" -u "${!user}" --password-stdin >/dev/null; then
-		die "$(registry_name "$host") refused the login: $src cannot use $(registry_owner)'s container packages"
+		die "$(registry_name "$host") refused the login: $src cannot use $3's container packages"
 	fi
 }
 
@@ -170,12 +209,13 @@ push() {
 	[[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "image name '$name' is not a registry repository name"
 	local hash=${image##*:}
 	[ "$hash" != "$image" ] && [[ $hash =~ ^[A-Za-z0-9_.-]+$ ]] || die "'$image' carries no content-hash tag"
-	local host owner
+	local host src owner
 	host=$(push_host)
-	owner=$(registry_owner)
+	src=$(credential_source "$host" push)
+	owner=$(registry_owner "$src")
 	local repo=$host/$owner/$name
 	local target=$repo:$hash-$trust
-	login "$host" push
+	login "$host" push "$owner"
 	docker tag "$image" "$target" || die "cannot tag $image as $target"
 	docker push "$target" >&2 || die "$(registry_name "$host") refused the push of $target"
 	local digest="" d
@@ -190,11 +230,16 @@ push() {
 pull() {
 	[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: pull <ref> [hold]"
 	local ref=$1 hold=${2:-}
-	check_ref "$ref"
-	local host
+	check_shape "$ref"
+	local host path
 	host=$(registry_host)
 	[ "${ref%%/*}" = "$host" ] || die "'$ref' is not in this run's registry"
-	login "$host" pull
+	path=${ref#*/}
+	local how=""
+	case $(credential_source "$host" pull) in
+	"no credential") how=" anonymously (the Gitea registry admits no job login; the release namespace reads publicly)" ;;
+	*) login "$host" pull "${path%%/*}" ;;
+	esac
 	local backoff=${CI_REGISTRY_BACKOFF:-10} n
 	for ((n = 1; n <= attempts; n++)); do
 		if docker pull --quiet "$ref" >/dev/null; then
@@ -211,7 +256,7 @@ pull() {
 		echo "==> pull of $ref failed (attempt $n of $attempts); retrying" >&2
 		sleep $((n * backoff))
 	done
-	die "cannot pull $ref after $attempts attempts; a consumer never rebuilds the image docker-build pushed"
+	die "cannot pull $ref$how after $attempts attempts; a consumer never rebuilds the image docker-build pushed"
 }
 
 # stage_modauth writes the module credentials the image build reads as its

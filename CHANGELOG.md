@@ -13,6 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
 - **A tenant Security Officer's PIN is held sealed while it is being onboarded**: `bootstrap.TenantSOConfig.PIN` is a `*secure.Secret`. The onboarding service seals the request's PIN bytes into it and wipes them. The Secret is opened only for the `SetSOPIN` commit, and `ProvisionTenant` destroys it on every return, whether the PIN was committed, the commit failed or the request was refused. The secure analyzer no longer flags the two `[]byte` PIN fields.
 - **CI's devcontainer images build on `bigdisk` again and the forge publishes nothing**: a push to `main` on the forge no longer pushes them to a registry namespace the release runner's credential cannot write; every job there builds or reuses the content-hash image on its own runner, and github.com still publishes to GHCR.
 - **A certificate a node issues or enrolls is admitted on its next

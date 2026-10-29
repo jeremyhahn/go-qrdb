@@ -112,7 +112,7 @@ other whole-tree test/buildgates gates this file already tracks.
 | `Makefile` — `INT_FEATURES`, `print-integration-features` | every feature whose `features.mk` entry maps at least one file, sorted: the features CI's `integration-features` shards run, each in one shard. `make -s print-integration-features` prints them |
 | `Makefile` — `integration-test-features` | runs each feature in `IT_FEATURES` past a failing one, prints a PASS/FAIL line with seconds per feature and a summary naming the failures, and fails if any failed; an unknown name is a FAIL. `IT_FEATURES_IN=host` (default) runs `integration-test-feature`, `image` runs `integration-test IT_FEATURE=<f>` |
 | `test/buildgates/feature_jobs_gate_test.go` (also run by `make check-integration-feature-coverage`) | ci.yml's `integration-features` matrix is only `include` entries, each exactly a literal `shard` name (unique) and a non-empty literal `features` list, and the lists together name every feature of `make -s print-integration-features` exactly once and nothing else (a missing, duplicated or unknown feature fails with the feature and its fix), and that list is exactly the `features.mk` entries that map a file; each shard needs `docker-build` and runs exactly six steps, the "Mask the forge credentials" step first (it runs no `make`), then the age-gated reap of `qrdb-ci-` stacks, `scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"` under `env.CI_PUBLISH == 'true'` with an `IT_REF` that is `docker-build`'s `it_ref` output (DS-3516), `scripts/ci-registry.sh local it "$IT_HOLD"` under `env.CI_PUBLISH != 'true'`, each handing its image on as `IT_IMAGE`, `make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image` with `IT_FEATURES: ${{ matrix.features }}` in the job env, and `make docker-down-it` under `always()`, with an `IT_PROJECT` that starts `qrdb-ci-` and carries the run, the attempt and the shard, and no job-level `IT_IMAGE`; `make -s it-image` prints a stable `qrdb-ci-it:<16-hex hash>`, and `make docker-down-it` removes no image; against a stub `docker` that untags one of several names freely and refuses to remove the last name of an image a container uses, `make docker-build-it` holds the image (`IT_HOLD`) so the reaper keeps it however old it is, even when the reaper removed it between the check and the hold, removes it once `make docker-release-it` released the hold, and removes a dead job's stale hold and its image in one pass; the reaper removes a stale image pulled from the registry, by tag and by digest, and keeps one a hold uses (every name of it: the local tag, the registry tag and the digest), one that is fresh, and another repository's; `timeout-minutes` is set and at most 45 (#1286; 30 on a light fleet); `fail-fast` is `false`; the job carries the full-tier `if:`; ci.yml runs on push and pull_request. Each rule has a fixture mutation that must redden it |
-| `test/buildgates/ci_image_digest_test.go` (run by `make test` and `make check-action-pins` with the rest of `test/buildgates`) | the workflow env `CI_PUBLISH` is exactly a push to `main` on github.com; `docker-build` runs on `ubuntu-latest` on github.com and `bigdisk` on the forge, and no job's `runs-on` names `release`; no workflow or job env holds the registry token, and every step of every job that logs in, pushes or pulls (`scripts/ci-registry.sh push\|pull`, `docker login\|push\|pull`) or carries the token runs under `env.CI_PUBLISH == 'true'`, with nothing ORed or negated around it, so no pull request touches the registry; `docker-build` sets `packages: write`, pushes with `scripts/ci-registry.sh push`, validates its outputs against `^[^@ ]+@sha256:[0-9a-f]{64}$` under the same condition and outputs `toolchain_ref` and `it_ref` from a step; every other job that reads one of those outputs needs `docker-build`, sets `packages: read`, has no `runs-on` that follows `docker-build`, reads no other output and pulls each output it reads with `scripts/ci-registry.sh pull` bound to that output before its first stage of that image; every job that runs a stage (`scripts/in-toolchain-image.sh`, `make integration-test`) or reads an output has a `scripts/ci-registry.sh local toolchain\|it` step under `env.CI_PUBLISH != 'true'` before that stage, pulls on a push to `main` unless it is dispatch-only, and never probes for or builds an image itself (`docker image inspect`, `docker build`, `make docker-build-*`); at least six consumers. A copy of ci.yml with `lint` reverted to `docker image inspect \|\| make docker-build-toolchain` must fail it, and each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_image_digest_test.go` (run by `make test` and `make check-action-pins` with the rest of `test/buildgates`) | the workflow env `CI_PUBLISH` is exactly a push to `main`; no workflow or job env holds the registry token, and every step of every job that logs in, pushes or pulls (`scripts/ci-registry.sh push\|pull`, `docker login\|push\|pull`) or carries the token runs under `env.CI_PUBLISH == 'true'`, with nothing ORed or negated around it, so no pull request touches the registry; `docker-build` sets `packages: write`, pushes with `scripts/ci-registry.sh push`, validates its outputs against `^[^@ ]+@sha256:[0-9a-f]{64}$` under the same condition and outputs `toolchain_ref` and `it_ref` from a step; every other job that reads one of those outputs needs `docker-build`, sets `packages: read`, has no `runs-on` that follows `docker-build`, reads no other output and pulls each output it reads with `scripts/ci-registry.sh pull` bound to that output before its first stage of that image; every job that runs a stage (`scripts/in-toolchain-image.sh`, `make integration-test`) or reads an output has a `scripts/ci-registry.sh local toolchain\|it` step under `env.CI_PUBLISH != 'true'` before that stage, pulls on a push to `main` unless it is dispatch-only, and never probes for or builds an image itself (`docker image inspect`, `docker build`, `make docker-build-*`); at least six consumers. A copy of ci.yml with `lint` reverted to `docker image inspect \|\| make docker-build-toolchain` must fail it, and each rule has a fixture mutation that must redden it |
 | `test/buildgates/ci_registry_test.go` (with the rest of `test/buildgates`) | `scripts/ci-registry.sh push` logs in to the registry of the forge the run is on and names it when the login is refused; `scripts/ci-registry.sh local`, against a stub `docker` that fails on and records any login, push, pull or tag, with the registry token and a job's image overrides in its environment, builds the toolchain image only when the daemon lacks its tag, holds it by image ID and prints the ID, builds the integration image through `make docker-build-it IT_HOLD=<hold>` and prints its tag, hands the build a module-auth file without the token and removes it, and refuses a family or hold name it does not know |
 | `test/integration/COVERAGE.md` | the per-feature, per-transport (REST/gRPC/QUIC/MCP/Unix/embedded) CLI coverage accounting, and every known gap |
 | `Makefile` — `INT_PROJECT`, `INT_IMAGE`, `INT_GPU_IMAGE` | the per-run identity of a Docker integration run, the host plus, in CI, the run, attempt and feature goal (`make integration-test-standalone`, `-cluster`, `-dao`, `-gpu`, `-embedding`, `-rag-ollama`): the compose project, and the images the run builds and runs, `go-qrdb-int:<INT_PROJECT>` and `go-qrdb-int-gpu:<INT_PROJECT>`, exported as `QRDB_INT_IMAGE` and `QRDB_INT_GPU_IMAGE` |
@@ -172,25 +172,31 @@ golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
 (`-oneline`) name a finding without quoting the line it is in, so a log never
 repeats the value a scanner exists to keep out of the tree.
 
-**The images take one of two paths, and only a push to `main` on github.com
-publishes.** The workflow env `CI_PUBLISH` is true on a push to `main` on
-github.com alone; every step that logs in, pushes or pulls runs under
-`if: env.CI_PUBLISH == 'true'`, and its counterpart on every other event, a
-pull request, a `workflow_dispatch` or the nightly `schedule:`, and on every
-event on the forge, under `if: env.CI_PUBLISH != 'true'`. The forge publishes
-nothing until the registry namespace the images go to is the release runner
-credential's own: a user-owned namespace refuses that credential's push.
+**The images take one of two paths, and only a push to `main` publishes.**
+The workflow env `CI_PUBLISH` is true on a push to `main` alone; every step
+that logs in, pushes or pulls runs under `if: env.CI_PUBLISH == 'true'`, and
+its counterpart on every other event, a pull request, a `workflow_dispatch`
+or the nightly `schedule:`, under `if: env.CI_PUBLISH != 'true'`.
 
 | Event | `docker-build` | Consumers take the image | Hold |
 |---|---|---|---|
-| push to `main` on github.com | on `ubuntu-latest`: builds both stages, logs in, pushes, outputs the digests | `scripts/ci-registry.sh pull <digest> <hold>` (logs in) | a container of the digest |
-| every event on the forge; pull request, `workflow_dispatch`, nightly `schedule:` on github.com | on `bigdisk`: builds both stages; no login, no push, empty outputs | `scripts/ci-registry.sh local toolchain\|it <hold>` on the job's own runner (no login) | toolchain: a container of the image ID; integration: `make docker-build-it`'s `IT_HOLD`, a container of the tag |
+| push to `main` | on the `release` runner: builds both stages, logs in, pushes, outputs the digests | `scripts/ci-registry.sh pull <digest> <hold>` (logs in) | a container of the digest |
+| pull request, `workflow_dispatch`, nightly `schedule:` | on `bigdisk`: builds both stages; no login, no push, empty outputs | `scripts/ci-registry.sh local toolchain\|it <hold>` on the job's own runner (no login) | toolchain: a container of the image ID; integration: `make docker-build-it`'s `IT_HOLD`, a container of the tag |
 
-**On a push to `main` on github.com the images are built once per run and
-pulled by digest** (DS-3516). The `docker-build` job builds both stages
+**On a push to `main` the images are built once per run and pulled by
+digest** (DS-3516). The `docker-build` job builds both stages
 (`make docker-build`; `make -s toolchain-image` prints the toolchain tag) and
-pushes each to `ghcr.io` under the repository owner, as `qrdb-ci-toolchain`
-and `qrdb-ci-it`. `scripts/ci-registry.sh push` tags each
+pushes each to the forge's registry (handbook `devops.md` §2): the Gitea
+registry, which the release runner's `RELEASE_REGISTRY` names (below) and so
+is never written in a tracked file, or `ghcr.io` when the run is on GitHub,
+as `qrdb-ci-toolchain` and `qrdb-ci-it`. The images go under the namespace of
+the credential that pushes them: on the forge the release credential's own
+namespace, the one namespace it can write (a push under the repository
+owner's was refused, main run 71805), and on GitHub the repository owner's,
+with the run's own token. `scripts/ci-registry.sh` takes the owner from the
+runner's environment and names it in no tracked file; its `check-ref` accepts
+a reference under the repository owner, or under the release credential's own
+namespace where that credential is in the environment, and no other. `scripts/ci-registry.sh push` tags each
 `<content-hash>-<trust>`, the 16-hex hash the Makefile built it under and the
 trust class (`main`), and prints the digest the registry reported. The job
 validates each against `^[^@ ]+@sha256:[0-9a-f]{64}$` and passes them on as
@@ -199,12 +205,12 @@ trust class, so a rebuilt tree pushes a new version under the same tag; the
 registry's cleanup rule for the owner's container packages removes the
 superseded versions, and no job deletes from the registry.
 
-**No job runs on the release runner.** `docker-build`'s `runs-on` is the one
-its sibling jobs use, `ubuntu-latest` on github.com and `bigdisk` on the
-forge, on every event. The forge push in `scripts/ci-registry.sh` and the
-credential contract below stay, for the day the forge publishes again under
-a namespace the release runner's credential owns; that push will run on the
-release runner, the one runner that holds the credential (ruling 169).
+**The push runs on the release runner, which alone holds the registry
+credential** (ruling 169). On the forge a push to `main` places `docker-build`
+on the runner labelled `release`; every other event places it on `bigdisk`,
+and github.com keeps `ubuntu-latest`. `runs-on` cannot read `env`, so the job
+restates `CI_PUBLISH`'s condition from the `github` context, and it stays one
+job definition.
 
 **The release runner's credential contract is the three names its runner env
 file exports** (ruling 173): `RELEASE_REGISTRY`, the
@@ -224,23 +230,25 @@ mask the runner's. A name change to the contract is an Infrastructure PR to
 claude-agents, announced before it lands on the claude-agents issue that
 records the runner's contract, and this repo follows it. On github.com the push step hands the run's own
 `secrets.GITHUB_TOKEN` on under `RUN_REGISTRY_*` as `CI_REGISTRY_*`, empty on
-the forge. Every consumer's pull logs in with the run's
+the forge. On github.com every consumer's pull logs in to GHCR with the run's
 `secrets.GITHUB_TOKEN` (the runner masks it), set only on the steps that log
-in, and stays on `bigdisk`. The job's `permissions:` grant `packages: write` to
+in; on the forge every consumer pulls anonymously, with no `docker login`,
+because the release credential's namespace is public and the run's token,
+which the forge issues with an empty scope, cannot log in to its registry.
+Every consumer stays on `bigdisk`. The job's `permissions:` grant `packages: write` to
 `docker-build` and `packages: read` to every consumer.
 `test/buildgates/ci_image_digest_test.go` fails when `docker-build`'s
 `runs-on` is anything but that one expression, when any `env:` in ci.yml sets
-a `RELEASE_REGISTRY*` name, when `CI_PUBLISH` can be true on the forge, or
-when any job, `docker-build` included, can run on `release`.
+a `RELEASE_REGISTRY*` name, or when any other job can run on `release`.
 `scripts/ci-registry.sh` feeds the credential to `docker login --password-stdin` in a
 private `DOCKER_CONFIG` that it deletes on exit, so the credential reaches no
 other job on the same Docker host. A refused login, push or pull fails the job
 with a typed `::error::` line that names the credential it used (the release
-runner's, or the run's token) and never its value: there is no local rebuild
+runner's, or the run's token) and never its value, or, for a pull on the
+forge, says the pull was anonymous: there is no local rebuild
 to fall back to.
 
-**On every other event, and on every event on the forge, nothing is
-published** (handbook `ci-standard.md` §9).
+**On every other event nothing is published** (handbook `ci-standard.md` §9).
 `docker-build` still builds both stages, so a broken Dockerfile fails the
 pull request in the PR tier, but it neither logs in nor pushes, and its outputs
 are empty. Each consumer instead runs `scripts/ci-registry.sh local`, which

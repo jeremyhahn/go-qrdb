@@ -83,17 +83,19 @@
 # number is hardcoded. No job changes.
 # CUSTOMIZE (go-qrdb) begin: where this file departs from v1.28.0, and why.
 #   - No revert-red-main.yml beside this file: not adopted here.
-#   - docker-build builds both images once per run. On a push to main on
-#     github.com alone (env.CI_PUBLISH) it pushes them to GHCR with the run's
-#     own token, as <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it
+#   - docker-build builds both images once per run. On a push to main alone
+#     (env.CI_PUBLISH) it runs on the release runner, which holds the
+#     registry credential (ruling 169), and pushes them to the forge's
+#     registry, derived from github.server_url, as <owner>/qrdb-ci-toolchain and <owner>/qrdb-ci-it,
+#     where <owner> is the namespace of the credential that pushes: the
+#     release credential's own namespace on the forge, the repository owner
+#     with the run's own token on github.com (scripts/ci-registry.sh), and
 #     tagged <content-hash>-main; its outputs toolchain_ref and it_ref are
 #     digest references, and every consumer pulls exactly that digest with
 #     scripts/ci-registry.sh and never rebuilds (DS-3516). No job is placed on
-#     docker-build's host. On every other event, and on every event on the
-#     forge, nothing logs in or pushes (claude-agents#329: the run's token
-#     cannot log in to the registry there, and the forge publishes nothing
-#     until the registry namespace is the release runner credential's own):
-#     docker-build runs on bigdisk, the outputs are empty, and each consumer takes the image from
+#     docker-build's host. On every other event nothing logs in or pushes
+#     (claude-agents#329: the run's token cannot log in to the registry
+#     there): the outputs are empty, and each consumer takes the image from
 #     its own runner's daemon by content-hash tag, building it when missing
 #     (`scripts/ci-registry.sh local`, ci-standard.md §9).
 #     test/buildgates/ci_image_digest_test.go holds both paths.
@@ -433,14 +435,11 @@ env:
   # equal (test/buildgates/ci_tiers_test.go).
   CI_FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   # CUSTOMIZE (go-qrdb, claude-agents#329): the one event that logs in to the
-  # registry and pushes the CI images, a push to main on github.com. On the
-  # forge no event publishes: that waits until the registry namespace the
-  # images go to is the release runner credential's own, and until then
-  # every job there takes the local path. Every step that logs
+  # registry and pushes the CI images, a push to main. Every step that logs
   # in, pushes or pulls carries `if: env.CI_PUBLISH == 'true'`; its
   # counterpart, which builds on the runner's own daemon, carries
   # `if: env.CI_PUBLISH != 'true'` (test/buildgates/ci_image_digest_test.go).
-  CI_PUBLISH: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
   # v1.24 (CA m749, m751 (a)): the files a docs-only PR may touch. CUSTOMIZE: narrow it
   # in a repo that embeds or generates from docs/ (go:embed, OpenAPI, protos).
   # CUSTOMIZE (go-qrdb): kept as the template's. Nothing embeds or generates
@@ -522,15 +521,19 @@ jobs:
   docker-build:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
-    # CUSTOMIZE (go-qrdb): on the forge this job builds on bigdisk on every
-    # event and pushes nothing (CI_PUBLISH); github.com keeps ubuntu-latest
-    # and the run's own token (test/buildgates/ci_image_digest_test.go).
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
+    # CUSTOMIZE (go-qrdb, ruling 169): on the forge, a push to main (the
+    # CI_PUBLISH condition, restated: runs-on cannot read env) runs this job
+    # on the release runner, the one runner that holds the registry
+    # credential, which pushes under its own namespace; every other event
+    # builds on bigdisk and pushes nothing. github.com keeps ubuntu-latest and the run's own token
+    # (test/buildgates/ci_image_digest_test.go).
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
     needs: [changes]
     timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
-    # CUSTOMIZE (go-qrdb): on a push to main on github.com this job alone
-    # pushes the images to the registry, with the run's own token, so it alone
-    # may write packages (DS-3516).
+    # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
+    # to the forge's registry, so it alone may write packages: on github.com
+    # with the run's own token, on the forge with the release runner's
+    # credential (DS-3516, ruling 169).
     permissions:
       contents: read
       packages: write
@@ -589,16 +592,17 @@ jobs:
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 
-      # CUSTOMIZE (go-qrdb): on a push to main alone (CI_PUBLISH: on
-      # github.com alone until the forge's registry namespace is the release
-      # runner credential's own), push each image once per
+      # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
       # run, tagged <content-hash>-main, and hand on its digest (DS-3516).
       # scripts/ci-registry.sh feeds the login to docker on stdin. On the forge
-      # the push, once enabled, runs on the release runner and reads its
+      # the push runs on the release runner (ruling 169) and reads its
       # credential contract alone, the three names its runner env file
       # exports (ruling 173, claude-agents#329): RELEASE_REGISTRY, the host
       # the push goes to and the digest reference names, RELEASE_REGISTRY_USER
-      # and RELEASE_REGISTRY_TOKEN. No step sets any of them: a step env entry
+      # and RELEASE_REGISTRY_TOKEN. The images go under the release
+      # credential's own namespace, the one it can write: a push under the
+      # repository owner's namespace is refused (401, main run 71805).
+      # No step sets any of them: a step env entry
       # would mask the runner's. On github.com the registry is GHCR and the
       # login the run's own token, handed on under RUN_REGISTRY_* as
       # CI_REGISTRY_* and empty on the forge. A
@@ -712,7 +716,7 @@ jobs:
     needs: [changes, docker-build]
     timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
-    # the registry on github.com (DS-3516).
+    # the forge's registry (DS-3516).
     permissions:
       contents: read
       packages: read
@@ -840,7 +844,7 @@ jobs:
     needs: [changes, docker-build]
     timeout-minutes: 45       # CUSTOMIZE: lint-gates took 6.5 warm minutes on main run 64873; headroom for a cold, loaded runner
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
-    # the registry on github.com (DS-3516).
+    # the forge's registry (DS-3516).
     permissions:
       contents: read
       packages: read
@@ -1111,7 +1115,7 @@ jobs:
     needs: [changes, docker-build]
     timeout-minutes: 75       # CUSTOMIZE (ruling 211): the bulk of the ~36 warm minutes the two steps took, doubled for a loaded runner
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
-    # the registry on github.com (DS-3516), in this job and the four below.
+    # the forge's registry (DS-3516), in this job and the four below.
     permissions:
       contents: read
       packages: read
@@ -1685,7 +1689,7 @@ jobs:
             minutes: 30
     timeout-minutes: ${{ matrix.minutes }}
     # CUSTOMIZE (go-qrdb): on a push to main the run's own token pulls the
-    # toolchain image from the registry on github.com (DS-3516).
+    # toolchain image from the forge's registry (DS-3516).
     permissions:
       contents: read
       packages: read

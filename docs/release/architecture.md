@@ -213,8 +213,9 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
 which builds the devcontainer images in about two minutes and, on a push to
-`main` on GitHub, pushes them to `ghcr.io` (on the forge it pushes nothing,
-on every event), and `test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
+`main`, pushes them to the forge's registry (the Gitea registry, derived from
+`github.server_url`, under the release credential's own namespace, or
+`ghcr.io` on GitHub, under the repository owner's), and `test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
 `image` and the five unit-suite jobs, which need `docker-build` too and run,
 side by side in those images, the lint stages and `make deps-check` (`lint`), the repository gates
 (`lint-gates`), the build and, in the full tier, the arm64 cross-build and
@@ -239,15 +240,12 @@ Every job that runs a stage in an image (`lint`, `lint-gates`, `image`, the
 unit-suite jobs `coverage`, `test-clusterproof`, `coverage-fts`, `test-tags`
 and `test-sdk`, `fips`, the `integration-features` legs and `soak`) takes it
 by one of two paths, chosen by the workflow env `CI_PUBLISH`, which is true
-on a push to `main` on GitHub alone (DS-3516). On the forge every event takes
-the local path, and `docker-build` runs on `bigdisk` like its sibling jobs:
-the forge publishes nothing until the registry namespace the images go to is
-the release runner credential's own, and no job runs on the release runner.
+on a push to `main` alone (DS-3516):
 
 | Event | `docker-build` | Consumers | Hold |
 |---|---|---|---|
-| push to `main` on GitHub | builds, logs in, pushes, outputs `toolchain_ref` and `it_ref` (`@sha256:` digests) | `scripts/ci-registry.sh pull` of the digest, 3 attempts with a bounded backoff, then fail | a stopped container on the digest |
-| every event on the forge; pull request, `workflow_dispatch`, nightly `schedule` on GitHub | builds, never logs in or pushes | `scripts/ci-registry.sh local`: build the content-hash tag, or reuse the daemon's | a stopped container on the image ID (toolchain) or the tag (integration) |
+| push to `main` | builds, logs in, pushes, outputs `toolchain_ref` and `it_ref` (`@sha256:` digests) | `scripts/ci-registry.sh pull` of the digest, 3 attempts with a bounded backoff, then fail | a stopped container on the digest |
+| pull request, `workflow_dispatch`, nightly `schedule` | builds, never logs in or pushes | `scripts/ci-registry.sh local`: build the content-hash tag, or reuse the daemon's | a stopped container on the image ID (toolchain) or the tag (integration) |
 
 On the publish path a consumer runs on any runner, with no affinity to
 `docker-build`'s host, and runs its stages on the pulled reference. On the

@@ -39,6 +39,8 @@ login)
 tag | push | rm | create) exit 0 ;;
 pull)
 	eval ref=\${$#}
+	echo "$ref" >> "$STUB_DIR/pull-attempts"
+	[ -n "${STUB_REFUSE_PULL:-}" ] && exit 1
 	echo "$ref" > "$STUB_DIR/pulled"
 	exit 0 ;;
 image)
@@ -139,7 +141,14 @@ func TestCIRegistry_RegistryOfTheForge(t *testing.T) {
 			if got.user != tc.wantUser || got.token != tc.wantToken {
 				t.Fatalf("logged in as %q with password %q; want %q with %q", got.user, got.token, tc.wantUser, tc.wantToken)
 			}
-			want := tc.wantHost + "/jeremyhahn/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
+			// The images go under the namespace of the credential that
+			// pushes: the run's token's repository owner on GitHub, the
+			// release runner's own user on Gitea.
+			owner := "jeremyhahn"
+			if tc.wantUser == "release-ci" {
+				owner = "release-ci"
+			}
+			want := tc.wantHost + "/" + owner + "/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
 			if out := strings.TrimSpace(got.out); out != want {
 				t.Fatalf("push printed %q; want %q", out, want)
 			}
@@ -187,6 +196,7 @@ func TestCIRegistry_PushRefusesAnotherRegistry(t *testing.T) {
 // output, the host its login handed docker, and the reference it pulled.
 type registryPullRun struct {
 	out, host, user, pulled string
+	attempts                int
 }
 
 // runRegistryPull runs scripts/ci-registry.sh pull ref against registryDocker
@@ -213,7 +223,11 @@ func runRegistryPull(t *testing.T, serverURL, ref string, env ...string) (regist
 		b, _ := os.ReadFile(filepath.Join(stub, name)) // #nosec G304 -- the test's own temp dir
 		return strings.TrimSpace(string(b))
 	}
-	return registryPullRun{out: buf.String(), host: read("login"), user: read("login-user"), pulled: read("pulled")}, err
+	attempts := 0
+	if tried := read("pull-attempts"); tried != "" {
+		attempts = len(strings.Split(tried, "\n"))
+	}
+	return registryPullRun{out: buf.String(), host: read("login"), user: read("login-user"), pulled: read("pulled"), attempts: attempts}, err
 }
 
 // TestCIRegistry_PullTakesWhatThePushPublished: the digest a push prints, on
@@ -221,9 +235,9 @@ func runRegistryPull(t *testing.T, serverURL, ref string, env ...string) (regist
 // pulls, logging in to the same registry with the run's token.
 func TestCIRegistry_PullTakesWhatThePushPublished(t *testing.T) {
 	for _, tc := range []struct {
-		name, serverURL string
+		name, serverURL, wantHost, wantUser string
 	}{
-		{name: "GitHub", serverURL: "https://github.com"},
+		{name: "GitHub", serverURL: "https://github.com", wantHost: "ghcr.io", wantUser: "run-ci"},
 		{name: "Gitea", serverURL: forgeURL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,11 +250,108 @@ func TestCIRegistry_PullTakesWhatThePushPublished(t *testing.T) {
 			if err != nil {
 				t.Fatalf("pull of the pushed %s: %v\n%s", ref, err, got.out)
 			}
-			if got.host != pushed.host || got.user != "run-ci" {
-				t.Fatalf("pull logged in to %q as %q; want %q as the run's token", got.host, got.user, pushed.host)
+			if got.host != tc.wantHost || got.user != tc.wantUser {
+				t.Fatalf("pull logged in to %q as %q; want %q as %q", got.host, got.user, tc.wantHost, tc.wantUser)
 			}
 			if got.pulled != ref {
 				t.Fatalf("pulled %q; want %q", got.pulled, ref)
+			}
+		})
+	}
+}
+
+// TestCIRegistry_ForgePullIsAnonymous asserts a consumer on the forge pulls
+// with no docker login at all: the run's token carries an empty scope there
+// and the registry refuses it (ruling 216(5)), while the release credential's
+// namespace reads anonymously. It needs no run's token in the environment.
+func TestCIRegistry_ForgePullIsAnonymous(t *testing.T) {
+	digest := "@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, ref string
+		env       []string
+	}{
+		{name: "the release namespace", ref: releaseRegistry + "/release-ci/qrdb-ci-toolchain" + digest},
+		{name: "the repository owner", ref: releaseRegistry + "/jeremyhahn/qrdb-ci-it" + digest},
+		{name: "no run's token", ref: releaseRegistry + "/release-ci/qrdb-ci-toolchain" + digest,
+			env: []string{"CI_REGISTRY_USER=", "CI_REGISTRY_TOKEN="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runRegistryPull(t, forgeURL, tc.ref, tc.env...)
+			if err != nil {
+				t.Fatalf("anonymous pull of %s: %v\n%s", tc.ref, err, got.out)
+			}
+			if got.host != "" || got.user != "" {
+				t.Fatalf("forge pull ran docker login to %q as %q; want no login", got.host, got.user)
+			}
+			if got.pulled != tc.ref || got.attempts != 1 {
+				t.Fatalf("pulled %q in %d attempts; want %q in 1", got.pulled, got.attempts, tc.ref)
+			}
+		})
+	}
+}
+
+// TestCIRegistry_GitHubPullLogsIn asserts a pull from GHCR still logs in with
+// the run's token, and fails naming it when the token is absent.
+func TestCIRegistry_GitHubPullLogsIn(t *testing.T) {
+	ref := "ghcr.io/jeremyhahn/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
+	t.Run("logs in", func(t *testing.T) {
+		got, err := runRegistryPull(t, "https://github.com", ref)
+		if err != nil {
+			t.Fatalf("pull of %s: %v\n%s", ref, err, got.out)
+		}
+		if got.host != "ghcr.io" || got.user != "run-ci" {
+			t.Fatalf("pull logged in to %q as %q; want ghcr.io as the run's token", got.host, got.user)
+		}
+		if got.pulled != ref {
+			t.Fatalf("pulled %q; want %q", got.pulled, ref)
+		}
+	})
+	t.Run("no run's token", func(t *testing.T) {
+		got, err := runRegistryPull(t, "https://github.com", ref, "CI_REGISTRY_TOKEN=")
+		if err == nil {
+			t.Fatalf("GHCR pull succeeded with no run's token:\n%s", got.out)
+		}
+		if !strings.Contains(got.out, "CI_REGISTRY_TOKEN is empty: the run's token is not in the job's environment") {
+			t.Fatalf("pull output does not name the missing token:\n%s", got.out)
+		}
+		if got.host != "" || got.pulled != "" {
+			t.Fatalf("pull logged in to %q and pulled %q with no token", got.host, got.pulled)
+		}
+	})
+}
+
+// TestCIRegistry_FailedPullRetriesThenDies asserts a pull that keeps failing
+// is tried every attempt and then dies naming the reference, and that on the
+// forge the error says the pull was anonymous while on GHCR it does not.
+func TestCIRegistry_FailedPullRetriesThenDies(t *testing.T) {
+	digest := "/jeremyhahn/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, serverURL, ref string
+		anonymous            bool
+	}{
+		{name: "Gitea", serverURL: forgeURL, ref: releaseRegistry + digest, anonymous: true},
+		{name: "GitHub", serverURL: "https://github.com", ref: "ghcr.io" + digest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runRegistryPull(t, tc.serverURL, tc.ref, "STUB_REFUSE_PULL=1")
+			if err == nil {
+				t.Fatalf("pull succeeded on a refusing registry:\n%s", got.out)
+			}
+			if got.attempts != 3 || got.pulled != "" {
+				t.Fatalf("pull made %d attempts and pulled %q; want 3 attempts and nothing pulled", got.attempts, got.pulled)
+			}
+			want := "::error::ci-registry: cannot pull " + tc.ref + " after 3 attempts"
+			if tc.anonymous {
+				want = "::error::ci-registry: cannot pull " + tc.ref + " anonymously ("
+			}
+			if !strings.Contains(got.out, want) {
+				t.Fatalf("pull output lacks %q:\n%s", want, got.out)
+			}
+			if !tc.anonymous && strings.Contains(got.out, "anonymously") {
+				t.Fatalf("GHCR pull error says the pull was anonymous:\n%s", got.out)
+			}
+			if strings.Contains(got.out, "stub-token") {
+				t.Fatalf("pull output prints the credential:\n%s", got.out)
 			}
 		})
 	}
@@ -285,7 +396,7 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 		name, serverURL, want string
 	}{
 		{name: "GitHub", serverURL: "https://github.com", want: "GHCR refused the login: the run's token cannot use jeremyhahn's container packages"},
-		{name: "Gitea", serverURL: "http://forge.example:3001", want: "the Gitea registry refused the login: the release runner's credential cannot use jeremyhahn's container packages"},
+		{name: "Gitea", serverURL: "http://forge.example:3001", want: "the Gitea registry refused the login: the release runner's credential cannot use release-ci's container packages"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := runRegistryPush(t, tc.serverURL, true)
@@ -358,6 +469,125 @@ func TestCIRegistry_ForgePushIgnoresTheRunsToken(t *testing.T) {
 	}
 	if got.host != "" || got.user != "" || got.token != "" {
 		t.Fatalf("push logged in to %q as %q with the run's token", got.host, got.user)
+	}
+}
+
+// TestCIRegistry_PushOwnerFollowsTheCredential holds the namespace a push
+// goes under to the credential that pushes it: the release runner's credential
+// can write only its own user's namespace on Gitea (main run 71805 was refused
+// under the repository owner's), and the run's token writes the repository
+// owner's on GHCR, whatever the release runner's user is.
+func TestCIRegistry_PushOwnerFollowsTheCredential(t *testing.T) {
+	digest := "/qrdb-ci-toolchain@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, serverURL, want string
+		env                   []string
+	}{
+		{name: "release credential", serverURL: forgeURL, want: releaseRegistry + "/release-ci" + digest},
+		{name: "release credential in mixed case", serverURL: forgeURL, want: releaseRegistry + "/release.ci_2" + digest,
+			env: []string{"RELEASE_REGISTRY_USER=Release.CI_2"}},
+		{name: "run's token", serverURL: "https://github.com", want: "ghcr.io/jeremyhahn" + digest},
+		{name: "run's token beside another release user", serverURL: "https://github.com", want: "ghcr.io/jeremyhahn" + digest,
+			env: []string{"RELEASE_REGISTRY_USER=someone-else"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runRegistryPush(t, tc.serverURL, false, tc.env...)
+			if err != nil {
+				t.Fatalf("push: %v\n%s", err, got.out)
+			}
+			if out := strings.TrimSpace(got.out); out != tc.want {
+				t.Fatalf("push printed %q; want %q", out, tc.want)
+			}
+		})
+	}
+}
+
+// TestCIRegistry_PushRefusesABadReleaseUser refuses a forge push whose
+// release runner's user names no registry namespace, before any login.
+func TestCIRegistry_PushRefusesABadReleaseUser(t *testing.T) {
+	for _, tc := range []struct {
+		name, user, want string
+	}{
+		{name: "empty", user: "", want: "RELEASE_REGISTRY_USER is empty: the release runner's credential is not in the job's environment"},
+		{name: "a path", user: "release/ci", want: "RELEASE_REGISTRY_USER does not name a registry owner"},
+		{name: "a leading dash", user: "-release", want: "RELEASE_REGISTRY_USER does not name a registry owner"},
+		{name: "a space", user: "release ci", want: "RELEASE_REGISTRY_USER does not name a registry owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runRegistryPush(t, forgeURL, false, "RELEASE_REGISTRY_USER="+tc.user)
+			if err == nil {
+				t.Fatalf("push succeeded with RELEASE_REGISTRY_USER=%q:\n%s", tc.user, got.out)
+			}
+			if !strings.Contains(got.out, "::error::ci-registry: "+tc.want) {
+				t.Fatalf("push output lacks the error %q:\n%s", tc.want, got.out)
+			}
+			if got.host != "" {
+				t.Fatalf("push logged in to %q with RELEASE_REGISTRY_USER=%q", got.host, tc.user)
+			}
+		})
+	}
+}
+
+// runCheckRef runs ci-registry.sh check-ref on ref with the repository owner
+// JeremyHahn and RELEASE_REGISTRY_USER set to releaseUser.
+func runCheckRef(t *testing.T, ref, releaseUser string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("scripts/ci-registry.sh", "check-ref", ref) // #nosec G204 -- this repository's own script
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "GITHUB_REPOSITORY_OWNER=JeremyHahn", "RELEASE_REGISTRY_USER="+releaseUser)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// TestCIRegistry_CheckRefAcceptsEitherOwner accepts a digest reference under
+// the repository owner, and under the release runner's user when its
+// credential is in the environment.
+func TestCIRegistry_CheckRefAcceptsEitherOwner(t *testing.T) {
+	digest := "/qrdb-ci-it@sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name, ref, releaseUser string
+	}{
+		{name: "repository owner", ref: releaseRegistry + "/jeremyhahn" + digest},
+		{name: "repository owner beside a release user", ref: releaseRegistry + "/jeremyhahn" + digest, releaseUser: "release-ci"},
+		{name: "release user", ref: releaseRegistry + "/release-ci" + digest, releaseUser: "release-ci"},
+		{name: "release user in mixed case", ref: releaseRegistry + "/release-ci" + digest, releaseUser: "Release-CI"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out, err := runCheckRef(t, tc.ref, tc.releaseUser); err != nil {
+				t.Fatalf("check-ref %s refused: %v\n%s", tc.ref, err, out)
+			}
+		})
+	}
+}
+
+// TestCIRegistry_CheckRefRefusesAThirdOwner refuses a reference under any
+// owner but those two, and one under the release runner's user when its
+// credential is not in the environment.
+func TestCIRegistry_CheckRefRefusesAThirdOwner(t *testing.T) {
+	digest := "/qrdb-ci-it@sha256:" + strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		name, ref, releaseUser, want string
+	}{
+		{name: "a third owner", ref: releaseRegistry + "/someone-else" + digest, releaseUser: "release-ci",
+			want: "is not under the repository owner's or the release runner credential's own namespace"},
+		{name: "a third owner with no release user", ref: releaseRegistry + "/someone-else" + digest,
+			want: "is not under the repository owner's or the release runner credential's own namespace"},
+		{name: "the release user's namespace with no release user", ref: releaseRegistry + "/release-ci" + digest,
+			want: "is not under the repository owner's or the release runner credential's own namespace"},
+		{name: "an owner only by prefix", ref: releaseRegistry + "/jeremyhahn-x" + digest, releaseUser: "release-ci",
+			want: "is not under the repository owner's or the release runner credential's own namespace"},
+		{name: "no digest", ref: releaseRegistry + "/jeremyhahn/qrdb-ci-it:latest", releaseUser: "release-ci",
+			want: "is not a digest reference"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runCheckRef(t, tc.ref, tc.releaseUser)
+			if err == nil {
+				t.Fatalf("check-ref %s accepted:\n%s", tc.ref, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("check-ref output lacks %q:\n%s", tc.want, out)
+			}
+		})
 	}
 }
 
