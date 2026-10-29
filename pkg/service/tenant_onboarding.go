@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -93,18 +94,28 @@ type OnboardTenantRequest struct {
 	SOPIN      []byte
 }
 
-// so is the request's SO, or nil when it names none.
-func (r *OnboardTenantRequest) so() *bootstrap.TenantSOConfig {
+// so is the request's SO, or nil when it names none. The PIN is sealed into
+// a *secure.Secret here, at the service boundary, and r.SOPIN is wiped;
+// bootstrap.ProvisionTenant destroys the Secret.
+func (r *OnboardTenantRequest) so(ctx context.Context) (*bootstrap.TenantSOConfig, error) {
 	if r.SOUsername == "" && len(r.SOCSRPEM) == 0 && len(r.SOCertPEM) == 0 && len(r.SOChainPEM) == 0 && len(r.SOPIN) == 0 {
-		return nil
+		return nil, nil
 	}
-	return &bootstrap.TenantSOConfig{
+	cfg := &bootstrap.TenantSOConfig{
 		Username: r.SOUsername,
 		CSRPEM:   r.SOCSRPEM,
 		CertPEM:  r.SOCertPEM,
 		ChainPEM: r.SOChainPEM,
-		PIN:      r.SOPIN,
 	}
+	// A missing PIN stays nil, for bootstrap to refuse as incomplete.
+	if len(r.SOPIN) > 0 {
+		pin, err := secure.NewSecret(ctx, r.SOPIN)
+		if err != nil {
+			return nil, &bootstrap.TenantSOEnrollmentError{Op: "PIN seal", Cause: err}
+		}
+		cfg.PIN = pin
+	}
+	return cfg, nil
 }
 
 // OnboardTenantResult is a created tenant and its first admin's credential.
@@ -399,6 +410,11 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 	// onboarding the deadline cut short is still recorded.
 	provisionCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+	soCfg, err := req.so(provisionCtx)
+	if err != nil {
+		settle(err)
+		return nil, err
+	}
 	result, err := bootstrap.ProvisionTenant(provisionCtx, bootstrap.TenantProvisionConfig{
 		TenantID:        req.ID,
 		DisplayName:     req.Name,
@@ -411,7 +427,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		CreateOptions:   opts,
 		AdminEnrollment: bootstrap.AdminEnrollCert,
 		Exclusive:       true,
-		SO:              req.so(),
+		SO:              soCfg,
 	}, deps)
 	if err != nil {
 		settle(err)

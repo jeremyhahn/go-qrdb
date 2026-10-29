@@ -27,7 +27,7 @@ func TestProvisionTenant_SO_StandardPostureTheAdminIsTheSO(t *testing.T) {
 	pins := &fakeSOPINs{}
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
 		TenantID: "acme", Isolation: tenant.IsolationPrefix, AdminCSRPEM: csr,
-		SO: &TenantSOConfig{Username: "Admin", CSRPEM: csr, PIN: []byte("so-pin-1234")},
+		SO: &TenantSOConfig{Username: "Admin", CSRPEM: csr, PIN: sealedPIN(t, "so-pin-1234")},
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{}, Signer: &fakeSigner{cert: realCertPEM(t)},
 		TrustDomain: onboardingTrustDomain, SOPINs: pins, Logger: discardLogger(),
@@ -62,7 +62,7 @@ func TestProvisionTenant_SO_StandardPostureAdminAsPendingSOIsCompletedOnTheAdmin
 	csr := validAdminCSR(t)
 	result, err := ProvisionTenant(ctx, TenantProvisionConfig{
 		TenantID: "acme", AdminCSRPEM: csr,
-		SO: &TenantSOConfig{Username: "admin", CSRPEM: csr, PIN: []byte("so-pin-1234")},
+		SO: &TenantSOConfig{Username: "admin", CSRPEM: csr, PIN: sealedPIN(t, "so-pin-1234")},
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeCertBindingUsers{}, Roles: &fakeRoles{},
 		PendingAdminSigner: &fakeSigner{cert: realCertPEM(t)}, TrustDomain: onboardingTrustDomain,

@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -81,6 +82,18 @@ func newCSRPEM(t *testing.T, cn string) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
+// sealedSOPIN seals soGatePIN as a bootstrap caller does; ProvisionTenant
+// destroys it, and the cleanup covers a test that never reaches it.
+func sealedSOPIN(t *testing.T) *secure.Secret {
+	t.Helper()
+	s, err := secure.NewSecret(context.Background(), []byte(soGatePIN))
+	if err != nil {
+		t.Fatalf("secure.NewSecret: %v", err)
+	}
+	t.Cleanup(s.Destroy)
+	return s
+}
+
 // onboardedSOFixture is a tenant provisioned with an admin and an SO.
 type onboardedSOFixture struct {
 	*soRealFixture
@@ -105,7 +118,7 @@ func newOnboardedSOFixture(t *testing.T) *onboardedSOFixture {
 		TenantID:    onboardedSOTenant,
 		Isolation:   tenant.IsolationPrefix,
 		AdminCSRPEM: newCSRPEM(t, "admin"),
-		SO:          &bootstrap.TenantSOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: []byte(soGatePIN)},
+		SO:          &bootstrap.TenantSOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: sealedSOPIN(t)},
 	}, bootstrap.Dependencies{
 		Tenants:     onboardedTenants{},
 		Users:       f.users,
