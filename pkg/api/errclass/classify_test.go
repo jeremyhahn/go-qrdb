@@ -304,6 +304,7 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 		{"leader transfer not supported by the admin service", &service.LeaderTransferUnsupportedError{}, Unimplemented},
 		{"shard snapshot export timed out", &service.ShardSnapshotTimeoutError{ShardID: 1}, Unavailable},
 		{"factor migration left records behind", &service.FactorMigrationRefusedError{}, FailedPrecondition},
+		{"barrier verb on a seal-disabled node", &service.SealDisabledError{Op: "barrier seal"}, FailedPrecondition},
 		{"database store keeps no compaction policy", &service.CompactionPolicyUnavailableError{Database: "d"}, Unprocessable},
 		{"node keyspace compaction not composed", &service.NodeCompactionUnavailableError{}, Unprocessable},
 	} {

@@ -185,6 +185,22 @@ func (e *TenantServiceError) Unwrap() error {
 	return e.Err
 }
 
+// BarrierServiceError is returned when the barrier service of a node with
+// the seal subsystem disabled fails to initialize.
+type BarrierServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierServiceError) Error() string {
+	return "lifecycle: barrier service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *BarrierServiceError) Unwrap() error {
+	return e.Err
+}
+
 // UserServiceError is returned when the user store fails to initialize.
 type UserServiceError struct {
 	Err error

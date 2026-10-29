@@ -1707,6 +1707,70 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 	}
 }
 
+// TestBuildServices_SealDisabled_ServesBarrierProtectionNone is go-qrdb#1285:
+// the seal-disabled branch built no barrier service, so neither qrdbd nor an
+// embedded node registered one and every transport answered BarrierStatus
+// with "barrier service is not configured".
+func TestBuildServices_SealDisabled_ServesBarrierProtectionNone(t *testing.T) {
+	host := newLocalHost()
+	t.Cleanup(func() { _ = host.Close() })
+
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+
+	if node.Barrier == nil {
+		t.Fatal("no barrier service on a seal-disabled node")
+	}
+	st, err := node.Barrier.BarrierStatus(context.Background())
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if st.Sealed || !st.Initialized || st.Strategy != string(seal.StrategyNone) {
+		t.Fatalf("status = %+v, want strategy none, initialized, unsealed", st)
+	}
+	var sde *service.SealDisabledError
+	if err := node.Barrier.BarrierSeal(context.Background()); !errors.As(err, &sde) {
+		t.Fatalf("BarrierSeal = %v, want *service.SealDisabledError", err)
+	}
+}
+
+// TestBuildServices_SealRequestedButAbsent_ServesNoBarrier: a composer that
+// asked for a seal and failed to build its barrier passes SealEnabled with no
+// SealBarrier. That is a failure the composer reports, not protection none,
+// so no barrier service claims the node is unsealed.
+func TestBuildServices_SealRequestedButAbsent_ServesNoBarrier(t *testing.T) {
+	host := newLocalHost()
+	t.Cleanup(func() { _ = host.Close() })
+
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:        host,
+		WatchHub:    hub,
+		DataDir:     t.TempDir(),
+		SealEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+
+	if node.Barrier != nil {
+		t.Fatal("a requested barrier that failed to construct was served as protection none")
+	}
+}
+
 // TestBuildServices_WiresTheKeyspaceReclaimerIntoTheManager pins the wiring
 // go-qrdb#412 depends on.
 //

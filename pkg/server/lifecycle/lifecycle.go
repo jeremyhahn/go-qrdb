@@ -1267,6 +1267,20 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		n.Tenant = kvTenantSvc
 
+		// Barrier protection none is a valid barrier, not an unconfigured
+		// one: a node whose composer chose seal.enabled: false serves
+		// BarrierStatus (strategy none, unsealed) on every transport and
+		// refuses the verbs that would change it. A barrier that was
+		// requested but failed to construct also lands here, and is no
+		// protection none: it gets no barrier service.
+		if !infra.SealEnabled {
+			barrierSvc, berr := service.NewSealDisabledBarrierService(ctx)
+			if berr != nil {
+				return nil, &BarrierServiceError{Err: berr}
+			}
+			n.Barrier = barrierSvc
+		}
+
 		// Route IAM here TOO. Keyspace isolation is not a property of
 		// encryption: a node with the seal subsystem off still has tenants,
 		// and they are still entitled to separate keyspaces. Leaving n.User

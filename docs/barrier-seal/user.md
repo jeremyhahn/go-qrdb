@@ -54,10 +54,16 @@ A deployment that does not want encryption runs the seal with strategy
 ## Running with no barrier at all
 
 `seal.enabled: false` is a step further than strategy `none`: there is no
-barrier object in front of the data plane at all, so none of the barrier
-commands above apply, and (per the previous section) it is only reachable
-with auth also disabled. Every node started this way logs one WARN at
-startup:
+barrier object in front of the data plane at all, and (per the previous
+section) it is only reachable with auth also disabled. The node still answers
+`barrier status`, on every transport and in process, with barrier protection
+`none`: strategy `none`, initialized, unsealed, with no `initialized_at`.
+Every barrier command that would change the barrier -- `init`, `unseal`,
+`seal`, `change-passphrase`, `init-shamir`, recovery keys, holder enrolment,
+share claims, quorum rounds, rekey and revocation -- is refused with
+`FailedPrecondition` (`409 Conflict` over REST; `service.SealDisabledError`):
+there is no key to act on, and a seal would report a sealed node while its
+data stayed readable. Every node started this way logs one WARN at startup:
 
 ```
 qrdb/seal: seal disabled; at-rest data is stored in plaintext
