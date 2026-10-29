@@ -349,7 +349,7 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "capabilities")
+			out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "capabilities")
 			if err != nil {
 				t.Fatalf("[%s] admin capabilities: %v\noutput: %s", proto.name, err, out)
 			}
@@ -366,7 +366,7 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 			}
 
 			// Table-format sanity: every feature name must be listed.
-			tableOut, err := runCLIProto(t, node, proto, "admin", "capabilities")
+			tableOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "capabilities")
 			if err != nil {
 				t.Fatalf("[%s] admin capabilities (table): %v\noutput: %s", proto.name, err, tableOut)
 			}
@@ -393,9 +393,11 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 // lands on a node that has since become the leader is served there, which is
 // equally correct, and a follower that has since lost track of the leader
 // answers with its own refusal, which fails the test rather than being
-// retried. The one refusal a membership step does retry, within its own
-// cliStepTimeout, is the auth middleware's retryable UNAVAILABLE, answered
-// before any handler runs (runCLIProtoRetryingAuthRefusal).
+// retried. The one refusal any step that is expected to succeed retries,
+// within its own cliStepTimeout, is the auth middleware's retryable
+// UNAVAILABLE, answered before any handler runs
+// (runCLIProtoRetryingAuthRefusal): every request, read or write, membership
+// or not, passes the same role lookup first.
 func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 	nodes, spares := start3NodeMultiProtocolCluster(t)
 
@@ -438,7 +440,7 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 func testAdminTopologyOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, role string) {
 	t.Helper()
 
-	out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "topology")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "topology")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin topology: %v\noutput: %s", proto.name, role, err, out)
 	}
@@ -471,7 +473,7 @@ func testAdminTopologyOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 
 	// Table-format sanity.
-	tableOut, err := runCLIProto(t, node, proto, "admin", "topology")
+	tableOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "topology")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin topology (table): %v\noutput: %s", proto.name, role, err, tableOut)
 	}
@@ -504,7 +506,7 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 
 	key := "admincluster/replica-states/" + proto.name
 	writer := adminClusterFollower(t, nodes, 30*time.Second)
-	if out, err := runCLIProto(t, writer, proto, "kv", "put", key, "replica-state-value"); err != nil {
+	if out, err := runCLIProtoRetryingAuthRefusal(t, writer, proto, "kv", "put", key, "replica-state-value"); err != nil {
 		t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, key, err, out)
 	}
 
@@ -541,7 +543,7 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 		t.Fatalf("[%s] want 3 distinct nodes and replicas answering, got %+v", proto.name, readings)
 	}
 
-	tableOut, err := runCLIProto(t, nodes[0], proto, "admin", "replica-states", "--shard-id", "1")
+	tableOut, err := runCLIProtoRetryingAuthRefusal(t, nodes[0], proto, "admin", "replica-states", "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin replica-states (table): %v\noutput: %s", proto.name, err, tableOut)
 	}
@@ -568,7 +570,7 @@ func readReplicaStatesConcurrently(t *testing.T, nodes [3]*multiProtoNode, proto
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			outs[i], errs[i] = runCLIProto(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
+			outs[i], errs[i] = runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
 		}()
 	}
 	wg.Wait()
@@ -633,12 +635,12 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	t.Helper()
 
 	key := fmt.Sprintf("admincluster/snapshot/%s/%s", proto.name, role)
-	out, err := runCLIProto(t, node, proto, "kv", "put", key, "pre-snapshot-value")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "kv", "put", key, "pre-snapshot-value")
 	if err != nil {
 		t.Fatalf("[%s/%s] kv put %s: %v\noutput: %s", proto.name, role, key, err, out)
 	}
 
-	out, err = runCLIProto(t, node, proto, "admin", "snapshot", "--shard-id", "1")
+	out, err = runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "snapshot", "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin snapshot --shard-id 1: %v\noutput: %s", proto.name, role, err, out)
 	}
@@ -647,14 +649,14 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 
 	// admin snapshot requires --shard-id.
-	out, err = runCLIProto(t, node, proto, "admin", "snapshot")
+	out, err = runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "snapshot")
 	if err == nil {
 		t.Fatalf("[%s/%s] admin snapshot (missing --shard-id) unexpectedly succeeded, output: %s", proto.name, role, out)
 	}
 
 	// The shard must remain fully readable across the leader/replica set
 	// after the snapshot request completes.
-	getOut, err := runCLIProto(t, node, proto, "kv", "get", key)
+	getOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "kv", "get", key)
 	if err != nil {
 		t.Fatalf("[%s/%s] kv get %s (post-snapshot): %v\noutput: %s", proto.name, role, key, err, getOut)
 	}
@@ -809,7 +811,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 // against node over proto lists replicaID as a peer.
 func adminPeersContainsReplica(t *testing.T, node *multiProtoNode, proto multiProtocol, replicaID uint64) bool {
 	t.Helper()
-	out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "peers")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "peers")
 	if err != nil {
 		t.Fatalf("[%s] admin peers: %v\noutput: %s", proto.name, err, out)
 	}
@@ -865,13 +867,16 @@ func refusedBeforeHandler(out string) bool {
 	return false
 }
 
-// runCLIProtoRetryingAuthRefusal runs one admin CLI step over proto, re-running
-// it while the auth middleware refuses it before its handler runs. The retries
-// stay inside cliStepTimeout, the bound every CLI step already has: a node
-// whose state machine is stalled behind a slow synced commit cannot answer the
-// middleware's role lookup until the commit returns (run 70682: 6.6 s), and
-// the middleware refuses rather than wait. Any other outcome, success or
-// failure, is returned at once.
+// runCLIProtoRetryingAuthRefusal runs a CLI step over proto, re-running it
+// while the auth middleware refuses it before its handler runs. Every step of
+// TestAdminCluster_CLI_PerProtocol that is expected to succeed goes through
+// it -- admin or kv, read or write -- since each request passes the same role
+// lookup first. The retries stay inside cliStepTimeout, the bound every CLI
+// step already has: a node whose state machine is stalled behind a slow
+// synced commit cannot answer the middleware's role lookup until the commit
+// returns (run 70682: a member remove, 6.6 s; run 71065: the post-snapshot
+// kv get, 2.6 s), and the middleware refuses rather than wait. Any other
+// outcome, success or failure, is returned at once.
 func runCLIProtoRetryingAuthRefusal(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
 	t.Helper()
 	var out string
@@ -887,7 +892,7 @@ func runCLIProtoRetryingAuthRefusal(t *testing.T, node *multiProtoNode, proto mu
 	return out, err
 }
 
-// TestRefusedBeforeHandler pins which CLI outputs the member lifecycle retries:
+// TestRefusedBeforeHandler pins which CLI outputs the admin cluster steps retry:
 // only the auth middleware's pre-handler refusals, never a membership change's
 // own failure.
 func TestRefusedBeforeHandler(t *testing.T) {
