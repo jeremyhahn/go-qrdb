@@ -13,6 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **CI's devcontainer images build on `bigdisk` again and the forge publishes nothing**: a push to `main` on the forge no longer pushes them to a registry namespace the release runner's credential cannot write; every job there builds or reuses the content-hash image on its own runner, and github.com still publishes to GHCR.
 - **A certificate a node issues or enrolls is admitted on its next
   handshake** (#1128). A tenant's first certificate brings its login CA into
   use. Until now the TLS client trust learned of that CA only through an

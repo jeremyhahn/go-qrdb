@@ -15,9 +15,11 @@
 package buildgates
 
 // ci.yml takes the CI images by one of two paths, chosen by the workflow env
-// CI_PUBLISH, which is true on a push to main alone (claude-agents#329):
+// CI_PUBLISH, which is true on a push to main on github.com alone
+// (claude-agents#329); on the forge every event takes the local path until
+// the registry namespace is the release runner credential's own:
 //
-//   - publish: docker-build pushes the images to the forge's registry and
+//   - publish: docker-build pushes the images to the registry and
 //     outputs their digest references, toolchain_ref and it_ref; every other
 //     job that runs a stage in an image pulls exactly that digest with
 //     scripts/ci-registry.sh (DS-3516);
@@ -31,7 +33,8 @@ package buildgates
 //   - a step that logs in, pushes or pulls, or holds the registry token, on a
 //     path other than a push to main: a pull request's run would publish or
 //     hold a write-scoped credential;
-//   - CI_PUBLISH widened past a push to main;
+//   - CI_PUBLISH widened past a push to main on github.com;
+//   - any job, docker-build included, placed on the release runner;
 //   - a consumer that checks the daemon for an image and rebuilds it inline
 //     (`docker image inspect || make docker-build-toolchain`, the form the
 //     registry replaced): on main it passes on the image it built, not the
@@ -75,8 +78,10 @@ const (
 	// before any name is compared.
 	digestConsumerFloor = 6
 
-	// ciPublishExpr is the one value CI_PUBLISH may have: a push to main.
-	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
+	// ciPublishExpr is the one value CI_PUBLISH may have: a push to main on
+	// github.com. On the forge no event publishes until the registry
+	// namespace is the release runner credential's own.
+	ciPublishExpr = "${{ github.server_url == 'https://github.com' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 
 	// ciPublishIf and ciLocalIf are the two paths' step conditions; a step
 	// may AND further terms onto either (ciPublishTerm, ciLocalTerm).
@@ -85,13 +90,11 @@ const (
 	ciPublishTerm = "env.CI_PUBLISH == 'true'"
 	ciLocalTerm   = "env.CI_PUBLISH != 'true'"
 
-	// producerRunsOn is the one runs-on the producer may have (ruling 169):
-	// on the forge, a push to main (ciPublishExpr's condition, restated
-	// because runs-on cannot read env) runs on the release runner, the one
-	// runner holding the registry credential, and every other event on
-	// bigdisk; github.com keeps ubuntu-latest.
-	producerRunsOn = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || " +
-		"(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}"
+	// producerRunsOn is the one runs-on the producer may have, the one its
+	// sibling jobs use: github.com keeps ubuntu-latest, and the forge builds
+	// on bigdisk on every event and pushes nothing (ciPublishExpr). No job
+	// runs on the release runner (releaseLabel).
+	producerRunsOn = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}"
 )
 
 // releaseLabel matches a runs-on that can place a job on the release
@@ -173,7 +176,7 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers []string) {
 	if v := strings.TrimSpace(wf.Env["CI_PUBLISH"]); v != ciPublishExpr {
 		problems = append(problems, "ci.yml's CI_PUBLISH is "+strconv.Quote(v)+"; want "+strconv.Quote(ciPublishExpr)+
-			": only a push to main logs in to the registry or pushes to it")
+			": only a push to main on github.com logs in to the registry or pushes to it")
 	}
 	if holdsRegistryToken(wf.Env) {
 		problems = append(problems, "ci.yml's workflow env holds the registry token: every step of every event would have it")
@@ -193,11 +196,11 @@ func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers [
 	for _, name := range names {
 		job := wf.Jobs[name]
 		problems = append(problems, publishOnlyProblems(name, job)...)
+		if releaseLabel.MatchString(strings.TrimSpace(job.RunsOn)) {
+			problems = append(problems, name+" runs on the release runner: no ci.yml job does until the registry namespace is its credential's own")
+		}
 		if name == digestProducer {
 			continue
-		}
-		if releaseLabel.MatchString(strings.TrimSpace(job.RunsOn)) {
-			problems = append(problems, name+" runs on the release runner: only "+digestProducer+" does, and on a push to main alone")
 		}
 		read := map[string]bool{}
 		for _, v := range job.Env {
@@ -240,7 +243,7 @@ func producerProblems(job digestJob) []string {
 	}
 	if v := strings.TrimSpace(job.RunsOn); v != producerRunsOn {
 		problems = append(problems, digestProducer+" runs on "+strconv.Quote(v)+"; want "+strconv.Quote(producerRunsOn)+
-			": a push to main publishes from the release runner alone, and no other event runs there")
+			": the forge builds on bigdisk on every event and publishes nothing")
 	}
 	var pushed, validated bool
 	for _, s := range job.Steps {
@@ -519,10 +522,10 @@ func TestCIImageDigest_RevertedConsumerFails(t *testing.T) {
 }
 
 const digestFixture = `env:
-  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  CI_PUBLISH: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 jobs:
   docker-build:
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     permissions:
       contents: read
       packages: write
@@ -631,10 +634,12 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "no validation", old: `re='^[^@ ]+@sha256:[0-9a-f]{64}$'`, new: `echo done`},
 		{name: "an output not from a step", old: "it_ref: ${{ steps.push.outputs.it_ref }}", new: "it_ref: qrdb-ci-it:latest"},
 		{name: "no producer", old: "  docker-build:\n", new: "  docker-build-old:\n"},
-		{name: "a publish off the release runner", old: "'refs/heads/main') && 'release' || 'bigdisk' }}", new: "'refs/heads/main') && 'bigdisk' || 'bigdisk' }}"},
-		{name: "a publish on bigdisk", old: "  docker-build:\n    runs-on: ${{", new: "  docker-build:\n    runs-on: bigdisk\n    x: ${{"},
-		{name: "the release runner on every event", old: "(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk'", new: "'release'"},
-		{name: "the release runner on a pull request", old: "(github.event_name == 'push' && github.ref", new: "(github.event_name == 'pull_request' && github.ref"},
+		{name: "the release runner on a push to main", old: "&& 'ubuntu-latest' || 'bigdisk' }}",
+			new: "&& 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}"},
+		{name: "bigdisk on github.com too", old: "  docker-build:\n    runs-on: ${{", new: "  docker-build:\n    runs-on: bigdisk\n    x: ${{"},
+		{name: "the release runner on every event", old: "&& 'ubuntu-latest' || 'bigdisk' }}", new: "&& 'ubuntu-latest' || 'release' }}"},
+		{name: "the release runner on a pull request", old: "&& 'ubuntu-latest' || 'bigdisk' }}",
+			new: "&& 'ubuntu-latest' || github.event_name == 'pull_request' && 'release' || 'bigdisk' }}"},
 		{name: "the release runner on github.com", old: "&& 'ubuntu-latest' ||", new: "&& 'release' ||"},
 		{name: "the push step masks the runner's registry", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY: ${{ github.server_url }}\n          RUN_REGISTRY_TOKEN:"},
 		{name: "the push step masks the runner's user", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
@@ -643,11 +648,13 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          RELEASE_REGISTRY_TOKEN: x\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
 		{name: "a job env sets the runner's registry", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
 		{name: "the workflow env sets the runner's user", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY_USER: x\n  CI_PUBLISH"},
+		{name: "a non-consumer on the release runner", old: "  typescript:\n    runs-on: ubuntu-latest", new: "  typescript:\n    runs-on: release"},
 		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},
 		{name: "a consumer on the release runner by expression", old: "  legs:\n    runs-on: bigdisk", new: "  legs:\n    runs-on: ${{ github.ref == 'refs/heads/main' && 'release' || 'bigdisk' }}"},
-		{name: "CI_PUBLISH widened to every branch", old: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "${{ github.ref == 'refs/heads/main' }}"},
+		{name: "CI_PUBLISH widened to the forge", old: "${{ github.server_url == 'https://github.com' && ", new: "${{ "},
+		{name: "CI_PUBLISH widened to every branch", old: "github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "github.ref == 'refs/heads/main' }}"},
 		{name: "CI_PUBLISH widened to pull requests", old: "github.event_name == 'push' && ", new: "github.event_name != 'schedule' && "},
-		{name: "no CI_PUBLISH", old: "env:\n  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}\n", new: ""},
+		{name: "no CI_PUBLISH", old: "env:\n  CI_PUBLISH: " + ciPublishExpr + "\n", new: ""},
 		{name: "a push on every event", old: "        id: push\n        if: ${{ env.CI_PUBLISH == 'true' }}\n", new: "        id: push\n"},
 		{name: "a push on a pull request", old: "if: ${{ env.CI_PUBLISH == 'true' }}", new: "if: ${{ env.CI_PUBLISH == 'true' || github.event_name == 'pull_request' }}"},
 		{name: "validation off main", old: "      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n", new: "      - name: Validate\n"},
