@@ -305,6 +305,9 @@ var dataPlaneRules = []rule{
 	// (go-qrdb#548): the request names an operation this node refuses to
 	// perform at all, not a transient or server-side fault.
 	as(&service.SystemBarrierInitRefusedError{}, FailedPrecondition),
+	// A seal-disabled node's barrier is protection none: a verb that would
+	// change it is refused for the node's configuration, not retried.
+	as(&service.SealDisabledError{}, FailedPrecondition),
 	// A request the protocol cannot encode was never proposed (go-qrdb#52).
 	as(&service.EncodeRequestError{}, InvalidArgument),
 	// A guard that could not be built or applied to a command -- a compare

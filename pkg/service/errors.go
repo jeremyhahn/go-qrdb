@@ -1113,6 +1113,23 @@ func (e *SystemBarrierInitRefusedError) Error() string {
 		`re-run "qrdb init" to bootstrap a fresh node`
 }
 
+// SealDisabledError is returned by every barrier verb that would change the
+// barrier of a node whose seal subsystem is disabled (seal.enabled: false).
+// Such a node's barrier protection is "none": its data is stored in plaintext
+// and nothing reads it through a barrier, so there is no key to initialize,
+// unseal, seal, re-wrap or split, and no holder to enrol. Sealing it would
+// report a sealed node while its data stays readable. Op names the refused
+// verb. Encryption is not added in place: a node provisioned with
+// seal.enabled: true is (docs/barrier-seal/user.md).
+type SealDisabledError struct {
+	Op string
+}
+
+// Error implements error.
+func (e *SealDisabledError) Error() string {
+	return "service: " + e.Op + ": the seal subsystem is disabled on this node (barrier protection none)"
+}
+
 // InvalidRaftTopologyError is returned when a raft-backed database's
 // requested Raft cluster-mode topology is internally incoherent (e.g.
 // Backend == BackendRaft paired with ClusterMode == RaftNone). See
