@@ -339,6 +339,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "vector:namespace_create";
     }
 
+    // VectorUpdateNamespace changes a namespace's index parameters and
+    // metadata in place, keeping every vector.
+    rpc VectorUpdateNamespace(VectorUpdateNamespaceRequest) returns (VectorUpdateNamespaceResponse) {
+        option (qrdb.v1.permission) = "vector:namespace_update";
+    }
+
     // VectorDeleteNamespace removes a namespace and all its vectors.
     rpc VectorDeleteNamespace(VectorDeleteNamespaceRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "vector:namespace_delete";
@@ -2676,6 +2682,23 @@ message VectorCreateNamespaceResponse {
     int64 timestamp = 2;
 }
 
+// VectorUpdateNamespaceRequest changes a namespace in place. Each key of the
+// index parameters and metadata is merged over the stored value; a key not
+// named keeps its value. A non-zero dimension must equal the namespace's.
+message VectorUpdateNamespaceRequest {
+    string namespace = 1;
+    int32 dimension = 2;
+    string index_params_json = 3;
+    string metadata_json = 4;
+}
+
+// VectorUpdateNamespaceResponse reports an in-place namespace update.
+message VectorUpdateNamespaceResponse {
+    bool updated = 1;
+    bool requires_rebuild = 2;
+    int64 timestamp = 3;
+}
+
 // VectorDeleteNamespaceRequest removes a namespace and all its vectors.
 message VectorDeleteNamespaceRequest {
     string namespace = 1;
@@ -2707,6 +2730,12 @@ message VectorNamespaceInfo {
     int64 vector_count = 5;
     int64 created_at = 6;
     int64 updated_at = 7;
+    // index_config is the namespace's index parameters, as merged by every
+    // VectorUpdateNamespace so far.
+    map<string, string> index_config = 8;
+    // metadata_json is the namespace's metadata as a JSON object, as merged
+    // by every VectorUpdateNamespace so far; empty when it has none.
+    string metadata_json = 9;
 }
 
 // ---------------------------------------------------------------------------

@@ -109,6 +109,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_ts_set_retention_policy":        permission.TSSetRetention,
 	"qrdb_ts_list_metrics":                permission.TSListMetrics,
 	"qrdb_vector_create_namespace":        permission.VectorNamespaceCreate,
+	"qrdb_vector_update_namespace":        permission.VectorNamespaceUpdate,
 	"qrdb_vector_delete_namespace":        permission.VectorNamespaceDelete,
 	"qrdb_vector_list_namespaces":         permission.VectorNamespaceList,
 	"qrdb_vector_get_namespace_info":      permission.VectorNamespaceInfo,

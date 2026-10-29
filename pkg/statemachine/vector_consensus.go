@@ -20,6 +20,7 @@ package statemachine
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
+	"github.com/jeremyhahn/go-qrdb/pkg/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
@@ -259,6 +261,9 @@ func (v *VectorConsensusFSM) Update(_ context.Context, entries []sm.Entry, resul
 
 		case OpUpdateMetadata:
 			result, err = v.applyUpdateMetadata(ctx, cmd)
+
+		case OpUpdateNamespace:
+			result, err = v.applyUpdateNamespace(ctx, cmd)
 
 		default:
 			// For read-only operations, just return success
@@ -649,6 +654,53 @@ func (v *VectorConsensusFSM) applyUpdateMetadata(ctx context.Context, cmd *Vecto
 		"id":        cmd.ID,
 	}).Debug("Metadata updated via Raft consensus")
 	return sm.Result{Value: 1}, nil
+}
+
+// applyUpdateNamespace changes a namespace's index parameters and metadata in
+// place, merging each key of the command over the stored value, and keeps
+// every vector. A missing namespace or a changed dimension is refused on its
+// merits, identically on every replica, so neither halts the apply loop.
+func (v *VectorConsensusFSM) applyUpdateNamespace(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
+	v.logger.WithField("namespace", cmd.Namespace).Debug("Applying UpdateNamespace")
+
+	if v.storage == nil {
+		return sm.Result{Value: 1}, nil
+	}
+
+	info, err := v.storage.GetNamespaceInfo(ctx, cmd.Namespace)
+	if err != nil {
+		if errors.Is(err, vectorStorage.ErrNamespaceNotFound) {
+			return sm.Result{}, &vector.NamespaceNotFoundError{Namespace: cmd.Namespace}
+		}
+		return sm.Result{}, err
+	}
+	if cmd.Dimension != 0 && cmd.Dimension != info.Dimension {
+		return sm.Result{}, &vector.DimensionMismatchError{
+			Namespace: cmd.Namespace,
+			Got:       int(cmd.Dimension),
+			Want:      info.Dimension,
+		}
+	}
+
+	metadata := make(map[string]string, len(cmd.Metadata))
+	for k, val := range cmd.Metadata {
+		metadata[k] = fmt.Sprintf("%v", val)
+	}
+	update, requiresRebuild := vectorStorage.MergeNamespaceUpdate(info, cmd.IndexParams, metadata, cmd.Timestamp)
+	if err := v.storage.UpdateNamespace(ctx, cmd.Namespace, update); err != nil {
+		return sm.Result{}, err
+	}
+
+	data, err := (&UpdateNamespaceResult{Updated: true, RequiresRebuild: requiresRebuild}).Encode()
+	if err != nil {
+		return sm.Result{}, err
+	}
+
+	v.logger.WithFields(map[string]interface{}{
+		"namespace":        cmd.Namespace,
+		"requires_rebuild": requiresRebuild,
+	}).Info("Namespace updated via Raft consensus")
+	return sm.Result{Value: 1, Data: data}, nil
 }
 
 // Lookup performs a read-only query on the state machine.

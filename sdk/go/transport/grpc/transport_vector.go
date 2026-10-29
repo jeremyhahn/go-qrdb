@@ -99,6 +99,40 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	}, nil
 }
 
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place via the VectorUpdateNamespace RPC, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	indexParamsJSON, err := marshalStringMapJSON(req.IndexConfig)
+	if err != nil {
+		return nil, err
+	}
+	metadataJSON, err := marshalInterfaceMapJSON(req.Metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := t.client.VectorUpdateNamespace(ctx, &pb.VectorUpdateNamespaceRequest{
+		Namespace:       req.Namespace,
+		Dimension:       int32(req.Dimension),
+		IndexParamsJson: indexParamsJSON,
+		MetadataJson:    metadataJSON,
+	})
+	if err != nil {
+		return nil, mapGRPCError("UpdateNamespace", err)
+	}
+
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: resp.GetRequiresRebuild(),
+		Timestamp:       resp.GetTimestamp(),
+		Success:         resp.GetUpdated(),
+	}, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors through the
 // gRPC transport.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
@@ -159,15 +193,26 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if err != nil {
 		return nil, mapGRPCError("GetNamespaceInfo", err)
 	}
+	return protoToNamespaceInfo(resp)
+}
 
+// protoToNamespaceInfo converts a namespace-info reply, decoding its
+// metadata JSON.
+func protoToNamespaceInfo(p *pb.VectorNamespaceInfo) (*transport.GetNamespaceInfoResponse, error) {
+	metadata, err := unmarshalInterfaceMapJSON(p.GetMetadataJson())
+	if err != nil {
+		return nil, err
+	}
 	return &transport.GetNamespaceInfoResponse{
-		Namespace:      resp.GetNamespace(),
-		Dimension:      uint32(resp.GetDimension()),
-		VectorCount:    uint64(resp.GetVectorCount()),
-		DistanceMetric: protoDistanceMetricToSDK[resp.GetDistanceMetric()],
-		IndexType:      protoIndexTypeToSDK[resp.GetIndexType()],
-		CreatedAt:      resp.GetCreatedAt(),
-		UpdatedAt:      resp.GetUpdatedAt(),
+		Namespace:      p.GetNamespace(),
+		Dimension:      uint32(p.GetDimension()),
+		VectorCount:    uint64(p.GetVectorCount()),
+		DistanceMetric: protoDistanceMetricToSDK[p.GetDistanceMetric()],
+		IndexType:      protoIndexTypeToSDK[p.GetIndexType()],
+		IndexConfig:    p.GetIndexConfig(),
+		Metadata:       metadata,
+		CreatedAt:      p.GetCreatedAt(),
+		UpdatedAt:      p.GetUpdatedAt(),
 	}, nil
 }
 

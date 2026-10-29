@@ -404,7 +404,7 @@ func registerOperatorGrants() {
 		TSWrite, TSWriteBatch,
 		TSQuery, TSAggregate,
 		// Vector
-		VectorNamespaceCreate, VectorNamespaceDelete,
+		VectorNamespaceCreate, VectorNamespaceUpdate, VectorNamespaceDelete,
 		VectorNamespaceList, VectorNamespaceInfo,
 		VectorUpsert, VectorGet, VectorDelete,
 		VectorBatchUpsert, VectorBatchDelete, VectorList,

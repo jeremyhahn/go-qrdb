@@ -162,6 +162,9 @@ const (
 const (
 	// VectorNamespaceCreate grants access to create vector namespaces.
 	VectorNamespaceCreate Permission = "vector:namespace_create"
+	// VectorNamespaceUpdate grants access to change a vector namespace's
+	// index parameters and metadata in place.
+	VectorNamespaceUpdate Permission = "vector:namespace_update"
 	// VectorNamespaceDelete grants access to delete vector namespaces.
 	VectorNamespaceDelete Permission = "vector:namespace_delete"
 	// VectorNamespaceList grants access to list vector namespaces.
@@ -1040,7 +1043,7 @@ const (
 // allVectorPermissions returns all vector permissions in a single slice.
 func allVectorPermissions() []Permission {
 	return []Permission{
-		VectorNamespaceCreate, VectorNamespaceDelete, VectorNamespaceList, VectorNamespaceInfo,
+		VectorNamespaceCreate, VectorNamespaceUpdate, VectorNamespaceDelete, VectorNamespaceList, VectorNamespaceInfo,
 		VectorUpsert, VectorGet, VectorDelete, VectorBatchUpsert, VectorBatchDelete, VectorList,
 		VectorUpdateMetadata, VectorSearchSimilar, VectorSearchByMetadata, VectorHybridSearch,
 		VectorSearchByID, VectorRebuildIndex, VectorGetRebuildProg, VectorGetIndexStats,

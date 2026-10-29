@@ -497,6 +497,7 @@ var requestHandlers = map[string]requestHandler{
 	"GetTopology":                 handleGetTopology,
 	"ReplicaStates":               handleReplicaStates,
 	"CreateNamespace":             handleCreateNamespace,
+	"UpdateNamespace":             handleUpdateNamespace,
 	"DeleteNamespace":             handleDeleteNamespace,
 	"ListNamespaces":              handleListNamespaces,
 	"GetNamespaceInfo":            handleGetNamespaceInfo,
@@ -2540,6 +2541,39 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	}, nil
 }
 
+// UpdateNamespace changes a vector namespace's index parameters and metadata
+// in place through the embedded vector service, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	ctx, err := t.admit(ctx, "UpdateNamespace")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "UpdateNamespace"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace:   req.Namespace,
+		Dimension:   req.Dimension,
+		IndexConfig: req.IndexConfig,
+		Metadata:    req.Metadata,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       resp.Namespace,
+		RequiresRebuild: resp.RequiresRebuild,
+		Timestamp:       resp.Timestamp,
+		Success:         resp.Success,
+	}, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors through the
 // embedded vector service.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
@@ -4233,6 +4267,21 @@ func handleCreateNamespace(ctx context.Context, t *Transport, req, resp any) err
 		return err
 	}
 	if out, ok := resp.(**transport.CreateNamespaceResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleUpdateNamespace(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.UpdateNamespaceRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "UpdateNamespace"}
+	}
+	result, err := t.UpdateNamespace(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.UpdateNamespaceResponse); ok {
 		*out = result
 	}
 	return nil

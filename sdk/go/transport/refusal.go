@@ -95,6 +95,12 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
 	},
+	ReasonVectorNamespaceNotFound: func(md map[string]string) error {
+		return NamespaceNotFoundFromMetadata(md)
+	},
+	ReasonVectorDimensionMismatch: func(md map[string]string) error {
+		return DimensionMismatchFromMetadata(md)
+	},
 	ceremony.ReasonAdminCredentialRequiresCA: func(md map[string]string) error {
 		return ceremony.AdminCredentialRequiresCAFromMetadata(md)
 	},

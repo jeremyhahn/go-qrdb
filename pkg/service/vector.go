@@ -993,6 +993,87 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 	}, nil
 }
 
+// UpdateNamespace changes a namespace's index parameters and metadata in place,
+// merging each key of the request over the stored value, and keeps every
+// vector. A dimension cannot change in place: a request naming a different
+// one is refused with DimensionMismatchError.
+func (v *vectorService) UpdateNamespace(ctx context.Context, req *UpdateNamespaceRequest) (*UpdateNamespaceResponse, error) {
+	start := time.Now()
+	defer func() {
+		if v.metrics != nil {
+			v.metrics.operationDuration.With("update_namespace").Observe(time.Since(start).Seconds())
+		}
+	}()
+
+	if err := v.validateUpdateNamespaceRequest(req); err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("update_namespace", "invalid_input").Inc()
+		}
+		return nil, err
+	}
+
+	scoped := scopedFromContext(ctx, req.Namespace)
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.closed {
+		return nil, &VectorServiceClosedError{}
+	}
+
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	if err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("update_namespace", "not_found").Inc()
+		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
+	}
+	if req.Dimension != 0 && req.Dimension != info.Dimension {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("update_namespace", "dimension_mismatch").Inc()
+		}
+		return nil, &DimensionMismatchError{Expected: int(info.Dimension), Actual: int(req.Dimension)}
+	}
+
+	metadata := convertToStringMap(req.Metadata)
+	now := time.Now().UnixNano()
+	update, requiresRebuild := vector.MergeNamespaceUpdate(info, req.IndexConfig, metadata, now)
+
+	v.logger.WithFields(map[string]interface{}{
+		"namespace":        req.Namespace,
+		"scoped":           scoped,
+		"requires_rebuild": requiresRebuild,
+	}).Debug("updating namespace")
+
+	if v.raftNode != nil {
+		cmd := statemachine.NewUpdateNamespaceCommand(scoped, req.IndexConfig, req.Metadata, v.nodeID)
+		cmd.Dimension = req.Dimension
+		if err := v.proposeToRaft(ctx, cmd); err != nil {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("update_namespace", "raft_error").Inc()
+			}
+			return nil, err
+		}
+	} else if err := v.storage.UpdateNamespace(ctx, scoped, update); err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("update_namespace", "storage_error").Inc()
+		}
+		return nil, vectorStorageError("update namespace", req.Namespace, 0, err)
+	}
+
+	v.logger.WithFields(map[string]interface{}{
+		"namespace":        req.Namespace,
+		"requires_rebuild": requiresRebuild,
+	}).Info("namespace updated successfully")
+
+	return &UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: requiresRebuild,
+		Timestamp:       now,
+		Success:         true,
+	}, nil
+}
+
 // DeleteNamespace removes a vector namespace and all its vectors.
 func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error) {
 	start := time.Now()
@@ -2352,6 +2433,16 @@ func (v *vectorService) validateCreateNamespaceRequest(req *CreateNamespaceReque
 		return &InvalidVectorError{Reason: "dimension must be greater than 0"}
 	}
 	return nil
+}
+
+func (v *vectorService) validateUpdateNamespaceRequest(req *UpdateNamespaceRequest) error {
+	if req == nil {
+		return &InvalidVectorError{Reason: "request cannot be nil"}
+	}
+	if req.Namespace == "" {
+		return &InvalidVectorError{Reason: "namespace is required"}
+	}
+	return validateNamespaceName(req.Namespace)
 }
 
 func (v *vectorService) validateDeleteNamespaceRequest(req *DeleteNamespaceRequest) error {

@@ -83,6 +83,7 @@ const (
 	QRDBService_TSSetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSSetRetention"
 	QRDBService_TSListMetrics_FullMethodName                     = "/qrdb.v1.QRDBService/TSListMetrics"
 	QRDBService_VectorCreateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorCreateNamespace"
+	QRDBService_VectorUpdateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorUpdateNamespace"
 	QRDBService_VectorDeleteNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
 	QRDBService_VectorListNamespaces_FullMethodName              = "/qrdb.v1.QRDBService/VectorListNamespaces"
 	QRDBService_VectorGetNamespaceInfo_FullMethodName            = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
@@ -422,6 +423,9 @@ type QRDBServiceClient interface {
 	TSListMetrics(ctx context.Context, in *TSListMetricsRequest, opts ...grpc.CallOption) (*TSListMetricsResponse, error)
 	// VectorCreateNamespace creates a new vector namespace.
 	VectorCreateNamespace(ctx context.Context, in *VectorCreateNamespaceRequest, opts ...grpc.CallOption) (*VectorCreateNamespaceResponse, error)
+	// VectorUpdateNamespace changes a namespace's index parameters and
+	// metadata in place, keeping every vector.
+	VectorUpdateNamespace(ctx context.Context, in *VectorUpdateNamespaceRequest, opts ...grpc.CallOption) (*VectorUpdateNamespaceResponse, error)
 	// VectorDeleteNamespace removes a namespace and all its vectors.
 	VectorDeleteNamespace(ctx context.Context, in *VectorDeleteNamespaceRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// VectorListNamespaces returns all vector namespace names.
@@ -1461,6 +1465,16 @@ func (c *qRDBServiceClient) VectorCreateNamespace(ctx context.Context, in *Vecto
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VectorCreateNamespaceResponse)
 	err := c.cc.Invoke(ctx, QRDBService_VectorCreateNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorUpdateNamespace(ctx context.Context, in *VectorUpdateNamespaceRequest, opts ...grpc.CallOption) (*VectorUpdateNamespaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorUpdateNamespaceResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorUpdateNamespace_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3631,6 +3645,9 @@ type QRDBServiceServer interface {
 	TSListMetrics(context.Context, *TSListMetricsRequest) (*TSListMetricsResponse, error)
 	// VectorCreateNamespace creates a new vector namespace.
 	VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error)
+	// VectorUpdateNamespace changes a namespace's index parameters and
+	// metadata in place, keeping every vector.
+	VectorUpdateNamespace(context.Context, *VectorUpdateNamespaceRequest) (*VectorUpdateNamespaceResponse, error)
 	// VectorDeleteNamespace removes a namespace and all its vectors.
 	VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error)
 	// VectorListNamespaces returns all vector namespace names.
@@ -4323,6 +4340,9 @@ func (UnimplementedQRDBServiceServer) TSListMetrics(context.Context, *TSListMetr
 }
 func (UnimplementedQRDBServiceServer) VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VectorCreateNamespace not implemented")
+}
+func (UnimplementedQRDBServiceServer) VectorUpdateNamespace(context.Context, *VectorUpdateNamespaceRequest) (*VectorUpdateNamespaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorUpdateNamespace not implemented")
 }
 func (UnimplementedQRDBServiceServer) VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method VectorDeleteNamespace not implemented")
@@ -5825,6 +5845,24 @@ func _QRDBService_VectorCreateNamespace_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).VectorCreateNamespace(ctx, req.(*VectorCreateNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorUpdateNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorUpdateNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorUpdateNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorUpdateNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorUpdateNamespace(ctx, req.(*VectorUpdateNamespaceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -9681,6 +9719,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VectorCreateNamespace",
 			Handler:    _QRDBService_VectorCreateNamespace_Handler,
+		},
+		{
+			MethodName: "VectorUpdateNamespace",
+			Handler:    _QRDBService_VectorUpdateNamespace_Handler,
 		},
 		{
 			MethodName: "VectorDeleteNamespace",

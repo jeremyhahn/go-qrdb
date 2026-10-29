@@ -1,7 +1,7 @@
 # Vector Database — Engineering Contract
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-26
+> Scope: go-qrdb · Last verified: 2026-10-29
 > Conflicts with this document are defects. Fix them here first.
 >
 > Sections headed **Target** are the vector half of the multi-model database
@@ -31,6 +31,7 @@ type VectorClient interface {
 	DeleteNamespace(ctx context.Context, req *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error)
 	ListNamespaces(ctx context.Context, req *ListNamespacesRequest) (*ListNamespacesResponse, error)
 	GetNamespaceInfo(ctx context.Context, req *GetNamespaceInfoRequest) (*GetNamespaceInfoResponse, error)
+	UpdateNamespace(ctx context.Context, req *UpdateNamespaceRequest) (*UpdateNamespaceResponse, error)
 
 	// Vector CRUD
 	UpsertVector(ctx context.Context, req *UpsertVectorRequest) (*UpsertVectorResponse, error)
@@ -74,6 +75,46 @@ These are the wire values (`transport.DistanceMetric`,
 `transport.VectorIndexType`). The CLI spells them `dot-product` and `ivf-flat`
 and defaults `--distance-metric` to `cosine`.
 
+## Namespace update
+
+`UpdateNamespace` changes a namespace's index parameters (`index_config`) and
+metadata in place and keeps every vector. It never changes the geometry.
+
+- **Merge, not replace.** Each key of the request's `index_config` and
+  `metadata` is written over the stored value; a key the request omits keeps
+  its value. No key is removed. `storage/vector.MergeNamespaceUpdate` computes
+  the merged record, and the service and the Raft apply both call it, so a
+  direct write and a replicated one produce the same record.
+- **Dimension is a precondition, not a field.** `dimension` zero means "not
+  given". Any other value must equal the namespace's dimension, or the update
+  is refused with `DimensionMismatchError` and nothing is written. The distance
+  metric and index type are not in the request at all.
+- **A missing namespace is refused** with `NamespaceNotFoundError`. The update
+  never creates a namespace.
+- **The rebuild flag.** `requires_rebuild` is true when at least one request
+  key of `index_config` is absent from the stored parameters or has a
+  different value there. A metadata-only update, or one that gives every
+  parameter its stored value, reports false.
+- **The update does not rebuild the index.** It rewrites the namespace record
+  (and its cached copy) and leaves the in-memory ANN index as built: searches
+  keep running on it. The caller that gets `requires_rebuild` runs
+  `RebuildIndex`, which rebuilds from the stored vectors under the record's
+  current parameters.
+- **Replication.** On a node with a Raft node the service proposes
+  `OpUpdateNamespace` to the vector consensus FSM, which re-reads the record,
+  checks the namespace and the dimension on every replica alike, and applies
+  the same merge. The service checks both before it proposes, so a refused
+  update is normally never in the log; one that reaches apply anyway is
+  refused there on its merits, identically on every replica, and does not
+  halt the apply loop. Without Raft the service writes the merged record to
+  storage itself.
+
+Typed refusals travel as structured refusals with the reasons
+`VECTOR_NAMESPACE_NOT_FOUND` and `VECTOR_DIMENSION_MISMATCH`: REST, gRPC, the
+Unix socket, QUIC and MCP each rebuild the same `transport.NamespaceNotFoundError`
+or `transport.DimensionMismatchError`, so a caller tests the type, not the
+text.
+
 ## Invariants
 
 - **Vector IDs are `uint64`.** The CLI takes them as strings to avoid shell and
@@ -81,6 +122,8 @@ and defaults `--distance-metric` to `cosine`.
   [../collections/](../collections/engineering.md).
 - **Namespace geometry is immutable.** Changing dimension, metric or index type
   requires a new namespace and a re-upsert; there is no in-place migration.
+  Index parameters and namespace metadata are not geometry: `UpdateNamespace`
+  changes them in place (see "Namespace update").
 - **Upsert is idempotent by ID** — inserting an existing ID replaces the vector
   and its metadata.
 - **A vector's length must equal the namespace dimension.** A mismatch is
@@ -130,6 +173,8 @@ the search cheaper.
 | Namespace already exists | `service.NamespaceExistsError` | yes |
 | Unknown namespace | not-found | **yes** — never auto-created |
 | Vector length ≠ namespace dimension | invalid-argument | **yes** |
+| Namespace update of an unknown namespace | `NamespaceNotFoundError` (not-found) | **yes** — never auto-created |
+| Namespace update with a nonzero dimension ≠ the namespace's | `DimensionMismatchError` (invalid-argument); nothing written | **yes** |
 | Unknown distance metric or index type at the CLI or MCP | invalid-argument | **yes** |
 | Unknown vector ID on get/delete/search-by-id | not-found | yes |
 | Malformed metadata filter JSON | invalid-argument | **yes** |

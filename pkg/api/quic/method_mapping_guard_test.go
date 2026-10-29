@@ -108,6 +108,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"ts.SetRetention":                    permission.TSSetRetention,
 	"ts.ListMetrics":                     permission.TSListMetrics,
 	"vector.CreateNamespace":             permission.VectorNamespaceCreate,
+	"vector.UpdateNamespace":             permission.VectorNamespaceUpdate,
 	"vector.DeleteNamespace":             permission.VectorNamespaceDelete,
 	"vector.ListNamespaces":              permission.VectorNamespaceList,
 	"vector.GetNamespaceInfo":            permission.VectorNamespaceInfo,

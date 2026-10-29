@@ -111,6 +111,50 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	}, nil
 }
 
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	indexParamsJSON, err := marshalMetadataJSON(req.IndexConfig)
+	if err != nil {
+		return nil, err
+	}
+	metadataJSON, err := marshalInterfaceMetadataJSON(req.Metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := proto.Marshal(&pb.VectorUpdateNamespaceRequest{
+		Namespace:       req.Namespace,
+		Dimension:       int32(req.Dimension),
+		IndexParamsJson: indexParamsJSON,
+		MetadataJson:    metadataJSON,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	resp, err := t.call(ctx, "vector.UpdateNamespace", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var pbResp pb.VectorUpdateNamespaceResponse
+	if err := proto.Unmarshal(resp, &pbResp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: pbResp.GetRequiresRebuild(),
+		Timestamp:       pbResp.GetTimestamp(),
+		Success:         pbResp.GetUpdated(),
+	}, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors through the
 // QUIC transport.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
@@ -196,15 +240,26 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if err := proto.Unmarshal(resp, &pbResp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
+	return protoToNamespaceInfo(&pbResp)
+}
 
+// protoToNamespaceInfo converts a namespace-info reply, decoding its
+// metadata JSON.
+func protoToNamespaceInfo(p *pb.VectorNamespaceInfo) (*transport.GetNamespaceInfoResponse, error) {
+	metadata, err := unmarshalInterfaceMetadataJSON(p.GetMetadataJson())
+	if err != nil {
+		return nil, err
+	}
 	return &transport.GetNamespaceInfoResponse{
-		Namespace:      pbResp.GetNamespace(),
-		Dimension:      uint32(pbResp.GetDimension()),
-		VectorCount:    uint64(pbResp.GetVectorCount()),
-		DistanceMetric: protoDistanceMetricToTransport[pbResp.GetDistanceMetric()],
-		IndexType:      protoIndexTypeToTransport[pbResp.GetIndexType()],
-		CreatedAt:      pbResp.GetCreatedAt(),
-		UpdatedAt:      pbResp.GetUpdatedAt(),
+		Namespace:      p.GetNamespace(),
+		Dimension:      uint32(p.GetDimension()),
+		VectorCount:    uint64(p.GetVectorCount()),
+		DistanceMetric: protoDistanceMetricToTransport[p.GetDistanceMetric()],
+		IndexType:      protoIndexTypeToTransport[p.GetIndexType()],
+		IndexConfig:    p.GetIndexConfig(),
+		Metadata:       metadata,
+		CreatedAt:      p.GetCreatedAt(),
+		UpdatedAt:      p.GetUpdatedAt(),
 	}, nil
 }
 

@@ -160,6 +160,40 @@ func TestRefusal_otherErrorsCarryNone(t *testing.T) {
 	}
 }
 
+func TestRefusal_vectorNamespaceNotFound(t *testing.T) {
+	for _, ns := range []string{"docs", ""} {
+		reason, md, ok := Refusal(&wrappedError{&service.NamespaceNotFoundError{Namespace: ns}})
+		if !ok || reason != transport.ReasonVectorNamespaceNotFound {
+			t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonVectorNamespaceNotFound)
+		}
+		want := &transport.NamespaceNotFoundError{Namespace: ns}
+		if got := transport.NamespaceNotFoundFromMetadata(md); *got != *want {
+			t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestRefusal_vectorDimensionMismatch(t *testing.T) {
+	for _, e := range []*service.DimensionMismatchError{{Expected: 768, Actual: 384}, {Expected: 3, Actual: 0}} {
+		reason, md, ok := Refusal(&wrappedError{e})
+		if !ok || reason != transport.ReasonVectorDimensionMismatch {
+			t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonVectorDimensionMismatch)
+		}
+		want := &transport.DimensionMismatchError{Expected: e.Expected, Got: e.Actual}
+		if got := transport.DimensionMismatchFromMetadata(md); *got != *want {
+			t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+		}
+	}
+}
+
+func TestVectorRefusal_otherErrorsCarryNone(t *testing.T) {
+	for _, err := range []error{errors.New("plain"), &service.NamespaceExistsError{Namespace: "docs"}} {
+		if reason, md, ok := vectorRefusal(err); ok || reason != "" || md != nil {
+			t.Fatalf("vectorRefusal(%v) = %q, %v, %v; want none", err, reason, md, ok)
+		}
+	}
+}
+
 func TestClassify_factorConditionAndContention(t *testing.T) {
 	if got := Classify(&auth.FactorConditionFailedError{}); got != AlreadyExists {
 		t.Fatalf("Classify(condition failed) = %v, want AlreadyExists", got)

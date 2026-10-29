@@ -284,6 +284,57 @@ func TestHandleVectorGetNamespaceInfo_Success(t *testing.T) {
 	}
 }
 
+func TestHandleVectorGetNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	mock := &mockVectorService{
+		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+			return &service.GetNamespaceInfoResponse{
+				Namespace:   "info-ns",
+				Dimension:   4,
+				IndexConfig: map[string]string{"ef_construction": "321"},
+				Metadata:    map[string]interface{}{"owner": "team-a"},
+			}, nil
+		},
+	}
+
+	srv := newVectorServer(mock)
+	payload, _ := proto.Marshal(&pb.VectorGetNamespaceInfoRequest{Namespace: "info-ns"})
+
+	resp, err := srv.handleVectorGetNamespaceInfo(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.VectorNamespaceInfo
+	if err := proto.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.GetIndexConfig()["ef_construction"] != "321" {
+		t.Fatalf("index_config = %v, want ef_construction=321", out.GetIndexConfig())
+	}
+	if out.GetMetadataJson() != `{"owner":"team-a"}` {
+		t.Fatalf("metadata_json = %q, want {\"owner\":\"team-a\"}", out.GetMetadataJson())
+	}
+}
+
+func TestHandleVectorGetNamespaceInfo_MetadataMarshalError(t *testing.T) {
+	mock := &mockVectorService{
+		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+			return &service.GetNamespaceInfoResponse{
+				Namespace: "info-ns",
+				Metadata:  map[string]interface{}{"bad": make(chan int)},
+			}, nil
+		},
+	}
+
+	srv := newVectorServer(mock)
+	payload, _ := proto.Marshal(&pb.VectorGetNamespaceInfoRequest{Namespace: "info-ns"})
+
+	_, err := srv.handleVectorGetNamespaceInfo(context.Background(), payload)
+	var mErr *MetadataMarshalError
+	if !errors.As(err, &mErr) {
+		t.Fatalf("expected *MetadataMarshalError, got %T: %v", err, err)
+	}
+}
+
 func TestHandleVectorGetNamespaceInfo_ServiceError(t *testing.T) {
 	mock := &mockVectorService{
 		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {

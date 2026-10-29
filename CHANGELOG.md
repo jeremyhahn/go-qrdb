@@ -107,6 +107,18 @@ are not reconstructed here — their history is in the git log.
 ### Added
 - **`qrdb kv put --revision`** prints the written key's version and revisions (the metadata of `kv get --revision`), through `MVCC().PutWithLease` with lease 0. The key-value user guide names the three calls that report a key's version — that put, `GetRevision` and a batch of get ops — which report one version, the one a transaction's `version` compare reads (#1211).
 ### Added
+- **A vector namespace's index parameters and metadata can change in place**
+  (#1290). `VectorClient.UpdateNamespace` (REST
+  `POST /vector/namespace/update`, gRPC `VectorUpdateNamespace`, QUIC
+  `vector.UpdateNamespace`, MCP `qrdb_vector_update_namespace`, the Unix
+  socket and the embedded client) and the CLI's
+  `qrdb vector namespace update` merge each given key over the stored value,
+  keep every vector, and report `requires_rebuild` when an index parameter
+  changed; the index is rebuilt by `rebuild-index`, not by the update. The
+  dimension cannot change: a different `--dimension` is a
+  `DimensionMismatchError`, and a missing namespace a
+  `NamespaceNotFoundError`, on every transport. The verb needs the new
+  `vector:namespace_update` permission.
 - **A non-replicated database is held by the node that created it, and every
   other node forwards to it** (#893, OD-2). The catalog record carries
   `owner_node`, the creating node's Raft address, for a memory, file, pebble or

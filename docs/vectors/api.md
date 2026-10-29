@@ -22,6 +22,7 @@ and `admin capabilities` omits `vector`.
 | Delete namespace | `POST /vector/namespace/delete` | `VectorDeleteNamespace` | `vector.DeleteNamespace` | `qrdb_vector_delete_namespace` | `DeleteNamespace` | `vector:namespace_delete` |
 | List namespaces | `GET /vector/namespaces` | `VectorListNamespaces` | `vector.ListNamespaces` | `qrdb_vector_list_namespaces` | `ListNamespaces` | `vector:namespace_list` |
 | Namespace info | `GET /vector/namespace/info` | `VectorGetNamespaceInfo` | `vector.GetNamespaceInfo` | `qrdb_vector_get_namespace_info` | `GetNamespaceInfo` | `vector:namespace_info` |
+| Update namespace | `POST /vector/namespace/update` | `VectorUpdateNamespace` | `vector.UpdateNamespace` | `qrdb_vector_update_namespace` | `UpdateNamespace` | `vector:namespace_update` |
 | Upsert | `POST /vector/upsert` | `VectorUpsert` | `vector.Upsert` | `qrdb_vector_upsert` | `UpsertVector` | `vector:upsert` |
 | Get | `GET /vector/get` | `VectorGet` | `vector.Get` | `qrdb_vector_get` | `GetVector` | `vector:get` |
 | Delete | `POST /vector/delete` | `VectorDelete` | `vector.Delete` | `qrdb_vector_delete` | `DeleteVector` | `vector:delete` |

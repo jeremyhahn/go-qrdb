@@ -2074,6 +2074,7 @@ func (s *Server) registerRoutes() {
 
 	// Vector routes.
 	s.route(http.MethodPost, "/vector/namespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.route(http.MethodPost, "/vector/namespace/update", permission.VectorNamespaceUpdate, s.handleVectorUpdateNamespace)
 	s.route(http.MethodPost, "/vector/namespace/delete", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
 	s.route(http.MethodGet, "/vector/namespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
 	s.route(http.MethodGet, "/vector/namespace/info", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)

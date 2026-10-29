@@ -116,6 +116,7 @@ var expectedMethods = []string{
 
 	// Vector (20)
 	"vector.CreateNamespace",
+	"vector.UpdateNamespace",
 	"vector.DeleteNamespace",
 	"vector.ListNamespaces",
 	"vector.GetNamespaceInfo",
@@ -280,6 +281,8 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 202 = 201 + vector.UpdateNamespace, the in-place namespace update
+	// that keeps every vector (docs/vectors).
 	// 201 = 200 + barrier.ChangePassphrase, the supported passphrase change
 	// of the system barrier (docs/barrier-seal).
 	// 200 = 198 + user.Suspend and user.Unsuspend, the suspension verbs
@@ -355,7 +358,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 201
+	const wantCount = 202
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -454,7 +457,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"lock":     6,
 		"index":    5,
 		"ts":       10,
-		"vector":   20,
+		"vector":   21,
 		"user":     14,
 		"role":     13,
 		"cert":     5,

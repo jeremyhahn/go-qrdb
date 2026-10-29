@@ -33,6 +33,10 @@ import (
 
 type noopVectorService struct{}
 
+func (s *noopVectorService) UpdateNamespace(_ context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return &service.UpdateNamespaceResponse{}, nil
+}
+
 func (s *noopVectorService) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	return &service.CreateNamespaceResponse{}, nil
 }

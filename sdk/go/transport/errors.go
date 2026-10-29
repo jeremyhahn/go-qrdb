@@ -377,6 +377,56 @@ func (e *DimensionMismatchError) Error() string {
 	return "transport: dimension mismatch: expected " + strconv.Itoa(e.Expected) + ", got " + strconv.Itoa(e.Got)
 }
 
+// ReasonVectorNamespaceNotFound is the structured-refusal reason every
+// transport carries beside the message of a missing vector namespace, so a
+// client rebuilds a *NamespaceNotFoundError without parsing text.
+const ReasonVectorNamespaceNotFound = "VECTOR_NAMESPACE_NOT_FOUND"
+
+// ReasonVectorDimensionMismatch is the structured-refusal reason of a vector
+// dimension that differs from its namespace's, rebuilt as a
+// *DimensionMismatchError.
+const ReasonVectorDimensionMismatch = "VECTOR_DIMENSION_MISMATCH"
+
+// Refusal metadata keys of the vector refusals.
+const (
+	vectorKeyNamespace = "namespace"
+	vectorKeyExpected  = "expected"
+	vectorKeyGot       = "got"
+)
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *NamespaceNotFoundError) Metadata() map[string]string {
+	return map[string]string{vectorKeyNamespace: e.Namespace}
+}
+
+// NamespaceNotFoundFromMetadata rebuilds the error Metadata encoded.
+func NamespaceNotFoundFromMetadata(md map[string]string) *NamespaceNotFoundError {
+	return &NamespaceNotFoundError{Namespace: md[vectorKeyNamespace]}
+}
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *DimensionMismatchError) Metadata() map[string]string {
+	return map[string]string{
+		vectorKeyExpected: strconv.Itoa(e.Expected),
+		vectorKeyGot:      strconv.Itoa(e.Got),
+	}
+}
+
+// DimensionMismatchFromMetadata rebuilds the error Metadata encoded. The
+// reason, not the metadata, says the dimension differs, so a missing or
+// malformed number is left zero rather than losing the classification.
+func DimensionMismatchFromMetadata(md map[string]string) *DimensionMismatchError {
+	expected, err := strconv.Atoi(md[vectorKeyExpected])
+	if err != nil {
+		expected = 0
+	}
+	got, err := strconv.Atoi(md[vectorKeyGot])
+	if err != nil {
+		got = 0
+	}
+	return &DimensionMismatchError{Expected: expected, Got: got}
+}
+
 // NotImplementedError is returned when a transport method is not yet
 // implemented.
 type NotImplementedError struct {

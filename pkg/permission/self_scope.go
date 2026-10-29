@@ -374,6 +374,7 @@ func selfScopedPermissions() []Permission {
 		VectorHybridSearch,
 		VectorList,
 		VectorNamespaceCreate,
+		VectorNamespaceUpdate,
 		VectorNamespaceDelete,
 		VectorNamespaceInfo,
 		VectorNamespaceList,

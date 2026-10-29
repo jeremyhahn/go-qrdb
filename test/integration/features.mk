@@ -136,6 +136,6 @@ INTTEST_transactions        := sql_transaction_test.go tx_cli_test.go
 INTTEST_trust_anchors       := tenant_trust_anchors_cli_test.go
 INTTEST_trust_bootstrap     := bootstrap_cli_test.go
 INTTEST_typescript_sdk      :=
-INTTEST_vectors             := vector_cli_test.go
+INTTEST_vectors             := vector_cli_test.go vector_namespace_update_cli_test.go
 INTTEST_volume_pools        := volume_pool_cli_test.go volume_boot_cli_test.go volume_boot_degraded_cli_test.go
 INTTEST_watch               := watch_cli_test.go

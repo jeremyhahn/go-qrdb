@@ -33,6 +33,8 @@ type mockVectorSvc struct {
 	mu sync.Mutex
 
 	createNSErr    error
+	updateNSErr    error
+	lastUpdateNS   *service.UpdateNamespaceRequest
 	deleteNSErr    error
 	listNSErr      error
 	getNSInfoErr   error
@@ -69,6 +71,19 @@ func (m *mockVectorSvc) CreateNamespace(_ context.Context, req *service.CreateNa
 		Dimension: req.Dimension,
 		Success:   true,
 		Timestamp: 1700000000,
+	}, nil
+}
+
+func (m *mockVectorSvc) UpdateNamespace(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	m.lastUpdateNS = req
+	if m.updateNSErr != nil {
+		return nil, m.updateNSErr
+	}
+	return &service.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: len(req.IndexConfig) > 0,
+		Success:         true,
+		Timestamp:       1700000000,
 	}, nil
 }
 
@@ -314,6 +329,47 @@ func TestCreateNamespace_ServiceError(t *testing.T) {
 
 	if _, err := tr.CreateNamespace(context.Background(), &transport.CreateNamespaceRequest{Namespace: "x", Dimension: 1}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestUpdateNamespace_Success(t *testing.T) {
+	svc := newMockVectorSvc()
+	tr, cleanup := connectVectorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{
+		Namespace:   "ns",
+		Dimension:   4,
+		IndexConfig: map[string]string{"ef_search": "128"},
+		Metadata:    map[string]interface{}{"owner": "search"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNamespace: %v", err)
+	}
+	if !resp.Success || !resp.RequiresRebuild || resp.Namespace != "ns" || resp.Timestamp != 1700000000 {
+		t.Fatalf("resp = %+v", resp)
+	}
+	got := svc.lastUpdateNS
+	if got == nil || got.Dimension != 4 || got.IndexConfig["ef_search"] != "128" || got.Metadata["owner"] != "search" {
+		t.Fatalf("service saw %+v", got)
+	}
+}
+
+func TestUpdateNamespace_TypedRefusals(t *testing.T) {
+	svc := newMockVectorSvc()
+	tr, cleanup := connectVectorInProcess(t, svc)
+	defer cleanup()
+
+	svc.updateNSErr = &service.NamespaceNotFoundError{Namespace: "missing"}
+	_, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "missing"})
+	if nf, ok := errors.AsType[*transport.NamespaceNotFoundError](err); !ok || nf.Namespace != "missing" {
+		t.Fatalf("err = %v (%T), want *NamespaceNotFoundError", err, err)
+	}
+
+	svc.updateNSErr = &service.DimensionMismatchError{Expected: 4, Actual: 8}
+	_, err = tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "ns", Dimension: 8})
+	if dm, ok := errors.AsType[*transport.DimensionMismatchError](err); !ok || dm.Expected != 4 || dm.Got != 8 {
+		t.Fatalf("err = %v (%T), want *DimensionMismatchError 4/8", err, err)
 	}
 }
 

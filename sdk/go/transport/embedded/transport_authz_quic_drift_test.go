@@ -257,6 +257,7 @@ var quicToEmbeddedMethod = map[string]string{
 	"vector.BatchUpsert":            "BatchUpsert",
 	"vector.CompactNamespace":       "CompactNamespace",
 	"vector.CreateNamespace":        "CreateNamespace",
+	"vector.UpdateNamespace":        "UpdateNamespace",
 	"vector.Delete":                 "DeleteVector",
 	"vector.DeleteNamespace":        "DeleteNamespace",
 	"vector.Get":                    "GetVector",

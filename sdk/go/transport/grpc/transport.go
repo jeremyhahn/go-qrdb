@@ -989,6 +989,12 @@ func mapGRPCError(method string, err error) error {
 
 	switch st.Code() {
 	case codes.NotFound:
+		// A refusal naming what is missing, such as a vector namespace,
+		// rebuilds its own typed error; anything else is a missing key.
+		reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
+		if typed := transport.RefusalError(reason, md); typed != nil {
+			return typed
+		}
 		return &transport.KeyNotFoundError{Key: st.Message()}
 	case codes.Unimplemented:
 		// The node is healthy and does not implement this verb on its

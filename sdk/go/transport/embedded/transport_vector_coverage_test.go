@@ -34,6 +34,10 @@ func (m *mockVectorService) CreateNamespace(_ context.Context, req *service.Crea
 	return &service.CreateNamespaceResponse{Namespace: req.Namespace, Dimension: req.Dimension, Success: true}, nil
 }
 
+func (m *mockVectorService) UpdateNamespace(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return &service.UpdateNamespaceResponse{Namespace: req.Namespace, RequiresRebuild: len(req.IndexConfig) > 0, Success: true}, nil
+}
+
 func (m *mockVectorService) DeleteNamespace(_ context.Context, _ *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
 	return &service.DeleteNamespaceResponse{Success: true, VectorsDeleted: 5}, nil
 }

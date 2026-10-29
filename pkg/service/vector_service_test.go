@@ -80,6 +80,20 @@ func newMockVectorStorage() *mockVectorStorage {
 	}
 }
 
+func (m *mockVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, exists := m.namespaces[namespace]
+	if !exists {
+		return vector.ErrNamespaceNotFound
+	}
+	data.info.IndexConfig = update.IndexConfig
+	data.info.Metadata = update.Metadata
+	data.info.UpdatedAt = update.UpdatedAt
+	return nil
+}
+
 func (m *mockVectorStorage) CreateNamespace(ctx context.Context, info *vector.NamespaceInfo) error {
 	if m.createNamespaceFn != nil {
 		return m.createNamespaceFn(ctx, info)

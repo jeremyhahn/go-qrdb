@@ -35,6 +35,7 @@ import (
 
 type mockVectorSvc struct {
 	createNSFn      func(ctx context.Context, req *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error)
+	updateNSFn      func(ctx context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error)
 	deleteNSFn      func(ctx context.Context, req *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error)
 	listNSFn        func(ctx context.Context, req *service.ListNamespacesRequest) (*service.ListNamespacesResponse, error)
 	getNSInfoFn     func(ctx context.Context, req *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error)
@@ -65,6 +66,18 @@ func (m *mockVectorSvc) CreateNamespace(ctx context.Context, req *service.Create
 		Dimension: req.Dimension,
 		Success:   true,
 		Timestamp: 1_700_000_000,
+	}, nil
+}
+
+func (m *mockVectorSvc) UpdateNamespace(ctx context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	if m.updateNSFn != nil {
+		return m.updateNSFn(ctx, req)
+	}
+	return &service.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: len(req.IndexConfig) > 0,
+		Success:         true,
+		Timestamp:       1_700_000_000,
 	}, nil
 }
 
@@ -290,6 +303,55 @@ func TestUnixRT_CreateNamespace(t *testing.T) {
 	}
 	if resp.Namespace != "vectors" || resp.Dimension != 128 {
 		t.Errorf("got %+v", resp)
+	}
+}
+
+func TestUnixRT_UpdateNamespace(t *testing.T) {
+	var got *service.UpdateNamespaceRequest
+	svc := &mockVectorSvc{
+		updateNSFn: func(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+			got = req
+			return &service.UpdateNamespaceResponse{Namespace: req.Namespace, RequiresRebuild: true, Success: true, Timestamp: 7}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	resp, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{
+		Namespace:   "vectors",
+		IndexConfig: map[string]string{"ef_search": "128"},
+		Metadata:    map[string]interface{}{"owner": "search"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNamespace: %v", err)
+	}
+	if !resp.Success || !resp.RequiresRebuild || resp.Namespace != "vectors" || resp.Timestamp != 7 {
+		t.Errorf("got %+v", resp)
+	}
+	if got.IndexConfig["ef_search"] != "128" || got.Metadata["owner"] != "search" {
+		t.Errorf("service saw %+v", got)
+	}
+}
+
+func TestUnixRT_UpdateNamespace_TypedRefusals(t *testing.T) {
+	refusal := error(&service.NamespaceNotFoundError{Namespace: "missing"})
+	svc := &mockVectorSvc{
+		updateNSFn: func(context.Context, *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+			return nil, refusal
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "missing"})
+	if nf, ok := errors.AsType[*transport.NamespaceNotFoundError](err); !ok || nf.Namespace != "missing" {
+		t.Fatalf("err = %v (%T), want *NamespaceNotFoundError", err, err)
+	}
+
+	refusal = &service.DimensionMismatchError{Expected: 4, Actual: 8}
+	_, err = tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "ns", Dimension: 8})
+	if dm, ok := errors.AsType[*transport.DimensionMismatchError](err); !ok || dm.Expected != 4 || dm.Got != 8 {
+		t.Fatalf("err = %v (%T), want *DimensionMismatchError 4/8", err, err)
 	}
 }
 

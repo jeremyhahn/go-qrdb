@@ -634,6 +634,12 @@ type VectorClient interface {
 	// CreateNamespace creates a new vector namespace.
 	CreateNamespace(ctx context.Context, req *CreateNamespaceRequest) (*CreateNamespaceResponse, error)
 
+	// UpdateNamespace changes a namespace's index parameters and metadata in
+	// place, keeping every vector, and reports whether the new index
+	// parameters need a rebuild. A missing namespace is a
+	// NamespaceNotFoundError and a dimension change a DimensionMismatchError.
+	UpdateNamespace(ctx context.Context, req *UpdateNamespaceRequest) (*UpdateNamespaceResponse, error)
+
 	// DeleteNamespace removes a namespace and all its vectors.
 	DeleteNamespace(ctx context.Context, req *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error)
 

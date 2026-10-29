@@ -639,7 +639,10 @@ func TestAll_TotalCount(t *testing.T) {
 	//   audit events (ScopeSelf) = 402 total.
 	// + 8 verifiable-log perms (vlog:create/list/append/get/proof/head/
 	//   expire/sign_head), tenant-scoped (ScopeSelf) = 410 total.
-	const expectedTotal = 410
+	// + 1 vector:namespace_update, the in-place update of a vector
+	//   namespace's configuration that keeps its vectors (ScopeSelf) = 411
+	//   total.
+	const expectedTotal = 411
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

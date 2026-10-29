@@ -1694,6 +1694,9 @@ func (s *stubMVCCSvc) CurrentRevision(_ context.Context) (int64, error) { return
 // stubVectorSvc satisfies service.VectorServicer for option propagation tests.
 type stubVectorSvc struct{}
 
+func (s *stubVectorSvc) UpdateNamespace(_ context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return nil, nil
+}
 func (s *stubVectorSvc) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	return nil, nil
 }

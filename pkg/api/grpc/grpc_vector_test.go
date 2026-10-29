@@ -78,6 +78,10 @@ type mockVectorService struct {
 	getCompactionErr       error
 }
 
+func (m *mockVectorService) UpdateNamespace(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return &service.UpdateNamespaceResponse{Namespace: req.Namespace, RequiresRebuild: len(req.IndexConfig) > 0, Timestamp: 1000, Success: true}, nil
+}
+
 func (m *mockVectorService) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	if m.createNSErr != nil {
 		return nil, m.createNSErr
@@ -1040,6 +1044,49 @@ func TestGRPC_VectorGetNamespaceInfo_Success(t *testing.T) {
 	}
 	if resp.GetVectorCount() != 500 {
 		t.Fatalf("expected vector_count 500, got %d", resp.GetVectorCount())
+	}
+}
+
+func TestGRPC_VectorGetNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	vecSvc := &mockVectorService{
+		getNSInfoResult: &service.GetNamespaceInfoResponse{
+			Namespace:   "ns1",
+			Dimension:   4,
+			IndexConfig: map[string]string{"ef_construction": "321"},
+			Metadata:    map[string]interface{}{"owner": "team-a"},
+		},
+	}
+	client, cleanup := startTestServerFull(t, WithVector(vecSvc))
+	defer cleanup()
+
+	resp, err := client.VectorGetNamespaceInfo(context.Background(), &pb.VectorGetNamespaceInfoRequest{
+		Namespace: "ns1",
+	})
+	if err != nil {
+		t.Fatalf("VectorGetNamespaceInfo failed: %v", err)
+	}
+	if resp.GetIndexConfig()["ef_construction"] != "321" {
+		t.Fatalf("index_config = %v, want ef_construction=321", resp.GetIndexConfig())
+	}
+	if resp.GetMetadataJson() != `{"owner":"team-a"}` {
+		t.Fatalf("metadata_json = %q, want {\"owner\":\"team-a\"}", resp.GetMetadataJson())
+	}
+}
+
+func TestGRPC_VectorGetNamespaceInfo_MetadataMarshalError(t *testing.T) {
+	vecSvc := &mockVectorService{
+		getNSInfoResult: &service.GetNamespaceInfoResponse{
+			Namespace: "ns1",
+			Metadata:  map[string]interface{}{"bad": make(chan int)},
+		},
+	}
+	client, cleanup := startTestServerFull(t, WithVector(vecSvc))
+	defer cleanup()
+
+	if _, err := client.VectorGetNamespaceInfo(context.Background(), &pb.VectorGetNamespaceInfoRequest{
+		Namespace: "ns1",
+	}); err == nil {
+		t.Fatal("expected an error for metadata that cannot be marshalled")
 	}
 }
 

@@ -216,6 +216,7 @@ func (s *Server) buildHandlers() {
 
 	// Vector
 	s.handle("vector.CreateNamespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.handle("vector.UpdateNamespace", permission.VectorNamespaceUpdate, s.handleVectorUpdateNamespace)
 	s.handle("vector.DeleteNamespace", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
 	s.handle("vector.ListNamespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
 	s.handle("vector.GetNamespaceInfo", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)

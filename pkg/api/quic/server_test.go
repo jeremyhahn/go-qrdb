@@ -235,7 +235,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"ts.DeleteSeries": true, "ts.GetRetention": true,
 		"ts.SetRetention": true, "ts.ListMetrics": true,
 		// Vector
-		"vector.CreateNamespace": true, "vector.DeleteNamespace": true,
+		"vector.CreateNamespace": true, "vector.UpdateNamespace": true, "vector.DeleteNamespace": true,
 		"vector.ListNamespaces": true, "vector.GetNamespaceInfo": true,
 		"vector.Upsert": true, "vector.Get": true, "vector.Delete": true,
 		"vector.BatchUpsert": true, "vector.BatchDelete": true,
@@ -488,7 +488,7 @@ func TestBuildHandlers_MVCCMethods(t *testing.T) {
 func TestBuildHandlers_VectorMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	vectorMethods := []string{
-		"vector.CreateNamespace", "vector.DeleteNamespace",
+		"vector.CreateNamespace", "vector.UpdateNamespace", "vector.DeleteNamespace",
 		"vector.ListNamespaces", "vector.GetNamespaceInfo",
 		"vector.Upsert", "vector.Get", "vector.Delete",
 		"vector.BatchUpsert", "vector.BatchDelete",

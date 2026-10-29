@@ -206,7 +206,7 @@ var goldenOperatorPermissions = []permission.Permission{
 	permission.IndexQuery, permission.IndexScan,
 	permission.TSWrite, permission.TSWriteBatch,
 	permission.TSQuery, permission.TSAggregate,
-	permission.VectorNamespaceCreate, permission.VectorNamespaceDelete,
+	permission.VectorNamespaceCreate, permission.VectorNamespaceUpdate, permission.VectorNamespaceDelete,
 	permission.VectorNamespaceList, permission.VectorNamespaceInfo,
 	permission.VectorUpsert, permission.VectorGet, permission.VectorDelete,
 	permission.VectorBatchUpsert, permission.VectorBatchDelete, permission.VectorList,

@@ -53,6 +53,7 @@ func TestVectorTools_Registration(t *testing.T) {
 
 	expectedNames := []string{
 		"qrdb_vector_create_namespace",
+		"qrdb_vector_update_namespace",
 		"qrdb_vector_delete_namespace",
 		"qrdb_vector_list_namespaces",
 		"qrdb_vector_get_namespace_info",

@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -38,6 +39,22 @@ var refusals = []refusalEncoder{
 	barrierRefusal,
 	adminCredentialRequiresCARefusal,
 	vlogRefusal,
+	vectorRefusal,
+}
+
+// vectorRefusal names a missing vector namespace and a dimension that differs
+// from its namespace's, so every transport's client rebuilds the SDK's typed
+// *NamespaceNotFoundError and *DimensionMismatchError.
+func vectorRefusal(err error) (string, map[string]string, bool) {
+	if e, ok := errors.AsType[*service.NamespaceNotFoundError](err); ok {
+		md := (&transport.NamespaceNotFoundError{Namespace: e.Namespace}).Metadata()
+		return transport.ReasonVectorNamespaceNotFound, md, true
+	}
+	if e, ok := errors.AsType[*service.DimensionMismatchError](err); ok {
+		md := (&transport.DimensionMismatchError{Expected: e.Expected, Got: e.Actual}).Metadata()
+		return transport.ReasonVectorDimensionMismatch, md, true
+	}
+	return "", nil, false
 }
 
 // vlogRefusal encodes the verifiable-log refusals a client rebuilds typed

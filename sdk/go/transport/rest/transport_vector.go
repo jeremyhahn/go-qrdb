@@ -45,6 +45,20 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	return &resp, nil
 }
 
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place via POST /vector/namespace/update, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.UpdateNamespaceResponse
+	if err := t.postJSONDecode(ctx, "UpdateNamespace", "/vector/namespace/update", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors. Maps to
 // POST /vector/namespace/delete with a JSON body.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -852,6 +853,50 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 	s.logger.Infof("Created namespace: %s", info.Name)
 
+	return nil
+}
+
+// UpdateNamespace replaces the namespace's index parameters and metadata in
+// place, durably, without touching a vector or the ID sequence.
+func (s *PebbleVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+	if !s.enter() {
+		return ErrStorageClosed
+	}
+	defer s.leave()
+
+	if namespace == "" || update == nil {
+		return ErrInvalidNamespace
+	}
+
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+
+	cached, exists := s.nsCache[namespace]
+	if !exists {
+		return ErrNamespaceNotFound
+	}
+
+	// The cached record is shared with readers holding a copy of its
+	// pointer, so the update is written to a fresh record and swapped in.
+	updated := *cached
+	updated.IndexConfig = maps.Clone(update.IndexConfig)
+	updated.Metadata = maps.Clone(update.Metadata)
+	updated.UpdatedAt = update.UpdatedAt
+
+	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(&updated))
+	if err != nil {
+		return err
+	}
+	key := schema.EncodeNamespaceMetaKey(namespace)
+	if err := s.durably(func(o *pebble.WriteOptions) error {
+		return s.db.Set(key, value, o)
+	}); err != nil {
+		s.metrics.errors.Inc()
+		return err
+	}
+
+	s.nsCache[namespace] = &updated
+	s.metrics.namespaceOps.Inc()
 	return nil
 }
 

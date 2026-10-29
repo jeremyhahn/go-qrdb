@@ -123,6 +123,7 @@ var operationPermissions = map[string]permission.Permission{
 
 	// Vector
 	"CreateNamespace":       permission.VectorNamespaceCreate,
+	"UpdateNamespace":       permission.VectorNamespaceUpdate,
 	"DeleteNamespace":       permission.VectorNamespaceDelete,
 	"ListNamespaces":        permission.VectorNamespaceList,
 	"GetNamespaceInfo":      permission.VectorNamespaceInfo,

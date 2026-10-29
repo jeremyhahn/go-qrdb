@@ -340,6 +340,57 @@ func (s *Server) handleVectorCreateNamespace(ctx context.Context, payload []byte
 	return out, nil
 }
 
+// handleVectorUpdateNamespace changes a namespace's index parameters and
+// metadata in place, keeping every vector.
+func (s *Server) handleVectorUpdateNamespace(ctx context.Context, payload []byte) ([]byte, error) {
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.VectorUpdateNamespaceRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	var indexConfig map[string]string
+	if req.GetIndexParamsJson() != "" {
+		params, err := unmarshalMetadata(req.GetIndexParamsJson())
+		if err != nil {
+			return nil, err
+		}
+		indexConfig = indexParamsToStringMap(params)
+	}
+	var metadata map[string]interface{}
+	if req.GetMetadataJson() != "" {
+		md, err := unmarshalMetadata(req.GetMetadataJson())
+		if err != nil {
+			return nil, err
+		}
+		metadata = md
+	}
+
+	resp, err := vectorSvc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace:   req.GetNamespace(),
+		Dimension:   uint32(req.GetDimension()),
+		IndexConfig: indexConfig,
+		Metadata:    metadata,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := proto.Marshal(&pb.VectorUpdateNamespaceResponse{
+		Updated:         resp.Success,
+		RequiresRebuild: resp.RequiresRebuild,
+		Timestamp:       resp.Timestamp,
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
 // handleVectorDeleteNamespace removes a namespace and all its vectors.
 func (s *Server) handleVectorDeleteNamespace(ctx context.Context, payload []byte) ([]byte, error) {
 	vectorSvc, svcErr := s.vectorSvcFor(ctx)
@@ -416,6 +467,10 @@ func (s *Server) handleVectorGetNamespaceInfo(ctx context.Context, payload []byt
 	if err != nil {
 		return nil, err
 	}
+	metadataJSON, err := marshalMetadata(info.Metadata)
+	if err != nil {
+		return nil, err
+	}
 
 	out, err := proto.Marshal(&pb.VectorNamespaceInfo{
 		Namespace:      info.Namespace,
@@ -425,6 +480,8 @@ func (s *Server) handleVectorGetNamespaceInfo(ctx context.Context, payload []byt
 		VectorCount:    int64(info.VectorCount),
 		CreatedAt:      info.CreatedAt,
 		UpdatedAt:      info.UpdatedAt,
+		IndexConfig:    info.IndexConfig,
+		MetadataJson:   metadataJSON,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

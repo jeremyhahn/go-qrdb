@@ -64,6 +64,11 @@ func vectorTools(vectorSvc service.VectorServicer) []serverTool {
 			Handler: handleVectorCreateNamespace(vectorSvc),
 		},
 		{
+			Tool:    toolVectorUpdateNamespace(),
+			Perm:    permission.VectorNamespaceUpdate,
+			Handler: handleVectorUpdateNamespace(vectorSvc),
+		},
+		{
 			Tool:    toolVectorDeleteNamespace(),
 			Perm:    permission.VectorNamespaceDelete,
 			Handler: handleVectorDeleteNamespace(vectorSvc),
@@ -261,6 +266,71 @@ func handleVectorCreateNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 		data, jsonErr := json.Marshal(resp)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_vector_create_namespace", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolVectorUpdateNamespace defines the qrdb_vector_update_namespace tool schema.
+func toolVectorUpdateNamespace() mcp.Tool {
+	return mcp.NewTool("qrdb_vector_update_namespace",
+		mcp.WithDescription("Change a vector namespace's index parameters and metadata in place through Raft consensus, keeping every vector. Reports whether the new index parameters need an index rebuild."),
+		mcp.WithString("namespace",
+			mcp.Required(),
+			mcp.Description("The name of the vector namespace to update."),
+		),
+		mcp.WithNumber("dimension",
+			mcp.Description("Optional dimensionality; when given it must equal the namespace's, since a dimension cannot change in place."),
+		),
+		mcp.WithString("index_config",
+			mcp.Description(`Optional JSON object of index parameters merged over the stored ones. Example: {"ef_search":"128"}.`),
+		),
+		mcp.WithString("metadata",
+			mcp.Description(`Optional JSON object of namespace metadata merged over the stored metadata. Example: {"owner":"search"}.`),
+		),
+	)
+}
+
+// handleVectorUpdateNamespace returns a tool handler that delegates to
+// vectorSvc.UpdateNamespace.
+func handleVectorUpdateNamespace(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		svc, rerr := resolveVector(ctx, svc)
+		if rerr != nil {
+			return nil, rerr
+		}
+		namespace := mcp.ParseString(req, "namespace", "")
+		if namespace == "" {
+			return mcp.NewToolResultError("namespace is required"), nil
+		}
+
+		var indexConfig map[string]string
+		if s := mcp.ParseString(req, "index_config", ""); s != "" {
+			if err := json.Unmarshal([]byte(s), &indexConfig); err != nil {
+				return mcp.NewToolResultError("invalid index_config JSON: " + err.Error()), nil
+			}
+		}
+		var metadata map[string]interface{}
+		if s := mcp.ParseString(req, "metadata", ""); s != "" {
+			if err := json.Unmarshal([]byte(s), &metadata); err != nil {
+				return mcp.NewToolResultError("invalid metadata JSON: " + err.Error()), nil
+			}
+		}
+
+		resp, err := svc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+			Namespace:   namespace,
+			Dimension:   mcp.ParseUInt32(req, "dimension", 0),
+			IndexConfig: indexConfig,
+			Metadata:    metadata,
+		})
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_vector_update_namespace", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(resp)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_vector_update_namespace", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil

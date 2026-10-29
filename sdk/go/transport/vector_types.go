@@ -61,6 +61,27 @@ type CreateNamespaceResponse struct {
 	Success   bool   `json:"success"`
 }
 
+// UpdateNamespaceRequest changes a namespace in place. Each key of
+// IndexConfig and Metadata is merged over the stored value; a key the request
+// does not name keeps its value. Dimension, when non-zero, must equal the
+// namespace's dimension.
+type UpdateNamespaceRequest struct {
+	Namespace   string                 `json:"namespace"`
+	Dimension   uint32                 `json:"dimension,omitempty"`
+	IndexConfig map[string]string      `json:"index_config,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// UpdateNamespaceResponse reports an in-place namespace update.
+// RequiresRebuild is set when an index parameter changed, so the index must
+// be rebuilt (RebuildIndex) before it reflects the new parameters.
+type UpdateNamespaceResponse struct {
+	Namespace       string `json:"namespace"`
+	RequiresRebuild bool   `json:"requires_rebuild"`
+	Timestamp       int64  `json:"timestamp"`
+	Success         bool   `json:"success"`
+}
+
 // DeleteNamespaceRequest contains the parameters for deleting a namespace.
 type DeleteNamespaceRequest struct {
 	Namespace string `json:"namespace"`

@@ -256,6 +256,47 @@ func (s *qrdbServiceServer) VectorCreateNamespace(ctx context.Context, req *pb.V
 	}, nil
 }
 
+// VectorUpdateNamespace changes a namespace's index parameters and metadata
+// in place, keeping every vector.
+func (s *qrdbServiceServer) VectorUpdateNamespace(ctx context.Context, req *pb.VectorUpdateNamespaceRequest) (*pb.VectorUpdateNamespaceResponse, error) {
+	vectorSvc, svcErr := s.vectorSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	var indexConfig map[string]string
+	if req.GetIndexParamsJson() != "" {
+		params, err := unmarshalMetadata(req.GetIndexParamsJson())
+		if err != nil {
+			return nil, mapServiceError(err)
+		}
+		indexConfig = indexParamsToStringMap(params)
+	}
+	var metadata map[string]interface{}
+	if req.GetMetadataJson() != "" {
+		md, err := unmarshalMetadata(req.GetMetadataJson())
+		if err != nil {
+			return nil, mapServiceError(err)
+		}
+		metadata = md
+	}
+
+	resp, err := vectorSvc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace:   req.GetNamespace(),
+		Dimension:   uint32(req.GetDimension()),
+		IndexConfig: indexConfig,
+		Metadata:    metadata,
+	})
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.VectorUpdateNamespaceResponse{
+		Updated:         resp.Success,
+		RequiresRebuild: resp.RequiresRebuild,
+		Timestamp:       resp.Timestamp,
+	}, nil
+}
+
 // VectorDeleteNamespace removes a namespace and all its vectors.
 func (s *qrdbServiceServer) VectorDeleteNamespace(ctx context.Context, req *pb.VectorDeleteNamespaceRequest) (*emptypb.Empty, error) {
 	vectorSvc, svcErr := s.vectorSvcFor(ctx)
@@ -312,6 +353,10 @@ func (s *qrdbServiceServer) VectorGetNamespaceInfo(ctx context.Context, req *pb.
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
+	metadataJSON, err := marshalMetadata(info.Metadata)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
 	return &pb.VectorNamespaceInfo{
 		Namespace:      info.Namespace,
 		Dimension:      int32(info.Dimension),
@@ -320,6 +365,8 @@ func (s *qrdbServiceServer) VectorGetNamespaceInfo(ctx context.Context, req *pb.
 		VectorCount:    int64(info.VectorCount),
 		CreatedAt:      info.CreatedAt,
 		UpdatedAt:      info.UpdatedAt,
+		IndexConfig:    info.IndexConfig,
+		MetadataJson:   metadataJSON,
 	}, nil
 }
 
