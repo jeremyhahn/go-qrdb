@@ -448,8 +448,14 @@ func assertNoRegistry(t *testing.T, stub string) {
 		t.Fatalf("the local path ran a registry verb: %s", b)
 	}
 	if p, err := os.ReadFile(filepath.Join(stub, "modauth-path")); err == nil { // #nosec G304 -- the test's own temp dir
-		if _, err := os.Stat(strings.TrimSpace(string(p))); !os.IsNotExist(err) {
-			t.Fatalf("the module-auth file %s outlived the script (stat: %v)", p, err)
+		// The script makes the file under RUNNER_TEMP, which is stub: a path
+		// outside it is a defect in itself, and is never stat'ed.
+		modauth := filepath.Clean(strings.TrimSpace(string(p)))
+		if rel, err := filepath.Rel(stub, modauth); err != nil || rel == "." || !filepath.IsLocal(rel) {
+			t.Fatalf("the module-auth file %s is not under the test's temp dir %s", modauth, stub)
+		}
+		if _, err := os.Stat(modauth); !os.IsNotExist(err) { // #nosec G703 -- contained in stub by the check above
+			t.Fatalf("the module-auth file %s outlived the script (stat: %v)", modauth, err)
 		}
 	}
 }

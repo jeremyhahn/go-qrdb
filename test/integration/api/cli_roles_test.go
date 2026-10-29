@@ -265,11 +265,12 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 			roleName := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
 			tenantID := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
 			// The kv:get role needs a creator holding kv:get, so a second
-			// account holding Admin and Operator writes it (the grant rule);
-			// it holds SO too, for the roles delete this test asserts. The
-			// tenant's delete, registered by newTenantBootstrapAdmin, removes
-			// the role with it.
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, true)
+			// account holding Admin and Operator writes it (the grant rule).
+			// It does not hold SO, the one built-in role that carries
+			// roles:delete, so the delete refused below is the Admin's own
+			// refusal. The tenant's delete, registered by
+			// newTenantBootstrapAdmin, removes the role with it.
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create a role with --tenant-id.
 			stdout, stderr, err := admin.exec(t, cfg, proto,
