@@ -105,6 +105,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.TenantsDelete, permission.TenantsList,
 	permission.TenantBarrierInit, permission.TenantBarrierUnseal,
 	permission.TenantBarrierSeal, permission.TenantBarrierStatus,
+	permission.TenantBarrierEnableEncryption,
 	permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
 	permission.TenantBarrierOfficerRevoke, permission.TenantBarrierRekey,
 	permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
@@ -131,6 +132,13 @@ var goldenAdminPermissions = []permission.Permission{
 	// pkg/permission/cluster_join_token_scope.go).
 	permission.ClusterJoinToken,
 	permission.MVCCRestore,
+	// Database lifecycle, seal and unseal included, own tenant only
+	// (go-qrdb#1278). Key custody -- rekey, initialize_shamir, officer_* --
+	// stays out.
+	permission.DatabasesCreate, permission.DatabasesRead, permission.DatabasesList,
+	permission.DatabasesUpdate, permission.DatabasesDelete,
+	permission.DatabasesCreateRaft, permission.DatabasesCreateVolume, permission.DatabasesScale,
+	permission.DatabasesBarrierStatus, permission.DatabasesSeal, permission.DatabasesUnseal,
 	permission.AuditRead, permission.AuditQuery, permission.AuditDelete,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
 	permission.TenantsReadCross, permission.TenantsDeleteCross, permission.TenantsUpdateCross,

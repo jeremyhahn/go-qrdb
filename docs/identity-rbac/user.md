@@ -129,6 +129,13 @@ qrdb roles create --name readonly --tenant-id acme \
      --permissions "kv:get,kv:list,kv:range"
 ```
 
+You can grant only what you hold yourself. The tenant Admin holds no data-plane
+or key-custody permission, so a role carrying `kv:get` or `keys:sign` is made by
+an account that holds them. An Admin's `roles create` with them is refused, as
+is assigning yourself a role carrying a permission you lack, the built-in
+`user` role included. Assigning `user` to somebody else is how their account
+gets crypto-use ([architecture.md](architecture.md#the-grant-rule)).
+
 **Let a release team activate and confirm updates on your devices.** The
 `ota:activate` and `ota:confirm` permissions belong to your tenant, so a custom
 role carrying them in `acme` reaches `acme`'s devices and no other tenant's.
@@ -195,7 +202,7 @@ the name in the first column:
 | Role | For |
 |---|---|
 | `so` (Security Officer) | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
-| `admin` | key lifecycle, tenants, backups, key escrow |
+| `admin` | key lifecycle, tenants, backups, key escrow; its own tenant's databases and tenant barrier, including database seal and unseal and turning on tenant encryption, but no database key custody |
 | `operator` | routine operations, including seal and unseal |
 | `user` | crypto operations only |
 | `auditor` | read-only everywhere |

@@ -27,6 +27,30 @@ are not reconstructed here — their history is in the git log.
   for a database another node dropped before refusing the name as a duplicate.
 
 ### Security
+- **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
+  `UpdateRole` are refused when the role would carry a permission the caller
+  does not hold in the role's tenant, and assigning a custom role is refused
+  unless the assigner holds all of it. A built-in role is assigned to another
+  account as before, so the tenant Admin still gives the built-in User role to
+  the accounts that sign, but no principal may bind to itself a role carrying a
+  permission it lacks. A tenant Admin could previously mint, widen or bind a
+  role with `keys:sign` and gain the key custody the Admin/User duty split
+  withholds from it. The refusal is `*role.GrantExceedsHolderError`, a
+  permission denial on every transport. Breaking: a tenant Admin no longer
+  creates roles carrying data-plane or key-custody permissions, and no longer
+  assigns itself its tenant's SO or User role. So that a role carrying the
+  database lifecycle can still be written in a tenant, the built-in Admin
+  gains, in its own tenant only, `databases:create`, `databases:read`,
+  `databases:list`, `databases:update`, `databases:delete`,
+  `databases:create_raft`, `databases:create_volume`, `databases:scale` and
+  `databases:barrier_status`, `databases:seal` and `databases:unseal`, and
+  beside the tenant barrier's init, seal, unseal and rekey it already held,
+  `tenant_barrier:enable_encryption`; a database's key custody
+  (`databases:rekey`, `databases:initialize_shamir`, `databases:officer_*`)
+  stays out of every built-in role. A role mixing Admin
+  and Operator permissions is written by a second account the Admin gives
+  both built-in roles. An Admin that gives User or Admin to a second account
+  it controls acts through it with that role's permissions.
 - **mcp-secret-argument-types** (#1129, #1130): an MCP secret, PIN or
   credential argument sent as anything but a JSON string (an array, object,
   number, boolean or `null`) is refused with `ToolArgumentError` naming it,

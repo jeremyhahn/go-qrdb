@@ -230,8 +230,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 
 	// The system tenant cannot provision records inside another tenant's IAM
 	// (owner ruling: ScopeSelf has no system-tenant lift), so the role and
-	// user below are created as the tenant's own onboarded admin, which
-	// self-assigns its pre-seeded SO role first (RolesCreate is SO-exclusive).
+	// user below are created by a second account the tenant's own onboarded
+	// admin seats (seatTenantProvisioner).
 	var createResp struct {
 		Admin struct {
 			CertPEM string `json:"cert_pem"`
@@ -245,7 +245,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 		t.Fatalf("X509KeyPair for the onboarded tenant admin: %v", err)
 	}
 	tenantAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-	selfAssignTenantSO(t, leaderPort, tenantID, tenantAdminClient)
+	// audit:verify_replicated is the SO's, so the provisioner holds SO too.
+	tenantAdminClient = seatTenantProvisioner(t, ca, leaderPort, tenantID, tenantAdminClient, true)
 
 	roleBody, roleStatus := iraftAPIPost(t, tenantAdminClient, fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{

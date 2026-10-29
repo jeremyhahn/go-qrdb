@@ -44,6 +44,32 @@ func (e *NotAssignableError) Error() string {
 	return "role: " + e.RoleID + " is not assignable within tenant " + e.TenantID
 }
 
+// GrantExceedsHolderError is returned when a principal creates or updates a
+// role carrying, or assigns a role granting, a permission the principal does
+// not itself hold in the target tenant (go-qrdb#1278). A grantor may grant
+// only what it holds; "holds" is the RBAC authorizer's evaluation of the
+// principal in that tenant, wildcards and scope included. Every transport
+// answers it with its permission-denied status.
+type GrantExceedsHolderError struct {
+	// Subject is the principal that attempted the grant.
+	Subject string
+	// TenantID is the tenant the grant would take effect in.
+	TenantID string
+	// Permission is the first concrete permission the principal lacks.
+	Permission string
+	// RoleID names the role being assigned; empty on a create or update.
+	RoleID string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *GrantExceedsHolderError) Error() string {
+	msg := "role: " + e.Subject + " cannot grant " + e.Permission + " in tenant " + e.TenantID
+	if e.RoleID != "" {
+		msg += " by assigning role " + e.RoleID
+	}
+	return msg + ": a grantor may grant only permissions it holds"
+}
+
 // ReferenceError is returned when a role-assignment write names a role that
 // does not exist. It wraps the lookup's own *RoleNotFoundError, so errors.As
 // still finds it, but it classifies as a bad field in the WRITE rather than as

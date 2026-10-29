@@ -250,6 +250,23 @@ qrdb roles create --name readonly --tenant-id acme \
 Permission strings are validated against the registry; an unregistered one is
 refused.
 
+**A grantor may grant only permissions it holds.** `roles create` and
+`roles update` are refused with a permission denial when the role would carry
+any permission the caller does not hold in the role's tenant, a wildcard
+counting for what it covers. The tenant Admin holds no data-plane or
+key-custody permission, so it creates roles only within its own holdings:
+`--permissions "kv:get"` or `"keys:sign"` from a tenant Admin is refused. The
+example above is run by a principal that holds `kv:get`, `kv:list` and
+`kv:range`. A tenant Admin may write a role carrying its own tenant's database
+lifecycle (`databases:create`, `databases:read`, `databases:list`,
+`databases:update`, `databases:delete`, `databases:create_raft`,
+`databases:create_volume`, `databases:scale`, `databases:barrier_status`,
+`databases:seal`, `databases:unseal`) or `tenant_barrier:enable_encryption`,
+which it holds; for a role that also carries `kv:*`, it first gives a second
+account in its tenant the built-in `admin` and `operator` roles, and that
+account runs `roles create`. See
+[architecture.md](architecture.md#the-grant-rule).
+
 ### `qrdb roles get <id>` / `get-by-name <name>` / `delete <id>`
 
 ```bash
@@ -293,6 +310,14 @@ qrdb roles unassign --user 1f2e... --role "$ROLE"
 
 **Both flags take IDs, not names.** This is the most common mistake in this
 group.
+
+Assigning a custom role is refused unless the assigner holds every permission
+the role carries. A built-in role is assigned to another account under its
+usual rules, which is how the tenant Admin gives the built-in `user` role, and
+its crypto-use duty, to the accounts that do the signing. No caller may assign
+itself a role, built-in or custom, that carries a permission it does not hold:
+`roles assign --user <your own id> --role <user>` from a tenant Admin is
+refused.
 
 ### Granting device onboarding alone
 
@@ -471,7 +496,8 @@ supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.
 
 A tenant's Admin creates and updates its tenant's custom roles (`roles create`,
-`roles update`); deleting a role stays with the Security Officer. Both verbs
+`roles update`) within its own holdings; deleting a role stays with the
+Security Officer. Both verbs
 act in the caller's own tenant only: `--tenant-id` naming another tenant, or
 `system`, is refused, and another tenant's role id is not found. A built-in
 role's name is reserved, so `roles create --name admin` is refused, and

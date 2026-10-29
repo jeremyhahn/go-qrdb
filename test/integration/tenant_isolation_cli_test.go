@@ -69,10 +69,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // cliTenantAdminCred is a tenant's first-admin certificate/key pair, stashed
@@ -181,7 +183,7 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 	var adminClient *http.Client
 	if cred, ok := lookupTenantAdminCred(tenantID); ok {
 		adminClient = mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second)
-		selfAssignTenantSO(t, node.restPort, tenantID, adminClient)
+		adminClient = seatTenantProvisioner(t, node.ca, node.restPort, tenantID, adminClient, false)
 	} else {
 		adminClient = mtlsHTTPClient(t, node.ca, 15*time.Second)
 	}
@@ -217,47 +219,78 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 // otherwise. Only that refusal is waited out; any other status fails.
 func awaitTenantAdminID(t *testing.T, restPort int, tenantID string, adminClient *http.Client) string {
 	t.Helper()
-	adminUsername := tenantID + "-admin"
-	lookupURL := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, adminUsername, tenantID)
+	return awaitTenantAccountID(t, restPort, tenantID, tenantID+"-admin", adminClient)
+}
+
+// awaitTenantAccountID looks up username in tenantID as client, polling until
+// client authenticates and is authorized, and returns the account's id.
+func awaitTenantAccountID(t *testing.T, restPort int, tenantID, username string, client *http.Client) string {
+	t.Helper()
+	lookupURL := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, username, tenantID)
 	var lookupBody []byte
 	var lookupStatus int
 	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
-		lookupBody, lookupStatus = iraftAPIGet(t, adminClient, lookupURL)
+		lookupBody, lookupStatus = iraftAPIGet(t, client, lookupURL)
 		return lookupStatus != http.StatusUnauthorized && lookupStatus != http.StatusForbidden
 	})
 	if lookupStatus != http.StatusOK {
-		t.Fatalf("awaitTenantAdminID: look up tenant admin %s: status %d, body: %s", adminUsername, lookupStatus, lookupBody)
+		t.Fatalf("awaitTenantAccountID: look up %s in tenant %s: status %d, body: %s", username, tenantID, lookupStatus, lookupBody)
 	}
-	var adminResp struct {
+	var resp struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(lookupBody, &adminResp); err != nil || adminResp.ID == "" {
-		t.Fatalf("awaitTenantAdminID: decode tenant admin id: %v body=%s", err, lookupBody)
+	if err := json.Unmarshal(lookupBody, &resp); err != nil || resp.ID == "" {
+		t.Fatalf("awaitTenantAccountID: decode id of %s: %v body=%s", username, err, lookupBody)
 	}
-	return adminResp.ID
+	return resp.ID
 }
 
-// selfAssignTenantSO grants tenantID's own, already-seeded SO role
-// (role.BuiltInRoles/pkg/bootstrap.seedTenantRoles create one for every
-// tenant) to the identity authenticating as adminClient -- which must be
-// that tenant's own admin, looked up by its well-known username. Purely
-// test setup, for a test whose admin then acts as the tenant's Security
-// Officer: roles:assign is in the Admin's grants, and self-assignment is not
-// restricted beyond it.
-func selfAssignTenantSO(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+// seatTenantProvisioner seats the account a test's tenant setup runs as, and
+// returns that account's client. The tenant's own first Admin (adminClient)
+// creates a second account in tenantID holding the built-in Admin and
+// Operator roles, bound to a fresh certificate (CN=<tenantID>-provisioner-<n>,
+// OU=tenantID; the sequence number keeps a second seat in the same tenant
+// distinct), and, when withSO, then assigns it the built-in SO role too.
+//
+// The grant rule (go-qrdb#1278) is why the setup does not run as the first
+// Admin itself: a role is written only by a principal that holds every
+// permission in it, and the Admin holds no kv:* data verbs, so the data roles
+// the tests mint need an account that also holds Operator. No principal binds
+// a role to itself past its holdings, so the Admin cannot take Operator or SO
+// for itself; assigning a built-in role to another account is the duty split
+// as designed. SO is assigned after the certificate is bound because the
+// certificate target guard refuses a key binding for an SO account.
+var provisionerSeq atomic.Uint64
+
+func seatTenantProvisioner(t *testing.T, ca *testCA, restPort int, tenantID string, adminClient *http.Client, withSO bool) *http.Client {
 	t.Helper()
-	adminUsername := tenantID + "-admin"
-	adminID := awaitTenantAdminID(t, restPort, tenantID, adminClient)
-	assignBody, assignStatus := iraftAPIPost(t, adminClient,
-		fmt.Sprintf("https://127.0.0.1:%d/roles/assign", restPort),
-		map[string]interface{}{
-			"user_id": adminID,
-			"role_id": role.SystemRoleID(tenantID, role.RoleNameSO),
+	awaitTenantAdminID(t, restPort, tenantID, adminClient)
+	username := fmt.Sprintf("%s-provisioner-%d", tenantID, provisionerSeq.Add(1))
+	kp := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(username, tenantID))
+	createBoundUser(t, adminClient, restPort, map[string]any{
+		"username":  username,
+		"email":     username + "@" + tenantID + ".example.com",
+		"tenant_id": tenantID,
+		"role_ids": []string{
+			role.SystemRoleID(tenantID, role.RoleNameAdmin),
+			role.SystemRoleID(tenantID, role.RoleNameOperator),
 		},
-	)
-	if assignStatus != http.StatusOK {
-		t.Fatalf("selfAssignTenantSO: self-assign SO to tenant admin %s: status %d, body: %s", adminUsername, assignStatus, assignBody)
+	}, kp.CertPath)
+	provisioner := mtlsHTTPClientFromFiles(t, ca, kp.CertPath, kp.KeyPath, 15*time.Second)
+	id := awaitTenantAccountID(t, restPort, tenantID, username, provisioner)
+	if withSO {
+		body, status := iraftAPIPost(t, adminClient,
+			fmt.Sprintf("https://127.0.0.1:%d/roles/assign", restPort),
+			map[string]interface{}{
+				"user_id": id,
+				"role_id": role.SystemRoleID(tenantID, role.RoleNameSO),
+			},
+		)
+		if status != http.StatusOK {
+			t.Fatalf("seatTenantProvisioner: assign SO to %s: status %d, body: %s", username, status, body)
+		}
 	}
+	return provisioner
 }
 
 // tenantCLIArgsForProto returns the root-level qrdb CLI flags that select
@@ -697,7 +730,7 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 	}
 	sealedConn := tenantCLIArgsForProto(node, proto, sealedCred.certPath, sealedCred.keyPath)
 	assertSealedIAMRefused(t, node, proto, sealedConn, "roles", "create",
-		"--name", "role-"+suffix, "--permissions", "kv:get", "--tenant-id", sealedID)
+		"--name", "role-"+suffix, "--permissions", "users:read", "--tenant-id", sealedID)
 	assertSealedIAMRefused(t, node, proto, sealedConn, "users", "create", "--without-email-login-key",
 		"--username", "user-"+suffix, "--tenant-id", sealedID)
 	assertSealedIAMRefused(t, node, proto, sealedConn, "roles", "list", "--tenant-id", sealedID)
@@ -723,9 +756,11 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 	openClient := mtlsHTTPClientFromFiles(t, node.ca, openCred.certPath, openCred.keyPath, 15*time.Second)
 	awaitTenantAdminID(t, node.restPort, openID, openClient)
 
+	// users:read, which the tenant Admin holds: under the grant rule
+	// (go-qrdb#1278) it writes no role past its own holdings.
 	openRole := "role-open-" + suffix
 	if out, err := runQRDB(t, node.cli, openConn, "roles", "create",
-		"--name", openRole, "--permissions", "kv:get", "--tenant-id", openID); err != nil {
+		"--name", openRole, "--permissions", "users:read", "--tenant-id", openID); err != nil {
 		t.Fatalf("[%s] roles create against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}
 	if out, err := runQRDB(t, node.cli, openConn, "users", "create", "--without-email-login-key",

@@ -134,6 +134,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -4434,7 +4435,6 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
 	if svcNode.Role != nil {
-		opts = append(opts, embedded.WithRoleService(svcNode.Role))
 		// Construct the qrdb RBAC authorizer the SAME way the standalone
 		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
 		// rbac.New(roleService, WithStrictSeparation(strictSoD)). Without
@@ -4466,7 +4466,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 			}
 		}
 		n.authorizer = authorizer
-		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))
+		// The embedded transport's role writes go through the same grant
+		// guard the server puts on every network transport
+		// (server.wireRoleGrantGuard), over this same final authorizer: a
+		// caller cannot create or widen a role past its own permissions.
+		// rbac.New above keeps the raw service, since it only reads roles,
+		// and server.WithRoleService gets the raw service too, because the
+		// server wraps it itself.
+		opts = append(opts,
+			embedded.WithRoleService(role.NewGrantGuard(svcNode.Role, authorizer)),
+			embedded.WithRBACAuthorizer(authorizer),
+		)
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))

@@ -1487,6 +1487,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireReclaimStoreResolver()
 	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
+	s.wireRoleGrantGuard()
 	s.wireTenantReplicaHosts()
 
 	return s
@@ -1521,6 +1522,18 @@ func (s *Server) wireProvisioningAuthorization() {
 		tenants = s.opts.tenantSvc
 	}
 	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
+}
+
+// wireRoleGrantGuard wraps the role service every transport is handed in
+// role.NewGrantGuard over the authorizer the transports authorize against, so
+// a role create or update over REST, gRPC, QUIC, Unix or MCP is refused when
+// it would grant a permission its caller does not hold (go-qrdb#1278). The
+// embedded transport does not reach this service: sdk/go/node's
+// buildEmbeddedOpts wraps the role service it hands that transport in the same
+// guard, over the same authorizer. Without authentication there is no authorizer, and the service is left as
+// it is.
+func (s *Server) wireRoleGrantGuard() {
+	s.opts.roleSvc = role.NewGrantGuard(s.opts.roleSvc, s.opts.authMW.Authorizer())
 }
 
 // wireTenantDataProbe gives the tenant service the data probe its

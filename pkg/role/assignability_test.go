@@ -28,7 +28,7 @@ func TestValidateAssignable_SameTenant(t *testing.T) {
 	svc := newTestStore(t)
 	r := createTestRole(t, svc, "acme-admin", "acme")
 
-	if err := ValidateAssignable(context.Background(), svc, r.ID, "acme"); err != nil {
+	if err := ValidateAssignable(context.Background(), svc, nil, r.ID, "acme"); err != nil {
 		t.Fatalf("ValidateAssignable(same tenant) = %v, want nil", err)
 	}
 }
@@ -40,7 +40,7 @@ func TestValidateAssignable_WrongTenant(t *testing.T) {
 	svc := newTestStore(t)
 	r := createTestRole(t, svc, "acme-admin", "acme")
 
-	err := ValidateAssignable(context.Background(), svc, r.ID, "globex")
+	err := ValidateAssignable(context.Background(), svc, nil, r.ID, "globex")
 	var na *NotAssignableError
 	if !errors.As(err, &na) {
 		t.Fatalf("ValidateAssignable(wrong tenant) = %v, want *NotAssignableError", err)
@@ -66,10 +66,10 @@ func TestValidateAssignable_SystemRoleFromSystemTenant(t *testing.T) {
 	}
 
 	var na *NotAssignableError
-	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, "acme"); !errors.As(err, &na) {
+	if err := ValidateAssignable(context.Background(), svc, nil, sysRole.ID, "acme"); !errors.As(err, &na) {
 		t.Fatalf("ValidateAssignable(system role, foreign tenant) = %v, want *NotAssignableError", err)
 	}
-	if err := ValidateAssignable(context.Background(), svc, sysRole.ID, tenantid.System); err != nil {
+	if err := ValidateAssignable(context.Background(), svc, nil, sysRole.ID, tenantid.System); err != nil {
 		t.Fatalf("ValidateAssignable(system role, system tenant) = %v, want nil", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid(t *testing.T) {
 		t.Fatalf("seeded role %+v is not marked System", acmeSysRole)
 	}
 
-	err := ValidateAssignable(context.Background(), svc, acmeSysRole.ID, "globex")
+	err := ValidateAssignable(context.Background(), svc, nil, acmeSysRole.ID, "globex")
 	var na *NotAssignableError
 	if !errors.As(err, &na) {
 		t.Fatalf("ValidateAssignable(acme's own system role, globex) = %v, want *NotAssignableError", err)
@@ -100,7 +100,7 @@ func TestValidateAssignable_TenantOwnSystemRoleNotGloballyValid(t *testing.T) {
 func TestValidateAssignable_RoleNotFound(t *testing.T) {
 	svc := newTestStore(t)
 
-	err := ValidateAssignable(context.Background(), svc, "does-not-exist", "acme")
+	err := ValidateAssignable(context.Background(), svc, nil, "does-not-exist", "acme")
 	var rnf *RoleNotFoundError
 	if !errors.As(err, &rnf) {
 		t.Fatalf("ValidateAssignable(missing role) = %v, want *RoleNotFoundError", err)
@@ -127,7 +127,7 @@ func (nilRoleServicer) GetRole(context.Context, string) (*Role, error) { return 
 // TestValidateAssignable_NilRoleIsNotFound asserts a contract-violating nil
 // role is refused as not found rather than dereferenced.
 func TestValidateAssignable_NilRoleIsNotFound(t *testing.T) {
-	err := ValidateAssignable(context.Background(), nilRoleServicer{}, "r1", "acme")
+	err := ValidateAssignable(context.Background(), nilRoleServicer{}, nil, "r1", "acme")
 	var rnf *RoleNotFoundError
 	if !errors.As(err, &rnf) || rnf.ID != "r1" {
 		t.Fatalf("ValidateAssignable(nil role) = %v, want *RoleNotFoundError for r1", err)
@@ -138,7 +138,7 @@ func TestValidateAssignable_NilRoleIsNotFound(t *testing.T) {
 // is reported as a bad reference in the write, still matching the lookup's
 // own not-found error underneath.
 func TestValidateAssignable_UnknownRoleIsAReferenceError(t *testing.T) {
-	err := ValidateAssignable(context.Background(), newTestStore(t), "no-such-role", "acme")
+	err := ValidateAssignable(context.Background(), newTestStore(t), nil, "no-such-role", "acme")
 	var ref *ReferenceError
 	if !errors.As(err, &ref) || ref.RoleID != "no-such-role" {
 		t.Fatalf("err = %v, want *ReferenceError for no-such-role", err)

@@ -929,6 +929,8 @@ var identityRules = []rule{
 	// Reserved whether or not anything holds it: malformed, not a collision.
 	as(&role.ReservedRoleNameError{}, InvalidArgument),
 	as(&role.SystemRoleImmutableError{}, PermissionDenied),
+	// A grantor may grant only permissions it holds (go-qrdb#1278).
+	as(&role.GrantExceedsHolderError{}, PermissionDenied),
 	as(&role.ValidationError{}, InvalidArgument),
 	as(&role.InvalidPermissionError{}, InvalidArgument),
 	as(&cert.CertNotFoundError{}, NotFound),

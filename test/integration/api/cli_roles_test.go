@@ -264,8 +264,10 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 			ts := testTimestamp()
 			roleName := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
 			tenantID := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
-			admin.grantSecurityOfficer(t, cfg, proto)
+			// The kv:get role needs a creator holding kv:get, so a second
+			// account holding Admin and Operator writes it (the grant rule);
+			// it holds SO too, for the roles delete this test asserts.
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, true)
 
 			var roleID string
 			t.Cleanup(func() {
@@ -331,8 +333,9 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 
 			ts := testTimestamp()
 			tenantID := fmt.Sprintf("role-page-%s-%d", proto, ts)
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
-			admin.grantSecurityOfficer(t, cfg, proto)
+			// The kv:get roles need a creator holding kv:get, so a second
+			// account holding Admin and Operator writes them (the grant rule).
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create 3 roles for pagination testing.
 			var roleIDs []string

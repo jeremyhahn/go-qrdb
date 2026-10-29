@@ -609,6 +609,56 @@ the caller's own tenant. A caller never gets an answer about another tenant's
 identity. The task-shaped version, with commands, is in
 [user.md](user.md#common-tasks).
 
+#### The grant rule
+
+A grantor may grant only permissions it holds. The rule is enforced once, in
+`pkg/role`, and every transport inherits it:
+
+- `CreateRole` and `UpdateRole` are refused when the role would carry a
+  permission the calling principal does not hold in the role's tenant
+  (`role.NewGrantGuard`, wired in the server for every network transport,
+  and by the embedded node for the embedded transport, over the same
+  authorizer).
+  Every permission counts, cluster-wide ones included, and a held wildcard
+  covers what it matches.
+- Assigning a custom role is refused unless the assigner holds every
+  permission the role carries (`role.ValidateAssignable`).
+- A built-in role is assigned to another account under its usual rules, so
+  the tenant Admin still gives the built-in `user` role, which carries the
+  crypto-use duty that Admin lacks, to the accounts that sign. No principal
+  may bind to itself a role, built-in or custom, that carries a permission it
+  does not hold (`role.ValidateSelfAssignable`).
+- The separation-of-duties checks on assignment run first, with their own
+  errors.
+- Work with no principal (bootstrap, first boot, the tenant seeder,
+  `ReconcileBuiltInRoles`) is not a grant and is not checked.
+
+A refusal is `*role.GrantExceedsHolderError`, which names the caller, the
+tenant, the first permission it lacks and, on assignment, the role. Every
+transport maps it to its permission-denied status: REST 403, gRPC
+`PermissionDenied`, and the same denial on QUIC, MCP and the Unix socket.
+
+Because a role can be written only by a principal that holds what it carries,
+some built-in role must hold each permission a tenant hands out. The tenant
+Admin holds its own tenant's database lifecycle (`databases:create`,
+`databases:read`, `databases:list`, `databases:update`, `databases:delete`,
+`databases:create_raft`, `databases:create_volume`, `databases:scale`,
+`databases:barrier_status`, `databases:seal`, `databases:unseal`) and
+`tenant_barrier:enable_encryption`, beside the tenant barrier's init, seal,
+unseal and rekey, for that reason; a database's key custody
+(`databases:rekey`, `databases:initialize_shamir`, `databases:officer_*`) is in
+none of the five built-in roles.
+To write a role mixing the Admin's and the Operator's permissions, such as one
+carrying `databases:create` and `kv:put`, the Admin gives a second account in
+its tenant the built-in `admin` and `operator` roles, and that account writes
+the role.
+
+The property that remains is designed: a tenant Admin who assigns a built-in
+role to another account it controls acts through that account with that
+role's permissions. Given User, it gets crypto-use; given Admin or Operator, it
+gets the second seat described above. The fix for that is the Admin/User duty
+split itself, not this guard.
+
 #### Granting device onboarding through a custom role
 
 To let someone onboard devices without the rest of `admin`, the tenant's admin

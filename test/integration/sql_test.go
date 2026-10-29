@@ -867,7 +867,7 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 			t.Fatalf("X509KeyPair for the onboarded admin of %s: %v", tc.tenantID, err)
 		}
 		onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-		selfAssignTenantSO(t, adminPort, tc.tenantID, onboardedAdminClient)
+		onboardedAdminClient = seatTenantProvisioner(t, ca, adminPort, tc.tenantID, onboardedAdminClient, false)
 
 		roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 			fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),

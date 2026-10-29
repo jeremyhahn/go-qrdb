@@ -17,6 +17,7 @@ package middleware
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -99,7 +100,11 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	if _, err := user.NormalizeRoleBindings(existing.ID, target, bindings); err != nil {
 		return err
 	}
-	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, bindings)
+	validate := assignValidator(role.ValidateAssignable)
+	if assignsToSelf(ctx, existing) {
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, roleIDs, bindings)
 }
 
 // AuthorizeRoleUnassignment authorizes removing a role from userID: the
@@ -154,7 +159,8 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 	if err := m.authorizeRoleAssignment(ctx, target); err != nil {
 		return err
 	}
-	return validateRoleAssignment(ctx, roleSvc, target, roleIDs, nil)
+	// The account is being created, so it is not the assigner.
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), role.ValidateAssignable, target, roleIDs, nil)
 }
 
 // authorizeRoleAssignment requires roles:assign in target, the tenant the
@@ -171,7 +177,11 @@ func (m *AuthMiddleware) authorizeRoleAssignment(ctx context.Context, target str
 // granted in target: each of roleIDs, and each binding's role, which the
 // caller has already confined to target. A reference present with
 // no roleSvc to check it against is refused with *role.ServiceRequiredError.
-func validateRoleAssignment(ctx context.Context, roleSvc role.RoleServicer, target string, roleIDs []string, bindings []user.RoleBinding) error {
+// The grant rule (go-qrdb#1278) is validate's: role.ValidateAssignable for a
+// holder other than the assigner, role.ValidateSelfAssignable when the
+// assigner binds roles to itself (assignsToSelf); a nil authz -- no RBAC --
+// skips it.
+func validateRoleAssignment(ctx context.Context, roleSvc role.RoleServicer, authz auth.Authorizer, validate assignValidator, target string, roleIDs []string, bindings []user.RoleBinding) error {
 	if len(roleIDs) == 0 && len(bindings) == 0 {
 		return nil
 	}
@@ -179,16 +189,29 @@ func validateRoleAssignment(ctx context.Context, roleSvc role.RoleServicer, targ
 		return &role.ServiceRequiredError{}
 	}
 	for _, id := range roleIDs {
-		if err := role.ValidateAssignable(ctx, roleSvc, id, target); err != nil {
+		if err := validate(ctx, roleSvc, authz, id, target); err != nil {
 			return err
 		}
 	}
 	for _, b := range bindings {
-		if err := role.ValidateAssignable(ctx, roleSvc, b.RoleID, target); err != nil {
+		if err := validate(ctx, roleSvc, authz, b.RoleID, target); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// assignValidator is role.ValidateAssignable or role.ValidateSelfAssignable.
+type assignValidator func(ctx context.Context, svc role.RoleServicer, authz auth.Authorizer, roleID, tenantID string) error
+
+// assignsToSelf reports whether the principal in ctx is the account u, in u's
+// own tenant: the identity resolved to it (auth.Identity.BindUser sets the
+// UserID of exactly the account it resolved). An identity that resolved to
+// no account is not any user record.
+func assignsToSelf(ctx context.Context, u *user.User) bool {
+	identity := auth.IdentityFromContext(ctx)
+	return identity != nil && identity.UserID != 0 && identity.UserID == u.ID &&
+		tenantid.Normalize(identity.TenantID) == tenantid.Normalize(u.TenantID)
 }
 
 // TouchesRoleAssignment reports whether an UpdateUser write names any of the
