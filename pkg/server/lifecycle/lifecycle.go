@@ -277,6 +277,12 @@ type Infra struct {
 	// admin out. An unrecognised value fails BuildServices. Empty means
 	// "enrolled".
 	MTLSBindingPolicy string
+
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it from auth.separation_of_duties
+	// and FIPS 140-3 mode. Tenant onboarding refuses, under it, a tenant SO
+	// that shares the first admin's username or key.
+	SeparationOfDuties bool
 	// PINBackend holds the node's SO and User PINs. Composers wire either
 	// an injected (hardware) backend or NewSealStorePINBackend over the
 	// node-local seal store. When nil every PIN-gated operation fails
@@ -636,6 +642,10 @@ type Node struct {
 	// are behind their own not-yet-initialized barrier (pkg/tenantadmin).
 	PendingAdmins tenantadmin.Store
 
+	// PendingSOs holds the security officers of those same tenants, named at
+	// tenant create, until their barrier is up (the __sys:pending-so record).
+	PendingSOs tenantadmin.Store
+
 	// BarrierInit is the per-node barrier init records and anchors
 	// (pkg/barrierinit) every tenant barrier init claims its owner's
 	// statement through. Nil exactly when Tenant is.
@@ -646,6 +656,9 @@ type Node struct {
 	// Both are nil exactly when CertProv is.
 	CertEnrollment   service.CertEnrollmentServicer
 	TenantOnboarding service.TenantOnboardingServicer
+	// onboarding is TenantOnboarding's concrete service, which AttachSOPINs
+	// gives the SO PIN seam once the node's SO authenticator is built.
+	onboarding *service.TenantOnboardingService
 
 	// Invitations is the invitation self-enrolment service every transport's
 	// users:invite and (unauthenticated) redemption verbs delegate to. Nil
@@ -1852,11 +1865,13 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	}
 	n.TrustAnchors = trustanchor.Observe(anchors, n.ClientTrustChanges.Notify)
 	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
+	n.PendingSOs = tenantadmin.NewSOKVStore(certStore)
 	n.CertTargets = service.NewCertTargetGuard()
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
 		service.WithEnrollmentTrustDomain(infra.ClusterTrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
-		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy))
+		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy),
+		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)))
 	onboardingDeps := service.TenantOnboardingDeps{
 		Tenants:     n.Tenant,
 		Users:       n.User,
@@ -1864,11 +1879,14 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Certs:       n.CertProv,
 		Anchors:     n.TrustAnchors,
 		Pending:     n.PendingAdmins,
+		PendingSOs:  n.PendingSOs,
 		TrustDomain: infra.ClusterTrustDomain,
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
 		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+
+		SeparationOfDuties: infra.SeparationOfDuties,
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.
@@ -1899,7 +1917,8 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 			onboardingDeps.PendingAdminSigner = signer
 		}
 	}
-	n.TenantOnboarding = service.NewTenantOnboardingService(onboardingDeps)
+	n.onboarding = service.NewTenantOnboardingService(onboardingDeps)
+	n.TenantOnboarding = n.onboarding
 
 	// Invitation self-enrolment. invitationUsers is n.User (the FINAL,
 	// tenant-routed service this function runs after) asserted to

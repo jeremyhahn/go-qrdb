@@ -681,6 +681,7 @@ func handleUserUpdate(svc user.UserServicer, factorSvc user.FactorLister, authMW
 		}
 
 		updateReq := &user.UpdateUserRequest{
+			Guard:     authMW.SORoleGuard(ctx),
 			ID:        id,
 			Username:  mcp.ParseString(req, "username", ""),
 			Email:     mcp.ParseString(req, "email", ""),

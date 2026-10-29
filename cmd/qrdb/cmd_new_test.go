@@ -579,6 +579,41 @@ func TestKVPutWithLeaseIDJSON(t *testing.T) {
 	}
 }
 
+func TestKVPutRevision(t *testing.T) {
+	mvccSvc := newMockMVCCService()
+	opts := newAllServiceOpts(mvccSvc, &mockTransactionService{}, &mockBatchService{}, newMockWatchService(), &mockLeaseService{}, &mockTimeSeriesService{})
+	root := newTestRootCmdWithOpts(mvccSvc, newMockAdminService(), opts...)
+
+	out, err := executeCommand(root, "kv", "put", "mykey", "myval", "--revision")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "Version:        1") || !strings.Contains(out, "LeaseID:        0") {
+		t.Fatalf("expected the written key's version with no lease, got: %q", out)
+	}
+	if string(mvccSvc.store["mykey"]) != "myval" {
+		t.Fatalf("expected stored value 'myval', got: %q", mvccSvc.store["mykey"])
+	}
+}
+
+func TestKVPutRevisionJSON(t *testing.T) {
+	mvccSvc := newMockMVCCService()
+	opts := newAllServiceOpts(mvccSvc, &mockTransactionService{}, &mockBatchService{}, newMockWatchService(), &mockLeaseService{}, &mockTimeSeriesService{})
+	root := newTestRootCmdWithOpts(mvccSvc, newMockAdminService(), opts...)
+
+	out, err := executeCommand(root, "--output", "json", "kv", "put", "mykey", "myval", "--revision", "--lease-id", "42")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v: %q", err, out)
+	}
+	if got["version"] != float64(1) || got["lease_id"] != float64(42) {
+		t.Fatalf("expected version 1 and lease 42, got: %v", got)
+	}
+}
+
 func TestKVGetRevision(t *testing.T) {
 	mvccSvc := newMockMVCCService()
 	mvccSvc.store["rev-key"] = []byte("rev-value")

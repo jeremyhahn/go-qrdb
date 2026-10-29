@@ -1470,7 +1470,7 @@ integration-test:
 		echo "==> integration-test IT_FEATURE=$(IT_FEATURE): mapped files contain no Test function"; \
 		exit 0; \
 	fi; \
-	$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?; \
+	$(it-image-step); \
 	echo "==> Running integration tests in $(IT_IMAGE) (project $(IT_PROJECT))..."; \
 	status=0; \
 	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
@@ -1854,12 +1854,23 @@ perf-docs: _kvcompare-build
 # Coverage
 # ============================================================================
 
-# check-coverage: extract percentage from coverage profile and fail if below threshold
+# check-coverage: extract the total from a coverage profile and fail if it is
+# below COVER_MIN, or if there is no total to compare: a missing, empty or
+# unreadable profile fails rather than passing.
 # Usage: $(call check-coverage,profile.out,package-name)
+#
+# awk does the comparison because it is in the CI image (gawk) and in every
+# POSIX shell environment; bc is not in the image, and an absent bc made this
+# check pass at any figure, 0% included (found by lane sdkfix2).
+# test/buildgates/check_coverage_test.go drives this macro through make.
 define check-coverage
-	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
+	@COVERAGE=$$($(GO) tool cover -func=$(1) | awk '$$1 == "total:" { sub(/%$$/, "", $$NF); print $$NF }'); \
+	if ! awk -v c="$${COVERAGE}" 'BEGIN { exit !(c ~ /^[0-9]+(\.[0-9]+)?$$/) }'; then \
+		echo "FAIL: $(2) coverage profile $(1) has no total to compare"; \
+		exit 1; \
+	fi; \
 	echo "$(2) coverage: $${COVERAGE}%"; \
-	if [ $$(echo "$${COVERAGE} < $(COVER_MIN)" | bc -l) -eq 1 ]; then \
+	if awk -v c="$${COVERAGE}" -v m="$(COVER_MIN)" 'BEGIN { exit !(c + 0 < m + 0) }'; then \
 		echo "FAIL: $(2) coverage $${COVERAGE}% is below minimum $(COVER_MIN)%"; \
 		exit 1; \
 	fi
@@ -4011,6 +4022,18 @@ IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
 IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
 IT_HOLD    ?=
 
+# CUSTOMIZE (go-qrdb): CI pulls the integration image from the Gitea registry
+# by digest, once per job, and never builds it (DS-3516). it-require-pulled is
+# the integration-test step for such a reference: the image must already be on
+# the daemon, pulled by scripts/ci-registry.sh, or the run fails rather than
+# rebuild something other than what docker-build pushed. A tag reference, the
+# developer-host default, still builds through docker-build-it.
+it-require-pulled = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a digest reference is pulled (scripts/ci-registry.sh pull), never built" >&2; exit 1; }
+# it-image-step is integration-test's image step. It sits in a variable, not in
+# the recipe text, so `make -n` prints the digest path instead of running it:
+# make runs any recipe line that names $(MAKE) directly, even under -n.
+it-image-step = $(if $(findstring @sha256:,$(IT_IMAGE)),$(it-require-pulled),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
+
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
 # The module credentials are the same $(stage-gomodauth) secret every other
@@ -4048,6 +4071,8 @@ docker-build-toolchain:
 # fails, and the loop builds it once more and holds that.
 docker-build-it:
 	$(REQUIRE_BUILDX)
+	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
+	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): pull a digest reference with scripts/ci-registry.sh" >&2; exit 1 ;; esac
 	@for attempt in 1 2; do \
 		if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 			echo "==> $(IT_IMAGE) is already built on this daemon"; \

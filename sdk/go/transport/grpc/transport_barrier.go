@@ -322,6 +322,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.BarrierShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("ShareClaimBegin", err)
@@ -333,6 +336,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	resp, err := t.client.BarrierShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,
@@ -350,6 +356,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.BarrierRecoveryShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("RecoveryShareClaimBegin", err)
@@ -361,6 +370,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	resp, err := t.client.BarrierRecoveryShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,

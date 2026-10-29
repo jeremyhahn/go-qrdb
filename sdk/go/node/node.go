@@ -80,7 +80,6 @@ package node
 
 import (
 	"context"
-	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -1146,6 +1145,14 @@ type Node struct {
 	// presented admin certificate exactly as a login will.
 	spiffeTrustDomain atomic.Pointer[string]
 
+	// strictSeparation is the separation-of-duties posture the node resolved
+	// with wiring.ResolveStrictSeparation when it wired its authorizer,
+	// reported by StrictSeparation.
+	strictSeparation atomic.Bool
+	// separationConfigured is the Auth.SeparationOfDuties setting that
+	// posture was resolved from; first boot records the posture from it.
+	separationConfigured atomic.Bool
+
 	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
 	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
 	// can re-decide it AFTER first boot runs (reconcileAwaitingAdminCredential):
@@ -1570,6 +1577,13 @@ func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistr
 // indirectly through WithAuthorizerWrapper (go-qrdb#587).
 func (n *Node) AuthMiddleware() *middleware.AuthMiddleware { return n.authMiddleware.Load() }
 
+// StrictSeparation reports the separation-of-duties posture the node resolved
+// at start: true under strict separation, which FIPS 140-3 mode forces on,
+// otherwise the auth.separation_of_duties setting (sdk.ResolveStrictSeparation).
+// It reports false until the node has wired its authorizer, which a sealed node
+// does once Unseal completes the boot, and false again after Close.
+func (n *Node) StrictSeparation() bool { return n.strictSeparation.Load() }
+
 // Authorizer returns the node's composed RBAC[+ABAC] auth.Authorizer -- the
 // SAME instance AuthMiddleware() authorizes every transport's requests
 // against -- or nil while auth is disabled or before boot completes.
@@ -1786,7 +1800,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -2400,7 +2415,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		NoClusterCAKey: n.byoTLS(),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -2855,6 +2871,9 @@ func (n *Node) Close() error {
 		_ = sock.Close()
 	}
 	n.retractDataPlaneServices()
+	// The posture describes the authorizer just retracted; a closed node has
+	// none, so it reports false as it did before the authorizer was wired.
+	n.strictSeparation.Store(false)
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
 		record(svcNode.Stop(context.Background()))
 	}
@@ -3130,7 +3149,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		SealEnabled:     cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3374,7 +3394,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3866,7 +3887,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// regardless of config, so embedded and standalone authorize
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
-	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
+	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
+	n.strictSeparation.Store(strictSoD)
+	n.separationConfigured.Store(cfg.Auth.SeparationOfDuties)
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
@@ -4785,6 +4808,11 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	if svcNode.TenantOnboarding != nil {
 		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
+	}
+	// The SO PIN store the SO gate verifies against is the one tenant create
+	// commits a tenant SO's PIN to, as cmd/qrdbd wires it.
+	if pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator; pins != nil {
+		svcNode.AttachSOPINs(pins)
 	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))

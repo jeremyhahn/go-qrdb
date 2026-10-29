@@ -4791,16 +4791,34 @@ message TenantCreateRequest {
     string admin_chain_pem = 10;
     // trust_anchors_pem registers the tenant's trust anchors with it.
     string trust_anchors_pem = 11;
+    // so_username is the tenant's security officer, optional: a second
+    // principal, distinct from the admin by name and by key, holding the
+    // tenant's so role alone. so_username, exactly one of so_csr_pem and
+    // so_cert_pem, and so_pin are given together or not at all.
+    string so_username = 12;
+    // so_csr_pem is the SO's CSR, signed as admin_csr_pem is.
+    string so_csr_pem = 13;
+    // so_cert_pem is the SO's own certificate, leaf first; it must chain to
+    // one of trust_anchors_pem.
+    string so_cert_pem = 14;
+    // so_chain_pem holds intermediates for so_cert_pem.
+    string so_chain_pem = 15;
+    // so_pin is the SO's second factor (auth.so_dual_factor), the PIN the
+    // SO gate asks the SO for.
+    string so_pin = 16;
 }
 
 // TenantCreateResponse is the created tenant and its first admin's
-// credential. There is never a private key.
+// credential, and its SO's when the request named one. There is never a
+// private key.
 message TenantCreateResponse {
     TenantResponse tenant = 1;
     TenantAdminCredential admin = 2;
+    TenantAdminCredential so = 3;
 }
 
-// TenantAdminCredential is a tenant's first admin as onboarding left it.
+// TenantAdminCredential is a tenant's first admin, or its SO, as onboarding
+// left it.
 message TenantAdminCredential {
     // user_id is 0 while awaits_barrier_init.
     uint64 user_id = 1;

@@ -184,6 +184,25 @@ func TestTenantProvisioning_UpdateTenantEntitlementsIsPlatformOperatorOnly(t *te
 	}
 }
 
+func TestTenantProvisioning_UpdateTenantEntitlementsRefusesNilRequest(t *testing.T) {
+	reached := false
+	svc := &mockTenantService{updateEntFn: func(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
+		reached = true
+		return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
+	}}
+	tr := newExtTransport(t, WithTenantService(svc), WithAuthMiddleware(newProvisioningMiddleware(t)))
+
+	_, err := tr.UpdateTenantEntitlements(systemAdminCtx(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "UpdateTenantEntitlements" || !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if reached {
+		t.Fatal("a nil request reached the tenant service")
+	}
+}
+
 func TestTenantProvisioning_UpdateTenantIsolationChangeIsPlatformOperatorOnly(t *testing.T) {
 	reached := false
 	svc := &mockTenantService{updateFn: func(ctx context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error) {

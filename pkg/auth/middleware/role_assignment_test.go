@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -624,7 +625,177 @@ func TestAuthorizeRoleUnassignment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.check(t, tt.mw.AuthorizeRoleUnassignment(tt.ctx, tt.users, 1))
+			tt.check(t, tt.mw.AuthorizeRoleUnassignment(tt.ctx, tt.users, 1, "r1"))
+		})
+	}
+}
+
+// soRoleFixture is the acme tenant's built-in roles with every caller holding
+// roles:assign and roles:unassign, so each SO-role test below reaches the SO
+// gate; whether it passes is the only question left. admin, so and userRole
+// are acme's built-in role IDs and sysSO the system tenant's SO role.
+type soRoleFixture struct {
+	mw                         *AuthMiddleware
+	roles                      role.RoleServicer
+	admin, so, userRole, sysSO string
+}
+
+func newSORoleFixture(t *testing.T) soRoleFixture {
+	t.Helper()
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	return soRoleFixture{
+		mw:       newTestMiddleware(rbac.New(&grantingRoleServicer{perms: []permission.Permission{permission.RolesAssign, permission.RolesUnassign}}), WithRoleResolver(roles), WithStrictSeparation(true)),
+		roles:    roles,
+		admin:    role.SystemRoleID("acme", role.RoleNameAdmin),
+		so:       role.SystemRoleID("acme", role.RoleNameSO),
+		userRole: role.SystemRoleID("acme", role.RoleNameUser),
+		sysSO:    role.SystemRoleID(tenantid.System, role.RoleNameSO),
+	}
+}
+
+// caller is an acme identity holding roleIDs, bound to its tenant as the
+// transport's authentication step binds it.
+func (f soRoleFixture) caller(roleIDs ...string) context.Context {
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-caller", TenantID: "acme", Roles: roleIDs})
+	return tenant.WithTenantID(ctx, "acme")
+}
+
+// TestAuthorizeSORoleChange decides the SO gate itself: a change in whether
+// the account holds acme's SO role passes only for acme's own SO, a write
+// leaving that membership as it was is not the gate's, and a role store that
+// cannot answer refuses rather than admits.
+func TestAuthorizeSORoleChange(t *testing.T) {
+	f := newSORoleFixture(t)
+	sysSO := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "system-so", TenantID: tenantid.System, Roles: []string{f.sysSO}})
+	unresolvable := newTestMiddleware(rbac.New(&grantingRoleServicer{}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}), WithStrictSeparation(true))
+	standard := newTestMiddleware(rbac.New(&grantingRoleServicer{perms: []permission.Permission{permission.RolesAssign, permission.RolesUnassign}}), WithRoleResolver(failingRoles{err: &role.StoreError{Op: "get", Err: context.DeadlineExceeded}}))
+	tests := []struct {
+		name          string
+		mw            *AuthMiddleware
+		ctx           context.Context
+		before, after []string
+		check         func(t *testing.T, err error)
+	}{
+		{name: "admin grants SO", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "admin revokes SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "admin changes other roles of an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.userRole, f.so}, check: wantNoError},
+		{name: "admin grants a non-SO role", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.userRole}, check: wantNoError},
+		{name: "tenant SO grants SO", mw: f.mw, ctx: f.caller(f.admin, f.so), after: []string{f.so}, check: wantNoError},
+		{name: "tenant SO revokes SO", mw: f.mw, ctx: f.caller(f.so), before: []string{f.so}, check: wantNoError},
+		{name: "system SO grants the tenant's SO", mw: f.mw, ctx: sysSO, after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "another tenant's SO role is not this tenant's", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.sysSO}, check: wantNoError},
+		{name: "no identity", mw: f.mw, ctx: context.Background(), after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "unresolvable SO role", mw: unresolvable, ctx: f.caller(f.so), after: []string{f.so}, check: wantErrorAs[*SORoleUnresolvedError]},
+		{name: "unchanged set needs no resolution", mw: unresolvable, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so}, check: wantNoError},
+		{name: "no RBAC", ctx: context.Background(), after: []string{f.so}, check: wantNoError},
+		{name: "standard: admin grants SO", mw: standard, ctx: f.caller(f.admin), after: []string{f.so}, check: wantNoError},
+		{name: "standard: admin revokes SO", mw: standard, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantNoError},
+		{name: "standard: system SO grants the tenant's SO", mw: standard, ctx: sysSO, after: []string{f.so}, check: wantNoError},
+		{name: "standard: no SO role resolution", mw: standard, ctx: context.Background(), after: []string{f.so}, check: wantNoError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.mw.authorizeSORoleChange(tt.ctx, "acme", tt.before, tt.after))
+		})
+	}
+}
+
+// TestSORoleGate_EveryRoleWrite drives the SO gate through each exported
+// role-assignment gate, with the role sets each one derives from the record
+// and the request: AssignRole appends, UnassignRole removes from RoleIDs
+// alone, UpdateUser replaces RoleIDs and RoleBindings independently, and
+// CreateUser starts from nothing.
+func TestSORoleGate_EveryRoleWrite(t *testing.T) {
+	f := newSORoleFixture(t)
+	admin, so := f.caller(f.admin), f.caller(f.admin, f.so)
+	acmeUser := func(roleIDs []string, bindings ...user.RoleBinding) *userTenantFixture {
+		return &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme", RoleIDs: roleIDs, RoleBindings: bindings}}
+	}
+	soBinding := user.RoleBinding{RoleID: f.so, TenantID: "acme"}
+	tests := []struct {
+		name  string
+		call  func() error
+		check func(t *testing.T, err error)
+	}{
+		{"assign SO as admin", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(nil), f.roles, 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		{"assign SO as SO", func() error { return f.mw.AuthorizeRoleAssignment(so, acmeUser(nil), f.roles, 7, f.so) }, wantNoError},
+		{"assign SO it already holds as admin", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser([]string{f.so}), f.roles, 7, f.so) }, wantNoError},
+		{"assign another role to an SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignment(admin, acmeUser([]string{f.so}), f.roles, 7, f.userRole)
+		}, wantNoError},
+		{"unassign SO as admin", func() error { return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so}), 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		{"unassign SO as SO", func() error { return f.mw.AuthorizeRoleUnassignment(so, acmeUser([]string{f.so}), 7, f.so) }, wantNoError},
+		{"unassign SO a binding still grants as admin", func() error {
+			return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so}, soBinding), 7, f.so)
+		}, wantNoError},
+		{"unassign another role from an SO as admin", func() error {
+			return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so, f.userRole}), 7, f.userRole)
+		}, wantNoError},
+		{"update role_ids granting SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil), f.roles, 7, []string{f.so}, nil)
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"update role_ids dropping SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser([]string{f.so}), f.roles, 7, []string{}, nil)
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"update role_bindings granting SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil), f.roles, 7, nil, []user.RoleBinding{soBinding})
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"update role_bindings dropping SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil, soBinding), f.roles, 7, nil, []user.RoleBinding{})
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"update role_ids keeping a bound SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil, soBinding), f.roles, 7, []string{f.userRole}, nil)
+		}, wantNoError},
+		{"update role_ids granting SO as SO", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(so, acmeUser(nil), f.roles, 7, []string{f.so}, nil)
+		}, wantNoError},
+		{"update attributes of an SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser([]string{f.so}), f.roles, 7, nil, nil)
+		}, wantNoError},
+		{"create with SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWriteOnCreate(admin, f.roles, "acme", []string{f.userRole, f.so})
+		}, wantErrorAs[*SORoleRequiredError]},
+		{"create with SO as SO", func() error { return f.mw.AuthorizeRoleAssignmentWriteOnCreate(so, f.roles, "acme", []string{f.so}) }, wantNoError},
+		{"create without SO as admin", func() error {
+			return f.mw.AuthorizeRoleAssignmentWriteOnCreate(admin, f.roles, "acme", []string{f.userRole})
+		}, wantNoError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.call())
+		})
+	}
+}
+
+// TestAuthorizeRoleAssignment covers AssignRole's gate apart from the SO
+// rule: the record decides the tenant, a missing or unreadable record
+// refuses, roles:assign is required, and the role is validated with or
+// without RBAC.
+func TestAuthorizeRoleAssignment(t *testing.T) {
+	f := newSORoleFixture(t)
+	acmeUser := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme"}}
+	tests := []struct {
+		name  string
+		mw    *AuthMiddleware
+		ctx   context.Context
+		users user.UserServicer
+		roles role.RoleServicer
+		check func(t *testing.T, err error)
+	}{
+		{name: "admitted", mw: f.mw, ctx: f.caller(f.admin), users: acmeUser, roles: f.roles, check: wantNoError},
+		{name: "no roles:assign", mw: mwWithPerms(), ctx: f.caller(f.admin), users: acmeUser, roles: f.roles, check: func(t *testing.T, err error) {
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("err = %v, want an authorization denial", err)
+			}
+		}},
+		{name: "user lookup fails", mw: f.mw, ctx: f.caller(f.admin), users: &userTenantFixture{err: &user.UserNotFoundError{ID: 7}}, roles: f.roles, check: wantErrorAs[*user.UserNotFoundError]},
+		{name: "nil record", mw: f.mw, ctx: f.caller(f.admin), users: &userTenantFixture{}, roles: f.roles, check: wantErrorAs[*user.UserNotFoundError]},
+		{name: "no RBAC still validates", ctx: context.Background(), users: acmeUser, check: wantErrorAs[*role.ServiceRequiredError]},
+		{name: "unknown role", mw: f.mw, ctx: f.caller(f.admin), users: acmeUser, roles: &roleAssignmentFixture{roles: map[string]*role.Role{}}, check: wantErrorAs[*role.RoleNotFoundError]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, tt.mw.AuthorizeRoleAssignment(tt.ctx, tt.users, tt.roles, 7, f.userRole))
 		})
 	}
 }

@@ -51,3 +51,22 @@ func TestSealed_RefusesEverythingElse(t *testing.T) {
 		}
 	}
 }
+
+func TestSealed_LooksPastDetailsOfOtherTypes(t *testing.T) {
+	retry := &errdetails.RetryInfo{}
+	sealed := &errdetails.ErrorInfo{Domain: sealedwindow.ErrorDomain, Reason: sealedwindow.ReasonSealed}
+	st, err := status.New(codes.Unavailable, sealedwindow.SealedMessage).WithDetails(retry, sealed)
+	if err != nil {
+		t.Fatalf("attach details: %v", err)
+	}
+	if !Sealed(st) {
+		t.Error("a sealed ErrorInfo after a RetryInfo was not recognised")
+	}
+	onlyRetry, err := status.New(codes.Unavailable, sealedwindow.SealedMessage).WithDetails(retry)
+	if err != nil {
+		t.Fatalf("attach details: %v", err)
+	}
+	if Sealed(onlyRetry) {
+		t.Error("a RetryInfo alone was recognised as sealed")
+	}
+}

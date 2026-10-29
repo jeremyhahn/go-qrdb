@@ -66,9 +66,10 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	userID := parseIDResponse(t, proto, "users create", run("users create",
 		"--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username, "--tenant-id", tenantID))
+	// roles:delete is the Security Officer's alone; the tenant's delete,
+	// registered by newTenantBootstrapAdmin, removes the role with it.
 	t.Cleanup(func() {
 		boot.exec(t, cfg, proto, "users", "delete", userID) //nolint:errcheck
-		boot.exec(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
 	})
 	run("roles assign", "roles", "assign", "--user", userID, "--role", roleID)
 

@@ -816,6 +816,55 @@ is written. The role check runs whether or not RBAC is enabled; only the
 `roles:assign` check depends on it. See
 [engineering.md](engineering.md#authorization-model) for the full mechanism.
 
+Under strict separation of duties (`auth.separation_of_duties`, forced on in
+FIPS 140-3 mode), a write that changes whether a user holds the tenant's
+Security Officer role (`so`) — `AssignRole` or `UnassignRole` of it, or a
+`CreateUser`/`UpdateUser` whose `roleIDs` or `roleBindings` add or drop it —
+additionally requires the caller to be a Security Officer **of that same tenant**, judged by the
+caller's own roles together with its role bindings scoped to that tenant: a
+caller bound to the tenant's `so` role may grant and revoke it, and a binding
+scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
+alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
+before anything is written, and so is the `system` tenant's Security Officer
+or another tenant's. A write that leaves the user's Security Officer standing
+as it was is not affected. Outside strict separation of duties the `so` role
+is granted and revoked like any other, by a caller holding
+`roles:assign`/`roles:unassign`, the tenant Admin included. A tenant's first
+Security Officer is enrolled by
+tenant create's optional `so_*` fields
+([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
+
+An embedder reads the posture its node resolved with
+`node.Node.StrictSeparation()` (`true` under strict separation). The
+resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
+FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
+posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
+(`strict` or `standard`). When a start or first boot resolves a posture that
+differs from the record, or no posture is recorded, the record is written
+first. The node whose conditional write wins then emits one audit event,
+which `audit query --action posture-change` returns:
+
+| Field | Value |
+|---|---|
+| `actor` | `system` |
+| `resource` | `auth/separation_of_duties` |
+| `action` | `posture-change` |
+| `outcome` | `success` |
+| `attributes.previous` | `none`, `strict` or `standard` |
+| `attributes.posture` | `strict` or `standard` |
+| `attributes.fips_forced` | `true` when FIPS 140-3 mode forced strict separation |
+
+A record that cannot be read or written refuses the daemon's start, and fails
+`Node.FirstBoot` / `Node.FirstBootWithCeremony`, with
+`*wiring.SeparationPostureError`.
+
+Under strict separation, the user store judges the rule again against the record version the write
+commits over, not the one the request was first checked against. An Admin's
+write that would remove a Security Officer grant committed after its first
+check is refused with `SORoleRequiredError`; a grant that commits after that
+judgement fails the Admin's write with `ConcurrentUpdateError`. Either way the
+grant stands.
+
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
 `transport.CreateUserRequest`/`UpdateUserRequest` — declares a `factors`
@@ -856,6 +905,8 @@ of its own, and the listing never contains one.
 | A request authenticated with a holder (officer or custodian) certificate or a tenant-issued delegation must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`UnsignedForwardRefusedError`) | 502 | — (REST leader forwarding only) |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the tenant's `so` role by a caller that is not that tenant's own Security Officer (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the `so` role when the tenant's `so` role cannot be looked up (`SORoleUnresolvedError`) | 503 | `UNAVAILABLE` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |

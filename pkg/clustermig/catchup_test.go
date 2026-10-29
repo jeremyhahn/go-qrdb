@@ -318,6 +318,68 @@ func TestCoordinator_Advance_LogsEachHandOn(t *testing.T) {
 	}
 }
 
+// loggingCatchUpCoordinator is catchUpCoordinator logging its hand-ons to
+// logs, so a test can tell which coordinator handed a turn on.
+func loggingCatchUpCoordinator(s *Store, p ReplicationProgress, logs *bytes.Buffer) *Coordinator {
+	return NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}},
+		func() bool { return true }, nil, WithRollingSteps(rollingOn, "n1"), WithCatchUp(p),
+		WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
+}
+
+// TestCoordinator_Advance_ASteppedDownCoordinatorLeavesTheHandOn is the
+// restarted coordinator that loses its leadership while a turn is held: it
+// recorded the target, but once it no longer leads the shard it neither
+// writes nor logs the hand-on, and the node elected in its place hands the
+// turn on at that target and logs it.
+func TestCoordinator_Advance_ASteppedDownCoordinatorLeavesTheHandOn(t *testing.T) {
+	s := NewStore(newMemKV())
+	var formerLogs, nextLogs bytes.Buffer
+	former := newFakeProgress(40)
+	restarted := loggingCatchUpCoordinator(s, former, &formerLogs)
+	requestRolling(t, restarted)
+	ack(t, s, "n2", 1, seal.PhaseComplete)
+	advance(t, restarted, true, "restarted coordinator records the target")
+
+	former.follower = true
+	former.set("n2", 40)
+	advance(t, restarted, false, "stepped-down coordinator, owner caught up")
+	requireSteps(t, s, catchUpStep("n2", StepRecycling, 40), step("n3", StepPending), step("n1", StepPending))
+
+	next := newFakeProgress(55)
+	next.set("n2", 40)
+	advance(t, loggingCatchUpCoordinator(s, next, &nextLogs), true, "the new leader hands on at the recorded target")
+	requireSteps(t, s, catchUpStep("n2", StepServing, 40), step("n3", StepRecycling), step("n1", StepPending))
+	if formerLogs.Len() != 0 {
+		t.Fatalf("the stepped-down coordinator logged %s", formerLogs.String())
+	}
+	if !strings.Contains(nextLogs.String(), `"msg":"cluster-migration step handed on"`) || !strings.Contains(nextLogs.String(), `"node":"n2"`) {
+		t.Fatalf("the new leader's log = %q, want n2's hand-on", nextLogs.String())
+	}
+}
+
+// TestCoordinator_Advance_ACoordinatorLeadingAgainHandsOn is the other
+// branch: the restarted coordinator that steps down and is elected again
+// before the owner catches up hands the turn on itself, from the record.
+func TestCoordinator_Advance_ACoordinatorLeadingAgainHandsOn(t *testing.T) {
+	s := NewStore(newMemKV())
+	var logs bytes.Buffer
+	p := newFakeProgress(40)
+	c := loggingCatchUpCoordinator(s, p, &logs)
+	requestRolling(t, c)
+	ack(t, s, "n2", 1, seal.PhaseComplete)
+	advance(t, c, true, "target recorded")
+
+	p.follower = true
+	advance(t, c, false, "stepped down")
+	p.follower = false
+	p.set("n2", 40)
+	advance(t, c, true, "leading again, owner caught up")
+	requireSteps(t, s, catchUpStep("n2", StepServing, 40), step("n3", StepRecycling), step("n1", StepPending))
+	if !strings.Contains(logs.String(), `"node":"n2"`) {
+		t.Fatalf("log = %q, want n2's hand-on", logs.String())
+	}
+}
+
 // interleavedKV runs between, once, right after the first read of the
 // migration record: another leader's write landing between a former leader's
 // read and its write.

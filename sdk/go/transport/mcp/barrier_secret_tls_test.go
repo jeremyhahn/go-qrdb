@@ -119,6 +119,54 @@ func TestBarrierSecret_ForeignHostRedirectIsRefused(t *testing.T) {
 	}
 }
 
+// TestCreateTenantSOPIN_RedirectIsRefused: a redirected qrdb_tenant_create
+// call does not resend a tenant's SO PIN to another host or to an http:// URL.
+func TestCreateTenantSOPIN_RedirectIsRefused(t *testing.T) {
+	createWithPIN := func(tr *Transport) error {
+		_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
+			ID: "acme", Name: "acme", AdminUsername: "admin", AdminCSRPEM: "csr",
+			SOUsername: "so", SOCSRPEM: "csr", SOPin: soTLSTestPIN,
+		})
+		return err
+	}
+	targets := []struct {
+		name  string
+		start func(http.Handler) *httptest.Server
+		want  func(error) bool
+	}{
+		{"another host", httptest.NewTLSServer, func(err error) bool {
+			var hostErr *transport.SOPINForeignHostError
+			return errors.As(err, &hostErr) && hostErr.Transport == "mcp"
+		}},
+		{"http", httptest.NewServer, func(err error) bool {
+			var tlsErr *transport.SOPINRequiresTLSError
+			return errors.As(err, &tlsErr) && tlsErr.Transport == "mcp"
+		}},
+	}
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		for _, target := range targets {
+			t.Run(http.StatusText(status)+" to "+target.name, func(t *testing.T) {
+				var reached atomic.Int64
+				dest := target.start(toolCallCounter(&reached))
+				t.Cleanup(dest.Close)
+				session := mcpserver.NewStreamableHTTPServer(mcpserver.NewMCPServer("redirect-probe", "1"))
+				origin := httptest.NewTLSServer(redirectToolCalls(session, status, func(r *http.Request) string {
+					return dest.URL + r.URL.Path
+				}))
+				t.Cleanup(origin.Close)
+				// One trust store for both: httptest servers share a certificate.
+				err := createWithPIN(connectMCP(t, origin.URL+"/mcp", trustingMCP(origin)))
+				if !target.want(err) {
+					t.Fatalf("err = %v, want the redirect refused", err)
+				}
+				if n := reached.Load(); n != 0 {
+					t.Fatalf("the SO PIN followed a redirect to %s (%d tool calls)", target.name, n)
+				}
+			})
+		}
+	}
+}
+
 // TestBarrierSecret_SameHostRedirectIsFollowed: a 307 or 308 of a barrier
 // secret's tool call to another path on the same host is followed, and the
 // secret arrives there.

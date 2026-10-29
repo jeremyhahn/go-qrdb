@@ -173,6 +173,22 @@ type Dependencies struct {
 	// a tenant.
 	PendingAdmins tenantadmin.Store
 
+	// PendingSOs records a tenant SO (TenantProvisionConfig.SO) beside the
+	// pending admin, under its own key (tenantadmin.NewSOKVStore), and
+	// CompletePendingTenantAdmin creates its account with the admin's.
+	// Required by ProvisionTenant for an SO of such a tenant.
+	PendingSOs tenantadmin.Store
+
+	// SOPINs commits a tenant SO's PIN. Required by ProvisionTenant when the
+	// request has an SO.
+	SOPINs SOPINSetter
+
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it. Under it a tenant SO must
+	// differ from the first admin by username and by key; outside it the SO
+	// may be the admin, named by the admin's username and key together.
+	SeparationOfDuties bool
+
 	// BarrierAnchors pins a pending first admin's SPKI thumbprint as its
 	// tenant barrier's epoch-1 anchor, the signer every node verifies that
 	// barrier's init statement against (docs/barrier-seal/architecture.md
@@ -509,6 +525,12 @@ type TenantProvisionConfig struct {
 	// defaults to AdminEnrollCert (existing behavior); any other value than
 	// the declared modes is an InvalidAdminEnrollmentModeError.
 	AdminEnrollment AdminEnrollmentMode
+
+	// SO is the tenant's optional security officer, enrolled with the
+	// tenant's so role alone through the same seams as the admin, and
+	// refused when it is the admin by username or by key. Nil enrolls none.
+	// It needs AdminEnrollCert.
+	SO *TenantSOConfig
 }
 
 // TenantProvisionResult reports what ProvisionTenant created.
@@ -568,6 +590,21 @@ type TenantProvisionResult struct {
 	// resolves only a truly pending admin (disabled, no credential bound)
 	// and fails closed on any other preexisting state.
 	AdminPending bool
+
+	// SOUserID, SOUsername, SOCertPEM, SOCertSerial and SOCertThumbprint
+	// report the tenant SO (TenantProvisionConfig.SO) as the Admin* fields
+	// report the admin. All are empty when the request had no SO.
+	SOUserID         uint64
+	SOUsername       string
+	SOCertPEM        []byte
+	SOCertSerial     string
+	SOCertThumbprint string
+
+	// SOAwaitsBarrierInit reports that the SO's account is pending behind
+	// the tenant's barrier with the admin's (the __sys:pending-so record),
+	// and is created beside it (CompletePendingTenantAdmin). SOUserID is
+	// then zero. AdminCompletionDue covers the SO's completion too.
+	SOAwaitsBarrierInit bool
 }
 
 // ProvisionTenant performs MINIMAL control-plane provisioning of a new tenant:
@@ -683,6 +720,10 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	if err != nil {
 		return nil, err
 	}
+	so, err := planSO(cfg, deps, mode, adminUsername, plan, behindBarrier)
+	if err != nil {
+		return nil, err
+	}
 	if mode == AdminEnrollCert {
 		if behindBarrier && deps.PendingAdmins == nil {
 			return nil, &MissingProvisioningSeamError{Seam: "Dependencies.PendingAdmins for a tenant whose identity records are behind its own barrier"}
@@ -764,6 +805,11 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		if err != nil {
 			return result, err
 		}
+		if so != nil {
+			if err := provisionPendingSO(ctx, cfg, deps, so, &undo, result); err != nil {
+				return fail(err)
+			}
+		}
 		result.Tenant = createdInfo
 		// A system-managed (auto-unseal) barrier is initialized and serving
 		// by the moment Step 1's CreateTenant returned, so its admin awaits
@@ -776,6 +822,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		// an existing tenant (createdInfo nil) is left to the hook.
 		if createdInfo != nil && createdInfo.BarrierAutoUnseal {
 			result.AdminAwaitsBarrierInit = false
+			result.SOAwaitsBarrierInit = false
 			result.AdminCompletionDue = true
 		}
 		return result, nil
@@ -792,45 +839,18 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	// always its canonical derivation -- no resolver, no store lookup, no
 	// legacy fallback.
 	adminRoleID := role.SystemRoleID(cfg.TenantID, role.RoleNameAdmin)
-	adminUser, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
-		// The bootstrap admin authenticates by certificate, not by an email login
-		// key, so the omission is declared rather than defaulted (#190).
-		WithoutEmailLoginKey: true,
-		Username:             adminUsername,
-		TenantID:             cfg.TenantID,
-		RoleIDs:              []string{adminRoleID},
-		// System is deliberately left false (zero value) here (go-qrdb#106).
-		// This is a PER-TENANT admin, one of potentially many created by
-		// ProvisionTenant, and must stay deletable so a tenant can be fully
-		// deprovisioned. Immutability is reserved for the single system-tenant
-		// admin that pkg/firstboot.Initialize mints.
-		// Deferred enrollment (#193) landed on main during this branch. Both
-		// sides of the conflict are load-bearing and neither supersedes the
-		// other: the admin has no email login key AND, under deferred mode,
-		// must be created disabled until it enrolls.
-		Pending: mode == AdminEnrollDeferred,
-	})
+	// System is deliberately left false (zero value) here (go-qrdb#106).
+	// This is a PER-TENANT admin, one of potentially many created by
+	// ProvisionTenant, and must stay deletable so a tenant can be fully
+	// deprovisioned. Immutability is reserved for the single system-tenant
+	// admin that pkg/firstboot.Initialize mints.
+	// Deferred enrollment (#193) landed on main during this branch. Both
+	// sides of the conflict are load-bearing and neither supersedes the
+	// other: the admin has no email login key AND, under deferred mode,
+	// must be created disabled until it enrolls.
+	adminUser, err := createTenantAccount(ctx, deps, cfg, adminUsername, role.RoleNameAdmin, mode == AdminEnrollDeferred, &undo, soRolesBesideAdmin(so)...)
 	if err != nil {
-		var exists *user.UsernameExistsError
-		if cfg.Exclusive || !errors.As(err, &exists) {
-			return fail(&TenantAdminUserCreationError{Cause: err})
-		}
-		deps.Logger.Debug("bootstrap: tenant-admin user already exists",
-			slog.String("tenant", cfg.TenantID),
-			slog.String("username", adminUsername))
-	} else {
-		deps.Logger.Info("bootstrap: tenant-admin user created",
-			slog.String("tenant", cfg.TenantID),
-			slog.String("username", adminUsername),
-			slog.String("role_id", adminRoleID))
-		createdID := adminUser.ID
-		undo.push("delete tenant admin", func(ctx context.Context) error {
-			d, ok := deps.Users.(userDeleter)
-			if !ok {
-				return &MissingProvisioningSeamError{Seam: "Users.DeleteUser"}
-			}
-			return d.DeleteUser(ctx, createdID)
-		})
+		return fail(err)
 	}
 
 	// Deferred mode must hand the consumer the admin's user id even on an
@@ -872,12 +892,8 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	// admin's first credential is bound by the consumer's
 	// invitation-redemption flow.
 	if adminUser != nil && mode == AdminEnrollCert {
-		c, err := plan.issue(ctx, cfg.TenantID, adminUsername)
+		c, err := certifyAccount(ctx, deps, cfg.TenantID, plan, adminUser, adminUsername, role.RoleNameAdmin, &undo)
 		if err != nil {
-			return fail(err)
-		}
-		pushRevoke(&undo, plan.signer, c)
-		if err := bindAdmin(ctx, deps, cfg.TenantID, adminUser, c); err != nil {
 			return fail(err)
 		}
 		result.AdminCertPEM = c.certPEM
@@ -887,6 +903,14 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 			slog.String("tenant", cfg.TenantID),
 			slog.Uint64("user_id", adminUser.ID),
 			slog.Bool("csr_signed", len(plan.csrPEM) > 0))
+	}
+
+	// Step 5: the tenant SO, when the request has one: the so role alone,
+	// through the same account and certificate steps, its PIN last.
+	if so != nil {
+		if err := enrollSO(ctx, cfg, deps, so, &undo, result); err != nil {
+			return fail(err)
+		}
 	}
 
 	deps.Logger.Info("bootstrap: tenant provisioned",
@@ -929,19 +953,10 @@ func provisionPendingAdmin(ctx context.Context, cfg TenantProvisionConfig, deps 
 			AdminAwaitsBarrierInit: true,
 		}, nil
 	}
-	c, err := plan.issue(ctx, cfg.TenantID, adminUsername)
+	c, err := recordPendingAccount(ctx, cfg.TenantID, deps.PendingAdmins, plan, adminUsername, role.RoleNameAdmin, undo)
 	if err != nil {
 		return fail(err)
 	}
-	pushRevoke(undo, plan.signer, c)
-	recorded := pendingFrom(adminUsername, c)
-	if err := deps.PendingAdmins.Create(ctx, cfg.TenantID, recorded); err != nil {
-		return fail(&PendingTenantAdminError{Op: "record", Cause: err})
-	}
-	undo.push("delete pending admin", func(ctx context.Context) error {
-		_, err := deps.PendingAdmins.Delete(ctx, cfg.TenantID, recorded)
-		return err
-	})
 	// The pin has no undo: it is written once, and an undone provisioning
 	// deletes the tenant, whose id is then retired and never reused.
 	if err := pinFirstAdmin(ctx, deps, cfg.TenantID, c.thumbprint); err != nil {

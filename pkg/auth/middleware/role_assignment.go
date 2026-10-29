@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -67,6 +68,11 @@ import (
 // roleSvc == nil with a reference present is a *role.ServiceRequiredError
 // rather than an unvalidated write. An Attributes-only write names no role
 // reference and needs no role service.
+//
+// RoleIDs and RoleBindings each replace the record's set when non-nil, so a
+// write that leaves the target tenant's SO role off a holder's new set
+// revokes it as surely as one naming it grants it: either is refused unless
+// the caller is that tenant's SO (authorizeSORoleChange).
 func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	ctx context.Context,
 	userSvc user.UserServicer,
@@ -80,24 +86,26 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 		// role reference to validate.
 		return nil
 	}
-	existing, err := userSvc.GetUser(ctx, userID)
+	existing, err := assignee(ctx, userSvc, userID)
 	if err != nil {
 		return err
 	}
-	if existing == nil {
-		// A nil record with a nil error is a UserServicer contract
-		// violation (GetUser should return a typed not-found error
-		// instead), but this gate must fail closed rather than panic on
-		// it: treat it as the same not-found condition the write itself
-		// would report for a missing target.
-		return &user.UserNotFoundError{ID: userID}
-	}
 	target := tenantid.Normalize(existing.TenantID)
 
-	if err := m.authorizeRoleAssignment(ctx, target); err != nil {
+	if err := m.authorizeRolesAssign(ctx, target); err != nil {
 		return err
 	}
 	if _, err := user.NormalizeRoleBindings(existing.ID, target, bindings); err != nil {
+		return err
+	}
+	afterIDs, afterBindings := existing.RoleIDs, existing.RoleBindings
+	if roleIDs != nil {
+		afterIDs = roleIDs
+	}
+	if bindings != nil {
+		afterBindings = bindings
+	}
+	if err := m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, afterBindings)); err != nil {
 		return err
 	}
 	validate := assignValidator(role.ValidateAssignable)
@@ -107,24 +115,61 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWrite(
 	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, roleIDs, bindings)
 }
 
-// AuthorizeRoleUnassignment authorizes removing a role from userID: the
-// caller needs roles:unassign in the tenant the user belongs to, read from the
-// record. Removing a grant names no role to validate, so there is no
-// validation step. AssignRole's twin is AuthorizeRoleAssignmentWrite with the
-// one role being added. A nil m authorizes nothing, as every AuthMiddleware
-// gate does when no RBAC is configured.
-func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc user.UserServicer, userID uint64) error {
-	if m == nil {
-		return nil
-	}
-	existing, err := userSvc.GetUser(ctx, userID)
+// AuthorizeRoleAssignment authorizes and validates AssignRole, adding roleID
+// to userID's roles: AuthorizeRoleAssignmentWrite's gate under AssignRole's
+// append semantics. The role joins the record's set rather than replacing it,
+// so assigning another role to an SO holder revokes nothing; assigning the
+// tenant's SO role to an account without it is a grant only the tenant's SO
+// may make (authorizeSORoleChange).
+func (m *AuthMiddleware) AuthorizeRoleAssignment(
+	ctx context.Context,
+	userSvc user.UserServicer,
+	roleSvc role.RoleServicer,
+	userID uint64,
+	roleID string,
+) error {
+	existing, err := assignee(ctx, userSvc, userID)
 	if err != nil {
 		return err
 	}
-	if existing == nil {
-		return &user.UserNotFoundError{ID: userID}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.authorizeRolesAssign(ctx, target); err != nil {
+		return err
 	}
-	return m.AuthorizeTenant(ctx, existing.TenantID, permission.RolesUnassign)
+	before := heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings)
+	if err := m.authorizeSORoleChange(ctx, target, before, append(slices.Clip(before), roleID)); err != nil {
+		return err
+	}
+	validate := assignValidator(role.ValidateAssignable)
+	if assignsToSelf(ctx, existing) {
+		validate = role.ValidateSelfAssignable
+	}
+	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), validate, target, []string{roleID}, nil)
+}
+
+// AuthorizeRoleUnassignment authorizes removing roleID from userID's roles:
+// the caller needs roles:unassign in the tenant the user belongs to, read
+// from the record, and removing that tenant's SO role from its holder is a
+// revocation only the tenant's SO may make (authorizeSORoleChange). Removing
+// a grant names no role to validate, so there is no validation step.
+// AssignRole's twin is AuthorizeRoleAssignment. A nil m authorizes nothing,
+// as every AuthMiddleware gate does when no RBAC is configured.
+func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc user.UserServicer, userID uint64, roleID string) error {
+	if m == nil {
+		return nil
+	}
+	existing, err := assignee(ctx, userSvc, userID)
+	if err != nil {
+		return err
+	}
+	target := tenantid.Normalize(existing.TenantID)
+	if err := m.AuthorizeTenant(ctx, target, permission.RolesUnassign); err != nil {
+		return err
+	}
+	// UnassignRole removes the role from RoleIDs alone; a binding naming it
+	// still grants it afterwards.
+	afterIDs := slices.DeleteFunc(slices.Clone(existing.RoleIDs), func(id string) bool { return id == roleID })
+	return m.authorizeSORoleChange(ctx, target, heldRoleIDs(target, existing.RoleIDs, existing.RoleBindings), heldRoleIDs(target, afterIDs, existing.RoleBindings))
 }
 
 // AuthorizeRoleAssignmentWriteOnCreate authorizes and validates a
@@ -142,7 +187,9 @@ func (m *AuthMiddleware) AuthorizeRoleUnassignment(ctx context.Context, userSvc 
 // A request naming no RoleIDs is a no-op: CreateUser carries no
 // RoleBindings or Attributes field, so RoleIDs is its only role-assignment
 // surface. Authorization and validation follow AuthorizeRoleAssignmentWrite:
-// m == nil skips only the authorization.
+// m == nil skips only the authorization. Creating an account that holds the
+// tenant's SO role grants it, so only that tenant's SO may name it here
+// (authorizeSORoleChange).
 func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 	ctx context.Context,
 	roleSvc role.RoleServicer,
@@ -156,21 +203,145 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 	if err != nil {
 		return err
 	}
-	if err := m.authorizeRoleAssignment(ctx, target); err != nil {
+	if err := m.authorizeRolesAssign(ctx, target); err != nil {
+		return err
+	}
+	if err := m.authorizeSORoleChange(ctx, target, nil, roleIDs); err != nil {
 		return err
 	}
 	// The account is being created, so it is not the assigner.
 	return validateRoleAssignment(ctx, roleSvc, m.Authorizer(), role.ValidateAssignable, target, roleIDs, nil)
 }
 
-// authorizeRoleAssignment requires roles:assign in target, the tenant the
+// SORoleGuard returns the user.UpdateGuard that binds the SO-role rule to the
+// write it authorizes. AuthorizeRoleAssignmentWrite, AuthorizeRoleAssignment
+// and AuthorizeRoleUnassignment judge the SO transition against the record as
+// they read it, which a concurrent write can replace before the update
+// commits: an Admin's role replacement checked against a record without the
+// SO role would otherwise remove a grant an SO committed in between. The
+// guard repeats the judgement inside the user store against the record the
+// conditional commit swaps against, so the rule holds for the version written.
+// Every UpdateUser that follows one of those gates carries it.
+//
+// The guard refuses with *SORoleRequiredError or *SORoleUnresolvedError, as
+// the gates do. A nil m enforces no RBAC and returns nil.
+func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
+	if m == nil {
+		return nil
+	}
+	return func(prior, next *user.User) error {
+		target := tenantid.Normalize(prior.TenantID)
+		return m.authorizeSORoleChange(ctx, target,
+			heldRoleIDs(target, prior.RoleIDs, prior.RoleBindings), heldRoleIDs(target, next.RoleIDs, next.RoleBindings))
+	}
+}
+
+// authorizeRolesAssign requires roles:assign in target, the tenant the
 // user is in or is being created in. A nil m authorizes nothing, as every
 // AuthMiddleware gate does when no RBAC is configured.
-func (m *AuthMiddleware) authorizeRoleAssignment(ctx context.Context, target string) error {
+func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string) error {
 	if m == nil {
 		return nil
 	}
 	return m.AuthorizeTenant(ctx, target, permission.RolesAssign)
+}
+
+// authorizeSORoleChange keeps the target tenant's Security Officer role in
+// that tenant's SO's hands under strict separation of duties
+// (WithStrictSeparation, go-qrdb#1042); under the standard posture it admits
+// every write, which roles:assign and roles:unassign then decide. A write
+// whose before and after role sets differ on whether the account holds the
+// SO role, a grant or a revocation, is admitted only for a caller who is
+// itself target's SO. The tenant Admin holds roles:assign and
+// roles:unassign and is refused here, as is any other tenant's SO, the
+// system tenant's included. A write that leaves SO membership as it was is
+// not this gate's to decide. The caller is judged by role.HoldsSystemRole
+// over the roles it holds in target, its Roles and its bindings scoped to
+// target (callerRoleIDs), as the account's own membership is counted.
+//
+// The refusal is *SORoleRequiredError (403 / PermissionDenied); a role
+// store that cannot say who holds the SO role is *SORoleUnresolvedError
+// (503), never an admission. A nil m authorizes nothing, as every
+// AuthMiddleware gate does when no RBAC is configured.
+func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target string, before, after []string) error {
+	if m == nil || !m.strictSeparation || slices.Equal(before, after) {
+		return nil
+	}
+	held, err := m.holdsSO(ctx, target, before)
+	if err != nil {
+		return err
+	}
+	holds, err := m.holdsSO(ctx, target, after)
+	if err != nil {
+		return err
+	}
+	if held == holds {
+		return nil
+	}
+	identity := auth.IdentityFromContext(ctx)
+	if identity == nil || tenantid.Normalize(identity.TenantID) != target {
+		return &SORoleRequiredError{}
+	}
+	isSO, err := m.holdsSO(ctx, target, callerRoleIDs(identity, target))
+	if err != nil {
+		return err
+	}
+	if !isSO {
+		return &SORoleRequiredError{}
+	}
+	return nil
+}
+
+// holdsSO reports whether roleIDs include tenantID's SO role.
+func (m *AuthMiddleware) holdsSO(ctx context.Context, tenantID string, roleIDs []string) (bool, error) {
+	ok, err := role.HoldsSystemRole(ctx, m.roles, tenantID, roleIDs, role.RoleNameSO)
+	if err != nil {
+		return false, &SORoleUnresolvedError{Err: err}
+	}
+	return ok, nil
+}
+
+// assignee reads the user a role-assignment write lands on. A nil record
+// with a nil error is a UserServicer contract violation (GetUser returns a
+// typed not-found error instead), but the gate fails closed rather than
+// panic on it: it is the not-found the write itself would report.
+func assignee(ctx context.Context, userSvc user.UserServicer, userID uint64) (*user.User, error) {
+	existing, err := userSvc.GetUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, &user.UserNotFoundError{ID: userID}
+	}
+	return existing, nil
+}
+
+// heldRoleIDs is every role an account with roleIDs and bindings holds in
+// target: its roles and its bindings scoped to target. An account's own
+// bindings name only its own tenant (user.NormalizeRoleBindings); a caller's
+// may name others, which grant nothing in target.
+func heldRoleIDs(target string, roleIDs []string, bindings []user.RoleBinding) []string {
+	out := make([]string, 0, len(roleIDs)+len(bindings))
+	out = append(out, roleIDs...)
+	for _, b := range bindings {
+		if tenantid.Normalize(b.TenantID) == target {
+			out = append(out, b.RoleID)
+		}
+	}
+	return out
+}
+
+// callerRoleIDs is every role the authenticated caller holds in target: its
+// roles and, as heldRoleIDs counts them for an account, its bindings scoped
+// to target. Authentication carries bindings apart from Roles
+// (auth.Identity.RoleBindings), so a caller holding the SO role through a
+// binding is an SO here too.
+func callerRoleIDs(identity *auth.Identity, target string) []string {
+	bindings := make([]user.RoleBinding, len(identity.RoleBindings))
+	for i, b := range identity.RoleBindings {
+		bindings[i] = user.RoleBinding{RoleID: b.RoleID, TenantID: b.TenantID}
+	}
+	return heldRoleIDs(target, identity.Roles, bindings)
 }
 
 // validateRoleAssignment confirms every role reference exists and may be

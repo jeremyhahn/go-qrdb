@@ -31,6 +31,9 @@ func (t *Transport) InviteUser(ctx context.Context, req *transport.InviteUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "InviteUser", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.InviteUser(ctx, &pb.InviteUserRequest{
 		Username:          req.Username,
 		Email:             req.Email,
@@ -54,6 +57,9 @@ func (t *Transport) InviteUser(ctx context.Context, req *transport.InviteUserReq
 func (t *Transport) RedeemInvitation(ctx context.Context, req *transport.RedeemInvitationRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RedeemInvitation", Err: &transport.NilRequestError{}}
 	}
 	if err := t.ensureClient(); err != nil {
 		return nil, err

@@ -48,6 +48,18 @@ func (n *Node) refreshClientTrust(ctx context.Context) error {
 	return pool.Refresh(ctx)
 }
 
+// settleClientTrust is refreshClientTrust when a change to the trusted CAs
+// is still waiting on the pool's rebuild, and nothing otherwise
+// (clienttrust.Pool.Settle). Certificate issuance and enrollment call it
+// before answering.
+func (n *Node) settleClientTrust(ctx context.Context) error {
+	pool := n.clientTrust.Load()
+	if pool == nil {
+		return nil
+	}
+	return pool.Settle(ctx)
+}
+
 // trustAnchorTenants lists every tenant that may hold trust anchors: each
 // live tenant, and the system tenant whether or not it is listed.
 func (n *Node) trustAnchorTenants(ctx context.Context) ([]string, error) {

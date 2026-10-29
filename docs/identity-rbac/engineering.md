@@ -990,6 +990,47 @@ exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
 (`roles:unassign` in the user's tenant; removing a grant names no role to
 validate).
 
+Under strict separation of duties (`middleware.WithStrictSeparation`, set from
+`wiring.ResolveStrictSeparation`, the one resolver, which FIPS 140-3 mode
+forces on), every one of those gates also refuses, with `SORoleRequiredError`,
+a write that changes whether the target holds its tenant's `so` role unless the
+caller is a Security Officer of that same tenant; outside it the `so` role is
+assigned like any other. Both sides are read by
+`heldRoleIDs`: the target's `RoleIDs` and `RoleBindings`, and the caller's
+`Roles` and `RoleBindings` (`callerRoleIDs`), counting a binding only where it
+is scoped to the target tenant. The gate reads the record before the write;
+to bind the decision to the version the write replaces, each handler also
+passes `AuthMiddleware.SORoleGuard` as `user.UpdateUserRequest.Guard`. The
+user store calls the guard with the decoded record it commits over and the
+record as the request writes it, before any index mutation, and the commit is
+conditional on those bytes, so a Security Officer grant that lands after the
+gate is either seen by the guard (`SORoleRequiredError`) or fails the write
+(`ConcurrentUpdateError`); it is never overwritten.
+
+The resolved posture is recorded and its changes are audited.
+`wiring.RecordSeparationPosture` compares the posture
+`ResolveStrictSeparation` gives with the replicated system record
+`__sys:cluster/separation_of_duties` (`wiring.SeparationPostureKey`, value
+`strict` or `standard`). It runs once first boot has run: in the daemon at
+every start (`recordSeparationPostureAtStart` in `cmd/qrdbd`), and in an
+embedded node in `Node.FirstBoot` and `Node.FirstBootWithCeremony`, through
+`lifecycle.Node.RecordSeparationPosture`. When no posture is recorded, or the
+recorded one differs, it **writes the record first**: `PutIfAbsent` on a first
+recording, `CompareAndSwap` against the value it read on a change, retried
+from a fresh read up to three times. Only then does it emit **one** compliance
+audit event: actor `system`, resource `auth/separation_of_duties`, action
+`posture-change` (`wiring.ActionSeparationPostureChange`), with the attributes
+`previous` (`none` when no posture was recorded), `posture`, and
+`fips_forced`. The event is sent through `audit.EmitBestEffort`. Only the
+node whose conditional write wins emits it, so nodes starting together under
+one change leave exactly one event. An unchanged posture writes and emits
+nothing. A record that cannot be read or written answers
+`*wiring.SeparationPostureError` (`Op` is `read`, `create`, `swap` or
+`contended`), which refuses the daemon's start and fails the embedded first
+boot. The write needs no Raft opcode of its own. Embedders read the posture
+the node resolved through `node.Node.StrictSeparation()`, and the resolver
+itself as `sdk.ResolveStrictSeparation`.
+
 The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
 (`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
 context tenant: `UpdateUser` routes its target purely by id, so a
@@ -1413,6 +1454,11 @@ unchecked call panics rather than failing cleanly.
   `__sys:abac_policy/<name>` in the tenant's own store, resolved through
   `tenant.StoreResolver`, so no tenant's policies share a keyspace with
   another's.
+- The separation-of-duties posture last recorded, `strict` or `standard`, is
+  the cluster record `__sys:cluster/separation_of_duties`, beside
+  `__sys:cluster/isolation_policy`. It is written only through
+  `wiring.RecordSeparationPosture` (see
+  [Authorization model](#authorization-model)).
 - Email lookup is `POST /users/lookup` with the key in the **body**. It is
   deliberately not a path parameter: the canonical login identifier would then
   be captured by access logs, proxies, tracing and browser history on every

@@ -548,6 +548,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 	defer cancel()
 
 	updateReq := &user.UpdateUserRequest{
+		Guard:        s.authMW.SORoleGuard(ctx),
 		ID:           id,
 		Username:     req.Username,
 		Email:        req.Email,

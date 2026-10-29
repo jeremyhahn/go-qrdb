@@ -1331,6 +1331,21 @@ func TestMintJoinToken_AfterClose(t *testing.T) {
 	}
 }
 
+func TestMintJoinToken_NilRequest(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	rt := newTestTransport(t, srv.URL)
+	defer rt.Close()
+
+	_, err := rt.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+}
+
 func TestMintJoinToken_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {

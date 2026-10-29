@@ -655,6 +655,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
+	}
 
 	var resp transport.MintJoinTokenResponse
 	if err := t.postJSONDecode(ctx, "MintJoinToken", "/v1/cluster/join-tokens", req, &resp); err != nil {

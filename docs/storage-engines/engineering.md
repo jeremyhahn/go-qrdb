@@ -428,7 +428,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   property tests); objstore object-name encoding. Every function has a happy
   path and an error path.
 - **Parity cells**: the storage parity tests and the `sdk/go/conformance`
-  matrix run every engine through the same cells; the file-engine cells run on
+  matrix run every engine through the same cells. The binary-key cells
+  (`pkg/storage/binary_parity_test.go`, `binary_key_parity_test.go`) hold every
+  engine to the same answer for every single byte, a NUL-prefixed table under
+  scans and `List`, keys shaped like paths (separators, `..`, a drive letter,
+  control characters, an embedded NUL), a key long enough that objstore names
+  it by hash, and binary keys through a batch, a rollback and a snapshot. The
+  file-engine cells run on
   tmpfs (`pkg/testutil/memdir`), so a deadline measures the code, not the disk.
 - **Fault-injection seams**: a slow fake sync for group commit, a failing
   record sync recovered from the journal, failing lock and unlock calls, and

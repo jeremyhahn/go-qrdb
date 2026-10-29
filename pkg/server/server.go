@@ -1377,6 +1377,10 @@ type CryptoOptions struct {
 	// hand it to the ceremony service, which issues every share holder's
 	// certificate from it.
 	CeremonyCA ceremony.CeremonyCA
+	// SOAuthenticator is the WithSOAuthenticator value. The node builders
+	// attach it to tenant create, which commits a tenant security officer's
+	// PIN through it (lifecycle.Node.AttachSOPINs).
+	SOAuthenticator *auth.SOAuthenticator
 
 	// The composition seams (see seam_options.go). Each is nil when no
 	// option set it, which keeps the software default.
@@ -1418,6 +1422,7 @@ func ResolveCryptoOptions(opts ...ServerOption) CryptoOptions {
 		DEKKeyDir:              o.dekKeyDir,
 		AuthFactorService:      o.authFactorSvc,
 		CeremonyCA:             o.ceremonyCA,
+		SOAuthenticator:        o.soAuthenticator,
 
 		BackupSink:              o.backupSink,
 		Clock:                   o.clock,

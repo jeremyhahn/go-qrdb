@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,12 +79,21 @@ type multiProtoNode struct {
 	passphrase   string
 
 	// proc is the node's process when its fixture retains it: a fixture whose
-	// node restarts (startTenantEntitlementNode), which also keeps bin and
-	// startArgs for restart, or startMultiProtocolCluster, for a test that
-	// stops the node.
+	// node restarts (startTenantEntitlementNode, startMultiProtocolNodeWithConfig),
+	// which also keeps bin and startArgs for restart, or
+	// startMultiProtocolCluster, for a test that stops the node.
 	bin       string
 	startArgs []string
 	proc      *exec.Cmd
+
+	// configPath is the daemon's --config file when the fixture wrote one
+	// (startMultiProtocolNodeWithConfig); a test rewrites it before restart
+	// to restart the node under another setting.
+	configPath string
+
+	// strictSeparation marks a node under strict separation of duties, whose
+	// system admin holds no data permission (startStrictSeparationNode).
+	strictSeparation bool
 }
 
 // restart stops the node and relaunches it with the same start arguments,
@@ -189,6 +199,18 @@ func startMultiProtocolNode(t *testing.T) *multiProtoNode {
 	t.Helper()
 	return startMultiProtocolNodeWithSM(t, "mvcc")
 }
+
+// startStrictSeparationNode is startMultiProtocolNode under strict separation
+// of duties (auth.separation_of_duties: true), the posture in which only a
+// tenant SO grants the so role and the SO must differ from the first admin.
+func startStrictSeparationNode(t *testing.T) *multiProtoNode {
+	t.Helper()
+	return startMultiProtocolNodeWithConfig(t, "mvcc", strictSeparationYAML)
+}
+
+// strictSeparationYAML is the daemon config fragment for strict separation of
+// duties; startMultiProtocolNodeWithConfig marks a node booted with it.
+const strictSeparationYAML = "auth:\n  separation_of_duties: true\n"
 
 // startMultiProtocolNodeWithSM is startMultiProtocolNode parameterized on the
 // daemon's state machine type. smType is passed as the "--sm" flag value; an
@@ -296,7 +318,7 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
-	startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
+	proc := startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
 
 	// The barrier subsystem runs a pre-host sealed-window REST listener
 	// (unauthenticated by design -- the secret itself is the
@@ -322,6 +344,12 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 		mcpPort:      mcpPort,
 		quicPort:     quicPort,
 		passphrase:   passphrase,
+		bin:          bin,
+		startArgs:    args,
+		proc:         proc,
+		configPath:   cfgPath,
+
+		strictSeparation: strings.Contains(extraYAML, strictSeparationYAML),
 	}
 
 	// Confirm every transport is actually serving (not just that its
@@ -419,7 +447,9 @@ func waitForCLIProtoReady(t *testing.T, node *multiProtoNode, proto multiProtoco
 	var lastErr error
 	if pollUntil(timeout, 200*time.Millisecond, func() bool {
 		lastOut, lastErr = runCLIProto(t, node, proto, "kv", "exists", "__multi_proto_ready_probe__")
-		return lastErr == nil
+		// Under strict separation of duties the system admin holds no data
+		// permission: the transport serving is its RBAC refusal.
+		return lastErr == nil || (node.strictSeparation && strings.Contains(lastOut, "permission denied"))
 	}) {
 		return
 	}

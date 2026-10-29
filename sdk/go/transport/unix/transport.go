@@ -749,6 +749,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
+	}
 
 	resp, err := t.client.MintJoinToken(ctx, &pb.MintJoinTokenRequest{
 		NodeId:     req.NodeID,

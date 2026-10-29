@@ -177,6 +177,33 @@ used. A bring-your-own certificate must chain to one of `trust_anchors_pem`
 for client authentication, its CN must be `admin_username`, and it must name
 the new tenant.
 
+The optional security officer (SO), given whole or not at all:
+
+| Field | Meaning |
+|---|---|
+| `so_username` | the SO's account name; under strict separation of duties, must differ from `admin_username` |
+| `so_csr_pem` | the SO's certificate signing request, signed as `admin_csr_pem` is |
+| `so_cert_pem` | the SO's own certificate, leaf first; must chain to `trust_anchors_pem` |
+| `so_chain_pem` | optional intermediates for `so_cert_pem` |
+| `so_pin` | the SO's PIN, the second factor the SO gate asks for; the SDK sends it only over TLS |
+
+A request carrying `so_pin` is a secret carrier in the Go SDK, as the barrier's
+secrets are: over a connection that is not TLS (plaintext gRPC, a Unix
+socket without TLS, an `http://` REST or MCP address) the SDK refuses it with
+`SOPINRequiresTLSError` before anything is sent, and on REST and MCP a redirect
+to `http://` or to another host is refused before the PIN is resent. A request
+without `so_pin` is sent on any transport.
+
+With an SO, `so_username`, `so_pin` and exactly one of `so_csr_pem` and
+`so_cert_pem` are required; a partial set or both a CSR and a certificate is
+`400` (`InvalidArgument` on gRPC), and nothing is written. Under strict
+separation of duties (`auth.separation_of_duties`, forced on in FIPS 140-3
+mode) an SO matching the admin by username or by key (SPKI) is `400` too.
+Outside it an SO matching the admin by both is the admin, whose account is
+granted `so` beside `admin`; one matching by only one of the two is `400`. A
+distinct SO is enrolled with the tenant's `so` role alone; its PIN is committed as the create's last step, and is never
+answered.
+
 Response `201` — the tenant's fields, plus the admin. **There is never a
 private key:**
 
@@ -188,7 +215,8 @@ private key:**
 
 `serial` is omitted for a bring-your-own certificate. On gRPC, QUIC and MCP the
 same response is `{ "tenant": {…}, "admin": {…} }` (`TenantCreateResponse`),
-with the same admin fields.
+with the same admin fields. With an SO the response also carries `"so": {…}`,
+the SO's credential in the admin's shape.
 
 For a `barrier`, `volume` or `raft` tenant the admin's account cannot be written
 yet — it lives behind the tenant's own barrier — so `user_id` is omitted and
@@ -198,6 +226,10 @@ tenant's pending admin; the barrier's trust-on-first-init window then admits
 created, granted the tenant's Admin role and bound to it as soon as the barrier
 is usable (on init, on every unseal, and on every status read that finds it
 unsealed, until it succeeds).
+
+The SO of such a tenant is recorded the same way (`awaits_barrier_init` on its
+credential) and its account is created, granted the `so` role, right after the
+admin's.
 
 A system-managed (`barrier_auto_unseal`) tenant's barrier is usable at
 creation, so its response omits both `user_id` and `awaits_barrier_init`: the

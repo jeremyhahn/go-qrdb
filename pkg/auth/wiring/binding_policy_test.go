@@ -15,6 +15,7 @@
 package wiring
 
 import (
+	"crypto/fips140"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -46,4 +47,36 @@ func TestBuildAuthMiddleware_MTLSBindingPolicy(t *testing.T) {
 			assert.Equal(t, tc.want, mw.MTLSBindingPolicy())
 		})
 	}
+}
+
+func TestBuildAuthMiddleware_StrictSeparation(t *testing.T) {
+	for name, strict := range map[string]bool{"standard": false, "strict": true} {
+		t.Run(name, func(t *testing.T) {
+			mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+				Enabled:          true,
+				RoleService:      adminRoleService(),
+				UserService:      &fakeUserService{},
+				StrictSeparation: strict,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, strict, mw.StrictSeparation())
+		})
+	}
+}
+
+func TestResolveStrictSeparation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fips, configured, want bool
+	}{
+		"standard":            {},
+		"configured":          {configured: true, want: true},
+		"FIPS forces strict":  {fips: true, want: true},
+		"FIPS and configured": {fips: true, configured: true, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveStrictSeparation(tc.fips, tc.configured))
+		})
+	}
+	assert.True(t, ResolveStrictSeparation(true))
+	assert.Equal(t, fips140.Enabled(), ResolveStrictSeparation(false))
 }

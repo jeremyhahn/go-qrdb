@@ -137,14 +137,31 @@ func toolTenantCreate() mcp.Tool {
 		mcp.WithString("trust_anchors_pem",
 			mcp.Description("A PEM bundle of CA certificates to register as the tenant's trust anchors."),
 		),
+		mcp.WithString("so_username",
+			mcp.Description("The tenant's optional security officer, enrolled with the so role alone. Given with so_pin and exactly one of so_csr_pem and so_cert_pem, or not at all; it must differ from the admin by name and by key."),
+		),
+		mcp.WithString("so_csr_pem",
+			mcp.Description("The SO's PEM certificate signing request, signed like the admin's. Exactly one of this and so_cert_pem."),
+		),
+		mcp.WithString("so_cert_pem",
+			mcp.Description("The SO's own PEM certificate, leaf first; it must chain to one of trust_anchors_pem."),
+		),
+		mcp.WithString("so_chain_pem",
+			mcp.Description("Optional PEM intermediates for so_cert_pem."),
+		),
+		mcp.WithString("so_pin",
+			mcp.Description("The SO's PIN, the second factor the SO gate asks for."),
+		),
 	)
 }
 
-// tenantCreateResult is qrdb_tenant_create's result: the tenant and its first
-// admin's credential. There is never a private key.
+// tenantCreateResult is qrdb_tenant_create's result: the tenant, its first
+// admin's credential and, when one was given, its SO's. There is never a
+// private key.
 type tenantCreateResult struct {
-	Tenant *tenant.TenantInfo        `json:"tenant"`
-	Admin  tenantAdminCredentialJSON `json:"admin"`
+	Tenant *tenant.TenantInfo         `json:"tenant"`
+	Admin  tenantAdminCredentialJSON  `json:"admin"`
+	SO     *tenantAdminCredentialJSON `json:"so,omitempty"`
 }
 
 // tenantAdminCredentialJSON is a tenant's first admin as onboarding left it.
@@ -155,6 +172,18 @@ type tenantAdminCredentialJSON struct {
 	Serial            string `json:"serial,omitempty"`
 	Thumbprint        string `json:"thumbprint"`
 	AwaitsBarrierInit bool   `json:"awaits_barrier_init,omitempty"`
+}
+
+// credentialJSON renders an account onboarding enrolled.
+func credentialJSON(c service.TenantAdminCredential) tenantAdminCredentialJSON {
+	return tenantAdminCredentialJSON{
+		UserID:            c.UserID,
+		Username:          c.Username,
+		CertPEM:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
 }
 
 // handleTenantCreate returns a tool handler that onboards a new tenant with
@@ -185,22 +214,25 @@ func handleTenantCreate(svc service.TenantOnboardingServicer) mcpserver.ToolHand
 			AdminCertPEM:      []byte(mcp.ParseString(req, "admin_cert_pem", "")),
 			AdminChainPEM:     []byte(mcp.ParseString(req, "admin_chain_pem", "")),
 			TrustAnchorsPEM:   []byte(mcp.ParseString(req, "trust_anchors_pem", "")),
+			SOUsername:        mcp.ParseString(req, "so_username", ""),
+			SOCSRPEM:          []byte(mcp.ParseString(req, "so_csr_pem", "")),
+			SOCertPEM:         []byte(mcp.ParseString(req, "so_cert_pem", "")),
+			SOChainPEM:        []byte(mcp.ParseString(req, "so_chain_pem", "")),
+			SOPIN:             []byte(mcp.ParseString(req, "so_pin", "")),
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: err}
 		}
 
-		data, jsonErr := json.Marshal(tenantCreateResult{
+		out := tenantCreateResult{
 			Tenant: result.Tenant,
-			Admin: tenantAdminCredentialJSON{
-				UserID:            result.Admin.UserID,
-				Username:          result.Admin.Username,
-				CertPEM:           string(result.Admin.CertPEM),
-				Serial:            result.Admin.Serial,
-				Thumbprint:        result.Admin.Thumbprint,
-				AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-			},
-		})
+			Admin:  credentialJSON(result.Admin),
+		}
+		if result.SO != nil {
+			so := credentialJSON(*result.SO)
+			out.SO = &so
+		}
+		data, jsonErr := json.Marshal(out)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: jsonErr}
 		}

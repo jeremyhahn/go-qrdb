@@ -11,6 +11,98 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A certificate a node issues or enrolls is admitted on its next
+  handshake** (#1128). A tenant's first certificate brings its login CA into
+  use. Until now the TLS client trust learned of that CA only through an
+  asynchronous rebuild, so a login that dialed the moment the certificate came
+  back could be refused. `SignCertificate` and `EnrollCertificate` now bring
+  the node's client trust up to date before answering
+  (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
+
+- **The rolling enable-encryption coordinator-restart test no longer requires
+  the restarted coordinator to make the hand-on itself** (#1167).
+  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
+  restarted coordinator lost leadership of the system shard before the second
+  turn: the node elected then handed the turn on from the record, as
+  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
+  every node's log since the restart, and accepts another node's only when the
+  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
+  pin the condition: a stepped-down coordinator writes and logs nothing, and
+  the new leader, or the coordinator leading again, hands the turn on.
+
+- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
+  (#1042): the CSR reads were keyed by path, so the second flag left the
+  admin's CSR empty.
+
+- **Tenant creation with an SO PIN goes only over TLS** (#1042): the Go SDK
+  sent `CreateTenantRequest.SOPin` on every transport without the SO PIN's
+  guard, so plaintext gRPC, a Unix socket without TLS or an `http://` REST or MCP
+  address carried it in the clear, and a redirect could resend it.
+  `CreateTenantRequest` is now a `BarrierSecretCarrier` when `SOPin` is set:
+  REST, MCP, gRPC and Unix refuse it with `SOPINRequiresTLSError` before
+  anything is sent, and REST and MCP refuse a redirect to `http://` or to
+  another host. QUIC is always TLS 1.3 and the embedded transport sends
+  nothing over a wire. A request without a PIN is sent as before.
+
+- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
+  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
+  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
+  transit, so on a busy runner the read timed out on a replica that was ready
+  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
+  `NewClusteredNode` was not at fault: it returns only after
+  `server.WaitForShardServing` has served a ReadIndex on that same host. The
+  test now checks at the moment each founder returns: the replica must
+  already know a leader, and its first read must not be refused. A read
+  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
+  outcome retried, up to three times. A constructor that skips the wait still
+  fails on the first attempt.
+
+
+- **Every `make coverage-<pkg>` target now compares its figure with
+  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
+  does not have, so the comparison produced nothing and the target passed at
+  any coverage, 0% included. It now compares with `awk`, and a profile with no
+  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
+  drives the check through `make` over profiles above and below the floor.
+## [0.58.0-alpha] - 2026-10-27
+
+### Added
+
+- **The separation-of-duties posture is readable and its changes are
+  audited** (#1128). Embedders read the posture a node resolved with
+  `node.Node.StrictSeparation()`, and the resolver as
+  `sdk.ResolveStrictSeparation`. At daemon start, and in `Node.FirstBoot` /
+  `Node.FirstBootWithCeremony`, the resolved posture is compared with the
+  cluster record `__sys:cluster/separation_of_duties`. On a first recording or
+  a change, the record is written first; the node whose conditional write
+  wins then emits one `posture-change` audit event (`previous`, `posture`,
+  `fips_forced`). A record that cannot be read or written refuses the start.
+
+- **Tenant create takes an optional Security Officer** (#1042): `so_username`,
+  `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
+  `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
+  `qrdb tenant create --so-username --so-csr|--so-cert --so-chain --so-pin`.
+  The SO is enrolled with the tenant's `so` role alone and its PIN set through
+  the SO authenticator; the response carries its credential as `so`, and
+  `--out` writes `so-cert.pem`. A partial set or a CSR with a certificate is
+  `InvalidArgument` and creates nothing; so, under strict separation of
+  duties, is an SO matching the admin by username or key, while outside it an
+  SO matching the admin by both is the admin, granted `so` beside `admin`, and
+  a half match is refused. An isolated tenant records the SO as
+  `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
+  SO authenticator to tenant onboarding.
+
+- **A conformance test holds Get-after-Delete to typed not-found on every
+  engine and transport** (#1163). `TestDeleteThenGetIsTypedNotFound` in
+  `sdk/go/conformance` runs Put, Delete, then Get and Exists for 50 rounds on
+  every cell of the guarded-verb matrix plus a standalone objstore cell per
+  transport, with short keys, keys objstore stores under a hashed name, and one
+  reused key. go-qrdb's read plane already answered not-found in every cell;
+  the read failure #1163 reported is not raised by go-qrdb or go-objstore.
+### Added
+- **`qrdb kv put --revision`** prints the written key's version and revisions (the metadata of `kv get --revision`), through `MVCC().PutWithLease` with lease 0. The key-value user guide names the three calls that report a key's version — that put, `GetRevision` and a batch of get ops — which report one version, the one a transaction's `version` compare reads (#1211).
 ### Added
 - **A non-replicated database is held by the node that created it, and every
   other node forwards to it** (#893, OD-2). The catalog record carries
@@ -107,6 +199,12 @@ are not reconstructed here — their history is in the git log.
   three in-process hosts, waiting for each follower's own stalled-fsync
   observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
   `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **Binary-key parity cells for every storage engine** (#1143):
+  `pkg/storage/binary_key_parity_test.go` holds memory, pebble, file and both
+  objstore providers to one answer for path-shaped keys (separators, `..`, a
+  drive letter, control characters, an embedded NUL), a key long enough that
+  objstore names it by hash, and binary keys through a batch, a rollback and a
+  snapshot. Tests only; no key encoding or on-disk format changes.
 - **A supported passphrase change for the system barrier** (#631).
   `BarrierChangePassphrase(current, next)` re-wraps the root key of an
   unsealed, passphrase-sealed barrier under a new passphrase; the root key and
@@ -430,6 +528,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- `MVCC().PutWithLease` on a state machine that keeps no revision history (the default pebble state machine) reports version 1 for the key it wrote, not 0. Presence is the only version such a state machine's transaction compares read, so a compare-and-set on the reported version now holds there too (#1211).
 - **A passphrase change checks the current passphrase and cannot lose a
   race** (#631). `StorageBarrier.ChangePassword` refuses a current passphrase
   that does not open the persisted root key (`seal.ErrCredentialMismatch`),
@@ -584,6 +683,40 @@ are not reconstructed here — their history is in the git log.
   before this fix keeps the membership it committed and has to be founded
   again to grow. `docs/clustering/user.md` gives the procedure for growing a
   one-node cluster.
+
+- **The Security Officer separation checks hold only under strict separation
+  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
+  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
+  now gates the SO-exclusive grant and revoke of the `so` role
+  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
+  the first admin, as it already gated the Owner role's voiding. In the
+  standard posture the tenant Admin grants and revokes `so` like any other
+  role, and may be named the tenant's SO.
+
+- **CI builds its images once per run and every job pulls them by digest**
+  (DS-3516): `docker-build` pushes the toolchain and integration images to the
+  forge's registry (the Gitea registry, derived from `github.server_url`, or
+  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
+  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
+  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
+  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
+  rather than rebuild when they cannot. `make integration-test` given a digest
+  `IT_IMAGE` requires the pulled image instead of building it, and the
+  reaper removes stale pulled images, never a name of an image any container
+  uses. `test/buildgates/ci_image_digest_test.go`
+  holds every consumer to the pull.
+- **A push to `main` publishes the CI images from the release runner**
+  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
+  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
+  on every other event; github.com keeps `ubuntu-latest`. The push reads the
+  release runner's credential contract alone (ruling 173, claude-agents#329):
+  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
+  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
+  secret, and no `env:` in ci.yml sets any of the three so none can mask
+  them. `scripts/ci-registry.sh` names the credential a refused or empty
+  login used, never its value. `test/buildgates/ci_image_digest_test.go`
+  fails when `docker-build` runs anywhere but `release` on a push to `main`,
+  on `release` on any other event, or when any other job can run there.
 
 ## [0.56.0-alpha] - 2026-10-26
 

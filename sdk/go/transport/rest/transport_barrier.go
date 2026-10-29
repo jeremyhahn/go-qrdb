@@ -336,6 +336,9 @@ func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus
 // ShareClaimBegin issues a claim nonce to an unseal-key holder.
 // Maps to POST /v1/barrier/officers/{username}/claim/begin.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimBeginResponse
 	if err := t.holderPost(ctx, "ShareClaimBegin", "/v1/barrier/officers/"+url.PathEscape(req.Username)+"/claim/begin", req, &resp); err != nil {
 		return nil, err
@@ -346,6 +349,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 // ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 // Maps to POST /v1/barrier/officers/{username}/claim/complete.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimCompleteResponse
 	if err := t.holderPost(ctx, "ShareClaimComplete", "/v1/barrier/officers/"+url.PathEscape(req.Username)+"/claim/complete", req, &resp); err != nil {
 		return nil, err
@@ -356,6 +362,9 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 // RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 // Maps to POST /v1/barrier/recovery/officers/{username}/claim/begin.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimBeginResponse
 	if err := t.holderPost(ctx, "RecoveryShareClaimBegin", "/v1/barrier/recovery/officers/"+url.PathEscape(req.Username)+"/claim/begin", req, &resp); err != nil {
 		return nil, err
@@ -366,6 +375,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 // RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 // Maps to POST /v1/barrier/recovery/officers/{username}/claim/complete.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimCompleteResponse
 	if err := t.holderPost(ctx, "RecoveryShareClaimComplete", "/v1/barrier/recovery/officers/"+url.PathEscape(req.Username)+"/claim/complete", req, &resp); err != nil {
 		return nil, err
