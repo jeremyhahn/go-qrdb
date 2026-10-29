@@ -335,10 +335,12 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 			tenantID := fmt.Sprintf("role-page-%s-%d", proto, ts)
 			// The kv:get roles need a creator holding kv:get, so a second
 			// account holding Admin and Operator writes them (the grant rule).
+			// The tenant's delete, registered by newTenantBootstrapAdmin,
+			// removes the roles with it: roles:delete is the Security
+			// Officer's alone, and the tenant Admin is not one.
 			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create 3 roles for pagination testing.
-			var roleIDs []string
 			for i := 1; i <= 3; i++ {
 				roleName := fmt.Sprintf("role-page-%d-%s-%d", i, proto, ts)
 
@@ -353,25 +355,9 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 					t.Fatalf("[%s] roles create %s failed: %v", proto, roleName, err)
 				}
 
-				var rid string
-				for _, line := range strings.Split(stdout, "\n") {
-					if strings.HasPrefix(line, "ID:") {
-						rid = strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
-						break
-					}
-				}
-				if rid == "" {
-					t.Fatalf("[%s] failed to extract role ID from create output for %s", proto, roleName)
-				}
-				roleIDs = append(roleIDs, rid)
+				assertContains(t, stdout, "ID:",
+					fmt.Sprintf("[%s] roles create %s should contain 'ID:'", proto, roleName))
 			}
-
-			// Register cleanup to delete all created roles.
-			t.Cleanup(func() {
-				for _, rid := range roleIDs {
-					admin.exec(t, cfg, proto, "roles", "delete", rid) //nolint:errcheck
-				}
-			})
 
 			// List roles with pagination.
 			stdout, stderr, err := admin.exec(t, cfg, proto,
@@ -394,19 +380,6 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 			}
 			assertNotEmpty(t, stdout,
 				fmt.Sprintf("[%s] roles list --tenant-id should not be empty", proto))
-
-			// Delete all created roles.
-			for _, rid := range roleIDs {
-				stdout, stderr, err = admin.exec(t, cfg, proto, "roles", "delete", rid)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] roles delete %s failed: %v", proto, rid, err)
-				}
-			}
-
-			// Clear roleIDs so cleanup does not attempt redundant deletes.
-			roleIDs = nil
 
 			t.Logf("[%s] roles list pagination passed", proto)
 		})
