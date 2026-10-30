@@ -402,6 +402,9 @@ A certificate carrying the delegation extension authenticates as a service
 principal acting inside a tenant, never as a user. Issuing one is
 `certs:delegate` on every transport; see
 [../certificate-authority/api.md](../certificate-authority/api.md#issuing-a-delegation).
+So is writing a standing delegation policy, under which the node mints the
+first certificate and the delegation renews itself; see
+[../certificate-authority/api.md](../certificate-authority/api.md#standing-delegation-policies).
 Why it is shaped this way is in
 [architecture.md](architecture.md#tenant-issued-delegations).
 

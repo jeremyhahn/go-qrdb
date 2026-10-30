@@ -99,7 +99,34 @@ Refused with an invalid-argument error: a principal named for a built-in
 role (`so`, `admin`, `operator`, `user`, `auditor`), a permission the server does not know, a repeated
 permission, more than 64 permissions, or a `--ttl` over `24h`. Refused with a
 permission error: a caller in the `system` tenant, and a caller that is itself
-authenticated by a delegation.
+authenticated by a delegation, except a renewal within a standing policy
+(below).
+
+### `qrdb ca delegate policy`
+
+Write a **standing delegation policy** once instead of issuing a delegation by
+hand before each one lapses. While it stands, the application mints the first
+certificate for the principal itself and renews it with the certificate it
+holds, never with more scope or a longer lifetime than the policy names.
+
+| Verb | Flags | Meaning |
+|---|---|---|
+| `policy put` | `--principal`, `--scope`, `--ttl` | write or replace the policy for a principal; `--ttl` is the longest lifetime a minted certificate may have, at most `24h` |
+| `policy list` | — | list your tenant's policies, with principal, scope and lifetime |
+| `policy delete <principal>` | — | delete the policy |
+
+```bash
+qrdb ca delegate policy put --principal billing --scope kv:get,kv:put --ttl 1h
+qrdb ca delegate policy list
+qrdb ca delegate policy delete billing
+```
+
+All three need `certs:delegate` and act in your own tenant; a caller in the
+`system` tenant and a delegated caller are refused with a permission error.
+Deleting a policy stops every further mint and renewal at once (a not-found
+error from then on); a certificate already minted works until it expires or
+you revoke its serial. Each put, delete and mint is recorded in your tenant's
+audit trail.
 
 ## `qrdb ca csr`
 
