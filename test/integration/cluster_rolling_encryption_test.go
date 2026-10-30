@@ -21,15 +21,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -161,12 +166,48 @@ func rollingGet(client *http.Client, ports []int, key string) (string, error) {
 	return value, err
 }
 
-// rollingAway reports whether a node is out of service for the migration:
-// its barrier is sealed, or it does not answer at all (an in-process
-// reboot). A node that answers SEAL_STATE_UNCONFIRMED during an election
-// still holds its key and its Raft replica, so it is not away.
+// rollingAway reports whether a reading is definitive evidence that a node
+// is out of service for the migration: its barrier answers sealed, or its
+// process is down, so nothing listens on its port (an in-process reboot) and
+// the connection is refused. A node that answers SEAL_STATE_UNCONFIRMED
+// during an election still holds its key and its Raft replica, so it is not
+// away. A probe that times out, or fails any other way, says nothing about
+// the node's state: it is no sample, not an away.
 func rollingAway(r barrierStatusReading) bool {
-	return r.Sealed || (r.Status == 0 && r.Err != nil)
+	if r.Sealed {
+		return true
+	}
+	return r.Status == 0 && errors.Is(r.Err, syscall.ECONNREFUSED)
+}
+
+// TestRollingAwayClassification pins which barrier-status readings count as
+// an owner away: only a sealed answer or a refused connection. A client
+// timeout awaiting headers is inconclusive and must not count (main run
+// 73166: two such timeouts at once were reported as two owners away).
+func TestRollingAwayClassification(t *testing.T) {
+	get := func(err error) error {
+		return &url.Error{Op: "Get", URL: "https://127.0.0.1:1/v1/barrier/status", Err: err}
+	}
+	refused := get(&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
+	timeout := get(fmt.Errorf("%w (Client.Timeout exceeded while awaiting headers)", context.DeadlineExceeded))
+	reset := get(&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
+	for _, tc := range []struct {
+		name string
+		r    barrierStatusReading
+		want bool
+	}{
+		{"sealed answer", barrierStatusReading{Sealed: true, Definitive: true, Status: http.StatusServiceUnavailable}, true},
+		{"connection refused", barrierStatusReading{Err: refused}, true},
+		{"client timeout awaiting headers", barrierStatusReading{Err: timeout}, false},
+		{"connection reset", barrierStatusReading{Err: reset}, false},
+		{"unsealed answer", barrierStatusReading{Strategy: "passphrase", Definitive: true, Status: http.StatusOK}, false},
+		{"seal state unconfirmed", barrierStatusReading{Status: http.StatusServiceUnavailable, Body: "SEAL_STATE_UNCONFIRMED"}, false},
+		{"body read failed after a status", barrierStatusReading{Status: http.StatusOK, Err: io.ErrUnexpectedEOF}, false},
+	} {
+		if got := rollingAway(tc.r); got != tc.want {
+			t.Errorf("%s: rollingAway = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // TestClusterEnableEncryption_Rolling_RF3 proves the rolling system-scope
