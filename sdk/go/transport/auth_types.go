@@ -428,6 +428,27 @@ type IssuedDelegation struct {
 	NotAfter  time.Time `json:"notAfter"`
 }
 
+// DelegationPolicyRequest writes the caller's own tenant's standing
+// delegation policy for Principal: while it stands, the node mints
+// delegation certificates to Principal, on its own request, within Scope and
+// TTL (#1186).
+type DelegationPolicyRequest struct {
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	// TTL is a Go duration, the longest a minted certificate may live; empty
+	// is the delegation default of one hour, and more than 24h is refused.
+	TTL string `json:"ttl,omitempty"`
+}
+
+// DelegationPolicy is a tenant's standing delegation policy.
+type DelegationPolicy struct {
+	TenantID  string   `json:"tenantID"`
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	// TTL is the policy's lifetime as a Go duration.
+	TTL string `json:"ttl"`
+}
+
 // CertRecord is the metadata for an issued certificate.
 type CertRecord struct {
 	Serial    string `json:"serial"`
