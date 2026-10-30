@@ -1048,3 +1048,61 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		})
 	}
 }
+
+// TestReaper_RemovesOnlyOrphanHoldTags is DS-4701: scripts/ci-registry.sh
+// tags the image a toolchain hold holds qrdb-ci-hold:<hold>, so a rebuild
+// that moves the content-hash tag cannot drop it. The reaper keeps the tag of
+// a hold that exists, and removes the tag of one that is gone without
+// forcing: an orphan tag of an image another name keeps only untags it, and
+// an orphan tag that is the image's last name removes the image.
+func TestReaper_RemovesOnlyOrphanHoldTags(t *testing.T) {
+	root := repoRoot(t)
+	const (
+		toolchain = "qrdb-toolchain:0123456789abcdef"
+		shared    = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		alone     = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		liveHold  = "qrdb-ci-hold-1-1-lint-toolchain"
+		deadHold  = "qrdb-ci-hold-2-1-lint-toolchain"
+		lastHold  = "qrdb-ci-hold-3-1-lint-toolchain"
+	)
+	stub := holdStub(t, toolchain, "2000-01-01T00:00:00Z", neverTagged)
+	images := filepath.Join(stub, "images")
+	seed := func(dir, name, body string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	aged := "2000-01-01T00:00:00Z " + neverTagged + "\n"
+	seed(images, toolchain, aged+shared+"\n")
+	seed(images, "qrdb-ci-hold:"+liveHold, aged+shared+"\n")
+	seed(images, "qrdb-ci-hold:"+deadHold, aged+shared+"\n")
+	seed(images, "qrdb-ci-hold:"+lastHold, aged+alone+"\n")
+	// The live hold was created just now, so it is not stale.
+	seed(filepath.Join(stub, "containers"), liveHold,
+		shared+"\n"+time.Now().UTC().Format("2006-01-02T15:04:05Z")+"\n"+shared+"\n")
+
+	reaped := runHoldStub(t, root, stub, toolchain, "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+	for _, tc := range []struct {
+		name string
+		kept bool
+	}{
+		{name: toolchain, kept: true},
+		{name: "qrdb-ci-hold:" + liveHold, kept: true},
+		{name: "qrdb-ci-hold:" + deadHold, kept: false},
+		{name: "qrdb-ci-hold:" + lastHold, kept: false},
+	} {
+		if _, err := os.Stat(filepath.Join(images, tc.name)); (err == nil) != tc.kept {
+			t.Errorf("after the reap %s exists: %v; want %v:\n%s", tc.name, err == nil, tc.kept, reaped)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stub, "containers", liveHold)); err != nil {
+		t.Errorf("the reaper removed the live hold %s:\n%s", liveHold, reaped)
+	}
+	if !strings.Contains(reaped, "2 hold tag(s) removed") {
+		t.Errorf("the reaper's summary does not count the 2 orphan hold tags:\n%s", reaped)
+	}
+}

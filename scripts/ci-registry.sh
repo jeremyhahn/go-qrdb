@@ -17,7 +17,7 @@
 #   ci-registry.sh push <local-image> <name> <trust>   prints <registry>/<owner>/<name>@sha256:<hex>
 #   ci-registry.sh pull <ref> [hold]                   pulls <ref>; with [hold], holds it
 #   ci-registry.sh local toolchain|it <hold>           builds if missing, holds, prints the reference to run
-#   ci-registry.sh release <hold>...                   removes the holds
+#   ci-registry.sh release <hold>...                   removes the holds and their hold tags
 #   ci-registry.sh check-ref <ref>...                  validates digest references
 #
 # The registry is the forge the run belongs to, derived from GITHUB_SERVER_URL:
@@ -62,6 +62,24 @@
 # reference name and an image ID is not one. Its hold uses the tag's image ID
 # all the same, so the reaper keeps the tag until the teardown.
 #
+# A container does not keep an image's name, and on the local path the
+# toolchain stages run an image ID, so the toolchain hold also tags the image
+# qrdb-ci-hold:<hold> (DS-4701). A BuildKit `docker buildx build --load` of a
+# tag the daemon already holds moves the tag to the new image and drops the
+# old image's record outright: no dangling record is left, the image ID it
+# had is "No such image" at once, and its content goes at the next GC, though
+# a container still uses it. The refusal of `docker image rm` covers a remove
+# only, never a moved tag. The docker-build job rebuilds the toolchain tag
+# every run, so on a shared runner it moved the tag under a lint job's
+# stages (go-qrdb #1271, run 71688 job 338499 on a shared runner, 2026-10-29:
+# run 71686's build named qrdb-toolchain:25c2ba15597a1817 at 11:18:18Z and
+# the job's next `docker run` of the held ID failed at 11:18:52Z). The hold
+# tag is a name no build ever loads, so the image keeps a record, and the
+# held ID resolves, until the teardown releases it. release removes the hold
+# and then its tag; `docker image rm` of one name of several only untags, so
+# an image another job holds stays. The reaper removes a hold tag whose
+# container is gone (a job that died before its teardown).
+#
 # CI_REGISTRY_BACKOFF is the seconds between pull attempts, times the attempt
 # number (default 10, so at most 10 s + 20 s of waiting across 3 attempts).
 set -euo pipefail
@@ -69,6 +87,9 @@ set -euo pipefail
 readonly attempts=3
 readonly ref_re='^[^@ ]+@sha256:[0-9a-f]{64}$'
 readonly host_re='^[A-Za-z0-9.-]+(:[0-9]+)?$'
+# The repository of the toolchain hold's tag, qrdb-ci-hold:<hold> (DS-4701):
+# under the Makefile's qrdb-ci- prefix, which the reaper's second pass reaps.
+readonly hold_tag_repo=qrdb-ci-hold
 
 die() {
 	echo "::error::ci-registry: $*" >&2
@@ -285,7 +306,7 @@ local_image() {
 	it) tag_re='^qrdb-ci-it:[0-9a-f]{16}$' ;;
 	*) die "family '$family' is neither toolchain nor it" ;;
 	esac
-	[[ $hold =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "'$hold' is not a hold name"
+	[[ $hold =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || die "'$hold' is not a hold name"
 	local tag
 	tag=$(env -u TOOLCHAIN_IMAGE -u IT_IMAGE make -s --no-print-directory "$family-image")
 	[[ $tag =~ $tag_re ]] || die "'$tag' is not a content-hash tag of the $family family"
@@ -315,19 +336,27 @@ local_image() {
 		id=$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null) || continue
 		[[ $id =~ ^sha256:[0-9a-f]{64}$ ]] || die "$tag has no image ID ('$id')"
 		docker rm -f "$hold" >/dev/null 2>&1 || true
-		if docker create --pull never --name "$hold" "$id" true >/dev/null; then
-			echo "==> $hold holds $tag ($id) until the job's teardown" >&2
+		# The hold tag keeps the ID resolvable when a rebuild moves the
+		# content-hash tag (above); without it the hold alone does not.
+		if docker create --pull never --name "$hold" "$id" true >/dev/null &&
+			docker tag "$id" "$hold_tag_repo:$hold"; then
+			echo "==> $hold holds $tag ($id), tagged $hold_tag_repo:$hold, until the job's teardown" >&2
 			printf '%s\n' "$id"
 			return 0
 		fi
+		docker rm -f "$hold" >/dev/null 2>&1 || true
 	done
 	die "$tag was removed before $hold could hold it"
 }
 
+# release removes each hold, then its hold tag, if any: never forced, so an
+# image another job holds or runs keeps its other names.
 release() {
 	local hold
 	for hold in "$@"; do
-		[ -z "$hold" ] || docker rm -f "$hold" >/dev/null 2>&1 || true
+		[ -n "$hold" ] || continue
+		docker rm -f "$hold" >/dev/null 2>&1 || true
+		docker image rm "$hold_tag_repo:$hold" >/dev/null 2>&1 || true
 	done
 }
 
