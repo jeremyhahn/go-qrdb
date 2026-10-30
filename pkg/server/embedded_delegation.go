@@ -17,6 +17,8 @@ package server
 import (
 	"context"
 	"crypto/x509"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // AuthenticateDelegation authenticates an in-process caller presenting a
@@ -39,4 +41,16 @@ func (s *Server) AuthenticateDelegation(ctx context.Context, chain []*x509.Certi
 		return nil, err
 	}
 	return delegated, nil
+}
+
+// MintDelegation mints a delegation certificate under the standing policy
+// req.TenantID wrote for the caller, the node's in-process service
+// principal (#1186). It is the first mint: once the principal holds a
+// delegation, it renews it over any transport through IssueDelegation, within
+// the same policy.
+func (s *Server) MintDelegation(ctx context.Context, req *service.MintDelegationRequest) (*service.IssuedDelegation, error) {
+	if s.opts.certEnroll == nil {
+		return nil, &service.CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
+	}
+	return s.opts.certEnroll.MintDelegation(ctx, req)
 }
