@@ -13,15 +13,24 @@ import (
 // The standing delegation policy operations (#1186), which this double
 // does not exercise: each refuses as not configured.
 
-func (*mockCertEnrollmentServicer) PutDelegationPolicy(context.Context, *service.DelegationPolicyRequest) (*delegation.Policy, error) {
+func (m *mockCertEnrollmentServicer) PutDelegationPolicy(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error) {
+	if m.policyPutFn != nil {
+		return m.policyPutFn(ctx, req)
+	}
 	return nil, &service.CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
 }
 
-func (*mockCertEnrollmentServicer) ListDelegationPolicies(context.Context, string) ([]delegation.Policy, error) {
+func (m *mockCertEnrollmentServicer) ListDelegationPolicies(ctx context.Context, tenantID string) ([]delegation.Policy, error) {
+	if m.policyListFn != nil {
+		return m.policyListFn(ctx, tenantID)
+	}
 	return nil, &service.CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
 }
 
-func (*mockCertEnrollmentServicer) DeleteDelegationPolicy(context.Context, string, string) error {
+func (m *mockCertEnrollmentServicer) DeleteDelegationPolicy(ctx context.Context, tenantID, principal string) error {
+	if m.policyDeleteFn != nil {
+		return m.policyDeleteFn(ctx, tenantID, principal)
+	}
 	return &service.CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
 }
 
