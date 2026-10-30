@@ -90,6 +90,7 @@ role. Revoke it early with "ca revoke --serial".
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Delegation lifetime (default 1h, at most 24h)")
 	cmd.Flags().StringVar(&outDir, "out", "", "Output directory for cert.pem (and key.pem when the key is generated here)")
 
+	cmd.AddCommand(newCADelegatePolicyCmd())
 	return cmd
 }
 
