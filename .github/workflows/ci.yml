@@ -1,5 +1,5 @@
-# ci-template: v1.29.3 — canonical CI for all first-party Go repos.
-# go-qrdb deviations from v1.29.3, one line each (the CUSTOMIZE block below
+# ci-template: v1.29.5 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.29.5, one line each (the CUSTOMIZE block below
 # gives each one's reason):
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
 #   - a docker-build job builds both images once; the others take its output
@@ -12,6 +12,15 @@
 #   - test-typescript is a job of its own
 #   - no revert-red-main.yml beside this file
 #   - the schedule guard gates docker-build, the bigdisk root, and soak
+# v1.29.4 and v1.29.5, adopted here (#1321) in one CI-file PR (Company
+# Agent rulings 261(c) and 262(a); handbook f9730b11f): each image build
+# passes GO_BUILD_PROXY=<DEVCACHE_GOPROXY>|https://proxy.golang.org|direct when
+# the runner sets DEVCACHE_GOPROXY and the cache answers a 5-second probe, as
+# one quoted make argument, and the Makefile quotes it on its docker build
+# line, where an unquoted `|` is a shell pipe; the schedule guard reads
+# waiting before in_progress; scripts/in-toolchain-image.sh v4. This repository's
+# copy kept its memory bound and takes the scratch volume and the Athens-first
+# bridge GOPROXY.
 # v1.29.3, adopted here (#1294) with v1.29.2 (ruling 255(10)/(11)(c)): one
 # schedule run per repository, skipped when a main run is in flight. A
 # schedule run's concurrency group is `schedule-{repository}`, with no sha,
@@ -575,7 +584,10 @@ jobs:
           runs() {
             local st n
             N=0
-            for st in in_progress waiting; do
+            # v1.29.4: waiting is read before in_progress. A run only moves
+            # waiting, then in_progress, then done, so the other order lets a
+            # run start between the two queries and be counted by neither.
+            for st in waiting in_progress; do
               CODE=$(curl -sS --max-time 30 -o "$RUNNER_TEMP/runs.json" -w '%{http_code}' \
                 -H @<(printf 'Authorization: token %s\n' "$1") \
                 "$RUNS_API?event=push&branch=main&status=$st&limit=1") || CODE="curl exit $?"
@@ -715,11 +727,18 @@ jobs:
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
+          # v1.29.4 and v1.29.5: Athens first when the runner sets DEVCACHE_GOPROXY
+          # and the cache answers, `|` so any error falls through to the public
+          # proxy; "$bp" is one quoted make argument and the Makefile quotes it.
+          bp=
+          if [ -n "${DEVCACHE_GOPROXY:-}" ] && curl -s -o /dev/null --max-time 5 "$DEVCACHE_GOPROXY/"; then
+            bp="GO_BUILD_PROXY=$DEVCACHE_GOPROXY|https://proxy.golang.org|direct"
+          fi
           if [ "$DOCS_ONLY" = true ]; then
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build-toolchain ${bp:+"$bp"} MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
             it_image=
           else
-            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build ${bp:+"$bp"} MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
             it_image=$(make -s it-image)
           fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
