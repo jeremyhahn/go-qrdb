@@ -172,6 +172,10 @@ are not reconstructed here — their history is in the git log.
 ### Changed
 - **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
   `make deps-check` passes on `main` and every pull request.
+- **Dependencies**: go.etcd.io/etcd `api/v3`, `client/v3` and `client/pkg/v3`
+  v3.7.3, in the root module, `sdk/go`, `sdk/go/gorm/conformance`,
+  `test/clusterproof` and `test/performance/etcd-benchmark`, so
+  `make deps-check` passes on `main` and every pull request.
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added

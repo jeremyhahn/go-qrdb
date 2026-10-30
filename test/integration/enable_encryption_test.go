@@ -229,7 +229,7 @@ func waitForBarrierSealedAgain(t *testing.T, ca *testCA, port int, timeout time.
 // failure; any other non-2xx status fails the test.
 func createDatabaseRetryingUnavailable(t *testing.T, client *http.Client, port int, body map[string]interface{}) {
 	t.Helper()
-	respBody, status := postRetryingRetryable(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", port), body)
+	respBody, status := postRetryingRetryable(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/databases", port), retryableCreateWindow, body)
 	if status != http.StatusCreated && status != http.StatusOK {
 		t.Fatalf("create database %v: status %d, body: %s", body["name"], status, respBody)
 	}
@@ -436,8 +436,8 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
 	createReq["id"], createReq["name"] = tenantID, "Acme"
 	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "volume", false
-	tBody, tStatus := postRetryingRetryable(t, sysClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort), createReq)
+	tBody, tStatus := postRetryingRetryable(t, tenantCreateClient(sysClient),
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort), tenantCreateWindow, createReq)
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tStatus, tBody)
 	}
