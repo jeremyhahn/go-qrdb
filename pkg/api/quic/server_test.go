@@ -262,7 +262,9 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.ReconcileBuiltIn":   true,
 		// Certificate management
 		"cert.Issue": true, "cert.Enroll": true, "cert.Delegate": true,
-		"cert.Revoke": true, "cert.List": true,
+		"cert.DelegationPolicyPut": true, "cert.DelegationPolicyList": true,
+		"cert.DelegationPolicyDelete": true,
+		"cert.Revoke":                 true, "cert.List": true,
 		// Collection
 		"collection.Create": true, "collection.Drop": true,
 		"collection.List": true, "collection.GetInfo": true,
@@ -539,6 +541,7 @@ func TestBuildHandlers_CertMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	certMethods := []string{
 		"cert.Issue", "cert.Enroll", "cert.Delegate", "cert.Revoke", "cert.List",
+		"cert.DelegationPolicyPut", "cert.DelegationPolicyList", "cert.DelegationPolicyDelete",
 	}
 	for _, m := range certMethods {
 		if _, ok := srv.handlers[m]; !ok {

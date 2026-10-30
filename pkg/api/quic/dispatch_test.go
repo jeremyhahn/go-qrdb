@@ -172,6 +172,9 @@ var expectedMethods = []string{
 	"cert.Issue",
 	"cert.Enroll",
 	"cert.Delegate",
+	"cert.DelegationPolicyPut",
+	"cert.DelegationPolicyList",
+	"cert.DelegationPolicyDelete",
 	"cert.Revoke",
 	"cert.List",
 
@@ -281,6 +284,9 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
+	// 205 = 202 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
+	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
+	// under which the node mints delegations (docs/identity-rbac).
 	// 202 = 201 + vector.UpdateNamespace, the in-place namespace update
 	// that keeps every vector (docs/vectors).
 	// 201 = 200 + barrier.ChangePassphrase, the supported passphrase change
@@ -358,7 +364,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 202
+	const wantCount = 205
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -460,7 +466,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"vector":   21,
 		"user":     14,
 		"role":     13,
-		"cert":     5,
+		"cert":     8,
 		"barrier":  22,
 		"ceremony": 3,
 		"tenant":   12,
