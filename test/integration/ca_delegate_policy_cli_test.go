@@ -30,7 +30,9 @@ import (
 // The first mint is in process (Server.MintDelegation) and no CLI reaches it,
 // so the tenant's own `ca delegate` stands in for it; every later mint is the
 // delegation's own renewal through `ca delegate`, which is what the policy
-// admits and what deleting it stops.
+// admits and what deleting it stops. A renewal is a `ca delegate` call, gated
+// by certs:delegate like any other, so the credential that renews carries it
+// in its scope, the policy admits it, and the principal is granted it.
 func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node, _, _ := startDelegationNode(t)
@@ -47,7 +49,7 @@ func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 
 			// The tenant writes the policy, and lists it back.
 			if out, err := runQRDB(t, node.cli, admin, "ca", "delegate", "policy", "put",
-				"--principal", delegationPrincipal, "--scope", "kv:get", "--ttl", "15m"); err != nil {
+				"--principal", delegationPrincipal, "--scope", "certs:delegate,kv:get", "--ttl", "15m"); err != nil {
 				t.Fatalf("[%s] ca delegate policy put: %v\noutput: %s", proto.name, err, out)
 			}
 			if out, err := runQRDB(t, node.cli, admin, "ca", "delegate", "policy", "list"); err != nil || !strings.Contains(out, delegationPrincipal) {
@@ -56,7 +58,7 @@ func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 
 			// The delegation renews itself within the policy, and the
 			// renewed certificate makes an in-tenant call.
-			_, first := issueDelegationCLI(t, node.cli, admin, proto, delegationPrincipal, "15m", "kv:get")
+			_, first := issueDelegationCLI(t, node.cli, admin, proto, delegationPrincipal, "15m", "certs:delegate", "kv:get")
 			delegated := tenantCLIArgsForProto(node, proto, first.certPath, first.keyPath)
 			_, renewed := issueDelegationCLI(t, node.cli, delegated, proto, delegationPrincipal, "10m", "kv:get")
 			if out, err := runQRDB(t, node.cli, tenantCLIArgsForProto(node, proto, renewed.certPath, renewed.keyPath),
