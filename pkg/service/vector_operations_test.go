@@ -990,7 +990,8 @@ func TestVecListVectors_WithCursor(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
-	assert.Equal(t, 10, capturedOpts.Offset)
+	assert.Equal(t, uint64(10), capturedOpts.FromID)
+	assert.Zero(t, capturedOpts.Offset)
 }
 
 func TestVecListVectors_InvalidCursor(t *testing.T) {
@@ -1006,8 +1007,8 @@ func TestVecListVectors_InvalidCursor(t *testing.T) {
 		Namespace: "list-ns",
 		Cursor:    "invalid",
 	})
-	require.NoError(t, err)
-	assert.Equal(t, 0, capturedOpts.Offset)
+	requireErrorAs[*InvalidVectorError](t, err)
+	assert.Nil(t, capturedOpts, "a malformed cursor must not scan from the start")
 }
 
 func TestVecListVectors_LimitDefaults(t *testing.T) {
@@ -1044,7 +1045,7 @@ func TestVecListVectors_NextCursor(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, resp.Vectors, 2)
-	assert.Equal(t, "2", resp.NextCursor)
+	assert.Equal(t, "3", resp.NextCursor, "the cursor resumes one past the page's last ID")
 }
 
 func TestVecListVectors_ScanError(t *testing.T) {

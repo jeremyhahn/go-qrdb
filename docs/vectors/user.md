@@ -104,6 +104,13 @@ qrdb vector list --namespace docs --limit 100
 qrdb vector list --namespace docs --limit 100 --cursor "$NEXT"
 ```
 
+Vectors come back in ascending vector-ID order, each at its latest version.
+The cursor is opaque: pass back exactly the one the previous page returned. It
+resumes after the last ID that page returned, so a walk sees every vector once,
+and a vector written or deleted between pages does not shift the rest. An empty
+cursor means there are no more vectors. A cursor the service did not return is
+refused as an invalid argument rather than read as the first page.
+
 **Update metadata without re-sending the vector.**
 
 ```bash

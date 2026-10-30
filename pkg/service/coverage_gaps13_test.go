@@ -230,10 +230,10 @@ func TestVectorService_ListVectors_WithCursor(t *testing.T) {
 		Limit:     1,
 		Cursor:    "some-cursor",
 	})
-	if err != nil {
-		t.Fatalf("ListVectors with cursor: %v", err)
+	if resp != nil {
+		t.Fatalf("ListVectors with a malformed cursor returned a page: %+v", resp)
 	}
-	_ = resp
+	requireErrorAs[*InvalidVectorError](t, err)
 }
 
 // ---------------------------------------------------------------------------

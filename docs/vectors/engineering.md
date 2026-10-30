@@ -141,6 +141,20 @@ text.
   `VectorServiceClosedError` before it touches storage. Every Close call waits
   for the jobs to stop, a second one concurrent with the first included. A job
   Close cancelled records the cancellation as its error.
+- **A namespace scan is ordered by vector ID.** `ScanNamespace` returns
+  ascending IDs at or above `ScanOptions.FromID`, at most `Limit` of them, each
+  at its latest version. On Pebble it seeks to the first key of `FromID`, keeps
+  the last version of each ID as the iterator leaves it (keys sort by ID, then
+  version, both big-endian) and stops at `Limit`. The memory store sorts by ID
+  and applies the same bounds. `Offset`, still honoured for the replicated list
+  command, counts in that same order after `FromID`.
+- **`ListVectors` pages by an opaque keyset cursor.** `NextCursor` resumes after
+  the last ID returned: today it is the decimal of that ID plus one, set only
+  when a `limit+1` probe found another vector, and empty when none follows or
+  the last ID is `MaxUint64`. A cursor that does not parse as one is refused
+  with `InvalidVectorError`, never read as the first page. The index rebuild
+  walks the namespace the same way, 1,000 IDs a page, so no vector repeats or
+  is skipped when the namespace is larger than a page.
 - **Search targets exactly one namespace.** There is no cross-namespace search.
 - **`ef_search` applies to HNSW only** and trades recall against latency; it is
   ignored by `flat` and has no meaning for it.

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -2227,7 +2228,8 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		Limit: 1000,
 	}
 
-	offset := 0
+	// Page by ID: each page starts one past the previous page's last ID, so a
+	// vector written during the rebuild cannot shift the rest of the walk.
 	for {
 		// Close cancels an async rebuild's context; stop between pages
 		// rather than scan storage its owner is about to close.
@@ -2237,7 +2239,6 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 			job.mu.Unlock()
 			return &VectorOperationError{Op: "scan vectors", Err: err}
 		}
-		opts.Offset = offset
 		vecs, err := v.storage.ScanNamespace(ctx, namespace, opts)
 		if err != nil {
 			job.mu.Lock()
@@ -2264,11 +2265,11 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 			job.mu.Unlock()
 		}
 
-		offset += len(vecs)
-
-		if len(vecs) < opts.Limit {
+		lastID := vecs[len(vecs)-1].ID
+		if len(vecs) < opts.Limit || lastID == math.MaxUint64 {
 			break
 		}
+		opts.FromID = lastID + 1
 	}
 
 	v.indexMu.Lock()
@@ -3020,17 +3021,20 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 		limit = 1000
 	}
 
-	offset := 0
+	// The cursor is the decimal ID the next page starts at: the previous
+	// page's last ID plus one. Paging by ID rather than by position keeps a
+	// vector written or deleted between pages from shifting the rest.
+	var fromID uint64
 	if req.Cursor != "" {
-		if _, parseErr := fmt.Sscanf(req.Cursor, "%d", &offset); parseErr != nil {
-			offset = 0
+		parsed, parseErr := strconv.ParseUint(req.Cursor, 10, 64)
+		if parseErr != nil {
+			return nil, &InvalidVectorError{Reason: "cursor is not one this service returned"}
 		}
+		fromID = parsed
 	}
 
-	scanOpts := &vector.ScanOptions{
-		Limit:  limit + 1,
-		Offset: offset,
-	}
+	// One vector past the page tells whether another page follows.
+	scanOpts := &vector.ScanOptions{Limit: limit + 1, FromID: fromID}
 	var (
 		namespaceInfo *vector.NamespaceInfo
 		vectors       []*vector.VectorValue
@@ -3054,7 +3058,9 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	var nextCursor string
 	if len(vectors) > limit {
 		vectors = vectors[:limit]
-		nextCursor = fmt.Sprintf("%d", offset+limit)
+		if lastID := vectors[limit-1].ID; lastID != math.MaxUint64 {
+			nextCursor = strconv.FormatUint(lastID+1, 10)
+		}
 	}
 
 	result := make([]*VectorData, len(vectors))
