@@ -102,6 +102,13 @@ const (
 	// left on the runner's daemon, so they do not collide with this one.
 	featureReap = "scripts/reap-stale-ci-stacks.sh " + featureReapPrefix
 
+	// featureApk puts the Alpine package index checksum in the shard's
+	// environment before featureStep names the integration image, whose
+	// content tag hashes it (ci-template v1.29): without it a shard names
+	// another tag than docker-build's and reuses an image built before
+	// Alpine's latest fix.
+	featureApk = "sum=$(make -s apk-index-sum)\necho \"APK_INDEX_SUM=$sum\" >> \"$GITHUB_ENV\""
+
 	// featureStep is the one test command each shard runs: every feature in
 	// its list, each the feature's features.mk selection in the integration
 	// image, under the shard's project, past a failing one. The image is the
@@ -226,13 +233,13 @@ func featureJobProblems(body []byte, want []string) []string {
 			conds = append(conds, strings.TrimSpace(s.If))
 		}
 	}
-	if !slices.Equal(runs, []string{featureReap, featurePull, featureLocal, featureStep, featureTeardown}) {
+	if !slices.Equal(runs, []string{featureReap, featureApk, featurePull, featureLocal, featureStep, featureTeardown}) {
 		problems = append(problems, featureJob+" runs "+strconv.Quote(strings.Join(runs, "; "))+
-			"; want exactly `"+featureReap+"`, `"+featurePull+"`, `"+featureLocal+"`, `"+featureStep+
+			"; want exactly `"+featureReap+"`, `"+featureApk+"`, `"+featurePull+"`, `"+featureLocal+"`, `"+featureStep+
 			"`, then `"+featureTeardown+"`")
-	} else if !slices.Equal(conds, []string{"", ciPublishIf, ciLocalIf, "", "always()"}) {
+	} else if !slices.Equal(conds, []string{"", "", ciPublishIf, ciLocalIf, "", "always()"}) {
 		problems = append(problems, featureJob+"'s steps run under if: "+strconv.Quote(strings.Join(conds, ", "))+
-			"; want the reap and the tests unconditional, the pull under "+ciPublishIf+
+			"; want the reap, the index read and the tests unconditional, the pull under "+ciPublishIf+
 			", the local build under "+ciLocalIf+" and the teardown under always(), "+
 			"so exactly one of the two takes the image and a failed or cancelled shard still removes its stack and its hold")
 	}
@@ -890,6 +897,10 @@ jobs:
         run: echo "::add-mask::$GIT_CONFIG_VALUE_0"
       - name: Reap stale CI stacks
         run: scripts/reap-stale-ci-stacks.sh qrdb-ci-
+      - name: Read the Alpine package index
+        run: |
+          sum=$(make -s apk-index-sum)
+          echo "APK_INDEX_SUM=$sum" >> "$GITHUB_ENV"
       - name: Pull the integration image
         if: ${{ env.CI_PUBLISH == 'true' }}
         env:
@@ -982,6 +993,9 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "a second run step", old: "IT_FEATURES_IN=image IT_PROJECT=\"$IT_PROJECT\"\n", new: "IT_FEATURES_IN=image IT_PROJECT=\"$IT_PROJECT\"\n      - run: make integration-test-auth\n"},
 		{name: "a make run named as the mask", old: "run: echo \"::add-mask::$GIT_CONFIG_VALUE_0\"", new: "run: make integration-test-auth"},
 		{name: "no reap", old: "      - name: Reap stale CI stacks\n        run: scripts/reap-stale-ci-stacks.sh qrdb-ci-\n", new: ""},
+		{name: "no apk index read", old: "      - name: Read the Alpine package index\n        run: |\n          sum=$(make -s apk-index-sum)\n          echo \"APK_INDEX_SUM=$sum\" >> \"$GITHUB_ENV\"\n", new: ""},
+		{name: "apk index sum not exported", old: `>> "$GITHUB_ENV"`, new: `>> "$GITHUB_OUTPUT"`},
+		{name: "apk index read made conditional", old: "      - name: Read the Alpine package index\n", new: "      - name: Read the Alpine package index\n        if: always()\n"},
 		{name: "reap of another prefix", old: "reap-stale-ci-stacks.sh qrdb-ci-", new: "reap-stale-ci-stacks.sh qrdb-"},
 		{name: "no teardown", old: "      - name: Tear down (shard ${{ matrix.shard }})\n        if: always()\n        run: make docker-down-it IT_PROJECT=\"$IT_PROJECT\"\n", new: ""},
 		{name: "teardown not always", old: "        if: always()\n", new: ""},

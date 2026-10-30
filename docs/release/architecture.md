@@ -185,7 +185,7 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `changes`, `schedule-guard` (ci-template v1.29.3), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage`), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
@@ -330,6 +330,8 @@ of the full tier on the PR branch is the accepted alternative.
 it cancels that ref's older run. On `main` the group carries the event and the
 commit (ci-template v1.26.2's group), so no `main` run cancels another: a push to `main` leaves the run of
 the previous `main` commit to finish, and every merge keeps a completed run.
+A scheduled run's group is `schedule-<repository>` (ci-template v1.29.3), so a
+repository has one scheduled run at a time and a newer one cancels the older.
 No expression reaches `cancel-in-progress`. The other workflows on pull
 requests keep one group per ref (handbook `devops.md` §9), whose
 `cancel-in-progress` expression spares `main`.
@@ -340,7 +342,21 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 It was restored under Company Agent ruling 216(1) (Software's typed order
 DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
 scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid
-host cron, timers and watchers, not this trigger. `automerge.yml` is the only other workflow with a
+host cron, timers and watchers, not this trigger.
+
+A scheduled run yields to `main` (ci-template v1.29.3). The `schedule-guard`
+job, beside `changes`, reads ci.yml's runs on `main` and sets its `verdict`:
+`run` when no push run on `main` is in progress or waiting, `busy` when one
+is, and `unreadable` when neither the job token nor `AGENT_TOKEN` reads the
+runs API. On any event but a schedule it says `run` without a request. On a
+scheduled run `docker-build`, the one job with no bigdisk job before it, runs
+only on `run`, and every other bigdisk job needs `docker-build` and skips with
+it; `soak` also carries the guard's clause itself, as the template's does. On `busy` `ci-gate` skips, so the nightly
+run reports `skipped`; on any other verdict but `run` it fails closed.
+`test/buildgates/ci_schedule_guard_test.go` holds every bigdisk job behind the
+guard, the gate's condition, and the step's verdicts against a stub `curl`.
+
+`automerge.yml` is the only other workflow with a
 `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
 on `workflow_dispatch`, and is dispatched by hand each night.
 

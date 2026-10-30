@@ -385,9 +385,10 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 		}
 		i, ok := pulled[family]
 		switch {
-		case !ok && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf):
-			// A nightly job (nightlyIf, draft guard aside) never runs on a
-			// push to main: the local path is its only one.
+		case !ok && tierCondition(job.If) == withoutDraftSkip(nightlyIf):
+			// A nightly job (nightlyIf, draft guard and schedule guard
+			// aside) never runs on a push to main: the local path is its
+			// only one.
 		case !ok:
 			problems = append(problems, name+" runs the "+family+" image but never pulls it with scripts/ci-registry.sh pull: "+
 				"on main it would run an image docker-build did not push")
@@ -485,7 +486,7 @@ func TestCIImageDigest_EveryNamedConsumerNeedsBothPaths(t *testing.T) {
 					return paths[path].MatchString(s.Run)
 				})
 				if len(kept) == len(job.Steps) {
-					if path == "pull" && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf) {
+					if path == "pull" && tierCondition(job.If) == withoutDraftSkip(nightlyIf) {
 						return
 					}
 					t.Fatalf("%s has no %s step to drop", name, path)

@@ -4014,8 +4014,26 @@ TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 # run 57540). CI names one per job under qrdb-ci-, so the reaper removes the
 # hold of a job that died before its teardown, as it does any stale
 # container. Empty, the default off CI, takes no hold.
+#
+# APK_INDEX_SUM is the checksum of the Alpine package indexes the build
+# resolves against (scripts/apk-index-sum.sh, ci-template v1.29): CI reads it
+# into the environment, the tag hashes it, and docker-build-it passes it to
+# the integration stage, which runs `apk upgrade` after it, so a new Alpine
+# package release changes the tag and forces a rebuild with the fixed
+# package. Empty when unset, so a local tag is the tree's alone.
+APK_INDEX_SUM ?=
+
+# apk-index-sum prints that checksum; every ci.yml job that reads it runs
+# `make -s apk-index-sum`. The Dockerfile's FROM lines name ${GO_IMAGE}, a
+# global ARG with no default because the pin lives in scripts/tool-pins.sh
+# alone, so the script cannot resolve the base image from the Dockerfile. This
+# target hands it the pin as APK_BASE_IMAGES, the script's input for a base
+# its FROM parse cannot read, and ci.yml carries no copy of the pin.
+.PHONY: apk-index-sum
+apk-index-sum:
+	@APK_BASE_IMAGES='$(GO_IMAGE)' scripts/apk-index-sum.sh
 IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1; then \
-	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
+	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS) $(APK_INDEX_SUM)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
 	  git ls-files -z -o --exclude-standard | xargs -0r sha256sum --; } | sha256sum | cut -c1-16; \
 	else echo $(DOCKER_TAG); fi)
 IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
@@ -4078,7 +4096,8 @@ docker-build-it:
 			echo "==> $(IT_IMAGE) is already built on this daemon"; \
 		else \
 			$(stage-gomodauth) \
-			$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
+			$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+				--target integration -t $(IT_IMAGE) . || { \
 				status=$$?; \
 				docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
 				echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
