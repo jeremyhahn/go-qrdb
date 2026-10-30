@@ -15,13 +15,14 @@
 package grpc
 
 import (
+	"context"
+	"crypto/x509"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
@@ -37,25 +38,28 @@ func init() {
 }
 
 // newDelegatedBarrierServer returns a tenant barrier server whose gate
-// verifies d's delegations and audits every delegated decision, and the
-// context carrying d's delegated identity.
-func newDelegatedBarrierServer(t *testing.T) (*tenantBarrierServer, *authtest.Delegation) {
+// verifies a #873 delegation for acme and audits every delegated decision,
+// and a context bound to that delegation exactly as an mTLS request
+// presenting it would be.
+func newDelegatedBarrierServer(t *testing.T) (*tenantBarrierServer, context.Context) {
 	t.Helper()
 	d := authtest.NewDelegation(t, delegation.Grant{Tenant: "acme", Principal: barrierDelegatedPrincipal,
 		Scope: []string{string(permission.TenantBarrierSeal), string(permission.TenantBarrierOfficerList)}})
-	roleSvc := &barrierGateRoleSvc{perms: []permission.Permission{permission.TenantBarrierSeal, permission.TenantBarrierOfficerList}}
-	mw := authmw.New(rbac.New(roleSvc),
-		authmw.WithRoleResolver(authtest.BuiltInRoles(t, "acme")),
+	roles := authtest.BuiltInRoles(t, "acme", "bob-corp")
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
 		authmw.WithDelegationVerifier(d.Authenticator),
 		authmw.WithAuditLogger(audit.NewDecisionLogger(audit.NewRingBuffer(8))))
-	return &tenantBarrierServer{svc: newMockTenantService(), authMW: mw}, d
+	ctx, _, err := mw.AuthenticateDelegation(t.Context(), []*x509.Certificate{d.Certificate})
+	if err != nil {
+		t.Fatalf("AuthenticateDelegation: %v", err)
+	}
+	return &tenantBarrierServer{svc: newMockTenantService(), authMW: mw}, ctx
 }
 
 // TestTenantBarrierGate_Delegated_SealAndOfficerList proves a #873
 // delegation for acme passes the seal and officer_list gates in acme.
 func TestTenantBarrierGate_Delegated_SealAndOfficerList(t *testing.T) {
-	srv, d := newDelegatedBarrierServer(t)
-	ctx := auth.WithIdentity(t.Context(), d.Identity(t))
+	srv, ctx := newDelegatedBarrierServer(t)
 
 	if _, err := srv.Seal(ctx, &pb.TenantBarrierSealRequest{TenantId: "acme"}); err != nil {
 		t.Fatalf("delegated Seal in acme: %v; want the gate to pass", err)
@@ -68,8 +72,7 @@ func TestTenantBarrierGate_Delegated_SealAndOfficerList(t *testing.T) {
 // TestTenantBarrierGate_Delegated_CrossTenantDenied proves the same
 // delegation is PermissionDenied on another tenant's barrier.
 func TestTenantBarrierGate_Delegated_CrossTenantDenied(t *testing.T) {
-	srv, d := newDelegatedBarrierServer(t)
-	ctx := auth.WithIdentity(t.Context(), d.Identity(t))
+	srv, ctx := newDelegatedBarrierServer(t)
 
 	if _, err := srv.Seal(ctx, &pb.TenantBarrierSealRequest{TenantId: "bob-corp"}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("delegated Seal in bob-corp: %v; want PermissionDenied", err)
