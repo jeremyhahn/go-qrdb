@@ -4056,14 +4056,17 @@ REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx
 
 # The module credentials are the same $(stage-gomodauth) secret every other
 # image build here passes; without them the build resolves from the public
-# proxy. GO_BUILD_PROXY is passed only when the caller sets it (handbook
-# devcontainer.md section 4). IT_TAGS is the tag set the integration stage
-# compiles its suites under, the same set the per-feature targets use.
+# proxy. GO_BUILD_PROXY comes from the caller (handbook devcontainer.md
+# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY, which on
+# the CI runners is the fleet Athens first (m1544, ruling 236(3)); unset, the
+# Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
+# runners' value uses the | separator. IT_TAGS is the tag set the integration
+# stage compiles its suites under, the same set the per-feature targets use.
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--secret id=gomodauth,env=GOMODAUTH \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
-	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY=$(GO_BUILD_PROXY)) \
+	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
