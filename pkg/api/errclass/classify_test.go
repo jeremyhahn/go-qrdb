@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
@@ -218,6 +219,29 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 		{"a propose that may still commit", &service.ProposeError{Err: &quicraft.MaybeAppliedError{Err: quicraft.ErrTimeout}}, Unavailable},
 		{"a user write whose raft wait ran out", &user.StoreError{Op: "create", Err: &service.ProposeError{Err: quicraft.ErrTimeout}}, Unavailable},
 		{"a failed rollback over a raft timeout stays itself", &user.IndexCompensationError{Op: "create", Cause: quicraft.ErrTimeout}, DataLoss},
+	} {
+		if got := Classify(tc.err); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestClassify_LeadershipUnderAuthIsUnavailableNotItsWrapper pins how the
+// auth classifier's election rule (go-qrdb#1280) meets this table: an
+// authenticator's verdict beside an election is Unavailable on every
+// transport, while a dominant wrapper over the same election -- a failed
+// rollback -- keeps its own class rather than becoming a retryable 503.
+func TestClassify_LeadershipUnderAuthIsUnavailableNotItsWrapper(t *testing.T) {
+	notLeader := &service.NotLeaderError{ShardID: 1}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"an election beside an authentication refusal", errors.Join(auth.ErrUnauthenticated, notLeader), Unavailable},
+		{"an election beside an authorization refusal", errors.Join(auth.ErrUnauthorized, notLeader), Unavailable},
+		{"an election under an auth chain", &authmw.AuthChainError{Err: notLeader}, Unavailable},
+		{"a failed rollback over an election", &user.IndexCompensationError{Op: "create", Cause: notLeader}, DataLoss},
 	} {
 		if got := Classify(tc.err); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)

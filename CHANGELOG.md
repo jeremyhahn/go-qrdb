@@ -172,6 +172,10 @@ are not reconstructed here — their history is in the git log.
 ### Changed
 - **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
   `make deps-check` passes on `main` and every pull request.
+
+### Fixed
+- **Auth**: an authenticator that fails because its shard is electing a leader (`service.LeadershipTransient`) answers 503 / `UNAVAILABLE` on every transport, not 401; `sdk/go` re-exports `StoreUnavailableError` and `IsLeadershipTransient` so a consumer can classify it.
+
 - **Dependencies**: go.etcd.io/etcd `api/v3`, `client/v3` and `client/pkg/v3`
   v3.7.3, in the root module, `sdk/go`, `sdk/go/gorm/conformance`,
   `test/clusterproof` and `test/performance/etcd-benchmark`, so
