@@ -1025,6 +1025,7 @@ var onboardingRules = []rule{
 	// caller renewing itself -- is refused permission.
 	as(&service.DelegationRequestError{}, InvalidArgument),
 	as(&service.DelegationDeniedError{}, PermissionDenied),
+	as(&service.DelegationPolicyNotFoundError{}, NotFound),
 	as(&service.TenantOnboardingFieldError{}, InvalidArgument),
 	as(&service.TenantOnboardingNotConfiguredError{}, Unimplemented),
 	as(&bootstrap.MissingAdminCredentialError{}, InvalidArgument),
