@@ -43,11 +43,14 @@ func runCollideHelper() int {
 		return 2
 	}
 	state := os.Getenv(collideStateEnv)
+	// #nosec G703 -- state is filepath.Join(t.TempDir(), "collisions"), set by
+	// the parent test that started this helper; the helper is never run otherwise.
 	seen, err := os.ReadFile(state)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return 2
 	}
 	if len(seen) < times {
+		// #nosec G703 -- the same parent-chosen t.TempDir() path read above.
 		if err := os.WriteFile(state, append(seen, 'x'), 0o600); err != nil {
 			return 2
 		}
@@ -56,6 +59,7 @@ func runCollideHelper() int {
 			" failed: listen udp 0.0.0.0:" + port + ": bind: address already in use\n")
 		return 1
 	}
+	// #nosec G703 -- filepath.Join(t.TempDir(), "ready"), set by the parent test.
 	if err := os.WriteFile(os.Getenv(collideReadyEnv), []byte("ready"), 0o600); err != nil {
 		return 2
 	}
