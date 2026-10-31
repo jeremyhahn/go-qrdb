@@ -159,8 +159,11 @@ func TestBuildTLSConfig_CustomNextProtosNotShared(t *testing.T) {
 				t.Fatalf("BuildTLSConfig: %v", err)
 			}
 			got.NextProtos = append(got.NextProtos, "h2")
-			if spare := backing[1:cap(backing)]; spare[0] != "" || spare[1] != "" || spare[2] != "" {
-				t.Errorf("caller's NextProtos backing array was written: %q", backing[:cap(backing)])
+			for _, spare := range backing[len(backing):cap(backing)] {
+				if spare != "" {
+					t.Errorf("caller's NextProtos backing array was written: %q", backing[:cap(backing)])
+					break
+				}
 			}
 			if len(custom.NextProtos) != 1 || custom.NextProtos[0] != "http/1.1" {
 				t.Errorf("caller NextProtos = %q, want [http/1.1]", custom.NextProtos)
