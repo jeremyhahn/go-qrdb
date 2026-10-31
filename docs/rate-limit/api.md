@@ -34,8 +34,8 @@ unavailable loses the reason and points at the node's health.
 The pre-authentication limit (`transport.client_rate_limit`) refuses before
 a request is authenticated, with the same status per transport as the table
 above: REST and MCP answer the HTTP request itself with `429` and
-`Retry-After` (MCP before its JSON-RPC layer runs), gRPC and the Unix socket
-`codes.ResourceExhausted` with a `google.rpc.RetryInfo` detail, QUIC
+`Retry-After` (MCP before its JSON-RPC layer runs), gRPC, the Unix socket and
+a database's etcd v3 listener `codes.ResourceExhausted` with a `google.rpc.RetryInfo` detail, QUIC
 `StatusResourceExhausted` with RetryInfo. The message names the client
 address, never a principal. A health check is refused like any other
 request, so a client's connect probe reports the refusal.

@@ -1275,18 +1275,25 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		handler = sealedWindowDispatch(s.sealedWindowDispatch, r)(handler)
 	}
 	handler = scopeMiddleware(handler)
+	var cors *corsPolicy
 	if s.corsConfig != nil {
-		handler = corsMiddleware(*s.corsConfig, handler)
+		cors = newCORSPolicy(*s.corsConfig)
+		handler = cors.preflight(handler)
 	}
 	// The client-address limiter (go-qrdb#1197) admits a request before the
 	// sealed window, authentication or any public-route allowlist does work
-	// on its behalf, and outside CORS so a preflight is charged too. It sits
-	// inside grpcWebDispatch: a gRPC-Web call is admitted by the gRPC
-	// server's interceptor and must not be charged twice, while a request
-	// under its prefix that the gRPC-Web handler answers itself (a
-	// preflight, another method or media type) is charged by
-	// grpcWebDispatch through this same limiter.
+	// on its behalf, and below the CORS preflight so a preflight is charged
+	// too, but below the CORS headers so an allowed origin's 429 carries
+	// Access-Control-Allow-Origin and the browser sees the rate limit, not
+	// a CORS failure. It sits inside grpcWebDispatch: a gRPC-Web call is
+	// admitted by the gRPC server's interceptor and must not be charged
+	// twice, while a request under its prefix that the gRPC-Web handler
+	// answers itself (a preflight, another method or media type) is charged
+	// by grpcWebDispatch through this same limiter.
 	handler = s.clientLimit.HTTP(handler)
+	if cors != nil {
+		handler = cors.headers(handler)
+	}
 	// canonicalPathMiddleware must see the SAME path every layer below it
 	// does -- sealed window, authentication and authorization, SO dual
 	// factor, and chi's routing. See its own doc comment. The HTTP/3

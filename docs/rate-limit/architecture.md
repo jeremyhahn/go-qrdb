@@ -64,8 +64,13 @@ The reference `Limiter`, `TokenBucketLimiter`, holds one bucket per
 retry loop rather than a mutex: concurrent callers for different keys never
 contend, and concurrent callers for the same key retry their own attempt
 rather than blocking on one another. A background goroutine reclaims buckets
-idle past a configurable TTL, bounding memory for a caller population that
-comes and goes rather than staying fixed.
+idle past a configurable TTL (ten minutes by default), bounding memory for a
+caller population that comes and goes rather than staying fixed. A bucket is
+never reclaimed before it has refilled to its burst, since a fresh bucket
+would grant its key tokens early: at one request an hour with a burst of one,
+the drained bucket is kept for the hour. Each key's memory is held for the
+longer of the TTL and its policy's refill window (`Burst / RatePerSecond`)
+after its last request, plus one sweep interval.
 
 ### Alternatives rejected
 
@@ -109,7 +114,9 @@ bucket keyed by **client address**, configured once per node as
   public-route allowlist, the sealed-window and awaiting-admin gates: the
   REST and MCP HTTP handlers (HTTP/2 and HTTP/3), the gRPC unary and stream
   interceptors, the native QUIC request dispatcher, the
-  Unix-socket gRPC listener, and the MySQL and PostgreSQL wire listeners,
+  Unix-socket gRPC listener, each database's etcd v3 gRPC listener (the same
+  interceptors, ahead of its request authorizer), and the MySQL and
+  PostgreSQL wire listeners,
   which charge the accepted connection's peer address once when the
   connection is established and again for every statement it sends. One
   `Limiter` per node, so an address's budget is the same whichever protocol
@@ -154,7 +161,11 @@ bucket keyed by **client address**, configured once per node as
   exhausted field, or a hop that is not an IP address, ends the walk the
   same way.
 - **The refusal.** `RateLimitedError`, naming the address and the wait: 429
-  with `Retry-After` on REST and MCP, `ResourceExhausted` with a RetryInfo
+  with `Retry-After` on REST and MCP (on REST, a request from an allowed
+  CORS origin gets the `Access-Control-Allow-Origin` and `Vary` headers a
+  served request would, so a browser reports the rate limit rather than a
+  CORS failure; the limiter still sits below the CORS preflight answer, so
+  a preflight is charged), `ResourceExhausted` with a RetryInfo
   detail on gRPC and the Unix socket, `RESOURCE_EXHAUSTED` with RetryInfo on
   native QUIC. The SQL listeners answer in their own wire protocol's terms:
   MySQL with an ERR packet carrying error 1226, `ER_USER_LIMIT_REACHED`,

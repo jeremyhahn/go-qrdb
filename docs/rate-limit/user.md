@@ -14,7 +14,8 @@ no CLI or runtime configuration surface — see [cli.md](cli.md) and
 ## For an operator: limiting each client address
 
 Every listener a node runs -- REST (gRPC-Web included), gRPC, native QUIC,
-MCP, the Unix socket, and the MySQL and PostgreSQL wire listeners -- admits
+MCP, the Unix socket, a database's etcd v3 listener, and the MySQL and
+PostgreSQL wire listeners -- admits
 a request against its client address's
 token bucket before authenticating it, so a flood of handshake, login or
 enrollment attempts is bounded before any principal exists. Set it in the

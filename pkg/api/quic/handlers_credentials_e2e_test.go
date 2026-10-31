@@ -142,6 +142,16 @@ func credentialE2ERoundTrip(
 		t.Fatalf("open stream: %v", err)
 	}
 	defer func() { _ = stream.Close() }()
+	// The context bounds dial and open only; the stream's reads and writes
+	// take its deadline too. The server's keep-alive PINGs (every half the
+	// negotiated idle timeout) keep the connection from idling out, so
+	// without this a handler that never answers holds ReadResponse until the
+	// package timeout instead of failing this call.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := stream.SetDeadline(deadline); err != nil {
+			t.Fatalf("stream deadline: %v", err)
+		}
+	}
 
 	if err := wire.WriteRequest(stream, method, "", 1, payload); err != nil {
 		t.Fatalf("write request: %v", err)

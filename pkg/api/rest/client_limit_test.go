@@ -56,6 +56,75 @@ func restWithClientLimiter(t *testing.T, authn *dispatchAuthenticator, l *client
 	return NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", opts...).Handler()
 }
 
+// TestClientLimit_RefusalCarriesCORSHeaders is the regression for a 429 that
+// lost its CORS headers: the limiter sits outside CORS so a preflight is
+// charged, and so its refusal was written before CORS set
+// Access-Control-Allow-Origin, which a browser reports as a CORS failure
+// rather than as the rate limit. An allowed origin's refusal carries the
+// headers CORS would set; a disallowed origin's does not; a preflight is
+// still charged.
+func TestClientLimit_RefusalCarriesCORSHeaders(t *testing.T) {
+	cors := WithCORS(CORSConfig{AllowedOrigins: []string{"https://app.example.com"}, AllowedHeaders: []string{"Content-Type"}, MaxAge: 600})
+	send := func(h http.Handler, method, origin, remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/health", nil)
+		req.RemoteAddr = remote
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if method == http.MethodOptions {
+			req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("allowed origin", func(t *testing.T) {
+		h := clientLimitedREST(t, &dispatchAuthenticator{}, 1, nil, cors)
+		send(h, http.MethodGet, "https://app.example.com", "192.0.2.10:1000")
+		rec := send(h, http.MethodGet, "https://app.example.com", "192.0.2.10:1000")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+			t.Fatalf("Access-Control-Allow-Origin = %q, want the allowed origin", got)
+		}
+		if got := rec.Header().Values("Vary"); len(got) != 1 || got[0] != "Origin" {
+			t.Fatalf("Vary = %q, want exactly [Origin]", got)
+		}
+	})
+
+	t.Run("disallowed origin", func(t *testing.T) {
+		h := clientLimitedREST(t, &dispatchAuthenticator{}, 1, nil, cors)
+		send(h, http.MethodGet, "https://evil.example.net", "192.0.2.11:1000")
+		rec := send(h, http.MethodGet, "https://evil.example.net", "192.0.2.11:1000")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("Access-Control-Allow-Origin = %q on a disallowed origin's refusal", got)
+		}
+	})
+
+	t.Run("preflight is charged", func(t *testing.T) {
+		h := clientLimitedREST(t, &dispatchAuthenticator{}, 1, nil, cors)
+		pre := send(h, http.MethodOptions, "https://app.example.com", "192.0.2.12:1000")
+		if pre.Code != http.StatusNoContent || pre.Header().Get("Access-Control-Allow-Methods") == "" {
+			t.Fatalf("preflight = %d, Allow-Methods %q; want 204 with the preflight headers", pre.Code, pre.Header().Get("Access-Control-Allow-Methods"))
+		}
+		if got := pre.Header().Values("Vary"); len(got) != 1 {
+			t.Fatalf("preflight Vary = %q, want exactly one Origin", got)
+		}
+		rec := send(h, http.MethodOptions, "https://app.example.com", "192.0.2.12:1000")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("second preflight status = %d, want 429: a preflight spends the bucket", rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+			t.Fatalf("refused preflight Access-Control-Allow-Origin = %q, want the allowed origin", got)
+		}
+	})
+}
+
 func serveFrom(h http.Handler, remote, path string, header ...string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.RemoteAddr = remote

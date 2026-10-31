@@ -15,6 +15,7 @@
 package ratelimit
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -209,6 +210,54 @@ func TestTokenBucketLimiter_ReapEvictsIdleBuckets(t *testing.T) {
 	}
 	if allowed, _ := l.Allow("caller-f", policy); !allowed {
 		t.Fatal("a reclaimed key must start again at full burst")
+	}
+}
+
+// TestTokenBucketLimiter_ReapKeepsBucketUntilRefilled is the regression for a
+// policy whose refill window outlasts idleTTL: at one request an hour with a
+// burst of one, reclaiming the drained bucket after the default ten minutes
+// handed its caller a fresh token fifty minutes early.
+func TestTokenBucketLimiter_ReapKeepsBucketUntilRefilled(t *testing.T) {
+	clock := newFakeClock(time.Now())
+	ticks := make(chan time.Time)
+	l := NewTokenBucketLimiter(withClock(clock.Now), withSweepTicks(ticks))
+	t.Cleanup(func() { _ = l.Close() })
+	policy := Policy{RatePerSecond: 1.0 / 3600, Burst: 1}
+
+	if allowed, _ := l.Allow("caller-slow", policy); !allowed {
+		t.Fatal("want the first request allowed")
+	}
+	clock.Advance(defaultIdleTTL + 2*defaultSweepInterval)
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	if _, loaded := l.buckets.Load("caller-slow"); !loaded {
+		t.Fatal("a bucket still refilling was reclaimed past idleTTL")
+	}
+	if allowed, retryAfter := l.Allow("caller-slow", policy); allowed || retryAfter <= 0 {
+		t.Fatalf("Allow = %v, retryAfter %v; want refused until the hour has passed", allowed, retryAfter)
+	}
+
+	// The refused request touched the bucket without spending a token, so it
+	// is full an hour after the first one; past that and idleTTL it goes.
+	clock.Advance(time.Hour)
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	if _, loaded := l.buckets.Load("caller-slow"); loaded {
+		t.Fatal("want the refilled, idle bucket reclaimed")
+	}
+	if allowed, _ := l.Allow("caller-slow", policy); !allowed {
+		t.Fatal("want a request allowed once the refill window has passed")
+	}
+}
+
+func TestTake_FullAtIsWhenTheBucketRefillsToBurst(t *testing.T) {
+	policy := Policy{RatePerSecond: 2, Burst: 4}
+	next, allowed, _ := take(nil, 0, policy)
+	if !allowed || next.fullAt != int64(500*time.Millisecond) {
+		t.Fatalf("after one token: allowed %v, fullAt %d; want true, %d", allowed, next.fullAt, int64(500*time.Millisecond))
+	}
+	if next, _, _ = take(&bucketState{tokens: 4, lastRefill: 0}, 0, Policy{RatePerSecond: 1e-300, Burst: 4}); next.fullAt != math.MaxInt64 {
+		t.Fatalf("a refill beyond int64 nanoseconds: fullAt %d; want MaxInt64", next.fullAt)
 	}
 }
 

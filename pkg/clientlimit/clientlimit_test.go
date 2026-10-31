@@ -340,6 +340,66 @@ func TestClientAddress_MixedProxyChain(t *testing.T) {
 	}
 }
 
+// TestClientAddress_MalformedForwardedFallsBackToPeer is the regression for
+// an unterminated quoted-string: a client behind a proxy that appends to
+// Forwarded sends for=<chosen>;x=" and the open quote swallows the hop the
+// proxy appends, so the client's own choice of address was taken. RFC 7239
+// §4 builds the field from RFC 7230 quoted-strings, so such a field is
+// malformed as a whole and the request is keyed by the trusted peer -- never
+// by X-Forwarded-For, which the same client may have written.
+func TestClientAddress_MalformedForwardedFallsBackToPeer(t *testing.T) {
+	fwd := newLimiter(t, 1, fwdProxy("10.0.0.0/8"))
+	xff := newLimiter(t, 1, xffProxy("10.0.0.0/8"))
+	proxy := tcp("10.0.0.1:443")
+	cases := []struct {
+		name string
+		l    *Limiter
+		h    HeaderFunc
+		want string
+	}{
+		{"open quote hides appended hop", fwd, headers(HeaderForwarded, `for=203.0.113.1;x=", for=198.51.100.7`), "10.0.0.1"},
+		{"open quote across field lines", fwd, headers(HeaderForwarded, `for=203.0.113.1;x="`, HeaderForwarded, "for=198.51.100.7"), "10.0.0.1"},
+		{"trailing backslash in quoted-pair", fwd, headers(HeaderForwarded, `for=198.51.100.7;x="a\`), "10.0.0.1"},
+		{"quote in last element", fwd, headers(HeaderForwarded, `for=198.51.100.7, for=203.0.113.1;x="`), "10.0.0.1"},
+		{"open quote in for value", fwd, headers(HeaderForwarded, `for="203.0.113.1`), "10.0.0.1"},
+		{"malformed forwarded does not fall back to xff", fwd, headers(HeaderForwarded, `for=198.51.100.7;x="`, HeaderXForwardedFor, "203.0.113.9"), "10.0.0.1"},
+		{"escaped quote inside closed string", fwd, headers(HeaderForwarded, `for=198.51.100.7;x="a\",b"`), "198.51.100.7"},
+		{"xff has no quoting to hide a hop", xff, headers(HeaderXForwardedFor, `203.0.113.1";x="`, HeaderXForwardedFor, "198.51.100.7"), "198.51.100.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.l.ClientAddress(proxy, tc.h); got != tc.want {
+				t.Fatalf("key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAppendForwarded_ReportsUnterminatedQuoting holds the quoting cases of
+// the splitter the RFC 7239 grammar parser replaced: a separator inside a
+// closed quoted-string does not split, and a line that ends inside one --
+// unterminated, or with a quoted-pair left open -- is refused.
+func TestAppendForwarded_ReportsUnterminatedQuoting(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantHops int
+		wantOK   bool
+	}{
+		{`a=1,b=2`, 2, true},
+		{`a="x,y",b=2`, 2, true},
+		{`a="x\"y",b=2`, 2, true},
+		{`a="x`, 0, false},
+		{`a="x\`, 0, false},
+		{`a="x\"`, 0, false},
+	}
+	for _, tc := range cases {
+		hops, ok := appendForwarded(nil, tc.in)
+		if ok != tc.wantOK || (ok && len(hops) != tc.wantHops) {
+			t.Errorf("appendForwarded(%q) = %d hops, ok=%v; want %d, %v", tc.in, len(hops), ok, tc.wantHops, tc.wantOK)
+		}
+	}
+}
+
 // TestAdmit_ClientForwardedCannotBypassXFFProxy is the bypass of PR #1253's
 // third review: behind a proxy appending only X-Forwarded-For, a client
 // rotating its own Forwarded field must not buy a fresh bucket.

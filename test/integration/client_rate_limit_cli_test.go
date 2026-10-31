@@ -19,11 +19,14 @@ package integration_test
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +34,8 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // clientRateLimitBurst is large enough for the harness's own start-up
@@ -41,13 +46,13 @@ const clientRateLimitBurst = 400
 // drainLoopbackBucket spends 127.0.0.1's bucket with unauthenticated REST
 // requests, each naming a different client in an X-Forwarded-For header that
 // an untrusted peer cannot make the limiter read, and returns the 429.
-func drainLoopbackBucket(t *testing.T, node *multiProtoNode) *http.Response {
+func drainLoopbackBucket(t *testing.T, roots *x509.CertPool, restPort int) *http.Response {
 	t.Helper()
 	c := &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: node.ca.Pool, MinVersion: tls.VersionTLS13},
+		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS13},
 	}}
 	defer c.CloseIdleConnections()
-	url := fmt.Sprintf("https://127.0.0.1:%d/health", node.restPort)
+	url := fmt.Sprintf("https://127.0.0.1:%d/health", restPort)
 	for i := 0; i <= clientRateLimitBurst; i++ {
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
@@ -81,7 +86,7 @@ func TestClientRateLimit_CLI_PerProtocol(t *testing.T) {
 		"--enable-mysql", "--mysql-port", fmt.Sprintf("%d", sqlPorts[0]),
 		"--enable-pgsql", "--pgsql-port", fmt.Sprintf("%d", sqlPorts[1]))
 
-	resp := drainLoopbackBucket(t, node)
+	resp := drainLoopbackBucket(t, node.ca.Pool, node.restPort)
 	if resp.Header.Get("Retry-After") == "" {
 		t.Fatal("429 carries no Retry-After")
 	}
@@ -159,4 +164,32 @@ func TestClientRateLimit_CLI_PerProtocol(t *testing.T) {
 			t.Fatalf("drained address: want FATAL 08004 naming the rate limit, got %v", pgErr)
 		}
 	})
+}
+
+// TestClientRateLimit_Etcd drains 127.0.0.1's bucket over REST on a node
+// built with the etcd v3 listener and checks an etcd client from the same
+// address is refused with ResourceExhausted before it is authorized: the
+// etcd listener is its own gRPC server and shares the node's one bucket.
+func TestClientRateLimit_Etcd(t *testing.T) {
+	t.Parallel()
+	cfgPath := filepath.Join(t.TempDir(), "qrdbd.yaml")
+	cfg := fmt.Sprintf("transport:\n  client_rate_limit:\n    rate_per_second: 0.001\n    burst: %d\n", clientRateLimitBurst)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	adminPort, etcdPort, ca := startSingleNodeWithEtcd(t, "--config", cfgPath)
+
+	drainLoopbackBucket(t, ca.Pool, adminPort)
+
+	cli := newEtcdClient(t, ca, etcdPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := cli.Get(ctx, "rate-limit-probe")
+	if err == nil {
+		t.Fatal("drained address served over etcd")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.ResourceExhausted || !strings.Contains(st.Message(), "rate limit") {
+		t.Fatalf("drained address: want ResourceExhausted naming the rate limit, got %v", err)
+	}
 }
