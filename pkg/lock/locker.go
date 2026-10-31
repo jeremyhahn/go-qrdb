@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -38,7 +39,9 @@ type Locker interface {
 	TryLock(ctx context.Context, opts LockOptions) (*Lock, error)
 
 	// Unlock releases the lock identified by key and fencingToken.
-	// Returns NotLockHolderError when the token does not match.
+	// Returns NotLockHolderError when the token does not match, and
+	// ErrUnlockContended when concurrent writes to the lock outlast its
+	// retries.
 	Unlock(ctx context.Context, key string, fencingToken int64) error
 
 	// Extend refreshes the TTL of an existing lock via keepalive.
@@ -64,6 +67,12 @@ type Service struct {
 	kvSvc    MVCCKVServicer
 	logger   *slog.Logger
 	clock    clock.Clock
+	// tokenFieldRetired reports whether every node reads the fencing token
+	// from the key's create revision; nil means it does.
+	tokenFieldRetired func() bool
+	// isRetryable reports whether a failed write may land if sent again;
+	// nil means none may.
+	isRetryable func(error) bool
 }
 
 // Compile-time interface check.
@@ -82,6 +91,118 @@ func WithClock(c clock.Clock) Option {
 		if c != nil {
 			s.clock = c
 		}
+	}
+}
+
+// WithTokenFieldRetired supplies the check that every node serving the lock
+// keys reads the fencing token from the key's create revision. Until it
+// reports true the lock record keeps the fencing_token field a binary from
+// before that reads: an acquisition stores it, and a re-entry or a reentrant
+// release's decrement rewrites it, always with the create revision, so both
+// formats name the same token. Once it reports true the field is dropped.
+// Without this option the field is never written, which is right only where
+// every node runs this binary.
+func WithTokenFieldRetired(retired func() bool) Option {
+	return func(s *Service) {
+		s.tokenFieldRetired = retired
+	}
+}
+
+// WithRetryable supplies the check that a write which failed with an error
+// may land if it is sent again: the transport could not say whether it was
+// applied, or the shard's leader changed under it. recordToken retries only
+// such a failure. Without this option no failure is retried.
+func WithRetryable(retryable func(error) bool) Option {
+	return func(s *Service) {
+		s.isRetryable = retryable
+	}
+}
+
+const (
+	// maxTokenStoreAttempts bounds recordToken's writes of one fencing token,
+	// the first included.
+	maxTokenStoreAttempts = 4
+
+	// tokenStoreBackoff is recordToken's wait between two attempts.
+	tokenStoreBackoff time.Duration = 50 * time.Millisecond
+)
+
+// storedToken is the fencing_token a write of the lock record carries: the
+// create revision while a node may still read the field, and zero, which
+// omits it, once none does.
+func (s *Service) storedToken(createRevision int64) int64 {
+	if s.tokenFieldRetired == nil || s.tokenFieldRetired() {
+		return 0
+	}
+	return createRevision
+}
+
+// recordToken stores the fencing token in the record the acquire just
+// created, for a node that reads the field. It is a compare-and-swap on the
+// acquire's own revision, so it writes nothing once the lock has been
+// released, re-entered (which stores the token itself) or re-acquired, and
+// can never write a released key back. A write that fails with an error
+// WithRetryable classes as retryable is sent again, the same compare-and-swap,
+// after tokenStoreBackoff, up to maxTokenStoreAttempts in all and never past
+// ctx; a compare that lost is not, since the record is no longer the one this
+// acquire wrote. A write still failing then leaves the lock held and is
+// logged: the field is advisory to this binary.
+func (s *Service) recordToken(ctx context.Context, key string, createRevision int64, lv lockValue) {
+	lv.FencingToken = s.storedToken(createRevision)
+	if lv.FencingToken == 0 {
+		return
+	}
+	updated, err := json.Marshal(lv)
+	if err != nil {
+		s.logger.Warn("lock: storing the fencing token for older nodes failed",
+			"key", key, "fencing_token", createRevision, "error", err)
+		return
+	}
+	compares := []Compare{{
+		Key:         []byte(lockKey(key)),
+		Target:      CompareModRevision,
+		Result:      CompareEqual,
+		ModRevision: createRevision,
+	}}
+	ops := []Op{{
+		Type:    OpPut,
+		Key:     []byte(lockKey(key)),
+		Value:   updated,
+		LeaseID: lv.LeaseID,
+	}}
+	for attempt := 1; ; attempt++ {
+		resp, err := s.txSvc.Execute(ctx, compares, ops, nil)
+		if err == nil {
+			if !resp.Succeeded {
+				s.logger.Info("lock: fencing token not stored, the record moved",
+					"key", key, "fencing_token", createRevision, "attempts", attempt)
+			}
+			return
+		}
+		if attempt == maxTokenStoreAttempts || !s.retryable(err) || !s.backoff(ctx) {
+			s.logger.Warn("lock: storing the fencing token for older nodes failed",
+				"key", key, "fencing_token", createRevision, "attempts", attempt, "error", err)
+			return
+		}
+	}
+}
+
+// retryable reports whether a write that failed with err may land if sent
+// again; without WithRetryable nothing is.
+func (s *Service) retryable(err error) bool {
+	return s.isRetryable != nil && s.isRetryable(err)
+}
+
+// backoff waits tokenStoreBackoff before recordToken's next attempt. It
+// reports false, without waiting it out, when ctx ends first.
+func (s *Service) backoff(ctx context.Context) bool {
+	timer := s.clock.NewTimer(tokenStoreBackoff)
+	defer timer.Stop()
+	select {
+	case <-timer.C():
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -126,7 +247,9 @@ func NewLocker(
 
 // TryLock attempts to acquire the lock without blocking. It returns
 // immediately with LockHeldError when the lock is held by a different
-// owner, or with the acquired Lock on success.
+// owner, or with the acquired Lock on success. A lock released while TryLock
+// reads its holder, or re-enters it, is free, so TryLock takes it rather than
+// report it held or write it back onto the released lease.
 func (s *Service) TryLock(ctx context.Context, opts LockOptions) (*Lock, error) {
 	if opts.Key == "" {
 		return nil, ErrEmptyKey
@@ -182,22 +305,49 @@ func (s *Service) TryLock(ctx context.Context, opts LockOptions) (*Lock, error) 
 		},
 	}
 
-	resp, err := s.txSvc.Execute(ctx, compares, successOps, nil)
-	if err != nil {
-		// The transaction's outcome may be unknown (go-quicraft committed
-		// the proposal and then failed to deliver the response): revoking
-		// the lease here would destroy a lock this attempt may have
-		// actually acquired. Re-read the key first -- if it is now bound to
-		// exactly the lease this attempt just granted, the PUT committed
-		// despite the error, and the lock is genuinely held, so return it
-		// instead of revoking and reporting failure. Anything else (a read
-		// failure, a different lease, no key at all) leaves the original
-		// error as the honest answer, matching the pattern
-		// PromoteJoinIdentityAdmitted uses for the identical ambiguity.
-		if current, getErr := s.kvSvc.GetRevision(ctx, lockKey(opts.Key)); getErr == nil && current.LeaseID == lease.ID {
+	// A release that lands between a failed CAS and the read of the holder
+	// leaves no key to read, and one that lands between that read and a
+	// reentrant update fails the update's CAS: either way the lock may be
+	// free, so the CAS is retried with the lease already granted. Every retry
+	// follows another caller's completed write to the key, so the loop makes
+	// progress; it ends with ctx.
+	for {
+		resp, err := s.txSvc.Execute(ctx, compares, successOps, nil)
+		if err != nil {
+			// The transaction's outcome may be unknown (go-quicraft committed
+			// the proposal and then failed to deliver the response): revoking
+			// the lease here would destroy a lock this attempt may have
+			// actually acquired. Re-read the key first -- if it is now bound
+			// to exactly the lease this attempt just granted, the PUT
+			// committed despite the error, and the lock is genuinely held, so
+			// return it instead of revoking and reporting failure. Anything
+			// else (a read failure, a different lease, no key at all) leaves
+			// the original error as the honest answer, matching the pattern
+			// PromoteJoinIdentityAdmitted uses for the identical ambiguity.
+			if committed, getErr := s.kvSvc.GetRevision(ctx, lockKey(opts.Key)); getErr == nil && committed.LeaseID == lease.ID {
+				s.recordToken(ctx, opts.Key, committed.CreateRevision, lv)
+				return &Lock{
+					Key:          opts.Key,
+					FencingToken: committed.CreateRevision,
+					LeaseID:      lease.ID,
+					HolderID:     opts.HolderID,
+					Reentrant:    opts.Reentrant,
+					AcquireCount: 1,
+					TTL:          ttlSecs,
+					AcquiredAt:   now,
+				}, nil
+			}
+			_ = s.leaseSvc.Revoke(ctx, lease.ID)
+			return nil, err
+		}
+
+		if resp.Succeeded {
+			// The transaction's one put created the key, so its revision
+			// is the key's create revision: the fencing token.
+			s.recordToken(ctx, opts.Key, resp.Revision, lv)
 			return &Lock{
 				Key:          opts.Key,
-				FencingToken: current.ModRevision,
+				FencingToken: resp.Revision,
 				LeaseID:      lease.ID,
 				HolderID:     opts.HolderID,
 				Reentrant:    opts.Reentrant,
@@ -206,90 +356,93 @@ func (s *Service) TryLock(ctx context.Context, opts LockOptions) (*Lock, error) 
 				AcquiredAt:   now,
 			}, nil
 		}
-		_ = s.leaseSvc.Revoke(ctx, lease.ID)
-		return nil, err
-	}
 
-	if resp.Succeeded {
-		// Store the fencing token in the value so it survives reentrant
-		// updates. The token is the MVCC revision of the initial acquisition.
-		lv.FencingToken = resp.Revision
-		if updated, err := json.Marshal(lv); err == nil {
-			// Best-effort update to persist the fencing token. If this fails,
-			// the token is still returned to the caller from resp.Revision.
-			updateOps := []Op{{Type: OpPut, Key: []byte(lockKey(opts.Key)), Value: updated, LeaseID: lease.ID}}
-			_, _ = s.txSvc.Execute(ctx, nil, updateOps, nil)
-		}
-
-		return &Lock{
-			Key:          opts.Key,
-			FencingToken: resp.Revision,
-			LeaseID:      lease.ID,
-			HolderID:     opts.HolderID,
-			Reentrant:    opts.Reentrant,
-			AcquireCount: 1,
-			TTL:          ttlSecs,
-			AcquiredAt:   now,
-		}, nil
-	}
-
-	// CAS failed: the key already exists. Read the current holder.
-	current, err := s.kvSvc.GetRevision(ctx, lockKey(opts.Key))
-	if err != nil {
-		_ = s.leaseSvc.Revoke(ctx, lease.ID)
-		return nil, err
-	}
-
-	var existing lockValue
-	if err := json.Unmarshal(current.Value, &existing); err != nil {
-		_ = s.leaseSvc.Revoke(ctx, lease.ID)
-		return nil, err
-	}
-
-	// Reentrant re-acquisition by the same holder. Both the caller and
-	// the existing lock must have reentrant enabled to allow re-entry.
-	if existing.HolderID == opts.HolderID && opts.Reentrant && existing.Reentrant {
-		existing.AcquireCount++
-
-		updated, err := json.Marshal(existing)
-		if err != nil {
+		// CAS failed: the key already exists. Read the current holder.
+		current, err := s.kvSvc.GetRevision(ctx, lockKey(opts.Key))
+		if isKeyNotFound(err) {
+			current = nil
+		} else if err != nil {
 			_ = s.leaseSvc.Revoke(ctx, lease.ID)
 			return nil, err
 		}
+		if current != nil {
+			var existing lockValue
+			if err := json.Unmarshal(current.Value, &existing); err != nil {
+				_ = s.leaseSvc.Revoke(ctx, lease.ID)
+				return nil, err
+			}
 
-		// Revoke the newly granted lease -- we reuse the existing one.
-		_ = s.leaseSvc.Revoke(ctx, lease.ID)
-
-		putOps := []Op{
-			{
-				Type:    OpPut,
-				Key:     []byte(lockKey(opts.Key)),
-				Value:   updated,
-				LeaseID: existing.LeaseID,
-			},
+			// Reentrant re-acquisition by the same holder. Both the caller
+			// and the existing lock must have reentrant enabled to allow
+			// re-entry.
+			if existing.HolderID != opts.HolderID || !opts.Reentrant || !existing.Reentrant {
+				_ = s.leaseSvc.Revoke(ctx, lease.ID)
+				return nil, &LockHeldError{Key: opts.Key, HolderID: existing.HolderID}
+			}
+			lock, reentered, err := s.reenter(ctx, opts.Key, current.CreateRevision, current.ModRevision, existing)
+			if err != nil || reentered {
+				// The update reuses the existing lease, so the newly
+				// granted one is not needed whatever its outcome.
+				_ = s.leaseSvc.Revoke(ctx, lease.ID)
+				return lock, err
+			}
 		}
-		if _, err := s.txSvc.Execute(ctx, nil, putOps, nil); err != nil {
+		if err := ctx.Err(); err != nil {
+			_ = s.leaseSvc.Revoke(ctx, lease.ID)
 			return nil, err
 		}
+	}
+}
 
-		// Return the stored fencing token from the initial acquisition.
-		// Reentrant re-acquisition does not change ownership, so the
-		// fencing token remains stable across re-entries.
-		return &Lock{
-			Key:          opts.Key,
-			FencingToken: existing.FencingToken,
-			LeaseID:      existing.LeaseID,
-			HolderID:     existing.HolderID,
-			Reentrant:    existing.Reentrant,
-			AcquireCount: existing.AcquireCount,
-			TTL:          existing.TTL,
-			AcquiredAt:   existing.AcquiredAt,
-		}, nil
+// reenter increments the acquire count of the reentrant lock existing, read
+// at modRevision, keeping it bound to its own lease. The update is a CAS on
+// modRevision: a release (or another re-entry) since the read fails it, and
+// reenter reports false rather than write the lock back onto a lease the
+// release has revoked. The returned lock carries createRevision, the key's
+// create revision, as its fencing token: a re-entry does not change ownership.
+func (s *Service) reenter(ctx context.Context, key string, createRevision, modRevision int64, existing lockValue) (*Lock, bool, error) {
+	existing.AcquireCount++
+	existing.FencingToken = s.storedToken(createRevision)
+
+	updated, err := json.Marshal(existing)
+	if err != nil {
+		return nil, false, err
 	}
 
-	// Non-reentrant or different holder: revoke newly granted lease and report held.
-	_ = s.leaseSvc.Revoke(ctx, lease.ID)
-	return nil, &LockHeldError{Key: opts.Key, HolderID: existing.HolderID}
+	compares := []Compare{
+		{
+			Key:         []byte(lockKey(key)),
+			Target:      CompareModRevision,
+			Result:      CompareEqual,
+			ModRevision: modRevision,
+		},
+	}
+	putOps := []Op{
+		{
+			Type:    OpPut,
+			Key:     []byte(lockKey(key)),
+			Value:   updated,
+			LeaseID: existing.LeaseID,
+		},
+	}
+	resp, err := s.txSvc.Execute(ctx, compares, putOps, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if !resp.Succeeded {
+		return nil, false, nil
+	}
+
+	return &Lock{
+		Key:          key,
+		FencingToken: createRevision,
+		LeaseID:      existing.LeaseID,
+		HolderID:     existing.HolderID,
+		Reentrant:    existing.Reentrant,
+		AcquireCount: existing.AcquireCount,
+		TTL:          existing.TTL,
+		AcquiredAt:   existing.AcquiredAt,
+	}, true, nil
 }
 
 // Lock acquires the distributed lock, blocking until the lock is available
@@ -352,61 +505,100 @@ func (s *Service) Lock(ctx context.Context, opts LockOptions) (*Lock, error) {
 // Unlock releases the lock identified by key and fencingToken. For
 // reentrant locks with an AcquireCount greater than one, the count is
 // decremented rather than the lock being released. Returns
-// NotLockHolderError when the token does not match the current lock.
+// NotLockHolderError when the token does not match the current lock, and
+// ErrUnlockContended when every one of maxUnlockAttempts rounds loses its
+// compare-and-swap to a concurrent write.
 func (s *Service) Unlock(ctx context.Context, key string, fencingToken int64) error {
-	current, err := s.kvSvc.GetRevision(ctx, lockKey(key))
-	if err != nil {
-		var knf interface{ Error() string }
-		if errors.As(err, &knf) {
-			// Translate KeyNotFoundError to LockNotFoundError.
-			return &LockNotFoundError{Key: key}
-		}
-		return err
-	}
-	if current == nil {
-		return &LockNotFoundError{Key: key}
-	}
-
-	var lv lockValue
-	if err := json.Unmarshal(current.Value, &lv); err != nil {
-		return err
-	}
-
-	// Validate the fencing token against the stored token (set on
-	// initial acquisition and preserved through reentrant updates).
-	storedToken := lv.FencingToken
-	if storedToken == 0 {
-		// Backwards compat: locks created before FencingToken was persisted
-		// fall back to ModRevision.
-		storedToken = current.ModRevision
-	}
-	if storedToken != fencingToken {
-		return &NotLockHolderError{
-			Key:           key,
-			ExpectedToken: fencingToken,
-			ActualToken:   storedToken,
-		}
-	}
-
-	// Reentrant lock with remaining acquisitions: decrement and update.
-	if lv.Reentrant && lv.AcquireCount > 1 {
-		lv.AcquireCount--
-		updated, err := json.Marshal(lv)
+	// A write that lands between the read and the decrement or delete fails
+	// that CAS, so the read is retried: it re-checks the token and finds the
+	// new count, or no lock at all. Every retry follows another caller's
+	// completed write to the key, so the loop makes progress; it is bounded
+	// by maxUnlockAttempts and ends with ctx.
+	for range maxUnlockAttempts {
+		current, err := s.kvSvc.GetRevision(ctx, lockKey(key))
 		if err != nil {
+			if isKeyNotFound(err) {
+				return &LockNotFoundError{Key: key}
+			}
 			return err
 		}
-		putOps := []Op{
-			{
-				Type:    OpPut,
-				Key:     []byte(lockKey(key)),
-				Value:   updated,
-				LeaseID: lv.LeaseID,
-			},
+		if current == nil {
+			return &LockNotFoundError{Key: key}
 		}
-		_, err = s.txSvc.Execute(ctx, nil, putOps, nil)
-		return err
-	}
 
+		var lv lockValue
+		if err := json.Unmarshal(current.Value, &lv); err != nil {
+			return err
+		}
+
+		// The fencing token is the key's create revision, which re-entries
+		// leave unchanged and a re-acquisition always raises.
+		if current.CreateRevision != fencingToken {
+			return &NotLockHolderError{
+				Key:           key,
+				ExpectedToken: fencingToken,
+				ActualToken:   current.CreateRevision,
+			}
+		}
+
+		var done bool
+		if !lv.Reentrant || lv.AcquireCount <= 1 {
+			done, err = s.release(ctx, key, current.ModRevision, lv.LeaseID)
+		} else {
+			// Reentrant lock with remaining acquisitions: decrement and update.
+			done, err = s.decrement(ctx, key, current.CreateRevision, current.ModRevision, lv)
+		}
+		if err != nil || done {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return ErrUnlockContended
+}
+
+// maxUnlockAttempts bounds the read and compare-and-swap rounds of one
+// Unlock. Each lost round follows a completed write to the lock key by its
+// own holder, so exhausting it takes a sustained stream of such writes.
+const maxUnlockAttempts = 16
+
+// decrement writes lv back with one acquisition fewer, as a CAS on the
+// ModRevision read: it reports false when the key changed since that read.
+func (s *Service) decrement(ctx context.Context, key string, createRevision, modRevision int64, lv lockValue) (bool, error) {
+	lv.AcquireCount--
+	lv.FencingToken = s.storedToken(createRevision)
+	updated, err := json.Marshal(lv)
+	if err != nil {
+		return false, err
+	}
+	compares := []Compare{
+		{
+			Key:         []byte(lockKey(key)),
+			Target:      CompareModRevision,
+			Result:      CompareEqual,
+			ModRevision: modRevision,
+		},
+	}
+	putOps := []Op{
+		{
+			Type:    OpPut,
+			Key:     []byte(lockKey(key)),
+			Value:   updated,
+			LeaseID: lv.LeaseID,
+		},
+	}
+	resp, err := s.txSvc.Execute(ctx, compares, putOps, nil)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
+// release deletes the lock key, as a CAS on the ModRevision read, and
+// revokes its lease: it reports false, deleting nothing, when the key
+// changed since that read.
+func (s *Service) release(ctx context.Context, key string, modRevision, leaseID int64) (bool, error) {
 	// CAS delete: only delete if the current revision still matches
 	// (no concurrent modification since our read).
 	compares := []Compare{
@@ -414,7 +606,7 @@ func (s *Service) Unlock(ctx context.Context, key string, fencingToken int64) er
 			Key:         []byte(lockKey(key)),
 			Target:      CompareModRevision,
 			Result:      CompareEqual,
-			ModRevision: current.ModRevision,
+			ModRevision: modRevision,
 		},
 	}
 	deleteOps := []Op{
@@ -426,22 +618,14 @@ func (s *Service) Unlock(ctx context.Context, key string, fencingToken int64) er
 
 	resp, err := s.txSvc.Execute(ctx, compares, deleteOps, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
-
 	if !resp.Succeeded {
-		// Another holder modified the key between our read and delete.
-		// Use resp.Revision as the actual token since current.ModRevision
-		// matched fencingToken at the time of our initial read.
-		return &NotLockHolderError{
-			Key:           key,
-			ExpectedToken: fencingToken,
-			ActualToken:   resp.Revision,
-		}
+		return false, nil
 	}
 
 	// Revoke the lease to immediately clean up the key.
-	return s.leaseSvc.Revoke(ctx, lv.LeaseID)
+	return true, s.leaseSvc.Revoke(ctx, leaseID)
 }
 
 // Extend refreshes the TTL of an existing lock by issuing a lease keepalive.
@@ -449,7 +633,10 @@ func (s *Service) Unlock(ctx context.Context, key string, fencingToken int64) er
 func (s *Service) Extend(ctx context.Context, key string, fencingToken int64) (*Lock, error) {
 	current, err := s.kvSvc.GetRevision(ctx, lockKey(key))
 	if err != nil {
-		return nil, &LockNotFoundError{Key: key}
+		if isKeyNotFound(err) {
+			return nil, &LockNotFoundError{Key: key}
+		}
+		return nil, err
 	}
 	if current == nil {
 		return nil, &LockNotFoundError{Key: key}
@@ -460,15 +647,11 @@ func (s *Service) Extend(ctx context.Context, key string, fencingToken int64) (*
 		return nil, err
 	}
 
-	storedToken := lv.FencingToken
-	if storedToken == 0 {
-		storedToken = current.ModRevision
-	}
-	if storedToken != fencingToken {
+	if current.CreateRevision != fencingToken {
 		return nil, &NotLockHolderError{
 			Key:           key,
 			ExpectedToken: fencingToken,
-			ActualToken:   storedToken,
+			ActualToken:   current.CreateRevision,
 		}
 	}
 
@@ -479,7 +662,7 @@ func (s *Service) Extend(ctx context.Context, key string, fencingToken int64) (*
 
 	return &Lock{
 		Key:          key,
-		FencingToken: lv.FencingToken,
+		FencingToken: current.CreateRevision,
 		LeaseID:      lv.LeaseID,
 		HolderID:     lv.HolderID,
 		Reentrant:    lv.Reentrant,
@@ -494,8 +677,12 @@ func (s *Service) Extend(ctx context.Context, key string, fencingToken int64) (*
 func (s *Service) Status(ctx context.Context, key string) (*Lock, error) {
 	current, err := s.kvSvc.GetRevision(ctx, lockKey(key))
 	if err != nil {
-		// A KeyNotFoundError means the key is not locked; return nil, nil.
-		return nil, nil
+		// Only a missing key means the key is not locked; any other
+		// error is a failed read the caller must see.
+		if isKeyNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	if current == nil {
 		return nil, nil
@@ -508,7 +695,7 @@ func (s *Service) Status(ctx context.Context, key string) (*Lock, error) {
 
 	return &Lock{
 		Key:          key,
-		FencingToken: lv.FencingToken,
+		FencingToken: current.CreateRevision,
 		LeaseID:      lv.LeaseID,
 		HolderID:     lv.HolderID,
 		Reentrant:    lv.Reentrant,
@@ -541,7 +728,7 @@ func (s *Service) List(ctx context.Context, prefix string) ([]*Lock, error) {
 		}
 		locks = append(locks, &Lock{
 			Key:          userKey(string(kv.Key)),
-			FencingToken: lv.FencingToken,
+			FencingToken: kv.CreateRevision,
 			LeaseID:      lv.LeaseID,
 			HolderID:     lv.HolderID,
 			Reentrant:    lv.Reentrant,

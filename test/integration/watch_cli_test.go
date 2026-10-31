@@ -837,3 +837,40 @@ func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
 		t.Fatalf("[mcp] watch %s: SIGTERM to exit took %v, want <= %v", key, d, watchCancelGrace)
 	}
 }
+
+// TestWatch_CLI_MaxWatchersRefusesPastTheCap starts qrdbd with
+// watch.max_watchers 1, holds the one slot with a subscribed `qrdb watch`
+// over REST, and proves every transport then refuses a further watch with
+// the watcher-limit error instead of opening it. The cap is node-wide, so one
+// holder fills it for all five transports; the node's own watchers do not
+// count against it, which the node coming up healthy at a cap of 1 shows.
+func TestWatch_CLI_MaxWatchersRefusesPastTheCap(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", "watch:\n  max_watchers: 1\n")
+
+	holderProto := multiProtocol{name: "rest", scheme: "https"}
+	holdKey := "watchcap/held"
+	holder := startBackgroundWatch(t, node, holderProto, holdKey)
+	// An observed event proves the holder is subscribed, so it has the slot.
+	putUntilObserved(t, node, holderProto, holder, holdKey, "held", watchEventGrace)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			key := "watchcap/" + proto.name + "/refused"
+			out, err := runCLIProto(t, node, proto, "watch", key, "--timeout", watchReplayTimeout)
+			if !strings.Contains(strings.ToLower(out), "watcher limit reached") {
+				t.Fatalf("[%s] watch %s past max_watchers 1: err = %v, output = %q, want the watcher-limit refusal",
+					proto.name, key, err, out)
+			}
+			// REST refuses before the event stream opens: a non-zero exit, as
+			// for any request-time watch error (see the compacted case).
+			if proto.name == "rest" && err == nil {
+				t.Fatalf("[rest] watch %s past max_watchers 1 exited 0, want a non-zero exit; output: %s", key, out)
+			}
+		})
+	}
+
+	// The holder is untouched by the refusals.
+	putUntilObserved(t, node, holderProto, holder, holdKey, "still-held", watchEventGrace)
+}

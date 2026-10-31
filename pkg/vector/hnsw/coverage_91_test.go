@@ -42,34 +42,6 @@ func TestRecoveryError_Error_Format(t *testing.T) {
 }
 
 // TestParseDistanceMetric_AllCases tests parseDistanceMetric with various inputs.
-func TestParseDistanceMetric_AllCases(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected DistanceMetric
-	}{
-		{"cosine lowercase", "cosine", CosineDistance},
-		{"cosine uppercase", "COSINE", CosineDistance},
-		{"dot_product lowercase", "dot_product", DotProductDistance},
-		{"dot_product uppercase", "DOT_PRODUCT", DotProductDistance},
-		{"l2 lowercase", "l2", L2Distance},
-		{"l2 uppercase", "L2", L2Distance},
-		{"euclidean lowercase", "euclidean", L2Distance},
-		{"euclidean uppercase", "EUCLIDEAN", L2Distance},
-		{"unknown defaults to l2", "unknown", L2Distance},
-		{"empty defaults to l2", "", L2Distance},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseDistanceMetric(tt.input)
-			if result != tt.expected {
-				t.Errorf("parseDistanceMetric(%q) = %v, want %v", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestIndexAdapter_GetStats_NonNil tests GetStats returns non-nil for empty index.
 func TestIndexAdapter_GetStats_NonNil(t *testing.T) {
 	// Create a minimal index

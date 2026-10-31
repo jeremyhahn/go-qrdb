@@ -303,6 +303,18 @@ func (e *WatchStartRevisionUnsupportedError) Error() string {
 	return "transport: watch start revision not supported: " + e.Reason
 }
 
+// WatcherLimitError indicates the node refused a watch because every
+// watch.max_watchers slot it has is held. The refusal is the node's capacity,
+// not the request's: the same watch opens once another closes.
+type WatcherLimitError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *WatcherLimitError) Error() string {
+	return "transport: watch refused: " + e.Reason
+}
+
 // IndexExistsError is returned when an index already exists.
 type IndexExistsError struct {
 	Name string
@@ -375,6 +387,19 @@ type DimensionMismatchError struct {
 // Error returns a human-readable description.
 func (e *DimensionMismatchError) Error() string {
 	return "transport: dimension mismatch: expected " + strconv.Itoa(e.Expected) + ", got " + strconv.Itoa(e.Got)
+}
+
+// UnknownDistanceMetricError is returned when a vector distance metric has no
+// wire value: a name the caller passed, or a value a server answered. It is
+// never read as cosine.
+type UnknownDistanceMetricError struct {
+	Metric string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownDistanceMetricError) Error() string {
+	return "transport: unknown vector distance metric " + strconv.Quote(e.Metric) +
+		" (want cosine, euclidean, l2, dot_product or manhattan)"
 }
 
 // ReasonVectorNamespaceNotFound is the structured-refusal reason every

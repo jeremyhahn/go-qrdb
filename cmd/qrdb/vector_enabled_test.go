@@ -263,6 +263,16 @@ func TestParseDistanceMetric_DotProduct(t *testing.T) {
 	}
 }
 
+func TestParseDistanceMetric_Manhattan(t *testing.T) {
+	dm, err := parseDistanceMetric("manhattan")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dm != transport.DistanceManhattan {
+		t.Errorf("got %q, want %q", dm, transport.DistanceManhattan)
+	}
+}
+
 func TestParseDistanceMetric_Invalid(t *testing.T) {
 	_, err := parseDistanceMetric("hamming")
 	if err == nil {
@@ -485,6 +495,7 @@ func TestDistanceMetricName_Known(t *testing.T) {
 		{transport.DistanceCosine, "cosine"},
 		{transport.DistanceEuclidean, "euclidean"},
 		{transport.DistanceDotProduct, "dot-product"},
+		{transport.DistanceManhattan, "manhattan"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {

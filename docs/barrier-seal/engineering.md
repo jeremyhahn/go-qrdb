@@ -773,6 +773,15 @@ re-encrypted with the WAL into a keyed sibling, recorded in the journal's
 verification mismatch rolls the migration back before any swap, leaving every
 store under the old key.
 
+A standalone node whose `pebble` store keeps its write-ahead log outside the
+store directory (`storage.wal_dir` naming another directory) is refused
+before anything is minted or quiesced, with `MigrationNotSupportedError`
+naming `storage.wal_dir`. The migration copies, verifies and swaps the store
+directory alone: records still only in the external WAL would be lost, and
+that WAL would stay under the old encryption. A node that will migrate keeps
+`storage.wal_dir` empty from its first boot: Pebble refuses to reopen a store
+whose WAL directory has changed.
+
 ### A tenant-scope migration right after a system-scope recycle
 
 `server.scopedEncryptionMigrator` routes a `ScopeTenant` request through two

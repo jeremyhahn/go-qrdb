@@ -129,7 +129,7 @@ INTTEST_shamir_custody      := barrier_cli_test.go tenant_barrier_officer_cli_te
 INTTEST_sql                 := sql_alter_rewrite_test.go sql_autoincrement_test.go sql_catalog_enumeration_test.go sql_ddl_test.go sql_pgsql_literals_test.go sql_query_cli_test.go sql_query_tenant_scope_test.go sql_readonly_ddl_test.go sql_test.go entity_bridge_test.go
 # sqlite-vfs: a future feature, not implemented; nothing to select yet.
 INTTEST_sqlite_vfs          :=
-INTTEST_storage_engines     := admin_node_compaction_cli_test.go objstore_credentials_cli_test.go sm_storage_file_test.go
+INTTEST_storage_engines     := admin_node_compaction_cli_test.go objstore_credentials_cli_test.go sm_storage_file_test.go storage_tuning_cli_test.go
 INTTEST_tenant_dek          := dek_test.go dek_cli_test.go
 INTTEST_time_series         := ts_cli_test.go
 INTTEST_transactions        := sql_transaction_test.go tx_cli_test.go

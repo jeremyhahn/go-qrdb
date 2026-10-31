@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -78,6 +79,35 @@ func TestRefusalError_userConcurrentUpdate(t *testing.T) {
 	}
 	if !dberrors.Is(err, dberrors.ErrConflict) || !dberrors.IsRetryable(err) {
 		t.Fatalf("RefusalError() = %v, want a retryable ErrConflict", err)
+	}
+}
+
+// TestRefusalError_lockOutcomes pins that each lock refusal rebuilds the
+// typed lock error a caller matches with errors.As, fields included.
+func TestRefusalError_lockOutcomes(t *testing.T) {
+	held := &lock.LockHeldError{Key: "k", HolderID: "h"}
+	if got, ok := errors.AsType[*lock.LockHeldError](RefusalError(lock.ReasonLockHeld, held.Metadata())); !ok || *got != *held {
+		t.Fatalf("RefusalError(held) = %+v, want %+v", got, held)
+	}
+	notHolder := &lock.NotLockHolderError{Key: "k", ExpectedToken: 3, ActualToken: 4}
+	if got, ok := errors.AsType[*lock.NotLockHolderError](RefusalError(lock.ReasonNotLockHolder, notHolder.Metadata())); !ok || *got != *notHolder {
+		t.Fatalf("RefusalError(not holder) = %+v, want %+v", got, notHolder)
+	}
+	notFound := &lock.LockNotFoundError{Key: "k"}
+	if got, ok := errors.AsType[*lock.LockNotFoundError](RefusalError(lock.ReasonLockNotFound, notFound.Metadata())); !ok || *got != *notFound {
+		t.Fatalf("RefusalError(not found) = %+v, want %+v", got, notFound)
+	}
+}
+
+// TestRefusalError_lockOutcomeWithoutMetadataKeepsItsType pins that a lock
+// refusal whose metadata is missing still rebuilds the typed error: the
+// reason, not the metadata, carries the outcome.
+func TestRefusalError_lockOutcomeWithoutMetadataKeepsItsType(t *testing.T) {
+	if _, ok := errors.AsType[*lock.LockNotFoundError](RefusalError(lock.ReasonLockNotFound, nil)); !ok {
+		t.Fatal("RefusalError(LOCK_NOT_FOUND, nil) is not a *lock.LockNotFoundError")
+	}
+	if _, ok := errors.AsType[*lock.NotLockHolderError](RefusalError(lock.ReasonNotLockHolder, nil)); !ok {
+		t.Fatal("RefusalError(NOT_LOCK_HOLDER, nil) is not a *lock.NotLockHolderError")
 	}
 }
 

@@ -39,6 +39,7 @@ encrypt`/`dek rotate` refuse to mint a key.
 ## `qrdb dek rotate`
 
 Add a key version and make it current. Earlier versions keep decrypting.
+Prints the keyring as `dek status` does.
 
 ```bash
 qrdb dek rotate
@@ -47,7 +48,8 @@ qrdb dek rotate
 ## `qrdb dek retire <version>`
 
 Destroy an old version's key. The current version is refused. Rewrap every
-ciphertext under the version first: retirement is irreversible.
+ciphertext under the version first: retirement is irreversible. Prints the
+keyring as `dek status` does.
 
 ```bash
 qrdb dek retire 1

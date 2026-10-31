@@ -989,34 +989,30 @@ func mapGRPCError(method string, err error) error {
 		return &transport.BarrierSealedError{Message: st.Message()}
 	}
 
-	switch st.Code() {
-	case codes.NotFound:
-		// A refusal naming what is missing, such as a vector namespace,
-		// rebuilds its own typed error; anything else is a missing key.
-		reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
-		if typed := transport.RefusalError(reason, md); typed != nil {
-			return typed
+	// A structured refusal names the typed error exactly, whatever its code:
+	// a missing lock is NotFound and must not be read as a missing key.
+	reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
+	if typed := transport.RefusalError(reason, md); typed != nil {
+		err = typed
+	} else {
+		switch st.Code() {
+		case codes.NotFound:
+			return &transport.KeyNotFoundError{Key: st.Message()}
+		case codes.Unimplemented:
+			// The node is healthy and does not implement this verb on its
+			// configured state machine. Reconstituting the typed error here is what
+			// lets a consumer degrade gracefully over the wire exactly as it can
+			// embedded, instead of matching message text (go-qrdb#141).
+			return &transport.CapabilityUnsupportedError{Message: st.Message()}
 		}
-		return &transport.KeyNotFoundError{Key: st.Message()}
-	case codes.Unimplemented:
-		// The node is healthy and does not implement this verb on its
-		// configured state machine. Reconstituting the typed error here is what
-		// lets a consumer degrade gracefully over the wire exactly as it can
-		// embedded, instead of matching message text (go-qrdb#141).
-		return &transport.CapabilityUnsupportedError{Message: st.Message()}
-	default:
-		reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
-		if typed := transport.RefusalError(reason, md); typed != nil {
-			err = typed
-		}
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(st.Code()),
-			Err:        err,
-			RetryAfter: retryinfo.Delay(st),
-			Reason:     reason,
-			Metadata:   md,
-		}
+	}
+	return &transport.RequestError{
+		Method:     method,
+		StatusCode: int(st.Code()),
+		Err:        err,
+		RetryAfter: retryinfo.Delay(st),
+		Reason:     reason,
+		Metadata:   md,
 	}
 }
 

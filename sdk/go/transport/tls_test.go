@@ -136,6 +136,39 @@ func TestBuildTLSConfig_CustomMutationDoesNotReachCaller(t *testing.T) {
 	}
 }
 
+// TestBuildTLSConfig_CustomNextProtosNotShared pins #949 beyond the
+// pointer: tls.Config.Clone copies the NextProtos slice header, so a clone
+// whose NextProtos is appended to (by the ALPN merge here, or by net/http
+// adding "h2") writes into the caller's backing array whenever it has
+// spare capacity.
+func TestBuildTLSConfig_CustomNextProtosNotShared(t *testing.T) {
+	tests := []struct {
+		name       string
+		nextProtos []string
+	}{
+		{name: "no merge", nextProtos: nil},
+		{name: "ALPN merge", nextProtos: []string{"qrdb"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backing := make([]string, 1, 4)
+			backing[0] = "http/1.1"
+			custom := &tls.Config{NextProtos: backing[:1]}
+			got, err := BuildTLSConfig(TLSBuildOptions{Custom: custom, NextProtos: tt.nextProtos})
+			if err != nil {
+				t.Fatalf("BuildTLSConfig: %v", err)
+			}
+			got.NextProtos = append(got.NextProtos, "h2")
+			if spare := backing[1:cap(backing)]; spare[0] != "" || spare[1] != "" || spare[2] != "" {
+				t.Errorf("caller's NextProtos backing array was written: %q", backing[:cap(backing)])
+			}
+			if len(custom.NextProtos) != 1 || custom.NextProtos[0] != "http/1.1" {
+				t.Errorf("caller NextProtos = %q, want [http/1.1]", custom.NextProtos)
+			}
+		})
+	}
+}
+
 func TestBuildTLSConfig_CustomWithNextProtosClonesAndAppends(t *testing.T) {
 	custom := &tls.Config{ServerName: "example", NextProtos: []string{"h3"}}
 	got, err := BuildTLSConfig(TLSBuildOptions{

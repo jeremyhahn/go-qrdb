@@ -50,7 +50,7 @@ func (s *noopVectorService) ListNamespaces(_ context.Context, _ *service.ListNam
 }
 
 func (s *noopVectorService) GetNamespaceInfo(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
-	return &service.GetNamespaceInfoResponse{}, nil
+	return &service.GetNamespaceInfoResponse{DistanceMetric: "L2"}, nil
 }
 
 func (s *noopVectorService) UpsertVector(_ context.Context, _ *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {

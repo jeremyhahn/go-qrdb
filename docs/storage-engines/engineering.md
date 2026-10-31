@@ -100,12 +100,16 @@ Windows exactly as one over `vfs.Default` does.
 ```go
 // pkg/server/lifecycle
 func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor,
-	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+	storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error)
 ```
 
 `NewLocalStorage` opens `pebble` and `file` through `enc`; it is the
 constructor every standalone node store goes through — the daemon, the SDK
-node and the embedded server. A raft replica's `file` storage takes the same
+node and the embedded server. It opens `pebble` with `storageCfg`'s
+`CacheSize`, `WALDir` and `MaxOpenFiles` (a zero keeps
+`pebbleStorage.DefaultConfig`'s value) and `objstore` with its `Objstore`
+section; the embedded server's `standalone.ServerConfig` carries the three
+Pebble fields itself. A raft replica's `file` storage takes the same
 encryptor from `statemachine.StorageConfig.Encryptor`.
 
 `pkg/database` — re-encrypting a `file` store under a new key, the file
@@ -205,9 +209,9 @@ The volume pool surface is in
 ```yaml
 storage:
   backend: pebble        # pebble | memory | file | objstore
-  cache_size: 0          # pebble block cache bytes; 0 = pebble default
+  cache_size: 0          # pebble block cache bytes; 0 = 512 MiB
   wal_dir: ""            # separate pebble WAL directory; empty = data dir
-  max_open_files: 0      # 0 = pebble default
+  max_open_files: 0      # 0 = 2000
   objstore:              # used when a backend is objstore
     provider: local      # local | memory | s3 | gcs | azure
     settings: {}         # passed verbatim to the go-objstore factory; never a credential
@@ -215,6 +219,10 @@ storage:
       key_file: ""       # owner-only file holding the access key ID
       secret_file: ""    # owner-only file holding the secret (alone: an account key)
 ```
+
+`cache_size`, `wal_dir` and `max_open_files` tune the standalone data plane's
+Pebble store, the one `NewLocalStorage` opens. A raft replica's state machines
+open their own Pebble stores and do not read them.
 
 The provider credential is a **file reference**, never a value. A credential
 setting in `settings` (go-objstore's `common.RejectCredentialSettings` list,

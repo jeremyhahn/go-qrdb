@@ -106,15 +106,14 @@ func (m *mockVectorStorage) CreateNamespace(ctx context.Context, info *vector.Na
 		return vector.ErrNamespaceExists
 	}
 
-	m.namespaces[info.Name] = &mockNamespaceData{
-		info: &vector.NamespaceInfo{
-			Name:        info.Name,
-			VectorCount: 0,
-			Dimension:   info.Dimension,
-			CreatedAt:   time.Now().UnixNano(),
-			UpdatedAt:   time.Now().UnixNano(),
-		},
-	}
+	// Keep the record as the caller wrote it, as the real backends do: a
+	// double that dropped the metric or index type would let a test of
+	// either pass against the default.
+	stored := *info
+	stored.VectorCount = 0
+	stored.CreatedAt = time.Now().UnixNano()
+	stored.UpdatedAt = stored.CreatedAt
+	m.namespaces[info.Name] = &mockNamespaceData{info: &stored}
 	m.vectors[info.Name] = make(map[uint64]*vector.VectorValue)
 	m.idCounters[info.Name] = 0
 

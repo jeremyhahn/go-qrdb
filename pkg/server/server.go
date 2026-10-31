@@ -292,6 +292,11 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+
+	// defaultRetention is the retention the scheduler applies to a metric
+	// with no policy, or a policy of duration zero. Zero keeps its points.
+	// See WithDefaultRetention.
+	defaultRetention time.Duration
 	// collectionSweepLeader reports whether this node leads the system
 	// shard; see WithCollectionSweepLeader. Nil means a single node.
 	collectionSweepLeader func() bool
@@ -2412,9 +2417,10 @@ func (s *Server) streamAdmitter() service.StreamAdmitter {
 // listenerWatch is the singleton watch service every listener receives: the
 // WithWatch service under the same stream admitter the registry installs, so
 // a watch opened before its tenant was suspended ends on its next event in
-// both configurations.
+// both configurations. Every watch a listener opens is a client's, so it
+// counts against watch.max_watchers (service.NewCountedWatch).
 func (s *Server) listenerWatch() service.WatchServicer {
-	return service.NewAdmittedWatch(s.opts.watchSvc, s.streamAdmitter())
+	return service.NewAdmittedWatch(service.NewCountedWatch(s.opts.watchSvc), s.streamAdmitter())
 }
 
 // startGRPC creates and starts the gRPC server with configured options.

@@ -135,9 +135,9 @@ func testVectorLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	// An invalid --distance-metric must fail closed client-side before ever
 	// reaching the server.
 	out, err = runCLIProto(t, node, proto, "vector", "namespace", "create",
-		"--namespace", ns+"-bad", "--dimension", "4", "--distance-metric", "manhattan")
+		"--namespace", ns+"-bad", "--dimension", "4", "--distance-metric", "chebyshev")
 	if err == nil {
-		t.Fatalf("[%s] vector namespace create --distance-metric manhattan succeeded, want error (output: %s)", proto.name, out)
+		t.Fatalf("[%s] vector namespace create --distance-metric chebyshev succeeded, want error (output: %s)", proto.name, out)
 	}
 	out, err = runCLIProto(t, node, proto, "vector", "namespace", "create",
 		"--namespace", ns+"-bad2", "--dimension", "4", "--index-type", "not-an-index")
@@ -476,5 +476,195 @@ func testVectorLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	out, err = runCLIProto(t, node, proto, "vector", "namespace", "info", "--namespace", ns)
 	if err == nil {
 		t.Fatalf("[%s] vector namespace info after delete succeeded, want error (output: %s)", proto.name, out)
+	}
+}
+
+// TestVector_CLI_FlatAndIVFIndexTypes pins, over every CLI transport, that a
+// namespace created with --index-type flat or ivf-flat is built and searched
+// as that index type: info and index-stats report it, a FLAT namespace ranks
+// exactly, and an IVF namespace refuses a search until it holds enough
+// vectors to train (the default eight centroids) and answers once it does.
+// A cosine namespace of either type ranks by direction, not by distance.
+func TestVector_CLI_FlatAndIVFIndexTypes(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testVectorFlatNamespaceOverProtocol(t, node, proto)
+			testVectorIVFNamespaceOverProtocol(t, node, proto)
+			testVectorCosineNamespaceOverProtocol(t, node, proto, "flat")
+			testVectorCosineNamespaceOverProtocol(t, node, proto, "ivf-flat")
+		})
+	}
+}
+
+// TestVector_CLI_ManhattanCrossTransport proves a Manhattan namespace keeps
+// its metric on every transport: a namespace created over each protocol is
+// inspected over every protocol, and each must report manhattan. The
+// protobuf transports (gRPC, Unix, QUIC) once had no wire value for it and
+// reported cosine.
+func TestVector_CLI_ManhattanCrossTransport(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, creator := range multiProtocols {
+		creator := creator
+		t.Run(creator.name, func(t *testing.T) {
+			ns := fmt.Sprintf("vecl1-%s-%d", creator.name, time.Now().UnixNano())
+			createVectorNamespaceOverProtocol(t, node, creator, ns, "manhattan", "flat")
+			for _, inspector := range multiProtocols {
+				out, err := runCLIProto(t, node, inspector, "vector", "namespace", "info", "--namespace", ns)
+				if err != nil {
+					t.Fatalf("[%s->%s] vector namespace info %s: %v\noutput: %s", creator.name, inspector.name, ns, err, out)
+				}
+				if !strings.Contains(out, "DistanceMetric: manhattan\n") {
+					t.Fatalf("[%s->%s] vector namespace info = %q, want DistanceMetric: manhattan", creator.name, inspector.name, out)
+				}
+			}
+		})
+	}
+}
+
+// createVectorNamespaceOverProtocol creates a two-dimensional namespace of
+// metric and indexType and asserts info reports both and index-stats the
+// index type.
+func createVectorNamespaceOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, ns, metric, indexType string) {
+	t.Helper()
+	out, err := runCLIProto(t, node, proto, "vector", "namespace", "create",
+		"--namespace", ns, "--dimension", "2", "--distance-metric", metric, "--index-type", indexType)
+	if err != nil {
+		t.Fatalf("[%s] vector namespace create --distance-metric %s --index-type %s: %v\noutput: %s", proto.name, metric, indexType, err, out)
+	}
+	out, err = runCLIProto(t, node, proto, "vector", "namespace", "info", "--namespace", ns)
+	if err != nil {
+		t.Fatalf("[%s] vector namespace info %s: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	if !strings.Contains(out, "DistanceMetric: "+metric+"\n") {
+		t.Fatalf("[%s] vector namespace info = %q, want DistanceMetric: %s", proto.name, out, metric)
+	}
+	if !strings.Contains(out, "IndexType:      "+indexType+"\n") {
+		t.Fatalf("[%s] vector namespace info = %q, want IndexType: %s", proto.name, out, indexType)
+	}
+	out, err = runCLIProto(t, node, proto, "vector", "index-stats", "--namespace", ns)
+	if err != nil {
+		t.Fatalf("[%s] vector index-stats %s: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	if !strings.Contains(out, "IndexType:        "+indexType+"\n") {
+		t.Fatalf("[%s] vector index-stats = %q, want IndexType: %s", proto.name, out, indexType)
+	}
+}
+
+// searchVectorIDsOverProtocol runs a k-NN search and returns the hit IDs in
+// rank order.
+func searchVectorIDsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, ns, query, k string) ([]uint64, string, error) {
+	t.Helper()
+	out, err := runCLIProto(t, node, proto, "--output", "json", "vector", "search",
+		"--namespace", ns, "--vector", query, "--k", k)
+	if err != nil {
+		return nil, out, err
+	}
+	var resp vectorSearchResponseJSON
+	if jerr := json.Unmarshal([]byte(out), &resp); jerr != nil {
+		t.Fatalf("[%s] decode `vector search --output json`: %v\noutput: %s", proto.name, jerr, out)
+	}
+	ids := make([]uint64, len(resp.Results))
+	for i, r := range resp.Results {
+		ids[i] = r.ID
+	}
+	return ids, out, nil
+}
+
+func testVectorFlatNamespaceOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	ns := fmt.Sprintf("vecflat-%s-%d", proto.name, time.Now().UnixNano())
+	createVectorNamespaceOverProtocol(t, node, proto, ns, "euclidean", "flat")
+
+	for id, vec := range map[string]string{"1": "0,0", "2": "3,4", "3": "6,8"} {
+		if out, err := runCLIProto(t, node, proto, "vector", "upsert", "--namespace", ns, "--id", id, "--vector", vec); err != nil {
+			t.Fatalf("[%s] vector upsert %s id=%s: %v\noutput: %s", proto.name, ns, id, err, out)
+		}
+	}
+	ids, out, err := searchVectorIDsOverProtocol(t, node, proto, ns, "6,8", "3")
+	if err != nil {
+		t.Fatalf("[%s] vector search %s: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	if fmt.Sprint(ids) != "[3 2 1]" {
+		t.Fatalf("[%s] FLAT search from (6,8) = %v, want [3 2 1] (exact Euclidean order)", proto.name, ids)
+	}
+}
+
+func testVectorIVFNamespaceOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	ns := fmt.Sprintf("vecivf-%s-%d", proto.name, time.Now().UnixNano())
+	createVectorNamespaceOverProtocol(t, node, proto, ns, "euclidean", "ivf-flat")
+
+	if out, err := runCLIProto(t, node, proto, "vector", "upsert", "--namespace", ns, "--id", "1", "--vector", "0,0"); err != nil {
+		t.Fatalf("[%s] vector upsert %s id=1: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	if ids, out, err := searchVectorIDsOverProtocol(t, node, proto, ns, "0,0", "1"); err == nil {
+		t.Fatalf("[%s] search on an IVF namespace below its training floor = %v, want a refusal (output: %s)", proto.name, ids, out)
+	}
+
+	// Seven more vectors reach the default eight centroids the index trains on.
+	batchFile := filepath.Join(t.TempDir(), "ivf-batch.json")
+	batchPayload := `[
+		{"id":2,"vector":[10,0]},
+		{"id":3,"vector":[0,10]},
+		{"id":4,"vector":[10,10]},
+		{"id":5,"vector":[20,0]},
+		{"id":6,"vector":[0,20]},
+		{"id":7,"vector":[20,20]},
+		{"id":8,"vector":[30,30]}
+	]`
+	if werr := os.WriteFile(batchFile, []byte(batchPayload), 0o600); werr != nil {
+		t.Fatalf("[%s] write IVF batch fixture: %v", proto.name, werr)
+	}
+	if out, err := runCLIProto(t, node, proto, "vector", "batch-upsert", "--namespace", ns, "--file", batchFile); err != nil {
+		t.Fatalf("[%s] vector batch-upsert %s: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	ids, out, err := searchVectorIDsOverProtocol(t, node, proto, ns, "20,20", "1")
+	if err != nil {
+		t.Fatalf("[%s] search on a trained IVF namespace: %v\noutput: %s", proto.name, err, out)
+	}
+	if len(ids) != 1 || ids[0] != 7 {
+		t.Fatalf("[%s] IVF search from (20,20) = %v, want [7] (exact match)", proto.name, ids)
+	}
+}
+
+// testVectorCosineNamespaceOverProtocol creates a cosine namespace of
+// indexType holding eight vectors in eight directions -- enough to train an
+// IVF index -- and searches from (1,1): only (30,30) shares its direction, and
+// (1,0) and (0,1) are nearer by Euclidean distance, so a namespace ranked
+// under any metric but the one it was created with misses the answer.
+func testVectorCosineNamespaceOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, indexType string) {
+	t.Helper()
+	ns := fmt.Sprintf("veccos-%s-%s-%d", indexType, proto.name, time.Now().UnixNano())
+	createVectorNamespaceOverProtocol(t, node, proto, ns, "cosine", indexType)
+
+	batchFile := filepath.Join(t.TempDir(), "cosine-batch.json")
+	batchPayload := `[
+		{"id":1,"vector":[1,0]},
+		{"id":2,"vector":[0,1]},
+		{"id":3,"vector":[30,30]},
+		{"id":4,"vector":[-1,0]},
+		{"id":5,"vector":[0,-1]},
+		{"id":6,"vector":[-1,-1]},
+		{"id":7,"vector":[1,-1]},
+		{"id":8,"vector":[-1,1]}
+	]`
+	if werr := os.WriteFile(batchFile, []byte(batchPayload), 0o600); werr != nil {
+		t.Fatalf("[%s] write cosine batch fixture: %v", proto.name, werr)
+	}
+	if out, err := runCLIProto(t, node, proto, "vector", "batch-upsert", "--namespace", ns, "--file", batchFile); err != nil {
+		t.Fatalf("[%s] vector batch-upsert %s: %v\noutput: %s", proto.name, ns, err, out)
+	}
+	ids, out, err := searchVectorIDsOverProtocol(t, node, proto, ns, "1,1", "1")
+	if err != nil {
+		t.Fatalf("[%s] search on a cosine %s namespace: %v\noutput: %s", proto.name, indexType, err, out)
+	}
+	if len(ids) != 1 || ids[0] != 3 {
+		t.Fatalf("[%s] cosine %s search from (1,1) = %v, want [3] (same direction)", proto.name, indexType, ids)
 	}
 }

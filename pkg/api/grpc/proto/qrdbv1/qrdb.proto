@@ -2648,6 +2648,10 @@ enum DistanceMetric {
 
     // DISTANCE_DOT_PRODUCT measures similarity via the dot product.
     DISTANCE_DOT_PRODUCT = 2;
+
+    // DISTANCE_MANHATTAN measures the sum of absolute coordinate differences
+    // (the L1 distance) between vectors.
+    DISTANCE_MANHATTAN = 3;
 }
 
 // VectorIndexType specifies the vector index algorithm.

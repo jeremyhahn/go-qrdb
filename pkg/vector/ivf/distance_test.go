@@ -186,6 +186,40 @@ func TestDotProduct(t *testing.T) {
 	}
 }
 
+func TestManhattan(t *testing.T) {
+	tests := []struct {
+		name     string
+		a        []float32
+		b        []float32
+		expected float32
+	}{
+		{
+			name:     "identical vectors",
+			a:        []float32{1.0, 2.0, 3.0},
+			b:        []float32{1.0, 2.0, 3.0},
+			expected: 0.0,
+		},
+		{
+			name:     "sums absolute differences",
+			a:        []float32{1.0, -2.0, 3.0},
+			b:        []float32{4.0, 2.0, 1.0},
+			expected: 9.0, // 3 + 4 + 2
+		},
+		{
+			name:     "mismatched dimensions",
+			a:        []float32{1.0, 2.0},
+			b:        []float32{1.0, 2.0, 3.0},
+			expected: float32(math.MaxFloat32),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.InDelta(t, tt.expected, Manhattan(tt.a, tt.b), 0.0001)
+		})
+	}
+}
+
 func TestL2SIMD(t *testing.T) {
 	// Test that SIMD version produces same results as regular version
 	tests := []struct {
@@ -269,6 +303,7 @@ func TestGetDistanceFunc(t *testing.T) {
 		{L2Distance, []float32{1.0, 2.0, 3.0}, []float32{4.0, 5.0, 6.0}},
 		{CosineDistance, []float32{1.0, 2.0, 3.0}, []float32{4.0, 5.0, 6.0}},
 		{DotProductDistance, []float32{1.0, 2.0, 3.0}, []float32{4.0, 5.0, 6.0}},
+		{ManhattanDistance, []float32{1.0, 2.0, 3.0}, []float32{4.0, 5.0, 6.0}},
 		{DistanceMetric(999), []float32{1.0, 2.0, 3.0}, []float32{4.0, 5.0, 6.0}}, // Unknown defaults to L2
 	}
 

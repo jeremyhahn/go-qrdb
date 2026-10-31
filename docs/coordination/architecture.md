@@ -261,7 +261,7 @@ Two ways to close it, both outside this surface:
   than by convention.
 - **The protected resource is external and needs a monotonic number** — use
   [../distributed-locks/](../distributed-locks/), whose `LockInfo.FencingToken`
-  is the MVCC `ModRevision` at acquisition: globally ordered and monotonically
+  is the lock key's MVCC create revision: globally ordered and monotonically
   increasing, so a resource that records the highest token it has seen and
   refuses anything lower rejects the resumed holder. **The coordination
   `Lease` carries no such token**, deliberately; it is a lease, not a lock.

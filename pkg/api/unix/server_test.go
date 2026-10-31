@@ -1221,9 +1221,9 @@ func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatu
 }
 func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (s *stubBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (s *stubBarrierSvc) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error) { return false, nil }
 

@@ -572,6 +572,165 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **`index.max_indexes` and `timeseries.max_metrics` are enforced** (#658,
+  #1088): both were validated and never read. A create of a new index name at
+  a shard's cap is refused with `*service.IndexLimitError`, and a write that
+  would create a metric past it with `*service.MetricLimitError`, both
+  classified ResourceExhausted (429 / `RESOURCE_EXHAUSTED`). The cap travels
+  in the command (a 4-byte trailer, absent when uncapped, so an uncapped
+  command is unchanged) and the apply path decides it against the state the
+  command applies over, in log order, so every replica reaches the same
+  verdict and two creates proposed through different nodes cannot both take
+  a shard's last slot. A write that recreates a metric deleted since it was
+  proposed counts as a creating write. A create naming a held index, or a
+  write to a held metric, is never refused.
+- **A capped command waits for every replica to enforce its cap** (#1088): a
+  binary from before the caps ignores the `TSWrite`, `TSWritePoint` and
+  `TSWriteBatch` trailer and the `IndexCreate` cap field, so during a rolling
+  upgrade it would admit a write or create its upgraded peers refuse. The cap
+  is now carried only once the group activates the `command-caps` cluster
+  feature (`featuregate.CommandCaps`); until then the commands are proposed
+  uncapped, byte-identical to an older binary's, and neither cap is enforced.
+  A standalone node gates nothing and enforces the caps from its first write.
+- **`timeseries.default_retention` applies to metrics with no policy**
+  (#658): it was loaded and validated but never reached the retention
+  scheduler. `server.WithDefaultRetention` carries it from `qrdbd` and
+  `sdk/go/node`, and the scheduler sweeps a metric with no policy, or with a
+  zero-duration policy, at the default.
+- **`watch.buffer_size` and `watch.max_watchers` take effect** (#658): the
+  buffer size sizes every hub's per-watcher event buffer, and `max_watchers`
+  caps the client watches open on a node, one limit shared by the node hub and
+  every tenant hub, in `qrdbd`, an `sdk/go/node` Node, the `sdk/go/standalone`
+  server and the desktop's embedded server.
+- **`storage.cache_size`, `storage.wal_dir` and `storage.max_open_files`
+  reach Pebble** (#658): every standalone data plane (`qrdbd --mode
+  standalone`, the SDK node and the embedded server) opened Pebble with the
+  defaults. **Breaking (API):** `lifecycle.NewLocalStorage` takes the whole
+  `StorageConfig` instead of its objstore section.
+- **An encryption migration refuses a Pebble store with an external WAL**
+  (#1088): the system migration copies, verifies and swaps the store
+  directory alone, so a store whose WAL lives elsewhere (`storage.wal_dir`)
+  would fail partway through, after the node was quiesced, and could not have
+  carried WAL-only records or re-encrypted that WAL. The migration is now
+  refused before anything is minted or quiesced, with
+  `MigrationNotSupportedError` naming `storage.wal_dir`; the store and its
+  data are untouched.
+- **Distributed locks report what happened** (#658). `Unlock`, `Extend` and
+  `Status` turned every failed read (a timeout, a lost leader, a sealed
+  barrier) into "lock not found" or "not locked"; only a missing key means
+  that now, and every other error reaches the caller. An empty key or a
+  non-positive TTL is InvalidArgument (400) rather than 500. Held-lock,
+  wrong-holder and missing-lock refusals keep their typed errors
+  (`LockHeldError`, `NotLockHolderError`, `LockNotFoundError`) over every
+  transport, and the gRPC and Unix clients no longer report a missing lock as
+  a missing key.
+- **Distributed locks hold under concurrent release and re-entry** (#658).
+  The fencing token is the lock key's MVCC create revision: the acquire is
+  one write, a re-entry leaves the token unchanged, and a release or expiry
+  followed by a new acquire always raises it. The lock record no longer
+  stores a token, and the second, post-acquire write that stored one, which a
+  release could interleave with to resurrect the key, is gone. A reentrant
+  re-acquire and a reentrant `Unlock` decrement are compare-and-swaps on the
+  revision read, so neither writes a released key back onto its lease nor
+  loses a concurrent re-entry; `TryLock` retries when the lock is released
+  between its failed CAS and its read of the holder; and `Unlock` retries a
+  delete that lost to the holder's own re-entry instead of reporting
+  `NotLockHolderError`, returning `ErrUnlockContended` only after bounded
+  retries.
+- **The lock record keeps its `fencing_token` field until every node reads the
+  create revision** (#1088): a binary from before reads the token from the
+  field, so during a rolling upgrade an acquisition still stores it (a
+  compare-and-swap on the acquire's own revision, which cannot write a
+  released lock back), and a re-entry or a reentrant release's decrement
+  rewrites it, always with the create revision. The field is dropped once the
+  group activates the `lock-create-revision-token` cluster feature
+  (`featuregate.LockCreateRevisionToken`, `lock.WithTokenFieldRetired`).
+  A store-back that fails with a not-leader refusal or an unknown outcome is
+  retried, the same compare-and-swap, up to four attempts 50 ms apart and
+  within the caller's context (`lock.WithRetryable`); one that still fails
+  leaves the lock held and is logged.
+- **A vector namespace builds the index type and metric it was created
+  with** (#658). Every namespace was built as HNSW, and `MANHATTAN` and every
+  unknown metric name were searched as L2. HNSW, FLAT and IVF are built from
+  the namespace record; an unknown index type is refused with
+  `UnknownIndexTypeError` and an unknown metric with
+  `service.UnknownDistanceMetricError` (both invalid argument), and the live
+  index refuses a zero dimension. An index built lazily on an upsert, or
+  rebuilt after a snapshot install, keeps the namespace's metric, and a
+  snapshot install now reloads each namespace's vectors from storage instead
+  of leaving an empty index. The GPU index is sized to the namespace's
+  dimension rather than 128.
+- **A `manhattan` vector namespace works on every transport** (#658, #1088).
+  The protobuf `DistanceMetric` enum gains `DISTANCE_MANHATTAN` (3), so gRPC,
+  Unix and QUIC no longer report or send a Manhattan namespace as cosine;
+  servers and SDKs refuse an enum value or metric name they do not know
+  (`service.UnknownDistanceMetricError`,
+  `transport.UnknownDistanceMetricError`); the REST, MCP and embedded SDK
+  transports report the metric as the `transport.DistanceMetric` constant
+  whatever case the server stored it in; and `qrdb vector namespace create`
+  accepts `--distance-metric manhattan`. A FLAT or IVF namespace using
+  Manhattan is refused with `service.VectorMetricNotActiveError` (failed
+  precondition) until the cluster's `vector-manhattan` feature is active,
+  and the vector service now reads the host's feature gates, so the gate
+  holds in production wiring.
+- **Vector index stats report the namespace's metric** (#658): the gRPC and
+  QUIC `VectorGetIndexStats` looked the metric up by index type and answered
+  cosine for every namespace.
+- **An untrained IVF index is a failed precondition** (#658): a search of an
+  IVF index short of its training floor answered the retryable
+  `VectorIndexWarmingError`, though only more writes can clear it; it now
+  answers `VectorIndexUntrainedError`.
+- **A stored vector namespace with an unsupported metric or index type is
+  refused, never searched as empty** (#1088): an earlier release stored any
+  metric or index name a caller sent, and a search of such a record answered
+  an empty result. Search, hybrid search, upsert, batch upsert and inspect
+  return `service.UnsupportedNamespaceGeometryError` (failed precondition),
+  naming the namespace and the stored value; delete still drops the
+  namespace.
+- **A vector batch upsert is checked whole for dimension before it is
+  written** (#1088): a batch carrying one vector of the wrong length was
+  stored and reported successful, and in an `ivf_flat` namespace that vector
+  stayed in the index's untrained set, so every later training attempt
+  failed and later vectors were never searchable. Every vector of the batch
+  is checked against the namespace's dimension (or, with none recorded,
+  against the batch's first vector) before anything is written, and a
+  mismatch refuses the whole batch with `service.DimensionMismatchError`.
+  A batch whose namespace metadata cannot be read is refused with that read's
+  error (`service.NamespaceNotFoundError` for a namespace that does not
+  exist).
+- **RAG ingest and delete keep the vector index in step with the document**
+  (#658): re-ingesting a document ID left every chunk past the new count
+  stored and searchable, and deleting a document left its chunks' vectors in
+  the vector store, taking top-k slots. Re-ingest replaces the document's
+  chunk set and delete removes its vectors.
+- **The `rag` config keys set the chunking and top-k defaults** (#658):
+  `default_chunk_strategy`, `default_chunk_size`, `default_overlap` and
+  `default_top_k` were parsed and never read. MCP's `qrdb_rag_ingest` takes
+  `chunk_min_size`, so `--chunk-min-size` is no longer dropped over MCP. An
+  oversize document answers 413 / `RESOURCE_EXHAUSTED`
+  (`rag.DocumentTooLargeError`) and a chunking input error 400
+  (`rag.ChunkingError`) rather than 500.
+- **A refused barrier initialize writes no PIN** (#658). On a node built with
+  the first-boot ceremony every transport provisioned the supplied SO and User
+  PINs and only then had the initialize refused
+  (`*SystemBarrierInitRefusedError`), so the PINs outlived the refusal.
+  `service.ProvisionInitializePINs` now asks for the refusal first.
+  **Breaking (API):** `service.BarrierServicer.BarrierInitialized(ctx)
+  (bool, error)` is replaced by `BarrierInitializePrecondition(ctx) error`,
+  which returns the refusal the initialize would return
+  (`*SystemBarrierInitRefusedError` or `seal.ErrAlreadyInitialized`).
+- **`qrdb ca list` lists the caller's own tenant by default** (#658). The
+  `--tenant-id` default was `system`, and `certs:list` admits only the
+  caller's own tenant, so every tenant caller that left the flag off was
+  refused. The flag now defaults to empty. Every transport (REST, gRPC, QUIC,
+  MCP, embedded) resolves an empty tenant to the caller's own: REST no longer
+  answers 400 for a missing `tenantID`, MCP's `qrdb_cert_list` no longer
+  defaults to `system`, and the embedded transport lists the tenant it
+  confined rather than the raw argument.
+- **`transport.BuildTLSConfig` no longer shares the caller's `NextProtos`**
+  (#949): `tls.Config.Clone` copies the slice header but not its array, so
+  the ALPN merge, or `net/http` adding `h2`, could write into the caller's
+  slice. The returned config owns its own `NextProtos`.
 - `qrdbd` carries every field of its config file's `transport:` section to the server: `max_message_bytes`, `max_conns_per_peer` and `max_streams_per_conn` set in YAML used to be dropped, leaving their defaults in force (#1197).
 - `MVCC().PutWithLease` on a state machine that keeps no revision history (the default pebble state machine) reports version 1 for the key it wrote, not 0. Presence is the only version such a state machine's transaction compares read, so a compare-and-set on the reported version now holds there too (#1211).
 - **A passphrase change checks the current passphrase and cannot lose a
@@ -593,6 +752,13 @@ are not reconstructed here — their history is in the git log.
   identity across every transport (`BARRIER_NOT_INITIALIZED`), as do
   `BARRIER_CREDENTIAL_MISMATCH`, `BARRIER_PASSPHRASE_CHANGE_CONFLICT` and
   `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` (#631).
+- `make security` passes on main again: gosec's G204 at
+  `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
+  repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
+- `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
+  helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
+  and reading under one `os.Root` opened on the directory, not by a waiver.
+- A distributed Shamir share that reaches its time-to-live (`CeremonyConfig.ShareTTL`) has its enclave destroyed before the store reports it expired. The expiry timer used to drop the share from the store's index and mark it expired, release the lock, and only then destroy the enclave, so for that window `Exists`, `Expired` and `Claim` reported a wiped share whose plaintext could still be opened. The destroy now runs under the store's lock, ahead of the index update.
 
 ### Security
 
@@ -603,13 +769,6 @@ are not reconstructed here — their history is in the git log.
   (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
   only `so_pin` from a passphrase-change payload, so the current and next
   passphrases are never decoded a second time.
-- `make security` passes on main again: gosec's G204 at
-  `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
-  repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
-- `make security`'s `gosec-sdk` passes too: gosec's G122 in the `filesContain`
-  helpers of `sdk/go/storage` and `sdk/go/timeseries` (#1207) is fixed by walking
-  and reading under one `os.Root` opened on the directory, not by a waiver.
-- A distributed Shamir share that reaches its time-to-live (`CeremonyConfig.ShareTTL`) has its enclave destroyed before the store reports it expired. The expiry timer used to drop the share from the store's index and mark it expired, release the lock, and only then destroy the enclave, so for that window `Exists`, `Expired` and `Claim` reported a wiped share whose plaintext could still be opened. The destroy now runs under the store's lock, ahead of the index update.
 
 ## [0.57.0-alpha] - 2026-10-26
 

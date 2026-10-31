@@ -638,8 +638,10 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
-// WithEncryptionMigrator configures the enable-encryption migrator, enabling
-// POST /v1/barrier/enable-encryption. When nil that route is not registered.
+// WithEncryptionMigrator configures the enable-encryption migrator that
+// POST /v1/barrier/enable-encryption runs. The route is registered on every
+// node either way (node parity); with no migrator set, an authorized call is
+// answered 501 with a typed *ServiceNotImplementedError.
 func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(s *Server) { s.encMigrator = m }
 }

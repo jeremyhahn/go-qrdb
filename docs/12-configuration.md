@@ -509,7 +509,7 @@ Configures the underlying storage backend.
 
 - Setting `cache_size` to `0` uses the PebbleDB default cache size.
 - Setting `max_open_files` to `0` uses the PebbleDB default file limit.
-- When `wal_dir` is empty, the WAL is stored in the default data directory. Placing the WAL on a separate disk can improve write throughput by isolating sequential WAL writes from random SSTable I/O.
+- When `wal_dir` is empty, the WAL is stored in the default data directory. Placing the WAL on a separate disk can improve write throughput by isolating sequential WAL writes from random SSTable I/O. A standalone node with a `wal_dir` outside its Pebble store cannot take an at-rest encryption migration: the migration is refused before it starts (see `docs/barrier-seal/engineering.md`, "What a system-scope migration re-encrypts").
 
 ---
 
@@ -738,7 +738,7 @@ Configures the secondary indexing system.
 
 **Notes:**
 
-- Setting `max_indexes` to `0` allows unlimited secondary indexes.
+- Setting `max_indexes` to `0` allows unlimited secondary indexes. Above zero it caps each shard: a create for a new index name past it is refused with `IndexLimitError` (HTTP 429, gRPC `RESOURCE_EXHAUSTED`), and a create naming an existing index never is. The cap is decided in the apply path, so it holds across nodes. In a cluster the cap is carried only once every replica runs a release with the `command-caps` cluster feature and the feature is activated; until then a create is proposed uncapped, as an older node would propose it. See [secondary indexes](secondary-indexes/engineering.md).
 - Each secondary index consumes additional storage and incurs write amplification. Set a limit appropriate for your workload.
 
 ---
@@ -750,7 +750,7 @@ Configures the time-series storage engine.
 | Field               | Type  | Default | Description                                                |
 |---------------------|-------|---------|------------------------------------------------------------|
 | `default_retention` | int64 | `0`     | Default data retention period in seconds                   |
-| `max_metrics`       | int64 | `0`     | Maximum number of distinct metric names allowed            |
+| `max_metrics`       | int   | `0`     | Maximum number of distinct metric names allowed            |
 
 **Validation rules:**
 
@@ -760,7 +760,7 @@ Configures the time-series storage engine.
 **Notes:**
 
 - Setting `default_retention` to `0` disables automatic data retention. Data points are retained indefinitely.
-- Setting `max_metrics` to `0` allows unlimited distinct metric names.
+- Setting `max_metrics` to `0` allows unlimited distinct metric names. Above zero it caps each shard: a write that would create a metric past it is refused with `MetricLimitError` (HTTP 429, gRPC `RESOURCE_EXHAUSTED`), and a write to an existing metric never is. The cap is decided in the apply path, so it holds across nodes. In a cluster the cap is carried only once every replica runs a release with the `command-caps` cluster feature and the feature is activated; until then a write is proposed uncapped, as an older node would propose it. See [time series](time-series/engineering.md).
 - Data points older than `default_retention` seconds are eligible for automatic deletion.
 
 ---

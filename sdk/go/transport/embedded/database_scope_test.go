@@ -150,7 +150,7 @@ func TestCloneShared_CoversEveryField(t *testing.T) {
 	// Fields cloneShared copies. A field of Transport in neither list is one
 	// nobody decided about.
 	copied := map[string]bool{}
-	for _, n := range []string{"kvSvc", "adminSvc", "mvccSvc", "txSvc", "batchSvc", "watchSvc", "leaseSvc",
+	for _, n := range []string{"kvSvc", "adminSvc", "mvccSvc", "txSvc", "batchSvc", "watchSvc", "countWatch", "leaseSvc",
 		"indexSvc", "tsSvc", "vectorSvc", "userSvc", "roleSvc", "certProv", "certEnroll", "invitations", "onboarding",
 		"dbSvc", "barrierSvc", "pinBackend", "holderActLimiter",
 		"dekSvc", "policySvc", "ceremonySvc", "ceremonyCA", "credentialSvc", "backupSvc", "rebalanceSvc", "embeddingSvc",

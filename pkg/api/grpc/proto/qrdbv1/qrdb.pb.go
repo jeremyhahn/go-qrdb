@@ -582,6 +582,9 @@ const (
 	DistanceMetric_DISTANCE_EUCLIDEAN DistanceMetric = 1
 	// DISTANCE_DOT_PRODUCT measures similarity via the dot product.
 	DistanceMetric_DISTANCE_DOT_PRODUCT DistanceMetric = 2
+	// DISTANCE_MANHATTAN measures the sum of absolute coordinate differences
+	// (the L1 distance) between vectors.
+	DistanceMetric_DISTANCE_MANHATTAN DistanceMetric = 3
 )
 
 // Enum value maps for DistanceMetric.
@@ -590,11 +593,13 @@ var (
 		0: "DISTANCE_COSINE",
 		1: "DISTANCE_EUCLIDEAN",
 		2: "DISTANCE_DOT_PRODUCT",
+		3: "DISTANCE_MANHATTAN",
 	}
 	DistanceMetric_value = map[string]int32{
 		"DISTANCE_COSINE":      0,
 		"DISTANCE_EUCLIDEAN":   1,
 		"DISTANCE_DOT_PRODUCT": 2,
+		"DISTANCE_MANHATTAN":   3,
 	}
 )
 
@@ -37276,11 +37281,12 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\aAGG_MIN\x10\x02\x12\v\n" +
 	"\aAGG_MAX\x10\x03\x12\r\n" +
 	"\tAGG_COUNT\x10\x04\x12\x12\n" +
-	"\x0eAGG_PERCENTILE\x10\x05*W\n" +
+	"\x0eAGG_PERCENTILE\x10\x05*o\n" +
 	"\x0eDistanceMetric\x12\x13\n" +
 	"\x0fDISTANCE_COSINE\x10\x00\x12\x16\n" +
 	"\x12DISTANCE_EUCLIDEAN\x10\x01\x12\x18\n" +
-	"\x14DISTANCE_DOT_PRODUCT\x10\x02*E\n" +
+	"\x14DISTANCE_DOT_PRODUCT\x10\x02\x12\x16\n" +
+	"\x12DISTANCE_MANHATTAN\x10\x03*E\n" +
 	"\x0fVectorIndexType\x12\x0e\n" +
 	"\n" +
 	"INDEX_HNSW\x10\x00\x12\x0e\n" +

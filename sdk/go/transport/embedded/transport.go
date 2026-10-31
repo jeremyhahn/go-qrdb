@@ -89,12 +89,15 @@ var (
 // performed, making this the fastest possible transport for embedded
 // usage.
 type Transport struct {
-	kvSvc       service.KVServicer
-	adminSvc    service.AdminServicer
-	mvccSvc     service.MVCCKVServicer
-	txSvc       service.TransactionServicer
-	batchSvc    service.BatchServicer
-	watchSvc    service.WatchServicer
+	kvSvc    service.KVServicer
+	adminSvc service.AdminServicer
+	mvccSvc  service.MVCCKVServicer
+	txSvc    service.TransactionServicer
+	batchSvc service.BatchServicer
+	watchSvc service.WatchServicer
+	// countWatch makes every watch opened through the transport hold a
+	// watch.max_watchers slot (WithCountedWatch).
+	countWatch  bool
 	leaseSvc    service.LeaseServicer
 	indexSvc    service.IndexServicer
 	tsSvc       service.TimeSeriesServicer
@@ -231,6 +234,17 @@ func WithBatchService(svc service.BatchServicer) Option {
 func WithWatchService(svc service.WatchServicer) Option {
 	return func(t *Transport) {
 		t.watchSvc = svc
+	}
+}
+
+// WithCountedWatch makes every watch opened through the transport count
+// against watch.max_watchers, as a watch opened over a network listener
+// does. An application's client sets it; a node's own in-process client
+// (membership and feature registries) does not, so a full cap refuses
+// applications and never the node's bookkeeping.
+func WithCountedWatch() Option {
+	return func(t *Transport) {
+		t.countWatch = true
 	}
 }
 
@@ -385,7 +399,11 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
 	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
 	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
-	t.watchSvc = t.admitWatch(service.NewHardConfinedWatch(t.watchSvc))
+	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
+	if t.countWatch {
+		t.watchSvc = service.NewCountedWatch(t.watchSvc)
+	}
+	t.watchSvc = t.admitWatch(t.watchSvc)
 	return t, nil
 }
 
@@ -2659,12 +2677,16 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if err != nil {
 		return nil, translateError(err)
 	}
+	metric, err := transport.ParseDistanceMetric(resp.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 	return &transport.GetNamespaceInfoResponse{
 		Namespace:      resp.Namespace,
 		Dimension:      resp.Dimension,
 		VectorCount:    resp.VectorCount,
-		DistanceMetric: resp.DistanceMetric,
-		IndexType:      resp.IndexType,
+		DistanceMetric: metric,
+		IndexType:      transport.ParseVectorIndexType(resp.IndexType),
 		IndexConfig:    resp.IndexConfig,
 		Metadata:       resp.Metadata,
 		CreatedAt:      resp.CreatedAt,
@@ -3170,7 +3192,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	}
 	return &transport.GetIndexStatsResponse{
 		Namespace:         resp.Namespace,
-		IndexType:         resp.IndexType,
+		IndexType:         transport.ParseVectorIndexType(resp.IndexType),
 		VectorCount:       resp.VectorCount,
 		Dimension:         resp.Dimension,
 		IndexSizeBytes:    resp.IndexSizeBytes,
@@ -3614,7 +3636,7 @@ func toTransportNamespaceInfo(info *service.NamespaceInfo) *transport.NamespaceI
 		Dimension:      info.Dimension,
 		VectorCount:    info.VectorCount,
 		DistanceMetric: info.DistanceMetric,
-		IndexType:      info.IndexType,
+		IndexType:      transport.ParseVectorIndexType(info.IndexType),
 		IndexConfig:    info.IndexConfig,
 		Metadata:       info.Metadata,
 		CreatedAt:      info.CreatedAt,

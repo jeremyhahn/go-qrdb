@@ -1,6 +1,6 @@
 # Initialization Ceremony — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 The ceremony is the barrier's custody bootstrap and the home of the share
@@ -51,7 +51,8 @@ the unseal key is split**: the User PIN is a PIN, not a Shamir secret.
 ## PIN handling — never raw bytes
 
 PIN material is owned by a `pin.PINBackend` injected with `WithPINBackend`;
-composers wire `pin.SoftwareBackend` over the node-local seal store, and
+composers wire `pin.SoftwareBackend` over the node's seal store
+(`lifecycle.NewSealStorePINBackend`, which also adds the SO PIN lockout), and
 hardware deployments inject go-xkms backends through the same option.
 
 - `pin.Provision` sets the SO PIN and then the User PIN (gated by the SO PIN),
@@ -156,7 +157,7 @@ qrdb ships only `NoopThresholdInitializer`.
 
 ## Relationship to firstboot
 
-`ceremony.Initialize` is barrier-and-CA custody, plus resolving
+`CeremonyService.Initialize` is barrier-and-CA custody, plus resolving
 and ISSUING the bootstrap admin's certificate — CSR-sign, BYOC, or generate,
 whichever the request selected. It is still **NOT** the canonical admin
 bootstrap: it has no admin ACCOUNT to bind the certificate to yet, because
@@ -166,11 +167,11 @@ store, not in-process — see [../firstboot/architecture.md](../firstboot/archit
 
 | Concern | Package | Function |
 |---------|---------|----------|
-| Barrier custody (M-of-N split, custodian enrolment, Shamir share lifecycle) | `pkg/ceremony` | `ceremony.Initialize` |
-| Bootstrap admin certificate ISSUANCE (not binding) | `pkg/ceremony` | `ceremony.Initialize` / `ReissueAdminCredential` |
+| Barrier custody (M-of-N split, custodian enrolment, Shamir share lifecycle) | `pkg/ceremony` | `CeremonyService.Initialize` |
+| Bootstrap admin certificate ISSUANCE (not binding) | `pkg/ceremony` | `CeremonyService.Initialize` / `CeremonyService.ReissueAdminCredential` |
 | System tenant + built-in roles + platform admin user + admin cert BINDING | `pkg/firstboot` | `firstboot.Initialize` |
 
-Daemon startup runs them in order: ceremony (PINs → barrier → CA cert, SO cert,
+Daemon startup runs them in order: ceremony (PINs → barrier → CA cert, holder certs,
 shares, admin cert ISSUED) then firstboot (system tenant → built-in roles →
 admin user → admin cert BOUND). **Both are idempotent and safe to re-run on
 cluster nodes** — leader writes propagate via Raft and follower runs are
@@ -189,8 +190,8 @@ issuance and binding; see
   certificate or key let the enroller choose the identity. Holders are enrolled
   from a CSR only and the CA assigns the identity.
 - **Persisting shares server side.** Rejected: shares are secrets that belong to
-  custodians, not the system. If the ceremony is abandoned — a server restart
-  mid-enrolment — all shares are lost and it must be re-run. That is
+  custodians, not the system. A server restart mid-enrolment loses the
+  unclaimed envelopes, and a rekey by M holders redistributes. That is
   intentional.
 - **Storing raw PIN bytes in the credential store.** Rejected: PIN material is
   owned by a `pin.PINBackend`, hashed with Argon2id or PBKDF2 depending on FIPS

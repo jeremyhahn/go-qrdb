@@ -33,6 +33,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -105,9 +106,8 @@ func testLockLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	// --- trylock contested: a different, non-reentrant holder must be
 	// rejected immediately while the lock is held. -----------------------
 	out, err = runCLIProto(t, node, proto, "lock", "trylock", key, "--ttl", "30", "--holder", "holder2")
-	if err == nil {
-		t.Fatalf("[%s] lock trylock %s (contested by holder2) succeeded, want LockHeldError (output: %s)", proto.name, key, out)
-	}
+	assertLockRefusal(t, proto, "lock trylock (contested by holder2)", out, err,
+		&lock.LockHeldError{Key: key, HolderID: "holder1"})
 
 	// --- extend: refreshes the TTL without releasing; fencing token is
 	// stable across extend. ------------------------------------------
@@ -124,16 +124,13 @@ func testLockLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 
 	// extend with the wrong fencing token must fail closed.
+	wrongHolder := &lock.NotLockHolderError{Key: key, ExpectedToken: token + 999, ActualToken: token}
 	out, err = runCLIProto(t, node, proto, "lock", "extend", key, "--token", itoa64(token+999))
-	if err == nil {
-		t.Fatalf("[%s] lock extend %s with wrong token succeeded, want NotLockHolderError (output: %s)", proto.name, key, out)
-	}
+	assertLockRefusal(t, proto, "lock extend (wrong token)", out, err, wrongHolder)
 
 	// --- release with the wrong fencing token must fail closed. --------
 	out, err = runCLIProto(t, node, proto, "lock", "release", key, "--token", itoa64(token+999))
-	if err == nil {
-		t.Fatalf("[%s] lock release %s with wrong token succeeded, want NotLockHolderError (output: %s)", proto.name, key, out)
-	}
+	assertLockRefusal(t, proto, "lock release (wrong token)", out, err, wrongHolder)
 
 	// release with no --token: cobra must reject the required flag.
 	out, err = runCLIProto(t, node, proto, "lock", "release", key)
@@ -161,9 +158,11 @@ func testLockLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 
 	// releasing an already-released lock must fail closed (LockNotFoundError).
 	out, err = runCLIProto(t, node, proto, "lock", "release", key, "--token", itoa64(token))
-	if err == nil {
-		t.Fatalf("[%s] lock release %s (already released) succeeded, want error (output: %s)", proto.name, key, out)
-	}
+	assertLockRefusal(t, proto, "lock release (already released)", out, err, &lock.LockNotFoundError{Key: key})
+
+	// extending a released lock is the same missing lock, not a missing key.
+	out, err = runCLIProto(t, node, proto, "lock", "extend", key, "--token", itoa64(token))
+	assertLockRefusal(t, proto, "lock extend (already released)", out, err, &lock.LockNotFoundError{Key: key})
 
 	// --- trylock on a now-free key must succeed immediately. -----------
 	out, err = runCLIProto(t, node, proto, "--output", "json", "lock", "trylock", key, "--ttl", "20", "--holder", "holder3")
@@ -287,6 +286,19 @@ func testLockLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	out, err = runCLIProto(t, node, proto, "lock", "release", listKey, "--token", itoa64(listedLock.FencingToken))
 	if err != nil {
 		t.Fatalf("[%s] lock release %s (cleanup): %v\noutput: %s", proto.name, listKey, err, out)
+	}
+}
+
+// assertLockRefusal fails t unless the CLI run that produced out and err
+// failed with want, the typed lock outcome the server refused with, rather
+// than with some other failure or a missing key.
+func assertLockRefusal(t *testing.T, proto multiProtocol, step, out string, err error, want error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("[%s] %s succeeded, want %q (output: %s)", proto.name, step, want, out)
+	}
+	if !strings.Contains(out, want.Error()) || strings.Contains(out, "key not found") {
+		t.Fatalf("[%s] %s output = %q, want the refusal %q", proto.name, step, out, want)
 	}
 }
 

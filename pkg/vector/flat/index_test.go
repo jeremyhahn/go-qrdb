@@ -727,6 +727,116 @@ func TestFlatIndex_ConcurrentInsertSearch_DeleteDuringSearch(t *testing.T) {
 	wg.Wait()
 }
 
+// TestFlatIndex_DeleteBetweenPublishAndCount drives the interleaving Codex
+// review 8596 found: a Delete removing the entry an Insert has just published,
+// before that Insert settles its count. Count must stay non-negative and
+// Search must not size a slice from it, both inside the window and after.
+func TestFlatIndex_DeleteBetweenPublishAndCount(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing bool
+	}{
+		{name: "new entry", existing: false},
+		{name: "overwrite", existing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := NewIndex(hnsw.L2Distance)
+			query := []float32{0, 0, 0, 0}
+			if tc.existing {
+				if err := idx.Insert(1, []float32{1, 0, 0, 0}); err != nil {
+					t.Fatalf("Insert failed: %v", err)
+				}
+			}
+			hookRan := false
+			idx.afterPublish = func() {
+				hookRan = true
+				if err := idx.Delete(1); err != nil {
+					t.Fatalf("Delete inside the window failed: %v", err)
+				}
+				if got := idx.Count(); got < 0 {
+					t.Fatalf("Count inside the window = %d, want >= 0", got)
+				}
+				if _, err := idx.Search(query, 1); err != ErrEmptyIndex { //nolint:errorlint // sentinel returned unwrapped
+					t.Fatalf("Search inside the window: err = %v, want ErrEmptyIndex", err)
+				}
+			}
+			if err := idx.Insert(1, []float32{2, 0, 0, 0}); err != nil {
+				t.Fatalf("Insert failed: %v", err)
+			}
+			if !hookRan {
+				t.Fatal("afterPublish did not run")
+			}
+			if got := idx.Count(); got != 0 {
+				t.Fatalf("Count after the interleaving = %d, want 0", got)
+			}
+			if _, err := idx.Search(query, 1); err != ErrEmptyIndex { //nolint:errorlint // sentinel returned unwrapped
+				t.Fatalf("Search after the interleaving: err = %v, want ErrEmptyIndex", err)
+			}
+		})
+	}
+}
+
+// TestFlatIndex_ConcurrentInsertDeleteSearch_SameIDs runs Insert, Delete and
+// Search over the same few IDs from several goroutines. Under -race it checks
+// that Search never panics, that Count is never negative, and that Count
+// agrees with the map once every writer has finished.
+func TestFlatIndex_ConcurrentInsertDeleteSearch_SameIDs(t *testing.T) {
+	const (
+		ids        = 4
+		writers    = 4
+		iterations = 2000
+	)
+	idx := NewIndex(hnsw.L2Distance)
+	vec := []float32{1, 2, 3, 4}
+	query := []float32{0, 0, 0, 0}
+
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				if err := idx.Insert(uint64(i%ids), vec); err != nil {
+					t.Errorf("Insert failed: %v", err)
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				_ = idx.Delete(uint64(i % ids))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Search panicked: %v", r)
+			}
+		}()
+		for i := 0; i < iterations; i++ {
+			_, _ = idx.Search(query, 2)
+			if got := idx.Count(); got < 0 {
+				t.Errorf("Count = %d, want >= 0", got)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	var entries int64
+	idx.vectors.Range(func(_, _ any) bool {
+		entries++
+		return true
+	})
+	if got := idx.Count(); got != entries {
+		t.Fatalf("Count after the writers = %d, map holds %d", got, entries)
+	}
+}
+
 // TestFlatIndex_Dimensions verifies dimensions are reported correctly.
 func TestFlatIndex_Dimensions(t *testing.T) {
 	idx := NewIndex(hnsw.L2Distance)

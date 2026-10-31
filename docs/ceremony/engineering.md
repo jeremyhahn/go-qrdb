@@ -1,6 +1,6 @@
 # Initialization Ceremony — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -33,6 +33,7 @@ var WithRegisterCeremonyCA func(ca CeremonyCA) GRPCRegisterOption // pkg/api/grp
 ```go
 func NewCeremonyService(cfg *CeremonyConfig, barrier *seal.StorageBarrier, log *slog.Logger) (*CeremonyService, error)
 func (s *CeremonyService) SetCA(ca CeremonyCA)
+func (s *CeremonyService) ReplaceCA(ca CeremonyCA)
 func (s *CeremonyService) SetFactorRegistry(r *authfactors.FactorRegistry)
 func (s *CeremonyService) SetPINBackend(b pin.PINBackend)
 func (s *CeremonyService) SetQuorumLimiter(l QuorumLimitFunc)
@@ -46,7 +47,8 @@ func (s *CeremonyService) SignCSRInit(ctx, username, soPin string, csrPEM []byte
 [../shamir-custody/engineering.md](../shamir-custody/engineering.md).
 `NewTenantCeremonyService` builds the same engine for a tenant barrier over the
 system ceremony's `HolderDeps` (CA, factor registry, quorum limiter and
-compliance audit trail). `SetCA` keeps the first CA wired; `SetAuditLogger`
+compliance audit trail). `SetCA` keeps the first CA wired; `ReplaceCA` swaps it, which the
+composer calls once Key A is readable after unseal. `SetAuditLogger`
 replaces the trail, so a composer that reopens its trail hands the ceremony
 the new one.
 
@@ -144,6 +146,11 @@ crash case's own retry-after-crash convergence needs the state to stay
 `awaiting_init`. No new node-local state file — everything read is already
 durable, replicated state.
 
+A read that fails or times out at construction yields `restore_failed`
+(`StateRestoreFailed`), never `awaiting_init`: this process does not know
+whether the ceremony ran. `Initialize` and `ReissueAdminCredential` refuse it
+with `ErrRestoreFailed`; the fix is the failing read's cause and a restart.
+
 ## Invariants
 
 - **Only the barrier's unseal key is split.** The ceremony enrols holders and
@@ -212,7 +219,7 @@ durable, replicated state.
     TLS-verified client certificate is the digest of its leaf; otherwise a
     caller with no identity or certificate at all -- the sealed-window
     caller, or an awaiting-admin-credential reissue -- is its own remote
-    network address, recorded as `"addr:<remote>"` by `auth.WithRemoteAddr`,
+    network address, recorded as `"addr:<host>"` from `auth.WithRemoteAddr`,
     which every transport calls where it first
     builds the request's context, before any gate that might bypass
     authentication entirely. Each distinct principal, address-keyed or
@@ -369,14 +376,17 @@ durable, replicated state.
     by the barrier service on every transport) also refuse while no SO PIN has
     been provisioned (`pin.ErrPINNotSet`, through
     `pin.RequireProvisionedSOPIN`), rather than admitting any PIN.
-- **Initialization refuses an initialized barrier before it compares a PIN.**
+- **Initialization refuses before it writes or compares a PIN.**
   Both initialize paths provision or verify the supplied PINs through
-  `service.ProvisionInitializePINs`, which answers
-  `seal.ErrAlreadyInitialized` first when `BarrierInitialized` reports the
-  barrier initialized. Otherwise an anonymous caller could tell a right SO PIN
-  from a wrong one by the answer on a barrier that can never be initialized
-  again. A failure to read the initialization record is returned, not treated
-  as "not initialized".
+  `service.ProvisionInitializePINs`, which first asks
+  `BarrierInitializePrecondition` for the refusal the initialize itself would
+  return: `*SystemBarrierInitRefusedError` on a node built with the first-boot
+  ceremony, `seal.ErrAlreadyInitialized` on an initialized barrier. A refused
+  initialize therefore leaves no PIN behind for `qrdb init` to find already
+  set, and an anonymous caller cannot tell a right SO PIN from a wrong one by
+  the answer on a barrier that can never be initialized that way. A failure to
+  read the initialization record is returned, not treated as
+  "not initialized".
 - **The SO PIN needs at least 40 bits of entropy.** With the backoff at its
   cap an attacker gets about 96 guesses a day. Use, for example, 8 random
   characters from a 62-character alphabet (about 47 bits) or a 12-digit
@@ -402,6 +412,8 @@ durable, replicated state.
 | No PIN backend | `pin.ErrBackendNotConfigured` | **yes** |
 | No ceremony CA (an operator-supplied-TLS node, which has no CA key) | holder enrolment and sign-csr refuse with `ErrCANotInitialized` (FailedPrecondition); every verify-only holder operation is still served | **yes** |
 | Ceremony already performed | `ErrAlreadyInitialized` | **yes** |
+| Ceremony state unreadable at construction (`restore_failed`) | `Initialize` and `ReissueAdminCredential` refuse with `ErrRestoreFailed` | **yes** |
+| sign-csr in any state but `enrolling` | `ErrNotInitializedOrEnrolling` | **yes** |
 | Node restarts before every holder claims | unclaimed envelopes are lost; a rekey redistributes | **yes** |
 | Wrong SO PIN on sign-csr | `pin.ErrPINInvalid`, from the backend's constant-time hash comparison | **yes** |
 | sign-csr while the SO PIN check is locked out (after 5 failures in a row; backoff 1 s doubling to 15 min) | `pin.SOPINLockedError`, surfaced as `service.SignCSRThrottledError` (unwraps to `pin.ErrPINLocked`): `429` / `RESOURCE_EXHAUSTED` on every transport, carrying the wait as REST `Retry-After`, a gRPC / Unix `google.rpc.RetryInfo` status detail, MCP `retry_after_seconds` in the error envelope, and a `google.rpc.RetryInfo` detail in the QUIC error frame's payload (seconds rounded up where whole seconds). The PIN is not checked, so a locked-out call cannot confirm a guess | **yes** |
@@ -424,8 +436,8 @@ Holder permissions are listed in
 
 - Holder records: `ceremony/officers/<name>` behind the barrier, public
   material only.
-- PIN state: the PIN backend's own store (the node-local seal store for
-  `pin.SoftwareBackend`).
+- PIN state: the PIN backend's own store (the node's seal store for the
+  `pin.SoftwareBackend` that `lifecycle.NewSealStorePINBackend` wires).
 - Envelopes: memory only.
 
 ## Test strategy

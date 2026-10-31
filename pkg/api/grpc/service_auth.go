@@ -864,17 +864,23 @@ func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRe
 	return &pb.RevokeCertResponse{RecordFound: result.RecordFound()}, nil
 }
 
-// ListCerts lists all issued client certificates for a tenant.
+// ListCerts lists all issued client certificates for a tenant. An empty
+// tenant_id means the caller's own tenant.
 func (s *qrdbServiceServer) ListCerts(ctx context.Context, req *pb.ListCertsRequest) (*pb.ListCertsResponse, error) {
 	if s.certProv == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert"})
 	}
 
-	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.CertsList); err != nil {
+	tenantID := req.GetTenantId()
+	if tenantID == "" {
+		tenantID = tenant.CallerTenant(ctx)
+	}
+
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {
 		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
 
-	records, err := s.certProv.ListCerts(ctx, req.GetTenantId())
+	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

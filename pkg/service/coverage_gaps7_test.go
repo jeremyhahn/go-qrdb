@@ -29,6 +29,7 @@ import (
 	qcsmkv "github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -49,6 +50,13 @@ func (m *lockMockWatchHub) WatchPrefix(_ context.Context, _ string, _ ...watch.W
 
 func newTestLockService(t *testing.T) LockServicer {
 	t.Helper()
+	return newTestLockServiceReadErr(t, &mockKeyNotFoundError{key: "k"})
+}
+
+// newTestLockServiceReadErr builds a LockService over a real MVCCKVService
+// whose every read fails with readErr, as the Raft host returned it.
+func newTestLockServiceReadErr(t *testing.T, readErr error) LockServicer {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	svc, err := NewLockService(
 		NewTransactionService(&mockHost{
@@ -64,7 +72,7 @@ func newTestLockService(t *testing.T) LockServicer {
 		NewWatchService(&lockMockWatchHub{}),
 		NewMVCCKVService(&mockHost{
 			syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-				return nil, &mockKeyNotFoundError{key: "k"}
+				return nil, readErr
 			},
 		}, 1),
 		logger,
@@ -111,8 +119,26 @@ func TestLockService_Unlock_KeyNotLocked(t *testing.T) {
 	ctx := context.Background()
 
 	err := svc.Unlock(ctx, "no-such-key", 42)
-	// Expected to fail since key is not locked.
-	_ = err
+	var notFound *lock.LockNotFoundError
+	if !errors.As(err, &notFound) || notFound.Key != "no-such-key" {
+		t.Fatalf("Unlock error = %v, want LockNotFoundError{Key: no-such-key}", err)
+	}
+}
+
+// TestLockService_Unlock_ReadErrorKeepsItsClass pins that a failed read is
+// not reported as a missing lock: the caller sees the service's ReadError.
+func TestLockService_Unlock_ReadErrorKeepsItsClass(t *testing.T) {
+	svc := newTestLockServiceReadErr(t, errors.New("raft: read timed out"))
+
+	err := svc.Unlock(context.Background(), "k", 42)
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("Unlock error = %v, want *ReadError", err)
+	}
+	var notFound *lock.LockNotFoundError
+	if errors.As(err, &notFound) {
+		t.Fatalf("Unlock reported a read failure as LockNotFoundError: %v", err)
+	}
 }
 
 func TestLockService_Extend_KeyNotLocked(t *testing.T) {
@@ -120,18 +146,47 @@ func TestLockService_Extend_KeyNotLocked(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.Extend(ctx, "no-such-key", 42)
-	// Expected to fail since key is not locked.
-	_ = err
+	var notFound *lock.LockNotFoundError
+	if !errors.As(err, &notFound) || notFound.Key != "no-such-key" {
+		t.Fatalf("Extend error = %v, want LockNotFoundError{Key: no-such-key}", err)
+	}
+}
+
+// TestLockService_Extend_ReadErrorKeepsItsClass pins that a failed read is
+// not reported as a missing lock: the caller sees the service's ReadError.
+func TestLockService_Extend_ReadErrorKeepsItsClass(t *testing.T) {
+	svc := newTestLockServiceReadErr(t, errors.New("raft: read timed out"))
+
+	_, err := svc.Extend(context.Background(), "k", 42)
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("Extend error = %v, want *ReadError", err)
+	}
 }
 
 func TestLockService_Status_NotLocked(t *testing.T) {
 	svc := newTestLockService(t)
 	ctx := context.Background()
 
-	lock, err := svc.Status(ctx, "no-such-key")
-	// Not locked = nil lock, nil error (or a not-found error).
-	_ = lock
-	_ = err
+	lk, err := svc.Status(ctx, "no-such-key")
+	if err != nil || lk != nil {
+		t.Fatalf("Status = (%+v, %v), want (nil, nil) for a key that is not locked", lk, err)
+	}
+}
+
+// TestLockService_Status_ReadErrorKeepsItsClass pins that a failed read is
+// returned as the service's ReadError, not reported as "not locked".
+func TestLockService_Status_ReadErrorKeepsItsClass(t *testing.T) {
+	svc := newTestLockServiceReadErr(t, errors.New("raft: read timed out"))
+
+	lk, err := svc.Status(context.Background(), "k")
+	if lk != nil {
+		t.Fatalf("Status returned a lock on a failed read: %+v", lk)
+	}
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("Status error = %v, want *ReadError", err)
+	}
 }
 
 func TestLockService_List_Empty(t *testing.T) {

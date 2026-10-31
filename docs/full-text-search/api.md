@@ -1,6 +1,6 @@
 # Full-Text Search — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 ## Capability matrix
@@ -11,7 +11,7 @@
 | Remove a document | MISSING | MISSING | MISSING | MISSING | `fts.FTSIndex.RemoveDocument` | none defined |
 | Search (AND) | MISSING | MISSING | MISSING | MISSING | `fts.FTSIndex.Search` | none defined |
 | Search (OR) | MISSING | MISSING | MISSING | MISSING | `fts.FTSIndex.SearchOr` | none defined |
-| Report FTS availability | `GET /capabilities` | `Capabilities` | `admin.Capabilities` | `qrdb_capabilities` | `Client.Admin().Capabilities` | `admin:capabilities` |
+| Report FTS availability | `GET /capabilities` | `qrdb.v1.QRDBService.Capabilities` | `admin.Capabilities` | `qrdb_capabilities` | `Client.Admin().Capabilities` | `admin:capabilities` |
 
 **Every row but the last is MISSING on all five network transports.**
 
@@ -20,10 +20,8 @@ handler on any protocol, and no permission constants. The "Embedded" column
 above is not the embedded *transport* — it is a direct Go import of `pkg/fts`,
 which is a different and weaker thing: it bypasses the SDK boundary entirely.
 
-Under the repo's export obligation, a qrdb capability with no SDK surface is
-not shippable, so this is a **tracked defect** rather than a scope fence. It is
-written as `MISSING` here, per the feature-doc convention, so the gap is
-recorded rather than hidden by omission.
+A qrdb capability with no SDK surface is not shippable, so this gap is a
+defect, not a scope fence.
 
 Closing it would need, at minimum:
 
