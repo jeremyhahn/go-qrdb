@@ -31,9 +31,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -166,11 +168,92 @@ func testCertTenantAgreementOverProtocol(t *testing.T, node *multiProtoNode, adm
 		t.Fatalf("[%s] request with the agreeing certificate after the refusals: %v\noutput: %s", proto.name, err, out)
 	}
 
-	if out, err := runCLIProto(t, node, proto, "users", "delete", userID); err != nil {
+	run := func(args ...string) (string, error) { return runCLIProto(t, node, proto, args...) }
+	if out, err := deleteFixtureCLI(run, time.Now().Add(fixtureDeleteRetryWindow), "users", "delete", userID); err != nil {
 		t.Fatalf("[%s] users delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
 	}
-	if out, err := runCLIProto(t, node, proto, "roles", "delete", role.ID); err != nil {
+	if out, err := deleteFixtureCLI(run, time.Now().Add(fixtureDeleteRetryWindow), "roles", "delete", role.ID); err != nil {
 		t.Fatalf("[%s] roles delete (fixture cleanup): %v\noutput: %s", proto.name, err, out)
+	}
+}
+
+// fixtureDeleteRetryWindow bounds how long deleteFixtureCLI keeps re-issuing
+// a delete whose propose timed out: volumePoolCreateRetryWindow's bound, for
+// the same cause, a loaded runner's slow raft WAL fsync.
+const fixtureDeleteRetryWindow = volumePoolCreateRetryWindow
+
+// deleteFixtureCLI deletes a test fixture by running args through run, the
+// CLI on one protocol. A propose that times out is answered 503 and may still
+// commit (pkg/api/errclass/table.go: quicraft.ErrTimeout is Unavailable, and a
+// client retries only a write it has made idempotent), so the delete is
+// re-issued until deadline, and once a timeout has been met a "not found"
+// answer is that earlier delete having committed (main run 73290). Any other
+// failure, a "not found" no timeout preceded, and a timeout past deadline are
+// returned as the failures they are.
+func deleteFixtureCLI(run func(args ...string) (string, error), deadline time.Time, args ...string) (string, error) {
+	timedOut := false
+	for {
+		out, err := run(args...)
+		switch {
+		case err == nil:
+			return out, nil
+		case timedOut && strings.Contains(strings.ToLower(out), "not found"):
+			return out, nil
+		case strings.Contains(out, "quicraft: timeout") && time.Now().Before(deadline):
+			timedOut = true
+			continue
+		}
+		return out, err
+	}
+}
+
+// TestDeleteFixtureCLI_ResolvesAnAmbiguousTimeout pins deleteFixtureCLI's
+// outcomes against a double CLI that answers a scripted sequence, the first
+// answer being main run 73290's proposal timeout where the case scripts one.
+func TestDeleteFixtureCLI_ResolvesAnAmbiguousTimeout(t *testing.T) {
+	const timeoutOut = "transport: request DeleteUser failed (status 503): user: store delete failed: cert index: " +
+		"service: propose failed: quicraft: timeout (already submitted to raft; it may still commit)"
+	errExit := errors.New("exit status 1")
+	type answer struct {
+		out string
+		err error
+	}
+	future := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name      string
+		answers   []answer
+		deadline  time.Time
+		wantErr   bool
+		wantCalls int
+	}{
+		{"a delete that succeeds at once", []answer{{"OK", nil}}, future, false, 1},
+		{"a timeout, then the retry succeeds", []answer{{timeoutOut, errExit}, {"OK", nil}}, future, false, 2},
+		{"a timeout that committed: the retry finds it gone", []answer{{timeoutOut, errExit}, {"Error: user Not Found", errExit}}, future, false, 2},
+		{"not found with no timeout before it is a failure", []answer{{"Error: user not found", errExit}}, future, true, 1},
+		{"any other failure is not retried", []answer{{"permission denied", errExit}}, future, true, 1},
+		{"a timeout past the deadline is a failure", []answer{{timeoutOut, errExit}}, time.Now().Add(-time.Second), true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			run := func(args ...string) (string, error) {
+				if !slices.Equal(args, []string{"users", "delete", "u1"}) {
+					t.Fatalf("args = %q, want the delete re-issued unchanged", args)
+				}
+				if calls >= len(tc.answers) {
+					t.Fatalf("call %d: the double has no answer scripted", calls+1)
+				}
+				a := tc.answers[calls]
+				calls++
+				return a.out, a.err
+			}
+			_, err := deleteFixtureCLI(run, tc.deadline, "users", "delete", "u1")
+			if gotErr := err != nil; gotErr != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("calls = %d, want %d", calls, tc.wantCalls)
+			}
+		})
 	}
 }
 
