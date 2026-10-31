@@ -1151,7 +1151,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			RolesCreate, RolesRead, RolesUpdate, RolesDelete,
 			RolesList, RolesAssign, RolesUnassign, PermissionsList,
-			PermissionsResolve,
+			PermissionsResolve, RolesReconcileAll,
 		},
 	},
 	{

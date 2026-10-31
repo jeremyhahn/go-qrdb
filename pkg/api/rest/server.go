@@ -2256,6 +2256,7 @@ func (s *Server) registerRoutes() {
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
 	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, s.handleReconcileRoles)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile/all-tenants", permission.RolesReconcileAll, s.handleReconcileRolesAllTenants)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
@@ -2280,6 +2281,7 @@ func (s *Server) registerRoutes() {
 			{http.MethodGet, "/roles/by-name"},
 			{http.MethodPost, "/roles/resolve-permissions"},
 			{http.MethodPost, "/roles/reconcile"},
+			{http.MethodPost, "/roles/reconcile/all-tenants"},
 			{http.MethodPost, "/roles/assign"},
 			{http.MethodPost, "/roles/unassign"},
 		} {

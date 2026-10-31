@@ -50,7 +50,33 @@ func (r *Role) RetiredPermissionError() error   // nil when there is no drift
 // RetiredPermissionError, RetiredPermissions.
 // sdk/go/transport: RoleClient.ReconcileBuiltInRoles(ctx, *ReconcileRolesRequest)
 //                   (*ReconcileRolesResponse, error)
+
+// Every tenant in one pass, platform operator only (roles:reconcile_all).
+type TenantLister interface {
+    ListTenants(ctx context.Context) ([]tenant.TenantInfo, error)
+}
+func ReconcileAllTenants(ctx context.Context, roles RoleServicer, tenants TenantLister) (*AllTenantsReconcileReport, error)
+
+type AllTenantsReconcileReport struct {
+    Tenants []ReconcileReport // system first, then by id
+    Skipped []SkippedTenant   // Reason: SkipReasonSealed | SkipReasonRefused
+    Failed  []FailedTenant    // TenantID, Error; the pass continues past them
+}
+func (r *AllTenantsReconcileReport) Changed() bool
+
+// sdk/go: PermissionRolesReconcileAll.
+// sdk/go/transport: RoleClient.ReconcileBuiltInRolesAllTenants(ctx)
+//                   (*ReconcileAllTenantsRolesResponse, error)
 ```
+
+`ReconcileAllTenants` returns `*tenant.PlatformOperatorRequiredError` for a
+caller bound to any tenant but the system tenant, before it lists a single
+tenant. The gRPC and Unix servers and the QUIC handler build their response
+through one conversion, `grpc.AllTenantsReconcileReportToProto`. The gRPC, Unix
+and QUIC clients read it back through one conversion too,
+`sdk/go/transport/internal/roleconv.AllTenantsFromProto`. REST and MCP carry
+JSON: REST uses snake_case fields and MCP the domain type's own tags. Each
+transport's unit tests pin its field names against its decoder.
 
 Tenant-issued delegations (see
 [architecture.md](architecture.md#tenant-issued-delegations)):
@@ -946,6 +972,14 @@ Unix socket, MCP and the embedded transport — carries the full surface.
   in this repository. The branch means "an internal, unauthenticated pipeline",
   not "an unauthenticated request"; the guard is what keeps those two apart and
   is pinned by a test.
+- **The all-tenant reconcile is a platform-operator verb, gated twice.**
+  `roles:reconcile_all` is cross-scope and granted only to the system tenant's
+  built-in Admin; independently of the role store, `role.ReconcileAllTenants`
+  refuses a caller bound to any other tenant with
+  `tenant.PlatformOperatorRequiredError`. Each tenant converges through its own
+  store with the per-tenant `ReconcileBuiltInRoles`, the system tenant first; a
+  sealed or refusing tenant is skipped with its reason, another error lands in
+  `failed`, and no tenant's outcome stops the pass.
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
@@ -1582,6 +1616,16 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   transport of one node: create, get, update (the creation time survives,
   `spec.enabled` flips), list and delete, and the refusals of a duplicate
   name, a missing policy and another tenant.
+  `TestRoles_CLI_ReconcileAllTenants_PerProtocol` (same target) runs
+  `qrdb roles reconcile --all-tenants` on every transport: every live tenant
+  converges with nothing to change, a second pass changes nothing, the
+  tenant's Admin and Operator hold no stranded permission afterwards, and a
+  tenant Admin and another tenant's SO are refused. A built-in role stored
+  with a stranded permission cannot be produced on a running node (`roles
+  update` refuses built-in permissions and the role keyspace is reserved), so
+  that convergence is pinned against the real role store by
+  `TestReconcileAllTenants_ConvergesEveryTenantsStrandedBuiltIns` in
+  `pkg/role`, beside the sealed, refused, failed and non-system-caller cases.
 - **An embedder reaches the delegation seams through `sdk/go` alone**: the
   external-composer build gate (`test/buildgates`) reads a grant with
   `sdk.DelegationFromCertificate` and composes `node.WithServicePrincipal` from

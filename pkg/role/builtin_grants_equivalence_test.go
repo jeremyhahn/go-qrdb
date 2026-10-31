@@ -158,6 +158,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// Retired-tenant listing and reconcile, cross-scope: effective only for
 	// system-tenant Admin.
 	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,
+	permission.RolesReconcileAll,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,

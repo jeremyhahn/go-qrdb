@@ -284,6 +284,9 @@ func registerAdminGrants() {
 		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
 		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
+		// Cross-tenant built-in role convergence -- only effective for
+		// system-tenant Admin.
+		RolesReconcileAll,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
 		VolumePoolUpdate, VolumePoolDelete,

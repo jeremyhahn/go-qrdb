@@ -82,11 +82,30 @@ see [Status and error mapping](#status-and-error-mapping).
 | List own effective permissions | `GET /permissions/own` | `ListOwnPermissions` | `role.ListOwnPermissions` | `qrdb_permissions_own` | `Client.RBAC().ListOwnPermissions` | identity-gated |
 | Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
 | Reconcile built-in roles | `POST /roles/reconcile` | `ReconcileBuiltInRoles` | `role.ReconcileBuiltIn` | `qrdb_role_reconcile_builtin` | `ReconcileBuiltInRoles` | `roles:create` |
+| Reconcile built-in roles in every tenant | `POST /roles/reconcile/all-tenants` | `ReconcileBuiltInRolesAllTenants` | `role.ReconcileBuiltInAllTenants` | `qrdb_role_reconcile_builtin_all_tenants` | `ReconcileBuiltInRolesAllTenants` | `roles:reconcile_all`, system tenant only |
 
 Reconcile carries **`roles:create`**, not a permission of its own. It IS the
 seeding operation applied to an existing tenant, and a dedicated permission
 would be absent from any role that lacks it — so nobody would hold the grant
 needed to repair that exact absence.
+
+**All-tenant reconcile** takes no request body and answers
+`{"tenants": [<reconcile report>...], "skipped": [{"tenant_id", "reason",
+"detail"}], "failed": [{"tenant_id", "error"}]}`. Every live tenant is
+reconciled independently, the system tenant first. A sealed tenant is skipped
+with reason `sealed`, a tenant that refuses the call with reason `refused`. A
+tenant that fails is reported in `failed` and the pass continues, so the call
+itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
+which only the system tenant's built-in Admin holds. A caller bound to any other
+tenant is refused with 403 / `PermissionDenied`. A node without a tenant service
+answers 501 / `Unimplemented`, and its MCP server does not list the tool. QUIC
+carries the request and response as protobuf
+(`ReconcileBuiltInRolesAllTenantsResponse`).
+
+The bootstrap problem that `roles:create` avoids for the single-tenant verb
+applies here once: a system Admin role stored before `roles:reconcile_all`
+existed lacks it. The single-tenant reconcile of the system tenant, which needs
+only `roles:create`, grants it. Run that first.
 
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not

@@ -572,6 +572,37 @@ the build no longer defines. It is never persisted — one marshal seam clears i
 — so it can only ever report the current disagreement, and it is the field an
 operator reads on a listing to see which tenants need converging.
 
+**Converging every tenant.** A rename strands every tenant, not one, and the
+per-tenant verb needs each tenant's own Admin, because the system tenant may not
+act on another tenant's roles. `role.ReconcileAllTenants` is the platform
+operator's single pass. It enumerates the live tenants from the tenant service
+(`TenantLister`), with retired IDs excluded, because `pkg/role` cannot import
+`pkg/tenant`'s service. It then converges each tenant through the routed role
+service's own store for that tenant. For a barrier tenant that is the tenant's
+sealed store, not the shared one. The system tenant goes first and the rest
+follow in order, each one independently:
+
+- a tenant whose barrier is sealed (`tenant.ErrTenantSealed`) is **skipped**
+  with reason `sealed`, and the next run reaches it once it is unsealed;
+- a tenant that refuses the call is **skipped** with reason `refused`;
+- any other error is reported in **failed** and does not stop the pass. The
+  report is the answer, and the CLI turns a non-empty `failed` into a non-zero
+  exit.
+
+It is gated twice. First by the cross-scope permission `roles:reconcile_all`,
+granted only to the system tenant's built-in Admin. Second, inside the function,
+by a refusal of any caller whose context is bound to a tenant other than the
+system tenant (`tenant.PlatformOperatorRequiredError`, a 403). The second gate
+does not depend on the role store being correct, which is what this verb
+repairs. The per-tenant write is the same `ReconcileBuiltInRoles` convergence,
+so every property above holds per tenant. Custom roles are untouched and a
+converged tenant writes nothing.
+
+A system Admin role stored before `roles:reconcile_all` existed does not hold
+it. That case needs no migration: the single-tenant reconcile of the system
+tenant needs only `roles:create`, and it converges the system Admin onto a
+definition that includes `roles:reconcile_all`. The operator runs that first.
+
 ### Device onboarding and OTA updates
 
 Device onboarding and over-the-air update control are **permissions, not

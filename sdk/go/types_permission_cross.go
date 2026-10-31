@@ -82,6 +82,11 @@ const (
 	// from its disk.
 	PermissionTenantsReconcileDeleted = permission.TenantsReconcileDeleted
 
+	// PermissionRolesReconcileAll ("roles:reconcile_all") converges the
+	// stored built-in roles of every tenant onto the server build's
+	// definitions in one pass, leaving custom roles untouched.
+	PermissionRolesReconcileAll = permission.RolesReconcileAll
+
 	// PermissionAuditVerify ("audit:verify") verifies the tamper-evidence
 	// hash chain of the node's audit log. The chain is the whole node's
 	// trail, not a tenant-filtered slice, so it is reserved for the system

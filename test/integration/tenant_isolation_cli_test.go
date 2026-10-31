@@ -273,6 +273,14 @@ var provisionerSeq atomic.Uint64
 
 func seatTenantProvisioner(t *testing.T, ca *testCA, restPort int, tenantID string, adminClient *http.Client, withSO bool) *http.Client {
 	t.Helper()
+	provisioner, _ := seatTenantProvisionerKeyPair(t, ca, restPort, tenantID, adminClient, withSO)
+	return provisioner
+}
+
+// seatTenantProvisionerKeyPair is seatTenantProvisioner returning also the
+// provisioner's certificate and key, for a caller that drives the CLI as it.
+func seatTenantProvisionerKeyPair(t *testing.T, ca *testCA, restPort int, tenantID string, adminClient *http.Client, withSO bool) (*http.Client, *qrdbdharness.KeyPair) {
+	t.Helper()
 	awaitTenantAdminID(t, restPort, tenantID, adminClient)
 	username := fmt.Sprintf("%s-provisioner-%d", tenantID, provisionerSeq.Add(1))
 	kp := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(username, tenantID))
@@ -299,7 +307,7 @@ func seatTenantProvisioner(t *testing.T, ca *testCA, restPort int, tenantID stri
 			t.Fatalf("seatTenantProvisioner: assign SO to %s: status %d, body: %s", username, status, body)
 		}
 	}
-	return provisioner
+	return provisioner, kp
 }
 
 // tenantCLIArgsForProto returns the root-level qrdb CLI flags that select
