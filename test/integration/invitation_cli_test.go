@@ -56,9 +56,9 @@ var invitationProtocols = []multiProtocol{
 }
 
 // redemptionsPerProtocol is how many redemptions
-// testInvitationRoundTripOverProtocol makes: one that enrols, one replay and
-// one unknown token.
-const redemptionsPerProtocol = 3
+// testInvitationRoundTripOverProtocol makes: one superseded token, one that
+// enrols, one replay and one unknown token.
+const redemptionsPerProtocol = 4
 
 // invitationRedeemLimitYAML sizes auth.invitation_redeem_limit.per_source to
 // every redemption this test makes. All but unix's come from the one
@@ -136,6 +136,13 @@ func testInvitationRoundTripOverProtocol(t *testing.T, node *multiProtoNode, pro
 	}
 	if reinvite.Token == inv.Token {
 		t.Fatalf("[%s] re-invite returned the SAME token as the original invite; it must be fresh", proto.name)
+	}
+
+	// --- the re-invite superseded the ORIGINAL token: redeeming it is ------
+	// refused, and the refusal does not consume the fresh one.
+	out, err = runCLI(t, node.cli, unauthenticatedEnrollArgs(node, proto, inv.TenantID, inv.Token, username, t.TempDir())...)
+	if err == nil {
+		t.Fatalf("[%s] enroll (superseded token) succeeded, want a refusal: %s", proto.name, out)
 	}
 
 	// --- enroll: redeem the fresh (re-invite) token with NO credential -----

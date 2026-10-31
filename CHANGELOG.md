@@ -13,6 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **A tenant administrator can grant the `credentials:*` permissions inside its tenant again**: the built-in Admin holds the ten `credentials:*` permissions in its own tenant, so under the rule that a grantor may grant only permissions it holds, a tenant Admin can write a role that gives its accounts use of the tenant's credential store (#1185).
 - **Vector namespace scans page every vector exactly once**: `ScanNamespace` returns ascending vector IDs from `ScanOptions.FromID` on both Pebble and memory storage, and `ListVectors` pages behind an opaque keyset cursor that resumes after the last ID returned and refuses a malformed cursor with `InvalidVectorError` rather than restarting at the first page; the index rebuild pages the same way, so neither repeats nor skips a vector in a namespace larger than one page.
 - **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
 - **A tenant Security Officer's PIN is held sealed while it is being onboarded**: `bootstrap.TenantSOConfig.PIN` is a `*secure.Secret`. The onboarding service seals the request's PIN bytes into it and wipes them. The Secret is opened only for the `SetSOPIN` commit, and `ProvisionTenant` destroys it on every return, whether the PIN was committed, the commit failed or the request was refused. The secure analyzer no longer flags the two `[]byte` PIN fields.
@@ -223,6 +224,7 @@ are not reconstructed here — their history is in the git log.
   three in-process hosts, waiting for each follower's own stalled-fsync
   observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
   `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **`sdk.MultiGuardedBatchKVStore`**, with `sdk.GuardedBatchKVStore`, `sdk.KVGuard` and `sdk.KVWrite`, re-exports the guarded multi-key commit (`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`) that `Client.KVStore()` already served, a standalone node's included, so an embedder commits an entry and its index entries as one batch conditional on expected values from `sdk/go` alone (#1196).
 - **Binary-key parity cells for every storage engine** (#1143):
   `pkg/storage/binary_key_parity_test.go` holds memory, pebble, file and both
   objstore providers to one answer for path-shaped keys (separators, `..`, a
@@ -252,6 +254,8 @@ are not reconstructed here — their history is in the git log.
 - **`sdk/go/storage` re-exports the objstore credential and provider-registration surface.** `WithObjStoreCredentialFiles`, `ObjStoreCredentialFiles`, `ObjStoreOption`, the `ObjStoreCredential*Error` types, `RejectObjStoreCredentialSettings` and `RegisterObjStoreProvider` alias their `pkg/storage/objstore` names, so an embedder opens `NewObjStoreStorage` with file credentials through the SDK boundary alone (#1215).
 - **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
 - **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+- **A pre-authentication request-rate limit per client address**, `transport.client_rate_limit` (`rate_per_second`, `burst`, `trusted_proxies`), off by default. REST, gRPC (gRPC-Web included), native QUIC, MCP and the Unix socket admit each request against one token bucket per address, shared by the node's listeners, before authentication runs; a refused request gets 429 with `Retry-After`, or `ResourceExhausted` with RetryInfo. The MySQL and PostgreSQL wire listeners charge the same bucket at connection and per statement: MySQL refuses with error 1226 (`ER_USER_LIMIT_REACHED`, SQLSTATE `42000`), PostgreSQL with SQLSTATE `08004` (FATAL) at connection and `53400` for a statement. An IPv6 client is keyed by its `/64`; each `trusted_proxies` entry names its `address` and the one `header` that proxy appends to (`forwarded` or `x-forwarded-for`), only that field is read on its behalf, so a client cannot override the chain its proxy wrote by sending the other one, and a field that is malformed -- a `Forwarded` field that does not match RFC 7239 §4 exactly, an unterminated quoted-string among others -- or exhausted fails closed to the last trusted hop's address. `sdk/go/server` names it `ClientRateLimitConfig` and `ClientRateLimitedError`. The Go SDK's and the CLI's `Connect` report the refusal as the server's typed answer rather than "health check failed", and QUIC no longer retries it until the connect bound (#1197).
+- **`invite.Store.Reissue`** supersedes every unredeemed invitation a user holds and issues a new one in one guarded write, and **`invite.Store.Activate`** records an account's activation apart from its redemption; `GC` keeps a reissued invitation written but not yet made live (the subject swap still in flight, or its outcome unknown) until it expires, collecting only records below the live generation; `ErrSuperseded`, `ErrUserNotFound`, `ErrUserActive` and `ErrReissueConflict` are re-exported through `sdk/go` (#1195).
 - **`sdk.TenantBarrierInitVerifier`** is the server half of signed tenant barrier initialization, re-exported from `pkg/auth/middleware` beside the client's `transport.ProveTenantBarrierInit` (#1246). `Begin(tenantID, tlsState)` issues a nonce bound to the tenant and the connection's TLS exporter; `Complete(tenantID, tlsState, proof, key)` checks the proof against that nonce, that exporter and the key `key` names, and spends the nonce, refusing with `*sdk.FirstAdminProofError`. A facade that terminates its callers' TLS runs the exchange with it rather than a copy of qrdb's. `AuthMiddleware` now runs the same type for every transport. The aliases `NewTenantBarrierInitVerifier`, `TenantBarrierInitKey`, `TenantBarrierInitProof`, `InitChallenge`, `InitChallengeBook`, `NewInitChallengeBook`, `InitChallengeTTL`, `InitChallengeMaxOutstanding`, `InitProofReason*` and `InitTooManyChallengesError` come with it.
 
 - **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
@@ -380,6 +384,18 @@ are not reconstructed here — their history is in the git log.
   registers each claim it attempts, and the rollback's release is guarded on
   the freshly generated id, so it removes a claim that landed and nothing
   else.
+- **A sealed at-rest barrier ends a `PebbleStorage` flush, durable write or
+  compaction with a typed error** (#1155): with encryption at rest, a barrier
+  sealed under an open store had Pebble retry a refused flush forever and
+  panic when it could not create its next WAL file. `encfs.FS.BarrierSealed`
+  reports whether the barrier keying it is sealed; `PebbleStorage` checks it
+  before every flush, durable write and compaction and returns a
+  `*pebble.SealedError` wrapping `ErrBarrierSealed`, and `pebble.Open` is the
+  one place a database opens under the seal watch, for the storage layer and
+  the state machines alike. `Node.Close` now closes the data-plane store before
+  it seals the node's barriers. A seal that lands between the check and Pebble
+  creating its next WAL file is not covered; that is the seal-quiesce row in
+  [docs/SPEC.md](docs/SPEC.md).
 
 - **A cancelled clustered boot stops at the step it is in**: `sdk/go/node`'s
   `NewClusteredNode` checked its ctx before opening the Raft WAL and in the
@@ -438,6 +454,8 @@ are not reconstructed here — their history is in the git log.
 
 - CI: the `fips` job's legs are rebalanced from the measured wall times of run 68401 (#1230, ruling 221(5)): nine legs, `tenant`, `seal`, `server`, `auth`, `service`, `api-keys`, `rest`, `sdk-transport` and `sdk`, with `pkg/tenant`, `pkg/seal` and `pkg/server` each in a leg alone. Each leg has its own `timeout-minutes` from its matrix entry, its expected time with headroom and at most 45, and go test's per-package budget is that limit less 5 minutes; `test/buildgates/fips_legs_test.go` enforces both. **The `tenant` (about 42 minutes) and `seal` (about 36.5 minutes) legs stay over 30 minutes until #1234 splits those packages**; every other leg is expected under 30 (docs/seal/fips140-mode.md, "The legs").
 - CI: the `fips` job splits `pkg/tenant`, `pkg/seal` and `pkg/server` by test name, each over two legs, so every leg is expected under 30 minutes and `server` under 25 (#1234, ruling 221(5)): twelve legs, with `tenant-lifecycle`, `seal-barrier` and `server-raft` selecting tests by the Makefile's `FIPS_RUN_<leg>` (`go test -run`) and `tenant`, `seal` and `server` skipping what those select (`-skip`). The limits are 30 minutes for the tenant and seal legs and 25 for the server legs. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints a leg's patterns, and the new `test/buildgates/fips_split_test.go` fails when a top-level test of a split package runs in no leg or in two. `TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace` uses the cheap test KDF, which brings it from 195 seconds to under 8 under FIPS mode.
+- **Credentials are per tenant.** Every credential operation, on every transport and through `Client.Credentials()`, acts on the caller's own tenant's store: the platform's for a system principal, a store kept under the tenant's own barrier (always the `barrier` strategy) for a principal of a tenant onboarded with `barrier`, `volume` or `raft` isolation. A tenant on `prefix` isolation is refused with `CapabilityUnsupportedError` (501 / `UNIMPLEMENTED`), and a sealed tenant barrier with `BarrierSealedError` (503 / `UNAVAILABLE`); neither falls back to the system store. The ten `credentials:*` permissions move from `ScopeCross` to `ScopeSelf`, so a tenant administrator can grant them inside the tenant, and their SDK names move to `sdk/go/types_permission_credentials.go`. `credentials.CredentialService.ForBarrier` builds a store over a given barrier. The embedded transport now receives the node's credential service, so `Client.Credentials()` on an in-process node no longer fails with a nil service (#1185).
+- **A re-invitation supersedes every earlier token** (`users invite --username` on every transport). A token sent before the re-invite is now refused like a spent one, so at most one token per pending account is redeemable; a re-invite that loses a race to another re-invite or a redemption fails with `ABORTED` (REST 409) and is retried (#1195).
 - The rationale for ci.yml's nightly `schedule:` (ci.yml, nightly.yml,
   AGENTS.md, docs/release/architecture.md, docs/release/engineering.md,
   test/buildgates/ci_tiers_test.go)
@@ -554,6 +572,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- `qrdbd` carries every field of its config file's `transport:` section to the server: `max_message_bytes`, `max_conns_per_peer` and `max_streams_per_conn` set in YAML used to be dropped, leaving their defaults in force (#1197).
 - `MVCC().PutWithLease` on a state machine that keeps no revision history (the default pebble state machine) reports version 1 for the key it wrote, not 0. Presence is the only version such a state machine's transaction compares read, so a compare-and-set on the reported version now holds there too (#1211).
 - **A passphrase change checks the current passphrase and cannot lose a
   race** (#631). `StorageBarrier.ChangePassword` refuses a current passphrase
@@ -758,6 +777,17 @@ are not reconstructed here — their history is in the git log.
   `ClusterTrustDomain`.
 
 ### Changed
+
+- **`cert.DefaultCertProvider.WatchForDeletions` returns a `done` channel**
+  beside its error, closed once both eviction watchers have returned, and nil
+  when the provider has no watch service. `lifecycle.WatchCertProviderEvictions`
+  waits on it as the node's own work, so `Node.Stop` cancels the Key B
+  eviction watchers and waits for them before it closes anything they read
+  through; before, they outlived the node. `sdk/go/node`'s `Close` likewise
+  waits for the cluster seal monitor rather than only canceling it.
+  `replicaforward.Start` also returns a `done` channel that closes once its
+  watches have returned, and `sdk/go/node`'s `Close` waits for it before it
+  closes the host the watches read through.
 
 - **Tenant creation refuses an ID that cannot be a SPIFFE trust domain**
   (#1150). A tenant ID is the trust domain of its principals'

@@ -918,10 +918,11 @@ of its own, and the listing never contains one.
 | A user/role request whose body (REST) or payload (QUIC) does not decode | 400 | `INVALID_ARGUMENT` |
 | A REST user or role administration body larger than 1 MiB | 413 | — |
 | A create, list or name lookup by a caller outside the system tenant naming a tenant other than its own (`tenant.CrossTenantDeniedError`) | 403 | `PERMISSION_DENIED` |
-| An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
+| An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, superseded by a later re-invite, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
 | Invite or redeem request missing a required field | 400 | `INVALID_ARGUMENT` |
 | Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
 | Re-inviting an account that already holds a credential or is not pending | 409 | `FAILED_PRECONDITION` |
+| Re-inviting an account while a concurrent re-invite or redemption of it commits first (`invite.ErrReissueConflict`; retry) | 409 | `ABORTED` |
 
 ## Pagination
 

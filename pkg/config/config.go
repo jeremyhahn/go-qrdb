@@ -209,6 +209,11 @@ type TransportConfig struct {
 	// DefaultTransportMaxStreamsPerConn; a negative value is an explicit
 	// opt-out and means unlimited.
 	MaxStreamsPerConn int `yaml:"max_streams_per_conn"`
+
+	// ClientRateLimit is the pre-authentication request-rate limit per
+	// client address, shared by every transport. Unset (the default)
+	// applies no limit. See ClientRateLimitConfig.
+	ClientRateLimit ClientRateLimitConfig `yaml:"client_rate_limit"`
 }
 
 // DefaultTransportMaxMessageBytes is the pre-auth per-message cap applied
@@ -2265,6 +2270,9 @@ func (c *Config) Validate() error {
 		// its own and must fail closed here rather than be silently
 		// resolved to a cap, which would reopen go-qrdb#576.
 		return &ValidationError{Field: "transport.max_message_bytes", Reason: "must not be negative"}
+	}
+	if err := c.Transport.ClientRateLimit.validate(); err != nil {
+		return err
 	}
 
 	if c.Raft.DataDir == "" {

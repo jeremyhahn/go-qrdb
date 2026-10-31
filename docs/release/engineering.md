@@ -492,7 +492,8 @@ minute held a `bigdisk` runner slot for well over a minute. The lists are
 balanced longest-first by the per-feature job times of main run 65165, with
 setup assumed to be about 60 s of each leg (counted once per shard) and
 `barrier-seal` taken at its first-attempt 300 s rather than the 585 s its
-rerun recorded:
+rerun recorded. `rate-limit`, added after that run, is counted at the 24 s its
+test took in a lane, in shard 5, then the shard with the least expected time:
 
 | Shard | Features | Expected (s) | Limit |
 |---|---|---|---|
@@ -500,12 +501,12 @@ rerun recorded:
 | 2 | backup-restore capabilities ceremony clustering firstboot tenant-dek | 551 | 30 min |
 | 3 | barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch | 563 | 30 min |
 | 4 | api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools | 551 | 30 min |
-| 5 | cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors | 550 | 30 min |
+| 5 | cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors | 574 | 30 min |
 | 6 | coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap | 562 | 30 min |
 
 That run's 40 feature legs held 5654 slot-seconds (1.57 slot-hours; 5369, or
-1.49, with `barrier-seal` at 300 s); the six shards are expected to hold 3329
-(0.92 slot-hours), with the wall time of the job going from its slowest leg
+1.49, with `barrier-seal` at 300 s); the six shards are expected to hold 3353
+(0.93 slot-hours), with the wall time of the job going from its slowest leg
 to its slowest shard, about nine and a half minutes. A new feature goes in the
 `features:` of the shard with the least expected time; rebalance when a
 shard's measured time drifts well past the others.

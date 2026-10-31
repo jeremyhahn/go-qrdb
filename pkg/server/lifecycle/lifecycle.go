@@ -1594,12 +1594,23 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	return opts
 }
 
+// credentialServiceOptions binds the barrier registry, when the node has one,
+// as the lookup through which a tenant caller reaches its own named-credential
+// store. A nil registry stays unbound rather than becoming a non-nil
+// interface holding a nil pointer.
+func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
+	if infra.BarrierRegistry == nil {
+		return nil
+	}
+	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
-		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)
 		if err != nil {
@@ -2013,7 +2024,7 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n := &Node{}
-	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 	ceremonyCoreSvc, err := ceremonyService(infra, log)
 	if err != nil {

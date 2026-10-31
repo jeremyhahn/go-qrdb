@@ -34,7 +34,8 @@
  * page.route(), the same pattern web-mode-server-init-wizard.spec.ts uses.
  */
 
-import { test as base, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
+import { test as base } from "./fixtures/api-guard.ts";
 import type { Page } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
@@ -59,6 +60,16 @@ async function injectSealedUninitializedMock(page: Page): Promise<CeremonyCall[]
 
   await page.route("**/health", (route) => {
     void route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "sealed" }) });
+  });
+
+  // /status is not on the sealed-window allowlist: refused as the REST
+  // sealed-window gate does, which connect() tolerates.
+  await page.route((url) => url.pathname === "/status", (route) => {
+    void route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "barrier sealed", code: "SEALED" }),
+    });
   });
 
   await page.route("**/v1/barrier/status", (route) => {

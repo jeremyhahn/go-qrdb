@@ -359,14 +359,162 @@ func TestWaitForLeaderReportsUnreachableServer(t *testing.T) {
 	}
 }
 
-func TestSleepUntil(t *testing.T) {
-	if sleepUntil(time.Now().Add(-time.Second), time.Millisecond) {
-		t.Error("sleepUntil returned true for a deadline in the past")
+func TestPollRunTimesOutPastTheDeadline(t *testing.T) {
+	probeErr := errors.New("not yet")
+	var probes atomic.Int32
+	err := poll{
+		op: "op", target: "target", timeout: 0, interval: time.Hour,
+		probe: func() error { probes.Add(1); return probeErr },
+	}.run(nil)
+	var timeout *TimeoutError
+	if !errors.As(err, &timeout) || timeout.Op != "op" || timeout.Target != "target" {
+		t.Fatalf("err = %v, want a *TimeoutError for op on target", err)
 	}
-	if !sleepUntil(time.Now().Add(time.Second), time.Millisecond) {
-		t.Error("sleepUntil returned false for a deadline in the future")
+	if !errors.Is(timeout.LastErr, probeErr) {
+		t.Errorf("LastErr = %v, want the probe's error", timeout.LastErr)
 	}
-	if sleepUntil(time.Now().Add(5*time.Millisecond), 40*time.Millisecond) {
-		t.Error("sleepUntil returned true after sleeping past the deadline")
+	if got := probes.Load(); got != 1 {
+		t.Errorf("probes = %d, want exactly one attempt before giving up", got)
+	}
+}
+
+func TestPollRunReportsStackDumpsOnTimeout(t *testing.T) {
+	err := poll{
+		op: "op", target: "target", timeout: time.Millisecond, interval: 2 * time.Millisecond,
+		probe:     func() error { return errEmptyFile },
+		onTimeout: func() []int { return []int{42} },
+	}.run(nil)
+	var timeout *TimeoutError
+	if !errors.As(err, &timeout) || len(timeout.StackDumped) != 1 || timeout.StackDumped[0] != 42 {
+		t.Fatalf("err = %v, want a *TimeoutError listing the dumped daemon", err)
+	}
+}
+
+func TestPollRunRetriesUntilTheProbeSucceeds(t *testing.T) {
+	var probes atomic.Int32
+	err := poll{
+		op: "op", target: "target", timeout: 10 * time.Second, interval: time.Millisecond,
+		probe: func() error {
+			if probes.Add(1) < 3 {
+				return errEmptyFile
+			}
+			return nil
+		},
+	}.run(nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}
+
+// neverReadyServer answers every probe with a 503 that is not the sealed
+// refusal and a status with no leader, so no HTTP wait on it ever succeeds.
+func neverReadyServer(t *testing.T) (*httptest.Server, *x509.CertPool) {
+	t.Helper()
+	return newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"shards":[{"shard_id":1,"is_leader":false}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+}
+
+// daemonWaits names every Daemon readiness wait, bound to a target it never
+// reaches.
+func daemonWaits(t *testing.T) map[string]func(*Daemon, time.Duration) error {
+	t.Helper()
+	srv, pool := neverReadyServer(t)
+	missing := filepath.Join(t.TempDir(), "missing")
+	return map[string]func(*Daemon, time.Duration) error{
+		"WaitForFile":     func(d *Daemon, to time.Duration) error { return d.WaitForFile(missing, to) },
+		"WaitForNodeHost": func(d *Daemon, to time.Duration) error { return d.WaitForNodeHost(missing, to) },
+		"WaitForHTTPOK":   func(d *Daemon, to time.Duration) error { return d.WaitForHTTPOK(srv.URL+"/health", pool, nil, to) },
+		"WaitForHTTPUp":   func(d *Daemon, to time.Duration) error { return d.WaitForHTTPUp(srv.URL+"/health", pool, nil, to) },
+		"WaitForLeader":   func(d *Daemon, to time.Duration) error { return d.WaitForLeader(srv.URL+"/status", pool, nil, to) },
+	}
+}
+
+func TestDaemonWaitFailsAtOnceWhenTheDaemonExits(t *testing.T) {
+	const timeout = 5 * time.Minute
+	for name, wait := range daemonWaits(t) {
+		t.Run(name, func(t *testing.T) {
+			d := startHelper(t, "print")
+			start := time.Now()
+			err := wait(d, timeout)
+			if elapsed := time.Since(start); elapsed > timeout/10 {
+				t.Errorf("wait took %v, want it to end at the exit, well under %v", elapsed, timeout)
+			}
+			var waitErr *DaemonWaitError
+			if !errors.As(err, &waitErr) {
+				t.Fatalf("err = %v, want a *DaemonWaitError", err)
+			}
+			var exit *DaemonExitError
+			if !errors.As(err, &exit) || exit.Op != name {
+				t.Fatalf("err = %v, want a *DaemonExitError for %s", err, name)
+			}
+			if !strings.Contains(waitErr.Tail, "problem") || !strings.Contains(err.Error(), " exited: ") {
+				t.Errorf("err = %v, want the exit and the daemon's output tail", err)
+			}
+			var collision *PortCollisionError
+			if errors.As(err, &collision) {
+				t.Errorf("err = %v, want no port collision for a tail without one", err)
+			}
+		})
+	}
+}
+
+func TestDaemonWaitReportsAFailingExitStatus(t *testing.T) {
+	d := startHelper(t, "unknown-mode")
+	err := d.WaitForFile(filepath.Join(t.TempDir(), "missing"), time.Minute)
+	var exit *DaemonExitError
+	if !errors.As(err, &exit) || exit.Status == nil {
+		t.Fatalf("err = %v, want a *DaemonExitError carrying the exit status", err)
+	}
+	if !strings.Contains(err.Error(), exit.Status.Error()) {
+		t.Errorf("err = %v, want it to name the exit status", err)
+	}
+}
+
+func TestDaemonWaitReachesReadyOnALiveDaemon(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+	if err := os.WriteFile(ready, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(ready), filepath.Dir(filepath.FromSlash(hostIDPath))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(ready), filepath.FromSlash(hostIDPath)), []byte("id"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, pool := newTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"shards":[{"shard_id":1,"is_leader":true}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	d := startHelper(t, "sleep")
+	waits := map[string]func() error{
+		"WaitForFile":     func() error { return d.WaitForFile(ready, 10*time.Second) },
+		"WaitForNodeHost": func() error { return d.WaitForNodeHost(filepath.Dir(ready), 10*time.Second) },
+		"WaitForHTTPOK":   func() error { return d.WaitForHTTPOK(srv.URL+"/health", pool, nil, 10*time.Second) },
+		"WaitForHTTPUp":   func() error { return d.WaitForHTTPUp(srv.URL+"/health", pool, nil, 10*time.Second) },
+		"WaitForLeader":   func() error { return d.WaitForLeader(srv.URL+"/status", pool, nil, 10*time.Second) },
+	}
+	for name, wait := range waits {
+		if err := wait(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestDaemonWaitTimesOutOnALiveDaemon(t *testing.T) {
+	d := startHelper(t, "sleep")
+	err := d.WaitForFile(filepath.Join(t.TempDir(), "missing"), shortTimeout)
+	var timeout *TimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("err = %v, want a *TimeoutError while the daemon still runs", err)
 	}
 }

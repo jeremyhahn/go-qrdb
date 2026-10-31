@@ -122,50 +122,6 @@ const (
 	PermissionRegistrationConfigUpdate = permission.RegistrationConfigUpdate
 )
 
-// The named-credential permissions are cross-scope because the credential
-// store is one system-scoped barrier with no tenant namespacing: a
-// tenant-local role must never satisfy them.
-const (
-	// PermissionCredentialsSubmit ("credentials:submit") submits a named
-	// credential.
-	PermissionCredentialsSubmit = permission.CredentialsSubmit
-
-	// PermissionCredentialsStrategy ("credentials:strategy") reads a named
-	// credential's sealing strategy.
-	PermissionCredentialsStrategy = permission.CredentialsStrategy
-
-	// PermissionCredentialsList ("credentials:list") lists named credentials.
-	PermissionCredentialsList = permission.CredentialsList
-
-	// PermissionCredentialsDelete ("credentials:delete") deletes a named
-	// credential.
-	PermissionCredentialsDelete = permission.CredentialsDelete
-
-	// PermissionCredentialsRotate ("credentials:rotate") rotates a named
-	// credential to a new version.
-	PermissionCredentialsRotate = permission.CredentialsRotate
-
-	// PermissionCredentialsGCExpired ("credentials:gc_expired") removes
-	// expired credential versions.
-	PermissionCredentialsGCExpired = permission.CredentialsGCExpired
-
-	// PermissionCredentialsRetrieveVersion ("credentials:retrieve_version")
-	// retrieves one version of a named credential.
-	PermissionCredentialsRetrieveVersion = permission.CredentialsRetrieveVersion
-
-	// PermissionCredentialsListVersions ("credentials:list_versions") lists a
-	// named credential's versions.
-	PermissionCredentialsListVersions = permission.CredentialsListVersions
-
-	// PermissionCredentialsStore ("credentials:store") stores a named
-	// credential.
-	PermissionCredentialsStore = permission.CredentialsStore
-
-	// PermissionCredentialsRetrieve ("credentials:retrieve") retrieves a named
-	// credential's current version.
-	PermissionCredentialsRetrieve = permission.CredentialsRetrieve
-)
-
 // The node-barrier permissions are cross-scope because the node barrier is a
 // singleton that protects every tenant's data, so an identity of one tenant
 // must never initialize, unseal, seal, rekey or recover it, rotate its root

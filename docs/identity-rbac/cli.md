@@ -54,7 +54,10 @@ Creates a pending account in your own tenant -- or, given only `--username`,
 re-invites one still pending -- and returns a single-use enrolment token
 **exactly once**. Deliver it to the invited user out of band; they redeem it
 themselves with `qrdb enroll`. You never hold a credential for their
-account.
+account. A re-invite supersedes every token issued for the account before
+it: only the newest token redeems, and an earlier one is refused exactly as a
+spent token is. If two re-invites of one account race, one of them fails with
+an aborted error; run it again.
 
 ```bash
 qrdb users invite --username alice --email alice@acme.com --roles "$OPERATOR_ROLE_ID"

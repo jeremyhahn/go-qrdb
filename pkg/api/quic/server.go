@@ -40,6 +40,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -261,6 +262,10 @@ type Server struct {
 	// single remote IP may hold open against this listener (go-qrdb#576).
 	// Zero means unlimited. See WithMaxConnsPerPeer.
 	maxConnsPerPeer int
+
+	// clientLimit admits each request by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every request.
+	clientLimit *clientlimit.Limiter
 }
 
 // DefaultMaxPayloadBytes is the per-request-frame payload cap applied when
@@ -313,6 +318,15 @@ func WithMaxStreamsPerConn(n int) ServerOption {
 // WithMaxConnsPerPeer.
 func WithMaxConnsPerPeer(n int) ServerOption {
 	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// WithClientLimiter admits every request stream by client address through l
+// before anything else -- authentication included -- runs on its behalf
+// (go-qrdb#1197). Native QUIC carries no forwarding headers, so the key is
+// always the connection's remote address. Every transport of one server
+// shares the same Limiter. Nil, the default, applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // resolveMaxPayloadBytes returns n if positive, else DefaultMaxPayloadBytes.
@@ -1096,6 +1110,17 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	}
 
 	start := time.Now()
+
+	// The client-address limiter (go-qrdb#1197) admits the request before
+	// anything -- the OnBehalf decode, the awaiting-admin and sealed-window
+	// gates, authentication -- does work on its behalf. Native QUIC carries
+	// no forwarding headers: the key is the connection's own remote address.
+	if err := s.clientLimit.Admit(conn.RemoteAddr(), nil); err != nil {
+		st, body := errorFrame(wire.StatusResourceExhausted, err)
+		_ = s.writeResponse(stream, requestID, st, body)
+		s.logRequest(method, requestID, st, start)
+		return
+	}
 
 	// A request a cluster peer forwarded on a caller's behalf carries the
 	// caller's method and payload in an envelope. It is served as that

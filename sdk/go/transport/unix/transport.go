@@ -291,7 +291,9 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 		return nil
 	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
 		return nil
-	case status.Code(err) == codes.Unauthenticated:
+	case status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.ResourceExhausted:
+		// The server answered with a typed refusal of the caller -- its
+		// credential, or its address under the client-address rate limit.
 		return mapGRPCError("Health", err)
 	}
 	return &transport.ConnectionError{

@@ -52,6 +52,8 @@ func TestClusterAdminScope(t *testing.T) {
 		{"qrdb_update_node_compaction", map[string]any{"mode": "revision", "retainRevisions": 10}},
 		// Replica state hashes cover every tenant's replicas on the node.
 		{"qrdb_state_hashes", nil},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{"qrdb_start_shard", map[string]any{"shard_id": 7, "replica_id": 1}},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

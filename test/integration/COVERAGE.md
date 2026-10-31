@@ -16,7 +16,7 @@ limitations under the License.
 
 # Integration test coverage matrix
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Accounting of integration coverage per feature and transport; derived from `test/integration/features.mk`.
 
 CLI-driven, per-transport coverage for every `docs/<feature>/` folder, over
@@ -126,7 +126,7 @@ itself (it is, deliberately, the CLI-selectable set).
 | [identity-rbac](../../docs/identity-rbac/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `roles_cli_test.go`, `users_cli_test.go`, `invitation_cli_test.go`, `abac_policy_cli_test.go` are `_PerProtocol`. `identity_hydrator_test.go` is embedded only: it boots an in-process node with `node.WithIdentityHydrator` and asserts the Subject the login ceremony returns and its bearer resolves to, because the ceremony is served by the embedded transport alone and a hydrator is a Go value no spawned `qrdbd` can take. `tenant_owner_test.go` asserts `Identity.TenantOwner` on the embedded login, the only transport that returns an identity to its caller. `tenant_owner_cli_test.go` is `_PerProtocol` over the network transports: a tenant Admin is served, then after demotion the next request is decided again (served under the remaining role, Admin-only verbs refused as permission denials, never as an undecidable ownership). The flag's value there has no wire projection and is asserted by `pkg/auth/middleware` unit tests. |
 | [auth-factors](../../docs/auth-factors/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `auth_cli_test.go` is `_PerProtocol`. `auth_factor_condition_cli_test.go` drives the conditional add (one-time claim, expected version, N racing claims) through the CLI per protocol and, for **E**, through `sdk/go/node`'s in-process client; the rest of the lifecycle has no embedded coverage. The factor service's lifecycle (a refused last-factor removal leaves the user active, a forced one disables the user, a revoked factor's lookup is refused) is unit-tested in `pkg/service` (`TestRemove_*`, `TestLookupByCredentialKey_*`), and its gRPC handlers in `pkg/api/grpc` (`TestUserAuthFactor_Delete_*`, `TestUserAuthFactorLogin_*`, `TestGRPC_Add*`). |
 | [audit](../../docs/audit/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `_PerProtocol`. |
-| [rate-limit](../../docs/rate-limit/) | — | — | — | — | — | — | **Gap.** No integration test. |
+| [rate-limit](../../docs/rate-limit/) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `client_rate_limit_cli_test.go` is `_PerProtocol`: the client-address limit (`transport.client_rate_limit`) refuses a drained loopback address over REST, gRPC, QUIC and MCP, serves the Unix caller from its own bucket, and refuses a MySQL client with error 1226 and a PostgreSQL client with SQLSTATE `08004`. `client_rate_limit_embedded_test.go` is `_Embedded_PerPermissionPolicy`: a per-permission `Policy` refuses the call past its burst on the embedded transport with `*middleware.RateLimitedError`. **Gap**: the per-permission `Policy` is driven on the embedded transport only; on the network transports it is unit-tested. |
 | [attested-caller](../../docs/attested-caller/) | — | — | — | — | — | — | **Gap.** No integration test. |
 | [multi-tenancy](../../docs/multi-tenancy/) | ✓ | ✓ | ✓ | ✓ | ✓ | — | `tenant_cli_test.go`, `tenant_isolation_cli_test.go`, `tenant_deleted_cli_test.go` are `_PerProtocol`. `tenant_barrier_init_proof_cli_test.go` runs `tenant barrier-init`'s proof of possession `_PerProtocol` on the five network transports (no signer, another key's signature, then the real CLI with the first admin's key); embedded asks no proof. `tenant_data_root_cli_test.go` and the `isolation_raft_*` cluster-correctness suites drive REST only. |
 
@@ -139,8 +139,8 @@ itself (it is, deliberately, the CLI-selectable set).
 
 ## Summary
 
-- **4 features have no integration test at all**: configuration, deployment,
-  rate-limit and attested-caller, and (on the qrdb-transport axis
+- **3 features have no integration test at all**: configuration, deployment
+  and attested-caller, and (on the qrdb-transport axis
   specifically) etcd-compatibility and row-locking are additionally gapped
   even though their own wire protocol is tested.
 - **release**, **desktop-gui**, and **typescript-sdk** are deliberately out of scope for this

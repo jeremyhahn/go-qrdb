@@ -231,6 +231,11 @@ func registerAdminGrants() {
 		// ScopeCross (cluster_admin_scope.go): only effective for the system
 		// tenant's Admin.
 		AdminStateHash,
+		// Starting a new shard on the cluster: a cluster administrator
+		// creates shards as it adds members and drains nodes. ScopeCross
+		// (cluster_admin_scope.go): only effective for the system tenant's
+		// Admin, so a tenant Admin cannot start a shard.
+		AdminStartShard,
 		// Minting a member-side CSR join token -- and reviewing the
 		// tokenless approval queue -- admits a new node to the whole
 		// replicated cluster. ClusterJoinToken is ScopeCross
@@ -332,6 +337,14 @@ func registerAdminGrants() {
 		ACMEOrdersRead, ACMEOrdersList,
 		ACMEEABRead, ACMEEABList,
 		ACMEEABCreate, ACMEEABDelete,
+		// The credentials:* family is ScopeSelf, so the Admin holds it in its
+		// own tenant only. Under the grant rule a role carrying it can be
+		// written only by a principal that holds it, so without it no tenant
+		// account could be given the right to use its tenant's credential
+		// store.
+		CredentialsSubmit, CredentialsStore, CredentialsStrategy, CredentialsRetrieve,
+		CredentialsDelete, CredentialsList, CredentialsRotate,
+		CredentialsRetrieveVersion, CredentialsListVersions, CredentialsGCExpired,
 	)
 }
 

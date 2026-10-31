@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -1314,6 +1315,9 @@ var holderRules = []rule{
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),
 	is(ceremony.ErrTooManyPendingChallenges, ResourceExhausted),
 	as(&ceremony.QuorumRateLimitedError{}, ResourceExhausted),
+	// The pre-authentication client-address limiter (go-qrdb#1197): a
+	// throttle, not a denial, so retrying after the wait is correct.
+	as(&clientlimit.RateLimitedError{}, ResourceExhausted),
 	is(ceremony.ErrCANotInitialized, FailedPrecondition),
 	is(ceremony.ErrInvalidHolderRole, InvalidArgument),
 	is(ceremony.ErrMissingUsername, InvalidArgument),
@@ -1536,6 +1540,10 @@ var genericRules = []rule{
 	// *service.InvitationInvalidError, so an outage classifies as a server
 	// fault instead of a forged credential.
 	as(&invite.StoreError{}, Internal),
+	// Two re-invitations of one pending account raced and this one lost the
+	// guarded write; the winner's token is the live one, and a retry
+	// supersedes it in turn.
+	is(invite.ErrReissueConflict, Aborted),
 	is(seal.ErrWrappedRootKeyCorrupt, Internal),
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.

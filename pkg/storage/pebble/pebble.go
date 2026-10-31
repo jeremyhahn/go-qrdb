@@ -72,6 +72,9 @@ type PebbleStorage struct {
 	writeSem chan struct{}
 	// syncs times every write committed with pebble.Sync.
 	syncs *syncwatch.Observer
+	// seals makes a sealed at-rest barrier under the store a typed error;
+	// nil for a store over a database opened elsewhere (NewFromDB).
+	seals *SealWatch
 }
 
 // Option configures a PebbleStorage built by New or NewFromDB.
@@ -99,7 +102,16 @@ func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
 // durably runs write with pebble.Sync when synced is set, timing it, and
 // with pebble.NoSync otherwise. A failed sync is timed too: a disk that
 // fails slowly is as much a stall as one that succeeds slowly.
+//
+// A write refused by a sealed barrier fails with a *SealedError before it
+// reaches Pebble, which would panic were the barrier to refuse the WAL file a
+// full memtable rotates to.
 func (s *PebbleStorage) durably(synced bool, write func(*pebble.WriteOptions) error) error {
+	if s.seals != nil {
+		if err := s.seals.Check(); err != nil {
+			return err
+		}
+	}
 	if !synced {
 		return write(pebble.NoSync)
 	}
@@ -123,13 +135,14 @@ func New(config *Config, opts ...Option) (*PebbleStorage, error) {
 
 	pebbleOpts := config.ToPebbleOptions()
 
-	db, err := pebble.Open(config.DataDir, pebbleOpts)
+	db, seals, err := Open(config.DataDir, pebbleOpts, nil)
 	if err != nil {
 		return nil, &storage.OpError{Op: "open", Err: err}
 	}
 
 	s := &PebbleStorage{
 		db:       db,
+		seals:    seals,
 		config:   config,
 		readSem:  make(chan struct{}, config.MaxConcurrentReads),
 		writeSem: make(chan struct{}, config.MaxConcurrentWrites),
@@ -488,6 +501,12 @@ func (s *PebbleStorage) Compact(start, end []byte) error {
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
+	// A compaction flushes an overlapping memtable first, rotating the WAL.
+	if s.seals != nil {
+		if err := s.seals.Check(); err != nil {
+			return &storage.OpError{Op: "compact", Err: err}
+		}
+	}
 	if err := s.db.Compact(context.Background(), start, end, true); err != nil {
 		return &storage.OpError{Op: "compact", Err: err}
 	}
@@ -501,7 +520,11 @@ func (s *PebbleStorage) Flush() error {
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
-	if err := s.db.Flush(); err != nil {
+	flush := s.db.Flush
+	if s.seals != nil {
+		flush = func() error { return s.seals.Flush(s.db) }
+	}
+	if err := flush(); err != nil {
 		return &storage.OpError{Op: "flush", Err: err}
 	}
 	return nil

@@ -191,6 +191,10 @@ transport:
   max_message_bytes: 4194304    # 4 MiB; applied pre-auth, identically on every transport
   max_conns_per_peer: 256       # REST, gRPC, MCP, and native+HTTP/3 QUIC listeners
   max_streams_per_conn: 128     # native QUIC transport only
+  client_rate_limit:            # pre-auth requests per client address; unset = no limit
+    rate_per_second: 0
+    burst: 0
+    trusted_proxies: []
 
 import_session:
   max_session_bytes: 67108864    # 64 MiB total staged per session
@@ -1239,6 +1243,9 @@ larger-message opt-in.
 | `max_message_bytes` | int | `4194304` (4 MiB) | Caps a single request or response message any transport accepts or produces: the REST request body, the gRPC and Unix `MaxRecvMsgSize`, the QUIC wire frame payload (checked against this bound before a buffer is allocated for it), and the MCP JSON-RPC request body |
 | `max_conns_per_peer` | int | `256` | Caps the number of concurrent connections a single remote IP may hold open against REST's HTTP/2 listener, gRPC, MCP, native QUIC, and REST's own HTTP/3 (QUIC) listener. A negative value means unlimited |
 | `max_streams_per_conn` | int | `128` | Caps the number of concurrent streams a single QUIC connection may have open against the native QUIC transport. A negative value means unlimited |
+| `client_rate_limit.rate_per_second` | float | `0` (off) | Sustained requests per second one client address may make, counted before authentication on REST, gRPC (gRPC-Web included), native QUIC, MCP, the Unix socket, MySQL and PostgreSQL, against one bucket per address the node's listeners share. Must be positive and finite when the limit is set |
+| `client_rate_limit.burst` | int | `0` (off) | Requests one client address may make at once. Must be positive when the limit is set |
+| `client_rate_limit.trusted_proxies` | []object | `[]` | Proxies whose connections may name the client they forward for. Each entry has `address`, a CIDR prefix or single address, and `header`, the one field that proxy appends to: `forwarded` (RFC 7239) or `x-forwarded-for`. Only that field is read for the proxy; the other is ignored. A request from any other peer is keyed by that peer's own address; with none listed no header is read. An entry without a known `header` is refused, as are overlapping entries naming different headers, and the list is refused when set without `rate_per_second` and `burst` |
 
 **Example configuration:**
 
@@ -1247,6 +1254,12 @@ transport:
   max_message_bytes: 4194304
   max_conns_per_peer: 256
   max_streams_per_conn: 128
+  client_rate_limit:
+    rate_per_second: 50
+    burst: 100
+    trusted_proxies:
+      - address: 192.0.2.0/24
+        header: x-forwarded-for
 ```
 
 **Notes:**
@@ -1261,6 +1274,15 @@ transport:
   single admitted QUIC connection.
 - Zero resolves each field to its default; a negative `max_message_bytes`
   is refused at config validation rather than silently disabling the cap.
+- `client_rate_limit` keys an IPv4 client by its address and an IPv6 client
+  by its `/64` prefix; every Unix-socket caller shares one bucket. A refused
+  request gets 429 with `Retry-After` (REST, MCP), `ResourceExhausted` with
+  RetryInfo (gRPC, Unix) or `RESOURCE_EXHAUSTED` (QUIC). The MySQL and
+  PostgreSQL listeners charge a client once at connection and once per
+  statement: MySQL refuses with error 1226 (`ER_USER_LIMIT_REACHED`,
+  SQLSTATE `42000`), PostgreSQL with SQLSTATE `08004` at connection and
+  `53400` for a statement. See
+  [rate-limit/user.md](rate-limit/user.md#for-an-operator-limiting-each-client-address).
 
 ---
 

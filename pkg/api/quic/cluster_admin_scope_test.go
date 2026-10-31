@@ -62,6 +62,8 @@ func TestClusterAdminScope(t *testing.T) {
 		})},
 		// Replica state hashes cover every tenant's replicas on the node.
 		{"admin.GetStateHashes", marshal(&pb.GetStateHashesRequest{})},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{"admin.StartShard", marshal(&pb.StartShardRequest{ShardId: 7, ReplicaId: 1})},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

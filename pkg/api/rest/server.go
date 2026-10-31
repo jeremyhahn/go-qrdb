@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -339,6 +340,10 @@ type Server struct {
 	// WithMaxConnsPerPeer.
 	maxConnsPerPeer int
 
+	// clientLimit admits each request by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every request.
+	clientLimit *clientlimit.Limiter
+
 	// http3Listener is the quic-go listener the HTTP/3 server serves via
 	// ServeListener, wrapped in a connlimit.QUICListener when
 	// maxConnsPerPeer is enabled. http3Transport owns the UDP socket
@@ -373,6 +378,16 @@ func WithMaxBodyBytes(n int64) ServerOption {
 // n <= 0 means unlimited.
 func WithMaxConnsPerPeer(n int) ServerOption {
 	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// WithClientLimiter admits every request by client address through l before
+// anything else -- authentication and the public-route allowlist included --
+// runs on its behalf (go-qrdb#1197). A gRPC-Web request is admitted by the
+// gRPC server's own interceptor instead, so it is charged once. Every
+// transport of one server shares the same Limiter. Nil, the default,
+// applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // resolveMaxBodyBytes returns n if positive, else DefaultMaxBodyBytes.
@@ -1261,6 +1276,15 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.corsConfig != nil {
 		handler = corsMiddleware(*s.corsConfig, handler)
 	}
+	// The client-address limiter (go-qrdb#1197) admits a request before the
+	// sealed window, authentication or any public-route allowlist does work
+	// on its behalf, and outside CORS so a preflight is charged too. It sits
+	// inside grpcWebDispatch: a gRPC-Web call is admitted by the gRPC
+	// server's interceptor and must not be charged twice, while a request
+	// under its prefix that the gRPC-Web handler answers itself (a
+	// preflight, another method or media type) is charged by
+	// grpcWebDispatch through this same limiter.
+	handler = s.clientLimit.HTTP(handler)
 	// canonicalPathMiddleware must see the SAME path every layer below it
 	// does -- sealed window, authentication and authorization, SO dual
 	// factor, and chi's routing. See its own doc comment. The HTTP/3
@@ -1269,7 +1293,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// the gRPC server's own handler, runs the gRPC interceptor chain, so
 	// none of REST's would apply twice. Everything below still covers it.
 	if grpcWeb != nil {
-		handler = grpcWebDispatch(grpcWeb, handler)
+		handler = grpcWebDispatch(grpcWeb, s.clientLimit, handler)
 	}
 	handler = canonicalPathMiddleware(handler)
 	// TRULY outermost: remoteAddrMiddleware wraps even canonicalPathMiddleware,

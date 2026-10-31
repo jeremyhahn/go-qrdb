@@ -1677,7 +1677,7 @@ jobs:
           - shard: 4
             features: api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools
           - shard: 5
-            features: cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors
+            features: cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors
           - shard: 6
             features: coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap
     steps:

@@ -73,6 +73,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -222,6 +223,14 @@ func awaitTenantAdminID(t *testing.T, restPort int, tenantID string, adminClient
 	return awaitTenantAccountID(t, restPort, tenantID, tenantID+"-admin", adminClient)
 }
 
+// tenantAdminCompletionWindow is how long awaitTenantAccountID waits for an
+// account to authenticate. The server completes a new tenant's admin account
+// after the create answers, retrying for up to
+// bootstrap.DefaultAdminCompletionBudget (qrdbd does not override it); the
+// window is that budget plus one lookup at the 15s client timeout the callers
+// use, so a completion the server still has budget for is never cut short.
+const tenantAdminCompletionWindow = bootstrap.DefaultAdminCompletionBudget + 15*time.Second
+
 // awaitTenantAccountID looks up username in tenantID as client, polling until
 // client authenticates and is authorized, and returns the account's id.
 func awaitTenantAccountID(t *testing.T, restPort int, tenantID, username string, client *http.Client) string {
@@ -229,7 +238,7 @@ func awaitTenantAccountID(t *testing.T, restPort int, tenantID, username string,
 	lookupURL := fmt.Sprintf("https://127.0.0.1:%d/users/by-username/%s?tenantID=%s", restPort, username, tenantID)
 	var lookupBody []byte
 	var lookupStatus int
-	pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+	pollUntil(tenantAdminCompletionWindow, 200*time.Millisecond, func() bool {
 		lookupBody, lookupStatus = iraftAPIGet(t, client, lookupURL)
 		return lookupStatus != http.StatusUnauthorized && lookupStatus != http.StatusForbidden
 	})

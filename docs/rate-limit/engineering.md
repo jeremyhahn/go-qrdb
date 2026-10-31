@@ -1,6 +1,6 @@
 # Rate Limiting — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -116,6 +116,30 @@ key prefix and the policy `auth.invitation_redeem_limit` resolves. The built-in
 buckets read the node's `clock.Clock` (`WithClock`); a supplied limiter owns its
 own time. The caller that supplies a limiter closes it.
 
+### The client-address limiter
+
+`pkg/clientlimit.Limiter` is the pre-authentication limit
+([architecture.md](architecture.md#the-pre-authentication-client-address-limit)).
+`pkg/server.Server` builds one from `config.Config.Transport.ClientRateLimit`
+(`openClientLimiter`; none when the section is unset) and hands the same
+instance to every listener through each package's `WithClientLimiter`
+option: `pkg/api/rest` and `pkg/api/mcp` wrap their handler in
+`Limiter.HTTP`, `pkg/api/grpc` and `pkg/api/unix` install its unary and
+stream interceptors ahead of auth, and `pkg/api/quic` calls `Admit` per
+request before the method authorizer. A nil `*Limiter` admits everything, so
+each listener calls it unconditionally. `sdk/go/server` names the config
+(`ClientRateLimitConfig`) and the refusal (`ClientRateLimitedError`); it
+exports no constructor, so an embedder cannot build a second bucket set. The
+daemon carries the section from its config file in `applyConfigToFlags`
+and `buildServerConfig` (`cmd/qrdbd/start.go`).
+
+The Go SDK's `Connect` treats the limiter's refusal of its health probe as
+the server's answer: REST returns the decoded 429, gRPC and the Unix socket
+the `ResourceExhausted` status, QUIC the `RESOURCE_EXHAUSTED` frame
+(`callerRefusal`, which also stops its connect retry), each a
+`*transport.RequestError` carrying `RetryAfter`, never a
+`*transport.ConnectionError`.
+
 ## Enforcement point
 
 `AuthMiddleware.authorize` — the single function every transport's
@@ -174,10 +198,27 @@ the `Registry`.
 | gRPC / unix | `mapGRPCAuthError` returns `codes.ResourceExhausted`. The unix-socket listener registers the same `UnaryInterceptor`, so a caller over its unix-transport quota sees the identical code a TCP gRPC caller would. |
 | QUIC | `authmw.AuthFailureRateLimited` maps to `wire.StatusResourceExhausted` (`pkg/api/quic/auth.go`); the frame carries `RateLimitedError.Error()` verbatim. |
 | MCP | The tool-authorization middleware (`pkg/api/mcp/auth.go`) returns `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the error text. The code comes from `authmw.GRPCError`, the classifier REST and gRPC answer from, so each auth-failure class keeps its own code. `AuthFailureUnavailable` and `AuthFailureAuditUnavailable` both map to `Unavailable` on every transport: the pair exists for control flow inside `pkg/auth/middleware`, not for the wire. |
+| MySQL | The client-address refusal is an ERR packet with error 1226, `ER_USER_LIMIT_REACHED`, SQLSTATE `42000` (`pkg/sql/mysql/client_limit.go`), returned for the connection, from go-mysql-server's connection-authenticated hook, and for each statement. The message is `RateLimitedError.Error()`. |
+| PostgreSQL | A refused connection gets an ErrorResponse of severity `FATAL`, SQLSTATE `08004` (`sqlserver_rejected_establishment_of_sqlconnection`), written by an authentication strategy that runs ahead of the sealed-window gate and the password exchange; a refused statement (simple query, Parse, or Execute) gets one of severity `ERROR`, SQLSTATE `53400` (`configuration_limit_exceeded`), and the session stays open (`pkg/sql/pgsql/client_limit.go`). The connection refusal is written in the startup exchange because psql-wire v0.20.0 closes a connection whose session middleware returns an error without sending an ErrorResponse. |
 
 ## Test strategy
 
-**Integration target:** `make integration-test-rate-limit` (no Docker; selection in `test/integration/features.mk`). The feature has no non-Docker integration test, so the target runs zero tests and says so; this is a recorded gap (the `rate-limit` row marks it), not a pass. Enforcement is proved by the unit tests below. Per-transport accounting is the `rate-limit` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-rate-limit` (no Docker; selection in `test/integration/features.mk`). It runs `TestClientRateLimit_CLI_PerProtocol` (`test/integration/client_rate_limit_cli_test.go`): a self-spawned `qrdbd` whose config file sets `transport.client_rate_limit`, a loopback bucket drained over REST with `X-Forwarded-For` headers the limiter must ignore, then the `qrdb` CLI refused with a message naming the rate limit over REST, gRPC, QUIC and MCP, and served over the Unix socket, whose callers have their own bucket; then a MySQL client (`go-sql-driver/mysql`) refused with error 1226 and a PostgreSQL client (`pgx`) refused with SQLSTATE `08004`. It also runs `TestClientRateLimit_Embedded_PerPermissionPolicy` (`test/integration/client_rate_limit_embedded_test.go`): an in-process node built with `node.WithRateLimitPolicies` admits a `Policy`'s burst through its embedded client and refuses the next call with `*middleware.RateLimitedError`, naming the permission and a positive `RetryAfter`. Per-transport accounting is the `rate-limit` row of `test/integration/COVERAGE.md`.
+
+- **Unit, `pkg/clientlimit`**: keying (IPv4, IPv6 `/64`, Unix peer),
+  trusted-proxy `Forwarded` and `X-Forwarded-For` walking, headers ignored
+  from an untrusted peer, refusal with `RetryAfter`, and the HTTP 429.
+- **Unit, each listener** (`pkg/api/{rest,grpc,quic,mcp,unix}`
+  `client_limit_test.go`): a drained address refused before auth, with the
+  transport's status, under `-race`; `pkg/sql/{mysql,pgsql}`
+  `client_limit_test.go`: a drained address refused at connection and per
+  statement with the protocol's error code; `pkg/server` builds one limiter
+  and shares it; `cmd/qrdbd` carries every field of the `transport:` section
+  of a config file to the server, and fails when the section gains a field
+  its table does not name.
+- **Unit, the Go SDK transports**: `Connect` against a rate-limited health
+  answer returns the typed refusal with its `RetryAfter`, and QUIC does not
+  retry it.
 
 - **Unit, `pkg/ratelimit`**: burst admission and refusal, refill over a
   simulated clock, retry-after computation, independent keys, invalid-policy
@@ -213,9 +254,10 @@ the `Registry`.
 
 ## Known gaps
 
-- **No YAML/CLI configuration surface.** `Policy` values are declared in Go
-  code, at `Registry.Register` call sites, not read from `pkg/config` or a
-  daemon flag. See [cli.md](cli.md).
+- **No YAML/CLI configuration surface for a `Policy`.** `Policy` values are
+  declared in Go code, at `Registry.Register` call sites, not read from
+  `pkg/config` or a daemon flag. See [cli.md](cli.md). Only the
+  client-address limit is configured from YAML.
 - **The default `TokenBucketLimiter` a `BuildAuthMiddleware` call constructs
   is never explicitly closed.** `AuthMiddleware` has no `Close`/shutdown
   lifecycle hook, so the reaper goroutine a default limiter starts

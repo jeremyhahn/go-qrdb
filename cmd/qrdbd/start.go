@@ -331,6 +331,13 @@ type startFlags struct {
 	// When no config file is provided, defaults from DefaultConfig are used.
 	sealConfig qrdbconfig.SealConfig
 
+	// transport is the transport: section loaded from YAML, carried whole
+	// into the server config: the per-message and per-peer bounds and the
+	// pre-authentication client-address rate limit every listener shares
+	// (go-qrdb#1197). Its zero value resolves each bound to its default
+	// and applies no rate limit.
+	transport qrdbconfig.TransportConfig
+
 	// storageConfig holds the storage subsystem configuration loaded
 	// from YAML — including volume pools that barrier-mode tenants
 	// draw from when allocating a per-tenant Pebble. When no config
@@ -1006,6 +1013,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 
 	// Seal config is always inherited from YAML (no CLI flag equivalent).
 	f.sealConfig = cfg.Seal
+
+	// The transport section is likewise YAML-only.
+	f.transport = cfg.Transport
 
 	// Storage config (including volume_pools) is always inherited from
 	// YAML — there is no CLI flag equivalent for the multi-path pool
@@ -3361,7 +3371,8 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			Host:    f.host,
 			GRPCWeb: f.grpcWeb,
 		},
-		CORS: f.cors,
+		CORS:      f.cors,
+		Transport: f.transport,
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
 			GRPC:       f.enableGRPC,

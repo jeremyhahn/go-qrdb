@@ -1262,7 +1262,9 @@ func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []by
 	return nil
 }
 func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
-func (s *stubCredentialSvc) CredentialStrategy() string                         { return "stub" }
+func (s *stubCredentialSvc) CredentialStrategy(context.Context) (string, error) {
+	return "stub", nil
+}
 func (s *stubCredentialSvc) CredentialList(_ context.Context) ([]string, error) {
 	return nil, nil
 }

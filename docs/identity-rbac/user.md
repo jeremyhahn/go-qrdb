@@ -100,7 +100,8 @@ sign it.
 
 An invitation expires after `auth.invitation_ttl` (24 hours by default) and
 can be redeemed exactly once; re-running step 1 with just `--username` issues
-a fresh token for the same still-pending account. If the operator has set
+a fresh token for the same still-pending account and cancels every token sent
+before it, so only the newest one works. If the operator has set
 `auth.invitation_require_key_pin`, step 1 also needs alice's key fingerprint
 (computed from her CSR — ask her to send it first) as `--key-pin-fingerprint`,
 and only a CSR over that exact key redeems it.
