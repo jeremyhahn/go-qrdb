@@ -151,7 +151,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 
 | Feature | Status | Requirements | Detail |
 |---|---|---|---|
-| cluster-verification | in progress | The qrdb-3-node-proven gate: a linearizability checker, nemesis and soak harness; a clock nemesis that perturbs rate, with lease reads on; a pinned port set for the three-node cluster; cluster suites green on main. | #669, #679, #671, #668, [cluster-verification/](cluster-verification/) |
+| cluster-verification | shipped | The qrdb-3-node-proven gate: a linearizability checker, nemesis and soak harness; a clock nemesis that perturbs rate, with lease reads on; a pinned port set for the three-node cluster; cluster suites green on main. | #669, #679, #671, #668, [cluster-verification/](cluster-verification/) |
 | sealed-mode-serving | shipped | Adopt the go-quicraft v0.21.0 release candidate, with sealed-mode serving. | #659, [barrier-seal/](barrier-seal/) |
 | bounded-startup-read | shipped | Each startup read attempt is bounded and a boot failure is logged; go-quicraft's typed retryable `ErrReadIndexNotReady` (errors.Is-matchable, classed Unavailable, returned while the leader has not committed the read index) is retried until the startup deadline. The consuming side of the seam with go-quicraft. | #668, [clustering/](clustering/) |
 | lease-reads | shipped | Lease reads are documented as linearizable under the 1 % clock-rate bound, not as a stale-read window. | #678, [key-value/](key-value/) |
