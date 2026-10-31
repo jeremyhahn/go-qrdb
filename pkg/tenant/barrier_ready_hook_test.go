@@ -454,6 +454,40 @@ func TestBarrierReadyHook_QuorumUnseal_CalledOnceOnCompletion(t *testing.T) {
 	}
 }
 
+// TestBarrierReadyHook_QuorumUnsealAsksForOneAttempt pins the mode a holder
+// quorum unseal runs the hook in: one attempt on the caller's context, as a
+// Shamir init does. The quorum unseals only the node that served it, so the
+// bounded wait would hold the reply while the home group cannot complete the
+// admin from here (main run 73226: a QUIC quorum unseal on a follower gave no
+// reply inside the CLI's 30 s deadline).
+func TestBarrierReadyHook_QuorumUnsealAsksForOneAttempt(t *testing.T) {
+	const tenantID = "hook-quorum-mode"
+	svc, _, hook, holders := newHookQuorumTenant(t, tenantID)
+	ctx := tenantAdminCtx(tenantID)
+
+	for _, h := range holders {
+		if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpSeal, h); err != nil {
+			t.Fatalf("seal share %s: %v", h.name, err)
+		}
+	}
+	hook.reset()
+	hook.failWith(ErrTenantAdminPending)
+
+	if _, err := submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[0]); err != nil {
+		t.Fatalf("first unseal share: %v", err)
+	}
+	out, err := submitTenant(t, svc, ctx, tenantID, seal.OpUnseal, holders[1])
+	if err != nil || !out.Complete {
+		t.Fatalf("second unseal share = %+v, %v; want a complete quorum whatever the hook returns", out, err)
+	}
+	if got := hook.count(); got != 1 {
+		t.Fatalf("hook fired %d times on the unseal quorum, want 1", got)
+	}
+	if got := hook.lastMode(); got != AdminCompletionOnce {
+		t.Fatalf("a quorum unseal asked the hook for mode %d; want AdminCompletionOnce", got)
+	}
+}
+
 // TestBarrierReadyHook_QuorumNonUnseal_NotCalled proves a quorum that
 // completes any other operation never fires the hook: a seal quorum leaves
 // the barrier unusable, and a rekey quorum leaves its seal state unchanged.
