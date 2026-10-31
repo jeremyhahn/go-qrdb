@@ -81,8 +81,9 @@ const (
 	// hosts is off (owner-queue 178): main run 70592's worst shard took 22
 	// minutes, and in run 70834 five of six shards hit 30 on the other,
 	// overloaded host (#1286). It goes back to 30 with ci.yml's limit when
-	// the host returns.
-	featureJobLimit = 45
+	// the host returns. ci-template v1.30 (#1331) sets it to
+	// ceil(1.5 x p95) of the Integration jobs' measured 30.2 minutes: 46.
+	featureJobLimit = 46
 
 	// featureShardKey and featureListKey are the two keys of each of the
 	// matrix's include entries: the shard's name and its space-separated
@@ -877,7 +878,7 @@ const featureJobFixture = `on:
 jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, arch-gates]
     timeout-minutes: 30
     env:
@@ -979,12 +980,12 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "a matrix axis", old: "        include:\n", new: "        feature: [audit]\n        include:\n"},
 		{name: "no include", old: "        include:\n", new: "        shards:\n"},
 		{name: "no matrix", old: "      matrix:\n        include:\n", new: "      other:\n        include:\n"},
-		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 46"},
+		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 47"},
 		{name: "limit zero", old: "timeout-minutes: 30", new: "timeout-minutes: 0"},
 		{name: "no limit", old: "    timeout-minutes: 30\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
-		{name: "left the full tier", old: "    if: github.event_name != 'pull_request' || ", new: "    if: "},
+		{name: "left the full tier", old: "    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || ", new: "    if: "},
 		{name: "a fixed list", old: `IT_FEATURES="$IT_FEATURES"`, new: `IT_FEATURES="cluster"`},
 		{name: "the list spliced in", old: "      IT_FEATURES: ${{ matrix.features }}\n", new: ""},
 		{name: "the list from elsewhere", old: "IT_FEATURES: ${{ matrix.features }}", new: "IT_FEATURES: audit"},

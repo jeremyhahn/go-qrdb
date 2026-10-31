@@ -2497,9 +2497,10 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of CI's lint stages, so CI runs them on a push to main and on the daily
-# full-tier dispatch, not on a pull request; release.yml still runs both
-# before a tag. `make lint-gates lint-sweeps` is the whole set.
+# hour of CI's lint stages, so they run in ci.yml's lint job on the nightly
+# schedule: event alone (ci-template v1.30, ruling 216(1)); release.yml still runs both before a
+# tag. `make lint-gates lint-sweeps` is the whole set. A pull request's lint
+# job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
@@ -4074,8 +4075,15 @@ docker-build: docker-build-toolchain docker-build-it
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
-	@$(stage-gomodauth) \
-	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
+	@# ci-template v1.30: the tag is the content hash, so an image already on
+	@# this daemon (built here, or pulled by scripts/ci-image-cache.sh) is the
+	@# image this tree would build.
+	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this

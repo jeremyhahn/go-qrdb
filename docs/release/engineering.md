@@ -63,8 +63,9 @@ limitations under the License.
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped. The two
   sweeps, `make vet-tags` and `make secure-analyzer`, run here on every tag
-  although ci.yml runs them (`make lint-sweeps`) only on a push to `main` and
-  on `workflow_dispatch`, never on a pull request.
+  although ci.yml runs them (`make lint-sweeps`, in the `lint` job) only on its
+  nightly `schedule:` event, cron `0 4 * * *`, never on a pull request, a push
+  or a dispatch (ci-template v1.30; the one schedule trigger, ruling 216(1)).
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
   the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, the only copy of
@@ -133,6 +134,12 @@ CI's stages run in one image, built from `build/docker/devcontainer/Dockerfile`
 at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
 `.devcontainer/` is a different image, the developer's VS Code container and
 the Docker `test/integration/api` stack, and runs none of these stages.
+`make docker-build-toolchain` builds the toolchain image alone, under its
+content-hash tag, and skips the build when that tag is already on the daemon;
+`scripts/ci-image-cache.sh pull` puts it there from the registry cache when
+main has published it (ci-template v1.30). `make gosec` is the gosec scan
+alone, with no network, which the PR tier's `lint` job runs and
+`make security` calls.
 
 | Stage | Holds | Runs |
 |---|---|---|
@@ -270,8 +277,9 @@ registry token is on none of these steps.
 
 Eleven jobs consume the images, each before its first stage: `lint`, in the
 PR tier (`make lint`, `make deps-check`, a lint-class gate on the PR tier
-from ci-template v1.28.0, and, on a push to `main` and a dispatch,
-`make lint-sweeps`), `lint-gates`, in the PR tier (`make lint-gates`, its own
+from ci-template v1.28.0, and, on the PR tier, `make gosec`; the sweeps,
+`make lint-sweeps`, run in it on the nightly `schedule:` event alone from
+ci-template v1.30), `lint-gates`, in the PR tier (`make lint-gates`, its own
 job from ci-template v1.27.0), the five unit-suite jobs, in the code tier,
 one suite each (ruling 211): `coverage` (`make coverage`),
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, and `fips`,

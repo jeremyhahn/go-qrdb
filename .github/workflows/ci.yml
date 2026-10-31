@@ -1,4 +1,4 @@
-# ci-template: v1.29.5 — canonical CI for all first-party Go repos.
+# ci-template: v1.30 — canonical CI for all first-party Go repos.
 # go-qrdb deviations from v1.29.5, one line each (the CUSTOMIZE block below
 # gives each one's reason):
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
@@ -482,7 +482,7 @@ env:
   # (push to main, schedule, workflow_dispatch), and a PR labelled ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:`
   # cannot read env, so each full-tier job repeats this expression. Keep them
   # equal (test/buildgates/ci_tiers_test.go).
-  CI_FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+  CI_FULL_TIER: ${{ (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   # CUSTOMIZE (go-qrdb, claude-agents#329): the one event that logs in to the
   # registry and pushes the CI images, a push to main. Every step that logs
   # in, pushes or pulls carries `if: env.CI_PUBLISH == 'true'`; its
@@ -520,6 +520,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Changed files
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
     steps:
@@ -560,6 +561,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Schedule guard
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
@@ -657,7 +659,7 @@ jobs:
     # (test/buildgates/ci_image_digest_test.go).
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
     needs: [changes, schedule-guard]   # v1.29.3
-    timeout-minutes: 45       # CUSTOMIZE (DS-3044): a cold build of both images
+    timeout-minutes: 26
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
     # to the forge's registry, so it alone may write packages: on github.com
     # with the run's own token, on the forge with the release runner's
@@ -852,22 +854,22 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): this departs from the
   # template's one image job (m601 (a)). The stages run in two jobs side by
-  # side, lint (make lint, make deps-check, make lint-sweeps) and image (the
-  # tag assertion, build, the release cross-build, the unit suites, security,
-  # trivy image), in the one toolchain image docker-build built,
-  # each with its own limit: together they outlast one job's 90 minutes on a
-  # loaded runner, where lint with lint-sweeps takes most of an hour and
-  # coverage about half of one.
+  # side, lint (make lint, make gosec on the PR tier, make deps-check) and
+  # image (the tag assertion, build, the release cross-build, the unit
+  # suites, security, trivy image), in the one toolchain image docker-build
+  # built, each with its own limit: together they outlast one job's 90
+  # minutes on a loaded runner. ci-template v1.30 moved make lint-sweeps
+  # (vet-tags, the secure analyzer) to nightly.yml.
   # lint is the PR tier and, with lint-gates (below), is all a docs-only PR
   # runs of the stages; image is the code tier (DS-3160) and skips there. Each
   # job pulls the images it runs by digest and holds them to its teardown
   # (DS-3516): lint and lint-gates the toolchain image alone, image both.
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer image [lint, deps-check, lint-sweeps]
+    name: Devcontainer image [lint, gosec, deps-check]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
-    timeout-minutes: 120      # CUSTOMIZE (#1046, DS-3575): lint-sweeps loaded average 43 min on the Dells; omega finished 0 of 4 runs inside 75
+    timeout-minutes: 131
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
     # the forge's registry (DS-3516).
     permissions:
@@ -958,13 +960,25 @@ jobs:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
 
-      # CUSTOMIZE (go-qrdb, #813): vet-tags and the secure analyzer sweep every
-      # SUPPORTED_TAG_SETS combination (Makefile LINT_SWEEPS), so they run on a
-      # push to main and on the daily full-tier workflow_dispatch, never on a
-      # pull request, which must finish within one hour. release.yml runs both
-      # again before a tag. A network for vet-tags' nested benchmark modules.
-      - name: make lint-sweeps
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') }}
+      # ci-template v1.30: the PR tier runs make gosec alone (no network); the
+      # full tier's make security (image job) already runs it beside
+      # gosec-sdk, vuln and trivy.
+      - name: make gosec (PR tier)
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER != 'true' && needs.changes.outputs.docs_only != 'true' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+
+      # ci-template v1.30 (#1331): the sweeps, make lint-sweeps (vet-tags and
+      # the secure analyzer over every SUPPORTED_TAG_SETS combination,
+      # Makefile LINT_SWEEPS), run nightly and on no other event: together
+      # they took over an hour, more than a pull request's pipeline has.
+      # CUSTOMIZE (go-qrdb, #1331): the template runs them in nightly.yml;
+      # here they run on this workflow's nightly schedule: event (cron
+      # 0 4 * * *), because no other workflow may carry a schedule (ruling
+      # 216(1)), as go-quicraft #504 does. release.yml runs both again before
+      # a tag. A network for vet-tags' nested benchmark modules; -k reports
+      # every failing sweep, not the first.
+      - name: make lint-sweeps (nightly schedule)
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && github.event_name == 'schedule' }}
         env:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
@@ -1000,7 +1014,7 @@ jobs:
     name: Lint Gates [toolchain image]
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     needs: [changes, docker-build]
-    timeout-minutes: 45       # CUSTOMIZE: lint-gates took 6.5 warm minutes on main run 64873; headroom for a cold, loaded runner
+    timeout-minutes: 38
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
     # the forge's registry (DS-3516).
     permissions:
@@ -1095,7 +1109,7 @@ jobs:
     # v1.24 (CA m749, m751 (a)). CUSTOMIZE (go-qrdb, DS-3044): and
     # docker-build, which builds the images this job's stages run in.
     needs: [changes, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE (#1046): the build stages plus the full tier's release-cross, security and trivy; the unit suites left for their own jobs (ruling 211), the 90 ceiling is kept
+    timeout-minutes: 34
     # CUSTOMIZE (go-qrdb): the run's own token pulls the images from the Gitea
     # registry (DS-3516).
     permissions:
@@ -1282,7 +1296,7 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 75       # CUSTOMIZE (ruling 211): the bulk of the ~36 warm minutes the two steps took, doubled for a loaded runner
+    timeout-minutes: 111
     # CUSTOMIZE (go-qrdb): the run's own token pulls the toolchain image from
     # the forge's registry (DS-3516), in this job and the four below.
     permissions:
@@ -1354,7 +1368,7 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 45       # CUSTOMIZE (ruling 211): no per-suite time on record; the four suites' share of the ~36 warm minutes, doubled
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
@@ -1413,7 +1427,7 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    timeout-minutes: 9
     permissions:
       contents: read
       packages: read
@@ -1471,7 +1485,7 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    timeout-minutes: 48
     permissions:
       contents: read
       packages: read
@@ -1530,7 +1544,7 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 45       # CUSTOMIZE (ruling 211): as test-clusterproof's
+    timeout-minutes: 43
     permissions:
       contents: read
       packages: read
@@ -1646,9 +1660,9 @@ jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, arch-gates]
-    timeout-minutes: 45       # CUSTOMIZE (#1286): 22 min worst shard on a light fleet (main run 70592); in run 70834 five of six shards hit 30 on the one Dell runner host left, at load 494 on 80 cores (claude-agents#452), while the other is off (owner-queue 178). Back to 30, with the gate's featureJobLimit, when it returns
+    timeout-minutes: 46
     # CUSTOMIZE (go-qrdb): the run's own token pulls the integration image
     # from the Gitea registry (DS-3516).
     permissions:
@@ -1755,9 +1769,9 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, arch-gates]
-    timeout-minutes: 90
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -1827,7 +1841,7 @@ jobs:
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
-    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
+    if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
     strategy:
       fail-fast: false
@@ -1840,29 +1854,29 @@ jobs:
       matrix:
         include:
           - leg: tenant-lifecycle
-            minutes: 30
+            minutes: 29
           - leg: tenant
-            minutes: 30
+            minutes: 29
           - leg: seal-barrier
-            minutes: 30
+            minutes: 29
           - leg: seal
-            minutes: 30
+            minutes: 29
           - leg: server-raft
-            minutes: 25
+            minutes: 29
           - leg: server
-            minutes: 25
+            minutes: 29
           - leg: auth
-            minutes: 25
+            minutes: 29
           - leg: service
-            minutes: 25
+            minutes: 29
           - leg: api-keys
-            minutes: 20
+            minutes: 29
           - leg: rest
-            minutes: 30
+            minutes: 29
           - leg: sdk-transport
-            minutes: 30
+            minutes: 29
           - leg: sdk
-            minutes: 30
+            minutes: 29
     timeout-minutes: ${{ matrix.minutes }}
     # CUSTOMIZE (go-qrdb): on a push to main the run's own token pulls the
     # toolchain image from the forge's registry (DS-3516).
@@ -2004,7 +2018,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [changes, docker-build]
-    timeout-minutes: 60
+    timeout-minutes: 27
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -2070,7 +2084,7 @@ jobs:
     # the integration image from this runner's daemon by content-hash tag,
     # building it when missing, and holds it; it never logs in to a registry.
     needs: [schedule-guard, docker-build]
-    timeout-minutes: 90       # CUSTOMIZE: SOAK_MINUTES plus one iteration
+    timeout-minutes: 48
     permissions:
       contents: read
     env:
@@ -2160,6 +2174,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Architecture Gates
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [changes]
     env:
       # go-qrdb: the objstore storage backend, and the embedded transport's
@@ -2227,6 +2242,7 @@ jobs:
   ci-gate:
     name: CI Gate
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'ci-gate' }}
+    timeout-minutes: 5
     # v1.29.3: on a schedule run the schedule guard decides. `busy` skips the
     # gate, so `CI / CI Gate (schedule)` posts `skipped` (Gitea 1.27.1 posts a
     # skipped job as `skipped`, not `success`), never a green nightly. Every
