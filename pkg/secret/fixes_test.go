@@ -128,13 +128,3 @@ func TestConfigProcessor_CyclicConfigDepthGuard(t *testing.T) {
 		t.Errorf("expected a MaxDepthExceededError for a cyclic config graph, got %v", result.Errors)
 	}
 }
-
-// TestNewTenantScopedCredentialRetrieve_NilSystemSvc verifies that a system-scope
-// request with no system CredentialService fails closed rather than panicking.
-func TestNewTenantScopedCredentialRetrieve_NilSystemSvc(t *testing.T) {
-	fn := secret.NewTenantScopedCredentialRetrieve(nil, nil, nil, nil)
-	_, err := fn(context.Background(), "name")
-	if !errors.Is(err, secret.ErrNilSystemCredentialService) {
-		t.Fatalf("expected ErrNilSystemCredentialService, got %v", err)
-	}
-}

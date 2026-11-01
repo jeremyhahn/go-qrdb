@@ -102,11 +102,6 @@ var NewCredentialResolver = secret.NewCredentialResolver
 // CredentialRetriever (including CredentialServicer).
 var CredentialResolverFromServicer = secret.CredentialResolverFromServicer
 
-// NewTenantScopedCredentialRetrieve returns a CredentialRetrieveFunc that
-// routes to the per-tenant credential store when a tenant ID is present in the
-// context, falling back to systemSvc otherwise.
-var NewTenantScopedCredentialRetrieve = secret.NewTenantScopedCredentialRetrieve
-
 // NewConfigProcessor creates a ConfigProcessor that walks and resolves secret
 // references in arbitrary config structs.
 var NewConfigProcessor = secret.NewConfigProcessor
@@ -149,11 +144,6 @@ var ErrNilContext = secret.ErrNilContext
 // ErrUnresolvedSecretURI is returned by ConfigProcessor.Process under
 // WithFailClosed when a secret reference cannot be resolved.
 var ErrUnresolvedSecretURI = secret.ErrUnresolvedSecretURI
-
-// ErrNilSystemCredentialService is returned by a tenant-scoped
-// CredentialRetrieveFunc when a system-scope request arrives but no system
-// CredentialService was supplied.
-var ErrNilSystemCredentialService = secret.ErrNilSystemCredentialService
 
 // InvalidSecretURIError is returned when a raw secret reference is
 // syntactically invalid.

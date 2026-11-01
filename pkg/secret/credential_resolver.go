@@ -17,11 +17,9 @@ package secret
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -120,49 +118,4 @@ func (r *CredentialResolver) Resolve(ctx context.Context, raw string) (*SecretVa
 // — including service.CredentialServicer from pkg/service — may be passed.
 func CredentialResolverFromServicer(svc CredentialRetriever) *CredentialResolver {
 	return NewCredentialResolver(svc.CredentialRetrieveBuffer)
-}
-
-// NewTenantScopedCredentialRetrieve returns a CredentialRetrieveFunc that
-// routes credential lookups to the per-tenant CredentialService when the
-// request context carries a non-empty tenant ID, falling back to systemSvc
-// for system-scope requests.
-//
-// Per-tenant services are constructed fresh on every call: a tenant barrier
-// can be atomically replaced during an enable-encryption rekey
-// (StorageBarrier.ReopenKeyed), so caching a per-tenant CredentialService
-// would risk serving reads from a stale barrier. A GetTenant sync.Map lookup
-// plus a trivial struct initialisation is negligible compared to the
-// credential retrieval I/O.
-func NewTenantScopedCredentialRetrieve(
-	registry *seal.BarrierRegistry,
-	systemSvc CredentialRetriever,
-	tenantIDFromCtx func(context.Context) (string, bool),
-	logger *slog.Logger,
-) CredentialRetrieveFunc {
-	// tenants derives each tenant's store (ForBarrier), which migrates the
-	// tenant barrier's records under the old credentials/ layout first.
-	tenants, tenantsErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credentials.StrategyBarrier}, nil, logger)
-	return func(ctx context.Context, name string) (*secure.Buffer, error) {
-		if tenantIDFromCtx != nil && registry != nil {
-			if tid, ok := tenantIDFromCtx(ctx); ok && tid != "" {
-				if tenantsErr != nil {
-					return nil, tenantsErr
-				}
-				tb, err := registry.GetTenant(tid)
-				if err != nil {
-					return nil, err
-				}
-				svc, err := tenants.ForBarrier(ctx, tb.Barrier())
-				if err != nil {
-					return nil, err
-				}
-				return svc.RetrieveCredentialBuffer(ctx, name)
-			}
-		}
-		if systemSvc == nil {
-			return nil, ErrNilSystemCredentialService
-		}
-		return systemSvc.CredentialRetrieveBuffer(ctx, name)
-	}
 }

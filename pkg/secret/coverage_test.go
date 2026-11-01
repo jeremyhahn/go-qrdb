@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secret"
 )
 
@@ -157,62 +156,5 @@ func TestConfigProcessor_SkipsUnsettableStringInInterface(t *testing.T) {
 	// The Metadata field must remain unchanged (processString skipped it).
 	if cfg.Metadata != "cred://metadata" {
 		t.Error("Metadata inside interface{} must not be modified")
-	}
-}
-
-// ---------- NewTenantScopedCredentialRetrieve error path from NewCredentialService ----------
-
-func TestNewTenantScopedCredentialRetrieve_CredentialServiceError(t *testing.T) {
-	// An unsealed (not initialized) tenant barrier will cause
-	// NewCredentialService's barrier strategy to fail on retrieve because the
-	// barrier is still sealed. We exercise the retrieve→error path here.
-	logger := testDiscardLogger()
-	ctx := context.Background()
-
-	sysBackend := seal.NewMemoryBackend()
-	sysStrategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("sys-pass"))
-	if err != nil {
-		t.Fatalf("NewSoftwareStrategy: %v", err)
-	}
-	sysBarrier, err := seal.NewStorageBarrier(logger, sysBackend, seal.BarrierConfig{
-		RootKeyPath: "system/root",
-	}, sysStrategy)
-	if err != nil {
-		t.Fatalf("NewStorageBarrier: %v", err)
-	}
-	if err := sysBarrier.Initialize(ctx, seal.MustCredentials(context.Background(), []byte("sys-pass"))); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	registry, err := seal.NewBarrierRegistry(logger, sysBarrier)
-	if err != nil {
-		t.Fatalf("NewBarrierRegistry: %v", err)
-	}
-	tenantBackend := seal.NewMemoryBackend()
-	tenantStrategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("tenant-pass"))
-	if err != nil {
-		t.Fatalf("NewSoftwareStrategy (tenant): %v", err)
-	}
-	tb, err := registry.RegisterTenant(ctx, "tenant-2", tenantBackend, seal.BarrierConfig{}, tenantStrategy)
-	if err != nil {
-		t.Fatalf("RegisterTenant: %v", err)
-	}
-	// Initialize and unseal the tenant barrier so the service builds OK.
-	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(context.Background(), []byte("tenant-pass"))); err != nil {
-		t.Fatalf("Initialize tenant: %v", err)
-	}
-
-	systemSvc := &fakeRetriever{
-		fn: func(_ context.Context, _ string) ([]byte, error) {
-			return []byte("sys-val"), nil
-		},
-	}
-	tenantIDFromCtx := func(_ context.Context) (string, bool) { return "tenant-2", true }
-	retrieve := secret.NewTenantScopedCredentialRetrieve(registry, systemSvc, tenantIDFromCtx, logger)
-
-	// Retrieving a credential that does not exist returns a not-found error
-	// from the barrier strategy.
-	_, err = retrieve(ctx, "nonexistent-key")
-	if err == nil {
-		t.Error("expected an error for a missing credential in the tenant barrier")
 	}
 }
