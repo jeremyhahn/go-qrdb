@@ -492,4 +492,19 @@ func TestUnixWatch_AfterClose(t *testing.T) {
 	}
 }
 
+func TestUnixAuthCertOps_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+
+	if _, err := tr.GetUserByCertThumbprint(context.Background(), "AABBCC"); !errors.As(err, &ce) {
+		t.Errorf("GetUserByCertThumbprint: expected ClosedError, got %T: %v", err, err)
+	}
+	if _, err := tr.AddCertBinding(context.Background(), 1, "CERT", 0); !errors.As(err, &ce) {
+		t.Errorf("AddCertBinding: expected ClosedError, got %T: %v", err, err)
+	}
+	if _, err := tr.RemoveCertBinding(context.Background(), 1, "CERT"); !errors.As(err, &ce) {
+		t.Errorf("RemoveCertBinding: expected ClosedError, got %T: %v", err, err)
+	}
+}
+
 func spIdx(s string) *string { return &s }
