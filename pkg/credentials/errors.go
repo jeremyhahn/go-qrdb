@@ -18,15 +18,22 @@ var (
 	// ErrInvalidStrategy is returned when the configured strategy is not recognized.
 	ErrInvalidStrategy = errors.New("credentials: invalid seal strategy")
 
-	// ErrNilStore is returned by BindStore for a nil store.
+	// ErrNilStore is returned by BindStore, ForTenant and NewKVStore for a
+	// nil store.
 	ErrNilStore = errors.New("credentials: nil store")
+
+	// ErrStoreNotAtomic is returned by NewKVStore for a store that serves
+	// no conditional writes: a rotation claim needs PutIfAbsent and
+	// CompareAndSwap decided once for every node that shares the store.
+	ErrStoreNotAtomic = errors.New("credentials: store serves no conditional writes")
 
 	// ErrStoreUnavailable is returned by a barrier-strategy call made before
 	// the node has bound the replicated store: the node is still sealed, or
 	// its system shard's KV has not started.
 	ErrStoreUnavailable = errors.New("credentials: credential store unavailable")
 
-	// ErrNilBarrier is returned by ForBarrier when it is given no barrier.
+	// ErrNilBarrier is returned by ForTenant when it is given no legacy
+	// barrier.
 	ErrNilBarrier = errors.New("credentials: nil barrier")
 
 	// ErrNilLogger is returned when a nil logger is provided to the constructor.

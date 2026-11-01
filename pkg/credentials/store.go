@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -11,7 +12,9 @@ import (
 // record in: values, version history and the metadata record that carries
 // the rotation policy and claim. A node binds the system shard's replicated
 // KV, whose PutIfAbsent and CompareAndSwap are Raft transactions, so a
-// conditional write decides once for the whole cluster. Get reports a missing
+// conditional write decides once for the whole cluster; a tenant's store is
+// its home store (NewKVStore), replicated the same way under the tenant's
+// own key. Get reports a missing
 // key with seal.ErrSecretNotFound.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -25,7 +28,41 @@ type Store interface {
 var (
 	_ Store = (*seal.StorageBarrier)(nil)
 	_ Store = (*boundStore)(nil)
+	_ Store = kvStore{}
 )
+
+// kvStore is a Store over a kvstore.AtomicKVStore, the shape of a tenant's
+// home store. kvstore reports a missing key as nil, nil; a Store reports it
+// as seal.ErrSecretNotFound.
+type kvStore struct{ kvstore.AtomicKVStore }
+
+// NewKVStore returns a Store over kv, which must serve conditional writes
+// (kvstore.AtomicKVStore): a tenant's home store on a cluster decides them
+// in its Raft group, so a rotation claim taken through one node fences every
+// other. It returns ErrNilStore for a nil kv and ErrStoreNotAtomic for one
+// that serves no conditional writes.
+func NewKVStore(kv kvstore.KVStore) (Store, error) {
+	if kv == nil {
+		return nil, ErrNilStore
+	}
+	atomicKV, ok := kv.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, ErrStoreNotAtomic
+	}
+	return kvStore{atomicKV}, nil
+}
+
+// Get returns key's value, or seal.ErrSecretNotFound when it is absent.
+func (s kvStore) Get(ctx context.Context, key string) ([]byte, error) {
+	data, err := s.AtomicKVStore.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return nil, seal.ErrSecretNotFound
+	}
+	return data, nil
+}
 
 // storeBox lets an interface value sit behind an atomic.Pointer.
 type storeBox struct{ Store }
