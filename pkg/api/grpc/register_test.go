@@ -21,6 +21,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -43,6 +44,7 @@ type (
 	stubSQLService      struct{ service.SQLServicer }
 	stubServiceRegistry struct{ service.Registry }
 	stubUserAuthFactor  struct{ service.UserAuthFactorServicer }
+	stubCertProvider    struct{ cert.CertProvider }
 )
 
 // TestWithRegisterPINBackend_StoresLockoutWrapper asserts the option stores
@@ -74,7 +76,7 @@ func TestRegisterOptions_AttachServices(t *testing.T) {
 	barrier := &stubBarrierService{}
 	cer := &stubCeremonyService{}
 	db := &stubDatabaseService{}
-	certProv := &mockCertProvider{}
+	certProv := &stubCertProvider{}
 	coll := &stubCollectionService{}
 	cred := &stubCredentialService{}
 	encMigrator := &stubEncryptionMigrator{}
