@@ -15,6 +15,7 @@ func TestErrorMessages_NonEmpty(t *testing.T) {
 		"SubsystemNotConfiguredError":              &SubsystemNotConfiguredError{Subsystem: "vector"},
 		"MemberNotObserverError":                   &MemberNotObserverError{ShardID: 1, ReplicaID: 2},
 		"UnsupportedTransactionOpError":            &UnsupportedTransactionOpError{},
+		"TransactionGetRangeEndError":              &TransactionGetRangeEndError{Key: []byte("k")},
 		"ImportArchiveExpandedTooLargeError":       &ImportArchiveExpandedTooLargeError{Max: 1},
 		"ImportTooManyEntriesError":                &ImportTooManyEntriesError{Max: 1},
 		"ImportTooManyRowsError":                   &ImportTooManyRowsError{Max: 1},

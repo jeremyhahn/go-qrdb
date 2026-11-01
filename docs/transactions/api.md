@@ -60,7 +60,8 @@ compare reads the field of the same name (`version`, `create_revision`,
 `mod_revision` or `value`).
 `result`: `equal` · `greater` · `less` · `not_equal`.
 op `type`: `put` · `delete` · `get` · `range`. A `get` reads `key`; a `range`
-reads `[key, range_end)`. A read in a transaction branch is answered inside
+reads `[key, range_end)`. A `get` that carries a `range_end` is refused whole
+as an invalid argument (`TransactionGetRangeEndError`) and nothing is read. A read in a transaction branch is answered inside
 the transaction, after the compares and the writes staged before it in the
 same branch, and needs an MVCC state machine (`--state-machine mvcc`) and the
 cluster feature `transaction-reads`; before that feature is active the
