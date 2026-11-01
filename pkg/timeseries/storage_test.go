@@ -19,6 +19,7 @@ package timeseries
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -1338,6 +1339,98 @@ func TestStorage_ApplyRetention_AfterClose(t *testing.T) {
 	}
 }
 
+func TestStorage_ListMetrics_ReturnsAllMetrics(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
+
+	metrics, err := s.ListMetrics("", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics: unexpected error: %v", err)
+	}
+	if len(metrics) != 3 {
+		t.Fatalf("ListMetrics: got %d metrics, want 3", len(metrics))
+	}
+
+	found := map[string]bool{}
+	for _, m := range metrics {
+		found[m] = true
+	}
+	for _, expected := range []string{"cpu.usage", "mem.free", "disk.io"} {
+		if !found[expected] {
+			t.Errorf("ListMetrics: missing metric %q", expected)
+		}
+	}
+}
+
+func TestStorage_ListMetrics_WithPrefix(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.load", 5.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+
+	metrics, err := s.ListMetrics("cpu", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics(prefix): unexpected error: %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Errorf("ListMetrics(prefix): got %d metrics, want 2", len(metrics))
+	}
+	for _, m := range metrics {
+		if !strings.HasPrefix(m, "cpu") {
+			t.Errorf("ListMetrics(prefix): metric %q does not start with 'cpu'", m)
+		}
+	}
+}
+
+func TestStorage_ListMetrics_WithLimit(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
+
+	metrics, err := s.ListMetrics("", 2)
+	if err != nil {
+		t.Fatalf("ListMetrics(limit): unexpected error: %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Errorf("ListMetrics(limit): got %d metrics, want 2", len(metrics))
+	}
+}
+
+func TestStorage_ListMetrics_EmptyStorage(t *testing.T) {
+	s := newStorage(t)
+
+	metrics, err := s.ListMetrics("", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics(empty): unexpected error: %v", err)
+	}
+	if len(metrics) != 0 {
+		t.Errorf("ListMetrics(empty): got %d metrics, want 0", len(metrics))
+	}
+}
+
+func TestStorage_ListMetrics_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	_, err := s.ListMetrics("", 0)
+	if err == nil {
+		t.Fatal("ListMetrics(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ListMetrics(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Aggregate
 // ---------------------------------------------------------------------------
@@ -2017,6 +2110,111 @@ func TestComputeAggregation_Unknown(t *testing.T) {
 	result := computeAggregation(AggFunc(99), []float64{10, 20, 30})
 	if result != 0 {
 		t.Errorf("computeAggregation(unknown): got %f, want 0", result)
+	}
+}
+
+func TestComputeAggregationWithPercentile_PercentileFunc(t *testing.T) {
+	values := make([]float64, 100)
+	for i := range values {
+		values[i] = float64(i + 1)
+	}
+
+	result := computeAggregationWithPercentile(AggPercentile, values, 50.0)
+	// P50 of 1..100: index = (100-1)*0.5 = 49.5, int = 49 -> values[49] = 50
+	if result != 50.0 {
+		t.Errorf("computeAggregationWithPercentile(p50): got %f, want 50.0", result)
+	}
+}
+
+func TestComputeAggregationWithPercentile_EmptyValues(t *testing.T) {
+	result := computeAggregationWithPercentile(AggPercentile, []float64{}, 95.0)
+	if result != 0 {
+		t.Errorf("computeAggregationWithPercentile(empty): got %f, want 0", result)
+	}
+}
+
+func TestAggregatePoints_Empty(t *testing.T) {
+	result := aggregatePoints([]*DataPoint{}, AggSum, 0)
+	if result != 0 {
+		t.Errorf("aggregatePoints(empty): got %f, want 0", result)
+	}
+}
+
+func TestDownsample_BucketsData(t *testing.T) {
+	base := ts(2026, 3, 1, 10, 0, 0)
+	points := []*DataPoint{
+		{Metric: "cpu", Value: 10.0, Timestamp: base},
+		{Metric: "cpu", Value: 20.0, Timestamp: base.Add(30 * time.Minute)},
+		{Metric: "cpu", Value: 30.0, Timestamp: base.Add(time.Hour)},
+		{Metric: "cpu", Value: 40.0, Timestamp: base.Add(90 * time.Minute)},
+	}
+
+	result := downsample(points, time.Hour, AggSum, 0)
+	if len(result) != 2 {
+		t.Fatalf("downsample: got %d buckets, want 2", len(result))
+	}
+	// First bucket: 10+20=30, second: 30+40=70.
+	if result[0].Value != 30.0 {
+		t.Errorf("downsample bucket[0]: got %f, want 30.0", result[0].Value)
+	}
+	if result[1].Value != 70.0 {
+		t.Errorf("downsample bucket[1]: got %f, want 70.0", result[1].Value)
+	}
+}
+
+func TestDownsample_ZeroInterval(t *testing.T) {
+	points := []*DataPoint{{Value: 1.0}}
+	result := downsample(points, 0, AggAvg, 0)
+	if len(result) != 1 {
+		t.Errorf("downsample(zero interval): got %d, want 1 (passthrough)", len(result))
+	}
+}
+
+func TestGroupAndAggregate_EmptyPoints(t *testing.T) {
+	results := groupAndAggregate([]*DataPoint{}, []string{"host"}, AggSum, 0, 0)
+	if results != nil {
+		t.Errorf("groupAndAggregate(empty): expected nil, got %v", results)
+	}
+}
+
+func TestGroupAndAggregate_WithInterval(t *testing.T) {
+	base := ts(2026, 3, 1, 10, 0, 0)
+	points := []*DataPoint{
+		{Metric: "cpu", Value: 10.0, Tags: map[string]string{"host": "a"}, Timestamp: base},
+		{Metric: "cpu", Value: 20.0, Tags: map[string]string{"host": "a"}, Timestamp: base.Add(30 * time.Minute)},
+		{Metric: "cpu", Value: 30.0, Tags: map[string]string{"host": "a"}, Timestamp: base.Add(time.Hour)},
+	}
+
+	results := groupAndAggregate(points, []string{"host"}, AggSum, time.Hour, 0)
+	if len(results) != 1 {
+		t.Fatalf("groupAndAggregate(interval): got %d groups, want 1", len(results))
+	}
+	// With interval, the group holds one summed point per bucket instead of an AggregatedValue.
+	if results[0].AggregatedValue != nil {
+		t.Errorf("groupAndAggregate(interval): AggregatedValue got %v, want nil", *results[0].AggregatedValue)
+	}
+	got := results[0].Points
+	if len(got) != 2 {
+		t.Fatalf("groupAndAggregate(interval): got %d downsampled points, want 2", len(got))
+	}
+	if got[0].Value != 30.0 || got[1].Value != 30.0 {
+		t.Errorf("groupAndAggregate(interval): bucket sums got %v, %v; want 30, 30", got[0].Value, got[1].Value)
+	}
+}
+
+func TestBuildGroupKey_MultipleTags(t *testing.T) {
+	tags := map[string]string{"host": "srv1", "region": "us"}
+	key := buildGroupKey(tags, []string{"host", "region"})
+	if key != "srv1|us" {
+		t.Errorf("buildGroupKey(multi): got %q, want %q", key, "srv1|us")
+	}
+}
+
+func TestBuildGroupKey_MissingTag(t *testing.T) {
+	tags := map[string]string{"host": "srv1"}
+	key := buildGroupKey(tags, []string{"host", "region"})
+	if key != "srv1|" {
+		t.Errorf("buildGroupKey(missing): got %q, want %q", key, "srv1|")
 	}
 }
 
