@@ -16,8 +16,8 @@
 
 // Coverage tests for the RAG transport surface, which is only compiled under
 // the qrdb_vector build tag (see transport_rag.go and transport/rag_types.go).
-// These were split out of transport_new_coverage_test.go so that file builds
-// in the default (non-vector) configuration.
+// They live in their own file because the RAG methods compile only under the
+// qrdb_vector tag.
 
 package embedded
 

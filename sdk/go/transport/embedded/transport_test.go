@@ -1554,3 +1554,21 @@ func TestTranslateError_VectorAndIndexErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestToTransportUsage(t *testing.T) {
+	if got := toTransportUsage(nil); got != nil {
+		t.Errorf("expected nil for nil input, got %v", got)
+	}
+	got := toTransportUsage(&service.UsageInfo{PromptTokens: 7, TotalTokens: 14})
+	if got == nil || got.PromptTokens != 7 || got.TotalTokens != 14 {
+		t.Errorf("field mismatch: %+v", got)
+	}
+}
+
+func TestWithRAGService_InstallsService(t *testing.T) {
+	svc := &struct{ service.RAGServicer }{}
+	tr := newExtTransport(t, WithRAGService(svc))
+	if tr.ragSvc != svc {
+		t.Errorf("ragSvc = %v, want the service passed to WithRAGService", tr.ragSvc)
+	}
+}

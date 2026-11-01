@@ -12,17 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Targeted tests for 0%-coverage embedded transport functions:
-// - NilRequestError.Error()
-// - WithRAGService + RAGClient nil-service guards
-// - WithEmbeddingService + EmbeddingClient nil-service guards + toTransportUsage
-// - SealDatabase / UnsealDatabase / DatabaseBarrierStatus nil-service guards
-// - CeremonyClaimShareBegin / CeremonyClaimShareComplete / CeremonySubmitUnsealShare nil-service guards
-// - custodianToInfo
-// - CredentialStore / CredentialRetrieve nil-service guards
-// - UserAuthFactor* nil-service guards
-// - errors.go NilRequestError + translateError uncovered branches
-// - translateError remaining service errors
+// Service-error propagation: a failing (or absent) backing service must
+// surface its error unchanged through both the direct Transport methods and
+// the Request dispatch table, for the admin, KV, time-series, vector and
+// lease services.
 
 package embedded
 
@@ -31,7 +24,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -40,11 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// ===========================================================================
-// Admin service error paths: Health/Status/Capabilities/StartShard/StopShard/
-// GetShardState/GetTopology/Scan/List/Exists/Get error branches
-// ===========================================================================
 
 // errorAdminService wraps mockAdminService and returns errSentinel for all ops.
 type errorAdminService struct {
@@ -208,11 +195,6 @@ func TestEmbedded_KVServiceErrors(t *testing.T) {
 	})
 }
 
-// ===========================================================================
-// TimeSeries service error paths: TSDeleteSeries/TSGetRetention/TSSetRetention/
-// TSListMetrics error branches
-// ===========================================================================
-
 // errTSSvc returns errors for TS operations.
 type errTSSvc struct {
 	captureTSSvc
@@ -268,10 +250,6 @@ func TestEmbedded_TSServiceErrors(t *testing.T) {
 		}
 	})
 }
-
-// ===========================================================================
-// Vector service error paths: exercise err != nil branch in each vector method
-// ===========================================================================
 
 // errVectorService wraps mockVectorService but returns errSentinel for all ops.
 type errVectorService struct {
@@ -386,11 +364,6 @@ func TestEmbedded_VectorServiceErrors(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// Vector dispatch error paths (via Request() with error-returning service)
-// to cover the "return err" branch in handler functions
-// ===========================================================================
-
 func TestEmbedded_VectorDispatch_ErrorPaths(t *testing.T) {
 	tr := newExtTransport(t, WithVectorService(&errVectorService{}))
 	ctx := context.Background()
@@ -430,10 +403,6 @@ func TestEmbedded_VectorDispatch_ErrorPaths(t *testing.T) {
 		})
 	}
 }
-
-// ===========================================================================
-// Lease/TS/other dispatch error paths via Request() to cover handler return err
-// ===========================================================================
 
 func TestEmbedded_TSDispatch_ErrorPaths(t *testing.T) {
 	// Use an error-returning TS service.
@@ -487,11 +456,6 @@ func TestEmbedded_LeaseDispatch_ErrorPaths(t *testing.T) {
 		})
 	}
 }
-
-// ===========================================================================
-// Dispatch error paths via nil-service (exercises "return err" in handlers
-// for credential, ceremony, barrier, TS, and lease handler groups)
-// ===========================================================================
 
 func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 	// Transport with no services (except the required KV and admin).
@@ -549,11 +513,6 @@ func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// Dispatch success paths for KV/MVCC/Shard/TS/Ceremony/Credential handlers
-// to cover the "*out = result" assignment statements
-// ===========================================================================
-
 func TestEmbedded_KVDispatch_ErrorPaths(t *testing.T) {
 	errKV := &errorKVService{*newMockKVService()}
 	tr, err := New(errKV, &mockAdminService{})
@@ -608,358 +567,3 @@ func TestEmbedded_AdminDispatch_SuccessPaths(t *testing.T) {
 		}
 	})
 }
-
-// ===========================================================================
-// Pure converter function coverage
-// ===========================================================================
-
-// ===========================================================================
-// GetUserByCertThumbprint / AddCertBinding nil-service guards
-// ===========================================================================
-
-// ===========================================================================
-// SealDatabase / UnsealDatabase / DatabaseBarrierStatus nil-service guards
-// ===========================================================================
-
-func TestEmbedded_SealDatabase_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.SealDatabase(context.Background(), "mydb")
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_UnsealDatabase_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.UnsealDatabase(context.Background(), "mydb", "secret")
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_DatabaseBarrierStatus_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-// Note: SealDatabase/UnsealDatabase/DatabaseBarrierStatus check dbSvc == nil
-// before the closed check, so a closed transport with no dbSvc returns
-// NilServiceError (not ClosedError). The nil-service tests above already
-// cover those paths. The closed-transport path requires a non-nil dbSvc which
-// is tested by existing integration tests.
-
-// ===========================================================================
-// userAuthRecordToDomain / domainToUserAuthRecord pure functions
-// ===========================================================================
-
-func TestUserAuthRecordToDomain_WithMetadata(t *testing.T) {
-	rec := &transport.AuthFactorAddRequest{
-		UserID:     10,
-		Type:       "fido2",
-		Label:      "hw-key",
-		Credential: []byte("cred"),
-		CreatedBy:  "admin",
-		Metadata:   map[string]string{"aaguid": "abc"},
-	}
-	got := userAuthRecordToDomain(rec, 10)
-	if got.UserID != 10 {
-		t.Errorf("expected UserID=10, got %d", got.UserID)
-	}
-	if got.Metadata["aaguid"] != "abc" {
-		t.Errorf("metadata not copied: %v", got.Metadata)
-	}
-}
-
-func TestUserAuthRecordToDomain_NoMetadata(t *testing.T) {
-	rec := &transport.AuthFactorAddRequest{Type: "mtls", Label: "cert"}
-	got := userAuthRecordToDomain(rec, 5)
-	if got.Metadata != nil {
-		t.Errorf("expected nil metadata, got %v", got.Metadata)
-	}
-}
-
-func TestDomainToUserAuthRecord_Nil(t *testing.T) {
-	got := domainToUserAuthRecord(nil)
-	if got.ID != "" {
-		t.Errorf("expected empty ID for nil input, got %q", got.ID)
-	}
-}
-
-func TestDomainToUserAuthRecord_WithMetadata(t *testing.T) {
-	f := &auth.AuthFactor{
-		ID:       "fid-1",
-		UserID:   5,
-		Type:     auth.AuthFactorMTLS,
-		Metadata: map[string]string{"slot": "9c"},
-	}
-	got := domainToUserAuthRecord(f)
-	if got.ID != "fid-1" {
-		t.Errorf("expected ID=fid-1, got %q", got.ID)
-	}
-	if got.Metadata["slot"] != "9c" {
-		t.Errorf("metadata not copied: %v", got.Metadata)
-	}
-}
-
-// ===========================================================================
-// mergeLoginMetadata pure function
-// ===========================================================================
-
-func TestMergeLoginMetadata_BothEmpty(t *testing.T) {
-	got := mergeLoginMetadata(nil, nil)
-	if got != nil {
-		t.Errorf("expected nil for both empty, got %v", got)
-	}
-}
-
-func TestMergeLoginMetadata_OnlyStored(t *testing.T) {
-	stored := map[string]string{"session": "abc"}
-	got := mergeLoginMetadata(stored, nil)
-	if got["session"] != "abc" {
-		t.Errorf("expected session=abc, got %v", got)
-	}
-}
-
-func TestMergeLoginMetadata_OnlyReq(t *testing.T) {
-	req := map[string]string{"assertion": "xyz"}
-	got := mergeLoginMetadata(nil, req)
-	if got["assertion"] != "xyz" {
-		t.Errorf("expected assertion=xyz, got %v", got)
-	}
-}
-
-func TestMergeLoginMetadata_ReqWins(t *testing.T) {
-	stored := map[string]string{"key": "old-val"}
-	req := map[string]string{"key": "new-val"}
-	got := mergeLoginMetadata(stored, req)
-	if got["key"] != "new-val" {
-		t.Errorf("expected req to win, got %q", got["key"])
-	}
-}
-
-// ===========================================================================
-// CredentialStore / CredentialRetrieve nil-service + closed guards
-// ===========================================================================
-
-func TestEmbedded_CredentialStore_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.CredentialStore(context.Background(), "k", []byte("v"))
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CredentialStore_Closed(t *testing.T) {
-	tr := closedExtTransport(t)
-	err := tr.CredentialStore(context.Background(), "k", []byte("v"))
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CredentialRetrieve_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.retrieveBytes(context.Background(), "k")
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_CredentialRetrieve_Closed(t *testing.T) {
-	tr := closedExtTransport(t)
-	_, err := tr.retrieveBytes(context.Background(), "k")
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-// ===========================================================================
-// Embedding: nil/closed guards + toTransportUsage
-// ===========================================================================
-
-func TestEmbedded_WithEmbeddingService_SetsNilCheck(t *testing.T) {
-	// WithEmbeddingService sets the field; calling methods without a real svc
-	// just tests the nil-service guard was cleared. We pass nil to show the
-	// Option function runs without panic.
-	tr := newExtTransport(t, WithEmbeddingService(nil))
-	// With nil service, methods return NilServiceError.
-	_, err := tr.Embed(context.Background(), &transport.EmbedRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_Embed_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.Embed(context.Background(), &transport.EmbedRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_BatchEmbed_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.BatchEmbed(context.Background(), &transport.BatchEmbedRequest{})
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_ListEmbeddingModels_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.ListEmbeddingModels(context.Background(), "openai")
-	var ne *NilServiceError
-	if !errors.As(err, &ne) {
-		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestToTransportUsage_Nil(t *testing.T) {
-	if got := toTransportUsage(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-}
-
-func TestToTransportUsage_NonNil(t *testing.T) {
-	got := toTransportUsage(&service.UsageInfo{PromptTokens: 10, TotalTokens: 20})
-	if got == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if got.PromptTokens != 10 || got.TotalTokens != 20 {
-		t.Errorf("unexpected: %+v", got)
-	}
-}
-
-// TestEmbedded_Embed_WithUsage verifies that a non-nil Usage is translated.
-// We test toTransportUsage directly since a real EmbeddingServicer is complex to stub.
-func TestToTransportUsage_FullCoverage(t *testing.T) {
-	// nil input returns nil
-	if got := toTransportUsage(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-	// non-nil input maps both fields
-	in := &service.UsageInfo{PromptTokens: 7, TotalTokens: 14}
-	got := toTransportUsage(in)
-	if got == nil {
-		t.Fatal("expected non-nil for non-nil input")
-	}
-	if got.PromptTokens != 7 || got.TotalTokens != 14 {
-		t.Errorf("field mismatch: %+v", got)
-	}
-}
-
-// ===========================================================================
-// RAG: WithRAGService + nil-service guards
-// ===========================================================================
-
-func TestEmbedded_WithRAGService_SetsNilField(t *testing.T) {
-	// WithRAGService with nil just sets the field to nil; nil-service guard
-	// returns NilServiceError.
-	tr := newExtTransport(t, WithRAGService(nil))
-	if tr.ragSvc != nil {
-		t.Error("expected ragSvc nil when nil passed")
-	}
-}
-
-// RAG nil-service guards for RAGIngestDocument/RAGQuery/RAGDeleteDocument/
-// RAGListDocuments live in transport_rag_coverage_test.go (qrdb_vector tag),
-// since those methods are only compiled under that build tag.
-
-// ===========================================================================
-// UserAuthFactor nil-service guards
-// ===========================================================================
-
-func TestEmbedded_UserAuthFactor_AllMethods_MissingService(t *testing.T) {
-	tr := newExtTransport(t)
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		call func() error
-	}{
-		{"AddAuthFactor", func() error {
-			_, e := tr.AddAuthFactor(ctx, &transport.AuthFactorAddRequest{})
-			return e
-		}},
-		{"ListAuthFactors", func() error {
-			_, e := tr.ListAuthFactors(ctx, &transport.AuthFactorListRequest{})
-			return e
-		}},
-		{"GetAuthFactor", func() error {
-			_, e := tr.GetAuthFactor(ctx, &transport.AuthFactorGetRequest{})
-			return e
-		}},
-		{"RemoveAuthFactor", func() error {
-			_, e := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{})
-			return e
-		}},
-		{"DeleteAuthFactor", func() error {
-			_, e := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
-			return e
-		}},
-		{"RotateAuthFactor", func() error {
-			_, e := tr.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{})
-			return e
-		}},
-		{"RelabelAuthFactor", func() error {
-			_, e := tr.RelabelAuthFactor(ctx, &transport.AuthFactorRelabelRequest{})
-			return e
-		}},
-		// LoginAuthFactor uses loginResolver, not userAuthFactorSvc.
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.call()
-			if err == nil {
-				t.Fatal("expected error from nil userAuthFactorSvc")
-			}
-			// Various error types are acceptable (NilServiceError or MissingUserAuthFactorServiceError).
-			if err.Error() == "" {
-				t.Error("expected non-empty error message")
-			}
-		})
-	}
-}
-
-func TestEmbedded_UserAuthFactorClient_ReturnsSelf(t *testing.T) {
-	tr := newExtTransport(t)
-	client := tr.UserAuthFactorClient()
-	if client != tr {
-		t.Error("expected UserAuthFactorClient to return self")
-	}
-}
-
-// LoginAuthFactor uses loginResolver, which is nil in a bare transport =>
-// NotImplementedError (not NilServiceError).
-func TestEmbedded_LoginAuthFactor_NotImplemented(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.LoginAuthFactor(context.Background(), &transport.AuthFactorLoginRequest{})
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}
-
-// ListAll mirrors List on this double: it applies no internal-key guard,
-// so the filtered and unfiltered enumerations are the same call.
-func (e *errorKVService) ListAll(a0 context.Context, a1 string) ([]string, error) {
-	return e.List(a0, a1)
-}
-
-// TestEmbedded_RemoveCertBinding_NilService guards the withdrawal verb the
-// same way: with no user service wired it reports NotImplementedError rather
-// than dereferencing a nil interface (go-qrdb#518).
