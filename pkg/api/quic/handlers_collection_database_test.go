@@ -871,8 +871,30 @@ func TestHandleDatabaseUpdateProtocol_EmptyName(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
 	payload, _ := json.Marshal(map[string]interface{}{"name": "", "mysql": true})
 	_, err := srv.handleDatabaseUpdateProtocol(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error for empty name")
+	var argErr *InvalidArgumentError
+	if !errors.As(err, &argErr) {
+		t.Fatalf("expected *InvalidArgumentError, got %T: %v", err, err)
+	}
+}
+
+func TestDatabaseToDomain_WithEtcd(t *testing.T) {
+	p := databaseCreateProtocolConfig{
+		MySQL: true,
+		Etcd: &databaseCreateEtcdConfig{
+			Enabled:             true,
+			ListenAddr:          "localhost:2379",
+			AdvertiseClientURLs: []string{"http://localhost:2379"},
+		},
+	}
+	got := p.toDomain()
+	if !got.MySQL {
+		t.Error("expected MySQL=true")
+	}
+	if got.Etcd == nil {
+		t.Fatal("expected non-nil Etcd config")
+	}
+	if got.Etcd.ListenAddr != "localhost:2379" {
+		t.Errorf("expected listen addr 'localhost:2379', got %q", got.Etcd.ListenAddr)
 	}
 }
 

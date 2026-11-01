@@ -45,6 +45,7 @@ type mockUserService struct {
 	unsuspendUserFn     func(ctx context.Context, id uint64) error
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
+	userByThumbprintFn  func(ctx context.Context, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -91,7 +92,10 @@ func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
 	return m.unsuspendUserFn(ctx, id)
 }
 
-func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.userByThumbprintFn != nil {
+		return m.userByThumbprintFn(ctx, thumbprint)
+	}
 	return nil, nil
 }
 

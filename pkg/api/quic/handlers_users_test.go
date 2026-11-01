@@ -800,3 +800,124 @@ func TestUserToWireResponse_CarriesCertBindingsIncludingExpired(t *testing.T) {
 		t.Errorf("no bindings must render as absent, got %+v", got)
 	}
 }
+
+func TestHandleGetUserByUsername_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := json.Marshal(getUserByUsernameWireRequest{TenantID: "t1", Username: "alice"})
+	_, err := srv.handleGetUserByUsername(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) {
+		t.Fatalf("expected ServiceNotConfiguredError, got %T", err)
+	}
+}
+
+func TestHandleGetUserByUsername_InvalidJSON(t *testing.T) {
+	mock := &mockUserService{
+		getUserByUsernameFn: func(_ context.Context, _, _ string) (*user.User, error) {
+			return testUser(1, "alice", "t1"), nil
+		},
+	}
+	srv := newUserServer(mock)
+	_, err := srv.handleGetUserByUsername(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleGetUserByUsername_Success(t *testing.T) {
+	mock := &mockUserService{
+		getUserByUsernameFn: func(_ context.Context, tenantID, username string) (*user.User, error) {
+			if tenantID != "tenant-1" || username != "alice" {
+				return nil, errors.New("unexpected args")
+			}
+			return testUser(10, "alice", "tenant-1"), nil
+		},
+	}
+	srv := newUserServer(mock)
+	payload, _ := json.Marshal(getUserByUsernameWireRequest{TenantID: "tenant-1", Username: "alice"})
+	resp, err := srv.handleGetUserByUsername(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out userWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ID != 10 {
+		t.Errorf("expected ID 10, got %d", out.ID)
+	}
+	if out.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", out.Username)
+	}
+}
+
+func TestHandleGetUserByUsername_ServiceError(t *testing.T) {
+	svcErr := errors.New("user not found")
+	mock := &mockUserService{
+		getUserByUsernameFn: func(_ context.Context, _, _ string) (*user.User, error) {
+			return nil, svcErr
+		},
+	}
+	srv := newUserServer(mock)
+	payload, _ := json.Marshal(getUserByUsernameWireRequest{TenantID: "t", Username: "nobody"})
+	_, err := srv.handleGetUserByUsername(context.Background(), payload)
+	if !errors.Is(err, svcErr) {
+		t.Fatalf("expected svcErr, got %v", err)
+	}
+}
+
+func TestHandleGetUserByCertThumbprint_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := json.Marshal(getUserByCertThumbprintWireRequest{Thumbprint: "abc"})
+	_, err := srv.handleGetUserByCertThumbprint(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) {
+		t.Fatalf("expected ServiceNotConfiguredError, got %T", err)
+	}
+}
+
+func TestHandleGetUserByCertThumbprint_InvalidJSON(t *testing.T) {
+	srv := newUserServer(&mockUserService{})
+	_, err := srv.handleGetUserByCertThumbprint(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleGetUserByCertThumbprint_Success(t *testing.T) {
+	var gotThumbprint string
+	srv := newUserServer(&mockUserService{
+		userByThumbprintFn: func(_ context.Context, thumbprint string) (*user.User, error) {
+			gotThumbprint = thumbprint
+			return testUser(11, "bob", "tenant-1"), nil
+		},
+	})
+	payload, _ := json.Marshal(getUserByCertThumbprintWireRequest{Thumbprint: "sha256:abc"})
+	resp, err := srv.handleGetUserByCertThumbprint(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotThumbprint != "sha256:abc" {
+		t.Fatalf("service got thumbprint %q, want sha256:abc", gotThumbprint)
+	}
+	var out userWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ID != 11 || out.Username != "bob" {
+		t.Fatalf("response = %+v, want user 11 bob", out)
+	}
+}
+
+func TestHandleGetUserByCertThumbprint_ServiceError(t *testing.T) {
+	svcErr := errors.New("no user bound to thumbprint")
+	srv := newUserServer(&mockUserService{
+		userByThumbprintFn: func(context.Context, string) (*user.User, error) { return nil, svcErr },
+	})
+	payload, _ := json.Marshal(getUserByCertThumbprintWireRequest{Thumbprint: "sha256:abc"})
+	if _, err := srv.handleGetUserByCertThumbprint(context.Background(), payload); !errors.Is(err, svcErr) {
+		t.Fatalf("expected svcErr, got %v", err)
+	}
+}
