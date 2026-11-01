@@ -30,6 +30,32 @@ func TestWithCredentialService_StoresService(t *testing.T) {
 	}
 }
 
+func TestServiceOptions_StoreService(t *testing.T) {
+	barrier := &stubBarrierService{}
+	cer := &stubCeremonyService{}
+	db := &stubDatabaseService{}
+	coll := &stubCollectionService{}
+	tests := []struct {
+		name string
+		opt  ServerOption
+		get  func(*Server) any
+		want any
+	}{
+		{"Database", WithDatabaseService(db), func(s *Server) any { return s.databaseSvc }, db},
+		{"Barrier", WithBarrierService(barrier), func(s *Server) any { return s.barrierSvc }, barrier},
+		{"Ceremony", WithCeremonyService(cer), func(s *Server) any { return s.ceremonySvc }, cer},
+		{"Collection", WithCollectionService(coll), func(s *Server) any { return s.collectionSvc }, coll},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", tt.opt)
+			if got := tt.get(srv); got != tt.want {
+				t.Fatalf("service = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestWithAuthMiddleware_StoresMiddleware asserts the option stores the auth
 // middleware it was given on the Server.
 func TestWithAuthMiddleware_StoresMiddleware(t *testing.T) {
