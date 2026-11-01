@@ -250,6 +250,46 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	}
 }
 
+// A staged value that cannot be read is not absent: the claimant reports the
+// read failure and does not call the value source for a second value.
+func TestRotateDue_StagedReadFailurePropagates(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 5)
+	var calls atomic.Int32
+	countSource(svc, &calls)
+	before, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	_, next := rotationVersions(before.CurrentVersion, true)
+	due := rotationEpoch.Add(time.Hour)
+
+	arm(&backend.failPut, credentialPrefix+"k")
+	if _, err := svc.RotateDue(t.Context(), due); err == nil {
+		t.Fatal("RotateDue under the fault succeeded, want an error")
+	}
+	backend.failPut.Store(nil)
+
+	arm(&backend.failGet, versionKey("k", next))
+	_, err = svc.RotateDue(t.Context(), due)
+	if !errors.Is(err, errInjectedFault) {
+		t.Fatalf("RotateDue with an unreadable staged value = %v, want the read failure", err)
+	}
+	requireOperationError(t, err, "read staged rotation")
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("value source called %d times, want 1: a staged value exists", got)
+	}
+	backend.failGet.Store(nil)
+
+	if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+		t.Fatalf("RotateDue after the fault = %d, %v; want 1, nil", n, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("value source called %d times for one interval, want 1", got)
+	}
+	requireVersionValue(t, svc, next, "k-rotated-1")
+}
+
 func requireCurrentValue(t *testing.T, svc *CredentialService, want string) {
 	t.Helper()
 	got, err := svc.store.Get(t.Context(), credentialPrefix+"k")

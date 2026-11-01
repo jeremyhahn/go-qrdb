@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -411,8 +412,13 @@ func (s *CredentialService) stagedRotation(ctx context.Context, name string) ([]
 	secure.Wipe(current)
 	_, next := rotationVersions(meta.CurrentVersion, exists)
 	staged, err := s.store.Get(ctx, versionKey(name, next))
-	if err != nil {
+	if errors.Is(err, seal.ErrSecretNotFound) {
 		return nil, nil
+	}
+	if err != nil {
+		// Any other failure is not absence: reading it as absence would
+		// invoke the rotation source again for a value already staged.
+		return nil, &OperationError{Op: "read staged rotation", Cause: err}
 	}
 	return staged, nil
 }
