@@ -453,6 +453,10 @@ func (s *Store) RangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 		if ro.CountOnly {
 			return nil, 1, currentRev, nil
 		}
+		var resultBytes int64
+		if tooLarge := resultBytesCrossed(&resultBytes, kv, ro.MaxResultBytes); tooLarge != nil {
+			return nil, 0, 0, tooLarge
+		}
 		return []*service.KeyValue{kv}, 1, currentRev, nil
 	}
 
@@ -479,8 +483,12 @@ func (s *Store) RangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 
 	var results []*service.KeyValue
 	var count int64
-	// readErr is the first failed key read; it ends the scan, since leaving
-	// the key out would answer a range that omits an existing key.
+	// resultBytes is the key and value bytes collected so far, counted
+	// against ro.MaxResultBytes.
+	var resultBytes int64
+	// readErr is the first failed key read, or the result that crossed
+	// ro.MaxResultBytes; it ends the scan, since leaving the key out would
+	// answer a range that omits an existing key.
 	var readErr error
 
 	scanErr := forEachKey(iter, start, end, func(userKey []byte) bool {
@@ -504,6 +512,10 @@ func (s *Store) RangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 
 		if ro.KeysOnly {
 			kv.Value = nil
+		}
+		if tooLarge := resultBytesCrossed(&resultBytes, kv, ro.MaxResultBytes); tooLarge != nil {
+			readErr = tooLarge
+			return false
 		}
 
 		results = append(results, kv)
@@ -541,6 +553,20 @@ func (s *Store) RangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 	}
 
 	return results, count, currentRev, nil
+}
+
+// resultBytesCrossed adds kv's key and value bytes to *total and reports a
+// *service.RangeResultTooLargeError when the total passes limit. A limit of
+// zero or less is no bound.
+func resultBytesCrossed(total *int64, kv *service.KeyValue, limit int64) error {
+	if limit <= 0 {
+		return nil
+	}
+	*total += int64(len(kv.Key)) + int64(len(kv.Value))
+	if *total > limit {
+		return &service.RangeResultTooLargeError{Limit: limit, Read: *total}
+	}
+	return nil
 }
 
 // sortKeyValues sorts results in place according to target, in ascending

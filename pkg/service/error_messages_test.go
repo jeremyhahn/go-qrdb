@@ -20,6 +20,7 @@ func TestErrorMessages_NonEmpty(t *testing.T) {
 		"ImportTooManyEntriesError":                &ImportTooManyEntriesError{Max: 1},
 		"ImportTooManyRowsError":                   &ImportTooManyRowsError{Max: 1},
 		"ImportProposalTooLargeError":              &ImportProposalTooLargeError{Max: 1},
+		"TxnReadResultTooLargeError":               &TxnReadResultTooLargeError{Limit: 1, Read: 2},
 		"nodeClosedError":                          &nodeClosedError{},
 		"nilRequestError":                          &nilRequestError{},
 		"ceremonyNotConfiguredError":               &ceremonyNotConfiguredError{},

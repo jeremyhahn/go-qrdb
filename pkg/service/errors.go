@@ -84,6 +84,12 @@ func checkResultError(result sm.Result) error {
 			return typed(int(maxCount))
 		}
 	}
+	// A transaction whose reads would answer past the engine's bound is
+	// refused with the bound and the bytes read, which the typed error
+	// carries.
+	if limit, read, refused := protocol.DecodeTxnReadRefusal(result.Data); refused {
+		return &TxnReadResultTooLargeError{Limit: limit, Read: read}
+	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		return nil
@@ -1101,6 +1107,25 @@ type ImportProposalTooLargeError struct {
 func (e *ImportProposalTooLargeError) Error() string {
 	return "service: transactional import's encoded batch command exceeds the maximum proposal size of " +
 		strconv.Itoa(e.Max) + " bytes; split the import into smaller, non-transactional batches"
+}
+
+// TxnReadResultTooLargeError is returned when the reads of a transaction's
+// executed branch would answer more than Limit key and value bytes. A
+// transaction's reads run inside the replicated apply and travel back in one
+// reply, so the bound is checked before any write of the branch is staged:
+// the transaction is refused whole, nothing is applied, and the group keeps
+// applying. Read is the byte count at which the bound was crossed; it is a
+// lower bound on what the reads would have answered, never the full size.
+type TxnReadResultTooLargeError struct {
+	Limit int64
+	Read  int64
+}
+
+// Error returns a human-readable description.
+func (e *TxnReadResultTooLargeError) Error() string {
+	return "service: transaction reads answer at least " + strconv.FormatInt(e.Read, 10) +
+		" bytes, past the limit of " + strconv.FormatInt(e.Limit, 10) +
+		" bytes; read fewer or smaller keys per transaction"
 }
 
 // ---------------------------------------------------------------------------
