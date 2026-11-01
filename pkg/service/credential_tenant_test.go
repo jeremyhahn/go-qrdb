@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -35,6 +37,7 @@ import (
 type tenantCredentialFixture struct {
 	svc      CredentialServicer
 	registry *seal.BarrierRegistry
+	homes    *memoryHomes
 	system   context.Context
 	acme     context.Context
 	globex   context.Context
@@ -56,9 +59,13 @@ func newTenantCredentialFixture(t *testing.T, opts ...credentials.Option) *tenan
 	}
 	inner, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, sysBarrier, testLogger(), opts...)
 	require.NoError(t, err)
+	svc := NewCredentialService(inner, WithCredentialTenantBarriers(registry)).(*CredentialService)
+	homes := newMemoryHomes()
+	svc.SetTenantHomes(homes)
 	return &tenantCredentialFixture{
-		svc:      NewCredentialService(inner, WithCredentialTenantBarriers(registry)),
+		svc:      svc,
 		registry: registry,
+		homes:    homes,
 		system:   ctx,
 		acme:     tenant.WithTenantID(ctx, "acme"),
 		globex:   tenant.WithTenantID(ctx, "globex"),
@@ -147,7 +154,8 @@ func TestCredentialService_StrategyFollowsTheCallersStore(t *testing.T) {
 	require.NoError(t, tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte("acme-pass"))))
 	manual, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyManual}, nil, testLogger())
 	require.NoError(t, err)
-	svc := NewCredentialService(manual, WithCredentialTenantBarriers(registry))
+	svc := NewCredentialService(manual, WithCredentialTenantBarriers(registry)).(*CredentialService)
+	svc.SetTenantHomes(newMemoryHomes())
 
 	got, err := svc.CredentialStrategy(ctx)
 	require.NoError(t, err)
@@ -302,6 +310,81 @@ func TestCredentialService_TenantLookupErrorPassesThrough(t *testing.T) {
 	assert.ErrorIs(t, err, errTenantLookup)
 }
 
+// TestCredentialService_TenantWithoutHomesRefuses: a tenant caller on a node
+// whose home stores are not attached, or were detached, is refused with a
+// CapabilityUnsupportedError rather than served from the node-local barrier.
+func TestCredentialService_TenantWithoutHomesRefuses(t *testing.T) {
+	f := newTenantCredentialFixture(t)
+	svc := f.svc.(*CredentialService)
+	svc.SetTenantHomes(nil)
+	for name, verb := range credentialVerbs {
+		t.Run(name, func(t *testing.T) {
+			var unsupported *CapabilityUnsupportedError
+			assert.True(t, errors.As(verb(f.acme, svc), &unsupported), "want *CapabilityUnsupportedError")
+		})
+	}
+	require.NoError(t, svc.CredentialStore(f.system, "sys-only", []byte("v")),
+		"a system caller needs no tenant home store")
+}
+
+// TestCredentialService_TenantHomeStoreErrors: a home store the source cannot
+// return, or one that serves no conditional writes, fails the tenant call.
+func TestCredentialService_TenantHomeStoreErrors(t *testing.T) {
+	f := newTenantCredentialFixture(t)
+	svc := f.svc.(*CredentialService)
+
+	homes := newMemoryHomes()
+	homes.err = errHomeLookup
+	svc.SetTenantHomes(homes)
+	_, err := svc.CredentialList(f.acme)
+	assert.ErrorIs(t, err, errHomeLookup)
+
+	homes = newMemoryHomes()
+	homes.plain = true
+	svc.SetTenantHomes(homes)
+	_, err = svc.CredentialList(f.acme)
+	assert.ErrorIs(t, err, credentials.ErrStoreNotAtomic)
+}
+
+var errHomeLookup = errors.New("home store lookup failed")
+
+// memoryHomes is a tenant.HomeStoreSource over one in-memory atomic KV per
+// tenant, as a cluster's home groups serve one store per tenant to every node.
+type memoryHomes struct {
+	mu     sync.Mutex
+	stores map[string]*kvstore.MemoryKVStore
+	err    error
+	plain  bool
+}
+
+var _ tenant.HomeStoreSource = (*memoryHomes)(nil)
+
+func newMemoryHomes() *memoryHomes {
+	return &memoryHomes{stores: make(map[string]*kvstore.MemoryKVStore)}
+}
+
+func (h *memoryHomes) EnsureHome(ctx context.Context, tenantID string) error {
+	_, err := h.HomeStore(ctx, tenantID)
+	return err
+}
+
+func (h *memoryHomes) HomeStore(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+	if h.err != nil {
+		return nil, h.err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	store, ok := h.stores[tenantID]
+	if !ok {
+		store = kvstore.NewMemoryKVStore()
+		h.stores[tenantID] = store
+	}
+	if h.plain {
+		return struct{ kvstore.KVStore }{store}, nil
+	}
+	return store, nil
+}
+
 // A scheduled rotation reaches a tenant's own store: a due policy in acme's
 // store rotates acme's credential under acme's context, and globex's
 // credential and the system credential of the same name are untouched.
@@ -378,7 +461,11 @@ func TestCredentialService_TenantMigrationConflictResolves(t *testing.T) {
 	tb, err := f.registry.GetTenant("acme")
 	require.NoError(t, err)
 	b := tb.Barrier()
-	live, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, b, testLogger())
+	kv, err := f.homes.HomeStore(f.system, "acme")
+	require.NoError(t, err)
+	home, err := credentials.NewKVStore(kv)
+	require.NoError(t, err)
+	live, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, home, testLogger())
 	require.NoError(t, err)
 	require.NoError(t, live.StoreCredential(f.system, "db", []byte("replicated")))
 	require.NoError(t, b.Put(f.system, "credentials/db", []byte("node-local")))
