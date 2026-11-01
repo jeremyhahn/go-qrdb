@@ -853,6 +853,20 @@ func TestBatch_Delete_EmptyKey(t *testing.T) {
 // Iterator tests
 // ---------------------------------------------------------------------------
 
+// TestNewFromDB_RoundTrip verifies that NewFromDB wraps the given *pebble.DB
+// and that DB() returns the same instance.
+func TestNewFromDB_RoundTrip(t *testing.T) {
+	db := openTestStorage(t).DB()
+
+	s := NewFromDB(db, true)
+	if s == nil {
+		t.Fatal("NewFromDB returned nil")
+	}
+	if got := s.DB(); got != db {
+		t.Fatalf("DB(): got %p, want %p", got, db)
+	}
+}
+
 func TestIterator_ForwardScan(t *testing.T) {
 	s := openTestStorage(t)
 
