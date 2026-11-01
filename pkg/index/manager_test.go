@@ -27,6 +27,7 @@ import (
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // mockBatch is a minimal mock batch implementation.
@@ -233,6 +234,78 @@ func TestIndexManager_DeleteIndexes_ClosedManager(t *testing.T) {
 	err := mgr.DeleteIndexes(&entity, []byte("1"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
+}
+
+// TestIndexManager_DeleteIndexes_GetFieldError verifies DeleteIndexes returns
+// the field-read error when the entity lacks an indexed field.
+func TestIndexManager_DeleteIndexes_GetFieldError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	mgr.indexes["Name"] = &deletefailIndex{}
+
+	type Other struct{ X int }
+	err := mgr.DeleteIndexes(Other{X: 1}, []byte("ek"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to get value for field Name")
+}
+
+// TestIndexManager_UpdateIndexes_DeleteError verifies UpdateIndexes returns
+// the index's Delete error when removing the old value fails.
+func TestIndexManager_UpdateIndexes_DeleteError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	deleteErr := &ClosedError{Name: "delete-error"}
+	mgr.indexes["Name"] = &deletefailIndex{deleteErr: deleteErr}
+
+	err := mgr.UpdateIndexes(User{Name: "alice"}, User{Name: "bob"}, []byte("ek1"))
+	require.ErrorIs(t, err, deleteErr)
+	assert.Contains(t, err.Error(), "failed to delete old index entry for field Name")
+}
+
+// TestIndexManager_UpdateIndexes_PutError verifies UpdateIndexes returns the
+// index's Put error when adding the new value fails after a successful Delete.
+func TestIndexManager_UpdateIndexes_PutError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	putErr := &ClosedError{Name: "put-error"}
+	mgr.indexes["Name"] = &putfailIndex{putErr: putErr}
+
+	err := mgr.UpdateIndexes(User{Name: "alice"}, User{Name: "bob"}, []byte("ek1"))
+	require.ErrorIs(t, err, putErr)
+	assert.Contains(t, err.Error(), "failed to add index entry for field Name")
+}
+
+// TestIndexManager_QueryIndexWithContext_ConvertError verifies
+// QueryIndexWithContext rejects a value it cannot convert to bytes on a
+// context-aware index.
+func TestIndexManager_QueryIndexWithContext_ConvertError(t *testing.T) {
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	mgr, err := NewIndexManager(s, newTestLogger(t))
+	require.NoError(t, err)
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	require.NoError(t, mgr.RegisterIndexes(reflect.TypeOf(User{})))
+	_, isCtx := mgr.indexes["Name"].(IndexWithContext)
+	require.True(t, isCtx, "registered index must take the context-aware path")
+
+	ids, err := mgr.QueryIndexWithContext(context.Background(), "Name", nil)
+	require.Error(t, err)
+	assert.Nil(t, ids)
+	assert.Contains(t, err.Error(), "failed to convert value to bytes")
 }
 
 func TestIndexManager_QueryIndexWithContext_Unit(t *testing.T) {
