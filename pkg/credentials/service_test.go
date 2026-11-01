@@ -98,9 +98,10 @@ func TestNewCredentialService_BarrierStrategy_Success(t *testing.T) {
 	assert.Equal(t, StrategyBarrier, svc.Strategy())
 }
 
-func TestNewCredentialService_BarrierStrategy_NilBarrier(t *testing.T) {
-	_, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, nil, testLogger())
-	assert.ErrorIs(t, err, ErrNilBarrier)
+func TestNewCredentialService_BarrierStrategy_NilStoreIsUnbound(t *testing.T) {
+	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, nil, testLogger())
+	require.NoError(t, err)
+	assert.ErrorIs(t, svc.StoreCredential(context.Background(), "k", []byte("v")), ErrStoreUnavailable)
 }
 
 func TestNewCredentialService_InvalidStrategy(t *testing.T) {

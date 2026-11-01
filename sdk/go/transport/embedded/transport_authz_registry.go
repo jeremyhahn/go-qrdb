@@ -216,16 +216,20 @@ var operationPermissions = map[string]permission.Permission{
 	"LoginAuthFactor":   permission.UserAuthFactorsLogin,
 
 	// Credentials
-	"CredentialSubmit":                permission.CredentialsSubmit,
-	"CredentialStrategy":              permission.CredentialsStrategy,
-	"CredentialDelete":                permission.CredentialsDelete,
-	"CredentialList":                  permission.CredentialsList,
-	"CredentialRotate":                permission.CredentialsRotate,
-	"CredentialRetrieveVersionBuffer": permission.CredentialsRetrieveVersion,
-	"CredentialListVersions":          permission.CredentialsListVersions,
-	"CredentialGCExpired":             permission.CredentialsGCExpired,
-	"CredentialStore":                 permission.CredentialsStore,
-	"CredentialRetrieveBuffer":        permission.CredentialsRetrieve,
+	"CredentialSubmit":                   permission.CredentialsSubmit,
+	"CredentialStrategy":                 permission.CredentialsStrategy,
+	"CredentialDelete":                   permission.CredentialsDelete,
+	"CredentialList":                     permission.CredentialsList,
+	"CredentialRotate":                   permission.CredentialsRotate,
+	"CredentialSetRotationPolicy":        permission.CredentialsRotate,
+	"CredentialRotationPolicy":           permission.CredentialsRotate,
+	"CredentialMigrationConflicts":       permission.CredentialsList,
+	"CredentialResolveMigrationConflict": permission.CredentialsRotate,
+	"CredentialRetrieveVersionBuffer":    permission.CredentialsRetrieveVersion,
+	"CredentialListVersions":             permission.CredentialsListVersions,
+	"CredentialGCExpired":                permission.CredentialsGCExpired,
+	"CredentialStore":                    permission.CredentialsStore,
+	"CredentialRetrieveBuffer":           permission.CredentialsRetrieve,
 
 	// Tenant DEK keyring. Every method acts on the caller's own tenant only
 	// (ScopeSelf; the keyring service itself refuses a system-tenant

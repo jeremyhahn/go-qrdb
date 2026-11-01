@@ -2530,11 +2530,15 @@ func (s *Server) registerRoutes() {
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/submit", permission.CredentialsSubmit, s.handleCredentialSubmit)
 	s.routeIf(credOn, http.MethodPost, "/v1/credentials/store", permission.CredentialsStore, s.handleCredentialStore)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials/strategy", permission.CredentialsStrategy, s.handleCredentialStrategy)
+	s.routeIf(credOn, http.MethodGet, "/v1/credentials/migration-conflicts", permission.CredentialsList, s.handleCredentialMigrationConflicts)
 	s.routeIf(credOn, http.MethodGet, "/v1/credentials", permission.CredentialsList, s.handleCredentialList)
 
 	// Credential path-param routes (the handler nil-checks the service).
 	s.route(http.MethodDelete, "/v1/credentials/{name}", permission.CredentialsDelete, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/rotate", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPut, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodGet, "/v1/credentials/{name}/rotation-policy", permission.CredentialsRotate, s.handleCredentialByPath)
+	s.route(http.MethodPost, "/v1/credentials/{name}/migration-resolve", permission.CredentialsRotate, s.handleCredentialByPath)
 	s.route(http.MethodPost, "/v1/credentials/{name}/gc", permission.CredentialsGCExpired, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions", permission.CredentialsListVersions, s.handleCredentialByPath)
 	s.route(http.MethodGet, "/v1/credentials/{name}/versions/{version}", permission.CredentialsRetrieveVersion, s.handleCredentialByPath)

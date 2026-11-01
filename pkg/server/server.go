@@ -196,6 +196,10 @@ type Server struct {
 	// retentionCancel stops the time-series retention scheduler (see
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
+
+	// credentialRotationCancel stops the credential rotation scheduler
+	// (see credential_rotation_scheduler.go); nil when none is running.
+	credentialRotationCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -292,6 +296,10 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+	// credentialRotationPeriod is how often the credential rotation
+	// scheduler runs the due rotation policies; zero keeps
+	// credentials.DefaultRotationCheckPeriod.
+	credentialRotationPeriod time.Duration
 
 	// defaultRetention is the retention the scheduler applies to a metric
 	// with no policy, or a policy of duration zero. Zero keeps its points.
@@ -1925,6 +1933,9 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Named credentials whose rotation policy is due are rotated on it.
+	s.startCredentialRotationScheduler()
+
 	return nil
 }
 
@@ -1999,6 +2010,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopCredentialRotationScheduler()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()

@@ -139,18 +139,21 @@ func NewTenantScopedCredentialRetrieve(
 	tenantIDFromCtx func(context.Context) (string, bool),
 	logger *slog.Logger,
 ) CredentialRetrieveFunc {
+	// tenants derives each tenant's store (ForBarrier), which migrates the
+	// tenant barrier's records under the old credentials/ layout first.
+	tenants, tenantsErr := credentials.NewCredentialService(
+		&credentials.Config{Strategy: credentials.StrategyBarrier}, nil, logger)
 	return func(ctx context.Context, name string) (*secure.Buffer, error) {
 		if tenantIDFromCtx != nil && registry != nil {
 			if tid, ok := tenantIDFromCtx(ctx); ok && tid != "" {
+				if tenantsErr != nil {
+					return nil, tenantsErr
+				}
 				tb, err := registry.GetTenant(tid)
 				if err != nil {
 					return nil, err
 				}
-				svc, err := credentials.NewCredentialService(
-					&credentials.Config{Strategy: credentials.StrategyBarrier},
-					tb.Barrier(),
-					logger,
-				)
+				svc, err := tenants.ForBarrier(ctx, tb.Barrier())
 				if err != nil {
 					return nil, err
 				}

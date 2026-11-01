@@ -19,6 +19,7 @@ package rest
 import (
 	"context"
 	"crypto/x509"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -110,6 +111,7 @@ type coverageCredentialService struct {
 	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
 	listVersionsFn    func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
 	gcFn              func(ctx context.Context, name string) (int, error)
+	setPolicy         credentials.RotationPolicy
 }
 
 var _ service.CredentialServicer = (*coverageCredentialService)(nil)
@@ -199,4 +201,33 @@ func (m *coverageCredentialService) CredentialGCExpired(ctx context.Context, nam
 		return m.gcFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (m *coverageCredentialService) CredentialSetRotationPolicy(_ context.Context, name string, policy credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	if policy.Enabled && policy.RetainVersions < 1 {
+		return &credentials.InvalidRotationPolicyError{Reason: "retain versions must be at least 1"}
+	}
+	m.setPolicy = policy
+	return nil
+}
+
+func (m *coverageCredentialService) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *coverageCredentialService) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *coverageCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }

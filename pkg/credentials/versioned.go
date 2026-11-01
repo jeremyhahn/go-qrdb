@@ -84,6 +84,29 @@ type RotateOptions struct {
 	// Zero means "no grace": the old version is wiped immediately
 	// and only the new value is accessible.
 	GracePeriod time.Duration
+
+	// retainPrevious keeps the previously-current version with no grace
+	// deadline, for a scheduled rotation whose policy retains versions by
+	// count rather than by time.
+	retainPrevious bool
+
+	// schedule, set by a scheduled rotation, stages the new value before it
+	// becomes current and settles the claim in the same metadata write that
+	// advances the version.
+	schedule *scheduledRotation
+}
+
+// scheduledRotation carries a scheduled rotation's claim into the write that
+// completes it, and that write's result back out.
+type scheduledRotation struct {
+	claim *rotationClaim
+	now   time.Time
+	// resumed reports that the new value was read back from a staged
+	// version left by an earlier attempt, whose writes before the staging
+	// are therefore already persisted.
+	resumed bool
+	// next is the schedule's next due time once the write settles it.
+	next time.Time
 }
 
 // RotateResult describes the rotation outcome.
@@ -115,6 +138,24 @@ type credentialMeta struct {
 	// History records non-current versions that have been written.
 	// Entries are pruned when their grace period elapses.
 	History []credentialMetaEntry `json:"history,omitempty"`
+
+	// Policy is the credential's rotation policy, nil when none was set.
+	Policy *RotationPolicy `json:"rotation_policy,omitempty"`
+
+	// NextRotation is when an enabled Policy next falls due. Zero when
+	// no enabled policy is set.
+	NextRotation time.Time `json:"next_rotation,omitzero"`
+
+	// Claim is the lease of the scheduled rotation in progress, nil when
+	// none is. Only its holder invokes the rotation value source.
+	Claim *rotationClaim `json:"rotation_claim,omitempty"`
+
+	// PendingCleanup is the claim ID of a completed scheduled rotation
+	// whose retention cleanup (expired-version GC and the trim to
+	// RetainVersions) has not yet succeeded, empty when none is pending.
+	// Every later check retries the cleanup, without invoking the value
+	// source, until it succeeds.
+	PendingCleanup string `json:"pending_cleanup,omitempty"`
 }
 
 type credentialMetaEntry struct {
@@ -471,7 +512,7 @@ func (s *CredentialService) gcManual(name string) int {
 // =============================================================================
 
 func (s *CredentialService) listBarrier(ctx context.Context) ([]string, error) {
-	keys, err := s.barrier.List(ctx, credentialPrefix)
+	keys, err := s.store.List(ctx, credentialPrefix)
 	if err != nil {
 		return nil, &OperationError{Op: "list barrier", Cause: err}
 	}
@@ -499,37 +540,66 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	if err != nil {
 		return nil, err
 	}
-	prevVersion := meta.CurrentVersion
-	if prevExists && prevVersion == 0 {
-		// Legacy promotion: existing untracked value is v1.
-		prevVersion = 1
-		meta.CurrentVersion = 1
-	}
-	newVersion := prevVersion + 1
-	if !prevExists && prevVersion == 0 {
-		newVersion = 1
-	}
+	prevVersion, newVersion := rotationVersions(meta.CurrentVersion, prevExists)
+	sched := opts.schedule
 
 	now := time.Now().UTC()
 	var graceUntil time.Time
-	if prevExists && opts.GracePeriod > 0 {
+	if opts.GracePeriod > 0 {
 		graceUntil = now.Add(opts.GracePeriod)
-		if err := s.barrier.Put(ctx, versionKey(name, prevVersion), prevValue); err != nil {
+	}
+	retained := prevExists && (opts.GracePeriod > 0 || opts.retainPrevious)
+	// A resumed scheduled rotation retained the previous version before it
+	// staged the new one, and its current record may already hold the new
+	// value, so the retained copy is not written again.
+	if retained && (sched == nil || !sched.resumed) {
+		if err := s.store.Put(ctx, versionKey(name, prevVersion), prevValue); err != nil {
 			return nil, &OperationError{Op: "write grace version", Cause: err}
 		}
-		meta.History = append(meta.History, credentialMetaEntry{
-			Version:    prevVersion,
-			CreatedAt:  now,
-			GraceUntil: graceUntil,
-		})
+	}
+	if sched != nil && !sched.resumed {
+		// The staged value is the persisted evidence a later attempt
+		// resumes from instead of invoking the value source again: no
+		// other write puts a version above the current one.
+		if err := s.store.Put(ctx, versionKey(name, newVersion), opts.NewValue); err != nil {
+			return nil, &OperationError{Op: "stage rotation", Cause: err}
+		}
 	}
 
-	if err := s.barrier.Put(ctx, credentialPrefix+name, opts.NewValue); err != nil {
+	if err := s.store.Put(ctx, credentialPrefix+name, opts.NewValue); err != nil {
 		return nil, &OperationError{Op: "write current", Cause: err}
 	}
-	meta.CurrentVersion = newVersion
-	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
+	// The version fields are applied to the record as it stands at the
+	// write, so a policy change or claim made since the read survives. A
+	// record that already names newVersion took this rotation's version
+	// write, and a second history entry would duplicate it. A scheduled
+	// rotation settles its claim and schedule in the same write.
+	if err := s.updateBarrierMeta(ctx, name, "write meta", func(m *credentialMeta) bool {
+		if m.CurrentVersion != newVersion {
+			if retained {
+				m.History = append(m.History, credentialMetaEntry{
+					Version:    prevVersion,
+					CreatedAt:  now,
+					GraceUntil: graceUntil,
+				})
+			}
+			m.CurrentVersion = newVersion
+		}
+		if sched != nil {
+			sched.settle(m)
+		}
+		return true
+	}); err != nil {
 		return nil, err
+	}
+	// newVersion is current, so a record under its version key is a spent
+	// staged value. One left by a failed delete is reaped by the scheduled
+	// rotation's cleanup.
+	if err := s.store.Delete(ctx, versionKey(name, newVersion)); err != nil {
+		s.logger.Warn("staged rotation value left for cleanup",
+			slog.String("name", name),
+			slog.Uint64("version", newVersion),
+			slog.String("error", err.Error()))
 	}
 
 	// Wipe in-memory copy of the previous value once it is on disk
@@ -553,6 +623,20 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	}, nil
 }
 
+// rotationVersions returns the version a rotation retires and the one it
+// writes, given the record's current version and whether a current value
+// exists. An existing untracked value is v1.
+func rotationVersions(current uint64, exists bool) (prev, next uint64) {
+	prev = current
+	if exists && prev == 0 {
+		prev = 1
+	}
+	if !exists && prev == 0 {
+		return 0, 1
+	}
+	return prev, prev + 1
+}
+
 func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
@@ -564,7 +648,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if version != 1 {
 			return nil, ErrVersionNotFound
 		}
-		value, err := s.barrier.Get(ctx, credentialPrefix+name)
+		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
 			return nil, ErrCredentialNotFound
 		}
@@ -572,7 +656,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 	}
 
 	if version == meta.CurrentVersion {
-		value, err := s.barrier.Get(ctx, credentialPrefix+name)
+		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
 			return nil, ErrCredentialNotFound
 		}
@@ -586,7 +670,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
 			return nil, ErrVersionExpired
 		}
-		value, err := s.barrier.Get(ctx, versionKey(name, version))
+		value, err := s.store.Get(ctx, versionKey(name, version))
 		if err != nil {
 			return nil, ErrVersionExpired
 		}
@@ -643,7 +727,7 @@ func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string
 func (s *CredentialService) deleteBarrierVersionKeys(ctx context.Context, name string, entries []credentialMetaEntry) (int, error) {
 	removed := 0
 	for _, h := range entries {
-		if err := s.barrier.Delete(ctx, versionKey(name, h.Version)); err != nil {
+		if err := s.store.Delete(ctx, versionKey(name, h.Version)); err != nil {
 			return removed, &OperationError{Op: fmt.Sprintf("delete v%d", h.Version), Cause: err}
 		}
 		removed++
@@ -658,20 +742,38 @@ func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, er
 	}
 	now := time.Now().UTC()
 	expired := make([]credentialMetaEntry, 0, len(meta.History))
-	kept := make([]credentialMetaEntry, 0, len(meta.History))
 	for _, h := range meta.History {
 		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
 			expired = append(expired, h)
-			continue
 		}
-		kept = append(kept, h)
 	}
-	reaped, err := s.deleteBarrierVersionKeys(ctx, name, expired)
+	return s.reapBarrierVersions(ctx, name, expired)
+}
+
+// reapBarrierVersions deletes the given versions' keys, then removes those
+// versions from the metadata record as it stands at the write, so a version
+// whose key survives a failed delete stays indexed and a concurrent policy
+// change or rotation is never overwritten. The record is written even when
+// nothing is reaped, so a sealed barrier fails the call closed.
+func (s *CredentialService) reapBarrierVersions(ctx context.Context, name string, versions []credentialMetaEntry) (int, error) {
+	reaped, err := s.deleteBarrierVersionKeys(ctx, name, versions)
 	if err != nil {
 		return reaped, err
 	}
-	meta.History = kept
-	if err := s.writeBarrierMeta(ctx, name, meta); err != nil {
+	gone := make(map[uint64]struct{}, len(versions))
+	for _, h := range versions {
+		gone[h.Version] = struct{}{}
+	}
+	if err := s.updateBarrierMeta(ctx, name, "write meta", func(m *credentialMeta) bool {
+		kept := make([]credentialMetaEntry, 0, len(m.History))
+		for _, h := range m.History {
+			if _, ok := gone[h.Version]; !ok {
+				kept = append(kept, h)
+			}
+		}
+		m.History = kept
+		return true
+	}); err != nil {
 		return reaped, err
 	}
 	return reaped, nil
@@ -693,10 +795,16 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 	if _, err := s.deleteBarrierVersionKeys(ctx, name, meta.History); err != nil {
 		return err
 	}
-	if err := s.barrier.Delete(ctx, metaKey(name)); err != nil {
+	// A value an unfinished scheduled rotation staged goes too, so a
+	// credential later stored under the name never lands it.
+	_, staged := rotationVersions(meta.CurrentVersion, true)
+	if err := s.store.Delete(ctx, versionKey(name, staged)); err != nil {
+		return &OperationError{Op: "delete staged rotation", Cause: err}
+	}
+	if err := s.store.Delete(ctx, metaKey(name)); err != nil {
 		return &OperationError{Op: "delete meta", Cause: err}
 	}
-	if err := s.barrier.Delete(ctx, credentialPrefix+name); err != nil {
+	if err := s.store.Delete(ctx, credentialPrefix+name); err != nil {
 		return &OperationError{Op: "delete current", Cause: err}
 	}
 	return nil
@@ -715,7 +823,7 @@ func metaKey(name string) string {
 }
 
 func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*credentialMeta, error) {
-	raw, err := s.barrier.Get(ctx, metaKey(name))
+	raw, err := s.store.Get(ctx, metaKey(name))
 	if err != nil {
 		// Missing metadata is normal for legacy (untracked) entries
 		// and for credentials that have never been rotated. Return
@@ -729,19 +837,8 @@ func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*
 	return &meta, nil
 }
 
-func (s *CredentialService) writeBarrierMeta(ctx context.Context, name string, meta *credentialMeta) error {
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		return &OperationError{Op: "encode meta", Cause: err}
-	}
-	if err := s.barrier.Put(ctx, metaKey(name), raw); err != nil {
-		return &OperationError{Op: "write meta", Cause: err}
-	}
-	return nil
-}
-
 func (s *CredentialService) loadBarrierCurrent(ctx context.Context, name string) ([]byte, bool, error) {
-	value, err := s.barrier.Get(ctx, credentialPrefix+name)
+	value, err := s.store.Get(ctx, credentialPrefix+name)
 	if err != nil {
 		// We can't distinguish "missing" from "I/O failure" at this
 		// layer because StorageBarrier collapses everything to a

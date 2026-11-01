@@ -40,6 +40,10 @@ func credentialTools(svc service.CredentialServicer) []serverTool {
 		{Tool: toolCredentialDelete(), Perm: permission.CredentialsDelete, Handler: handleCredentialDelete(svc)},
 		{Tool: toolCredentialList(), Perm: permission.CredentialsList, Handler: handleCredentialList(svc)},
 		{Tool: toolCredentialRotate(), Perm: permission.CredentialsRotate, Handler: handleCredentialRotate(svc)},
+		{Tool: toolCredentialSetRotationPolicy(), Perm: permission.CredentialsRotate, Handler: handleCredentialSetRotationPolicy(svc)},
+		{Tool: toolCredentialRotationPolicy(), Perm: permission.CredentialsRotate, Handler: handleCredentialRotationPolicy(svc)},
+		{Tool: toolCredentialMigrationConflicts(), Perm: permission.CredentialsList, Handler: handleCredentialMigrationConflicts(svc)},
+		{Tool: toolCredentialResolveMigrationConflict(), Perm: permission.CredentialsRotate, Handler: handleCredentialResolveMigrationConflict(svc)},
 		{Tool: toolCredentialRetrieveVersion(), Perm: permission.CredentialsRetrieveVersion, Handler: handleCredentialRetrieveVersion(svc)},
 		{Tool: toolCredentialListVersions(), Perm: permission.CredentialsListVersions, Handler: handleCredentialListVersions(svc)},
 		{Tool: toolCredentialGCExpired(), Perm: permission.CredentialsGCExpired, Handler: handleCredentialGCExpired(svc)},
@@ -330,6 +334,175 @@ func handleCredentialRotate(svc service.CredentialServicer) mcpserver.ToolHandle
 			return nil, &ToolError{Tool: "qrdb_credential_rotate", Err: jsonErr}
 		}
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolCredentialSetRotationPolicy defines the qrdb_credential_set_rotation_policy tool.
+func toolCredentialSetRotationPolicy() mcp.Tool {
+	return mcp.NewTool("qrdb_credential_set_rotation_policy",
+		mcp.WithDescription("Set a credential's scheduled rotation policy. A disabled policy stops scheduled rotation."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The credential name."),
+		),
+		mcp.WithBoolean("enabled",
+			mcp.Description("Whether scheduled rotation is on."),
+		),
+		mcp.WithString("interval",
+			mcp.Description("The time between rotations as a Go duration string, such as 720h. Required when enabled."),
+		),
+		mcp.WithNumber("retain_versions",
+			mcp.Description("How many versions, the current one included, survive a scheduled rotation. At least 1 when enabled."),
+		),
+	)
+}
+
+// handleCredentialSetRotationPolicy returns the handler for the
+// qrdb_credential_set_rotation_policy tool.
+func handleCredentialSetRotationPolicy(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+
+		policy, err := service.CredentialRotationPolicyFromWire(
+			mcp.ParseBoolean(req, "enabled", false),
+			mcp.ParseString(req, "interval", ""),
+			mcp.ParseInt(req, "retain_versions", 0),
+		)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_set_rotation_policy", Err: err}
+		}
+		if err := svc.CredentialSetRotationPolicy(ctx, name, policy); err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_set_rotation_policy", Err: err}
+		}
+
+		return mcp.NewToolResultText("rotation policy set"), nil
+	}
+}
+
+// toolCredentialRotationPolicy defines the qrdb_credential_rotation_policy tool.
+func toolCredentialRotationPolicy() mcp.Tool {
+	return mcp.NewTool("qrdb_credential_rotation_policy",
+		mcp.WithDescription("Return a credential's scheduled rotation policy and the RFC 3339 time of its next scheduled rotation."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The credential name."),
+		),
+	)
+}
+
+// handleCredentialRotationPolicy returns the handler for the
+// qrdb_credential_rotation_policy tool.
+func handleCredentialRotationPolicy(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+
+		status, err := svc.CredentialRotationPolicy(ctx, name)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_rotation_policy", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(struct {
+			Name           string `json:"name"`
+			Enabled        bool   `json:"enabled"`
+			Interval       string `json:"interval"`
+			RetainVersions int    `json:"retain_versions"`
+			NextRotation   string `json:"next_rotation,omitempty"`
+		}{
+			Name:           name,
+			Enabled:        status.Policy.Enabled,
+			Interval:       status.WireInterval(),
+			RetainVersions: status.Policy.RetainVersions,
+			NextRotation:   status.WireNextRotation(),
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_rotation_policy", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolCredentialMigrationConflicts defines the
+// qrdb_credential_migration_conflicts tool.
+func toolCredentialMigrationConflicts() mcp.Tool {
+	return mcp.NewTool("qrdb_credential_migration_conflicts",
+		mcp.WithDescription("List the credentials whose node-local copy in the old credentials/ layout differs from the replicated record, and which parts differ. Values are never returned."),
+	)
+}
+
+// migrationConflictJSON is one entry of the
+// qrdb_credential_migration_conflicts result.
+type migrationConflictJSON struct {
+	Name     string `json:"name"`
+	Value    bool   `json:"value"`
+	Versions bool   `json:"versions"`
+	Policy   bool   `json:"policy"`
+}
+
+// handleCredentialMigrationConflicts lists the caller's store's migration
+// conflicts.
+func handleCredentialMigrationConflicts(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		conflicts, err := svc.CredentialMigrationConflicts(ctx)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_migration_conflicts", Err: err}
+		}
+
+		result := struct {
+			Conflicts []migrationConflictJSON `json:"conflicts"`
+		}{
+			Conflicts: make([]migrationConflictJSON, 0, len(conflicts)),
+		}
+		for _, c := range conflicts {
+			result.Conflicts = append(result.Conflicts, migrationConflictJSON{
+				Name: c.Name, Value: c.Value, Versions: c.Versions, Policy: c.Policy,
+			})
+		}
+
+		data, jsonErr := json.Marshal(result)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_migration_conflicts", Err: jsonErr}
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolCredentialResolveMigrationConflict defines the
+// qrdb_credential_resolve_migration_conflict tool.
+func toolCredentialResolveMigrationConflict() mcp.Tool {
+	return mcp.NewTool("qrdb_credential_resolve_migration_conflict",
+		mcp.WithDescription("Settle one credential migration conflict: import makes the node-local current value a new version of the replicated record, discard keeps the replicated record. Either way the node-local records are deleted."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The credential name."),
+		),
+		mcp.WithString("resolution",
+			mcp.Required(),
+			mcp.Enum(string(credentials.MigrationImport), string(credentials.MigrationDiscard)),
+			mcp.Description("import or discard."),
+		),
+	)
+}
+
+// handleCredentialResolveMigrationConflict settles one migration conflict.
+func handleCredentialResolveMigrationConflict(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+
+		how := credentials.MigrationResolution(mcp.ParseString(req, "resolution", ""))
+		if err := svc.CredentialResolveMigrationConflict(ctx, name, how); err != nil {
+			return nil, &ToolError{Tool: "qrdb_credential_resolve_migration_conflict", Err: err}
+		}
+
+		return mcp.NewToolResultText("migration conflict resolved"), nil
 	}
 }
 

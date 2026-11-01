@@ -19,6 +19,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -47,6 +48,11 @@ type kvSealBackend struct {
 	kvstore.KVStore
 	tx service.TransactionServicer
 }
+
+// kvSealBackend is the credential service's replicated store
+// (buildSealServices binds it), so its conditional verbs must stay the
+// credentials.Store ones.
+var _ credentials.Store = kvSealBackend{}
 
 // Close is a no-op: the wrapped KV store is owned by the node lifecycle.
 func (kvSealBackend) Close() error { return nil }

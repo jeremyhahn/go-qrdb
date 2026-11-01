@@ -177,6 +177,115 @@ func (s *Server) handleCredentialRotate(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, resp)
 }
 
+// handleCredentialSetRotationPolicy handles PUT
+// /v1/credentials/{name}/rotation-policy. A refused policy is 400.
+func (s *Server) handleCredentialSetRotationPolicy(w http.ResponseWriter, r *http.Request, name string) {
+	if s.credentialSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "credentials"})
+		return
+	}
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+
+	var req transport.CredentialSetRotationPolicyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	// The path-param name authoritatively identifies the credential.
+	req.Name = name
+
+	policy, err := service.CredentialRotationPolicyFromWire(req.Enabled, req.Interval, req.RetainVersions)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	if err := s.credentialSvc.CredentialSetRotationPolicy(r.Context(), name, policy); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCredentialRotationPolicy handles GET
+// /v1/credentials/{name}/rotation-policy.
+func (s *Server) handleCredentialRotationPolicy(w http.ResponseWriter, r *http.Request, name string) {
+	if s.credentialSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "credentials"})
+		return
+	}
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+
+	status, err := s.credentialSvc.CredentialRotationPolicy(r.Context(), name)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, transport.CredentialRotationPolicyResponse{
+		Name:           name,
+		Enabled:        status.Policy.Enabled,
+		Interval:       status.WireInterval(),
+		RetainVersions: status.Policy.RetainVersions,
+		NextRotation:   status.WireNextRotation(),
+	})
+}
+
+// handleCredentialMigrationConflicts handles GET
+// /v1/credentials/migration-conflicts: the credentials whose node-local
+// copy differs from the replicated record. No value is returned.
+func (s *Server) handleCredentialMigrationConflicts(w http.ResponseWriter, r *http.Request) {
+	if s.credentialSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "credentials"})
+		return
+	}
+
+	conflicts, err := s.credentialSvc.CredentialMigrationConflicts(r.Context())
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	resp := transport.CredentialMigrationConflictsResponse{
+		Conflicts: make([]transport.CredentialMigrationConflict, 0, len(conflicts)),
+	}
+	for _, c := range conflicts {
+		resp.Conflicts = append(resp.Conflicts, transport.CredentialMigrationConflict{
+			Name: c.Name, Value: c.Value, Versions: c.Versions, Policy: c.Policy,
+		})
+	}
+	writeJSON(w, resp)
+}
+
+// handleCredentialResolveMigrationConflict handles POST
+// /v1/credentials/{name}/migration-resolve with a body naming the
+// resolution, "import" or "discard".
+func (s *Server) handleCredentialResolveMigrationConflict(w http.ResponseWriter, r *http.Request, name string) {
+	if s.credentialSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "credentials"})
+		return
+	}
+	if name == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+
+	var req transport.CredentialResolveMigrationConflictRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	how := credentials.MigrationResolution(req.Resolution)
+	if err := s.credentialSvc.CredentialResolveMigrationConflict(r.Context(), name, how); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleCredentialRetrieveVersion handles
 // GET /v1/credentials/{name}/versions/{version} -- returns the credential
 // value for the requested version. Version "0" means the current version.
@@ -327,6 +436,23 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			s.handleCredentialRotate(w, r, name)
+		case "rotation-policy":
+			switch r.Method {
+			case http.MethodPut:
+				s.handleCredentialSetRotationPolicy(w, r, name)
+			case http.MethodGet:
+				s.handleCredentialRotationPolicy(w, r, name)
+			default:
+				w.Header().Set("Allow", "GET, PUT")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+		case "migration-resolve":
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			s.handleCredentialResolveMigrationConflict(w, r, name)
 		case "gc":
 			if r.Method != http.MethodPost {
 				w.Header().Set("Allow", "POST")

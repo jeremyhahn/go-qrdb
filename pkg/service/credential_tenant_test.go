@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -38,7 +40,7 @@ type tenantCredentialFixture struct {
 	globex   context.Context
 }
 
-func newTenantCredentialFixture(t *testing.T) *tenantCredentialFixture {
+func newTenantCredentialFixture(t *testing.T, opts ...credentials.Option) *tenantCredentialFixture {
 	t.Helper()
 	ctx := context.Background()
 	sysBarrier, _ := newTestSoftwareBarrier(t)
@@ -52,7 +54,7 @@ func newTenantCredentialFixture(t *testing.T) *tenantCredentialFixture {
 		require.NoError(t, err)
 		require.NoError(t, tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte(id+"-pass"))))
 	}
-	inner, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, sysBarrier, testLogger())
+	inner, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, sysBarrier, testLogger(), opts...)
 	require.NoError(t, err)
 	return &tenantCredentialFixture{
 		svc:      NewCredentialService(inner, WithCredentialTenantBarriers(registry)),
@@ -195,6 +197,52 @@ var credentialVerbs = map[string]func(context.Context, CredentialServicer) error
 		_, err := s.CredentialGCExpired(ctx, "n")
 		return err
 	},
+	"set_rotation_policy": func(ctx context.Context, s CredentialServicer) error {
+		return s.CredentialSetRotationPolicy(ctx, "n", credentials.RotationPolicy{})
+	},
+	"rotation_policy": func(ctx context.Context, s CredentialServicer) error {
+		_, err := s.CredentialRotationPolicy(ctx, "n")
+		return err
+	},
+	"migration_conflicts": func(ctx context.Context, s CredentialServicer) error {
+		_, err := s.CredentialMigrationConflicts(ctx)
+		return err
+	},
+	"resolve_migration_conflict": func(ctx context.Context, s CredentialServicer) error {
+		return s.CredentialResolveMigrationConflict(ctx, "n", credentials.MigrationDiscard)
+	},
+}
+
+// A tenant caller neither reads, disables nor replaces the rotation policy of
+// a system credential of the same name: the policy verbs resolve the caller's
+// own store like every other verb.
+func TestCredentialService_TenantCannotTouchSystemRotationPolicy(t *testing.T) {
+	f := newTenantCredentialFixture(t)
+	require.NoError(t, f.svc.CredentialStore(f.system, "node-pass", []byte("node-secret")))
+	sysPolicy := credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}
+	require.NoError(t, f.svc.CredentialSetRotationPolicy(f.system, "node-pass", sysPolicy))
+
+	_, err := f.svc.CredentialRotationPolicy(f.acme, "node-pass")
+	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound, "acme reads the system credential's policy")
+	err = f.svc.CredentialSetRotationPolicy(f.acme, "node-pass", credentials.RotationPolicy{})
+	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound, "acme disables the system credential's policy")
+	err = f.svc.CredentialSetRotationPolicy(f.acme, "node-pass", credentials.RotationPolicy{Enabled: true, Interval: time.Minute, RetainVersions: 1})
+	assert.ErrorIs(t, err, credentials.ErrCredentialNotFound, "acme replaces the system credential's policy")
+
+	got, err := f.svc.CredentialRotationPolicy(f.system, "node-pass")
+	require.NoError(t, err)
+	assert.Equal(t, sysPolicy, got.Policy)
+
+	// acme's own credential of the same name carries its own policy.
+	require.NoError(t, f.svc.CredentialStore(f.acme, "node-pass", []byte("acme-secret")))
+	acmePolicy := credentials.RotationPolicy{Enabled: true, Interval: time.Minute, RetainVersions: 1}
+	require.NoError(t, f.svc.CredentialSetRotationPolicy(f.acme, "node-pass", acmePolicy))
+	got, err = f.svc.CredentialRotationPolicy(f.acme, "node-pass")
+	require.NoError(t, err)
+	assert.Equal(t, acmePolicy, got.Policy)
+	got, err = f.svc.CredentialRotationPolicy(f.system, "node-pass")
+	require.NoError(t, err)
+	assert.Equal(t, sysPolicy, got.Policy, "acme's policy reached the system store")
 }
 
 // A servicer built without tenant barriers refuses a tenant caller on every
@@ -254,6 +302,123 @@ func TestCredentialService_TenantLookupErrorPassesThrough(t *testing.T) {
 	assert.ErrorIs(t, err, errTenantLookup)
 }
 
+// A scheduled rotation reaches a tenant's own store: a due policy in acme's
+// store rotates acme's credential under acme's context, and globex's
+// credential and the system credential of the same name are untouched.
+func TestCredentialService_RotateDueRotatesATenantsCredential(t *testing.T) {
+	var sources []string
+	f := newTenantCredentialFixture(t, credentials.WithRotationValueSource(
+		func(ctx context.Context, name string) (*secure.Buffer, error) {
+			id := tenant.FromContext(ctx)
+			sources = append(sources, id+"/"+name)
+			return secure.NewBufferFromBytes([]byte(id + "-rotated"))
+		}))
+	for _, c := range []struct {
+		ctx   context.Context
+		value string
+	}{{f.system, "sys-secret"}, {f.acme, "acme-secret"}, {f.globex, "globex-secret"}} {
+		require.NoError(t, f.svc.CredentialStore(c.ctx, "db-pass", []byte(c.value)))
+	}
+	policy := credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 1}
+	require.NoError(t, f.svc.CredentialSetRotationPolicy(f.acme, "db-pass", policy))
+
+	rotated, err := f.svc.(*CredentialService).CredentialRotateDue(context.Background(), time.Now().Add(2*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, rotated)
+	assert.Equal(t, []string{"acme/db-pass"}, sources, "the source was not called once under acme's context")
+	assert.Equal(t, "acme-rotated", retrieveTenantCredential(f.acme, t, f.svc, "db-pass"))
+	assert.Equal(t, "globex-secret", retrieveTenantCredential(f.globex, t, f.svc, "db-pass"))
+	assert.Equal(t, "sys-secret", retrieveTenantCredential(f.system, t, f.svc, "db-pass"))
+	got, err := f.svc.CredentialRotationPolicy(f.globex, "db-pass")
+	require.NoError(t, err)
+	assert.False(t, got.Policy.Enabled, "acme's policy reached globex's store")
+}
+
+// A sealed tenant's store is skipped, not reported: its policies fall due at
+// the first sweep after it is unsealed.
+func TestCredentialService_RotateDueSkipsASealedTenant(t *testing.T) {
+	var calls int
+	f := newTenantCredentialFixture(t, credentials.WithRotationValueSource(
+		func(context.Context, string) (*secure.Buffer, error) {
+			calls++
+			return secure.NewBufferFromBytes([]byte("rotated"))
+		}))
+	require.NoError(t, f.svc.CredentialStore(f.acme, "db-pass", []byte("acme-secret")))
+	policy := credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 1}
+	require.NoError(t, f.svc.CredentialSetRotationPolicy(f.acme, "db-pass", policy))
+	tb, err := f.registry.GetTenant("acme")
+	require.NoError(t, err)
+	require.NoError(t, tb.Seal())
+
+	rotated, err := f.svc.(*CredentialService).CredentialRotateDue(context.Background(), time.Now().Add(2*time.Hour))
+	require.NoError(t, err)
+	assert.Zero(t, rotated)
+	assert.Zero(t, calls)
+}
+
+// A tenant whose store cannot be resolved is reported by ID, wrapping the
+// cause, and does not stop the system store's sweep.
+func TestCredentialService_RotateDueReportsATenantFailure(t *testing.T) {
+	svc := newTestBarrierCredentialServiceSvc(t).(*CredentialService)
+	svc.tenants = failingTenantBarriers{}
+	_, err := svc.CredentialRotateDue(context.Background(), time.Now())
+	var tenantErr *CredentialTenantRotationError
+	require.ErrorAs(t, err, &tenantErr)
+	assert.Equal(t, "acme", tenantErr.TenantID)
+	assert.ErrorIs(t, err, errTenantLookup)
+	assert.Contains(t, err.Error(), `tenant "acme"`)
+}
+
+// TestCredentialService_TenantMigrationConflictResolves verifies a tenant's
+// node-local credentials/ record that differs from its replicated record is
+// listed as a conflict for that tenant alone, and that importing it makes
+// the node-local value the current version.
+func TestCredentialService_TenantMigrationConflictResolves(t *testing.T) {
+	f := newTenantCredentialFixture(t)
+	tb, err := f.registry.GetTenant("acme")
+	require.NoError(t, err)
+	b := tb.Barrier()
+	live, err := credentials.NewCredentialService(&credentials.Config{Strategy: credentials.StrategyBarrier}, b, testLogger())
+	require.NoError(t, err)
+	require.NoError(t, live.StoreCredential(f.system, "db", []byte("replicated")))
+	require.NoError(t, b.Put(f.system, "credentials/db", []byte("node-local")))
+
+	conflicts, err := f.svc.CredentialMigrationConflicts(f.acme)
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1)
+	assert.Equal(t, "db", conflicts[0].Name)
+	assert.True(t, conflicts[0].Value)
+	assert.Equal(t, "replicated", retrieveTenantCredential(f.acme, t, f.svc, "db"))
+
+	other, err := f.svc.CredentialMigrationConflicts(f.globex)
+	require.NoError(t, err)
+	assert.Empty(t, other, "globex sees acme's conflict")
+
+	err = f.svc.CredentialResolveMigrationConflict(f.acme, "missing", credentials.MigrationImport)
+	assert.ErrorIs(t, err, credentials.ErrMigrationConflictNotFound)
+	err = f.svc.CredentialResolveMigrationConflict(f.acme, "db", "merge")
+	assert.ErrorIs(t, err, credentials.ErrInvalidMigrationResolution)
+
+	require.NoError(t, f.svc.CredentialResolveMigrationConflict(f.acme, "db", credentials.MigrationImport))
+	assert.Equal(t, "node-local", retrieveTenantCredential(f.acme, t, f.svc, "db"))
+	conflicts, err = f.svc.CredentialMigrationConflicts(f.acme)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
+func retrieveTenantCredential(ctx context.Context, t *testing.T, svc CredentialServicer, name string) string {
+	t.Helper()
+	buf, err := svc.CredentialRetrieveBuffer(ctx, name)
+	require.NoError(t, err)
+	defer buf.Destroy()
+	var out string
+	require.NoError(t, buf.WithBytes(func(b []byte) error {
+		out = string(b)
+		return nil
+	}))
+	return out
+}
+
 var errTenantLookup = errors.New("tenant lookup failed")
 
 type failingTenantBarriers struct{}
@@ -261,5 +426,7 @@ type failingTenantBarriers struct{}
 func (failingTenantBarriers) GetTenant(string) (*seal.TenantBarrier, error) {
 	return nil, errTenantLookup
 }
+
+func (failingTenantBarriers) ListTenants() []string { return []string{"acme"} }
 
 var _ CredentialTenantBarriers = failingTenantBarriers{}

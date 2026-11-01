@@ -157,6 +157,72 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	return &resp, nil
 }
 
+// CredentialSetRotationPolicy sets a credential's scheduled rotation policy
+// via PUT /v1/credentials/{name}/rotation-policy.
+func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transport.CredentialSetRotationPolicyRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: &nilRequestError{}}
+	}
+	if req.Name == "" {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: &emptyCredentialNameError{}}
+	}
+
+	path := "/v1/credentials/" + url.PathEscape(req.Name) + "/rotation-policy"
+	return t.putJSONDecode(ctx, "CredentialSetRotationPolicy", path, req, nil)
+}
+
+// CredentialRotationPolicy reads a credential's scheduled rotation policy
+// via GET /v1/credentials/{name}/rotation-policy.
+func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (*transport.CredentialRotationPolicyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if name == "" {
+		return nil, &transport.RequestError{Method: "CredentialRotationPolicy", Err: &emptyCredentialNameError{}}
+	}
+
+	path := "/v1/credentials/" + url.PathEscape(name) + "/rotation-policy"
+	var resp transport.CredentialRotationPolicyResponse
+	if err := t.getJSONDecode(ctx, "CredentialRotationPolicy", path, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CredentialMigrationConflicts lists the credentials whose node-local copy
+// differs from the replicated record.
+func (t *Transport) CredentialMigrationConflicts(ctx context.Context) (*transport.CredentialMigrationConflictsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.CredentialMigrationConflictsResponse
+	if err := t.getJSONDecode(ctx, "CredentialMigrationConflicts", "/v1/credentials/migration-conflicts", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CredentialResolveMigrationConflict settles one migration conflict by
+// import or discard.
+func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req *transport.CredentialResolveMigrationConflictRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: &nilRequestError{}}
+	}
+	if req.Name == "" {
+		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: &emptyCredentialNameError{}}
+	}
+
+	path := "/v1/credentials/" + url.PathEscape(req.Name) + "/migration-resolve"
+	return t.postJSONDecode(ctx, "CredentialResolveMigrationConflict", path, req, nil)
+}
+
 // CredentialListVersions returns the version history (current +
 // non-expired grace) for a credential. Values are never returned.
 // Maps to GET /v1/credentials/{name}/versions.

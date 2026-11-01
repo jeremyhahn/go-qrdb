@@ -905,6 +905,7 @@ brings the barrier up.
 | `shamir_total` | int | — | when `strategy: shamir` | `--shares` (`qrdb init`) / `--total` (`qrdb barrier init-shamir`) | Total Shamir shares to generate. |
 | `share_ttl` | string | `"15m"` | no | N/A (env `QRDB_SEAL_SHARE_TTL`) | How long an unseal-share quorum session stays open before submitted shares expire. |
 | `credential_strategy` | string | `"barrier"` | no | N/A | `"manual"` \| `"barrier"` — where named credentials (SO/user PINs, rotated credentials) are stored. |
+| `credential_rotation_check_period` | string | `"1m"` | no | N/A | How often each node's scheduler rotates the named credentials whose rotation policy is due. See [credentials/engineering.md](credentials/engineering.md#scheduled-rotation). |
 | `cluster_lease` | string | `"15s"` | no | N/A | How long a successful read of the cluster seal records lets this node serve; a node that cannot read them for longer stops serving, keeping its keys. At most `60s`. |
 | `cluster_poll_interval` | string | `"1s"` | no | N/A | How often this node reads the cluster seal records. At most a third of `cluster_lease`. |
 | `cluster_ack_timeout` | string | `"5s"` | no | N/A | How long a node waits for every node to acknowledge a node-barrier seal before wiping its own key. At most half of `cluster_lease`. |
@@ -924,6 +925,8 @@ brings the barrier up.
   `"shamir"`: the threshold must be `>= 2` and the total `>=` the threshold.
 - `credential_strategy`, when non-empty, must be `manual` or `barrier`.
 - `share_ttl`, when non-empty, must be a Go duration greater than zero.
+- `credential_rotation_check_period`, when non-empty, must be a Go duration
+  greater than zero.
 - `cluster_lease`, `cluster_poll_interval` and `cluster_ack_timeout` must each
   be a Go duration greater than zero (empty takes the default) and keep the
   bounds in the table.
