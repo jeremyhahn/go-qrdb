@@ -16,6 +16,7 @@ package unix
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -85,5 +87,76 @@ func TestMapGRPCError_abortedWithoutRefusalIsNotAConflict(t *testing.T) {
 	}
 	if dberrors.IsRetryable(got) {
 		t.Fatalf("err = %v is retryable without the refusal", got)
+	}
+}
+
+// TestMapGRPCError_lockRefusalsAreTyped pins that each typed lock outcome
+// survives the socket with its fields -- including the missing lock, whose
+// NotFound code would otherwise be read as a missing key.
+func TestMapGRPCError_lockRefusalsAreTyped(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   codes.Code
+		reason string
+		err    interface {
+			error
+			Metadata() map[string]string
+		}
+		match func(error) (error, bool)
+	}{
+		{
+			name: "held", code: codes.Aborted, reason: lock.ReasonLockHeld,
+			err: &lock.LockHeldError{Key: "k", HolderID: "h"},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.LockHeldError](err)
+				return e, ok
+			},
+		},
+		{
+			name: "not holder", code: codes.PermissionDenied, reason: lock.ReasonNotLockHolder,
+			err: &lock.NotLockHolderError{Key: "k", ExpectedToken: 3, ActualToken: 4},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.NotLockHolderError](err)
+				return e, ok
+			},
+		},
+		{
+			name: "not found", code: codes.NotFound, reason: lock.ReasonLockNotFound,
+			err: &lock.LockNotFoundError{Key: "k"},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.LockNotFoundError](err)
+				return e, ok
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := status.New(tt.code, tt.err.Error()).WithDetails(&errdetails.ErrorInfo{
+				Domain: transport.RefusalDomain, Reason: tt.reason, Metadata: tt.err.Metadata(),
+			})
+			if err != nil {
+				t.Fatalf("WithDetails: %v", err)
+			}
+			got := mapGRPCError("LockRelease", st.Err())
+
+			if typed, ok := tt.match(got); !ok || !reflect.DeepEqual(typed, tt.err) {
+				t.Fatalf("mapGRPCError() = %#v, want %#v", got, tt.err)
+			}
+			if _, ok := errors.AsType[*transport.KeyNotFoundError](got); ok {
+				t.Fatalf("mapGRPCError() = %v, a lock outcome read as a missing key", got)
+			}
+			if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != int(tt.code) {
+				t.Fatalf("err = %T, want a RequestError carrying %v", got, tt.code)
+			}
+		})
+	}
+}
+
+// TestMapGRPCError_notFoundWithoutRefusalIsAMissingKey pins that NotFound
+// with no structured refusal still maps to the missing key.
+func TestMapGRPCError_notFoundWithoutRefusalIsAMissingKey(t *testing.T) {
+	got := mapGRPCError("Get", status.Error(codes.NotFound, "k"))
+	if e, ok := errors.AsType[*transport.KeyNotFoundError](got); !ok || e.Key != "k" {
+		t.Fatalf("mapGRPCError() = %#v, want KeyNotFoundError{Key: k}", got)
 	}
 }

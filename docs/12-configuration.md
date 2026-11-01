@@ -191,6 +191,10 @@ transport:
   max_message_bytes: 4194304    # 4 MiB; applied pre-auth, identically on every transport
   max_conns_per_peer: 256       # REST, gRPC, MCP, and native+HTTP/3 QUIC listeners
   max_streams_per_conn: 128     # native QUIC transport only
+  client_rate_limit:            # pre-auth requests per client address; unset = no limit
+    rate_per_second: 0
+    burst: 0
+    trusted_proxies: []
 
 import_session:
   max_session_bytes: 67108864    # 64 MiB total staged per session
@@ -482,6 +486,15 @@ Configures the underlying storage backend.
 - `backend`, when non-empty, must be one of: `pebble`, `memory`, `file`, `objstore`.
 - `cache_size` must not be negative (>= 0).
 - `max_open_files` must not be negative (>= 0).
+- `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
+- `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
+
+**`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
+
+| Field         | Type   | Default | Required | Description |
+|---------------|--------|---------|----------|-------------|
+| `key_file`    | string | `""`    | no       | Owner-only file (mode `0600`/`0400`) holding the access key ID |
+| `secret_file` | string | `""`    | with `key_file` | Owner-only file holding the secret; alone, an account key |
 
 **Valid `backend` values:**
 
@@ -496,7 +509,7 @@ Configures the underlying storage backend.
 
 - Setting `cache_size` to `0` uses the PebbleDB default cache size.
 - Setting `max_open_files` to `0` uses the PebbleDB default file limit.
-- When `wal_dir` is empty, the WAL is stored in the default data directory. Placing the WAL on a separate disk can improve write throughput by isolating sequential WAL writes from random SSTable I/O.
+- When `wal_dir` is empty, the WAL is stored in the default data directory. Placing the WAL on a separate disk can improve write throughput by isolating sequential WAL writes from random SSTable I/O. A standalone node with a `wal_dir` outside its Pebble store cannot take an at-rest encryption migration: the migration is refused before it starts (see `docs/barrier-seal/engineering.md`, "What a system-scope migration re-encrypts").
 
 ---
 
@@ -725,7 +738,7 @@ Configures the secondary indexing system.
 
 **Notes:**
 
-- Setting `max_indexes` to `0` allows unlimited secondary indexes.
+- Setting `max_indexes` to `0` allows unlimited secondary indexes. Above zero it caps each shard: a create for a new index name past it is refused with `IndexLimitError` (HTTP 429, gRPC `RESOURCE_EXHAUSTED`), and a create naming an existing index never is. The cap is decided in the apply path, so it holds across nodes. In a cluster the cap is carried only once every replica runs a release with the `command-caps` cluster feature and the feature is activated; until then a create is proposed uncapped, as an older node would propose it. See [secondary indexes](secondary-indexes/engineering.md).
 - Each secondary index consumes additional storage and incurs write amplification. Set a limit appropriate for your workload.
 
 ---
@@ -737,7 +750,7 @@ Configures the time-series storage engine.
 | Field               | Type  | Default | Description                                                |
 |---------------------|-------|---------|------------------------------------------------------------|
 | `default_retention` | int64 | `0`     | Default data retention period in seconds                   |
-| `max_metrics`       | int64 | `0`     | Maximum number of distinct metric names allowed            |
+| `max_metrics`       | int   | `0`     | Maximum number of distinct metric names allowed            |
 
 **Validation rules:**
 
@@ -747,7 +760,7 @@ Configures the time-series storage engine.
 **Notes:**
 
 - Setting `default_retention` to `0` disables automatic data retention. Data points are retained indefinitely.
-- Setting `max_metrics` to `0` allows unlimited distinct metric names.
+- Setting `max_metrics` to `0` allows unlimited distinct metric names. Above zero it caps each shard: a write that would create a metric past it is refused with `MetricLimitError` (HTTP 429, gRPC `RESOURCE_EXHAUSTED`), and a write to an existing metric never is. The cap is decided in the apply path, so it holds across nodes. In a cluster the cap is carried only once every replica runs a release with the `command-caps` cluster feature and the feature is activated; until then a write is proposed uncapped, as an older node would propose it. See [time series](time-series/engineering.md).
 - Data points older than `default_retention` seconds are eligible for automatic deletion.
 
 ---
@@ -1230,6 +1243,9 @@ larger-message opt-in.
 | `max_message_bytes` | int | `4194304` (4 MiB) | Caps a single request or response message any transport accepts or produces: the REST request body, the gRPC and Unix `MaxRecvMsgSize`, the QUIC wire frame payload (checked against this bound before a buffer is allocated for it), and the MCP JSON-RPC request body |
 | `max_conns_per_peer` | int | `256` | Caps the number of concurrent connections a single remote IP may hold open against REST's HTTP/2 listener, gRPC, MCP, native QUIC, and REST's own HTTP/3 (QUIC) listener. A negative value means unlimited |
 | `max_streams_per_conn` | int | `128` | Caps the number of concurrent streams a single QUIC connection may have open against the native QUIC transport. A negative value means unlimited |
+| `client_rate_limit.rate_per_second` | float | `0` (off) | Sustained requests per second one client address may make, counted before authentication on REST, gRPC (gRPC-Web included), native QUIC, MCP, the Unix socket, MySQL, PostgreSQL and the etcd v3 listener, against one bucket per address the node's listeners share. Must be positive and finite when the limit is set |
+| `client_rate_limit.burst` | int | `0` (off) | Requests one client address may make at once. Must be positive when the limit is set |
+| `client_rate_limit.trusted_proxies` | []object | `[]` | Proxies whose connections may name the client they forward for. Each entry has `address`, a CIDR prefix or single address, and `header`, the one field that proxy appends to: `forwarded` (RFC 7239) or `x-forwarded-for`. Only that field is read for the proxy; the other is ignored. A request from any other peer is keyed by that peer's own address; with none listed no header is read. An entry without a known `header` is refused, as are overlapping entries naming different headers, and the list is refused when set without `rate_per_second` and `burst` |
 
 **Example configuration:**
 
@@ -1238,6 +1254,12 @@ transport:
   max_message_bytes: 4194304
   max_conns_per_peer: 256
   max_streams_per_conn: 128
+  client_rate_limit:
+    rate_per_second: 50
+    burst: 100
+    trusted_proxies:
+      - address: 192.0.2.0/24
+        header: x-forwarded-for
 ```
 
 **Notes:**
@@ -1252,6 +1274,15 @@ transport:
   single admitted QUIC connection.
 - Zero resolves each field to its default; a negative `max_message_bytes`
   is refused at config validation rather than silently disabling the cap.
+- `client_rate_limit` keys an IPv4 client by its address and an IPv6 client
+  by its `/64` prefix; every Unix-socket caller shares one bucket. A refused
+  request gets 429 with `Retry-After` (REST, MCP), `ResourceExhausted` with
+  RetryInfo (gRPC, Unix) or `RESOURCE_EXHAUSTED` (QUIC). The MySQL and
+  PostgreSQL listeners charge a client once at connection and once per
+  statement: MySQL refuses with error 1226 (`ER_USER_LIMIT_REACHED`,
+  SQLSTATE `42000`), PostgreSQL with SQLSTATE `08004` at connection and
+  `53400` for a statement. See
+  [rate-limit/user.md](rate-limit/user.md#for-an-operator-limiting-each-client-address).
 
 ---
 

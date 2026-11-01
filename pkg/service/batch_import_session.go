@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -99,7 +100,7 @@ func callerIdentity(ctx context.Context) (tenantID, subject string) {
 	return tenantID, subject
 }
 
-// checkImportStagingEnabled refuses with *featuregate.NotActiveError until
+// checkImportStagingEnabled refuses with *feature.NotActiveError until
 // every replica of this shard's group can apply protocol.OpImportStage:
 // go-quicraft replays a group's committed log to catch up a new member, so
 // an opcode applied under a narrower membership that already used it would
@@ -107,7 +108,7 @@ func callerIdentity(ctx context.Context) (tenantID, subject string) {
 func (s *BatchService) checkImportStagingEnabled(ctx context.Context) error {
 	gated, ok := s.host.(FeatureGatedHost)
 	if ok && !gated.FeatureEnabled(s.shardID, featuregate.ImportStaging) {
-		return &featuregate.NotActiveError{Feature: featuregate.ImportStaging, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.ImportStaging, ShardID: s.shardID}
 	}
 	_ = ctx
 	return nil

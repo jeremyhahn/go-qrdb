@@ -17,7 +17,7 @@ package service
 import (
 	"strconv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 // LogFeatureNotActiveError is returned by a LogService write while a cluster
@@ -58,7 +58,7 @@ func (e *BarrierDatabaseLogNotSupportedError) Error() string {
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64
-	Feature  featuregate.Feature
+	Feature  feature.Feature
 }
 
 func (e *LogFeatureNotActiveError) Error() string {

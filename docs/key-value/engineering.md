@@ -247,6 +247,14 @@ sweep becoming an enumeration of the internal keyspace.
   zero-length value for the second; `Exists` is false and true respectively.
   This is a promise about the read plane, not about any one state machine —
   see [Point reads and absence](#point-reads-and-absence).
+- **A `Get` issued after `Delete` has returned reports not-found.** On every
+  storage engine (memory, file, pebble, objstore) and every transport, the
+  answer is the typed `*transport.KeyNotFoundError` and `Exists` is false,
+  never a read failure: `Delete` returns only once applied, `Get` is a
+  linearizable read, and every engine maps its backend's own not-found to an
+  absent key. `TestDeleteThenGetIsTypedNotFound` in `sdk/go/conformance`
+  holds it over 50 rounds per cell, for short keys and for keys long enough
+  that objstore stores them under a hashed name (#1163).
 - **A refusal never costs the shard its reads.** Raft treats any non-nil error
   out of `Update` as a fatal apply failure: `lastApplied` stops advancing, and
   every subsequent linearizable read on that shard — on any engine sharing it,
@@ -644,7 +652,7 @@ boundary as a typed value and is mapped per transport by
 | `Compact` to a revision below 1 | `service.CompactRevisionInvalidError` | **yes** |
 | `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
 | `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |
-| `Compact` before every replica of the group supports per-database compaction | `featuregate.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
+| `Compact` before every replica of the group supports per-database compaction | `feature.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
 | As-of read against a non-MVCC state machine | `service.MVCCBackendRequiredError` (501 / `UNIMPLEMENTED`) | **yes** |
 | Restore naming a reserved prefix or key | refused, HTTP 403 equivalent, **no override** | **yes** |
 | Restore with no scope or both scopes | refused | **yes** |
@@ -817,7 +825,7 @@ consumes no revision, fires no watch and is never itself compacted.
   policy, recording a sample -- is `protocol.OpCompactionState` (16), proposed
   to the database's own group and applied in the apply batch, so every replica
   holds the same record. It is proposed only once the cluster feature
-  `prefix-compaction` is activated (`featuregate.NotActiveError` before),
+  `prefix-compaction` is activated (`feature.NotActiveError` before),
   the gate that carries `OpMVCCCompactPrefix` too. A state machine that does
   not apply it -- the pebble KV state machine, the KV engine, the state
   machines of `pkg/statemachine` -- refuses it as an unknown opcode. Such

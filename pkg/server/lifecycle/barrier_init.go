@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -210,7 +211,7 @@ func (t tenantInitBook) TenantInit(ctx context.Context, tenantID string) (tenant
 // perNodeBarrierKeysRequired is the per-node-barrier-keys activation check
 // for host: nil on a host that gates nothing (a standalone node, whose groups
 // hold only this binary), otherwise one that refuses with
-// *featuregate.NotActiveError until the cluster has activated the feature. A
+// *feature.NotActiveError until the cluster has activated the feature. A
 // single-member cluster activates at its first check.
 func perNodeBarrierKeysRequired(host service.Host) func() error {
 	gated, ok := host.(service.FeatureGatedHost)
@@ -222,7 +223,7 @@ func perNodeBarrierKeysRequired(host service.Host) func() error {
 		if gated.FeatureEnabled(0, featuregate.PerNodeBarrierKeys) {
 			return nil
 		}
-		return &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
+		return &feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
 	}
 }
 

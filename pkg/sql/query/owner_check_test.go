@@ -17,10 +17,14 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ownerCatalog is a catalog of three KV databases: acme's, globex's, and the
@@ -86,5 +90,87 @@ func TestExecute_WithoutSharedDefault_EveryNameIsOwnerChecked(t *testing.T) {
 	var notFound *database.NotFoundError
 	if _, err := svc.Execute(authedContext("acme"), "shared", "SELECT 1"); !errors.As(err, &notFound) {
 		t.Fatalf("acme on a system database = %v, want *database.NotFoundError", err)
+	}
+}
+
+// pairCatalog is a catalog keyed by (tenant, name), as the real one is: the
+// owner-checked read resolves the pair, and the name-only read answers
+// *database.AmbiguousNameError once two tenants hold a name, as
+// database.Manager.Get does.
+type pairCatalog struct {
+	service.DatabaseServicer
+	sql map[string]map[string]*database.SQLConfig // owner -> name -> settings
+}
+
+func (c *pairCatalog) Get(name string) (*database.DatabaseInfo, error) {
+	var found *database.DatabaseInfo
+	for owner, dbs := range c.sql {
+		if _, ok := dbs[name]; !ok {
+			continue
+		}
+		if found != nil {
+			return nil, &database.AmbiguousNameError{Name: name}
+		}
+		found = c.info(owner, name)
+	}
+	if found == nil {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return found, nil
+}
+
+func (c *pairCatalog) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
+	owner := tenantid.Normalize(tenant.FromContext(ctx))
+	if _, ok := c.sql[owner][name]; !ok {
+		return nil, &database.NotFoundError{Name: name}
+	}
+	return c.info(owner, name), nil
+}
+
+func (c *pairCatalog) info(owner, name string) *database.DatabaseInfo {
+	info, _ := kvDB(name)
+	info.TenantID = owner
+	info.SQL = c.sql[owner][name]
+	return info
+}
+
+var _ service.DatabaseServicer = (*pairCatalog)(nil)
+
+// TestDatabaseSQLConfig_TwoTenantsSharingANameEachResolveTheirOwn: a name two
+// tenants hold resolves to the caller's own database, the shared default
+// included -- a tenant that owns a database of the shared default's name
+// reaches its own, and one that does not reaches the system tenant's.
+func TestDatabaseSQLConfig_TwoTenantsSharingANameEachResolveTheirOwn(t *testing.T) {
+	pessimistic := &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic}
+	optimistic := &database.SQLConfig{Concurrency: database.ConcurrencyOptimistic}
+	catalog := &pairCatalog{sql: map[string]map[string]*database.SQLConfig{
+		"acme":          {"orders": pessimistic, "shared": optimistic},
+		"globex":        {"orders": optimistic},
+		tenantid.System: {"shared": pessimistic},
+	}}
+	svc := NewService(newMockKV(), catalog, WithSharedDefaultDatabase("shared")).(*sqlService)
+
+	tests := []struct {
+		tenant, name string
+		want         *database.SQLConfig
+	}{
+		{"acme", "orders", pessimistic},
+		{"globex", "orders", optimistic},
+		{"acme", "shared", optimistic},
+		{"globex", "shared", pessimistic},
+		{"initech", "orders", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tenant+"/"+tt.name, func(t *testing.T) {
+			if got := svc.databaseSQLConfig(tt.tenant, tt.name); got != tt.want {
+				t.Fatalf("databaseSQLConfig(%q, %q) = %+v, want %+v", tt.tenant, tt.name, got, tt.want)
+			}
+		})
+	}
+	if _, err := svc.Execute(authedContext("acme"), "orders", "SELECT 1"); err != nil {
+		t.Fatalf("acme's own orders: %v", err)
+	}
+	if _, err := svc.Execute(authedContext("globex"), "shared", "SELECT 1"); err != nil {
+		t.Fatalf("the shared default through the system tenant: %v", err)
 	}
 }

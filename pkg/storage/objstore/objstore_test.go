@@ -51,6 +51,16 @@ func TestNew_UnsupportedProvider(t *testing.T) {
 	assert.Equal(t, unknown, upErr.Provider)
 }
 
+// TestNew_LocalWithoutPath pins that a registered provider refusing its
+// configuration surfaces as a configuration error, not as an unsupported
+// provider.
+func TestNew_LocalWithoutPath(t *testing.T) {
+	_, err := New("local", map[string]string{})
+	require.Error(t, err)
+	var upErr *UnsupportedProviderError
+	assert.False(t, errors.As(err, &upErr), "local without a path = %v, want a config error", err)
+}
+
 func TestSetGetDelete(t *testing.T) {
 	e := newMemEngine(t)
 

@@ -100,6 +100,27 @@ exactly where it is.
 qrdb --database billing kv list invoices/
 ```
 
+## Reading a key's version
+
+A key's **version** counts its writes since it was created: 1 after the first
+write, 2 after the next, and so on. It is the number a transaction's `version` compare reads, so you can read it, then
+write only if nobody wrote in between.
+
+Three calls report it, and they are the supported ways to get it — the version
+they report is the same number for the same key:
+
+| Call | CLI | SDK |
+|---|---|---|
+| a put that returns what it wrote | `qrdb kv put <key> <value> --revision` | `MVCC().PutWithLease(ctx, key, value, 0)` |
+| a read with its metadata | `qrdb kv get <key> --revision` | `MVCC().GetRevision(ctx, key)` |
+| a batch of get operations | `qrdb batch execute --file ops.json` | `Batch().ExecuteBatch(ctx, ops)` with `get` ops |
+
+A plain `kv put` and `kv get` return no version. With `raft.sm_type: mvcc`
+every call also reports the key's create and modification revisions. A daemon
+that keeps no revision history counts no writes: its `version` compare reads
+only whether the key exists (0 absent, 1 present), so `kv put --revision` there
+reports version 1 and no revisions.
+
 ## Claiming a key so exactly one caller wins
 
 When two processes might write the same key at the same time, reading it and

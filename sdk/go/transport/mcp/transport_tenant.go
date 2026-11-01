@@ -97,6 +97,10 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"id":   req.ID,
@@ -117,6 +121,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		"admin_cert_pem":    req.AdminCertPEM,
 		"admin_chain_pem":   req.AdminChainPEM,
 		"trust_anchors_pem": req.TrustAnchorsPEM,
+		"so_username":       req.SOUsername,
+		"so_csr_pem":        req.SOCSRPEM,
+		"so_cert_pem":       req.SOCertPEM,
+		"so_chain_pem":      req.SOChainPEM,
+		"so_pin":            req.SOPin,
 	} {
 		if value != "" {
 			args[name] = value
@@ -134,14 +143,15 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 
 	var result struct {
-		Tenant mcpTenantInfo                   `json:"tenant"`
-		Admin  transport.TenantAdminCredential `json:"admin"`
+		Tenant mcpTenantInfo                    `json:"tenant"`
+		Admin  transport.TenantAdminCredential  `json:"admin"`
+		SO     *transport.TenantAdminCredential `json:"so,omitempty"`
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin}, nil
+	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin, SO: result.SO}, nil
 }
 
 // trustAnchorTool calls a trust-anchor tool and decodes the tenant's
@@ -381,6 +391,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 
 	args := map[string]any{
 		"id":                           req.TenantID,
@@ -506,6 +519,92 @@ func tenantBarrierInitRound(ctx context.Context, client *mcpclient.Client, captu
 	var wire mcpTenantBarrierInitResponse
 	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       wire.TenantID,
+		Strategy:       wire.Strategy,
+		ShareCount:     wire.ShareCount,
+		Threshold:      wire.Threshold,
+		TotalShares:    wire.TotalShares,
+		Holders:        wire.Holders,
+		Roster:         wire.Roster,
+		UnsealKeyCheck: wire.UnsealKeyCheck,
+		AdminPending:   wire.AdminPending,
+	}, nil
+}
+
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node: the qrdb_tenant_barrier_signed_init_begin tool.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &nilRequestError{Method: "TenantBarrierSignedInitBegin"}}
+	}
+	args := map[string]any{
+		"tenant_id":  req.TenantID,
+		"public_key": base64.StdEncoding.EncodeToString(req.PublicKey),
+	}
+	optional := map[string]any{"strategy": req.Strategy, "key_ref": req.KeyRef, "policy": req.Policy}
+	for name, value := range optional {
+		if value != "" {
+			args[name] = value
+		}
+	}
+	if req.Threshold != 0 {
+		args["threshold"] = req.Threshold
+	}
+	if req.Shares != 0 {
+		args["shares"] = req.Shares
+	}
+	if len(req.Officers) > 0 {
+		encoded, err := json.Marshal(req.Officers)
+		if err != nil {
+			return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &jsonEncodeError{Err: err}}
+		}
+		args["officers"] = string(encoded)
+	}
+	text, err := t.callTool(ctx, "qrdb_tenant_barrier_signed_init_begin", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: err}
+	}
+	var resp transport.TenantBarrierSignedInitBeginResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &resp, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it: the
+// qrdb_tenant_barrier_signed_init_complete tool.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &nilRequestError{Method: "TenantBarrierSignedInitComplete"}}
+	}
+	args := map[string]any{
+		"tenant_id": req.TenantID,
+		"reference": base64.StdEncoding.EncodeToString(req.Reference),
+		"signature": base64.StdEncoding.EncodeToString(req.Signature),
+	}
+	if len(req.Passphrase) > 0 {
+		putSecret(args, "passphrase", req.Passphrase)
+	}
+	text, err := t.callTool(ctx, "qrdb_tenant_barrier_signed_init_complete", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: err}
+	}
+	var wire mcpTenantBarrierInitResponse
+	if jsonErr := json.Unmarshal([]byte(text), &wire); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 	return &transport.TenantBarrierInitResponse{
 		TenantID:       wire.TenantID,

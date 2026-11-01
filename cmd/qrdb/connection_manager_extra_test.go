@@ -21,6 +21,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
@@ -88,6 +89,10 @@ func TestConnectionManager_GetState_AfterConnect(t *testing.T) {
 	if err := m.SaveProfile(p); err != nil {
 		t.Fatalf("SaveProfile: %v", err)
 	}
+	// A saved profile that was never connected has no state.
+	if s := m.GetState("ext-getstate"); s != nil {
+		t.Fatalf("GetState before Connect = %+v, want nil", s)
+	}
 
 	// Connect attempts to connect — even if it fails it stores the connection.
 	_, _ = m.Connect("ext-getstate")
@@ -130,6 +135,9 @@ func TestConnectionManager_Disconnect_WithClient(t *testing.T) {
 	if err := m.Disconnect("with-client-conn"); err != nil {
 		t.Fatalf("Disconnect with client: %v", err)
 	}
+	if _, ok := m.connections.Load("with-client-conn"); ok {
+		t.Fatal("expected Disconnect to remove the managed connection")
+	}
 }
 
 // TestConnectionManager_Disconnect_WithNilClient verifies Disconnect works
@@ -147,6 +155,9 @@ func TestConnectionManager_Disconnect_WithNilClient(t *testing.T) {
 	// Disconnect should succeed without panicking.
 	if err := m.Disconnect("nil-client-conn"); err != nil {
 		t.Fatalf("Disconnect with nil client: %v", err)
+	}
+	if _, ok := m.connections.Load("nil-client-conn"); ok {
+		t.Fatal("expected Disconnect to remove the managed connection")
 	}
 }
 
@@ -180,8 +191,14 @@ func TestConnectionManager_Startup_WithProfile(t *testing.T) {
 		t.Fatalf("SaveProfile: %v", err)
 	}
 
-	// startup will attempt auto-connect and log a warning for the failure.
-	m.startup(context.Background())
+	// A fresh manager's startup loads the saved profile from disk, then
+	// attempts auto-connect and logs a warning for the failure.
+	m2 := NewConnectionManagerBinding(testLogger(t))
+	m2.startup(context.Background())
+	profiles := m2.ListProfiles()
+	if len(profiles) != 1 || profiles[0].ID != p.ID {
+		t.Fatalf("expected startup to load profile %q, got %+v", p.ID, profiles)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +255,31 @@ func TestConnectionManager_ProbeBarrierStatus_Error(t *testing.T) {
 	// The embedded mock barrier returns an error → should fall back to connected.
 	if status != connectionStatusConnected && status != connectionStatusNeedsInit && status != connectionStatusSealed {
 		t.Errorf("unexpected status: %q", status)
+	}
+}
+
+// TestConnectionManager_ProbeBarrierStatus_ServiceErrorAssumesConnected
+// requires a barrier probe that fails for any reason but a sealed barrier
+// to report the profile as connected.
+func TestConnectionManager_ProbeBarrierStatus_ServiceErrorAssumesConnected(t *testing.T) {
+	m := newTestConnectionManager(t)
+	m.ctx = context.Background()
+
+	tr, err := embedded.New(&noopKVService{}, newMockAdminService(),
+		embedded.WithBarrierService(&mockBarrierService{
+			statusFn: func(context.Context) (*service.BarrierStatusInfo, error) { return nil, errBarrierTest },
+		}))
+	if err != nil {
+		t.Fatalf("embedded.New: %v", err)
+	}
+	cl, err := sdk.NewClient(tr)
+	if err != nil {
+		t.Fatalf("sdk.NewClient: %v", err)
+	}
+
+	p := ConnectionProfile{ID: "probe-test", Name: "Probe Test", Type: connectionTypeExternal}
+	if status := m.probeBarrierStatus(cl, p); status != connectionStatusConnected {
+		t.Errorf("status = %q, want %q", status, connectionStatusConnected)
 	}
 }
 

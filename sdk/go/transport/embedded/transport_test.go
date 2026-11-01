@@ -693,6 +693,27 @@ func TestMintJoinToken_AfterClose(t *testing.T) {
 	}
 }
 
+func TestMintJoinToken_NilRequest(t *testing.T) {
+	reached := false
+	adminSvc := &mockAdminService{
+		mintJoinTokenFn: func(context.Context, string, time.Duration) (string, time.Time, error) {
+			reached = true
+			return "minted-token", time.Now(), nil
+		},
+	}
+	tr, _ := New(newMockKVService(), adminSvc)
+
+	_, err := tr.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if reached {
+		t.Fatal("a nil request reached the join-token minter")
+	}
+}
+
 func TestAddMember_Success(t *testing.T) {
 	adminSvc := &mockAdminService{}
 	tr, _ := New(newMockKVService(), adminSvc)

@@ -52,7 +52,7 @@ type storeResolver struct {
 // RaftBackendFactory: a dedicated shard's engines, resolved even while its
 // replicated placement entry is marked dropping (see FenceServices).
 type raftFenceSource interface {
-	FenceServices(ctx context.Context, tenantID, db string) (*DatabaseServices, error)
+	FenceServices(ctx context.Context, tenantID, db, incarnation string) (*DatabaseServices, error)
 }
 
 // Compile-time check: the production source is the factory.
@@ -136,8 +136,11 @@ func (r *storeResolver) ReclaimTarget(ctx context.Context, tenantID string) (ser
 // while it is being created, before its shard is placed, and there is no
 // marker to set in a shard that does not exist yet; a drop refuses it (see
 // KeyspaceReclaimService.FenceDatabaseKeyspace) rather than fencing a store
-// the database's writes are not guarded in.
-func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db string) (service.FenceStore, bool, error) {
+// the database's writes are not guarded in. A shard the name resolves to
+// while the catalog records another incarnation, or none, is not
+// incarnation's: it is refused with *database.DropSupersededError (see
+// RaftBackendFactory.FenceServices).
+func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db, incarnation string) (service.FenceStore, bool, error) {
 	if r.tenantSvc == nil || tenantID == "" || tenantID == r.systemTenant {
 		return service.FenceStore{}, false, nil
 	}
@@ -166,7 +169,7 @@ func (r *storeResolver) FenceTarget(ctx context.Context, tenantID, db string) (s
 		if r.raft == nil {
 			return service.FenceStore{}, true, &rest.IsolationBackendUnavailableError{TenantID: tenantID, Isolation: string(isolation)}
 		}
-		svcs, err := r.raft.FenceServices(ctx, tenantID, db)
+		svcs, err := r.raft.FenceServices(ctx, tenantID, db, incarnation)
 		if errors.Is(err, ErrRaftDatabaseUnknown) {
 			return service.FenceStore{PerDatabase: true}, true, nil
 		}

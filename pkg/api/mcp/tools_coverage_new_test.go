@@ -99,9 +99,9 @@ func (m *covMockBarrierSvc) BarrierDeleteRecoveryKeys(ctx context.Context) error
 	return nil
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (m *covMockBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (m *covMockBarrierSvc) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 // BarrierClusterUnseal answers as a node without cluster sealing does.
 func (m *covMockBarrierSvc) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {
@@ -241,6 +241,14 @@ func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id string, pas
 }
 func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+
+func (m *covMockTenantSvc) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *covMockTenantSvc) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
 }
 func (m *covMockTenantSvc) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {
 	if m.barrierUnsealFn != nil {
@@ -464,6 +472,7 @@ func TestCovBarrierTools_Registration(t *testing.T) {
 	names := []string{
 		"qrdb_barrier_initialize",
 		"qrdb_barrier_unseal",
+		"qrdb_barrier_change_passphrase",
 		"qrdb_barrier_seal",
 		"qrdb_barrier_status",
 		"qrdb_barrier_cluster_unseal",
@@ -1313,8 +1322,8 @@ func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantBarrierTools(svc, allowAllTenantBarrierAuthz())
 	// init begin/complete, unseal, seal, status + the eight share-holder tools.
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 tools, got %d", len(tools))
+	if len(tools) != 15 {
+		t.Fatalf("expected 15 tools, got %d", len(tools))
 	}
 }
 

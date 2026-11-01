@@ -29,7 +29,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
-import { DesktopOnlyError } from '../src/errors.js';
+import { ConfigError, DesktopOnlyError, TransportError } from '../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Routing fetch mock
@@ -40,6 +40,7 @@ interface CapturedRequest {
     path: string;
     method: string;
     body: unknown;
+    headers: Record<string, string>;
 }
 
 /** A per-route response: either a JSON body (status 200) or an explicit status. */
@@ -75,7 +76,8 @@ function installRouter(routes: Record<string, RouteResponse>): {
                     body = init.body;
                 }
             }
-            calls.push({ url, path, method, body });
+            const headers = Object.fromEntries(new Headers(init?.headers).entries());
+            calls.push({ url, path, method, body, headers });
 
             const key = `${method} ${path}`;
             counts[key] = (counts[key] ?? 0) + 1;
@@ -171,6 +173,127 @@ describe('seal client – initializeShamir', () => {
         expect(calls.some((c) => c.path.includes('root-token'))).toBe(false);
 
         expect(result).toEqual({ rootToken: '', threshold: 3, shareCount: 5 });
+    });
+});
+
+describe('seal client – changePassphrase', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('posts both passphrases base64 with the SO PIN in the body and header', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/barrier/change-passphrase': { status: 204 },
+        });
+
+        await client.seal.changePassphrase('old-pass', 'new-pass', 'SO123');
+
+        const change = calls.find((c) => c.path === '/v1/barrier/change-passphrase');
+        expect(change?.method).toBe('POST');
+        expect(change?.body).toEqual({ current: 'b2xkLXBhc3M=', next: 'bmV3LXBhc3M=', so_pin: 'SO123' });
+        expect(change?.headers['x-qrdb-so-pin']).toBe('SO123');
+        expect(change?.headers['content-type']).toBe('application/json');
+    });
+
+    it('sends no SO PIN header or body field when none is given', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/barrier/change-passphrase': { status: 204 },
+        });
+
+        await client.seal.changePassphrase('old-pass', 'new-pass');
+
+        const change = calls.find((c) => c.path === '/v1/barrier/change-passphrase');
+        expect(change?.headers['x-qrdb-so-pin']).toBeUndefined();
+        expect(change?.body).toEqual({ current: 'b2xkLXBhc3M=', next: 'bmV3LXBhc3M=' });
+    });
+
+    // Models the server with an SO PIN provisioned: the authorization
+    // middleware checks X-QRDB-SO-PIN, then handleBarrierChangePassphrase
+    // checks the body's so_pin through pin.RequireSOPIN; either one missing
+    // or wrong is a 401.
+    function installProvisionedPINServer(pin: string): void {
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            const url = typeof input === 'string' ? input : (input as URL).toString();
+            if (new URL(url).pathname !== '/v1/barrier/change-passphrase') {
+                return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            const header = new Headers(init?.headers).get('X-QRDB-SO-PIN');
+            const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { so_pin?: string }) : {};
+            if (header !== pin || body.so_pin !== pin) {
+                return new Response(JSON.stringify({ error: 'pin: SO PIN required' }), {
+                    status: 401,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return new Response(null, { status: 204 });
+        });
+    }
+
+    it('passes both SO PIN gates of a provisioned server with the correct PIN', async () => {
+        const client = await connectedClient();
+        installProvisionedPINServer('SO123');
+
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass', 'SO123')).resolves.toBeUndefined();
+    });
+
+    it('is refused by a provisioned server with a wrong or missing PIN', async () => {
+        const client = await connectedClient();
+        installProvisionedPINServer('SO123');
+
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass', 'SO999')).rejects.toThrow();
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass')).rejects.toThrow();
+    });
+
+    it('rejects when the server refuses the current passphrase', async () => {
+        const client = await connectedClient();
+        installRouter({
+            'POST /v1/barrier/change-passphrase': {
+                status: 403,
+                body: { error: 'seal: credential mismatch' },
+            },
+        });
+
+        await expect(client.seal.changePassphrase('wrong', 'new-pass', 'SO123')).rejects.toThrow();
+    });
+
+    it('refuses an http:// base URL before any request, with or without an SO PIN', async () => {
+        installRouter({ 'GET /health': { body: { status: 'ok' } } });
+        const client = new RestClient('http://localhost:63002');
+        await client.connection.connect('http://localhost:63002');
+        const { calls } = installRouter({ 'POST /v1/barrier/change-passphrase': { status: 204 } });
+
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass', 'SO123'))
+            .rejects.toBeInstanceOf(ConfigError);
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass'))
+            .rejects.toBeInstanceOf(ConfigError);
+
+        // Nothing was transmitted: no passphrase and no PIN left the process.
+        expect(calls).toEqual([]);
+    });
+
+    it('fails on a redirect instead of resending the secrets to its target', async () => {
+        const client = await connectedClient();
+        // Models fetch's redirect modes: 'error' rejects on a 3xx, as the
+        // Fetch standard requires, and 'follow' (the default) resends the
+        // 308's body to the Location origin.
+        const sent: { url: string; redirect: RequestRedirect | undefined; body: unknown }[] = [];
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+            const url = typeof input === 'string' ? input : (input as URL).toString();
+            sent.push({ url, redirect: init?.redirect, body: init?.body });
+            if (init?.redirect === 'error') {
+                throw new TypeError('fetch failed: unexpected redirect');
+            }
+            sent.push({ url: 'https://attacker.example.com/v1/barrier/change-passphrase', redirect: init?.redirect, body: init?.body });
+            return new Response(null, { status: 204 });
+        });
+
+        await expect(client.seal.changePassphrase('old-pass', 'new-pass', 'SO123'))
+            .rejects.toBeInstanceOf(TransportError);
+
+        // One request, to the configured origin, sent with redirect 'error'.
+        expect(sent.map((s) => [s.url, s.redirect])).toEqual([
+            [`${BASE}/v1/barrier/change-passphrase`, 'error'],
+        ]);
     });
 });
 

@@ -123,6 +123,9 @@ func (t *Transport) UpdatePool(ctx context.Context, req *transport.UpdateVolumeP
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdatePool", Err: &transport.NilRequestError{}}
+	}
 	if t.volumeSvc == nil {
 		return nil, &NilServiceError{Service: "volume.Service"}
 	}

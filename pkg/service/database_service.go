@@ -1338,9 +1338,11 @@ func (s *DatabaseService) UpdateSQL(name string, sqlCfg *database.SQLConfig) (*d
 // caller which names other tenants hold. The system tenant owns the databases
 // whose TenantID is the system tenant or empty (the bootstrap and legacy
 // ones).
-func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
-	_, err := s.ownedDatabase(ctx, name)
-	return err
+//
+// It returns the database, whose record names the tenant its barrier is
+// keyed by.
+func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) (*database.Database, error) {
+	return s.ownedDatabase(ctx, name)
 }
 
 // ownedDatabase returns the named database when the caller's tenant
@@ -1362,36 +1364,37 @@ func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
 	// Authorize ownership BEFORE consulting the barrier manager: a non-owning
 	// tenant must be answered as if the database did not exist, and must never
 	// learn whether the target database or its barrier even exists.
-	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+	db, err := s.authorizeDatabaseTenant(ctx, name)
+	if err != nil {
 		return err
 	}
 	// A Shamir barrier is sealed by a quorum of its holders
 	// (DatabaseBarrierQuorumSubmit), never by one caller -- refused before
 	// anything is recorded.
-	if s.barrierMgr != nil && s.barrierMgr.RequiresQuorum(name) {
+	if s.barrierMgr != nil && s.barrierMgr.RequiresQuorum(name, db.TenantID()) {
 		return &database.BarrierSealError{Name: name, Err: seal.ErrShamirBarrierRequiresQuorum}
 	}
-	return s.sealOwnedDatabase(ctx, name)
+	return s.sealOwnedDatabase(ctx, db)
 }
 
-// sealOwnedDatabase seals name, which the caller's tenant owns
+// sealOwnedDatabase seals db, which the caller's tenant owns
 // (authorizeDatabaseTenant has checked that): cluster-wide through the sealer
 // when active -- the record first, then every node holding the database's
 // barrier seals it -- on this node only otherwise, ending its streams.
-func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, name string) error {
+func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, db *database.Database) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
 	if clusterseal.ActiveIn(s.sealer) {
 		// A database with no barrier of its own has no key to wipe and none
 		// to unseal with: a record sealing it could never be cleared.
-		if _, err := s.barrierMgr.BarrierStatus(name); err != nil {
+		if _, err := s.barrierMgr.BarrierStatus(db.Name(), db.TenantID()); err != nil {
 			return err
 		}
-		_, err := s.sealer.Seal(ctx, s.databaseBarrier(ctx, name), clusterseal.PrincipalFrom(ctx))
+		_, err := s.sealer.Seal(ctx, s.databaseBarrier(ctx, db.Name()), clusterseal.PrincipalFrom(ctx))
 		return err
 	}
-	if err := s.sealDatabaseHere(name); err != nil {
+	if err := s.sealDatabaseHere(db); err != nil {
 		return err
 	}
 	// A node-local seal ends the database's open streams and its tenant's
@@ -1399,7 +1402,7 @@ func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, name string) er
 	// the database marked, so a stream opening between the two finds it
 	// refused.
 	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
-		b := s.databaseBarrier(ctx, name)
+		b := s.databaseBarrier(ctx, db.Name())
 		streams.EndDatabase(b.Tenant(), b.Database(), &clusterseal.SealedError{Barrier: b})
 	}
 	return nil
@@ -1413,10 +1416,11 @@ func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, name string) er
 func (s *DatabaseService) SealDatabaseLocal(tenantID, name string) error {
 	// The drop fence does not hold back a seal: a database being dropped
 	// still has a key to wipe.
-	if _, err := s.manager.GetOwnedIgnoringFence(name, tenantID); err != nil {
+	db, err := s.manager.GetOwnedIgnoringFence(name, tenantID)
+	if err != nil {
 		return err
 	}
-	return s.sealDatabaseHere(name)
+	return s.sealDatabaseHere(db)
 }
 
 // SealBarrierDatabases seals every database barrier on this node and marks
@@ -1426,23 +1430,21 @@ func (s *DatabaseService) SealBarrierDatabases() error {
 	return s.manager.SealBarrierDatabases()
 }
 
-// sealDatabaseHere seals name's barrier on this node and marks the database
+// sealDatabaseHere seals db's barrier on this node and marks the database
 // sealed. Its callers have established whose database it is and carry the
 // authority to seal it: an owner's seal of a non-Shamir barrier, a completed
 // holder quorum, or a cluster seal record.
-func (s *DatabaseService) sealDatabaseHere(name string) error {
+func (s *DatabaseService) sealDatabaseHere(db *database.Database) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	if err := s.barrierMgr.SealAuthorized(name); err != nil {
+	if err := s.barrierMgr.SealAuthorized(db.Name(), db.TenantID()); err != nil {
 		return err
 	}
 	// Reflect the sealed state on the Database's own status so
 	// DatabaseInfo.Status (database info / database list) stays consistent
 	// with the barrier registry's authoritative sealed/unsealed state.
-	if db, err := s.manager.Get(name); err == nil {
-		db.SetStatus(database.StatusSealed)
-	}
+	db.SetStatus(database.StatusSealed)
 	return nil
 }
 
@@ -1451,31 +1453,31 @@ func (s *DatabaseService) sealDatabaseHere(name string) error {
 // the same call clears it; if the clear cannot be written the barrier is
 // sealed again and the call fails.
 func (s *DatabaseService) UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error {
-	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+	db, err := s.authorizeDatabaseTenant(ctx, name)
+	if err != nil {
 		return err
 	}
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	if err := s.barrierMgr.UnsealDatabase(ctx, name, creds); err != nil {
+	if err := s.barrierMgr.UnsealDatabase(ctx, name, db.TenantID(), creds); err != nil {
 		return err
 	}
-	if db, err := s.manager.Get(name); err == nil {
-		db.SetStatus(database.StatusOpen)
-	}
-	return s.clearDatabaseSeal(ctx, name)
+	db.SetStatus(database.StatusOpen)
+	return s.clearDatabaseSeal(ctx, db)
 }
 
 // DatabaseBarrierStatus returns the barrier status for the named database,
 // owner only, with its cluster seal state.
 func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*DatabaseBarrierStatusInfo, error) {
-	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+	db, err := s.authorizeDatabaseTenant(ctx, name)
+	if err != nil {
 		return nil, err
 	}
 	if s.barrierMgr == nil {
 		return nil, &BarrierManagerNotConfiguredError{}
 	}
-	st, err := s.barrierMgr.BarrierStatus(name)
+	st, err := s.barrierMgr.BarrierStatus(name, db.TenantID())
 	if err != nil {
 		return nil, err
 	}
@@ -1991,9 +1993,9 @@ func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.Databas
 // entry exists for (info.TenantID, info.Name). The placement table is the
 // sole cluster-wide source of truth for a dedicated-raft database's
 // replication factor: info.Replicas as sourced from db.Info() only reflects
-// the local manager's meta.json, which is written once at create time on the
-// node that ran the create and is never touched by a ScaleForTenant call
-// executed on a different node (the dedicated group's current leader, which
+// the configuration this node opened the database with from its catalog
+// record, which a ScaleForTenant call executed on a different node does not
+// refresh (the dedicated group's current leader, which
 // commonly is not the create node -- see ScaleForTenant). A no-op when the
 // placement subsystem is not configured, the database is not raft-backed, or
 // the database has no placement entry (predates placement, or was created
@@ -2494,7 +2496,7 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 // (the local per-node manager singleton happens to hold this database), its
 // info is enriched with db.Info() and Replicas/ShardID are refreshed from p
 // so the response always reports the just-applied (or concurrently changed)
-// replication factor rather than a possibly stale local meta.json snapshot.
+// replication factor rather than this node's possibly stale open copy of the catalog record.
 // When db is nil -- the common case for a distributed dedicated-raft
 // database, since a scale request executes on the dedicated group's CURRENT
 // leader, which very often never created the database in its own singleton
@@ -2635,8 +2637,8 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	// (current.RF) is the authoritative, cluster-wide value; a missing local
 	// manager entry must never fail an otherwise-successful scale.
 	if added > 0 && db != nil {
-		if err := s.manager.UpdateReplicas(name, current.RF); err != nil {
-			s.logger.Warn("database: local manager UpdateReplicas failed after scale-up (best-effort; the placement table's RF is authoritative)",
+		if err := s.manager.UpdateReplicasForTenant(ctx, name, current.RF); err != nil {
+			s.logger.Warn("database: local manager UpdateReplicasForTenant failed after scale-up (best-effort; the placement table's RF is authoritative)",
 				slog.String("tenant", tenantID),
 				slog.String("database", name),
 				slog.Any("error", err))
@@ -2657,7 +2659,7 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 // Raft goes first). Unlike scale-up's AddObserver, a RemoveFollowerNode error
 // fails the whole call (the placement still lists the replica, which keeps
 // running; the caller retries). Whatever prefix of
-// removals did succeed is still persisted (manager.UpdateReplicas + quota
+// removals did succeed is still persisted (manager.UpdateReplicasForTenant + quota
 // decrement for the actually-removed count), so a retry converges rather than
 // double-applying.
 func (s *DatabaseService) scaleDown(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, removeCount int) (*database.DatabaseInfo, error) {
@@ -2696,8 +2698,8 @@ func (s *DatabaseService) scaleDown(ctx context.Context, tenantID, name string, 
 		// best-effort display cache, never a requirement -- the placement
 		// table's RF (current.RF) is authoritative.
 		if db != nil {
-			if err := s.manager.UpdateReplicas(name, current.RF); err != nil {
-				s.logger.Warn("database: local manager UpdateReplicas failed after scale-down (best-effort; the placement table's RF is authoritative)",
+			if err := s.manager.UpdateReplicasForTenant(ctx, name, current.RF); err != nil {
+				s.logger.Warn("database: local manager UpdateReplicasForTenant failed after scale-down (best-effort; the placement table's RF is authoritative)",
 					slog.String("tenant", tenantID),
 					slog.String("database", name),
 					slog.Any("error", err))

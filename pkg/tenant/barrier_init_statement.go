@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -43,6 +44,15 @@ type BarrierInitBook interface {
 	// exactly the split this node prepared.
 	ClaimTenantShamirInit(ctx context.Context, tenantID string, prepared *seal.ShamirInitParams, statement []byte) error
 	TenantInit(ctx context.Context, tenantID string) (terms BarrierInitTerms, found bool, err error)
+	// PrepareTenantInit returns tenantID's unsigned epoch-1 statement naming
+	// signerSPKI as its signing key, encoded, and the message that key signs:
+	// the first half of TenantBarrierInitBegin. prepared is a Shamir init's
+	// split, nil for every other strategy.
+	PrepareTenantInit(tenantID string, strategyID seal.StrategyID, keyRef string, prepared *seal.ShamirInitParams, signerSPKI []byte, issuedAt time.Time) (statement, message []byte, err error)
+	// AttachTenantInit returns the encoded statement PrepareTenantInit
+	// returned, carrying signature, once it verifies under the key the
+	// statement names.
+	AttachTenantInit(statement, signature []byte) ([]byte, error)
 }
 
 // BarrierInitTerms is what a tenant barrier's verified init statement says
@@ -82,6 +92,9 @@ type barrierInitClaims struct {
 	// initLocks holds one *sync.Mutex per tenant, serializing this node's
 	// inits of that tenant's barrier: the owner's call and the watcher's.
 	initLocks sync.Map
+	// signedInits holds the statements TenantBarrierInitBegin issued and
+	// TenantBarrierInitComplete has not yet redeemed.
+	signedInits signedInitBook
 }
 
 // lockInit takes tenantID's init lock and returns its release.

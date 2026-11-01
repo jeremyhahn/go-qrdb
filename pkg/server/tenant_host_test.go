@@ -119,7 +119,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	dataRoot, tb := registerVolumeTenant(t, reg, "t1")
 	ctx := context.Background()
 
-	th, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, volTestLogger())
+	th, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}, nil, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestTenantHost_LifecycleAndDurability(t *testing.T) {
 	}
 
 	// Re-open at the same DataRoot: must succeed (lock released) and recover data.
-	th2, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, volTestLogger())
+	th2, err := newTenantHost(context.Background(), "t1", dataRoot, tb, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}, nil, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost (re-open): %v", err)
 	}
@@ -189,12 +189,12 @@ func TestTenantHost_FullEngineIsolationAndEncryption(t *testing.T) {
 	rootA, tbA := registerVolumeTenant(t, reg, "ta")
 	rootB, tbB := registerVolumeTenant(t, reg, "tb")
 
-	ha, err := newTenantHost(context.Background(), "ta", rootA, tbA, qrdbconfig.ImportSessionConfig{}, volTestLogger())
+	ha, err := newTenantHost(context.Background(), "ta", rootA, tbA, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}, nil, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(ta): %v", err)
 	}
 	defer func() { _ = ha.Close() }()
-	hb, err := newTenantHost(context.Background(), "tb", rootB, tbB, qrdbconfig.ImportSessionConfig{}, volTestLogger())
+	hb, err := newTenantHost(context.Background(), "tb", rootB, tbB, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}, nil, volTestLogger())
 	if err != nil {
 		t.Fatalf("newTenantHost(tb): %v", err)
 	}

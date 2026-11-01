@@ -81,6 +81,8 @@ func runHelper(mode string) int {
 			return 1
 		}
 		os.Stdout.WriteString(dir + "\n")
+	case collideHelperMode:
+		return runCollideHelper()
 	case argvHelperMode:
 		// The argv the harness actually launched the daemon with.
 		os.Stdout.WriteString(strings.Join(os.Args[1:], "\n") + "\n")

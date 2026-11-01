@@ -15,17 +15,18 @@
 package database
 
 import (
+	"context"
 	"testing"
 )
 
 // TestManager_ConfigUpdateKeepsTheDataDirectory pins that rewriting a
-// database's meta.json after a configuration update keeps its dedicated data
+// database's catalog record after a configuration update keeps its dedicated data
 // directory. Dropping it reopened the database on the shared default store
 // after the next restart: its data out of reach, and an encrypted database
 // refused outright (a barrier needs a dedicated store).
 func TestManager_ConfigUpdateKeepsTheDataDirectory(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir)
+	mgr := newCatalogManager(nil, dataDir)
 	cfg := validDedicatedMemoryConfig(t, "dedicated")
 	if _, err := mgr.Create(cfg); err != nil {
 		t.Fatal(err)
@@ -37,9 +38,9 @@ func TestManager_ConfigUpdateKeepsTheDataDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened := NewManager(nil, dataDir)
+	reopened := newCatalogManager(nil, dataDir)
 	defer func() { _ = reopened.Close() }()
-	db, err := reopened.Open("dedicated")
+	db, err := reopened.Open(context.Background(), "", "dedicated")
 	if err != nil {
 		t.Fatal(err)
 	}

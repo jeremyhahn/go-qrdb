@@ -92,7 +92,12 @@ COVER_GOTEST  := $(GO) test -race -v -timeout=$(GOTEST_TIMEOUT)
 # qrdbd count a CI leg starts (GOMAXPROCS=8, go test's default otherwise)
 # within the leg's CPU budget.
 INT_PARALLEL  ?= 5
-INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -parallel $(INT_PARALLEL)
+# INT_PROCS is the per-feature run's -p: how many packages go test builds and
+# runs at once. A feature's tests are one package, so it bounds the build, and
+# 4 keeps a shard's compile within half its GOMAXPROCS=8 on a runner host the
+# other jobs share (#1286).
+INT_PROCS     ?= 4
+INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -p $(INT_PROCS) -parallel $(INT_PARALLEL)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt
@@ -1465,7 +1470,7 @@ integration-test:
 		echo "==> integration-test IT_FEATURE=$(IT_FEATURE): mapped files contain no Test function"; \
 		exit 0; \
 	fi; \
-	$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?; \
+	$(it-image-step); \
 	echo "==> Running integration tests in $(IT_IMAGE) (project $(IT_PROJECT))..."; \
 	status=0; \
 	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
@@ -1552,8 +1557,9 @@ INTEGRATION_RUN ?=
 #
 # The stage's resource budget (#682). It applies to the integration-tests
 # compose service: that container holds the `go test` process and every qrdbd
-# and qrdb process the tests spawn. CI's per-feature jobs run outside compose
-# and carry the GOMAXPROCS half of it as job env (ci.yml, integration-features).
+# and qrdb process the tests spawn. CI's per-feature shards (ci.yml,
+# integration-features) run in the compose integration service instead, which
+# carries the GOMAXPROCS half of it in its environment (see IT_CMD).
 #
 # CLUSTER_CPUS caps the container at that many CPUs (`cpus:`, docker --cpus).
 # Every Go process in it then sizes GOMAXPROCS to the cap instead of the host's
@@ -1848,12 +1854,23 @@ perf-docs: _kvcompare-build
 # Coverage
 # ============================================================================
 
-# check-coverage: extract percentage from coverage profile and fail if below threshold
+# check-coverage: extract the total from a coverage profile and fail if it is
+# below COVER_MIN, or if there is no total to compare: a missing, empty or
+# unreadable profile fails rather than passing.
 # Usage: $(call check-coverage,profile.out,package-name)
+#
+# awk does the comparison because it is in the CI image (gawk) and in every
+# POSIX shell environment; bc is not in the image, and an absent bc made this
+# check pass at any figure, 0% included (found by lane sdkfix2).
+# test/buildgates/check_coverage_test.go drives this macro through make.
 define check-coverage
-	@COVERAGE=$$($(GO) tool cover -func=$(1) | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
+	@COVERAGE=$$($(GO) tool cover -func=$(1) | awk '$$1 == "total:" { sub(/%$$/, "", $$NF); print $$NF }'); \
+	if ! awk -v c="$${COVERAGE}" 'BEGIN { exit !(c ~ /^[0-9]+(\.[0-9]+)?$$/) }'; then \
+		echo "FAIL: $(2) coverage profile $(1) has no total to compare"; \
+		exit 1; \
+	fi; \
 	echo "$(2) coverage: $${COVERAGE}%"; \
-	if [ $$(echo "$${COVERAGE} < $(COVER_MIN)" | bc -l) -eq 1 ]; then \
+	if awk -v c="$${COVERAGE}" -v m="$(COVER_MIN)" 'BEGIN { exit !(c + 0 < m + 0) }'; then \
 		echo "FAIL: $(2) coverage $${COVERAGE}% is below minimum $(COVER_MIN)%"; \
 		exit 1; \
 	fi
@@ -1894,7 +1911,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/pkg/database/databasetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -2355,7 +2372,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches test-in-toolchain-image check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2480,13 +2497,14 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of CI's lint stages, so CI runs them on a push to main and on the daily
-# full-tier dispatch, not on a pull request; release.yml still runs both
-# before a tag. `make lint-gates lint-sweeps` is the whole set.
+# hour of CI's lint stages, so they run in ci.yml's lint job on the nightly
+# schedule: event alone (ci-template v1.30, ruling 216(1)); release.yml still runs both before a
+# tag. `make lint-gates lint-sweeps` is the whole set. A pull request's lint
+# job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
-	test-cluster-cpus test-trim-ci-caches check-action-pins \
-	check-integration-feature-coverage \
+	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
+	check-action-pins check-integration-feature-coverage \
 	check-no-deprecated-credential-retrieve check-no-alias-language \
 	check-lean-standalone \
 	test-nightly-signal test-coverratchet test-coverage-merge-subprocess \
@@ -2796,6 +2814,15 @@ test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
 .PHONY: test-trim-ci-caches
 test-trim-ci-caches: ## Test the CI cache trim's age-first eviction
 	@./scripts/trim-ci-caches_test.sh
+
+# A stage's multicast namespace was a holder container sleeping until the
+# script's EXIT trap removed it, so every job killed first left one running
+# (#1264). scripts/in-toolchain-image.sh now configures the stage's own
+# namespace from a one-shot --rm container and traps INT, TERM and HUP. Tested
+# on a stub docker: a real run needs the runner's daemon.
+.PHONY: test-in-toolchain-image
+test-in-toolchain-image: ## Test that no stage container outlives its script
+	@./scripts/in-toolchain-image_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:
@@ -3988,26 +4015,59 @@ TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 # run 57540). CI names one per job under qrdb-ci-, so the reaper removes the
 # hold of a job that died before its teardown, as it does any stale
 # container. Empty, the default off CI, takes no hold.
+#
+# APK_INDEX_SUM is the checksum of the Alpine package indexes the build
+# resolves against (scripts/apk-index-sum.sh, ci-template v1.29): CI reads it
+# into the environment, the tag hashes it, and docker-build-it passes it to
+# the integration stage, which runs `apk upgrade` after it, so a new Alpine
+# package release changes the tag and forces a rebuild with the fixed
+# package. Empty when unset, so a local tag is the tree's alone.
+APK_INDEX_SUM ?=
+
+# apk-index-sum prints that checksum; every ci.yml job that reads it runs
+# `make -s apk-index-sum`. The Dockerfile's FROM lines name ${GO_IMAGE}, a
+# global ARG with no default because the pin lives in scripts/tool-pins.sh
+# alone, so the script cannot resolve the base image from the Dockerfile. This
+# target hands it the pin as APK_BASE_IMAGES, the script's input for a base
+# its FROM parse cannot read, and ci.yml carries no copy of the pin.
+.PHONY: apk-index-sum
+apk-index-sum:
+	@APK_BASE_IMAGES='$(GO_IMAGE)' scripts/apk-index-sum.sh
 IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1; then \
-	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
+	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS) $(APK_INDEX_SUM)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
 	  git ls-files -z -o --exclude-standard | xargs -0r sha256sum --; } | sha256sum | cut -c1-16; \
 	else echo $(DOCKER_TAG); fi)
 IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
 IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
 IT_HOLD    ?=
 
+# CUSTOMIZE (go-qrdb): CI pulls the integration image from the Gitea registry
+# by digest, once per job, and never builds it (DS-3516). it-require-pulled is
+# the integration-test step for such a reference: the image must already be on
+# the daemon, pulled by scripts/ci-registry.sh, or the run fails rather than
+# rebuild something other than what docker-build pushed. A tag reference, the
+# developer-host default, still builds through docker-build-it.
+it-require-pulled = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a digest reference is pulled (scripts/ci-registry.sh pull), never built" >&2; exit 1; }
+# it-image-step is integration-test's image step. It sits in a variable, not in
+# the recipe text, so `make -n` prints the digest path instead of running it:
+# make runs any recipe line that names $(MAKE) directly, even under -n.
+it-image-step = $(if $(findstring @sha256:,$(IT_IMAGE)),$(it-require-pulled),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
+
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
 # The module credentials are the same $(stage-gomodauth) secret every other
 # image build here passes; without them the build resolves from the public
-# proxy. GO_BUILD_PROXY is passed only when the caller sets it (handbook
-# devcontainer.md section 4). IT_TAGS is the tag set the integration stage
-# compiles its suites under, the same set the per-feature targets use.
+# proxy. GO_BUILD_PROXY comes from the caller (handbook devcontainer.md
+# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY, which on
+# the CI runners is the fleet Athens first (m1544, ruling 236(3)); unset, the
+# Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
+# runners' value uses the | separator. IT_TAGS is the tag set the integration
+# stage compiles its suites under, the same set the per-feature targets use.
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--secret id=gomodauth,env=GOMODAUTH \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
-	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY=$(GO_BUILD_PROXY)) \
+	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
@@ -4015,8 +4075,15 @@ docker-build: docker-build-toolchain docker-build-it
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
-	@$(stage-gomodauth) \
-	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
+	@# ci-template v1.30: the tag is the content hash, so an image already on
+	@# this daemon (built here, or pulled by scripts/ci-image-cache.sh) is the
+	@# image this tree would build.
+	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
@@ -4033,12 +4100,15 @@ docker-build-toolchain:
 # fails, and the loop builds it once more and holds that.
 docker-build-it:
 	$(REQUIRE_BUILDX)
+	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
+	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): pull a digest reference with scripts/ci-registry.sh" >&2; exit 1 ;; esac
 	@for attempt in 1 2; do \
 		if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 			echo "==> $(IT_IMAGE) is already built on this daemon"; \
 		else \
 			$(stage-gomodauth) \
-			$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
+			$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+				--target integration -t $(IT_IMAGE) . || { \
 				status=$$?; \
 				docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
 				echo "==> a concurrent build loaded $(IT_IMAGE) first"; \

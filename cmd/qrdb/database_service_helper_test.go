@@ -19,7 +19,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 )
@@ -33,7 +33,7 @@ import (
 func newRealCLIDatabaseService(t *testing.T) service.DatabaseServicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return servicetest.NewDatabaseService(t, mgr)
 }

@@ -75,6 +75,30 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return nil
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return err
+	}
+	// The server verifies the SO PIN the request carries, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	_, err = t.client.BarrierChangePassphrase(ctx, &pb.BarrierChangePassphraseRequest{
+		Current: req.Current,
+		Next:    req.Next,
+		SoPin:   soPIN,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierChangePassphrase", err)
+	}
+	return nil
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
@@ -298,6 +322,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.BarrierShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("ShareClaimBegin", err)
@@ -309,6 +336,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	resp, err := t.client.BarrierShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,
@@ -326,6 +356,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.BarrierRecoveryShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("RecoveryShareClaimBegin", err)
@@ -337,6 +370,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	resp, err := t.client.BarrierRecoveryShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,

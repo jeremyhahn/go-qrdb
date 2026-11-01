@@ -411,6 +411,18 @@ func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string
 	return s.authMW.AuthorizeTenantBarrierInitProof(ctx, tenantID, s.tenantSvc, proof)
 }
 
+// authorizeTenantBarrierSignedInit authorizes either half of a two-phase
+// signed init as a plain init is authorized -- RBAC, or the tenant's
+// trust-on-first-init window -- without the connection-bound proof: the
+// signed statement, anchored to the tenant's first admin, is the proof of
+// possession.
+func (s *Server) authorizeTenantBarrierSignedInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
 // authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
 // that must remain reachable while the tenant's IAM itself is unreachable
 // (status/unseal) via the shared sealed-window rule

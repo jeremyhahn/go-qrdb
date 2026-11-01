@@ -59,6 +59,40 @@ type AtomicKVStore = kvstore.AtomicKVStore
 //	fenced, ok := store.(sdk.FencedCreator)
 type FencedCreator = kvstore.FencedCreator
 
+// GuardedBatchKVStore is a KVStore that applies a multi-key batch atomically
+// and only while ONE guard key still holds its expected value
+// (PutAllIfUnchanged). MultiGuardedBatchKVStore generalizes it to several
+// guards.
+type GuardedBatchKVStore = kvstore.GuardedBatchKVStore
+
+// MultiGuardedBatchKVStore is the guarded multi-key commit: PutAllIfAllUnchanged
+// applies every KVWrite as one atomic batch, and only while EVERY KVGuard
+// holds, so an entry and its index entries commit together or not at all,
+// fenced against a concurrent writer to the same entry. applied=false with a
+// nil error is the conflict outcome: at least one guard did not hold and
+// nothing was written. A non-nil error means the outcome is unknown.
+//
+// The store a Client returns from KVStore() satisfies it, a standalone node's
+// included, by executing the batch as one compare-guarded transaction; a
+// consumer discovers it by type assertion and fails closed:
+//
+//	guarded, ok := client.KVStore().(sdk.MultiGuardedBatchKVStore)
+//	if !ok {
+//	    return sdk.ErrKVAtomicWriteUnsupported
+//	}
+//	applied, err := guarded.PutAllIfAllUnchanged(ctx,
+//	    []sdk.KVGuard{{Key: entryKey, Value: readValue}},
+//	    []sdk.KVWrite{{Key: entryKey, Value: next}, {Key: indexKey, Value: ref}})
+type MultiGuardedBatchKVStore = kvstore.MultiGuardedBatchKVStore
+
+// KVGuard is one condition of a guarded batch: a nil Value requires Key to be
+// absent, a non-nil Value requires Key to be present and hold exactly Value.
+type KVGuard = kvstore.Guard
+
+// KVWrite is one write of a guarded batch: a put of Value under Key, or a
+// delete of Key when Delete is set.
+type KVWrite = kvstore.KV
+
 // CompareAndSwapWithCurrent calls store.CompareAndSwap and, on a mismatch,
 // reads the key back so the caller learns what it should have compared
 // against without a second round trip -- useful for a contended counter (a

@@ -151,6 +151,40 @@ func TestUnsealWithStrategy_Uninitialized(t *testing.T) {
 	}
 }
 
+// TestUnseal_UninitializedNilBlobIsNotInitialized covers a base that signals
+// a missing key as (nil, nil), as PebbleStorage does through StorageAdapter:
+// the unseal of a never-initialized barrier is ErrNotInitialized, not
+// ErrCorruptRootKey.
+func TestUnseal_UninitializedNilBlobIsNotInitialized(t *testing.T) {
+	b, err := NewStorageBarrier(testLogger(), &errorBackend{}, BarrierConfig{
+		RootKeyPath: "system/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	err = b.Unseal(context.Background(), Credentials{})
+	if !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("Unseal = %v, want ErrNotInitialized", err)
+	}
+	if errors.Is(err, ErrCorruptRootKey) {
+		t.Fatalf("Unseal = %v, must not be ErrCorruptRootKey", err)
+	}
+}
+
+// TestUnseal_UninitializedMissingKeyIsNotInitialized covers a base that
+// signals a missing key with ErrSecretNotFound.
+func TestUnseal_UninitializedMissingKeyIsNotInitialized(t *testing.T) {
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "system/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Unseal(context.Background(), Credentials{}); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("Unseal = %v, want ErrNotInitialized", err)
+	}
+}
+
 // TestUnsealTenantWithStrategy_RoundTrip verifies the registry-level wrapper
 // unseals a reattached tenant shell with the given strategy, refuses a
 // mismatch, and reports an unregistered tenant.

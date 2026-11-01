@@ -36,6 +36,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
@@ -199,6 +200,10 @@ type Server struct {
 	// single remote IP may hold open against this server's listener.
 	// Zero means unlimited. See WithMaxConnsPerPeer.
 	maxConnsPerPeer int
+
+	// clientLimit admits each request by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every request.
+	clientLimit *clientlimit.Limiter
 }
 
 // DefaultMaxConnections bounds simultaneously open connections to the MCP
@@ -239,6 +244,15 @@ func WithMaxBodyBytes(n int64) ServerOption {
 // means unlimited.
 func WithMaxConnsPerPeer(n int) ServerOption {
 	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// WithClientLimiter admits every HTTP request -- the JSON-RPC endpoint, the
+// enrollment endpoint and the protected-resource metadata alike -- by client
+// address through l before anything else runs on its behalf (go-qrdb#1197).
+// Every transport of one server shares the same Limiter. Nil, the default,
+// applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // WithTLS configures the server with TLS. The config is cloned and pinned to
@@ -859,6 +873,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.roleSvc != nil && s.userSvc != nil {
 		s.addTools(roleTools(s.roleSvc, s.userSvc, s.authMW)...)
 	}
+	if s.roleSvc != nil && s.tenantSvc != nil {
+		s.addTools(roleReconcileAllTools(s.roleSvc, s.tenantSvc)...)
+	}
 	if s.certProv != nil {
 		s.addTools(certTools(s.certProv, s.authMW)...)
 	}
@@ -919,10 +936,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.tenantSvc != nil {
 		s.addTools(tenantTools(s.tenantSvc, s.onboarding, s.authMW)...)
 		s.addTools(tenantBarrierTools(s.tenantSvc, tenantBarrierAuthorizers{
-			Op:        s.authorizeTenantBarrierOp,
-			InitBegin: s.beginTenantBarrierInit,
-			Init:      s.authorizeTenantBarrierInit,
-			Sealed:    s.authorizeTenantBarrierSealedOp,
+			Op:         s.authorizeTenantBarrierOp,
+			InitBegin:  s.beginTenantBarrierInit,
+			Init:       s.authorizeTenantBarrierInit,
+			SignedInit: s.authorizeTenantBarrierSignedInit,
+			Sealed:     s.authorizeTenantBarrierSealedOp,
 		})...)
 	}
 	if s.volumeSvc != nil {
@@ -1064,7 +1082,10 @@ func (s *Server) Start() error {
 	}
 
 	s.httpSrv = &http.Server{
-		Handler:      mux,
+		// The client-address limiter (go-qrdb#1197) admits every request --
+		// JSON-RPC, enrollment and discovery alike -- before routing,
+		// authentication or the sealed window does work on its behalf.
+		Handler:      s.clientLimit.HTTP(mux),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

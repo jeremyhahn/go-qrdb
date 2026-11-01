@@ -19,6 +19,7 @@ import (
 	"sort"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -45,7 +46,7 @@ func tenantUndoRequired(host service.Host) func() error {
 		if gated.FeatureEnabled(0, featuregate.TenantUndo) {
 			return nil
 		}
-		return &featuregate.NotActiveError{Feature: featuregate.TenantUndo}
+		return &feature.NotActiveError{Feature: featuregate.TenantUndo}
 	}
 }
 

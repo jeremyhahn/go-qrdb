@@ -40,17 +40,19 @@ import (
 
 type mockTenantService struct {
 	tenant.TenantServicer
-	createFn        func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
-	getFn           func(ctx context.Context, id string) (*tenant.TenantInfo, error)
-	listFn          func(ctx context.Context) ([]tenant.TenantInfo, error)
-	updateFn        func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
-	deleteFn        func(ctx context.Context, id string) error
-	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
-	quotasFn        func(ctx context.Context, id string) (*quota.Quotas, error)
-	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
-	barrierUnsealFn func(ctx context.Context, id string, share []byte) error
-	barrierSealFn   func(ctx context.Context, id string) error
-	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
+	createFn         func(ctx context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error)
+	getFn            func(ctx context.Context, id string) (*tenant.TenantInfo, error)
+	listFn           func(ctx context.Context) ([]tenant.TenantInfo, error)
+	updateFn         func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
+	deleteFn         func(ctx context.Context, id string) error
+	updateQuotasFn   func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
+	quotasFn         func(ctx context.Context, id string) (*quota.Quotas, error)
+	barrierInitFn    func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
+	barrierUnsealFn  func(ctx context.Context, id string, share []byte) error
+	barrierSealFn    func(ctx context.Context, id string) error
+	barrierStatusFn  func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
+	signedBeginFn    func(ctx context.Context, req *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error)
+	signedCompleteFn func(ctx context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error)
 }
 
 var _ tenant.TenantServicer = (*mockTenantService)(nil)
@@ -136,6 +138,20 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, pa
 
 func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+
+func (m *mockTenantService) TenantBarrierInitBegin(ctx context.Context, req *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	if m.signedBeginFn != nil {
+		return m.signedBeginFn(ctx, req)
+	}
+	return &tenant.TenantBarrierInitBeginResult{TenantID: req.TenantID, Strategy: string(req.Strategy), Reference: []byte("ref"), Statement: []byte("statement")}, nil
+}
+
+func (m *mockTenantService) TenantBarrierInitComplete(ctx context.Context, req *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	if m.signedCompleteFn != nil {
+		return m.signedCompleteFn(ctx, req)
+	}
+	return &tenant.TenantBarrierInitResult{TenantID: req.TenantID}, nil
 }
 
 func (m *mockTenantService) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
@@ -239,6 +255,63 @@ func TestGRPC_TenantCreate_Success(t *testing.T) {
 	}
 	if onboarding.gotReq.AdminUsername != "admin" || string(onboarding.gotReq.AdminCSRPEM) != "csr-pem" {
 		t.Errorf("OnboardTenant request = %+v, admin fields not forwarded", onboarding.gotReq)
+	}
+}
+
+// TestGRPC_TenantCreate_SO proves the SO's fields reach OnboardTenant and the
+// SO's credential is answered beside the admin's (go-qrdb#1042).
+func TestGRPC_TenantCreate_SO(t *testing.T) {
+	onboarding := &fakeTenantOnboarding{
+		result: &service.OnboardTenantResult{
+			Tenant: &tenant.TenantInfo{ID: "acme", Name: "ACME Corp"},
+			Admin:  service.TenantAdminCredential{UserID: 1, Username: "admin"},
+			SO:     &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Serial: "S2", Thumbprint: "tp"},
+		},
+	}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantOnboarding(onboarding))
+	defer cleanup()
+
+	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "acme", Name: "ACME Corp", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+		SoUsername: "so", SoCsrPem: "so-csr", SoChainPem: "so-chain", SoPin: "so-pin",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	so := resp.GetSo()
+	if so.GetUserId() != 2 || so.GetUsername() != "so" || so.GetCertPem() != "so-cert" || so.GetSerial() != "S2" || so.GetThumbprint() != "tp" {
+		t.Errorf("SO credential = %+v, want so's", so)
+	}
+	got := onboarding.gotReq
+	if got.SOUsername != "so" || string(got.SOCSRPEM) != "so-csr" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" || len(got.SOCertPEM) != 0 {
+		t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+	}
+}
+
+// TestGRPC_TenantCreate_NoSO proves a tenant created without an SO answers none.
+func TestGRPC_TenantCreate_NoSO(t *testing.T) {
+	onboarding := &fakeTenantOnboarding{
+		result: &service.OnboardTenantResult{
+			Tenant: &tenant.TenantInfo{ID: "acme", Name: "ACME Corp"},
+			Admin:  service.TenantAdminCredential{UserID: 1, Username: "admin"},
+		},
+	}
+	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
+		WithTenantOnboarding(onboarding))
+	defer cleanup()
+
+	resp, err := client.TenantCreate(context.Background(), &pb.TenantCreateRequest{
+		Id: "acme", Name: "ACME Corp", AdminUsername: "admin", AdminCsrPem: "csr-pem",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetSo() != nil {
+		t.Errorf("SO credential = %+v, want none", resp.GetSo())
+	}
+	if onboarding.gotReq.SOUsername != "" || len(onboarding.gotReq.SOPIN) != 0 {
+		t.Errorf("OnboardTenant request = %+v, want no SO", onboarding.gotReq)
 	}
 }
 

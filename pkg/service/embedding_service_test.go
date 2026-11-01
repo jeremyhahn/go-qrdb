@@ -28,7 +28,11 @@ type mockProvider struct {
 	embedFn  func(ctx context.Context, texts []string, model string) (*EmbeddingResult, error)
 	modelsFn func(ctx context.Context) ([]ModelInfo, error)
 	closeFn  func() error
+	// defaultModel is what Embed resolves an empty model to.
+	defaultModel string
 }
+
+func (m *mockProvider) DefaultModel() string { return m.defaultModel }
 
 func (m *mockProvider) Embed(ctx context.Context, texts []string, model string) (*EmbeddingResult, error) {
 	if m.embedFn != nil {
@@ -170,6 +174,89 @@ func TestEmbeddingService_Embed_CacheHit(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("expected 1 provider call, got %d", calls)
+	}
+}
+
+// countingProvider returns a mockProvider whose default model is
+// defaultModel and which counts its Embed calls per model it was called with.
+func countingProvider(defaultModel string, calls map[string]int) *mockProvider {
+	return &mockProvider{
+		defaultModel: defaultModel,
+		embedFn: func(_ context.Context, texts []string, model string) (*EmbeddingResult, error) {
+			if model == "" {
+				model = defaultModel
+			}
+			calls[model]++
+			embeddings := make([][]float32, len(texts))
+			for i := range texts {
+				embeddings[i] = []float32{float32(len(model))}
+			}
+			return &EmbeddingResult{Embeddings: embeddings, Model: model}, nil
+		},
+	}
+}
+
+func TestEmbeddingService_Embed_NoModelHitsDefaultModelEntry(t *testing.T) {
+	calls := map[string]int{}
+	svc := newServiceWithCache("local", countingProvider("dflt", calls), newMockCache())
+
+	if _, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}, Model: "dflt"}); err != nil {
+		t.Fatalf("default-model Embed: %v", err)
+	}
+	resp, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}})
+	if err != nil {
+		t.Fatalf("no-model Embed: %v", err)
+	}
+	if !resp.Cached {
+		t.Error("no-model request after a default-model request: want a cache hit")
+	}
+	if resp.Model != "dflt" {
+		t.Errorf("Model = %q, want %q", resp.Model, "dflt")
+	}
+	if calls["dflt"] != 1 {
+		t.Errorf("provider calls = %d, want 1", calls["dflt"])
+	}
+}
+
+func TestEmbeddingService_Embed_DefaultModelHitsNoModelEntry(t *testing.T) {
+	calls := map[string]int{}
+	svc := newServiceWithCache("local", countingProvider("dflt", calls), newMockCache())
+
+	if _, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}}); err != nil {
+		t.Fatalf("no-model Embed: %v", err)
+	}
+	resp, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}, Model: "dflt"})
+	if err != nil {
+		t.Fatalf("default-model Embed: %v", err)
+	}
+	if !resp.Cached {
+		t.Error("default-model request after a no-model request: want a cache hit")
+	}
+	if calls["dflt"] != 1 {
+		t.Errorf("provider calls = %d, want 1", calls["dflt"])
+	}
+}
+
+func TestEmbeddingService_Embed_DifferentModelsDoNotShareEntry(t *testing.T) {
+	calls := map[string]int{}
+	svc := newServiceWithCache("local", countingProvider("dflt", calls), newMockCache())
+
+	for _, model := range []string{"a", "bb", "", "a", "bb", ""} {
+		if _, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}, Model: model}); err != nil {
+			t.Fatalf("Embed(%q): %v", model, err)
+		}
+	}
+	resp, err := svc.Embed(context.Background(), &EmbedRequest{Texts: []string{"t"}, Model: "bb"})
+	if err != nil {
+		t.Fatalf("Embed(bb): %v", err)
+	}
+	if got := resp.Embeddings[0][0]; got != 2 {
+		t.Errorf("model bb served the embedding %v of another model", got)
+	}
+	for _, model := range []string{"a", "bb", "dflt"} {
+		if calls[model] != 1 {
+			t.Errorf("provider calls for %q = %d, want 1", model, calls[model])
+		}
 	}
 }
 

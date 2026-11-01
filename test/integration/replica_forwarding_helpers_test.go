@@ -86,6 +86,10 @@ type fwdCluster struct {
 	otherCert, otherKey   string
 	tenant                *http.Client
 
+	// sysCert/sysKey authenticate the system tenant's bootstrap admin, the
+	// identity sys presents.
+	sysCert, sysKey string
+
 	// writerID and writerRole are fwdWriter's user and role.
 	writerID   uint64
 	writerRole string
@@ -262,6 +266,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	}
 
 	c.sys = mtlsHTTPClient(t, ca, 15*time.Second)
+	_, c.sysCert, c.sysKey = ca.adminIdentity(t, t.TempDir())
 	base := fmt.Sprintf("https://127.0.0.1:%d", adminPorts[c.creator])
 	// A raft tenant is placed on a catalog pool (docs/volume-pools, D2):
 	// every node maps "default" to a directory, but only the operator's
@@ -274,7 +279,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
-	tenantBody, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
+	tenantBody, st := iraftAPIPost(t, tenantCreateClient(c.sys), base+"/v1/tenants", map[string]interface{}{
 		"id": fwdTenantID, "name": "Replica Forwarding Tenant",
 		"isolation_type": "raft", "barrier_auto_unseal": true,
 		"admin_username": fwdTenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),
@@ -285,8 +290,9 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	// The system tenant can no longer provision records inside another
 	// tenant's IAM at all (owner ruling, 2026-10-01), so createRole and the
 	// tenant's bound users below authenticate as the tenant's own onboarded
-	// admin; its built-in Admin role cannot create a NEW role (RolesCreate
-	// is SO-exclusive), so it self-assigns its own pre-seeded SO role first.
+	// admin; its built-in Admin role lets it seat a second account with
+	// Admin and Operator (seatTenantProvisioner), which creates the role
+	// from what it holds (the grant rule, go-qrdb#1278).
 	var createResp struct {
 		Admin struct {
 			CertPEM string `json:"cert_pem"`
@@ -300,7 +306,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 		t.Fatalf("X509KeyPair for the onboarded admin: %v", err)
 	}
 	c.admin = qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-	selfAssignTenantSO(t, adminPorts[c.creator], fwdTenantID, c.admin)
+	c.admin = seatTenantProvisioner(t, ca, adminPorts[c.creator], fwdTenantID, c.admin, false)
 	writerRole := c.createRole(t, base, "kv-writer", "databases:create", "databases:create_raft", "databases:read",
 		"databases:list", "databases:delete", "kv:put", "kv:get", "kv:delete", "watch:watch")
 	listerRole := c.createRole(t, base, "db-lister", "databases:list")

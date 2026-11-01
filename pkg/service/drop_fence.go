@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -46,7 +47,12 @@ import (
 //     incarnation", in the same Raft command (WriteGuard, OpGuarded).
 //   - DROP DATABASE sets the marker to a tombstone no incarnation equals
 //     (KeyspaceReclaimService.FenceDatabaseKeyspace) before it reclaims
-//     anything.
+//     anything. The tombstone carries the drop's claim, the token it holds
+//     in the catalog record: a drop that takes another over re-stamps it,
+//     and the reclamation's deletes and a failed drop's rollback are
+//     guarded on the drop's own tombstone, so a drop that was taken over
+//     can neither delete under, nor clear, the fence of the one that took
+//     it over.
 //
 // Log order then decides every race. A write applied before the fence
 // landed before it and is removed by the reclamation that follows; a write
@@ -73,6 +79,24 @@ const DropFencePrefix = InternalKeyPrefixSystem + "dropfence/"
 // starts with a NUL byte, so it can never equal an incarnation (NewIncarnation
 // produces hex), and it is non-empty, so it never reads as "absent".
 var dropFenceTombstone = []byte("\x00dropped")
+
+// dropFenceTombstoneFor returns the tombstone the drop holding claim stamps
+// on a marker: dropFenceTombstone followed by claim. The claim is the drop's
+// fencing token in the store, as it is in the catalog: a drop that takes
+// another over re-stamps the marker with its own claim, in the same Raft
+// group as the data, so every later write of the drop it took over -- the
+// rollback that would clear the fence, a delete of its reclamation -- names
+// a tombstone the marker no longer holds and is refused by the state machine
+// (go-qrdb#893). An empty claim is the bare tombstone.
+func dropFenceTombstoneFor(claim string) []byte {
+	return append(append(make([]byte, 0, len(dropFenceTombstone)+len(claim)), dropFenceTombstone...), claim...)
+}
+
+// isDropFenceTombstone reports whether a marker value is a tombstone, of any
+// drop's claim. No incarnation starts with the tombstone's NUL byte.
+func isDropFenceTombstone(value []byte) bool {
+	return bytes.HasPrefix(value, dropFenceTombstone)
+}
 
 // DropFenceKey returns the key whose presence fences (tenantID, db) against
 // writes. An empty tenantID is the system tenant and an empty db the default

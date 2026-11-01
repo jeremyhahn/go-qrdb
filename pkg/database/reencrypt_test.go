@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 func reencTestLogger() *slog.Logger {
@@ -73,7 +74,7 @@ func newKeyedEncryptor(t *testing.T, rootKeyPath, passphrase string) *atrest.Enc
 func writeStore(t *testing.T, dir string, enc *atrest.Encryptor, pairs map[string]string) {
 	t.Helper()
 	opts := &pebble.Options{}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open store %s: %v", dir, err)
@@ -92,7 +93,7 @@ func writeStore(t *testing.T, dir string, enc *atrest.Encryptor, pairs map[strin
 func readAll(t *testing.T, dir string, enc *atrest.Encryptor) map[string]string {
 	t.Helper()
 	opts := &pebble.Options{ReadOnly: true}
-	enc.Apply(opts)
+	opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		t.Fatalf("open store %s: %v", dir, err)
@@ -163,7 +164,7 @@ func TestReencryptPebbleStore_NoneToKeyed(t *testing.T) {
 	func() {
 		defer func() { _ = recover() }()
 		opts := &pebble.Options{ReadOnly: true}
-		noneEnc.Apply(opts)
+		opts.FS = pebblestore.WrapVFS(opts.FS, noneEnc.Wrap)
 		db, err := pebble.Open(dstDir, opts)
 		if err != nil {
 			return // expected: cannot open keyed store as none

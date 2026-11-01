@@ -16,9 +16,11 @@ package quic
 
 import (
 	"context"
+	"unicode/utf8"
 
 	quicgo "github.com/quic-go/quic-go"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -27,7 +29,7 @@ import (
 // soPINField is the request-message field that carries the SO PIN on QUIC.
 const soPINField = "so_pin"
 
-// soPINCarriers names, for every SO-gated QUIC method, a constructor for its
+// soPINCarriers names, for every SO-gated QUIC method, the descriptor of its
 // request message, whose so_pin field carries the SO PIN.
 //
 // A QUIC frame has no header section, so unlike REST (the X-QRDB-SO-PIN
@@ -40,35 +42,65 @@ const soPINField = "so_pin"
 // would refuse it (fail-closed), never admit it.
 // TestSOGate_EveryGatedQUICMethodHasACarrier pins the table against the
 // method registry, so a newly gated method cannot silently lack one.
-var soPINCarriers = map[string]func() proto.Message{
-	"barrier.ShamirInitialize": func() proto.Message { return &pb.BarrierShamirInitializeRequest{} },
-	"barrier.RekeyStart":       func() proto.Message { return &pb.BarrierRekeyStartRequest{} },
-	"barrier.RecoveryGenerate": func() proto.Message { return &pb.BarrierRecoveryGenerateRequest{} },
-	"barrier.RecoveryDelete":   func() proto.Message { return &pb.BarrierRecoveryDeleteRequest{} },
-	"ceremony.Initialize":      func() proto.Message { return &pb.CeremonyInitializeRequest{} },
-	"ceremony.SignCSR":         func() proto.Message { return &pb.CeremonySignCSRRequest{} },
+var soPINCarriers = map[string]protoreflect.MessageDescriptor{
+	"barrier.ShamirInitialize": (&pb.BarrierShamirInitializeRequest{}).ProtoReflect().Descriptor(),
+	"barrier.RekeyStart":       (&pb.BarrierRekeyStartRequest{}).ProtoReflect().Descriptor(),
+	"barrier.RecoveryGenerate": (&pb.BarrierRecoveryGenerateRequest{}).ProtoReflect().Descriptor(),
+	"barrier.RecoveryDelete":   (&pb.BarrierRecoveryDeleteRequest{}).ProtoReflect().Descriptor(),
+	"barrier.ChangePassphrase": (&pb.BarrierChangePassphraseRequest{}).ProtoReflect().Descriptor(),
+	"ceremony.Initialize":      (&pb.CeremonyInitializeRequest{}).ProtoReflect().Descriptor(),
+	"ceremony.SignCSR":         (&pb.CeremonySignCSRRequest{}).ProtoReflect().Descriptor(),
 }
 
-// soPINFromPayload returns the SO PIN a gated method's request carries, or
-// nil when the method has no carrier or the payload does not decode.
+// soPINFromPayload returns a copy of the SO PIN a gated method's request
+// carries, or nil when the method has no carrier, the payload is not a
+// well-formed protobuf message, or so_pin is empty.
+//
+// It scans the wire format instead of decoding the message: a carrier such
+// as BarrierChangePassphraseRequest also holds the current and next
+// passphrases, and proto.Unmarshal would copy them into slices this gate
+// never wipes. Only so_pin's bytes are copied; every other field is stepped
+// over in place. The scan reads the payload as proto.Unmarshal does: the
+// last so_pin occurrence wins, and a malformed field anywhere or a PIN that
+// is not UTF-8 yields nil, so the gate fails closed.
 func soPINFromPayload(method string, payload []byte) []byte {
-	newMsg, ok := soPINCarriers[method]
+	desc, ok := soPINCarriers[method]
 	if !ok {
 		return nil
 	}
-	msg := newMsg()
-	if proto.Unmarshal(payload, msg) != nil {
+	fd := desc.Fields().ByName(soPINField)
+	if fd == nil || fd.Kind() != protoreflect.StringKind {
 		return nil
 	}
-	refl := msg.ProtoReflect()
-	fd := refl.Descriptor().Fields().ByName(soPINField)
-	if fd == nil {
+	var pin []byte
+	for b := payload; len(b) > 0; {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil
+		}
+		b = b[n:]
+		// A so_pin of another wire type is an unknown field to
+		// proto.Unmarshal, and is skipped here as one.
+		if num != fd.Number() || typ != protowire.BytesType {
+			if n = protowire.ConsumeFieldValue(num, typ, b); n < 0 {
+				return nil
+			}
+			b = b[n:]
+			continue
+		}
+		v, m := protowire.ConsumeBytes(b)
+		if m < 0 || !utf8.Valid(v) {
+			return nil
+		}
+		b = b[m:]
+		pin = v
+	}
+	if len(pin) == 0 {
 		return nil
 	}
-	if pin := refl.Get(fd).String(); pin != "" {
-		return []byte(pin)
-	}
-	return nil
+	// A copy, not a subslice: the SO factor wipes what it is given, and the
+	// handler decodes this payload after the gate.
+	return append([]byte(nil), pin...)
 }
 
 // enforceSOGate applies the SO dual-factor gate to one request, after

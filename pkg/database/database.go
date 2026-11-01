@@ -15,6 +15,7 @@
 package database
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -79,6 +80,12 @@ type Database struct {
 	// Manager.Drop's own explicit rollback on a failed reclaim.
 	dropping atomic.Bool
 
+	// obsolete is set when the catalog no longer records this incarnation
+	// and the entry could not yet be released. An obsolete entry is never
+	// served: the manager refuses it with StaleDatabaseError until a release
+	// removes it or a later read finds the record current again.
+	obsolete atomic.Bool
+
 	// incarnation distinguishes this database from every other database
 	// ever created under its name: the value its drop-fence marker holds
 	// while it is live, and the value every write to it is guarded by. Set
@@ -86,6 +93,11 @@ type Database struct {
 	// published; empty for a database created before incarnations existed
 	// or with no store to mark. See Incarnation.
 	incarnation string
+
+	// ownerNode is the node the catalog records as holding the database
+	// (DatabaseMeta.OwnerNode). Set once, like incarnation, before the
+	// database is published; empty when any node opens it.
+	ownerNode string
 }
 
 // NewDatabase creates a Database from the given config and backend.
@@ -360,6 +372,42 @@ func (d *Database) updateSQL(sqlCfg *SQLConfig) {
 	}
 }
 
+// adoptSettings makes the database's protocol and SQL settings those of its
+// catalog record, which a settings update through another node rewrites
+// without touching this node's entry. An entry already holding them is left
+// as it is, so a lookup that finds nothing changed allocates nothing.
+func (d *Database) adoptSettings(protocol ProtocolConfig, sqlCfg *SQLConfig) {
+	for {
+		old := d.config.Load()
+		if sameProtocol(old.Protocol, protocol) && sameSQL(old.SQL, sqlCfg) {
+			return
+		}
+		updated := *old
+		updated.Protocol = protocol
+		updated.SQL = sqlCfg
+		if d.config.CompareAndSwap(old, &updated) {
+			return
+		}
+	}
+}
+
+// sameProtocol reports whether a and b are the same protocol settings.
+func sameProtocol(a, b ProtocolConfig) bool {
+	if a.MySQL != b.MySQL || a.PostgreSQL != b.PostgreSQL || (a.Etcd == nil) != (b.Etcd == nil) {
+		return false
+	}
+	return a.Etcd == nil || (a.Etcd.Enabled == b.Etcd.Enabled && a.Etcd.ListenAddr == b.Etcd.ListenAddr &&
+		slices.Equal(a.Etcd.AdvertiseClientURLs, b.Etcd.AdvertiseClientURLs))
+}
+
+// sameSQL reports whether a and b are the same SQL settings.
+func sameSQL(a, b *SQLConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // updateConnection atomically replaces the connection configuration.
 func (d *Database) updateConnection(conn *DatabaseConnectionConfig) {
 	for {
@@ -404,6 +452,7 @@ func (d *Database) Info() DatabaseInfo {
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		OwnerNode:    d.ownerNode,
 	}
 	if cfg.Raft != nil {
 		info.ShardID = cfg.Raft.ShardID

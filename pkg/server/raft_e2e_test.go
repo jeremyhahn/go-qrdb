@@ -32,7 +32,7 @@ import (
 )
 
 // alwaysAbsentCatalog is a DatabaseCatalog that reports every database as
-// absent, simulating a node whose local catalog (meta.json) never recorded a
+// absent, simulating a node whose database manager has not opened a
 // dedicated-raft database created on another node.
 type alwaysAbsentCatalog struct{}
 
@@ -40,8 +40,8 @@ func (alwaysAbsentCatalog) DatabaseExists(string, string) bool { return false }
 
 // TestRaftE2E_ResolveIgnoresLocalCatalog proves that an IsolationRaft database
 // resolves through the replicated placement-backed RaftBackendFactory even when
-// the node-local catalog has no record of it — the post-restart follower / leader
-// change case where only the creating node holds a local meta.json record. A
+// the node's database manager has not opened it — a raft-isolated tenant's
+// databases are opened on first access, after the shard is attached. A
 // genuinely unknown database for the raft tenant still surfaces as a 404.
 func TestRaftE2E_ResolveIgnoresLocalCatalog(t *testing.T) {
 	stack := newRaftE2EStack(t)

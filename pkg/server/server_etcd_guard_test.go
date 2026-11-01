@@ -77,6 +77,38 @@ func TestEtcdRequestAuthorizer_GuardStreamUnknownDatabase(t *testing.T) {
 	}
 }
 
+// A listener guards its owner's database by the (owner, name) pair: another
+// tenant holding a database of the same name neither makes the guard
+// ambiguous nor ends the stream when that other database stops serving.
+func TestEtcdRequestAuthorizer_GuardStreamGuardsTheOwnersDatabase(t *testing.T) {
+	f := newEtcdScopeFixture(t, true)
+	other, err := f.mgr.Create(database.DatabaseConfig{Name: "app", TenantID: "globex", Backend: database.BackendMemory})
+	if err != nil {
+		t.Fatalf("create globex's app: %v", err)
+	}
+	a := &etcdRequestAuthorizer{mgr: f.mgr, owner: "acme", db: "app"}
+	unserved, _, err := a.GuardStream(context.Background())
+	if err != nil {
+		t.Fatalf("GuardStream with a second tenant's app: %v", err)
+	}
+	other.SetStatus(database.StatusSealed)
+	select {
+	case <-unserved:
+		t.Fatal("another tenant's database of the same name ended the stream")
+	default:
+	}
+	own, err := f.mgr.GetOwned("app", "acme")
+	if err != nil {
+		t.Fatalf("acme's app: %v", err)
+	}
+	own.SetStatus(database.StatusSealed)
+	select {
+	case <-unserved:
+	default:
+		t.Fatal("the guard did not close when the owner's database stopped serving")
+	}
+}
+
 // With cluster sealing, the etcd stream guard also closes when the database's
 // tenant is sealed, or the node is cut off, and the stream ends with that
 // refusal; a database that stops serving still ends it with its own. The

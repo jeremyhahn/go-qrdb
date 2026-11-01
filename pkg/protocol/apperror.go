@@ -244,6 +244,69 @@ var compactRefusalPhrases = map[CompactRefusalReason]func(bound string) string{
 	CompactRefusalCompacted: func(bound string) string { return " has been compacted (floor " + bound + ")" },
 }
 
+// LimitResource names the shard capacity a command was refused for. A
+// configured cap travels in the command and is checked by the apply path
+// against the state the command applies over, so every replica reaches the
+// same verdict at the same log position whichever node proposed it
+// (go-qrdb#1088).
+type LimitResource uint8
+
+const (
+	// LimitIndexes -- the shard holds index.max_indexes indexes.
+	LimitIndexes LimitResource = iota + 1
+
+	// LimitMetrics -- the shard holds timeseries.max_metrics metric names.
+	LimitMetrics
+)
+
+// limitRefusalMarker distinguishes a capacity refusal from the other
+// application errors. Its body is [resource:1][max:4 LE]: the service layer
+// returns a typed error per resource carrying the cap.
+var limitRefusalMarker = []byte("\x00limit\x00")
+
+// EncodeLimitRefusal encodes the refusal of a command that would take the
+// shard past maxCount of resource.
+func EncodeLimitRefusal(resource LimitResource, maxCount uint32) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(limitRefusalMarker)+1+4)
+	out = append(out, appErrorPrefix...)
+	out = append(out, limitRefusalMarker...)
+	out = append(out, byte(resource))
+	return binary.LittleEndian.AppendUint32(out, maxCount)
+}
+
+// DecodeLimitRefusal reports whether data is a capacity refusal and, if it
+// is, the resource and the cap it was refused at.
+func DecodeLimitRefusal(data []byte) (resource LimitResource, maxCount uint32, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return 0, 0, false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, limitRefusalMarker) {
+		return 0, 0, false
+	}
+	body = body[len(limitRefusalMarker):]
+	if len(body) != 1+4 {
+		return 0, 0, false
+	}
+	return LimitResource(body[0]), binary.LittleEndian.Uint32(body[1:]), true
+}
+
+// limitRefusalNouns names each resource in a capacity refusal's message.
+var limitRefusalNouns = map[LimitResource]string{
+	LimitIndexes: "indexes",
+	LimitMetrics: "metric names",
+}
+
+// limitRefusalMessage renders a capacity refusal as the message a generic
+// DecodeAppError caller reads.
+func limitRefusalMessage(resource LimitResource, maxCount uint32) string {
+	noun, ok := limitRefusalNouns[resource]
+	if !ok {
+		noun = "resource " + strconv.Itoa(int(resource))
+	}
+	return "shard holds its limit of " + strconv.FormatUint(uint64(maxCount), 10) + " " + noun
+}
+
 // ownershipMarker distinguishes an index-ownership refusal (go-qrdb#426) from
 // the other application errors. Like capabilityMarker it has to be carried
 // rather than inferred from message text: the service layer turns it into a
@@ -465,6 +528,13 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// merits.
 	if reason, requested, bound, refused := DecodeCompactRefusal(data); refused {
 		return compactRefusalMessage(reason, requested, bound), AppErrorInvalid, true
+	}
+	// A capacity refusal carries its resource and cap (see
+	// EncodeLimitRefusal). checkResultError decodes it into the typed limit
+	// error for its resource first; a generic reader gets its message and
+	// the conflict kind -- the shard's state, not the command, refused it.
+	if resource, maxCount, refused := DecodeLimitRefusal(data); refused {
+		return limitRefusalMessage(resource, maxCount), AppErrorConflict, true
 	}
 	return string(body), AppErrorCorrupt, true
 }

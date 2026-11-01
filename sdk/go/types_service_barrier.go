@@ -141,6 +141,12 @@ type AuthFactorTenantMismatchError = service.AuthFactorTenantMismatchError
 // errors.As without importing pkg/service.
 type SystemBarrierInitRefusedError = service.SystemBarrierInitRefusedError
 
+// SealDisabledError is returned by a barrier verb that would change the
+// barrier of a node whose seal subsystem is disabled: its protection is none
+// and it reports unsealed, so a seal, unseal, initialize, rekey or holder
+// verb is refused (see service.SealDisabledError).
+type SealDisabledError = service.SealDisabledError
+
 // UserAuthFactorServicer is the service-layer interface for per-user auth
 // factor management.
 type UserAuthFactorServicer = service.UserAuthFactorServicer

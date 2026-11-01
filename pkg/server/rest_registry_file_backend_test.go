@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -33,7 +34,7 @@ import (
 // unless it carries a per-database barrier over its own store, which
 // encrypts it separately.
 func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	db, err := mgr.Create(database.DatabaseConfig{
 		Name:    "files",
@@ -72,7 +73,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 // objstore is a node-store backend only: the database manager refuses to
 // open a database over it, so no runtime-created database stores data there.
 func TestDatabaseManager_ObjstoreDatabaseRefused(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
 	var invalid *database.InvalidBackendError

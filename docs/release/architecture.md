@@ -185,7 +185,7 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `changes`, `schedule-guard` (ci-template v1.29.3), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage`), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
@@ -212,8 +212,10 @@ itself: it takes effect on the PR's next push, an update-branch, or a
 
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
-which builds the devcontainer images in about two minutes, and
-`test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
+which builds the devcontainer images in about two minutes and, on a push to
+`main`, pushes them to the forge's registry (the Gitea registry, derived from
+`github.server_url`, under the release credential's own namespace, or
+`ghcr.io` on GitHub, under the repository owner's), and `test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
 `image` and the five unit-suite jobs, which need `docker-build` too and run,
 side by side in those images, the lint stages and `make deps-check` (`lint`), the repository gates
 (`lint-gates`), the build and, in the full tier, the arm64 cross-build and
@@ -227,12 +229,33 @@ needs every job, fails on that result; a run whose `docker-build`,
 
 The stages are separate jobs, not the ci-template's one image job, because
 together they outlast one job's 90-minute limit on a loaded runner: `lint`
-with `make lint-sweeps` takes most of an hour, and `make coverage` with the
+took most of an hour while it carried `make lint-sweeps`, and `make coverage` with the
 other four unit suites about 36 minutes, which ran in series in `image` until
 ruling 211 made each suite its own job. As separate jobs they run
 concurrently, each under a limit sized to its own stage, and the run waits on
 the longest rather than on their sum. Each suite is its own job because no
 per-suite time is on record to show any of them under two minutes.
+
+Every job that runs a stage in an image (`lint`, `lint-gates`, `image`, the
+unit-suite jobs `coverage`, `test-clusterproof`, `coverage-fts`, `test-tags`
+and `test-sdk`, `fips`, the `integration-features` legs and `soak`) takes it
+by one of two paths, chosen by the workflow env `CI_PUBLISH`, which is true
+on a push to `main` alone (DS-3516):
+
+| Event | `docker-build` | Consumers | Hold |
+|---|---|---|---|
+| push to `main` | builds, logs in, pushes, outputs `toolchain_ref` and `it_ref` (`@sha256:` digests) | `scripts/ci-registry.sh pull` of the digest, 3 attempts with a bounded backoff, then fail | a stopped container on the digest |
+| pull request, `workflow_dispatch`, nightly `schedule` | builds, never logs in or pushes | `scripts/ci-registry.sh local`: build the content-hash tag, or reuse the daemon's | a stopped container on the image ID (toolchain) or the tag (integration) |
+
+On the publish path a consumer runs on any runner, with no affinity to
+`docker-build`'s host, and runs its stages on the pulled reference. On the
+local path no step reaches the registry or sees its token: the consumer builds
+on its own runner, or reuses an image whose tag is the hash of the files that
+built it, and runs its stages on the image ID it holds. Neither path falls
+back to the other. `soak` runs on a dispatch or the nightly schedule, never
+on a push, so it is always local. `test/buildgates/ci_image_digest_test.go`
+names every consumer above, holds each to both paths and every registry step
+to a push to `main` (engineering.md, "The CI image").
 
 `fips` needs `docker-build` alone and runs in the toolchain image: it builds
 every package with `GOFIPS140=latest` and runs `make test` and `make test-sdk`
@@ -263,21 +286,24 @@ parallel with the `lint` job's `make lint` rather than a step after it, so
 the PR tier's lint wall time is the longer of the two and not their sum. It
 runs on every run and holds `make vet` over the default tag set and the
 secure analyzer's self-test (`test-secure-analyzer`). Within the `lint` job,
-one step depends on the trigger. `make lint-sweeps`,
-`make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
-combination, is the longest stage (about 45 minutes), so it runs only on a
-push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
-included), never on a pull request, whose pipeline is held to one hour. The
-sweeps run in the `lint` job beside the unit-suite jobs, so no job's limit
-exceeds 90 minutes. `release.yml`
-runs both sweeps again before a tag. The integration legs run without
+one step depends on the trigger: `make gosec` runs on the PR tier alone,
+since the full tier's `make security` in `image` runs it already
+(ci-template v1.30). `make lint-sweeps`, `make vet-tags` and
+`make secure-analyzer` over every `SUPPORTED_TAG_SETS` combination, is the
+longest stage (about 45 minutes), so the `lint` job runs it on `ci.yml`'s
+nightly `schedule:` event alone, cron `0 4 * * *`, never on a pull request, a
+push or a dispatch (ci-template v1.30; the template's `nightly.yml` home for it
+would need a second schedule trigger, which ruling 216(1) forbids).
+Every job carries a `timeout-minutes` of ceil(1.5 x its measured p95), and 5
+for the small ones. `release.yml` runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`
 (`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
 `changes`, `docker-build`, `lint`, `lint-gates`, `arch-gates` and `ci-gate`.
-`docker-build` builds the toolchain image alone: no job of a docs-only run
-uses the integration image, so it builds none and takes no hold on one.
+`docker-build` builds the toolchain image alone: no job of a
+docs-only run uses the integration image, so it builds none and outputs an
+empty `it_ref`.
 `lint` runs `make lint` and then `make deps-check`, which reads `go.mod` and
 the module proxy and needs no build output (ci-template v1.28.0 made it a
 lint-class gate on the PR tier, ruling 219(3), so a module behind its
@@ -306,6 +332,8 @@ of the full tier on the PR branch is the accepted alternative.
 it cancels that ref's older run. On `main` the group carries the event and the
 commit (ci-template v1.26.2's group), so no `main` run cancels another: a push to `main` leaves the run of
 the previous `main` commit to finish, and every merge keeps a completed run.
+A scheduled run's group is `schedule-<repository>` (ci-template v1.29.3), so a
+repository has one scheduled run at a time and a newer one cancels the older.
 No expression reaches `cancel-in-progress`. The other workflows on pull
 requests keep one group per ref (handbook `devops.md` §9), whose
 `cancel-in-progress` expression spares `main`.
@@ -316,20 +344,37 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 It was restored under Company Agent ruling 216(1) (Software's typed order
 DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
 scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid
-host cron, timers and watchers, not this trigger. `automerge.yml` is the only other workflow with a
+host cron, timers and watchers, not this trigger.
+
+A scheduled run yields to `main` (ci-template v1.29.3). The `schedule-guard`
+job, beside `changes`, reads ci.yml's runs on `main` and sets its `verdict`:
+`run` when no push run on `main` is in progress or waiting, `busy` when one
+is, and `unreadable` when neither the job token nor `AGENT_TOKEN` reads the
+runs API. On any event but a schedule it says `run` without a request. On a
+scheduled run `docker-build`, the one job with no bigdisk job before it, runs
+only on `run`, and every other bigdisk job needs `docker-build` and skips with
+it; `soak` also carries the guard's clause itself, as the template's does. On `busy` `ci-gate` skips, so the nightly
+run reports `skipped`; on any other verdict but `run` it fails closed.
+`test/buildgates/ci_schedule_guard_test.go` holds every bigdisk job behind the
+guard, the gate's condition, and the step's verdicts against a stub `curl`.
+
+`automerge.yml` is the only other workflow with a
 `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
 on `workflow_dispatch`, and is dispatched by hand each night.
 
 `lint`, `lint-gates`, `image` and the unit-suite jobs run every stage of the
 handbook CI standard (`ci-standard.md`) in the one image built from
-`build/docker/devcontainer/Dockerfile` at the commit under test: `lint` the
-lint, deps-check and, on `main` and a dispatch, the lint sweeps; `lint-gates`
-the lint gates; `image` the server and headless CLI build and, in the full
-tier, the linux/arm64 release cross-build and security in its `toolchain`
+`build/docker/devcontainer/Dockerfile` at the commit under test, once, by
+`docker-build`, and pulled by digest on a push to `main` or built on the
+consumer's runner otherwise: `lint` the lint, deps-check and, on `main` and a
+dispatch, the lint sweeps; `lint-gates` the lint gates; `image` the server and
+headless CLI build and, in the full tier, the linux/arm64 release cross-build
+and security in its `toolchain`
 stage, then `trivy image` over its `integration` stage; `coverage`,
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` one unit
 suite each. Each stage container is bounded to the job's
-CPU quota (`scripts/in-toolchain-image.sh`).
+CPU quota and memory limit, with no swap, under the runner host's
+`ci.slice` (`scripts/in-toolchain-image.sh`).
 `test-typescript` (the TypeScript SDK and the desktop frontend) and
 `arch-gates` (the import-boundary, public-releasable and compose-target
 gates) run on the runner beside them.
@@ -350,15 +395,16 @@ carrying a literal list of features: each shard runs
 every feature in its list, goes on past a failing one, prints a PASS/FAIL line
 with seconds per feature and fails the shard if any failed. The lists together
 name every feature of `make -s print-integration-features` once, balanced to
-about nine minutes a shard; each shard has its own 30-minute limit, and the
+about nine minutes a shard; each shard has its own 45-minute limit while a runner host is off (30 on a light fleet), and the
 shards run in parallel. Sharding pays the per-job setup once per shard rather
 than once per feature (engineering.md, "Per-feature integration jobs").
 `ci-gate` needs the job once and reads its aggregate result, which is
 `failure` when any shard fails. `integration-standalone` runs the Docker `test/integration/api`
 suites on the `.devcontainer/` image.
 
-`test/buildgates/ci_tiers_test.go` and
-`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the gate, the
+`test/buildgates/ci_tiers_test.go`,
+`test/buildgates/ci_image_digest_test.go` and
+`test/buildgates/feature_jobs_gate_test.go` hold the tiers, the two image paths, the gate, the
 triggers and the feature shards together; see engineering.md.
 
 A draft pull request runs no CI (ci-standard §10 (f), ruling 214): every job

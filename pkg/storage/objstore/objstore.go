@@ -33,7 +33,6 @@ import (
 	"sync/atomic"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
-	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -79,9 +78,16 @@ type Engine struct {
 // always available, while cloud providers ("s3", "gcs", "azure", "glacier",
 // "azurearchive") link their SDKs and are compiled in only when go-objstore's
 // matching build tag is set (awss3, gcpstorage, azureblob, glacier,
-// azurearchive). Settings are passed verbatim to the provider. No credential handle is
-// passed, so a cloud provider authenticates through its SDK's default
-// credential chain; go-objstore refuses a credential carried in settings.
+// azurearchive). Settings are passed verbatim to the provider; New first
+// refuses a credential carried in settings with a *CredentialSettingError,
+// so no provider, including one added through RegisterProvider, receives it. A credential is referenced by file
+// through WithCredentialFiles: New reads each file into a go-enclave
+// protected-memory handle, passes the handles to go-objstore as a
+// common.Credentials, whose backend copies the bytes out only inside
+// Credentials.Open, and destroys them before it returns, on success and on
+// every failure. Without one, a cloud provider authenticates through its
+// SDK's default credential chain. A handle go-objstore cannot read fails the
+// open with a *CredentialUnavailableError naming the files.
 //
 // The store must be dedicated to this engine. An empty store is marked with
 // this build's object layout; a non-empty one is opened only if it carries
@@ -89,20 +95,48 @@ type Engine struct {
 // silently hidden. An interrupted batch commit from a previous process is
 // completed here (see recoverJournal); a corrupt journal fails the open
 // rather than silently serving a half-applied batch.
-func New(provider string, settings map[string]string) (*Engine, error) {
+// providerResolved runs in New between resolving the provider and reading
+// any credential file. It does nothing; it is the seam a test drives a
+// concurrent RegisterProvider through, deterministically.
+var providerResolved = func(string) {}
+
+func New(provider string, settings map[string]string, opts ...Option) (*Engine, error) {
 	if provider == "" {
 		return nil, storage.ErrInvalidPath
 	}
-	store, err := objfactory.NewStorage(provider, settings, objcommon.Credentials{})
-	if err != nil {
-		if errors.Is(err, objfactory.ErrUnknownBackend) {
-			return nil, &UnsupportedProviderError{Provider: provider}
-		}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	// A registered creator need not delegate to a go-objstore Configure, so
+	// an inline credential is refused here, before any provider sees it.
+	if err := RejectCredentialSettings(settings); err != nil {
 		return nil, err
 	}
-	store, journal, err := openStores(provider, settings, store)
+	// The provider is resolved once, and an unknown one refused before any
+	// credential file is read: the declaration checked below and the creator
+	// that opens the store are one registration, whatever RegisterProvider
+	// does meanwhile.
+	resolved, known := resolveProvider(provider)
+	providerResolved(provider)
+	if !known {
+		return nil, &UnsupportedProviderError{Provider: provider}
+	}
+	if err := checkCredentialUse(provider, resolved.reads, o.credentials); err != nil {
+		return nil, err
+	}
+	creds, release, err := openCredentials(o.credentials)
+	defer release()
 	if err != nil {
 		return nil, err
+	}
+	store, err := resolved.creator(settings, creds)
+	if err != nil {
+		return nil, credentialOpenError(o.credentials, err)
+	}
+	store, journal, err := openStores(provider, resolved.creator, settings, store, creds)
+	if err != nil {
+		return nil, credentialOpenError(o.credentials, err)
 	}
 	e := &Engine{store: store, journal: journal, provider: provider}
 	if err := e.ensureFormatMarker(); err != nil {

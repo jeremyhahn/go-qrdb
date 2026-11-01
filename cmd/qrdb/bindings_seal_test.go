@@ -26,6 +26,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -34,10 +36,10 @@ import (
 
 // newSealTestBinding wires a SealBinding to an embedded transport backed by
 // the given mock barrier service, mirroring how the desktop GUI connects.
-func newSealTestBinding(t *testing.T, svc service.BarrierServicer) *SealBinding {
+func newSealTestBinding(t *testing.T, svc service.BarrierServicer, opts ...embedded.Option) *SealBinding {
 	t.Helper()
 	conn := newTestConnectionBinding(t, newMockKVService(), newMockAdminService(),
-		embedded.WithBarrierService(svc))
+		append([]embedded.Option{embedded.WithBarrierService(svc)}, opts...)...)
 	return NewSealBinding(testLogger(t), nil, conn)
 }
 
@@ -321,8 +323,8 @@ func TestSealBinding_Seal_Success(t *testing.T) {
 	svc := &mockBarrierService{
 		sealFn: func(ctx context.Context) error {
 			sealCalled = true
-			pin, ok, err := transport.SOPINFromContext(ctx)
-			got, bound = string(pin), ok
+			soPIN, ok, err := transport.SOPINFromContext(ctx)
+			got, bound = string(soPIN), ok
 			return err
 		},
 	}
@@ -381,6 +383,79 @@ func TestSealBinding_Seal_NotConnected(t *testing.T) {
 	}
 	var nce *NotConnectedError
 	if !errors.As(err, &nce) {
+		t.Fatalf("expected NotConnectedError, got %T: %v", err, err)
+	}
+}
+
+func TestSealBinding_ChangePassphrase_Success(t *testing.T) {
+	var gotCurrent, gotNext, gotPIN string
+	svc := &mockBarrierService{
+		changePassphraseFn: func(ctx context.Context, current, next []byte) error {
+			soPIN, _, err := transport.SOPINFromContext(ctx)
+			gotCurrent, gotNext, gotPIN = string(current), string(next), string(soPIN)
+			return err
+		},
+	}
+	b := newSealTestBinding(t, svc, embedded.WithPINBackend(pintest.NewSOPINBackend(t)))
+
+	if err := b.ChangePassphrase("old-passphrase", "new-passphrase", pintest.ThrottledSOPIN); err != nil {
+		t.Fatalf("ChangePassphrase: %v", err)
+	}
+	if gotCurrent != "old-passphrase" || gotNext != "new-passphrase" || gotPIN != pintest.ThrottledSOPIN {
+		t.Fatalf("service got (%q, %q, so-pin %q), want (old-passphrase, new-passphrase, the SO PIN)",
+			gotCurrent, gotNext, gotPIN)
+	}
+}
+
+// TestSealBinding_ChangePassphrase_RequiresSOPIN verifies the binding's
+// passphrase change is refused, without reaching the barrier service, when
+// the SO PIN is wrong or the node has no PIN backend.
+func TestSealBinding_ChangePassphrase_RequiresSOPIN(t *testing.T) {
+	cases := map[string]struct {
+		opts  []embedded.Option
+		soPIN string
+		want  error
+	}{
+		"no pin backend": {soPIN: pintest.ThrottledSOPIN, want: pin.ErrBackendNotConfigured},
+		"wrong pin":      {opts: []embedded.Option{embedded.WithPINBackend(pintest.NewSOPINBackend(t))}, soPIN: "wrong-pin-0000", want: pin.ErrPINInvalid},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := &mockBarrierService{
+				changePassphraseFn: func(context.Context, []byte, []byte) error {
+					called = true
+					return nil
+				},
+			}
+			b := newSealTestBinding(t, svc, tc.opts...)
+			if err := b.ChangePassphrase("old", "new", tc.soPIN); !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if called {
+				t.Fatal("a refused passphrase change reached the barrier service")
+			}
+		})
+	}
+}
+
+func TestSealBinding_ChangePassphrase_ServiceError(t *testing.T) {
+	svc := &mockBarrierService{
+		changePassphraseFn: func(context.Context, []byte, []byte) error { return errBarrierTest },
+	}
+	b := newSealTestBinding(t, svc, embedded.WithPINBackend(pintest.NewSOPINBackend(t)))
+
+	if err := b.ChangePassphrase("old", "new", pintest.ThrottledSOPIN); !errors.Is(err, errBarrierTest) {
+		t.Fatalf("expected the service error propagated, got %v", err)
+	}
+}
+
+func TestSealBinding_ChangePassphrase_NotConnected(t *testing.T) {
+	log := testLogger(t)
+	b := NewSealBinding(log, nil, NewConnectionBinding(log))
+
+	var nce *NotConnectedError
+	if err := b.ChangePassphrase("old", "new", ""); !errors.As(err, &nce) {
 		t.Fatalf("expected NotConnectedError, got %T: %v", err, err)
 	}
 }

@@ -54,7 +54,11 @@ var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "co
 // in one of the two lists, so a new job fails the gate until it is placed.
 var unmaskedJobs = map[string]string{
 	"changes": "prints only the changed file names",
-	"ci-gate": "prints only the jobs' results",
+	// ci-template v1.29.3: it runs no git, make or script, only curl and jq
+	// against the Actions API, and its tokens reach curl as a header from a
+	// file descriptor.
+	"schedule-guard": "prints only HTTP codes and run counts",
+	"ci-gate":        "prints only the jobs' results",
 }
 
 const maskStepName = "Mask the forge credentials"

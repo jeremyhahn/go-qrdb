@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -30,7 +30,7 @@ import (
 // included -- reaches the database through the server's MCP tools.
 func TestMCPDatabase_RaftRequestReachesTheService(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := service.NewDatabaseService(mgr)
 	dbwiretest.Seed(t, svc)
@@ -55,7 +55,7 @@ func TestMCPDatabase_RaftRequestReachesTheService(t *testing.T) {
 // removing the block.
 func TestMCPDatabase_AnEmptyBlockIsStillSent(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := service.NewDatabaseService(mgr)
 	dbwiretest.Seed(t, svc)

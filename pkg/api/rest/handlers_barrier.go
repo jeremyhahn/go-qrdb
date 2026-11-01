@@ -82,8 +82,8 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 	// so a deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.Secret)
 
-	// Refuse an initialized barrier before any PIN is compared, then
-	// provision the SO / User PINs. PINs supplied with no backend configured
+	// Refuse an initialize the service would refuse before any PIN is
+	// written or compared, then provision the SO / User PINs. PINs supplied with no backend configured
 	// are refused, never ignored.
 	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, req.SOPin, req.UserPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -115,6 +115,48 @@ func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 	defer secure.Wipe(req.Secret)
 
 	if err := s.barrierSvc.BarrierUnseal(r.Context(), req.Secret); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// barrierChangePassphraseRequest is the JSON payload for
+// POST /v1/barrier/change-passphrase. SOPin is verified by pin.RequireSOPIN
+// exactly as for POST /v1/barrier/seal.
+type barrierChangePassphraseRequest struct {
+	Current []byte `json:"current"`
+	Next    []byte `json:"next"`
+	SOPin   string `json:"so_pin,omitempty"`
+}
+
+// handleBarrierChangePassphrase handles POST /v1/barrier/change-passphrase --
+// re-wraps the root key of the unsealed, passphrase-sealed barrier under the
+// next passphrase once the current one opens it, under the SO PIN; without a
+// PIN backend it fails closed. Both passphrases are wiped on return.
+func (s *Server) handleBarrierChangePassphrase(w http.ResponseWriter, r *http.Request) {
+	if s.barrierSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "barrier"})
+		return
+	}
+
+	var req barrierChangePassphraseRequest
+	defer func() {
+		secure.Wipe(req.Current)
+		secure.Wipe(req.Next)
+	}()
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	if err := pin.RequireSOPIN(r.Context(), s.pinBackend, req.SOPin); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	if err := s.barrierSvc.BarrierChangePassphrase(r.Context(), req.Current, req.Next); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -190,8 +232,8 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Refuse an initialized barrier before any PIN is compared, then
-	// provision the SO / User PINs. PINs supplied with no backend configured
+	// Refuse an initialize the service would refuse before any PIN is
+	// written or compared, then provision the SO / User PINs. PINs supplied with no backend configured
 	// are refused, never ignored.
 	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, req.SOPin, req.UserPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

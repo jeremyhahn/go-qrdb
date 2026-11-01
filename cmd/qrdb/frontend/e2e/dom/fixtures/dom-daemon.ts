@@ -43,7 +43,7 @@ const DOM_GRPC_PORT = 63013;
  * dedicated port (5273) distinct from the default dev server (5173) so it can
  * run alongside an interactive dev session without proxy-target conflicts.
  */
-export const UI_BASE_URL = "http://localhost:5273";
+export const UI_BASE_URL = "https://localhost:5273";
 
 /** Resolves the qrdbd binary (QRDBD_BIN overrides; falls back to bin/qrdbd). */
 function qrdbdBin(): string {

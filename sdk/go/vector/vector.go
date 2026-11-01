@@ -33,7 +33,7 @@ var NewPebbleVectorStorage = vector.NewPebbleVectorStorage
 type VectorStorageOption = vector.StorageOption
 
 // VectorStorageWithEncryptor returns a VectorStorageOption that wraps the
-// Pebble vfs.FS with barrier-driven AES-256-GCM encryption. A nil enc or
+// store's filesys.FS with barrier-driven AES-256-GCM encryption. A nil enc or
 // an enc whose barrier is nil is a no-op, preserving plaintext operation.
 func VectorStorageWithEncryptor(enc *atrest.Encryptor) VectorStorageOption {
 	return vector.WithEncryptor(enc)

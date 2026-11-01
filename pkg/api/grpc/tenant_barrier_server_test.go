@@ -617,10 +617,18 @@ func TestTenantBarrier_AllHandlers_Interceptor(t *testing.T) {
 	if _, err := c.Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"}); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
+	if _, err := c.SignedInitBegin(context.Background(), &pb.TenantBarrierSignedInitBeginRequest{TenantId: "acme", PublicKey: []byte("k")}); err != nil {
+		t.Fatalf("SignedInitBegin: %v", err)
+	}
+	if _, err := c.SignedInitComplete(context.Background(), &pb.TenantBarrierSignedInitCompleteRequest{TenantId: "acme", Reference: []byte("r"), Signature: []byte("s")}); err != nil {
+		t.Fatalf("SignedInitComplete: %v", err)
+	}
 
 	for _, m := range []string{
 		"/qrdb.v1.TenantBarrierService/InitBegin",
 		"/qrdb.v1.TenantBarrierService/InitComplete",
+		"/qrdb.v1.TenantBarrierService/SignedInitBegin",
+		"/qrdb.v1.TenantBarrierService/SignedInitComplete",
 		"/qrdb.v1.TenantBarrierService/Unseal",
 		"/qrdb.v1.TenantBarrierService/Seal",
 		"/qrdb.v1.TenantBarrierService/Status",

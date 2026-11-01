@@ -74,31 +74,34 @@ func TestClusteredNode_ProposalsAndReadIndexReachMetricsGatherer(t *testing.T) {
 		t.Fatalf("shared collector does not serve %s", electionFamily)
 	}
 
+	// go-quicraft records a request's latency on its own path once the
+	// request completes, and nothing orders that observation before the
+	// caller's result returns: the read-index sample is observed after the
+	// reader is woken (once pendingReadsMu is released), and CI run 70098
+	// read the proposal count unchanged (701 -> 701) just after Put returned.
+	// Wait for each sample through the histogram, within the test's budget.
+	waitForSample := func(family string, before uint64, across string) {
+		t.Helper()
+		after, _ := syncwatchtest.HistogramSample(t, registry, family, "", "")
+		for after <= before {
+			select {
+			case <-ctx.Done():
+				t.Fatalf("%s sample count %d -> %d across %s: %v", family, before, after, across, ctx.Err())
+			case <-time.After(clusterPollInterval):
+			}
+			after, _ = syncwatchtest.HistogramSample(t, registry, family, "", "")
+		}
+	}
+
 	proposalsBefore, _ := syncwatchtest.HistogramSample(t, registry, proposalFamily, "", "")
 	if err := putUntilCommitted(ctx, n.Client().KV(), "metrics/probe", []byte("w")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if after, _ := syncwatchtest.HistogramSample(t, registry, proposalFamily, "", ""); after <= proposalsBefore {
-		t.Fatalf("%s sample count %d -> %d across a committed write", proposalFamily, proposalsBefore, after)
-	}
+	waitForSample(proposalFamily, proposalsBefore, "a committed write")
 
 	readsBefore, _ := syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", "")
-	if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
+	if err := readIndexOnce(ctx, n.host.(*quicraft.Host)); err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
-	// go-quicraft wakes the reader before it observes the read's latency
-	// (the observation runs once pendingReadsMu is released), so the sample
-	// can land just after Result returns: wait for it, within a read's
-	// budget.
-	landed, cancelLanded := context.WithTimeout(context.Background(), firstReadBudget)
-	defer cancelLanded()
-	after, _ := syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", "")
-	for after <= readsBefore {
-		select {
-		case <-landed.Done():
-			t.Fatalf("%s sample count %d -> %d across a linearizable read: %v", readIndexFamily, readsBefore, after, landed.Err())
-		case <-time.After(clusterPollInterval):
-		}
-		after, _ = syncwatchtest.HistogramSample(t, registry, readIndexFamily, "", "")
-	}
+	waitForSample(readIndexFamily, readsBefore, "a linearizable read")
 }

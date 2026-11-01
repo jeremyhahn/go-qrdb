@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
@@ -306,7 +307,7 @@ func TestNewServer_WithDatabaseManager(t *testing.T) {
 	adminSvc := &mockAdminService{}
 
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithDatabaseManager(mgr))
@@ -330,7 +331,7 @@ func TestStartStop_WithDatabaseManager(t *testing.T) {
 	adminSvc := &mockAdminService{}
 
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Create a database in the manager so the provider has something
@@ -466,7 +467,7 @@ func TestStartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing.T) {
 	adminSvc := &mockAdminService{}
 
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Owned by the tenant the query runs as: a session sees only its own
@@ -506,7 +507,7 @@ func TestStartStop_WithCollectionService_ListsCollection(t *testing.T) {
 	adminSvc := &mockAdminService{}
 
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Owned by the tenant the query runs as: a session sees only its own

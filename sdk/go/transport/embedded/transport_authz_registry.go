@@ -123,6 +123,7 @@ var operationPermissions = map[string]permission.Permission{
 
 	// Vector
 	"CreateNamespace":       permission.VectorNamespaceCreate,
+	"UpdateNamespace":       permission.VectorNamespaceUpdate,
 	"DeleteNamespace":       permission.VectorNamespaceDelete,
 	"ListNamespaces":        permission.VectorNamespaceList,
 	"GetNamespaceInfo":      permission.VectorNamespaceInfo,
@@ -301,6 +302,7 @@ var operationPermissions = map[string]permission.Permission{
 	// tenant owns). Share-claim and quorum routes are IdentityGated, not
 	// here -- see transport_barrier.go.
 	"BarrierSeal":                 permission.SealSeal,
+	"BarrierChangePassphrase":     permission.SealRekey,
 	"BarrierClusterUnseal":        permission.SealUnseal,
 	"BarrierStatus":               permission.SealStatus,
 	"BarrierGenerateRecoveryKeys": permission.SealGenerateRecovery,

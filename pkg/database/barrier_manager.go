@@ -19,22 +19,25 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // DatabaseBarrierManager manages per-database encryption barriers. Each
 // database with barrier encryption enabled gets its own barrier, providing
 // cryptographic isolation between databases.
 //
-// The barriers live in a registry of the manager's own, keyed by database
-// name, never in the seal subsystem's tenant registry: a database named like
-// a tenant would otherwise resolve to that tenant's barrier, so sealing or
-// reading the status of one's own database would seal or describe another
-// tenant's barrier.
+// The barriers live in a registry of the manager's own, keyed by the
+// database's tenant and name (barrierKey), never in the seal subsystem's
+// tenant registry: a database named like a tenant would otherwise resolve to
+// that tenant's barrier, so sealing or reading the status of one's own
+// database would seal or describe another tenant's barrier. Two tenants may
+// each hold a database of one name, and each has a barrier of its own.
 type DatabaseBarrierManager struct {
 	logger   *slog.Logger
 	registry *seal.BarrierRegistry
@@ -44,7 +47,7 @@ type DatabaseBarrierManager struct {
 	holderMu   sync.Mutex
 	holderDeps *ceremony.HolderDeps
 	// holders is the holder authority of every Shamir database barrier,
-	// keyed by database name.
+	// keyed by barrierKey.
 	holders *ceremony.ScopedCeremonyRegistry
 	// auditTrail is the compliance trail every database barrier records its
 	// events on, keyed by the database's tenant (WithBarrierAuditTrail).
@@ -142,6 +145,20 @@ func NewDatabaseBarrierManager(logger *slog.Logger, system *seal.StorageBarrier,
 	return m, nil
 }
 
+// barrierKey is the registry and holder key of dbName's barrier in tenantID:
+// the database's tenant, then its name, so two tenants holding one name hold
+// two barriers. A tenant ID never contains a '/' (the tenant package refuses
+// one), so the first '/' splits the key back (splitBarrierKey).
+func barrierKey(dbName, tenantID string) string {
+	return tenantid.Normalize(tenantID) + "/" + dbName
+}
+
+// splitBarrierKey returns the database name and tenant barrierKey joined.
+func splitBarrierKey(key string) (dbName, tenantID string) {
+	tenantID, dbName, _ = strings.Cut(key, "/")
+	return dbName, tenantID
+}
+
 // barrierConfig is the BarrierConfig of dbName's barrier in tenantID: its
 // root-key path, and its trail on the compliance audit.
 func (m *DatabaseBarrierManager) barrierConfig(dbName, tenantID string) seal.BarrierConfig {
@@ -185,17 +202,19 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 	}
 
 	barrierCfg := m.barrierConfig(dbName, tenantID)
+	key := barrierKey(dbName, tenantID)
 
-	_, err = m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
+	_, err = m.registry.RegisterTenant(ctx, key, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 
-	if err := m.registry.InitializeTenant(ctx, dbName, creds); err != nil {
+	if err := m.registry.InitializeTenant(ctx, key, creds); err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 
 	m.logger.Info("database barrier initialized",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName))
 
 	return nil
@@ -235,39 +254,40 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 	// RegisterBarrier always supplies a real backend, so the pool path
 	// is never engaged here. context.Background is sufficient because
 	// RegisterTenant only consults ctx on the pool path.
-	_, err = m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
+	_, err = m.registry.RegisterTenant(context.Background(), barrierKey(dbName, tenantID), storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 
 	m.logger.Info("database barrier registered (sealed)",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName))
 
 	return nil
 }
 
-// GetBarrier returns the BarrierEncryptor for the named database.
+// GetBarrier returns the BarrierEncryptor for the named database of tenantID.
 // The returned encryptor wraps the EpochBarrier from the StorageBarrier,
 // providing Encrypt/Decrypt/IsSealed for transparent data encryption.
 // Returns nil if the database is not registered in the barrier registry.
-func (m *DatabaseBarrierManager) GetBarrier(dbName string) BarrierEncryptor {
-	tb, err := m.registry.GetTenant(dbName)
+func (m *DatabaseBarrierManager) GetBarrier(dbName, tenantID string) BarrierEncryptor {
+	tb, err := m.registry.GetTenant(barrierKey(dbName, tenantID))
 	if err != nil {
 		return nil
 	}
 	return tb.Barrier().EpochBarrier()
 }
 
-// SealDatabase seals the encryption barrier for the named database,
-// blocking all further encrypted storage operations until the barrier
-// is unsealed.
-func (m *DatabaseBarrierManager) SealDatabase(dbName string) error {
+// SealDatabase seals the encryption barrier for the named database of
+// tenantID, blocking all further encrypted storage operations until the
+// barrier is unsealed.
+func (m *DatabaseBarrierManager) SealDatabase(dbName, tenantID string) error {
 	// A Shamir barrier is sealed by a quorum of its holders, never by one
 	// caller, as the system barrier is.
-	if m.RequiresQuorum(dbName) {
+	if m.RequiresQuorum(dbName, tenantID) {
 		return &BarrierSealError{Name: dbName, Err: seal.ErrShamirBarrierRequiresQuorum}
 	}
-	return m.SealAuthorized(dbName)
+	return m.SealAuthorized(dbName, tenantID)
 }
 
 // SealAll seals every database barrier this manager holds -- the database
@@ -285,74 +305,85 @@ func (m *DatabaseBarrierManager) SealAll() error {
 // SetUnsealGate makes the node unseal leave sealed every database for which
 // refuses reports true -- the composer passes the cluster seal's verdict on
 // the database's record -- as seal.WithTenantUnsealGate does for tenants.
-func (m *DatabaseBarrierManager) SetUnsealGate(refuses func(dbName string) bool) {
-	m.registry.Attach(seal.WithTenantUnsealGate(refuses))
+// refuses is asked with the database's name and tenant.
+func (m *DatabaseBarrierManager) SetUnsealGate(refuses func(dbName, tenantID string) bool) {
+	m.registry.Attach(seal.WithTenantUnsealGate(func(key string) bool {
+		return refuses(splitBarrierKey(key))
+	}))
 }
 
-// UnsealRefused reports whether the node unseal would leave dbName sealed
-// because the unseal gate refuses it (SetUnsealGate). Without a gate it
-// refuses none.
-func (m *DatabaseBarrierManager) UnsealRefused(dbName string) bool {
-	return m.registry.TenantUnsealRefused(dbName)
+// UnsealRefused reports whether the node unseal would leave the named
+// database of tenantID sealed because the unseal gate refuses it
+// (SetUnsealGate). Without a gate it refuses none.
+func (m *DatabaseBarrierManager) UnsealRefused(dbName, tenantID string) bool {
+	return m.registry.TenantUnsealRefused(barrierKey(dbName, tenantID))
 }
 
 // PendingUnseals returns the databases the last node seal sealed whose
 // unseal with the node barrier has not succeeded, each with the error of its
-// last attempt (seal.BarrierRegistry.PendingTenantUnseals).
+// last attempt (seal.BarrierRegistry.PendingTenantUnseals), keyed by
+// "<tenant>/<database>".
 func (m *DatabaseBarrierManager) PendingUnseals() map[string]error {
 	return m.registry.PendingTenantUnseals()
 }
 
-// RequiresQuorum reports whether dbName's barrier is sealed only by a quorum
-// of its share holders (a Shamir barrier), not by one caller.
-func (m *DatabaseBarrierManager) RequiresQuorum(dbName string) bool {
-	_, ok := m.holders.Get(dbName)
+// RequiresQuorum reports whether the barrier of tenantID's dbName is sealed
+// only by a quorum of its share holders (a Shamir barrier), not by one
+// caller.
+func (m *DatabaseBarrierManager) RequiresQuorum(dbName, tenantID string) bool {
+	_, ok := m.holders.Get(barrierKey(dbName, tenantID))
 	return ok
 }
 
-// SealAuthorized seals dbName's barrier whatever its strategy. Its callers
-// carry the authority themselves: a completed holder quorum, or the cluster
-// seal record a node enforces. A single caller seals through SealDatabase.
-func (m *DatabaseBarrierManager) SealAuthorized(dbName string) error {
-	if err := m.registry.SealTenant(dbName); err != nil {
+// SealAuthorized seals the barrier of tenantID's dbName whatever its
+// strategy. Its callers carry the authority themselves: a completed holder
+// quorum, or the cluster seal record a node enforces. A single caller seals
+// through SealDatabase.
+func (m *DatabaseBarrierManager) SealAuthorized(dbName, tenantID string) error {
+	if err := m.registry.SealTenant(barrierKey(dbName, tenantID)); err != nil {
 		return &BarrierSealError{Name: dbName, Err: err}
 	}
 	m.logger.Info("database barrier sealed",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName))
 	return nil
 }
 
-// UnsealDatabase unseals the encryption barrier for the named database,
-// restoring access to its encrypted storage.
+// UnsealDatabase unseals the encryption barrier for the named database of
+// tenantID, restoring access to its encrypted storage.
 func (m *DatabaseBarrierManager) UnsealDatabase(
 	ctx context.Context,
-	dbName string,
+	dbName, tenantID string,
 	creds seal.Credentials,
 ) error {
-	if err := m.registry.UnsealTenant(ctx, dbName, creds); err != nil {
+	if err := m.registry.UnsealTenant(ctx, barrierKey(dbName, tenantID), creds); err != nil {
 		return &BarrierUnsealError{Name: dbName, Err: err}
 	}
 	m.logger.Info("database barrier unsealed",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName))
 	return nil
 }
 
 // BarrierStatus returns the current status of the encryption barrier
-// for the named database.
-func (m *DatabaseBarrierManager) BarrierStatus(dbName string) (*seal.BarrierStatus, error) {
-	return m.registry.TenantStatus(dbName)
+// for the named database of tenantID.
+func (m *DatabaseBarrierManager) BarrierStatus(dbName, tenantID string) (*seal.BarrierStatus, error) {
+	return m.registry.TenantStatus(barrierKey(dbName, tenantID))
 }
 
 // RemoveBarrier seals and removes the encryption barrier for the named
-// database. The barrier is closed and unregistered from the registry.
-func (m *DatabaseBarrierManager) RemoveBarrier(dbName string) error {
+// database of tenantID. The barrier is closed and unregistered from the
+// registry.
+func (m *DatabaseBarrierManager) RemoveBarrier(dbName, tenantID string) error {
+	key := barrierKey(dbName, tenantID)
 	// A Shamir barrier's holder authority goes with it: every envelope still
 	// held for its holders and every pending challenge is destroyed.
-	m.holders.Delete(dbName)
-	if err := m.registry.RemoveTenant(dbName); err != nil {
+	m.holders.Delete(key)
+	if err := m.registry.RemoveTenant(key); err != nil {
 		return err
 	}
 	m.logger.Info("database barrier removed",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName))
 	return nil
 }

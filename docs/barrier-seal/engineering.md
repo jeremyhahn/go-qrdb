@@ -25,6 +25,28 @@ and on the embedded node (`sdk/go/node`):
 
 ```go
 func WithSealStrategy(strategy seal.SealingStrategy) NodeOption     // a pre-built strategy, registered under its ID
+func WithSealPassphrase(passphrase []byte) NodeOption               // initializes on first boot, unseals after
+func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error
+func (n *Node) ChangePassphrase(ctx context.Context, current, next seal.Credentials) error
+```
+
+`Node.Unseal` initializes an uninitialized system barrier and unseals an
+initialized one. `Node.ChangePassphrase` re-wraps the system barrier's root
+key under `next` through `StorageBarrier.ChangePassword`; it returns
+`ErrSealNotEnabled` on a node without a seal barrier.
+
+The passphrase change on the client surface:
+
+```go
+// sdk/go/transport
+type BarrierChangePassphraseRequest struct{ Current, Next []byte } // both wiped by the caller
+func (BarrierClient) BarrierChangePassphrase(ctx context.Context, req *BarrierChangePassphraseRequest) error // sends the SO PIN bound by WithSOPIN
+
+// pkg/service
+func (s *BarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error
+
+// pkg/seal
+func (b *StorageBarrier) ChangePassword(ctx context.Context, current, next Credentials) error
 ```
 
 The system barrier resolves its strategies through a registry, the same seam
@@ -569,6 +591,21 @@ services and to the server, which wraps the node's sealed-window probe with
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
   close it.
+- **An encrypted Pebble store refuses work once its barrier seals, with a
+  typed error.** A sealed barrier refuses every file `encfs` would create, and
+  Pebble retries a refused flush at once and forever and panics when it cannot
+  create its next WAL file. Every Pebble database under a barrier opens
+  through `pebble.Open` in `pkg/storage/pebble`, which attaches a `SealWatch`:
+  it logs the first sealed background error of an episode and counts the rest,
+  and its `Flush` and `Check` return a `*SealedError` wrapping
+  `ErrBarrierSealed` instead of waiting. `PebbleStorage` checks before every
+  flush, durable write and compaction, and the state machines' `Sync` flushes
+  through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
+  node closes its own data-plane store before it seals its barriers, so a
+  clean `Close` never meets the refusal. The check and Pebble's next file
+  creation are not atomic, so a seal landing between them is still a crash;
+  closing that window is the planned seal-quiesce row in
+  [SPEC.md](../SPEC.md).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -735,6 +772,15 @@ re-encrypted with the WAL into a keyed sibling, recorded in the journal's
 `StagedSnapshots`, and renamed into place once the swaps commit. A
 verification mismatch rolls the migration back before any swap, leaving every
 store under the old key.
+
+A standalone node whose `pebble` store keeps its write-ahead log outside the
+store directory (`storage.wal_dir` naming another directory) is refused
+before anything is minted or quiesced, with `MigrationNotSupportedError`
+naming `storage.wal_dir`. The migration copies, verifies and swaps the store
+directory alone: records still only in the external WAL would be lost, and
+that WAL would stay under the old encryption. A node that will migrate keeps
+`storage.wal_dir` empty from its first boot: Pebble refuses to reopen a store
+whose WAL directory has changed.
 
 ### A tenant-scope migration right after a system-scope recycle
 
@@ -947,7 +993,11 @@ above the previous turn's.
 coordinating leader while the second owner holds its turn, and starts it
 again. Every node, over every transport, then reports the same generation and
 the same steps as before the stop. The restarted node, leading again, hands
-that turn on. Its own turn comes last and waits for its credential file,
+that turn on. Raft does not keep a leader in place: a leader that loses its
+quorum steps down, and the node elected then hands the turn on from the
+record instead. So the test looks for the hand-on in every node's log since
+the restart, and accepts another node's only when the restarted node's log
+shows it stepped down (`leader lost` on shard 1). Its own turn comes last and waits for its credential file,
 because the restart discarded the request credential. The rollout ends with
 one hand-on per owner. A stale coordinator's conditional write, which
 loses and is decided again on the record it re-reads, and a shard with no
@@ -1069,7 +1119,7 @@ adapter: `PutIf` is a `service.WriteGuard` comparing the key's value to
 
 The activation check `NewBook` and `tenant.WithPerNodeBarrierKeysGate` take
 returns the refusal itself: the composer builds the
-`*featuregate.NotActiveError`, so neither package imports `pkg/cluster` and a
+`*feature.NotActiveError`, so neither package imports `pkg/cluster` and a
 lean standalone build does not compile cluster code through them.
 
 `featuregate.PerNodeBarrierKeys` is in the supported set, so every binary
@@ -1077,7 +1127,7 @@ advertises it and adopts its activation record. `pkg/server/lifecycle` builds
 the check once per node (`perNodeBarrierKeysRequired`): nil on a host that is
 not a `service.FeatureGatedHost` — a standalone node, which gates nothing —
 and otherwise a function that returns
-`*featuregate.NotActiveError{Feature: per-node-barrier-keys}` until
+`*feature.NotActiveError{Feature: per-node-barrier-keys}` until
 `FeatureEnabled(0, PerNodeBarrierKeys)` holds cluster-wide. The same check is
 passed to `tenant.WithPerNodeBarrierKeysGate` and to the book, so neither an
 isolated tenant nor a statement is admitted before every member can
@@ -1277,7 +1327,15 @@ key.
 | `enable-encryption` on a node that cannot migrate (see above) | refused before any teardown, `ErrMigrationProviderUnavailable` | **yes** |
 | tenant `enable-encryption` while a system migration is rebuilding the data plane | `DataPlaneRecyclingError`, `503` / `Unavailable`; retry | **yes** |
 | `enable-encryption` queued on an embedded node when `Close` begins | refused, not queued: `service.ErrNodeClosed`, `503` / `Unavailable` | **yes** |
-| Wrong passphrase on unseal | refused; barrier stays sealed | **yes** |
+| Wrong passphrase on unseal | refused; barrier stays sealed (`seal.ErrDecryptionFailed`, inside `*node.UnsealError` for `Node.Unseal`) | **yes** |
+| Unseal of a barrier never initialized | `seal.ErrNotInitialized` (`BARRIER_NOT_INITIALIZED` on QUIC and MCP), never `ErrCorruptRootKey` | **yes** |
+| Passphrase change whose current passphrase does not open the persisted root key | `seal.ErrCredentialMismatch`; nothing written | **yes** |
+| Passphrase change whose blob was replaced between the check and the write | `seal.ErrPassphraseChangeConflict`; nothing written; retry | **yes** |
+| Passphrase change while another rewrite of the root key, such as a second change, is in flight | `seal.ErrRootKeyWriteInProgress`, `409` / `Aborted` (`BARRIER_ROOT_KEY_WRITE_IN_PROGRESS`); nothing written; retry | **yes** |
+| Passphrase change on a store without a guarded swap | `seal.ErrGuardedSwapUnsupported`; never an unguarded write | **yes** |
+| Passphrase change on a node with no seal barrier (`Node.ChangePassphrase`) | `node.ErrSealNotEnabled` | **yes** |
+| Passphrase change with no PIN backend configured | `pin.ErrBackendNotConfigured`, `412` / `FailedPrecondition`; the barrier is not reached | **yes** |
+| Passphrase change with a missing or wrong SO PIN | refused, `401` / `Unauthenticated`; the barrier is not reached | **yes** |
 | System shard electing during a seal or clear | retried within one 15 s `SettleBudget`; succeeds once a leader serves | **yes** |
 | Seal record not confirmed | the receiving node is sealed; `RecordNotConfirmedError` | **yes** |
 | Tenant or database unseal whose clear record cannot be written | the barrier is sealed again; `RecordNotConfirmedError` | **yes** |
@@ -1296,7 +1354,7 @@ key.
 | Raft-isolated tenant barrier unseal with no recorded statement | `*tenant.InitStatementMissingError`; stays sealed | **yes** |
 | Tenant barrier unseal whose statement names `system-barrier` for a tenant its owner keeps custody of | `tenant.ErrNotPlatformCustody` inside `tenant.BarrierError{Op: unseal}`; stays sealed (`TestTenantBarrierUnseal_PlatformStatementForAnOwnersBarrier`) | **yes** |
 | Statement record for a barrier level the node cannot yet self-initialise | `*lifecycle.UnsupportedBarrierKindError`; retried on the next poll | **yes** |
-| Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*featuregate.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
+| Isolated tenant create or update, or a statement recorded, before `per-node-barrier-keys` is active | `*feature.NotActiveError{Feature: per-node-barrier-keys}`; nothing written. A standalone node never raises it | **yes** |
 | Node lease expired, or no read since start | node gate refuses as `SEAL_STATE_UNCONFIRMED`, never `SEALED` (`sealedwindow.StateProbe`, `TestClusterSeal_LapsedLeaseIsUnconfirmedNotSealed`); streams end with `SealStateUnconfirmedError`; keys kept | **yes** |
 | Enforcement step fails on a node (shard close, key wipe) | logged and retried on the next poll; the gate stays closed | **yes** |
 | Platform operator seals or unseals a tenant's barrier | `403` (`tenant_barrier:*` are tenant-only) and `TenantScopeError` in the service | **yes** |
@@ -1668,6 +1726,22 @@ distinguishes them.
   `barrier-seal` leg of the `integration-features` job
   (`make integration-test-barrier-seal`), part of the result gate, tenant-scope
   case included.
+- **Passphrase change**: `pkg/seal` proves the old passphrase is checked, the
+  load generation kept and the swap guarded; `pkg/service` and every transport
+  (REST, gRPC, Unix, QUIC with its `so_pin` carrier, MCP, embedded) prove the
+  call and its typed refusals. Each server transport's
+  `*ChangePassphrase*RequiresSOPIN` test and the embedded transport's prove the
+  SO PIN gate: no PIN backend, a missing and a wrong PIN are refused before the
+  barrier service is reached, the right PIN reaches it; the shared SO PIN
+  conformance suite (`sdk/go/transport/internal/sotest`) proves the gRPC, Unix,
+  REST, QUIC and MCP SDK clients carry the bound PIN. `sdk/go/node`'s
+  `TestNode_ChangePassphrase_EmbedderFlow` initializes through `Node.Unseal`,
+  changes the passphrase and reboots: the old passphrase is
+  `seal.ErrDecryptionFailed`, the new one unseals, and an error-level log
+  handler records nothing. `TestBarrierCLI_ChangePassphrase_PerProtocol`
+  drives the CLI on all five network transports: a pre-init unseal is
+  `barrier not initialized`, a wrong current passphrase is the credential
+  mismatch, and after a seal only the new passphrase unseals.
 - **Feature target**: `make integration-test-barrier-seal` runs this feature's
   self-spawned suites (`test/integration/features.mk`, no Docker). The
   per-transport accounting, including the embedded-transport gap, is the
@@ -1758,10 +1832,45 @@ database's backend *is* the node's store. `objstore` is a node-store backend
 only: the database manager refuses to open a database with it
 (`database.InvalidBackendError`).
 
+### `seal.enabled: false` barrier service
+
+A seal-disabled node still serves the barrier verbs. Protection `none` is a
+valid barrier, not a missing one, so a caller that asks a seal-disabled node
+for `BarrierStatus` gets an answer on every transport (REST, gRPC, QUIC,
+Unix, MCP and in process), not "barrier service is not configured".
+`lifecycle.BuildServices` sets `Services.Barrier` to
+`service.NewSealDisabledBarrierService` when `!infra.SealEnabled`. Every
+composer wires the barrier routes from that field, so `qrdbd` and both
+`sdk/go/node` builders (`NewStandaloneNode`, `NewClusteredNode`) get the same
+service from one place. No node option turns it on.
+
+The service reads its status from a `StorageBarrier` over `seal.StrategyNone`,
+initialized on a private in-memory backend that nothing else reads:
+
+| Verb | Answer |
+|------|--------|
+| `BarrierStatus` | strategy `none`, initialized, unsealed, not hardware-backed; `initialized_at` is zero, because no one initialized it, so `/v1/config/initialized` reads as before |
+| `BarrierInitialized` | true |
+| `BarrierHasRecoveryKeys` | false |
+| `BarrierOfficerList` | an empty list |
+| every verb that changes a barrier (initialize, unseal, seal, change passphrase, cluster unseal, Shamir initialize, recovery keys, officer register/revoke, share claim, quorum, rekey) | `*service.SealDisabledError`, classified `FailedPrecondition` (409 over REST) |
+
+The changing verbs are refused because the barrier guards nothing: the node's
+data never passes through it. A `seal` that succeeded would report a sealed
+node whose data was still readable. The barrier logs to a discard handler for
+the same reason, since go-quicraft's `StrategyNone` WARN would describe a
+barrier the node does not have. The node reports running unencrypted with the
+startup warning below.
+
+A barrier that was *requested* but failed to construct (`SealEnabled` true,
+`SealBarrier` nil) gets no barrier service. It is a failure, not protection
+`none`, and reporting it as an unsealed `none` barrier would hide it.
+
 ### `seal.enabled: false` startup warning
 
-`seal.enabled: false` is not a barrier operation — there is no barrier
-instance to audit — so it is not in the table above. `lifecycle.BuildServices`
+`seal.enabled: false` is not a barrier operation — the barrier service above
+guards nothing, so there is nothing to audit — so it is not in the table
+above. `lifecycle.BuildServices`
 is the single construction path `cmd/qrdbd`, the embedded `sdk/go/node`
 composer, and the Wails GUI's `cmd/qrdb` composer all call on every
 successful boot, sealed or not, so it is where the warning is logged exactly

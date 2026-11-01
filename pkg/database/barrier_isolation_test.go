@@ -46,13 +46,13 @@ func TestDatabaseBarrierManager_DoesNotReachATenantBarrier(t *testing.T) {
 	}
 
 	// The database "acme" has no barrier of its own.
-	if err := mgr.SealDatabase("acme"); err == nil {
+	if err := mgr.SealDatabase("acme", ""); err == nil {
 		t.Fatal("sealing a database with no barrier succeeded")
 	}
-	if mgr.GetBarrier("acme") != nil {
+	if mgr.GetBarrier("acme", "") != nil {
 		t.Fatal("a database with no barrier resolved an encryptor")
 	}
-	if _, err := mgr.BarrierStatus("acme"); err == nil {
+	if _, err := mgr.BarrierStatus("acme", ""); err == nil {
 		t.Fatal("a database with no barrier reported a barrier status")
 	}
 

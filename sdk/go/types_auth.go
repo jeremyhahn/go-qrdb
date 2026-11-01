@@ -18,7 +18,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,13 @@ var WithRBACCacheTTL = rbac.WithCacheTTL
 // the Owner role is not honored. The daemon enables it in FIPS mode.
 // (Aliases pkg/auth/rbac.WithStrictSeparation.)
 var WithRBACStrictSeparation = rbac.WithStrictSeparation
+
+// ResolveStrictSeparation resolves the separation-of-duties posture from the
+// auth.separation_of_duties setting: FIPS 140-3 mode forces it on, otherwise
+// the setting selects it. It is the resolution the daemon and sdk/go/node
+// apply at start; a started node reports its result through
+// node.Node.StrictSeparation. (Aliases pkg/auth/wiring.ResolveStrictSeparation.)
+var ResolveStrictSeparation = wiring.ResolveStrictSeparation
 
 // WithRBACRoleServiceFallback installs a stale-read role store consulted for
 // the system tenant when the linearizable resolve fails transiently.
@@ -313,6 +322,18 @@ var IsServicePrincipal = auth.IsServicePrincipal
 // produced it. It matches ErrUnauthenticated under errors.Is, so transports
 // answer 401 / Unauthenticated.
 type ServicePrincipalPresentedError = authmw.ServicePrincipalPresentedError
+
+// StoreUnavailableError is the authentication middleware's refusal when the
+// user store could not answer. Every transport answers 503 / Unavailable, and
+// the request may be retried.
+type StoreUnavailableError = authmw.StoreUnavailableError
+
+// IsLeadershipTransient reports whether err is a shard electing a leader or
+// its leader moving: a state the next attempt, after the election, does not
+// share. An authentication refused for this reason answers 503 / Unavailable
+// on every transport, never a credential failure. (Aliases
+// pkg/service.LeadershipTransient.)
+var IsLeadershipTransient = service.LeadershipTransient
 
 // ---------------------------------------------------------------------------
 // Auth context helpers

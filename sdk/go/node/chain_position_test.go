@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -229,15 +228,4 @@ func enrolChainClient(t *testing.T, n *Node, ca *qrdbdharness.CA) callerCredenti
 	_, err = n.Services().User.AddCertBinding(ctx, u.ID, user.ComputeSPKIThumbprint(leaf), 0)
 	require.NoError(t, err)
 	return callerCredential{cert: &cert}
-}
-
-// freeUDPPort returns a UDP port free at the time of the call, for the QUIC
-// listener.
-func freeUDPPort(t *testing.T) int {
-	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := pc.LocalAddr().(*net.UDPAddr).Port
-	require.NoError(t, pc.Close())
-	return port
 }

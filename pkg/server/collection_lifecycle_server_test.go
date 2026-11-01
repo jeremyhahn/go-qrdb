@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -219,7 +220,7 @@ func TestCollectionSweeper_RunUsesIntervalTicker(t *testing.T) {
 // node-local catalog -- its work is found through the store's journal -- and a
 // tenant enumeration that fails fails the pass.
 func TestServer_CollectionSweepTargets_TenantsAndDatabases(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, cfg := range []database.DatabaseConfig{
 		{Name: "reports", Backend: database.BackendMemory},

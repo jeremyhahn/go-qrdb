@@ -228,3 +228,46 @@ func TestBarrierHandlers_SOPINGated_ServiceRefusals(t *testing.T) {
 		}
 	}
 }
+
+// TestBarrierHandlers_ChangePassphrase_RequiresSOPIN verifies the passphrase
+// change is SO-gated like every other custody operation: no PIN backend is
+// 412, a missing or wrong SO PIN 401, and in none of those is the barrier
+// service reached; the right SO PIN reaches it.
+func TestBarrierHandlers_ChangePassphrase_RequiresSOPIN(t *testing.T) {
+	provisioned := func() pin.PINBackend {
+		backend := newStubPINBackend()
+		backend.storedSOPIN, backend.soPINSet = "so-1234", true
+		return backend
+	}
+	cases := map[string]struct {
+		backend pin.PINBackend
+		soPIN   string
+		want    int
+	}{
+		"no pin backend": {nil, "so-1234", http.StatusPreconditionFailed},
+		"missing pin":    {provisioned(), "", http.StatusUnauthorized},
+		"wrong pin":      {provisioned(), "wrong", http.StatusUnauthorized},
+		"right pin":      {provisioned(), "so-1234", http.StatusNoContent},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := &mockBarrierService{
+				changePassphraseFn: func(context.Context, []byte, []byte) error {
+					called = true
+					return nil
+				},
+			}
+			srv := newBarrierPINTestServer(t, svc, tc.backend)
+			body := fmt.Sprintf(`{"current":"b2xk","next":"bmV3","so_pin":%q}`, tc.soPIN)
+			req := httptest.NewRequest(http.MethodPost, "/v1/barrier/change-passphrase", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, req)
+
+			assertStatus(t, rec, tc.want)
+			if reached := tc.want == http.StatusNoContent; called != reached {
+				t.Fatalf("service reached = %v, want %v", called, reached)
+			}
+		})
+	}
+}

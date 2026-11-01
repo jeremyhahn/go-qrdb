@@ -23,8 +23,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -1539,7 +1538,7 @@ func TestMkdirAllDurable_MkdirErrorPropagates(t *testing.T) {
 // own first error path: an engine root that no longer exists, so the temp
 // file cannot be created in it.
 func TestWriteFormatMarker_CreateTempErrorPropagates(t *testing.T) {
-	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: filesys.Default, atRest: atRestPlaintext}
 	if err := e.writeFormatMarker(); err == nil {
 		t.Fatal("expected an error creating the marker's temp file in a missing root, got nil")
 	}
@@ -1559,7 +1558,7 @@ func TestWriteFormatMarker_RenameErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext}
 	if err := e.writeFormatMarker(); err == nil {
 		t.Fatal("expected writeFormatMarker to fail renaming onto a non-empty directory")
 	}

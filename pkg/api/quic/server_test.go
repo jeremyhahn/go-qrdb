@@ -235,7 +235,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"ts.DeleteSeries": true, "ts.GetRetention": true,
 		"ts.SetRetention": true, "ts.ListMetrics": true,
 		// Vector
-		"vector.CreateNamespace": true, "vector.DeleteNamespace": true,
+		"vector.CreateNamespace": true, "vector.UpdateNamespace": true, "vector.DeleteNamespace": true,
 		"vector.ListNamespaces": true, "vector.GetNamespaceInfo": true,
 		"vector.Upsert": true, "vector.Get": true, "vector.Delete": true,
 		"vector.BatchUpsert": true, "vector.BatchDelete": true,
@@ -257,9 +257,10 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.Update": true, "role.Delete": true, "role.List": true,
 		"role.Assign": true, "role.Unassign": true,
 		"role.ListPermissions": true, "role.ResolvePermissions": true,
-		"role.ListOwnPermissions": true,
-		"role.Authorize":          true,
-		"role.ReconcileBuiltIn":   true,
+		"role.ListOwnPermissions":         true,
+		"role.Authorize":                  true,
+		"role.ReconcileBuiltIn":           true,
+		"role.ReconcileBuiltInAllTenants": true,
 		// Certificate management
 		"cert.Issue": true, "cert.Enroll": true, "cert.Delegate": true,
 		"cert.Revoke": true, "cert.List": true,
@@ -283,7 +284,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// SQL
 		"sql.Query": true,
 		// Barrier
-		"barrier.Initialize": true, "barrier.Unseal": true,
+		"barrier.Initialize": true, "barrier.Unseal": true, "barrier.ChangePassphrase": true,
 		"barrier.Seal": true, "barrier.Status": true, "barrier.ClusterUnseal": true,
 		"barrier.ShamirInitialize": true,
 		"barrier.RecoveryGenerate": true,
@@ -488,7 +489,7 @@ func TestBuildHandlers_MVCCMethods(t *testing.T) {
 func TestBuildHandlers_VectorMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	vectorMethods := []string{
-		"vector.CreateNamespace", "vector.DeleteNamespace",
+		"vector.CreateNamespace", "vector.UpdateNamespace", "vector.DeleteNamespace",
 		"vector.ListNamespaces", "vector.GetNamespaceInfo",
 		"vector.Upsert", "vector.Get", "vector.Delete",
 		"vector.BatchUpsert", "vector.BatchDelete",
@@ -527,6 +528,7 @@ func TestBuildHandlers_RoleMethods(t *testing.T) {
 		"role.ResolvePermissions",
 		"role.ListOwnPermissions", "role.Authorize",
 		"role.ReconcileBuiltIn",
+		"role.ReconcileBuiltInAllTenants",
 	}
 	for _, m := range roleMethods {
 		if _, ok := srv.handlers[m]; !ok {

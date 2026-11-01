@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -126,7 +127,7 @@ func TestSessionSettings_FallBackToDefaults(t *testing.T) {
 
 func TestManagerSQLConfig_ReadsTheCatalog(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(database.DatabaseConfig{
 		Name: "shop", Backend: database.BackendMemory,
@@ -134,11 +135,11 @@ func TestManagerSQLConfig_ReadsTheCatalog(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resolve := managerSQLConfig(mgr)
+	p := NewManagerProvider(mgr, nil)
+	resolve := p.managerSQLConfig
 	assert.Equal(t, database.ConcurrencyPessimistic, resolve("", "shop").EffectiveConcurrency())
 	assert.Nil(t, resolve("", "missing"))
 
-	p := NewManagerProvider(mgr, nil)
 	assert.NotNil(t, p.sqlConfigOf)
 	db := p.newDatabase("shop").(*Database)
 	assert.Equal(t, database.ConcurrencyPessimistic, db.concurrency(""))

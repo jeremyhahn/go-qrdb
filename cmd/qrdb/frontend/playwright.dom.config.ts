@@ -16,6 +16,13 @@
  */
 
 import { defineConfig, devices } from "@playwright/test";
+import { resolveTLS } from "./playwright.tls.ts";
+
+// The UI is served over https, as qrdbd serves web mode: every secret-bearing
+// SDK call refuses an http origin. The certificate is self-signed and
+// generated per run in memory (playwright.tls.ts); only this tier's
+// `ignoreHTTPSErrors` makes the browser accept it.
+resolveTLS();
 
 export default defineConfig({
   testDir: "./e2e/dom",
@@ -26,7 +33,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["html", { outputFolder: "playwright-report-dom" }], ["list"]],
   use: {
-    baseURL: "http://localhost:5273",
+    baseURL: "https://localhost:5273",
     ignoreHTTPSErrors: true,
     trace: "on-first-retry",
   },
@@ -41,7 +48,8 @@ export default defineConfig({
     // proxy aimed at the fixed DOM daemon port so it never collides with an
     // interactive dev session on 5173.
     command: "npx vite --port 5273 --strictPort",
-    url: "http://localhost:5273",
+    url: "https://localhost:5273",
+    ignoreHTTPSErrors: true,
     reuseExistingServer: false,
     timeout: 60_000,
     env: { QRDB_PROXY_TARGET: "https://127.0.0.1:63012" },

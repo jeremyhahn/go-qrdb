@@ -33,6 +33,8 @@ type mockVectorSvc struct {
 	mu sync.Mutex
 
 	createNSErr    error
+	updateNSErr    error
+	lastUpdateNS   *service.UpdateNamespaceRequest
 	deleteNSErr    error
 	listNSErr      error
 	getNSInfoErr   error
@@ -52,6 +54,10 @@ type mockVectorSvc struct {
 	indexStatsErr  error
 	compactErr     error
 	compactProgErr error
+
+	// nsInfoMetric, when set, is the distance metric GetNamespaceInfo
+	// reports in place of L2.
+	nsInfoMetric string
 }
 
 var _ service.VectorServicer = (*mockVectorSvc)(nil)
@@ -69,6 +75,19 @@ func (m *mockVectorSvc) CreateNamespace(_ context.Context, req *service.CreateNa
 		Dimension: req.Dimension,
 		Success:   true,
 		Timestamp: 1700000000,
+	}, nil
+}
+
+func (m *mockVectorSvc) UpdateNamespace(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	m.lastUpdateNS = req
+	if m.updateNSErr != nil {
+		return nil, m.updateNSErr
+	}
+	return &service.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: len(req.IndexConfig) > 0,
+		Success:         true,
+		Timestamp:       1700000000,
 	}, nil
 }
 
@@ -95,11 +114,15 @@ func (m *mockVectorSvc) GetNamespaceInfo(_ context.Context, _ *service.GetNamesp
 	if m.getNSInfoErr != nil {
 		return nil, m.getNSInfoErr
 	}
+	metric := "L2"
+	if m.nsInfoMetric != "" {
+		metric = m.nsInfoMetric
+	}
 	return &service.GetNamespaceInfoResponse{
 		Namespace:      "ns1",
 		Dimension:      128,
 		VectorCount:    100,
-		DistanceMetric: "L2",
+		DistanceMetric: metric,
 		IndexType:      "HNSW",
 	}, nil
 }
@@ -317,6 +340,47 @@ func TestCreateNamespace_ServiceError(t *testing.T) {
 	}
 }
 
+func TestUpdateNamespace_Success(t *testing.T) {
+	svc := newMockVectorSvc()
+	tr, cleanup := connectVectorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{
+		Namespace:   "ns",
+		Dimension:   4,
+		IndexConfig: map[string]string{"ef_search": "128"},
+		Metadata:    map[string]interface{}{"owner": "search"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateNamespace: %v", err)
+	}
+	if !resp.Success || !resp.RequiresRebuild || resp.Namespace != "ns" || resp.Timestamp != 1700000000 {
+		t.Fatalf("resp = %+v", resp)
+	}
+	got := svc.lastUpdateNS
+	if got == nil || got.Dimension != 4 || got.IndexConfig["ef_search"] != "128" || got.Metadata["owner"] != "search" {
+		t.Fatalf("service saw %+v", got)
+	}
+}
+
+func TestUpdateNamespace_TypedRefusals(t *testing.T) {
+	svc := newMockVectorSvc()
+	tr, cleanup := connectVectorInProcess(t, svc)
+	defer cleanup()
+
+	svc.updateNSErr = &service.NamespaceNotFoundError{Namespace: "missing"}
+	_, err := tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "missing"})
+	if nf, ok := errors.AsType[*transport.NamespaceNotFoundError](err); !ok || nf.Namespace != "missing" {
+		t.Fatalf("err = %v (%T), want *NamespaceNotFoundError", err, err)
+	}
+
+	svc.updateNSErr = &service.DimensionMismatchError{Expected: 4, Actual: 8}
+	_, err = tr.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "ns", Dimension: 8})
+	if dm, ok := errors.AsType[*transport.DimensionMismatchError](err); !ok || dm.Expected != 4 || dm.Got != 8 {
+		t.Fatalf("err = %v (%T), want *DimensionMismatchError 4/8", err, err)
+	}
+}
+
 func TestDeleteNamespace_Success(t *testing.T) {
 	svc := newMockVectorSvc()
 	tr, cleanup := connectVectorInProcess(t, svc)
@@ -341,7 +405,10 @@ func TestListNamespaces_Success(t *testing.T) {
 		t.Fatalf("ListNamespaces: %v", err)
 	}
 	if len(resp.Namespaces) != 1 {
-		t.Errorf("namespaces: %d", len(resp.Namespaces))
+		t.Fatalf("namespaces: %d", len(resp.Namespaces))
+	}
+	if resp.Namespaces[0].IndexType != transport.IndexHNSW {
+		t.Errorf("index type: %q, want %q", resp.Namespaces[0].IndexType, transport.IndexHNSW)
 	}
 }
 
@@ -356,6 +423,47 @@ func TestGetNamespaceInfo_Success(t *testing.T) {
 	}
 	if resp.Namespace != "ns1" {
 		t.Errorf("namespace: %q", resp.Namespace)
+	}
+	if resp.IndexType != transport.IndexHNSW {
+		t.Errorf("index type: %q, want %q", resp.IndexType, transport.IndexHNSW)
+	}
+}
+
+// TestGetNamespaceInfo_DistanceMetricNormalized proves a metric the server
+// reports in either case comes back as the SDK constant every other
+// transport returns.
+func TestGetNamespaceInfo_DistanceMetricNormalized(t *testing.T) {
+	for reported, want := range map[string]transport.DistanceMetric{
+		"L2":        transport.DistanceEuclidean,
+		"MANHATTAN": transport.DistanceManhattan,
+		"manhattan": transport.DistanceManhattan,
+	} {
+		svc := newMockVectorSvc()
+		svc.nsInfoMetric = reported
+		tr, cleanup := connectVectorInProcess(t, svc)
+		resp, err := tr.GetNamespaceInfo(context.Background(), &transport.GetNamespaceInfoRequest{Namespace: "ns1"})
+		cleanup()
+		if err != nil {
+			t.Fatalf("GetNamespaceInfo with %q: %v", reported, err)
+		}
+		if resp.DistanceMetric != want {
+			t.Errorf("GetNamespaceInfo with %q: metric %q, want %q", reported, resp.DistanceMetric, want)
+		}
+	}
+}
+
+// TestGetNamespaceInfo_UnknownDistanceMetricRefused proves a metric the SDK
+// does not know is refused with the typed error, never read as cosine.
+func TestGetNamespaceInfo_UnknownDistanceMetricRefused(t *testing.T) {
+	svc := newMockVectorSvc()
+	svc.nsInfoMetric = "CHEBYSHEV"
+	tr, cleanup := connectVectorInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.GetNamespaceInfo(context.Background(), &transport.GetNamespaceInfoRequest{Namespace: "ns1"})
+	var unknown *transport.UnknownDistanceMetricError
+	if !errors.As(err, &unknown) || unknown.Metric != "CHEBYSHEV" {
+		t.Fatalf("GetNamespaceInfo = %+v, %v; want *UnknownDistanceMetricError{CHEBYSHEV}", resp, err)
 	}
 }
 
@@ -611,6 +719,9 @@ func TestGetIndexStats_Success(t *testing.T) {
 	}
 	if resp.Namespace != "ns1" {
 		t.Errorf("namespace: %q", resp.Namespace)
+	}
+	if resp.IndexType != transport.IndexHNSW {
+		t.Errorf("index type: %q, want %q", resp.IndexType, transport.IndexHNSW)
 	}
 }
 

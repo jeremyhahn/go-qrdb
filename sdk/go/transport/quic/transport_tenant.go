@@ -59,6 +59,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	return &transport.CreateTenantResponse{
 		Tenant: quicProtoToTenantInfo(resp.GetTenant()),
 		Admin:  enrollconv.AdminCredential(resp.GetAdmin()),
+		SO:     enrollconv.SOCredential(resp.GetSo()),
 	}, nil
 }
 
@@ -297,6 +298,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 
 	payload, err := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{
 		Id: req.TenantID,
@@ -533,6 +537,62 @@ func (t *Transport) tenantBarrierInitRound(ctx context.Context, req *transport.T
 		UnsealKeyCheck: wire.UnsealKeyCheck,
 		AdminPending:   wire.AdminPending,
 	}, nil
+}
+
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node: tenant.BarrierSignedInitBegin.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierSignedInitBegin"}}
+	}
+	var resp transport.TenantBarrierSignedInitBeginResponse
+	if err := t.tenantBarrierSignedInitCall(ctx, "TenantBarrierSignedInitBegin", "tenant.BarrierSignedInitBegin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it: tenant.BarrierSignedInitComplete.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierSignedInitComplete"}}
+	}
+	var wire quicTenantBarrierInitResponse
+	if err := t.tenantBarrierSignedInitCall(ctx, "TenantBarrierSignedInitComplete", "tenant.BarrierSignedInitComplete", req, &wire); err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       wire.TenantID,
+		Strategy:       wire.Strategy,
+		ShareCount:     wire.ShareCount,
+		Threshold:      wire.Threshold,
+		TotalShares:    wire.TotalShares,
+		Holders:        wire.Holders,
+		Roster:         wire.Roster,
+		UnsealKeyCheck: wire.UnsealKeyCheck,
+		AdminPending:   wire.AdminPending,
+	}, nil
+}
+
+// tenantBarrierSignedInitCall sends one half of a signed init as msgType and
+// decodes the reply into out; both halves always answer with a body.
+func (t *Transport) tenantBarrierSignedInitCall(ctx context.Context, method, msgType string, req, out any) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	respBytes, err := t.call(ctx, msgType, payload)
+	if err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	if err := json.Unmarshal(respBytes, out); err != nil {
+		return &transport.RequestError{Method: method, Err: err}
+	}
+	return nil
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier via the QUIC

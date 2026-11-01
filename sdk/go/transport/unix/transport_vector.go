@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -81,12 +82,14 @@ func (e *vectorIDParseError) Unwrap() error {
 // Enum conversion maps
 // ---------------------------------------------------------------------------
 
-// distanceMetricToProto converts transport DistanceMetric strings to proto
-// DistanceMetric values.
-var distanceMetricToProto = map[string]pb.DistanceMetric{
+// transportDistanceMetricToProto converts lower-case transport DistanceMetric
+// strings to proto DistanceMetric values.
+var transportDistanceMetricToProto = map[string]pb.DistanceMetric{
 	transport.DistanceCosine:     pb.DistanceMetric_DISTANCE_COSINE,
 	transport.DistanceEuclidean:  pb.DistanceMetric_DISTANCE_EUCLIDEAN,
 	transport.DistanceDotProduct: pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+	transport.DistanceManhattan:  pb.DistanceMetric_DISTANCE_MANHATTAN,
+	"l2":                         pb.DistanceMetric_DISTANCE_EUCLIDEAN,
 }
 
 // protoDistanceMetricToTransport converts proto DistanceMetric values to
@@ -95,6 +98,30 @@ var protoDistanceMetricToTransport = map[pb.DistanceMetric]string{
 	pb.DistanceMetric_DISTANCE_COSINE:      transport.DistanceCosine,
 	pb.DistanceMetric_DISTANCE_EUCLIDEAN:   transport.DistanceEuclidean,
 	pb.DistanceMetric_DISTANCE_DOT_PRODUCT: transport.DistanceDotProduct,
+	pb.DistanceMetric_DISTANCE_MANHATTAN:   transport.DistanceManhattan,
+}
+
+// distanceMetricToProto converts a caller's distance metric name, in any
+// case, to its wire value. An unset name is the wire default, cosine; any
+// other name with no wire value is refused rather than sent as cosine.
+func distanceMetricToProto(name string) (pb.DistanceMetric, error) {
+	if name == "" {
+		return pb.DistanceMetric_DISTANCE_COSINE, nil
+	}
+	if metric, ok := transportDistanceMetricToProto[strings.ToLower(name)]; ok {
+		return metric, nil
+	}
+	return 0, &transport.UnknownDistanceMetricError{Metric: name}
+}
+
+// distanceMetricFromProto converts a server's wire distance metric to its
+// transport name. A value this SDK does not know is refused, never read as
+// cosine.
+func distanceMetricFromProto(metric pb.DistanceMetric) (string, error) {
+	if name, ok := protoDistanceMetricToTransport[metric]; ok {
+		return name, nil
+	}
+	return "", &transport.UnknownDistanceMetricError{Metric: metric.String()}
 }
 
 // vectorIndexTypeToProto converts transport VectorIndexType strings to proto
@@ -128,11 +155,15 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	if err != nil {
 		return nil, err
 	}
+	metric, err := distanceMetricToProto(req.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := t.client.VectorCreateNamespace(ctx, &pb.VectorCreateNamespaceRequest{
 		Namespace:       req.Namespace,
 		Dimension:       int32(req.Dimension),
-		DistanceMetric:  distanceMetricToProto[req.DistanceMetric],
+		DistanceMetric:  metric,
 		IndexType:       vectorIndexTypeToProto[req.IndexType],
 		IndexParamsJson: indexParamsJSON,
 		ShardId:         req.ShardID,
@@ -146,6 +177,40 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		Dimension: req.Dimension,
 		Timestamp: resp.GetTimestamp(),
 		Success:   resp.GetCreated(),
+	}, nil
+}
+
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	indexParamsJSON, err := marshalStringMetadataJSON(req.IndexConfig)
+	if err != nil {
+		return nil, err
+	}
+	metadataJSON, err := marshalInterfaceMetadataJSON(req.Metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := t.client.VectorUpdateNamespace(ctx, &pb.VectorUpdateNamespaceRequest{
+		Namespace:       req.Namespace,
+		Dimension:       int32(req.Dimension),
+		IndexParamsJson: indexParamsJSON,
+		MetadataJson:    metadataJSON,
+	})
+	if err != nil {
+		return nil, mapGRPCError("UpdateNamespace", err)
+	}
+
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       req.Namespace,
+		RequiresRebuild: resp.GetRequiresRebuild(),
+		Timestamp:       resp.GetTimestamp(),
+		Success:         resp.GetUpdated(),
 	}, nil
 }
 
@@ -206,15 +271,30 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if err != nil {
 		return nil, mapGRPCError("GetNamespaceInfo", err)
 	}
+	return protoToNamespaceInfo(resp)
+}
 
+// protoToNamespaceInfo converts a namespace-info reply, decoding its
+// metadata JSON.
+func protoToNamespaceInfo(p *pb.VectorNamespaceInfo) (*transport.GetNamespaceInfoResponse, error) {
+	metric, err := distanceMetricFromProto(p.GetDistanceMetric())
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := unmarshalInterfaceMetadataJSON(p.GetMetadataJson())
+	if err != nil {
+		return nil, err
+	}
 	return &transport.GetNamespaceInfoResponse{
-		Namespace:      resp.GetNamespace(),
-		Dimension:      uint32(resp.GetDimension()),
-		VectorCount:    uint64(resp.GetVectorCount()),
-		DistanceMetric: protoDistanceMetricToTransport[resp.GetDistanceMetric()],
-		IndexType:      protoVectorIndexTypeToTransport[resp.GetIndexType()],
-		CreatedAt:      resp.GetCreatedAt(),
-		UpdatedAt:      resp.GetUpdatedAt(),
+		Namespace:      p.GetNamespace(),
+		Dimension:      uint32(p.GetDimension()),
+		VectorCount:    uint64(p.GetVectorCount()),
+		DistanceMetric: metric,
+		IndexType:      protoVectorIndexTypeToTransport[p.GetIndexType()],
+		IndexConfig:    p.GetIndexConfig(),
+		Metadata:       metadata,
+		CreatedAt:      p.GetCreatedAt(),
+		UpdatedAt:      p.GetUpdatedAt(),
 	}, nil
 }
 

@@ -141,6 +141,37 @@ func (b *SealBinding) Unseal(secret string) (*UnsealProgress, error) {
 	return &UnsealProgress{Sealed: false}, nil
 }
 
+// ChangePassphrase re-wraps the root key of the unsealed, passphrase-sealed
+// barrier under next once current opens it. A wrong current passphrase is
+// refused and nothing is written. seal:rekey is SO-gated, so soPin is bound to
+// the call as Seal binds it; an empty PIN binds none.
+func (b *SealBinding) ChangePassphrase(current, next, soPin string) error {
+	b.logger.Debug("ChangePassphrase called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("ChangePassphrase failed", "error", err)
+		return err
+	}
+	ctx, release, err := transport.WithSOPIN(context.Background(), []byte(soPin))
+	if err != nil {
+		b.logger.Error("ChangePassphrase failed", "error", err)
+		return err
+	}
+	defer release()
+	req := &transport.BarrierChangePassphraseRequest{
+		Current: secretBytes(current),
+		Next:    secretBytes(next),
+	}
+	defer secure.Wipe(req.Current)
+	defer secure.Wipe(req.Next)
+	if err := cl.Barrier().BarrierChangePassphrase(ctx, req); err != nil {
+		b.logger.Error("ChangePassphrase failed", "error", err)
+		return err
+	}
+	b.logger.Debug("ChangePassphrase completed")
+	return nil
+}
+
 // Seal seals the barrier, preventing further data access until it is
 // unsealed again. soPin is the Security Officer PIN, required once one is
 // provisioned and empty otherwise; it rides the call's context

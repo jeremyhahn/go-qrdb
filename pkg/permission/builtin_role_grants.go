@@ -60,7 +60,11 @@ func registerSOGrants() {
 		// Trust anchors: which outside CAs vouch for this tenant's logins.
 		TrustAnchorsAdd, TrustAnchorsList, TrustAnchorsRemove,
 		// Role management (roles:delete is SO-exclusive; the tenant Admin
-		// also creates and updates roles in its own tenant)
+		// also creates and updates roles in its own tenant). roles:assign
+		// and roles:unassign are shared with the Admin, but only the
+		// tenant's own SO grants or revokes the SO role itself: the
+		// role-assignment gate in pkg/auth/middleware refuses that change
+		// to every other caller with SORoleRequiredError.
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
@@ -175,6 +179,13 @@ func registerAdminGrants() {
 		// sealed-window fallback is closed and RBAC is the only path.
 		TenantBarrierInit, TenantBarrierUnseal,
 		TenantBarrierSeal, TenantBarrierStatus,
+		// Turning encryption on for the Admin's own tenant (ScopeSelf, and
+		// every transport's handler checks it for the tenant the request
+		// names). It sits beside init/seal/unseal/rekey: under the grant
+		// rule (go-qrdb#1278) a role carrying it can be written only by a
+		// principal that holds it, so without it no tenant account could be
+		// given the right to encrypt its own tenant.
+		TenantBarrierEnableEncryption,
 		// Per-tenant share-holder management (ScopeTenantOnly: a tenant admin
 		// enrols, lists and revokes holders, and opens rekey rounds, for their
 		// OWN tenant's barrier only).
@@ -194,7 +205,11 @@ func registerAdminGrants() {
 		// seeds and reconciles its tenant's custom roles; the built-in roles
 		// stay out of its hands either way, because their names are reserved
 		// and their names and grants are immutable (pkg/role). roles:delete
-		// stays with the Security Officer.
+		// stays with the Security Officer. roles:assign and roles:unassign
+		// let the Admin grant and revoke every role but one: a write that
+		// gives a user the SO role or takes it away, by assign, unassign,
+		// user create or user update, is refused unless the caller is the
+		// tenant's SO (pkg/auth/middleware, SORoleRequiredError).
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
@@ -216,6 +231,11 @@ func registerAdminGrants() {
 		// ScopeCross (cluster_admin_scope.go): only effective for the system
 		// tenant's Admin.
 		AdminStateHash,
+		// Starting a new shard on the cluster: a cluster administrator
+		// creates shards as it adds members and drains nodes. ScopeCross
+		// (cluster_admin_scope.go): only effective for the system tenant's
+		// Admin, so a tenant Admin cannot start a shard.
+		AdminStartShard,
 		// Minting a member-side CSR join token -- and reviewing the
 		// tokenless approval queue -- admits a new node to the whole
 		// replicated cluster. ClusterJoinToken is ScopeCross
@@ -235,6 +255,21 @@ func registerAdminGrants() {
 		// tenant's data. It stays ScopeSelf, so a tenant Admin restores only
 		// their own tenant's keys.
 		MVCCRestore,
+		// Database lifecycle in the Admin's own tenant (ScopeSelf;
+		// databases:barrier_status is ScopeSelfStrict). An Admin answers for
+		// its tenant's data, and under the grant rule (go-qrdb#1278) a role
+		// carrying these can be written only by a principal that holds them,
+		// so without them no account in an onboarded tenant could be given
+		// the right to create a database. Sealing and unsealing a database
+		// in the Admin's own tenant (ScopeSelfStrict) are operations on it,
+		// as they are on the tenant barrier above, so the Admin holds them
+		// too. Key custody stays out of every built-in role:
+		// databases:rekey, databases:initialize_shamir and
+		// databases:officer_* are not granted here.
+		DatabasesCreate, DatabasesRead, DatabasesList,
+		DatabasesUpdate, DatabasesDelete,
+		DatabasesCreateRaft, DatabasesCreateVolume, DatabasesScale,
+		DatabasesBarrierStatus, DatabasesSeal, DatabasesUnseal,
 		// Audit (self-scope). AuditDelete is retention administration of the
 		// tenant's own events; the Auditor role, which reviews the trail,
 		// does not hold it, so the trail's reviewer cannot remove from it.
@@ -249,6 +284,9 @@ func registerAdminGrants() {
 		TenantsCreate, TenantsSetQuotas, TenantsSetEntitlements, TenantsSetIsolation,
 		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
+		// Cross-tenant built-in role convergence -- only effective for
+		// system-tenant Admin.
+		RolesReconcileAll,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,
 		VolumePoolUpdate, VolumePoolDelete,
@@ -302,6 +340,14 @@ func registerAdminGrants() {
 		ACMEOrdersRead, ACMEOrdersList,
 		ACMEEABRead, ACMEEABList,
 		ACMEEABCreate, ACMEEABDelete,
+		// The credentials:* family is ScopeSelf, so the Admin holds it in its
+		// own tenant only. Under the grant rule a role carrying it can be
+		// written only by a principal that holds it, so without it no tenant
+		// account could be given the right to use its tenant's credential
+		// store.
+		CredentialsSubmit, CredentialsStore, CredentialsStrategy, CredentialsRetrieve,
+		CredentialsDelete, CredentialsList, CredentialsRotate,
+		CredentialsRetrieveVersion, CredentialsListVersions, CredentialsGCExpired,
 	)
 }
 
@@ -374,7 +420,7 @@ func registerOperatorGrants() {
 		TSWrite, TSWriteBatch,
 		TSQuery, TSAggregate,
 		// Vector
-		VectorNamespaceCreate, VectorNamespaceDelete,
+		VectorNamespaceCreate, VectorNamespaceUpdate, VectorNamespaceDelete,
 		VectorNamespaceList, VectorNamespaceInfo,
 		VectorUpsert, VectorGet, VectorDelete,
 		VectorBatchUpsert, VectorBatchDelete, VectorList,

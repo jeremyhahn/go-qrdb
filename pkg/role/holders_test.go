@@ -200,7 +200,7 @@ func TestDeleteRole_AnInterruptedStripIsFinishedByRetry(t *testing.T) {
 		t.Fatalf("ResolvePermissions = %v, want only the kept role's grant", perms)
 	}
 	var rde *RoleDeletingError
-	if err := ValidateAssignable(ctx, roles, doomed.ID, "acme"); !errors.As(err, &rde) {
+	if err := ValidateAssignable(ctx, roles, nil, doomed.ID, "acme"); !errors.As(err, &rde) {
 		t.Fatalf("ValidateAssignable mid-delete = %v, want *RoleDeletingError", err)
 	}
 
@@ -301,13 +301,13 @@ func TestValidateAssignable_RefusesARoleBeingDeleted(t *testing.T) {
 	}
 	ctx := context.Background()
 	r := createTestRole(t, svc, "doomed", "acme")
-	if err := ValidateAssignable(ctx, svc, r.ID, "acme"); err != nil {
+	if err := ValidateAssignable(ctx, svc, nil, r.ID, "acme"); err != nil {
 		t.Fatalf("ValidateAssignable before delete: %v", err)
 	}
 	_ = svc.DeleteRole(ctx, r.ID)
 
 	var rde *RoleDeletingError
-	if err := ValidateAssignable(ctx, svc, r.ID, "acme"); !errors.As(err, &rde) || rde.ID != r.ID {
+	if err := ValidateAssignable(ctx, svc, nil, r.ID, "acme"); !errors.As(err, &rde) || rde.ID != r.ID {
 		t.Fatalf("ValidateAssignable = %v, want *RoleDeletingError", err)
 	}
 }

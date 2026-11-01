@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"sync"
@@ -24,7 +25,7 @@ import (
 // SetShardIDClaimer with nil clears the claimer: a raft create then refuses as
 // a Manager that never had one does.
 func TestSetShardIDClaimer_NilClears(t *testing.T) {
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 	m.SetShardIDClaimer(testShardClaimer(t))
 	m.SetShardIDClaimer(nil)
@@ -35,11 +36,34 @@ func TestSetShardIDClaimer_NilClears(t *testing.T) {
 	}
 }
 
+func TestClaimShardID_IssuesFromTheClaimer(t *testing.T) {
+	m := newCatalogManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+	m.SetShardIDClaimer(testShardClaimer(t))
+	first, err := m.ClaimShardID(context.Background())
+	if err != nil || first == 0 {
+		t.Fatalf("ClaimShardID = %d, %v; want a non-zero ID", first, err)
+	}
+	second, err := m.ClaimShardID(context.Background())
+	if err != nil || second == first {
+		t.Fatalf("second ClaimShardID = %d, %v; want an ID other than %d", second, err, first)
+	}
+}
+
+func TestClaimShardID_NoClaimerIsRefused(t *testing.T) {
+	m := newCatalogManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+	var required *ShardIssuerRequiredError
+	if _, err := m.ClaimShardID(context.Background()); !errors.As(err, &required) {
+		t.Fatalf("ClaimShardID with no claimer: err = %v, want *ShardIssuerRequiredError", err)
+	}
+}
+
 // The claimer is set while creates run (a composition wiring a node that is
 // already serving): each create sees no claimer or the one set, never a torn
 // value. Run under -race.
 func TestSetShardIDClaimer_ConcurrentWithCreates(t *testing.T) {
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 	claimer := testShardClaimer(t)
 

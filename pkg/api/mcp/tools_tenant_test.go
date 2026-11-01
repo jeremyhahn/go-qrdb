@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
@@ -138,6 +139,14 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, pa
 
 func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID, _ *tenant.TenantBarrierShamirRoster, _ ...tenant.TenantBarrierInitOption) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
+}
+
+func (m *mockTenantService) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantService) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
 }
 
 func (m *mockTenantService) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
@@ -257,6 +266,52 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 	}
 	if out.Tenant.Name != "ACME Corp" {
 		t.Errorf("expected name 'ACME Corp', got %q", out.Tenant.Name)
+	}
+}
+
+// TestHandleTenantCreate_SO proves the so_* params reach OnboardTenant and the
+// SO's credential is answered (go-qrdb#1042); without an SO, none is.
+func TestHandleTenantCreate_SO(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		so   *service.TenantAdminCredential
+		args map[string]any
+	}{
+		{
+			name: "with an SO",
+			so:   &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Thumbprint: "tp"},
+			args: map[string]any{"id": "acme", "name": "ACME", "so_username": "so", "so_csr_pem": "so-csr", "so_chain_pem": "so-chain", "so_pin": "so-pin"},
+		},
+		{name: "without an SO", args: map[string]any{"id": "acme", "name": "ACME"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newMockTenantService()
+			svc.createFn = func(_ context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+				return &tenant.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
+			}
+			onboarding := &fakeTenantOnboarding{tenants: svc, so: tc.so}
+			result, err := handleTenantCreate(onboarding)(context.Background(), buildCallToolRequest(t, "qrdb_tenant_create", tc.args))
+			if err != nil || result.IsError {
+				t.Fatalf("qrdb_tenant_create = %v, %v", result, err)
+			}
+			var out tenantCreateResult
+			if err := json.Unmarshal([]byte(resultText(t, result)), &out); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tc.so == nil {
+				if out.SO != nil {
+					t.Fatalf("SO credential = %+v, want none", out.SO)
+				}
+				return
+			}
+			if out.SO == nil || out.SO.UserID != 2 || out.SO.Username != "so" || out.SO.CertPEM != "so-cert" || out.SO.Thumbprint != "tp" {
+				t.Errorf("SO credential = %+v, want so's", out.SO)
+			}
+			got := onboarding.gotReq
+			if got.SOUsername != "so" || string(got.SOCSRPEM) != "so-csr" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" {
+				t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+			}
+		})
 	}
 }
 

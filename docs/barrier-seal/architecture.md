@@ -59,6 +59,37 @@ initialization (`--barrier-strategy <name>`); qrdb returns
 `ErrNoStrategySpecified` if it cannot choose. With exactly one registered, that
 one is selected unconditionally.
 
+## Changing the passphrase
+
+A passphrase-sealed barrier's passphrase is changed by **re-wrapping**, not
+rotating: the root key and every byte of data stay as they are, and only the
+persisted root-key blob is replaced, sealed under the new passphrase.
+
+- **The current passphrase is proven, not assumed.** The barrier is unsealed,
+  but holding an unsealed barrier is not holding its passphrase: the change
+  opens the persisted blob with the current passphrase and compares it with
+  the live key. A mismatch is `ErrCredentialMismatch` and nothing is written.
+- **The write is a guarded swap.** The new blob replaces the old one only
+  while the old one is still the blob the check read, so a rotation, rekey or
+  second change that lands in between is never overwritten
+  (`ErrPassphraseChangeConflict`). Storage with no guarded swap is refused
+  (`ErrGuardedSwapUnsupported`) rather than written unguarded. A change
+  that arrives while another rewrite of the root key is in flight, such as an
+  overlapping change, is refused before it reads anything
+  (`ErrRootKeyWriteInProgress`); like the conflict it is a retryable `409` /
+  `Aborted`.
+- **The load generation is kept,** so the next unseal does not read the
+  change as a generation going backwards.
+- **One service call, every transport.** `BarrierChangePassphrase` is a
+  service method that REST, gRPC, the Unix socket, QUIC, MCP and the embedded
+  client delegate to, under `seal:rekey`, which the dual-factor gate holds to
+  the Security Officer's PIN. An embedder calls `Node.ChangePassphrase`.
+
+Rejected: changing the passphrase by an encryption migration
+(`enable-encryption`) re-encrypts every key and tears the data plane down for
+what is a change of the key's wrapping; a rekey round is the Shamir custody
+mechanism and has no meaning for a single passphrase.
+
 ## The strategy registry
 
 `StrategyRegistry` decouples the daemon from concrete strategy implementations. The daemon parses `--barrier-strategy <name>` and calls `LookupFactory` on the registry; the registry returns a `StrategyFactory` that constructs the strategy on demand. (`pkg/seal/strategy_registry.go:39-58`)
@@ -876,7 +907,7 @@ records, never the tenant's own admin.
 **Feature gate.** `per-node-barrier-keys` is activation-based, built like
 `cluster-seal`. Until every member advertises it, an isolated tenant is not
 created (nor a tenant changed to an isolated type) and no statement is
-recorded: `*featuregate.NotActiveError`. See
+recorded: `*feature.NotActiveError`. See
 [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md#feature-gate-and-upgrade).
 A single-member cluster activates it at its first check. A standalone node
 holds only its own binary and gates nothing.

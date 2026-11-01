@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // engineKey identifies a cached go-mysql-server engine by the (tenant,
@@ -380,15 +381,19 @@ func formatValue(v any) string {
 }
 
 // databaseInfo returns the catalog record of name as the context's tenant
-// addresses it: the shared default SQL database by name (every tenant's
-// namespace shares its record), every other database only when the tenant
-// owns it (GetForTenant), so another tenant's database is answered as
-// missing.
+// addresses it: the tenant's own database of that name (GetForTenant), or --
+// for the shared default SQL database, which the system tenant owns and every
+// tenant's namespace shares -- the system tenant's when the tenant has none
+// of that name. Another tenant's database is answered as missing, and a name
+// two tenants hold resolves to the caller's own.
 func (s *sqlService) databaseInfo(ctx context.Context, name string) (*database.DatabaseInfo, error) {
-	if s.sharedDefaultDB != "" && name == s.sharedDefaultDB {
-		return s.dbSvc.Get(name)
+	info, err := s.dbSvc.GetForTenant(ctx, name)
+	var notFound *database.NotFoundError
+	if errors.As(err, &notFound) && s.sharedDefaultDB != "" && name == s.sharedDefaultDB &&
+		tenant.FromContext(ctx) != tenantid.System {
+		return s.dbSvc.GetForTenant(tenant.WithTenantID(ctx, tenantid.System), name)
 	}
-	return s.dbSvc.GetForTenant(ctx, name)
+	return info, err
 }
 
 // databaseSQLConfig resolves the SQL settings of tenantID's database name for

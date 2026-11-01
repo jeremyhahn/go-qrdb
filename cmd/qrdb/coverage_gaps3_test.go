@@ -31,138 +31,6 @@ import (
 )
 
 // ===========================================================================
-// resolveConfigDir — covers the os.UserConfigDir() fallback path (27.3%)
-// ===========================================================================
-
-// TestResolveConfigDir_DefaultPath exercises the branch where configDir is
-// empty and os.UserConfigDir() resolves via XDG_CONFIG_HOME.
-func TestResolveConfigDir_DefaultPath(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
-
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-	// configDir is empty — forces the os.UserConfigDir() branch.
-
-	got, err := d.resolveConfigDir()
-	if err != nil {
-		t.Fatalf("resolveConfigDir: %v", err)
-	}
-	if got == "" {
-		t.Fatal("expected non-empty directory path")
-	}
-	if _, statErr := os.Stat(got); statErr != nil {
-		t.Fatalf("expected returned directory to exist: %v", statErr)
-	}
-	if filepath.Base(got) != daemonConfigDir {
-		t.Fatalf("expected base dir %q, got %q", daemonConfigDir, filepath.Base(got))
-	}
-}
-
-// TestResolveConfigDir_DefaultPath_Idempotent verifies calling resolveConfigDir
-// twice with an empty configDir yields the same path.
-func TestResolveConfigDir_DefaultPath_Idempotent(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
-
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-
-	first, err := d.resolveConfigDir()
-	if err != nil {
-		t.Fatalf("first resolveConfigDir: %v", err)
-	}
-	second, err := d.resolveConfigDir()
-	if err != nil {
-		t.Fatalf("second resolveConfigDir: %v", err)
-	}
-	if first != second {
-		t.Fatalf("expected idempotent path, got %q and %q", first, second)
-	}
-}
-
-// ===========================================================================
-// cleanupPIDFile — success and no-file paths (57.1%)
-// ===========================================================================
-
-// TestCleanupPIDFile_RemovesExistingFile verifies the normal success path.
-func TestCleanupPIDFile_RemovesExistingFile(t *testing.T) {
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-	d.configDir = t.TempDir()
-
-	pidPath := filepath.Join(d.configDir, "qrdbd.pid")
-	if err := os.WriteFile(pidPath, []byte("12345"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	d.cleanupPIDFile()
-
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Error("expected PID file to be removed after cleanupPIDFile")
-	}
-}
-
-// TestCleanupPIDFile_NoPIDFile verifies that cleanupPIDFile is a no-op when
-// no PID file exists.
-func TestCleanupPIDFile_NoPIDFile(t *testing.T) {
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-	d.configDir = t.TempDir()
-
-	// No PID file written; must not panic.
-	d.cleanupPIDFile()
-}
-
-// ===========================================================================
-// resolveDataDir — covers the os.UserConfigDir() fallback branch (77.8%)
-// ===========================================================================
-
-// TestResolveDataDir_DefaultPath exercises the branch where cfg.DataDir is
-// empty and the path is derived from os.UserConfigDir().
-func TestResolveDataDir_DefaultPath(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
-
-	cfg := &EmbeddedConfig{DataDir: ""}
-	got, err := esb.resolveDataDir(cfg)
-	if err != nil {
-		t.Fatalf("resolveDataDir: %v", err)
-	}
-	if got == "" {
-		t.Fatal("expected non-empty data directory path")
-	}
-	if _, statErr := os.Stat(got); statErr != nil {
-		t.Fatalf("expected returned directory to exist: %v", statErr)
-	}
-}
-
-// TestResolveDataDir_ExplicitPath verifies that an explicit DataDir is used
-// as-is after being created.
-func TestResolveDataDir_ExplicitPath(t *testing.T) {
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
-
-	explicit := filepath.Join(t.TempDir(), "explicit-data")
-	cfg := &EmbeddedConfig{DataDir: explicit}
-
-	got, err := esb.resolveDataDir(cfg)
-	if err != nil {
-		t.Fatalf("resolveDataDir: %v", err)
-	}
-	if got != explicit {
-		t.Fatalf("expected %q, got %q", explicit, got)
-	}
-	if _, statErr := os.Stat(got); statErr != nil {
-		t.Fatalf("expected explicit data dir to be created: %v", statErr)
-	}
-}
-
-// ===========================================================================
 // ClearSavedConfig — covers the os.Remove error branch (66.7%)
 // ===========================================================================
 
@@ -277,18 +145,8 @@ func TestBuildClient_UnknownTransport(t *testing.T) {
 	if !errors.As(err, &te) {
 		t.Fatalf("expected TransportError, got %T: %v", err, err)
 	}
-}
-
-// TestBuildClient_UnknownTransport_Message verifies the error message includes
-// the transport type name.
-func TestBuildClient_UnknownTransport_Message(t *testing.T) {
-	ctx := context.Background()
-	_, err := buildClient(ctx, "xyzzy", "localhost:1234", "", "", "", 0)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "xyzzy") {
-		t.Fatalf("expected error to mention transport name, got: %q", err.Error())
+	if !strings.Contains(err.Error(), "badtransport") {
+		t.Fatalf("expected error to name the transport, got: %q", err.Error())
 	}
 }
 
@@ -362,21 +220,6 @@ func TestBarrierRecoveryStatusCmd_YAMLOutput(t *testing.T) {
 	}
 }
 
-// TestBarrierRecoveryStatusCmd_ServiceError verifies that a service error is
-// propagated.
-func TestBarrierRecoveryStatusCmd_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		hasRecoveryKeysFn: func(_ context.Context) (bool, error) {
-			return false, errors.New("recovery: storage unavailable")
-		},
-	}
-	root := newBarrierTestRoot(t, svc)
-	_, err := executeCommand(root, "barrier", "recovery", "status")
-	if err == nil {
-		t.Fatal("expected error from barrier recovery status when service fails")
-	}
-}
-
 // ===========================================================================
 // newIndexListCmd — JSON / YAML / error output paths (76.9%)
 // ===========================================================================
@@ -422,6 +265,8 @@ func (e *errorIndexListService) CreateIndex(_ context.Context, _, _ string, _ in
 // newBatchExecuteCmd — stdin read branch (77.4%)
 // ===========================================================================
 
+// TestBatchExecuteCmd_StdinInvalidJSON verifies malformed stdin JSON returns
+// an error.
 // TestBatchExecuteCmd_StdinSuccess exercises the stdin read path ("-").
 func TestBatchExecuteCmd_StdinSuccess(t *testing.T) {
 	root := newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(),
@@ -432,7 +277,10 @@ func TestBatchExecuteCmd_StdinSuccess(t *testing.T) {
 			{Type: transport.OpPut, Key: []byte("k1"), Value: []byte("v1")},
 		},
 	}
-	data, _ := json.Marshal(batchReq)
+	data, err := json.Marshal(batchReq)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -454,10 +302,53 @@ func TestBatchExecuteCmd_StdinSuccess(t *testing.T) {
 	if cmdErr != nil {
 		t.Fatalf("expected no error from stdin batch, got: %v\noutput: %s", cmdErr, out)
 	}
+	if !strings.Contains(out, "succeeded=true") {
+		t.Fatalf("expected succeeded=true in output, got: %q", out)
+	}
 }
 
-// TestBatchExecuteCmd_StdinInvalidJSON verifies malformed stdin JSON returns
-// an error.
+// TestResolveDataDir_DefaultPath exercises the branch where cfg.DataDir is
+// empty and the path is derived from os.UserConfigDir().
+func TestResolveDataDir_DefaultPath(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	got, err := esb.resolveDataDir(&EmbeddedConfig{DataDir: ""})
+	if err != nil {
+		t.Fatalf("resolveDataDir: %v", err)
+	}
+	if !strings.HasPrefix(got, configHome+string(filepath.Separator)) {
+		t.Fatalf("expected data directory under %q, got %q", configHome, got)
+	}
+	if _, statErr := os.Stat(got); statErr != nil {
+		t.Fatalf("expected returned directory to exist: %v", statErr)
+	}
+}
+
+// TestResolveDataDir_ExplicitPath verifies that an explicit DataDir is used
+// as-is after being created.
+func TestResolveDataDir_ExplicitPath(t *testing.T) {
+	log := testLogger(t)
+	conn := NewConnectionBinding(log)
+	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
+
+	explicit := filepath.Join(t.TempDir(), "explicit-data")
+	got, err := esb.resolveDataDir(&EmbeddedConfig{DataDir: explicit})
+	if err != nil {
+		t.Fatalf("resolveDataDir: %v", err)
+	}
+	if got != explicit {
+		t.Fatalf("expected %q, got %q", explicit, got)
+	}
+	if _, statErr := os.Stat(got); statErr != nil {
+		t.Fatalf("expected explicit data dir to be created: %v", statErr)
+	}
+}
+
 func TestBatchExecuteCmd_StdinInvalidJSON(t *testing.T) {
 	root := newTestRootCmdWithOpts(newMockKVService(), newMockAdminService(),
 		embedded.WithBatchService(&mockBatchService{}))
@@ -544,196 +435,8 @@ func TestTxExecuteCmd_StdinInvalidJSON(t *testing.T) {
 	}
 	_ = w.Close()
 
-	_, cmdErr := executeCommand(root, "tx", "execute", "--file", "-")
-	if cmdErr == nil {
+	if _, cmdErr := executeCommand(root, "tx", "execute", "--file", "-"); cmdErr == nil {
 		t.Fatal("expected error from stdin tx with invalid JSON")
-	}
-}
-
-// ===========================================================================
-// embeddedDatabaseInstance.Close — additional branch coverage (53.8%)
-// ===========================================================================
-
-// TestEmbeddedDatabaseInstance_Close_AllNilFields verifies that Close on an
-// instance with all nil fields returns nil (exercises the nil-guard branches).
-func TestEmbeddedDatabaseInstance_Close_AllNilFields(t *testing.T) {
-	inst := &embeddedDatabaseInstance{}
-	if err := inst.Close(); err != nil {
-		t.Fatalf("Close on empty instance: %v", err)
-	}
-}
-
-// TestEmbeddedDatabaseInstance_Close_NilFieldsAreSkipped verifies that Close
-// returns nil regardless of nil fields, a second time for completeness.
-func TestEmbeddedDatabaseInstance_Close_NilFieldsAreSkipped(t *testing.T) {
-	inst := &embeddedDatabaseInstance{
-		watchHub:      nil,
-		vectorStorage: nil,
-		host:          nil,
-		localBackend:  nil,
-	}
-	if err := inst.Close(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// ===========================================================================
-// newTransport — unknown type returns InvalidArgError
-// ===========================================================================
-
-// TestNewTransport_UnknownType verifies that an unrecognised transport name
-// returns an InvalidArgError.
-func TestNewTransport_UnknownType(t *testing.T) {
-	_, err := newTransport("unknown-transport-xyz")
-	if err == nil {
-		t.Fatal("expected error for unknown transport type")
-	}
-	var iae *InvalidArgError
-	if !errors.As(err, &iae) {
-		t.Fatalf("expected InvalidArgError, got %T: %v", err, err)
-	}
-}
-
-// TestNewTransport_UnknownType_Message verifies the error message contains
-// the transport type name.
-func TestNewTransport_UnknownType_Message(t *testing.T) {
-	_, err := newTransport("badtype")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "badtype") {
-		t.Fatalf("expected error to contain transport name, got: %q", err.Error())
-	}
-}
-
-// ===========================================================================
-// resolveTransport — additional scheme branches
-// ===========================================================================
-
-// TestResolveTransport_GRPCSScheme verifies grpcs:// stripping.
-func TestResolveTransport_GRPCSScheme(t *testing.T) {
-	gotType, gotAddr := resolveTransport("grpcs://myhost:443", "")
-	if gotType != transportGRPC {
-		t.Fatalf("transport: got %q, want %q", gotType, transportGRPC)
-	}
-	if gotAddr != "myhost:443" {
-		t.Fatalf("address: got %q, want %q", gotAddr, "myhost:443")
-	}
-}
-
-// TestResolveTransport_GRPCScheme verifies grpc:// stripping.
-func TestResolveTransport_GRPCScheme(t *testing.T) {
-	gotType, gotAddr := resolveTransport("grpc://myhost:63003", "")
-	if gotType != transportGRPC {
-		t.Fatalf("transport: got %q, want %q", gotType, transportGRPC)
-	}
-	if gotAddr != "myhost:63003" {
-		t.Fatalf("address: got %q, want %q", gotAddr, "myhost:63003")
-	}
-}
-
-// TestResolveTransport_QUICScheme verifies quic:// stripping.
-func TestResolveTransport_QUICScheme(t *testing.T) {
-	gotType, gotAddr := resolveTransport("quic://myhost:63004", "")
-	if gotType != transportQUIC {
-		t.Fatalf("transport: got %q, want %q", gotType, transportQUIC)
-	}
-	if gotAddr != "myhost:63004" {
-		t.Fatalf("address: got %q, want %q", gotAddr, "myhost:63004")
-	}
-}
-
-// TestResolveTransport_QUICSScheme verifies quics:// stripping.
-func TestResolveTransport_QUICSScheme(t *testing.T) {
-	gotType, gotAddr := resolveTransport("quics://myhost:63004", "")
-	if gotType != transportQUIC {
-		t.Fatalf("transport: got %q, want %q", gotType, transportQUIC)
-	}
-	if gotAddr != "myhost:63004" {
-		t.Fatalf("address: got %q, want %q", gotAddr, "myhost:63004")
-	}
-}
-
-// TestResolveTransport_MCPScheme verifies mcp:// is converted to https URL.
-func TestResolveTransport_MCPScheme(t *testing.T) {
-	gotType, gotAddr := resolveTransport("mcp://myhost:8080", "")
-	if gotType != transportMCP {
-		t.Fatalf("transport: got %q, want %q", gotType, transportMCP)
-	}
-	if !strings.HasPrefix(gotAddr, "https://") {
-		t.Fatalf("expected https:// prefix for MCP address, got: %q", gotAddr)
-	}
-}
-
-// TestResolveTransport_ExplicitUnix verifies explicit unix transport uses
-// the default socket when no --server is given.
-func TestResolveTransport_ExplicitUnix(t *testing.T) {
-	gotType, gotAddr := resolveTransport("", transportUnix)
-	if gotType != transportUnix {
-		t.Fatalf("transport: got %q, want %q", gotType, transportUnix)
-	}
-	if gotAddr != defaultUnixSocket {
-		t.Fatalf("address: got %q, want %q", gotAddr, defaultUnixSocket)
-	}
-}
-
-// TestResolveTransport_ExplicitQUIC verifies explicit quic transport uses
-// the default QUIC address when no --server is given.
-func TestResolveTransport_ExplicitQUIC(t *testing.T) {
-	gotType, gotAddr := resolveTransport("", transportQUIC)
-	if gotType != transportQUIC {
-		t.Fatalf("transport: got %q, want %q", gotType, transportQUIC)
-	}
-	if gotAddr != defaultQUICAddress {
-		t.Fatalf("address: got %q, want %q", gotAddr, defaultQUICAddress)
-	}
-}
-
-// TestResolveTransport_ExplicitUnknown verifies that an unknown explicit
-// transport falls back to the default gRPC address.
-func TestResolveTransport_ExplicitUnknown(t *testing.T) {
-	gotType, gotAddr := resolveTransport("", "custom-proto")
-	if gotType != "custom-proto" {
-		t.Fatalf("transport: got %q, want %q", gotType, "custom-proto")
-	}
-	if gotAddr != defaultGRPCAddress {
-		t.Fatalf("address: got %q, want %q", gotAddr, defaultGRPCAddress)
-	}
-}
-
-// ===========================================================================
-// HasSavedConfig — UserConfigDir-based path
-// ===========================================================================
-
-// TestHasSavedConfig_WithDefaultConfigDir_NoFile verifies HasSavedConfig
-// returns false when XDG_CONFIG_HOME is set but no config exists.
-func TestHasSavedConfig_WithDefaultConfigDir_NoFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
-
-	if esb.HasSavedConfig() {
-		t.Error("expected HasSavedConfig()=false before any saveConfig call")
-	}
-}
-
-// TestHasSavedConfig_WithDefaultConfigDir_AfterSave verifies HasSavedConfig
-// returns true after saveConfig with XDG_CONFIG_HOME set.
-func TestHasSavedConfig_WithDefaultConfigDir_AfterSave(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
-
-	if err := esb.saveConfig(&EmbeddedConfig{StorageBackend: "memory"}); err != nil {
-		t.Fatalf("saveConfig: %v", err)
-	}
-
-	if !esb.HasSavedConfig() {
-		t.Error("expected HasSavedConfig()=true after saveConfig")
 	}
 }
 

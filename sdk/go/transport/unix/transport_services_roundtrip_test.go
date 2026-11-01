@@ -107,6 +107,14 @@ func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id string, _ []byte
 func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id string, _ []byte, _, _ int, _ seal.StrategyID, _ *tenantpkg.TenantBarrierShamirRoster, _ ...tenantpkg.TenantBarrierInitOption) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
+
+func (m *mockTenantSvc) TenantBarrierInitBegin(context.Context, *tenantpkg.TenantBarrierInitBeginRequest) (*tenantpkg.TenantBarrierInitBeginResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantSvc) TenantBarrierInitComplete(context.Context, *tenantpkg.TenantBarrierInitCompleteRequest) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
 func (m *mockTenantSvc) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }

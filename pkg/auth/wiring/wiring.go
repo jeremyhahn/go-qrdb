@@ -30,6 +30,7 @@ package wiring
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
 	"time"
 
@@ -73,7 +74,7 @@ type AuthorizerConfig struct {
 
 	// StrictSeparation enables strict separation-of-duties posture
 	// (rbac.WithStrictSeparation): the Owner convenience role is voided.
-	// Callers resolve this as fips140.Enabled() || <config flag>.
+	// Callers resolve it with ResolveStrictSeparation.
 	StrictSeparation bool
 
 	// ABACEnabled activates the ABAC policy decorator layered over RBAC.
@@ -90,6 +91,21 @@ type AuthorizerConfig struct {
 	// policies (e.g. sdk/go/node's WithABACPolicies option). They compose
 	// with ABACPolicyDir; either being non-empty activates the decorator.
 	ABACPolicies []*abac.Policy
+}
+
+// ResolveStrictSeparation is the one resolution of the strict
+// separation-of-duties posture every composer passes to the authorizer, the
+// auth middleware and tenant onboarding: the operator's
+// auth.separation_of_duties, forced on under FIPS 140-3 mode
+// (crypto/fips140.Enabled()). Config can only raise strictness.
+func ResolveStrictSeparation(configured bool) bool {
+	return resolveStrictSeparation(fips140.Enabled(), configured)
+}
+
+// resolveStrictSeparation is ResolveStrictSeparation over an explicit FIPS
+// mode, so the forced-on path is testable without a FIPS process.
+func resolveStrictSeparation(fipsMode, configured bool) bool {
+	return fipsMode || configured
 }
 
 // BuildAuthorizer constructs the canonical RBAC[+ABAC] auth.Authorizer:
@@ -169,8 +185,9 @@ type AuthMiddlewareConfig struct {
 	RoleServiceFallback role.RoleServicer
 	UserServiceFallback user.UserServicer
 
-	// StrictSeparation enables strict separation-of-duties posture. See
-	// AuthorizerConfig.StrictSeparation.
+	// StrictSeparation enables strict separation-of-duties posture: the
+	// authorizer's (AuthorizerConfig.StrictSeparation) and the middleware's
+	// SO-exclusive so-role gate (middleware.WithStrictSeparation).
 	StrictSeparation bool
 
 	// ClusterTrustDomain, when non-empty, pins the mTLS authenticator to a
@@ -502,6 +519,7 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		middleware.WithRevocationChecker(revocation),
 		middleware.WithMTLSBindingPolicy(cfg.MTLSBindingPolicy),
 		middleware.WithPeerAttestationGate(cfg.PeerAttestation),
+		middleware.WithStrictSeparation(cfg.StrictSeparation),
 	)
 	if cfg.IssuerVerifier != nil {
 		// The SAME verifier gates the on-behalf forwarding path

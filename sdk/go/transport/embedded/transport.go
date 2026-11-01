@@ -89,12 +89,15 @@ var (
 // performed, making this the fastest possible transport for embedded
 // usage.
 type Transport struct {
-	kvSvc       service.KVServicer
-	adminSvc    service.AdminServicer
-	mvccSvc     service.MVCCKVServicer
-	txSvc       service.TransactionServicer
-	batchSvc    service.BatchServicer
-	watchSvc    service.WatchServicer
+	kvSvc    service.KVServicer
+	adminSvc service.AdminServicer
+	mvccSvc  service.MVCCKVServicer
+	txSvc    service.TransactionServicer
+	batchSvc service.BatchServicer
+	watchSvc service.WatchServicer
+	// countWatch makes every watch opened through the transport hold a
+	// watch.max_watchers slot (WithCountedWatch).
+	countWatch  bool
 	leaseSvc    service.LeaseServicer
 	indexSvc    service.IndexServicer
 	tsSvc       service.TimeSeriesServicer
@@ -231,6 +234,17 @@ func WithBatchService(svc service.BatchServicer) Option {
 func WithWatchService(svc service.WatchServicer) Option {
 	return func(t *Transport) {
 		t.watchSvc = svc
+	}
+}
+
+// WithCountedWatch makes every watch opened through the transport count
+// against watch.max_watchers, as a watch opened over a network listener
+// does. An application's client sets it; a node's own in-process client
+// (membership and feature registries) does not, so a full cap refuses
+// applications and never the node's bookkeeping.
+func WithCountedWatch() Option {
+	return func(t *Transport) {
+		t.countWatch = true
 	}
 }
 
@@ -385,7 +399,11 @@ func New(kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...Optio
 	t.mvccSvc = service.NewHardConfinedMVCC(t.mvccSvc)
 	t.txSvc = service.NewHardConfinedTransaction(t.txSvc)
 	t.batchSvc = service.NewHardConfinedBatch(t.batchSvc)
-	t.watchSvc = t.admitWatch(service.NewHardConfinedWatch(t.watchSvc))
+	t.watchSvc = service.NewHardConfinedWatch(t.watchSvc)
+	if t.countWatch {
+		t.watchSvc = service.NewCountedWatch(t.watchSvc)
+	}
+	t.watchSvc = t.admitWatch(t.watchSvc)
 	return t, nil
 }
 
@@ -497,6 +515,7 @@ var requestHandlers = map[string]requestHandler{
 	"GetTopology":                 handleGetTopology,
 	"ReplicaStates":               handleReplicaStates,
 	"CreateNamespace":             handleCreateNamespace,
+	"UpdateNamespace":             handleUpdateNamespace,
 	"DeleteNamespace":             handleDeleteNamespace,
 	"ListNamespaces":              handleListNamespaces,
 	"GetNamespaceInfo":            handleGetNamespaceInfo,
@@ -525,6 +544,7 @@ var requestHandlers = map[string]requestHandler{
 	"BarrierInitialize":           handleBarrierInitialize,
 	"BarrierUnseal":               handleBarrierUnseal,
 	"BarrierSeal":                 handleBarrierSeal,
+	"BarrierChangePassphrase":     handleBarrierChangePassphrase,
 	"BarrierStatus":               handleBarrierStatus,
 	"BarrierInitializeShamir":     handleBarrierInitializeShamir,
 	"BarrierGenerateRecoveryKeys": handleBarrierGenerateRecoveryKeys,
@@ -1037,6 +1057,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	minter, ok := t.adminSvc.(service.ClusterJoinTokenMinter)
 	if !ok {
 		return nil, translateError(&service.ClusterJoinTokenNotConfiguredError{})
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
 	}
 	token, expiresAt, err := minter.MintJoinToken(ctx, req.NodeID, time.Duration(req.TTLSeconds)*time.Second)
 	if err != nil {
@@ -2536,6 +2559,39 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	}, nil
 }
 
+// UpdateNamespace changes a vector namespace's index parameters and metadata
+// in place through the embedded vector service, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	ctx, err := t.admit(ctx, "UpdateNamespace")
+	if err != nil {
+		return nil, err
+	}
+	if err := t.authorize(ctx, "UpdateNamespace"); err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.vectorSvc == nil {
+		return nil, &NilServiceError{Service: "VectorServicer"}
+	}
+	resp, err := t.vectorSvc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace:   req.Namespace,
+		Dimension:   req.Dimension,
+		IndexConfig: req.IndexConfig,
+		Metadata:    req.Metadata,
+	})
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       resp.Namespace,
+		RequiresRebuild: resp.RequiresRebuild,
+		Timestamp:       resp.Timestamp,
+		Success:         resp.Success,
+	}, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors through the
 // embedded vector service.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
@@ -2621,12 +2677,16 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if err != nil {
 		return nil, translateError(err)
 	}
+	metric, err := transport.ParseDistanceMetric(resp.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 	return &transport.GetNamespaceInfoResponse{
 		Namespace:      resp.Namespace,
 		Dimension:      resp.Dimension,
 		VectorCount:    resp.VectorCount,
-		DistanceMetric: resp.DistanceMetric,
-		IndexType:      resp.IndexType,
+		DistanceMetric: metric,
+		IndexType:      transport.ParseVectorIndexType(resp.IndexType),
 		IndexConfig:    resp.IndexConfig,
 		Metadata:       resp.Metadata,
 		CreatedAt:      resp.CreatedAt,
@@ -3132,7 +3192,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	}
 	return &transport.GetIndexStatsResponse{
 		Namespace:         resp.Namespace,
-		IndexType:         resp.IndexType,
+		IndexType:         transport.ParseVectorIndexType(resp.IndexType),
 		VectorCount:       resp.VectorCount,
 		Dimension:         resp.Dimension,
 		IndexSizeBytes:    resp.IndexSizeBytes,
@@ -3576,7 +3636,7 @@ func toTransportNamespaceInfo(info *service.NamespaceInfo) *transport.NamespaceI
 		Dimension:      info.Dimension,
 		VectorCount:    info.VectorCount,
 		DistanceMetric: info.DistanceMetric,
-		IndexType:      info.IndexType,
+		IndexType:      transport.ParseVectorIndexType(info.IndexType),
 		IndexConfig:    info.IndexConfig,
 		Metadata:       info.Metadata,
 		CreatedAt:      info.CreatedAt,
@@ -4229,6 +4289,21 @@ func handleCreateNamespace(ctx context.Context, t *Transport, req, resp any) err
 		return err
 	}
 	if out, ok := resp.(**transport.CreateNamespaceResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleUpdateNamespace(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.UpdateNamespaceRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "UpdateNamespace"}
+	}
+	result, err := t.UpdateNamespace(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.UpdateNamespaceResponse); ok {
 		*out = result
 	}
 	return nil

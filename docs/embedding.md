@@ -1,6 +1,6 @@
 # Embedding QRDB
 
-> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-13
+> **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
 QRDB can be embedded directly into Go applications via the `sdk/go/node` package. Two builder functions cover the most common deployment shapes:
@@ -69,11 +69,8 @@ in between. A service method like `AdminService.AddMember` or
 authorization is a property of the HANDLER a transport interposes, and a
 service handle has none.
 
-This is intentional and correct for its actual use: an embedding Go
-process calling `n.Services()` IS its own admission
-control, the same way a library call is not expected to re-authenticate
-its caller. The rule this implies, and the reason it is written down
-here rather than left implicit:
+An embedding Go process calling `n.Services()` is its own admission
+control, the same way a library call does not re-authenticate its caller.
 
 **The desktop webview is the operator's own local UI, not an untrusted
 party** -- it is the one surface this specific embedder exposes a human
@@ -84,22 +81,17 @@ in their own desktop app is exercising the same authority they would have
 from the CLI on the same machine, and refusing those verbs there would not
 add security, only friction.
 
-**The rule that stays is narrower, and about what a response CARRIES, not
-which verb it names: a secret-bearing output must never be returned
-through the webview.** Today that means exactly one thing --
-`admin.mintJoinToken`'s minted token, a credential good for admitting a
-new node to the whole cluster (`ScopeCross`; see
-[clustering/architecture.md](clustering/architecture.md)) -- is never
-wired through, no matter how convenient a "mint a join token" button
-would be. `sdk/typescript/src/wails.ts`'s `admin.mintJoinToken`
-deliberately throws `NotImplementedError` instead of wiring a new
-`AdminBinding` method for it, rather than let the interface's own
-TypeScript structural typing silently reopen the gap: a token minted
-there would appear in the webview's own JavaScript heap, on a surface
-whose whole point is rendering content (including, on some platforms, a
-loaded remote page or a plugin) that the desktop process does not fully
-control -- exactly the condition a write-only credential like this one
-exists to never be exposed to.
+**A secret-bearing output is never returned through the webview.** The
+rule is about what a response carries, not which verb it names. The one
+such output is
+`admin.mintJoinToken`'s minted token, a credential that admits a new node
+to the whole cluster (`ScopeCross`; see
+[clustering/architecture.md](clustering/architecture.md)).
+`sdk/typescript/src/wails.ts`'s `admin.mintJoinToken` throws
+`NotImplementedError`, and `AdminBinding` has no method for it: a token
+minted there would sit in the webview's JavaScript heap, on a surface that
+renders content (on some platforms a loaded remote page or a plugin) the
+desktop process does not fully control.
 
 If a desktop or other local-UI surface genuinely needs to mint a join
 token, the fix is a narrower, dedicated binding that keeps the token off
@@ -132,7 +124,7 @@ if err != nil { ... }
 defer n.Close()
 
 client := n.Client()
-if err := client.Put(ctx, "key", []byte("value")); err != nil { ... }
+if err := client.KV().Put(ctx, "key", []byte("value")); err != nil { ... }
 ```
 
 ### On-disk (PebbleDB backend)
@@ -374,7 +366,6 @@ The following concerns are **not** provided by the builders and remain in `cmd/q
 | SIGHUP TLS reload | `signal.Notify` goroutine calling `bundle.Reloader.Reload()` |
 | Sealed-window listener | `lifecycle.BuildSealServicesOnly` + `awaitUnseal` before `initializeNode` |
 | Audit file logger | `server.WithAuditLogger(...)` |
-| Auth middleware | `server.WithAuthMiddleware(...)` |
 
 Embedders that need these features pass the corresponding `server.ServerOption` values in the `serverOpts` slice.
 
@@ -383,27 +374,18 @@ Embedders that need these features pass the corresponding `server.ServerOption` 
 ## Per-Tenant Infrastructure & Enable-Encryption
 
 Both the daemon (`cmd/qrdbd`) and the embedded node (`sdk/go/node`) are sibling
-composition roots over the shared `pkg/server` core. A new compositor,
-`server.BuildTenantInfra()`, is used by both to wire the per-tenant infrastructure
-(tenant host registry, Raft backend factory, encryption migrator), enabling parity
-across daemon and embedded paths.
+composition roots over the shared `pkg/server` core. Both wire the per-tenant
+infrastructure (tenant host registry, Raft backend factory, shard reconciler)
+through `server.BuildTenantInfra`.
 
 To opt in to per-tenant features on an embedded node, use the
-`node.WithTenantIsolation()` builder option:
-
-```go
-n, err := node.NewStandaloneNode(ctx, cfg, nil,
-    node.WithTenantIsolation(),
-)
-```
-
-### Seal barrier (encryption at rest)
-
-Enable the barrier in config and supply the passphrase via `WithSealPassphrase`:
+`node.WithTenantIsolation()` builder option. It requires the seal barrier
+(`cfg.Seal.Enabled`) and at least one volume pool (`cfg.Storage.VolumePools`):
 
 ```go
 cfg.Seal.Enabled  = true
 cfg.Seal.Strategy = "passphrase"
+cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: "/var/lib/myapp/volumes"}}
 
 n, err := node.NewStandaloneNode(ctx, cfg, nil,
     node.WithSealPassphrase([]byte("admin-secret")),
@@ -422,12 +404,11 @@ through `database.NewRaftWAL`, the code path qrdbd uses:
 | Posture | WAL |
 |---|---|
 | Seal disabled | written `WithoutEncryption` (plaintext, like every other byte) |
-| Sealed, single- or multi-member, system protection encrypting or `none` | the multiplex: shared system-barrier WAL plus per-tenant dedicated WALs for `dedicatedWal` databases; under protection `none` it encrypts once encryption is enabled |
+| Sealed, single- or multi-member, system protection encrypting or `none` | the multiplex: shared system-barrier WAL plus per-tenant dedicated WALs for `dedicated_wal` databases; under protection `none` it encrypts once encryption is enabled |
 
 The WAL directory records its format in `<data-dir>/wal/.qrdb-wal-format`.
-Before v0.25.1-alpha the SDK node wrote its WAL `WithoutEncryption` even when
-sealed. Such a WAL is **refused, not converted**: unsealing a node over it
-fails with `*database.RaftWALFormatError`. Start the node from an empty WAL
+A WAL written `WithoutEncryption` is **refused, not converted**, under a
+sealed node: unsealing the node over it fails with `*database.RaftWALFormatError`. Start the node from an empty WAL
 directory, and a cluster replica re-syncs from its peers.
 
 ### Tenant-scoped enable-encryption (with isolation enabled)
@@ -444,11 +425,14 @@ scope := qrdbsdk.BarrierScope{
     TenantID: "acme",
 }
 
-err := n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
+creds, err := qrdbsdk.NewCredentials(ctx, []byte("tenant-secret"))
+if err != nil { ... }
+
+err = n.EnableEncryption(ctx, scope, qrdbsdk.MigrationOptions{
     TargetStrategy: qrdbsdk.StrategyPassphrase,
     Mechanism:      qrdbsdk.MechanismSwap,
     Availability:   qrdbsdk.AvailabilityOnline,
-    Credentials:    qrdbsdk.Credentials{Secret: []byte("tenant-secret")},
+    Credentials:    creds,
 })
 ```
 
@@ -497,4 +481,4 @@ GetQuotaUsage(ctx, tenantID, quota.ResourceKeys)
 
 Usage counters are stored in `TenantInfo.Quotas` (the `Current*` fields on `quota.Quotas`) and persisted with each `UpdateQuotas` / `IncrementQuotaUsage` / `DecrementQuotaUsage` call. Enforcement happens inside `IncrementQuotaUsage`: when `current + delta > max` and `max > 0`, a `*tenant.QuotaExceededError` is returned and the counter is not written.
 
-A `max` of `-1` means unlimited; `0` means use system default (treated as unlimited today).
+A `max` of `-1` means unlimited; `0` means use the system default, which `IncrementQuotaUsage` does not enforce.

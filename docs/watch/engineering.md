@@ -50,7 +50,7 @@ func ClassifyWatchError(err error) error
 ```
 
 Typed errors: `WatchCanceledError`, `WatchCompactedError`,
-`WatchStartRevisionUnsupportedError`.
+`WatchStartRevisionUnsupportedError`, `WatcherLimitError`.
 
 ## Invariants
 
@@ -147,6 +147,7 @@ maximum instead of reaching zero.
 |---|---|---|
 | `WatchCompactedError` | the requested start revision has been compacted away | re-read current state, then watch live |
 | `WatchStartRevisionUnsupportedError` | the store keeps no revision history (a raft node whose `raft.sm_type` is not `mvcc`) | drop `StartRevision` and watch live |
+| `WatcherLimitError` | every `watch.max_watchers` slot on the node is held | retry once another watch closes; the refusal is the node's capacity, not the request's |
 | `CapabilityUnsupportedError` | the serving node has no watch service configured | watch through a node that serves it, or not at all |
 | `WatchCanceledError` | any other cancellation, reason carried verbatim | inspect the reason |
 
@@ -174,6 +175,7 @@ ordinary service error would hand back a generic `RequestError` and break
 | Barrier sealed | stream refused | **yes** |
 | Start revision above current | accepted at open; delivers once a change reaches that revision | n/a — nothing to fail; the revision has simply not happened yet |
 | Start revision at or below the watched database's compaction floor | `WatchCompactedError` | **yes** — never silently starts live instead. The floor is the one covering the watched key or range, so another database's compaction never cancels this watch |
+| Every `watch.max_watchers` slot held | `WatcherLimitError` at open | **yes** — no watcher is registered |
 | Caller context cancelled | stream ends, channel closed | n/a |
 
 The compacted case fails rather than quietly downgrading to a live watch,
@@ -197,7 +199,18 @@ beyond the current one.
 
 ## Configuration
 
-No watch-specific keys. A standalone node replays on every backend; on a raft
+| Key | Default | Effect |
+|---|---|---|
+| `watch.buffer_size` | 1024 | every watcher's event buffer, in responses; a consumer that falls this far behind is evicted and its stream ends in-band with the overflow reason |
+| `watch.max_watchers` | 0 (unlimited) | client watches open at once on the node, across every database and tenant; one past it is refused with `WatcherLimitError` |
+
+Only a watch a client opens takes a `watch.max_watchers` slot, on every
+transport and through the embedded SDK client; the node's own watchers
+(tenant lifecycle, membership, feature registries) take none, so a full cap
+refuses clients and never starves the node. A slot is free again when the
+watch's `Close` returns.
+
+A standalone node replays on every backend; on a raft
 node replay availability is governed by `raft.sm_type` (`mvcc` required). The replay window is the watched database's compaction
 floor -- per database, moved only by that database's owner. See
 [../key-value/engineering.md](../key-value/engineering.md).

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -36,7 +37,7 @@ func TestDatabaseService_VolumeTenant_ReservedHostDirectoryNames(t *testing.T) {
 	for _, name := range []string{"wal", "nodehost", "WAL"} {
 		t.Run(name, func(t *testing.T) {
 			dataRoot := t.TempDir()
-			mgr := database.NewManager(nil, t.TempDir())
+			mgr := databasetest.NewManager(nil, t.TempDir())
 			t.Cleanup(func() { _ = mgr.Close() })
 			lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
 				ID:            "acme",

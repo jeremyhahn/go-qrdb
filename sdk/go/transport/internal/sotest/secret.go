@@ -139,6 +139,10 @@ func SecretCalls() []SecretCall {
 			_, err := c.TenantBarrierQuorumSubmit(ctx, &transport.TenantQuorumSubmitRequest{TenantID: "acme", Op: "unseal", Username: "officer", Share: secretBytes(on)})
 			return err
 		}},
+		{"CreateTenant SO PIN", "", func(ctx context.Context, c SecretClient, on bool) error {
+			_, err := c.CreateTenant(ctx, &transport.CreateTenantRequest{ID: "acme", Name: "acme", AdminUsername: "admin", SOPin: secretString(on)})
+			return err
+		}},
 		{"CreateDatabase barrier passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
 			_, err := c.CreateDatabase(ctx, transport.CreateDatabaseRequest{Name: "db1", Barrier: &transport.DatabaseBarrierConfig{Enabled: true, Secret: secretString(on)}})
 			return err

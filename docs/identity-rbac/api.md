@@ -82,11 +82,30 @@ see [Status and error mapping](#status-and-error-mapping).
 | List own effective permissions | `GET /permissions/own` | `ListOwnPermissions` | `role.ListOwnPermissions` | `qrdb_permissions_own` | `Client.RBAC().ListOwnPermissions` | identity-gated |
 | Authorize an identity | `POST /permissions/authorize` | `Authorize` | `role.Authorize` | `qrdb_permissions_authorize` | `Client.RBAC().Authorize` | identity-gated; `permissions:resolve` for another identity |
 | Reconcile built-in roles | `POST /roles/reconcile` | `ReconcileBuiltInRoles` | `role.ReconcileBuiltIn` | `qrdb_role_reconcile_builtin` | `ReconcileBuiltInRoles` | `roles:create` |
+| Reconcile built-in roles in every tenant | `POST /roles/reconcile/all-tenants` | `ReconcileBuiltInRolesAllTenants` | `role.ReconcileBuiltInAllTenants` | `qrdb_role_reconcile_builtin_all_tenants` | `ReconcileBuiltInRolesAllTenants` | `roles:reconcile_all`, system tenant only |
 
 Reconcile carries **`roles:create`**, not a permission of its own. It IS the
 seeding operation applied to an existing tenant, and a dedicated permission
 would be absent from any role that lacks it — so nobody would hold the grant
 needed to repair that exact absence.
+
+**All-tenant reconcile** takes no request body and answers
+`{"tenants": [<reconcile report>...], "skipped": [{"tenant_id", "reason",
+"detail"}], "failed": [{"tenant_id", "error"}]}`. Every live tenant is
+reconciled independently, the system tenant first. A sealed tenant is skipped
+with reason `sealed`, a tenant that refuses the call with reason `refused`. A
+tenant that fails is reported in `failed` and the pass continues, so the call
+itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
+which only the system tenant's built-in Admin holds. A caller bound to any other
+tenant is refused with 403 / `PermissionDenied`. A node without a tenant service
+answers 501 / `Unimplemented`, and its MCP server does not list the tool. QUIC
+carries the request and response as protobuf
+(`ReconcileBuiltInRolesAllTenantsResponse`).
+
+The bootstrap problem that `roles:create` avoids for the single-tenant verb
+applies here once: a system Admin role stored before `roles:reconcile_all`
+existed lacks it. The single-tenant reconcile of the system tenant, which needs
+only `roles:create`, grants it. Run that first.
 
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not
@@ -816,6 +835,55 @@ is written. The role check runs whether or not RBAC is enabled; only the
 `roles:assign` check depends on it. See
 [engineering.md](engineering.md#authorization-model) for the full mechanism.
 
+Under strict separation of duties (`auth.separation_of_duties`, forced on in
+FIPS 140-3 mode), a write that changes whether a user holds the tenant's
+Security Officer role (`so`) — `AssignRole` or `UnassignRole` of it, or a
+`CreateUser`/`UpdateUser` whose `roleIDs` or `roleBindings` add or drop it —
+additionally requires the caller to be a Security Officer **of that same tenant**, judged by the
+caller's own roles together with its role bindings scoped to that tenant: a
+caller bound to the tenant's `so` role may grant and revoke it, and a binding
+scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
+alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
+before anything is written, and so is the `system` tenant's Security Officer
+or another tenant's. A write that leaves the user's Security Officer standing
+as it was is not affected. Outside strict separation of duties the `so` role
+is granted and revoked like any other, by a caller holding
+`roles:assign`/`roles:unassign`, the tenant Admin included. A tenant's first
+Security Officer is enrolled by
+tenant create's optional `so_*` fields
+([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
+
+An embedder reads the posture its node resolved with
+`node.Node.StrictSeparation()` (`true` under strict separation). The
+resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
+FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
+posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
+(`strict` or `standard`). When a start or first boot resolves a posture that
+differs from the record, or no posture is recorded, the record is written
+first. The node whose conditional write wins then emits one audit event,
+which `audit query --action posture-change` returns:
+
+| Field | Value |
+|---|---|
+| `actor` | `system` |
+| `resource` | `auth/separation_of_duties` |
+| `action` | `posture-change` |
+| `outcome` | `success` |
+| `attributes.previous` | `none`, `strict` or `standard` |
+| `attributes.posture` | `strict` or `standard` |
+| `attributes.fips_forced` | `true` when FIPS 140-3 mode forced strict separation |
+
+A record that cannot be read or written refuses the daemon's start, and fails
+`Node.FirstBoot` / `Node.FirstBootWithCeremony`, with
+`*wiring.SeparationPostureError`.
+
+Under strict separation, the user store judges the rule again against the record version the write
+commits over, not the one the request was first checked against. An Admin's
+write that would remove a Security Officer grant committed after its first
+check is refused with `SORoleRequiredError`; a grant that commits after that
+judgement fails the Admin's write with `ConcurrentUpdateError`. Either way the
+grant stands.
+
 `factors` is **read-only on every transport, on both `CreateUser` and
 `UpdateUser`**: no wire request — REST, gRPC, QUIC, MCP or the SDK's
 `transport.CreateUserRequest`/`UpdateUserRequest` — declares a `factors`
@@ -856,6 +924,8 @@ of its own, and the listing never contains one.
 | A request authenticated with a holder (officer or custodian) certificate or a tenant-issued delegation must be forwarded to the leader, and this node cannot sign the on-behalf assertion (`UnsignedForwardRefusedError`) | 502 | — (REST leader forwarding only) |
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the tenant's `so` role by a caller that is not that tenant's own Security Officer (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
+| Granting or revoking the `so` role when the tenant's `so` role cannot be looked up (`SORoleUnresolvedError`) | 503 | `UNAVAILABLE` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |
 | Role-assignment write names a role but the node has no role service | 501 | `UNIMPLEMENTED` |
@@ -867,10 +937,11 @@ of its own, and the listing never contains one.
 | A user/role request whose body (REST) or payload (QUIC) does not decode | 400 | `INVALID_ARGUMENT` |
 | A REST user or role administration body larger than 1 MiB | 413 | — |
 | A create, list or name lookup by a caller outside the system tenant naming a tenant other than its own (`tenant.CrossTenantDeniedError`) | 403 | `PERMISSION_DENIED` |
-| An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
+| An invitation token cannot be redeemed — unknown, wrong tenant, expired, already used, superseded by a later re-invite, or for an account no longer pending — whatever the specific cause | 401 | `UNAUTHENTICATED` |
 | Invite or redeem request missing a required field | 400 | `INVALID_ARGUMENT` |
 | Redeemed key already bound to an account of the tenant | 409 | `ALREADY_EXISTS` |
 | Re-inviting an account that already holds a credential or is not pending | 409 | `FAILED_PRECONDITION` |
+| Re-inviting an account while a concurrent re-invite or redemption of it commits first (`invite.ErrReissueConflict`; retry) | 409 | `ABORTED` |
 
 ## Pagination
 

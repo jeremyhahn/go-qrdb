@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -319,6 +320,18 @@ var authFailureRules = []struct {
 	{"auth.TrustStateUnavailableError", func(err error) (AuthFailureClass, bool) {
 		var e *auth.TrustStateUnavailableError
 		return AuthFailureUnavailable, errors.As(err, &e)
+	}},
+	// The read behind an authenticator met its shard electing a leader or
+	// moving it (service.LeadershipTransient): the credential was never
+	// judged, and the next attempt, after the election, can succeed. Ahead of
+	// auth.AuthError because an election is never a credential failure: a
+	// chain carrying an *auth.AuthError beside the election -- an
+	// authenticator joining its verdict with the read that failed under it --
+	// would otherwise answer 401 and send a valid caller to re-authenticate
+	// (go-qrdb#1280). Below the audit and attestation rules for the reasons
+	// their comments give.
+	{"service.LeadershipTransient", func(err error) (AuthFailureClass, bool) {
+		return AuthFailureUnavailable, service.LeadershipTransient(err)
 	}},
 	{"auth.AuthError", func(err error) (AuthFailureClass, bool) {
 		var authErr *auth.AuthError

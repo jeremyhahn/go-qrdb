@@ -14,6 +14,7 @@ package invite
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
@@ -52,8 +53,28 @@ type Store interface {
 	// ErrAlreadyRedeemed.
 	Redeem(ctx context.Context, token string) (*Entity, error)
 
-	// GC removes invitations that are redeemed or expired, and returns how
-	// many were removed.
+	// Reissue supersedes every unredeemed invitation userID holds and issues
+	// a new one, returning its plaintext token exactly as Create does. The
+	// supersession and the new invitation take effect in one guarded write,
+	// so no earlier token stays redeemable beside the new one, and of two
+	// racing reissues exactly one succeeds; the other gets
+	// ErrReissueConflict, as does a reissue a concurrent Redeem beat. It
+	// returns ErrUserNotFound for a user that was never invited and
+	// ErrUserActive for one recorded active by Activate. A user who redeemed
+	// an invitation but was never activated can still be reissued: that is
+	// how a redemption whose activation failed recovers.
+	Reissue(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...CreateOption) (token string, entity *Entity, err error)
+
+	// Activate records that the account userID's invitation enrols is
+	// active, after which Reissue refuses it with ErrUserActive. The caller
+	// calls it once its own activation, which follows Redeem, has succeeded.
+	// It is idempotent, and returns ErrUserNotFound for a user that was never
+	// invited.
+	Activate(ctx context.Context, userID, tenantID string, at time.Time) error
+
+	// GC removes invitations that are redeemed, expired or superseded, and
+	// returns how many were removed. An invitation a Reissue has written but
+	// not yet made live is not superseded: it stays until it expires.
 	GC(ctx context.Context, now time.Time) (removed int, err error)
 }
 
@@ -90,8 +111,10 @@ func (r *redemption) SetEntityID(id uint64) { r.ID = id }
 type DAOStore struct {
 	invites     dao.GenericDAO[*Entity]
 	redemptions dao.GenericDAO[*redemption]
+	subjects    dao.GenericDAO[*subject]
 	inviteIDs   *dao.FieldHashGenerator
 	claimIDs    *dao.FieldHashGenerator
+	subjectIDs  *dao.FieldHashGenerator
 }
 
 // NewDAOStore builds a DAOStore over the given KV store.
@@ -131,11 +154,23 @@ func NewDAOStore(store kvstore.KVStore) (*DAOStore, error) {
 		return nil, &StoreError{Op: "create redemption dao", Cause: err}
 	}
 
+	subjectIDs := dao.NewFieldHashGenerator("Key")
+	subjects, err := dao.New(
+		store, subjectEntityType,
+		func() *subject { return &subject{} },
+		dao.WithIDGenerator(subjectIDs),
+	)
+	if err != nil {
+		return nil, &StoreError{Op: "create invite subject dao", Cause: err}
+	}
+
 	return &DAOStore{
 		invites:     invites,
 		redemptions: redemptions,
+		subjects:    subjects,
 		inviteIDs:   inviteIDs,
 		claimIDs:    claimIDs,
+		subjectIDs:  subjectIDs,
 	}, nil
 }
 
@@ -148,6 +183,31 @@ func (s *DAOStore) Create(ctx context.Context, userID, tenantID string, ttl time
 		return "", nil, ErrNonPositiveTTL
 	}
 
+	current, err := s.ensureSubject(ctx, tenantID, userID)
+	if err != nil {
+		return "", nil, err
+	}
+	token, entity, err := s.mint(ctx, userID, tenantID, ttl, current.Generation, opts)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// A reissue that advanced the generation while this record was being
+	// written has already superseded it. Report that rather than hand out a
+	// token that is dead on arrival.
+	if err := s.checkLive(ctx, entity); err != nil {
+		s.discard(ctx, entity)
+		if errors.Is(err, ErrSuperseded) {
+			return "", nil, ErrReissueConflict
+		}
+		return "", nil, err
+	}
+	return token, entity, nil
+}
+
+// mint writes a new invitation for userID at the given generation and returns
+// its plaintext token.
+func (s *DAOStore) mint(ctx context.Context, userID, tenantID string, ttl time.Duration, generation uint64, opts []CreateOption) (string, *Entity, error) {
 	token, err := GenerateToken()
 	if err != nil {
 		return "", nil, err
@@ -155,11 +215,12 @@ func (s *DAOStore) Create(ctx context.Context, userID, tenantID string, ttl time
 
 	now := time.Now().UTC()
 	entity := &Entity{
-		TokenHash: TokenDigest(token),
-		UserID:    userID,
-		TenantID:  tenantID,
-		ExpiresAt: now.Add(ttl),
-		CreatedAt: now,
+		TokenHash:  TokenDigest(token),
+		UserID:     userID,
+		TenantID:   tenantID,
+		ExpiresAt:  now.Add(ttl),
+		CreatedAt:  now,
+		Generation: generation,
 	}
 	for _, opt := range opts {
 		opt(entity)
@@ -222,6 +283,9 @@ func (s *DAOStore) Redeem(ctx context.Context, token string) (*Entity, error) {
 	if !claimed {
 		return nil, ErrAlreadyRedeemed
 	}
+	if err := s.claimGeneration(ctx, entity); err != nil {
+		return nil, err
+	}
 
 	// Stamp the invitation for audit and for GC. A failure here does not undo
 	// the claim — the marker is authoritative — so it is reported without
@@ -241,7 +305,13 @@ func (s *DAOStore) GC(ctx context.Context, now time.Time) (int, error) {
 		func(page dao.PageResult[*Entity]) error {
 			for _, entity := range page.Entities {
 				if entity.Usable(now) {
-					continue
+					collect, liveErr := s.collectible(ctx, entity)
+					if liveErr != nil {
+						return liveErr
+					}
+					if !collect {
+						continue
+					}
 				}
 				if delErr := s.invites.Delete(ctx, entity); delErr != nil {
 					return delErr
@@ -293,7 +363,7 @@ func (s *DAOStore) checkUsable(ctx context.Context, entity *Entity, now time.Tim
 	if entity.Expired(now) {
 		return ErrExpired
 	}
-	return nil
+	return s.checkLive(ctx, entity)
 }
 
 // find resolves a plaintext token to its stored invitation.

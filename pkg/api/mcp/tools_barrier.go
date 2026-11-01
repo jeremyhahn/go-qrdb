@@ -54,6 +54,7 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMig
 	tools := []serverTool{
 		{Tool: toolBarrierInitialize(), Perm: permission.SealBootstrap, Handler: handleBarrierInitialize(svc, pinBackend)},
 		{Tool: toolBarrierUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierUnseal(svc)},
+		{Tool: toolBarrierChangePassphrase(), Perm: permission.SealRekey, Handler: handleBarrierChangePassphrase(svc, pinBackend)},
 		{Tool: toolBarrierSeal(), Perm: permission.SealSeal, Handler: handleBarrierSeal(svc, pinBackend)},
 		{Tool: toolBarrierStatus(), Perm: permission.SealStatus, Handler: handleBarrierStatus(svc)},
 		{Tool: toolBarrierClusterUnseal(), Perm: permission.SealUnseal, Handler: handleBarrierClusterUnseal(svc)},
@@ -313,6 +314,52 @@ func handleBarrierUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc 
 		}
 
 		return mcp.NewToolResultText("barrier unsealed"), nil
+	}
+}
+
+// toolBarrierChangePassphrase defines the qrdb_barrier_change_passphrase
+// tool schema.
+func toolBarrierChangePassphrase() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_change_passphrase",
+		mcp.WithDescription("Re-wrap the root key of the unsealed, passphrase-sealed barrier under a new passphrase."),
+		withSecretArg("current", "Current barrier passphrase. Required, in exactly one of its two forms."),
+		withSecretArg("next", "New barrier passphrase. Required, in exactly one of its two forms."),
+		withSecretArg("so_pin", "SO PIN verified against the configured pin.PINBackend."),
+	)
+}
+
+// handleBarrierChangePassphrase returns a tool handler that delegates to
+// svc.BarrierChangePassphrase under the SO PIN, verified by pinBackend
+// exactly as for every other SO-gated barrier operation; without a PIN
+// backend it fails closed. Both passphrases are wiped on return.
+func handleBarrierChangePassphrase(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		current, err := secretArg(req, "current")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_change_passphrase", Err: err}
+		}
+		defer secure.Wipe(current)
+		next, err := secretArg(req, "next")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_change_passphrase", Err: err}
+		}
+		defer secure.Wipe(next)
+		if len(current) == 0 || len(next) == 0 {
+			return mcp.NewToolResultError("current and next are required"), nil
+		}
+		soPIN, err := pinArg(req, "so_pin")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_change_passphrase", Err: err}
+		}
+		if err := pin.RequireSOPIN(ctx, pinBackend, soPIN); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_change_passphrase", Err: err}
+		}
+
+		if err := svc.BarrierChangePassphrase(ctx, current, next); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_change_passphrase", Err: err}
+		}
+
+		return mcp.NewToolResultText("barrier passphrase changed"), nil
 	}
 }
 

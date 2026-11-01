@@ -32,12 +32,18 @@ Store a key-value pair.
 | Flag | Type | Default | Required |
 |---|---|---|---|
 | `--lease-id` | int | none | no |
+| `--revision` | bool | false | no — print the written key's version and revisions |
 | `--write-mode` | string | server default | no — `sync`, `wal_durable`, or `batched` |
 
 ```bash
 qrdb --server https://db.example.com kv put app/config/timeout 30s
 qrdb kv put session/abc --lease-id 7 --write-mode sync
+qrdb kv put app/config/timeout 45s --revision
 ```
+
+`--revision` prints the same metadata as `kv get --revision`: the version a
+transaction's `version` compare reads, so a compare-and-set can use it
+directly. See [user.md](user.md#reading-a-keys-version).
 
 ## `qrdb kv get <key>`
 

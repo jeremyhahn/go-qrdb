@@ -663,6 +663,15 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	// regardless of whether the source was StrategyNone or StrategySystemBarrier.
 	sourceStrategy, _ := b.activeStrategy.Load().(StrategyID)
 
+	// Writing the target's key over this barrier's and retiring this
+	// barrier's persister are one operation (see rootKeyRewrap and
+	// rootKeyAdopted): a rotation, purge or backoff write of this barrier's
+	// live state at any point after the first Put below would write its
+	// pre-migration key back over the migrated one. Nothing here holds a
+	// barrier lock, so it waits rather than refuses.
+	b.rootKeyRewrap.Lock()
+	defer b.rootKeyRewrap.Unlock()
+
 	sealed := target.barrier.SealedRootKeyData()
 	if sealed == nil {
 		return ErrNilSealedData
@@ -703,6 +712,13 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	if err := b.base.Put(ctx, b.config.RootKeyPath, blob); err != nil {
 		return err
 	}
+	if hook := b.rootKeyWritten; hook != nil {
+		hook()
+	}
+	// The canonical blob now names the target's key: from here on no write
+	// of this barrier's live state may reach disk. Set while rootKeyRewrap
+	// is held, so no persist lands between the write and this.
+	b.rootKeyAdopted.Store(true)
 
 	if targetStrategy == StrategyShamir {
 		if shamirStrategy := target.ShamirStrategy(); shamirStrategy != nil {

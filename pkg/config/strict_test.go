@@ -16,6 +16,8 @@ package config
 
 import (
 	"errors"
+	"net"
+	"strconv"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -167,6 +169,46 @@ func TestLoad_IntegrationExemplarConfigsLoadStrictly(t *testing.T) {
 				t.Fatalf("Validate: %v", err)
 			}
 		})
+	}
+}
+
+// TestLoad_IntegrationExemplarConfigsBindDistinctPorts pins that the two
+// qrdbd configs of the integration docker-compose stack listen on disjoint
+// ports. Both servers join one network namespace, so a port both take, a
+// default included, fails the second to start with "address already in use"
+// (main run 70485: both took bootstrap.noise_port's default 63006).
+func TestLoad_IntegrationExemplarConfigsBindDistinctPorts(t *testing.T) {
+	owner := map[string]string{}
+	for _, path := range []string{
+		"../../test/integration/api/config.test.yaml",
+		"../../test/integration/api/config.test.shamir.yaml",
+	} {
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load %s: %v", path, err)
+		}
+		_, raftPort, err := net.SplitHostPort(cfg.Raft.ListenAddress)
+		if err != nil {
+			t.Fatalf("%s: raft.listen_address %q: %v", path, cfg.Raft.ListenAddress, err)
+		}
+		binds := map[string]string{
+			"tcp " + raftPort: "raft.listen_address",
+			"udp " + raftPort: "raft.listen_address",
+			"tcp " + strconv.Itoa(cfg.Server.AdminPort):    "server.admin_port",
+			"tcp " + strconv.Itoa(cfg.Server.GRPCPort):     "server.grpc_port",
+			"udp " + strconv.Itoa(cfg.Server.QUICPort):     "server.quic_port",
+			"tcp " + strconv.Itoa(cfg.MCP.Port):            "mcp.port",
+			"tcp " + strconv.Itoa(cfg.Bootstrap.NoisePort): "bootstrap.noise_port",
+		}
+		if len(binds) != 7 {
+			t.Errorf("%s binds %d distinct ports, want 7: %v", path, len(binds), binds)
+		}
+		for bind, key := range binds {
+			if prev, taken := owner[bind]; taken {
+				t.Errorf("%s %s (%s) is already bound by %s", path, bind, key, prev)
+			}
+			owner[bind] = path + " " + key
+		}
 	}
 }
 

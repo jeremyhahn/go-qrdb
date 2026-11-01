@@ -12,9 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 )
 
 // ErrWriteAtUnsupported is returned by WriteAt when the offset does
@@ -30,12 +31,12 @@ var ErrFileClosed = errors.New("encfs: file is closed")
 // ErrReadOnly is returned by write methods on a read-only file.
 var ErrReadOnly = errors.New("encfs: file is read-only")
 
-// encryptedFile implements vfs.File on top of an underlying base file
+// encryptedFile implements filesys.File on top of an underlying base file
 // holding encfs-formatted ciphertext. One instance corresponds to one
 // open Pebble file handle. The struct is small enough to embed in the
-// returned vfs.File interface value without additional indirection.
+// returned filesys.File interface value without additional indirection.
 type encryptedFile struct {
-	base       vfs.File
+	base       filesys.File
 	crypto     *blockCrypto
 	headerSize int64
 	readOnly   bool
@@ -51,7 +52,7 @@ type encryptedFile struct {
 // newWriteFile wraps a freshly-created base file in an encryptedFile
 // configured for sequential writes. The base file MUST be empty; the
 // header is written immediately.
-func newWriteFile(base vfs.File, h *header) (*encryptedFile, error) {
+func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
 	if _, err := base.Write(h.marshal()); err != nil {
 		return nil, err
 	}
@@ -69,7 +70,7 @@ func newWriteFile(base vfs.File, h *header) (*encryptedFile, error) {
 // newReadFile wraps an existing base file in an encryptedFile
 // configured for read-only access. The header has already been parsed
 // and the base read cursor sits immediately past the header.
-func newReadFile(base vfs.File, h *header, physicalSize int64) (*encryptedFile, error) {
+func newReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFile, error) {
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
 		return nil, err
@@ -345,23 +346,9 @@ func (f *encryptedFile) Sync() error {
 	return f.base.Sync()
 }
 
-// SyncData behaves like Sync.
-func (f *encryptedFile) SyncData() error { return f.Sync() }
-
-// SyncTo persists at least the prefix of the file up to length
-// bytes. The simplification used here syncs the entire file; that is
-// always correct and matches the contract's allowance to upgrade to a
-// full sync.
-func (f *encryptedFile) SyncTo(length int64) (bool, error) {
-	if err := f.Sync(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // Stat returns a FileInfo whose Size reports the logical (plaintext)
 // length of the file, hiding the encryption overhead from Pebble.
-func (f *encryptedFile) Stat() (vfs.FileInfo, error) {
+func (f *encryptedFile) Stat() (os.FileInfo, error) {
 	fi, err := f.base.Stat()
 	if err != nil {
 		return nil, err
@@ -372,29 +359,33 @@ func (f *encryptedFile) Stat() (vfs.FileInfo, error) {
 	return &encFileInfo{FileInfo: fi, logicalSize: logicalSize}, nil
 }
 
-// Preallocate is forwarded to the base file. The encryption overhead
+// Preallocate is forwarded to the base file when it is a
+// filesys.Preallocator, and is otherwise a no-op. The encryption overhead
 // is small enough that Pebble's preallocation hint remains useful even
 // without a translated offset.
 func (f *encryptedFile) Preallocate(offset, length int64) error {
-	return f.base.Preallocate(offset, length)
+	if p, ok := f.base.(filesys.Preallocator); ok {
+		return p.Preallocate(offset, length)
+	}
+	return nil
 }
 
-// Prefetch is forwarded to the base file with the encryption-overhead
-// adjusted offset. Prefetch is a hint; over-fetching is harmless.
+// Prefetch is forwarded to the base file, when it is a
+// filesys.Prefetcher, with the encryption-overhead adjusted offset, and is
+// otherwise a no-op. Prefetch is a hint; over-fetching is harmless.
 func (f *encryptedFile) Prefetch(offset, length int64) error {
-	return f.base.Prefetch(offset+f.headerSize, length)
+	if p, ok := f.base.(filesys.Prefetcher); ok {
+		return p.Prefetch(offset+f.headerSize, length)
+	}
+	return nil
 }
 
-// Fd returns InvalidFd: encrypted files do not expose a raw OS file
-// descriptor because direct OS access would bypass encryption.
-func (f *encryptedFile) Fd() uintptr { return vfs.InvalidFd }
-
-// encFileInfo wraps an underlying vfs.FileInfo and overrides Size to
+// encFileInfo wraps an underlying os.FileInfo and overrides Size to
 // report the logical plaintext length. All other methods (Name,
-// Mode, ModTime, IsDir, Sys, DeviceID) are promoted from the embedded
+// Mode, ModTime, IsDir, Sys) are promoted from the embedded
 // base FileInfo via Go's method promotion rules.
 type encFileInfo struct {
-	vfs.FileInfo
+	os.FileInfo
 	logicalSize int64
 }
 

@@ -21,6 +21,8 @@ type failingBackend struct {
 	listErr   error
 	existErr  error
 	scanErr   error
+	// casErr is CompareAndSwap's error; nil makes it refuse every swap.
+	casErr error
 }
 
 func newFailingBackend() *failingBackend {
@@ -55,7 +57,7 @@ func (f *failingBackend) CompareAndDelete(ctx context.Context, key string, expec
 }
 
 func (f *failingBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	return false, f.casErr
 }
 
 func (f *failingBackend) Delete(ctx context.Context, key string) error {

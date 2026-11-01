@@ -34,7 +34,7 @@ qrdb --database docs-db vector namespace create --namespace docs --dimension 768
 |---|---|---|---|
 | `--namespace` | string | — | namespace name |
 | `--dimension` | uint32 | — | vector dimensionality |
-| `--distance-metric` | string | `cosine` | `cosine \| euclidean \| dot-product` |
+| `--distance-metric` | string | `cosine` | `cosine \| euclidean \| dot-product \| manhattan` |
 | `--index-type` | string | `hnsw` | `hnsw \| flat \| ivf-flat` |
 | `--shard-id` | uint64 | — | target shard |
 

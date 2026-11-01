@@ -284,6 +284,59 @@ func TestHandleVectorGetNamespaceInfo_Success(t *testing.T) {
 	}
 }
 
+func TestHandleVectorGetNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	mock := &mockVectorService{
+		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+			return &service.GetNamespaceInfoResponse{
+				Namespace:      "info-ns",
+				Dimension:      4,
+				DistanceMetric: "COSINE",
+				IndexConfig:    map[string]string{"ef_construction": "321"},
+				Metadata:       map[string]interface{}{"owner": "team-a"},
+			}, nil
+		},
+	}
+
+	srv := newVectorServer(mock)
+	payload, _ := proto.Marshal(&pb.VectorGetNamespaceInfoRequest{Namespace: "info-ns"})
+
+	resp, err := srv.handleVectorGetNamespaceInfo(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out pb.VectorNamespaceInfo
+	if err := proto.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.GetIndexConfig()["ef_construction"] != "321" {
+		t.Fatalf("index_config = %v, want ef_construction=321", out.GetIndexConfig())
+	}
+	if out.GetMetadataJson() != `{"owner":"team-a"}` {
+		t.Fatalf("metadata_json = %q, want {\"owner\":\"team-a\"}", out.GetMetadataJson())
+	}
+}
+
+func TestHandleVectorGetNamespaceInfo_MetadataMarshalError(t *testing.T) {
+	mock := &mockVectorService{
+		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+			return &service.GetNamespaceInfoResponse{
+				Namespace:      "info-ns",
+				DistanceMetric: "COSINE",
+				Metadata:       map[string]interface{}{"bad": make(chan int)},
+			}, nil
+		},
+	}
+
+	srv := newVectorServer(mock)
+	payload, _ := proto.Marshal(&pb.VectorGetNamespaceInfoRequest{Namespace: "info-ns"})
+
+	_, err := srv.handleVectorGetNamespaceInfo(context.Background(), payload)
+	var mErr *MetadataMarshalError
+	if !errors.As(err, &mErr) {
+		t.Fatalf("expected *MetadataMarshalError, got %T: %v", err, err)
+	}
+}
+
 func TestHandleVectorGetNamespaceInfo_ServiceError(t *testing.T) {
 	mock := &mockVectorService{
 		getNamespaceInfoFn: func(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
@@ -1150,6 +1203,7 @@ func TestHandleVectorGetIndexStats_Success(t *testing.T) {
 			return &service.GetIndexStatsResponse{
 				Namespace:        "stats-ns",
 				IndexType:        "HNSW",
+				DistanceMetric:   "L2",
 				VectorCount:      10000,
 				Dimension:        128,
 				IndexSizeBytes:   1048576,
@@ -1181,6 +1235,45 @@ func TestHandleVectorGetIndexStats_Success(t *testing.T) {
 	}
 	if out.DiskUsage != 1048576 {
 		t.Fatalf("expected disk usage 1048576, got %d", out.DiskUsage)
+	}
+}
+
+func TestHandleVectorGetIndexStats_ReportsTheMetricNotTheIndexType(t *testing.T) {
+	for metric, want := range map[string]pb.DistanceMetric{
+		"dot_product": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+		"euclidean":   pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+	} {
+		mock := &mockVectorService{
+			getIndexStatsFn: func(context.Context, *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
+				return &service.GetIndexStatsResponse{Dimension: 4, IndexType: "FLAT", DistanceMetric: metric}, nil
+			},
+		}
+		payload, _ := proto.Marshal(&pb.VectorGetIndexStatsRequest{Namespace: "ns"})
+		resp, err := newVectorServer(mock).handleVectorGetIndexStats(context.Background(), payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var out pb.VectorIndexStats
+		if err := proto.Unmarshal(resp, &out); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if out.DistanceMetric != want {
+			t.Errorf("metric %q: DistanceMetric = %v, want %v", metric, out.DistanceMetric, want)
+		}
+	}
+}
+
+func TestProtoDistanceMetric_FoldsCaseAndAliases(t *testing.T) {
+	tests := map[string]pb.DistanceMetric{
+		"Cosine":      pb.DistanceMetric_DISTANCE_COSINE,
+		"l2":          pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+		"EUCLIDEAN":   pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+		"DOT_PRODUCT": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+	}
+	for name, want := range tests {
+		if got, err := protoDistanceMetric("ns", name); err != nil || got != want {
+			t.Errorf("protoDistanceMetric(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

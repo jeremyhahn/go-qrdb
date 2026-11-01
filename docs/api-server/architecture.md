@@ -1,6 +1,6 @@
 # Unified API Server — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 One server hosting six transports, with one authorization decision behind all of
@@ -278,6 +278,22 @@ neither owns a verb neither registered. See
 | SDK Tier 2 aliases | `sdk/go/server/server.go` | go-qrdb |
 | Capability modules | — | **go-xkms, go-quicbaas, go-trusted-platform** |
 
+### Capability rows and the SDK edge
+
+The feature is the three rows of the constitution's capability registry under
+*API server framework*:
+
+| Capability | Tier | Reach via the qrdb SDK |
+|---|---|---|
+| Unified multi-protocol API server | none: hosting infrastructure, consumed by embedding | `node.NewStandaloneNode` / `node.NewClusteredNode` server options |
+| `ServiceModule` seam | 2 | `sdk/go/server`: `ServiceModule`, `BaseModule`, `WithModule`, `ModuleHTTPRegistrar` |
+| One-source authorization | 2 | the `qrdb.v1.permission` proto option and the per-transport registration registries |
+
+All three are composer-only from the layers above. The server's own lower
+layer is go-quicraft, the Raft library this repository embeds: `pkg/server`
+reaches it through go-quicraft's public `pkg` packages (the host, `config`,
+`sm`, `logdb`), never through its internals.
+
 ### Where the transports bind
 
 Every listener the server opens — REST, the HTTP/3 (QUIC) listener that shares
@@ -492,6 +508,42 @@ port on the SDK node still selects the SDK node's fixed default (63001 / 63002),
 kernel-assigned port. Those SDK defaults differ from the daemon's configuration
 defaults (REST 63002, gRPC 63003, QUIC 63004, `config.DefaultConfig`): the SDK
 node's gRPC default is the daemon's REST port.
+
+## Data flow
+
+One request, from the wire to the store and back:
+
+1. **The transport terminates the connection.** REST serves HTTP/2 over TCP
+   and HTTP/3 over UDP on the same port; gRPC and the MCP endpoint listen on
+   TCP, the native QUIC transport on UDP, each on its own port of
+   `config.Server.Host`; the Unix transport serves gRPC on a local socket; the
+   embedded transport is a Go call inside the process and crosses no
+   boundary. TLS, and the client certificate when mTLS is configured, ends at
+   the listener.
+2. **Authentication** turns the presented credential into an identity: a
+   certificate, a bearer token, a cluster peer's on-behalf assertion or, for a
+   credential the host does not understand, a module's `ModuleAuthFallback`.
+   The tenant comes from that identity; the database comes from the request's
+   database scope (`X-QRDB-Database` or its per-transport equivalent).
+3. **Authorization** looks up the permission the route, RPC or tool declared
+   at registration and asks the authorizer for it. A denial is the
+   transport's typed refusal, written to the audit log, and nothing below
+   this step runs.
+4. **The handler delegates to `pkg/service`.** `service.Registry` resolves the
+   servicer for the request's (tenant, database), and the servicer runs the
+   operation against its engine. A request a `ServiceModule` registered goes
+   to that module's handler instead, after the same steps 1-3.
+5. **The engine reaches Raft.** A write is proposed to the database's shard
+   through go-quicraft and applied by each replica's state machine to its
+   storage backend, where it is persisted; replication crosses the host
+   boundary over go-quicraft's QUIC transport. A request that reaches a node
+   which cannot serve it is forwarded as
+   [../replica-forwarding/](../replica-forwarding/) describes.
+6. **The result returns** along the same path and is encoded in the
+   transport's own form, an error through the shared error classification.
+
+The per-capability detail of steps 4 and 5 is in each feature's own data flow,
+for example [../key-value/architecture.md](../key-value/architecture.md#data-flow).
 
 ## Trust boundaries
 

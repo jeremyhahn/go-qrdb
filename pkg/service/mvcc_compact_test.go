@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -66,7 +67,7 @@ func TestMVCCKVService_CompactPrefix_WaitsForTheFeatureGate(t *testing.T) {
 	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
 
 	err := NewMVCCKVService(host, 1).(PrefixCompactor).CompactPrefix(context.Background(), "acme/app/", 5)
-	var gate *featuregate.NotActiveError
+	var gate *feature.NotActiveError
 	if !errors.As(err, &gate) || gate.Feature != featuregate.PrefixCompaction || gate.ShardID != 1 {
 		t.Fatalf("CompactPrefix before the gate opened = %v (%T)", err, err)
 	}

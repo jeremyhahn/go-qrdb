@@ -47,6 +47,60 @@ func TestE2E_BarrierUnseal_HappyPath(t *testing.T) {
 	}
 }
 
+// TestE2E_BarrierChangePassphrase_CarriesSOPIN pins the QUIC wire shape of a
+// passphrase change: a QUIC frame has no header section, so the SO PIN bound
+// by transport.WithSOPIN travels in the request's so_pin field.
+func TestE2E_BarrierChangePassphrase_CarriesSOPIN(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	got := make(chan *pb.BarrierChangePassphraseRequest, 1)
+	srv.SetResponder("barrier.ChangePassphrase", func(payload []byte) (uint16, []byte) {
+		var req pb.BarrierChangePassphraseRequest
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			return wire.StatusInvalidArgument, nil
+		}
+		got <- &req
+		return wire.StatusOK, nil
+	})
+	ctx, release, err := transport.WithSOPIN(context.Background(), []byte("SO123"))
+	if err != nil {
+		t.Fatalf("WithSOPIN: %v", err)
+	}
+	defer release()
+	if err := tr.BarrierChangePassphrase(ctx, &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old-passphrase"),
+		Next:    []byte("new-passphrase"),
+	}); err != nil {
+		t.Fatalf("BarrierChangePassphrase: %v", err)
+	}
+	req := <-got
+	if string(req.GetCurrent()) != "old-passphrase" || string(req.GetNext()) != "new-passphrase" || req.GetSoPin() != "SO123" {
+		t.Fatalf("server got (%q, %q, so_pin %q), want (old-passphrase, new-passphrase, SO123)",
+			req.GetCurrent(), req.GetNext(), req.GetSoPin())
+	}
+}
+
+func TestE2E_BarrierChangePassphrase_NoSOPINSendsNone(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	got := make(chan string, 1)
+	srv.SetResponder("barrier.ChangePassphrase", func(payload []byte) (uint16, []byte) {
+		var req pb.BarrierChangePassphraseRequest
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			return wire.StatusInvalidArgument, nil
+		}
+		got <- req.GetSoPin()
+		return wire.StatusOK, nil
+	})
+	if err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
+		Current: []byte("old"),
+		Next:    []byte("new"),
+	}); err != nil {
+		t.Fatalf("BarrierChangePassphrase: %v", err)
+	}
+	if pin := <-got; pin != "" {
+		t.Fatalf("so_pin = %q with no PIN bound, want empty", pin)
+	}
+}
+
 func TestE2E_BarrierSeal_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.Seal", func(_ []byte) (uint16, []byte) {

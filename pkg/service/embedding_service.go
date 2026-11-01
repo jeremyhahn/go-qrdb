@@ -112,25 +112,32 @@ func (s *embeddingService) Embed(ctx context.Context, req *EmbedRequest) (*Embed
 		return nil, err
 	}
 
+	// Resolve the effective model once: the lookup and the store use the
+	// same key, so a request naming the default model and one naming none
+	// share one cache entry.
+	model := req.Model
+	if model == "" {
+		model = provider.DefaultModel()
+	}
+
 	// Fast path: all texts are in the cache.
 	if s.cache != nil && len(req.Texts) > 0 {
-		if cached, ok := s.tryCache(req.Model, req.Texts); ok {
+		if cached, ok := s.tryCache(model, req.Texts); ok {
 			return &EmbedResponse{
 				Embeddings: cached,
-				Model:      req.Model,
+				Model:      model,
 				Cached:     true,
 			}, nil
 		}
 	}
 
-	result, err := provider.Embed(ctx, req.Texts, req.Model)
+	result, err := provider.Embed(ctx, req.Texts, model)
 	if err != nil {
 		return nil, err
 	}
 
 	// Populate the cache with the fresh embeddings.
 	if s.cache != nil {
-		model := result.Model
 		for i, text := range req.Texts {
 			if i < len(result.Embeddings) {
 				s.cache.Put(model, text, result.Embeddings[i])

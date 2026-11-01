@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,14 +32,41 @@ func TestManager_WasDropped(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	dropped, err := mgr.WasDropped("never-touched")
+	dropped, err := mgr.WasDropped("", "never-touched")
 	require.NoError(t, err)
 	assert.False(t, dropped, "a name this manager never recorded a drop for")
 
-	require.NoError(t, mgr.recordDrop("orders"))
-	dropped, err = mgr.WasDropped("orders")
+	require.NoError(t, mgr.recordDrop("", "orders"))
+	dropped, err = mgr.WasDropped("", "orders")
 	require.NoError(t, err)
 	assert.True(t, dropped, "a name recordDrop just tombstoned")
+}
+
+// TestManager_DropLedger_KeyedByTenantAndName is the collision: two tenants
+// and the system tenant hold one name, and a drop recorded or forgotten for
+// one of them says nothing about the others.
+func TestManager_DropLedger_KeyedByTenantAndName(t *testing.T) {
+	mgr := newTestManager(t)
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.recordDrop("tenant-a", "orders"))
+	for _, tc := range []struct {
+		tenant string
+		want   bool
+	}{{"tenant-a", true}, {"tenant-b", false}, {"", false}} {
+		dropped, err := mgr.WasDropped(tc.tenant, "orders")
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, dropped, "tenant %q after tenant-a's drop", tc.tenant)
+	}
+
+	require.NoError(t, mgr.recordDrop("tenant-b", "orders"))
+	require.NoError(t, mgr.forgetDrop("tenant-a", "orders"))
+	dropped, err := mgr.WasDropped("tenant-a", "orders")
+	require.NoError(t, err)
+	assert.False(t, dropped, "tenant-a's drop was forgotten")
+	dropped, err = mgr.WasDropped("tenant-b", "orders")
+	require.NoError(t, err)
+	assert.True(t, dropped, "forgetting tenant-a's drop cleared tenant-b's")
 }
 
 // forgetDrop is a no-op, not an error, for a name that was never dropped
@@ -48,16 +76,16 @@ func TestManager_ForgetDrop_NoOpWhenAbsent(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	require.NoError(t, mgr.forgetDrop("never-dropped"))
+	require.NoError(t, mgr.forgetDrop("", "never-dropped"))
 
-	require.NoError(t, mgr.recordDrop("orders"))
-	require.NoError(t, mgr.forgetDrop("orders"))
-	dropped, err := mgr.droppedHere("orders")
+	require.NoError(t, mgr.recordDrop("", "orders"))
+	require.NoError(t, mgr.forgetDrop("", "orders"))
+	dropped, err := mgr.droppedHere("", "orders")
 	require.NoError(t, err)
 	assert.False(t, dropped, "forgetDrop clears the tombstone")
 
 	// Forgetting it again is still a no-op, not a second error.
-	require.NoError(t, mgr.forgetDrop("orders"))
+	require.NoError(t, mgr.forgetDrop("", "orders"))
 }
 
 // recordDrop reports *MetaWriteError, not a silent no-op, when it cannot
@@ -70,7 +98,7 @@ func TestManager_RecordDrop_MkdirFailureIsAMetaWriteError(t *testing.T) {
 	// so MkdirAll fails (not a directory) instead of creating it.
 	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, droppedDir), []byte("x"), 0o600))
 
-	err := mgr.recordDrop("orders")
+	err := mgr.recordDrop("", "orders")
 	var writeErr *MetaWriteError
 	require.ErrorAs(t, err, &writeErr)
 }
@@ -92,7 +120,7 @@ func TestManager_DroppedHere_StatFailureIsAMetaReadError(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(filepath.Join(mgr.dataDir, droppedDir), []byte("x"), 0o600))
 
-	_, err := mgr.droppedHere("orders")
+	_, err := mgr.droppedHere("", "orders")
 	var readErr *MetaReadError
 	require.ErrorAs(t, err, &readErr)
 }
@@ -113,7 +141,7 @@ func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 	path := filepath.Join(mgr.dataDir, droppedDir, "orders")
 	require.NoError(t, os.MkdirAll(filepath.Join(path, "child"), 0o750))
 
-	err := mgr.forgetDrop("orders")
+	err := mgr.forgetDrop("", "orders")
 	var writeErr *MetaWriteError
 	require.ErrorAs(t, err, &writeErr)
 }
@@ -122,15 +150,15 @@ func TestManager_ForgetDrop_RemoveFailureIsAMetaWriteError(t *testing.T) {
 // one creates that root, the second one then creates its own directory
 // under it, and the first one fails and undoes, the undo must not take the
 // second create's directory with it: that removal is what failed concurrent
-// creates' meta.json writes while the shard ID claimer was being attached.
+// creates while the shard ID claimer was being attached.
 func TestCreateUndo_DoesNotRemoveASiblingCreatesDirectory(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "databases")
-	first := &createUndo{m: NewManager(nil, t.TempDir()), name: "a"}
+	first := &createUndo{m: newCatalogManager(nil, t.TempDir()), name: "a"}
 	second := &createUndo{m: first.m, name: "b"}
 
 	require.NoError(t, first.mkdirAll(filepath.Join(root, "a")))
 	require.NoError(t, second.mkdirAll(filepath.Join(root, "b")))
-	first.run()
+	require.NoError(t, first.run(context.Background(), nil))
 
 	_, err := os.Stat(filepath.Join(root, "a"))
 	assert.True(t, os.IsNotExist(err), "the failed create left its own directory behind")
@@ -146,10 +174,10 @@ func TestCreateUndo_LeavesAPreExistingDirectory(t *testing.T) {
 	require.NoError(t, os.Mkdir(dir, 0o750))
 	keep := filepath.Join(dir, "keep")
 	require.NoError(t, os.WriteFile(keep, nil, 0o600))
-	u := &createUndo{m: NewManager(nil, t.TempDir()), name: "x"}
+	u := &createUndo{m: newCatalogManager(nil, t.TempDir()), name: "x"}
 
 	require.NoError(t, u.mkdirAll(dir))
-	u.run()
+	require.NoError(t, u.run(context.Background(), nil))
 
 	_, err := os.Stat(keep)
 	assert.NoError(t, err, "the undo removed a directory the create did not make")

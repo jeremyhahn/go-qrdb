@@ -67,16 +67,34 @@ type createTenantRequest struct {
 	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
 	// TrustAnchorsPEM registers the tenant's trust anchors with it.
 	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
+
+	// SOUsername is the tenant's security officer, optional. SOUsername,
+	// exactly one of SOCSRPEM and SOCertPEM, and SOPin are given together
+	// or not at all; the SO differs from the admin by name and by key.
+	SOUsername string `json:"so_username,omitempty"`
+	// SOCSRPEM is the SO's certificate signing request, signed as
+	// AdminCSRPEM is.
+	SOCSRPEM string `json:"so_csr_pem,omitempty"`
+	// SOCertPEM is the SO's own certificate, leaf first, which must chain
+	// to one of TrustAnchorsPEM.
+	SOCertPEM string `json:"so_cert_pem,omitempty"`
+	// SOChainPEM holds intermediates for SOCertPEM.
+	SOChainPEM string `json:"so_chain_pem,omitempty"`
+	// SOPin is the SO's second factor (auth.so_dual_factor).
+	SOPin string `json:"so_pin,omitempty"`
 }
 
-// createTenantResponse is the 201 body of POST /v1/tenants: the tenant and its
-// first admin's credential. There is never a private key.
+// createTenantResponse is the 201 body of POST /v1/tenants: the tenant, its
+// first admin's credential, and its SO's when the request named one. There
+// is never a private key.
 type createTenantResponse struct {
 	*tenantResponse
-	Admin tenantAdminResponse `json:"admin"`
+	Admin tenantAdminResponse  `json:"admin"`
+	SO    *tenantAdminResponse `json:"so,omitempty"`
 }
 
-// tenantAdminResponse is a tenant's first admin as onboarding left it.
+// tenantAdminResponse is a tenant's first admin, or its SO, as onboarding
+// left it.
 type tenantAdminResponse struct {
 	UserID            uint64 `json:"user_id,omitempty,string"`
 	Username          string `json:"username"`
@@ -273,6 +291,11 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		AdminCertPEM:      []byte(req.AdminCertPEM),
 		AdminChainPEM:     []byte(req.AdminChainPEM),
 		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
+		SOUsername:        req.SOUsername,
+		SOCSRPEM:          []byte(req.SOCSRPEM),
+		SOCertPEM:         []byte(req.SOCertPEM),
+		SOChainPEM:        []byte(req.SOChainPEM),
+		SOPIN:             []byte(req.SOPin),
 	})
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -281,17 +304,27 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(createTenantResponse{
+	resp := createTenantResponse{
 		tenantResponse: tenantToResponse(result.Tenant),
-		Admin: tenantAdminResponse{
-			UserID:            result.Admin.UserID,
-			Username:          result.Admin.Username,
-			CertPEM:           string(result.Admin.CertPEM),
-			Serial:            result.Admin.Serial,
-			Thumbprint:        result.Admin.Thumbprint,
-			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-		},
-	})
+		Admin:          tenantAdminToResponse(&result.Admin),
+	}
+	if result.SO != nil {
+		so := tenantAdminToResponse(result.SO)
+		resp.SO = &so
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// tenantAdminToResponse renders an account onboarding enrolled.
+func tenantAdminToResponse(c *service.TenantAdminCredential) tenantAdminResponse {
+	return tenantAdminResponse{
+		UserID:            c.UserID,
+		Username:          c.Username,
+		CertPEM:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
 }
 
 // handleListTenants handles GET /v1/tenants/list -- returns every tenant to a
@@ -384,6 +417,8 @@ func (s *Server) handleReconcileDeletedTenants(w http.ResponseWriter, r *http.Re
 //   - POST   /v1/tenants/{id}/quotas                                         -> set tenant quotas
 //   - POST   /v1/tenants/{id}/barrier/init/begin                             -> tenant barrier init nonce
 //   - POST   /v1/tenants/{id}/barrier/init/complete                          -> initialize tenant barrier
+//   - POST   /v1/tenants/{id}/barrier/signed-init/begin                      -> tenant barrier init statement to sign
+//   - POST   /v1/tenants/{id}/barrier/signed-init/complete                   -> initialize under the signed statement
 //   - POST   /v1/tenants/{id}/barrier/unseal                                 -> unseal tenant barrier
 //   - POST   /v1/tenants/{id}/barrier/seal                                   -> seal tenant barrier
 //   - GET    /v1/tenants/{id}/barrier/status                                 -> tenant barrier status
@@ -432,6 +467,14 @@ func (s *Server) handleTenantByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if id, found := strings.CutSuffix(suffix, "/barrier/init/complete"); found && id != "" {
 			s.handleTenantBarrierInit(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/signed-init/begin"); found && id != "" {
+			s.handleTenantBarrierSignedInitBegin(w, r, id)
+			return
+		}
+		if id, found := strings.CutSuffix(suffix, "/barrier/signed-init/complete"); found && id != "" {
+			s.handleTenantBarrierSignedInitComplete(w, r, id)
 			return
 		}
 		if id, found := strings.CutSuffix(suffix, "/barrier/unseal"); found && id != "" {
@@ -829,29 +872,40 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
+	writeTenantBarrierInitResult(w, result)
+}
 
-	// INV-1: share bytes are never included in initialization responses.
-	// Security Officers retrieve their shares via the per-tenant claim
-	// handshake. Return share_count so callers know enrollment succeeded,
-	// and the Shamir split's roster and check value, which the owner signs
-	// between the two requests of a Shamir init, and admin_pending when the
-	// committed init's first admin waits on the tenant's home group.
+// writeTenantBarrierInitResult writes a committed tenant barrier init's
+// response, the plain init's and the signed init's alike.
+func writeTenantBarrierInitResult(w http.ResponseWriter, result *tenant.TenantBarrierInitResult) {
 	if result != nil && (result.ShareCount > 0 || len(result.UnsealKeyCheck) > 0 || result.AdminPending) {
-		writeJSON(w, map[string]interface{}{
-			"tenant_id":        result.TenantID,
-			"strategy":         result.Strategy,
-			"threshold":        result.Threshold,
-			"total_shares":     result.TotalShares,
-			"share_count":      result.ShareCount,
-			"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
-			"roster":           result.Roster,
-			"unseal_key_check": result.UnsealKeyCheck,
-			"admin_pending":    result.AdminPending,
-		})
+		writeJSON(w, tenantBarrierInitBody(result))
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// tenantBarrierInitBody is a committed tenant barrier init's response body.
+//
+// INV-1: share bytes are never included in initialization responses.
+// Security Officers retrieve their shares via the per-tenant claim
+// handshake. It carries share_count so callers know enrollment succeeded,
+// and the Shamir split's roster and check value, which the owner signs
+// between the two requests of a Shamir init, and admin_pending when the
+// committed init's first admin waits on the tenant's home group.
+func tenantBarrierInitBody(result *tenant.TenantBarrierInitResult) map[string]any {
+	return map[string]any{
+		"tenant_id":        result.TenantID,
+		"strategy":         result.Strategy,
+		"threshold":        result.Threshold,
+		"total_shares":     result.TotalShares,
+		"share_count":      result.ShareCount,
+		"holders":          holderwire.TenantBarrierHoldersTo(result.Holders),
+		"roster":           result.Roster,
+		"unseal_key_check": result.UnsealKeyCheck,
+		"admin_pending":    result.AdminPending,
+	}
 }
 
 // handleTenantBarrierUnseal handles POST /v1/tenants/{id}/barrier/unseal --

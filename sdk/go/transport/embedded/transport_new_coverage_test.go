@@ -407,6 +407,10 @@ type errVectorService struct {
 func (e *errVectorService) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	return nil, errSentinel
 }
+
+func (e *errVectorService) UpdateNamespace(_ context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return nil, errSentinel
+}
 func (e *errVectorService) DeleteNamespace(_ context.Context, _ *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
 	return nil, errSentinel
 }

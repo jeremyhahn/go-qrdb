@@ -27,7 +27,7 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -57,7 +57,7 @@ func NewLogService(t testing.TB) service.LogService {
 		t.Fatalf("servicetest: open the log state machine: %v", err)
 	}
 	t.Cleanup(func() { _ = machine.Close(context.Background()) })
-	databases := database.NewManager(nil, t.TempDir())
+	databases := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = databases.Close() })
 	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: logShard{host: backend.NewLocalBackend(machine)}, Databases: databases})
 	if err != nil {

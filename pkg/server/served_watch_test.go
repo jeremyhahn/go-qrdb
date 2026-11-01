@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -111,7 +112,7 @@ func (s *queuedWatchService) openEntities(ctx context.Context) (<-chan service.W
 // servedTestDatabase returns an open in-memory database.
 func servedTestDatabase(t *testing.T) *database.Database {
 	t.Helper()
-	m := database.NewManager(nil, t.TempDir())
+	m := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 	db, err := m.Create(database.DatabaseConfig{Name: "app", Backend: database.BackendMemory})
 	if err != nil {

@@ -212,7 +212,7 @@ func TestServer_WiresTheVolumeStoreResolver(t *testing.T) {
 
 	// The resolver is installed, so a volume-isolated tenant now routes to the
 	// (here unavailable) Host rather than silently to the system store.
-	err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
+	err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "", "")
 	var want *service.ReclaimStoreUnavailableError
 	if !errors.As(err, &want) {
 		t.Fatalf("error = %v (%T), want the resolver to have been wired and to fail closed", err, err)
@@ -227,7 +227,7 @@ func TestServer_WithoutATenantHostRegistryLeavesTheResolverUnset(t *testing.T) {
 
 	_ = New(&config.Config{}, nil, nil, WithKeyspaceReclaimService(reclaim))
 
-	if err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""); err != nil {
+	if err := reclaim.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "", ""); err != nil {
 		t.Fatalf("with no resolver the system store is the answer: %v", err)
 	}
 }
@@ -296,7 +296,7 @@ func TestStoreResolver_FenceTargetRoutesEachIsolationMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store, dedicated, err := tt.resolver.FenceTarget(context.Background(), tt.tenantID, "orders")
+			store, dedicated, err := tt.resolver.FenceTarget(context.Background(), tt.tenantID, "orders", "")
 			if err != nil {
 				t.Fatalf("FenceTarget: %v", err)
 			}
@@ -356,7 +356,7 @@ func TestStoreResolver_FenceTargetNeverFallsBackOnFailure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, dedicated, err := tt.resolver.FenceTarget(ctx, "acme", "orders")
+			_, dedicated, err := tt.resolver.FenceTarget(ctx, "acme", "orders", "")
 			if err == nil || !tt.check(err) {
 				t.Fatalf("FenceTarget error = %v (%T), want the failure reported", err, err)
 			}
@@ -375,7 +375,7 @@ func TestStoreResolver_FenceTargetMissingShard(t *testing.T) {
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationRaft},
 		systemTenant: tenantid.System,
 	}
-	store, dedicated, err := unknown.FenceTarget(context.Background(), "acme", "orders")
+	store, dedicated, err := unknown.FenceTarget(context.Background(), "acme", "orders", "")
 	if err != nil || !dedicated || store.KV != nil || !store.PerDatabase {
 		t.Fatalf("unknown shard: (%+v, dedicated=%v, %v), want a per-database store that does not exist", store, dedicated, err)
 	}
@@ -394,7 +394,7 @@ func TestServer_WiresTheResolverForARaftBackendAlone(t *testing.T) {
 
 	// A factory with no host cannot resolve the shard, and the resolver must
 	// say so rather than fence the system store.
-	err := reclaim.FenceDatabaseKeyspace(context.Background(), "acme", "orders")
+	err := reclaim.FenceDatabaseKeyspace(context.Background(), "acme", "orders", "inc-1", "")
 	var unavailable *service.ReclaimStoreUnavailableError
 	if !errors.As(err, &unavailable) {
 		t.Fatalf("error = %v (%T), want the resolver to be wired and to fail closed", err, err)

@@ -41,17 +41,16 @@ awaiting_init --> enrolling --> operational
 ```
 
 `CeremonySignCSR` issues a holder certificate (`so` or `custodian`, never a
-login certificate) under the SO PIN. It is pre-operational only (`sealedwindow.PreOperationalOnly`), full stop:
-`SignCSRInit` (`pkg/ceremony/ceremony.go`) refuses every call unless the
-ceremony state is `enrolling`. The BOOT-TIME sealed listener allows it
-WITHOUT session authentication only during `awaiting_init`/`enrolling`,
-while the cluster CA key still exists only as the in-memory bootstrap key
-and there is no IAM plane yet to authenticate against. Once the ceremony
-reaches `operational`, both that unauthenticated sealed-window path AND the
-node's ordinary, authenticated API refuse it outright -- there is no
-operational path to this verb. An officer who already holds a certificate
-still unseals with it on every later restart instead, which needs only the
-CA certificate (public), never this verb.
+login certificate) under the SO PIN. It is a `PreOperationalOnly` verb
+(`pkg/api/sealedwindow/sealedwindow.go`), and `SignCSRInit`
+(`pkg/ceremony/ceremony.go`) refuses every call unless the ceremony state is
+`enrolling`. The sealed listener serves it without session authentication
+only during `awaiting_init` and `enrolling`, while the cluster CA key exists
+only as the in-memory bootstrap key and there is no IAM plane to
+authenticate against. Once the ceremony is `operational`, both the sealed
+listener and the node's authenticated API refuse it. An officer who already
+holds a certificate unseals with it on every later restart, which needs only
+the public CA certificate, never this verb.
 
 ## SDK CeremonyClient Interface
 
@@ -65,18 +64,16 @@ type CeremonyClient interface {
 }
 ```
 
-| SDK Method | Service Method |
-|---|---|
-| CeremonyInitialize | CeremonyServicer.CeremonyInitialize |
-| CeremonyStatus | CeremonyServicer.CeremonyStatus |
-| CeremonySignCSR | CeremonyServicer.CeremonySignCSR |
+Each method delegates to the method of the same name on `CeremonyServicer`
+(`pkg/service/ceremony_service.go`).
 
 ## Transport Coverage
 
 Every SDK transport — embedded, REST, gRPC, Unix, QUIC and MCP — implements
 `CeremonyClient` with a compile-time interface assertion. The REST routes are
 `POST /v1/ceremony/initialize`, `GET /v1/ceremony/status` and
-`POST /v1/ceremony/sign-csr` (`pkg/api/rest/handlers_ceremony.go`).
+`POST /v1/ceremony/sign-csr`, registered in `pkg/api/rest/server.go` and
+handled in `pkg/api/rest/handlers_ceremony.go`.
 
 ## SDK Usage Example
 

@@ -257,6 +257,9 @@ type Daemon struct {
 	// for its goroutine dump to be written.
 	args []string
 	out  *outputWriter
+	// reserved holds the port values ReserveListenerPorts appended to the
+	// caller's args, the ones StartReady may draw again.
+	reserved []string
 
 	waitOnce sync.Once
 	waitErr  error
@@ -278,10 +281,16 @@ func Start(binary string, args []string, opts ...DaemonOption) (*Daemon, error) 
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	args, err := ReserveListenerPorts(args)
+	full, err := ReserveListenerPorts(args)
 	if err != nil {
 		return nil, err
 	}
+	// ReserveListenerPorts appends flag/value pairs after the caller's args.
+	var reserved []string
+	for i := len(args) + 1; i < len(full); i += 2 {
+		reserved = append(reserved, full[i])
+	}
+	args = full
 
 	tail := newTailWriter(tailSize)
 	var sink io.Writer = tail
@@ -302,9 +311,51 @@ func Start(binary string, args []string, opts ...DaemonOption) (*Daemon, error) 
 	if err := cmd.Start(); err != nil {
 		return nil, &DaemonStartError{Binary: binary, Err: err}
 	}
-	d := &Daemon{cmd: cmd, tail: tail, args: args, out: out, done: make(chan struct{})}
+	d := &Daemon{cmd: cmd, tail: tail, args: args, out: out, reserved: reserved, done: make(chan struct{})}
 	spawned.Store(d, struct{}{})
 	return d, nil
+}
+
+// startAttempts bounds StartReady: the first start and two re-reservations.
+const startAttempts = 3
+
+// StartReady starts the daemon as Start does and calls ready on it. When
+// ready fails with a *PortCollisionError on a port ReserveListenerPorts drew
+// -- another process bound it between the reservation and the daemon's own
+// bind, and the daemon exited -- it starts the daemon again with those ports
+// reserved afresh, up to startAttempts starts in all. A collision on a port
+// the caller's args fixed is not retried: a new start would draw the same
+// port. Once a start has been retried, a failure is a *StartReadyError
+// carrying every attempt's error.
+//
+// When ready fails for any other reason the daemon is returned alongside the
+// error, still running, and stopping it is the caller's job, as after Start.
+func StartReady(binary string, args []string, ready func(*Daemon) error, opts ...DaemonOption) (*Daemon, error) {
+	var attempts []error
+	fail := func(err error) error {
+		if len(attempts) == 0 {
+			return err
+		}
+		return &StartReadyError{Attempts: append(attempts, err)}
+	}
+	for {
+		d, err := Start(binary, args, opts...)
+		if err != nil {
+			return nil, fail(err)
+		}
+		err = ready(d)
+		if err == nil {
+			return d, nil
+		}
+		var collision *PortCollisionError
+		if !errors.As(err, &collision) || !collision.Reserved {
+			return d, fail(err)
+		}
+		attempts = append(attempts, err)
+		if len(attempts) == startAttempts {
+			return nil, &StartReadyError{Attempts: attempts}
+		}
+	}
 }
 
 // Cmd exposes the underlying command, for callers that need the process ID or
@@ -340,6 +391,22 @@ func (d *Daemon) WaitContext(ctx context.Context) error {
 // waitError describes a wait that ended before the daemon was reaped.
 func (d *Daemon) waitError(err error) *DaemonWaitError {
 	return &DaemonWaitError{PID: d.cmd.Process.Pid, Err: err, Tail: d.Tail()}
+}
+
+// Exited returns a channel closed when the daemon's process has ended and
+// its output has been drained, after which Tail is complete.
+func (d *Daemon) Exited() <-chan struct{} {
+	d.reap()
+	return d.done
+}
+
+// exitError is the error a Daemon readiness wait returns when the daemon
+// exits before op on target succeeds: a *DaemonWaitError carrying the exit
+// status and the output tail, or a *PortCollisionError wrapping it when the
+// tail says a listener's port was already in use. Call it only after Exited
+// has closed.
+func (d *Daemon) exitError(op, target string) error {
+	return portCollision(d.waitError(&DaemonExitError{Op: op, Target: target, Status: d.waitErr}), d.reserved)
 }
 
 // reap starts the single goroutine allowed to call exec.Cmd.Wait.

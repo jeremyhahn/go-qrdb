@@ -115,7 +115,7 @@ func TestKeyspaceReclaim_DropClearsTheDatabasesCompactionRecord(t *testing.T) {
 	_ = table.SetCompactionPolicy(ctx, other, compaction.Binding{Policy: policy, Tenant: "acme", Database: "other"})
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: populatedStore(), Compaction: table})
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""); err != nil {
+	if err := fenceThenReclaim(ctx, svc, "acme", "reports", ""); err != nil {
 		t.Fatalf("ReclaimDatabaseKeyspace: %v", err)
 	}
 	if st, _ := table.CompactionState(ctx, reports); st != nil {
@@ -126,7 +126,7 @@ func TestKeyspaceReclaim_DropClearsTheDatabasesCompactionRecord(t *testing.T) {
 	}
 	// Idempotent: a re-issued drop finds nothing and proposes nothing.
 	before := len(table.cleared)
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""); err != nil || len(table.cleared) != before {
+	if err := fenceThenReclaim(ctx, svc, "acme", "reports", ""); err != nil || len(table.cleared) != before {
 		t.Fatalf("a re-issued drop = %v, cleared %v", err, table.cleared)
 	}
 }
@@ -144,14 +144,19 @@ func TestKeyspaceReclaim_DropClearsOnlyItsOwnIncarnationsRecord(t *testing.T) {
 	_ = table.SetCompactionPolicy(ctx, reports, compaction.Binding{Policy: policy, Tenant: "acme", Database: "reports", Incarnation: "new"})
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: populatedStore(), Compaction: table})
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "old"); err != nil {
+	// The name is fenced, so the store admits both reclamations; the
+	// record's own incarnation is what keeps the old one off the new record.
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "", ""); err != nil {
+		t.Fatalf("FenceDatabaseKeyspace: %v", err)
+	}
+	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "old", ""); err != nil {
 		t.Fatalf("ReclaimDatabaseKeyspace(old): %v", err)
 	}
 	if st, _ := table.CompactionState(ctx, reports); st == nil || st.Incarnation != "new" {
 		t.Fatalf("a drop of the old incarnation cleared the new incarnation's record: %+v", st)
 	}
 
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "new"); err != nil {
+	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "new", ""); err != nil {
 		t.Fatalf("ReclaimDatabaseKeyspace(new): %v", err)
 	}
 	if st, _ := table.CompactionState(ctx, reports); st != nil {
@@ -191,7 +196,7 @@ func TestKeyspaceReclaim_CompactionRecordSkipsAStoreWithoutHistory(t *testing.T)
 	table.noHistory = true
 	table.readErr = errors.New("would fail if read")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: populatedStore(), Compaction: table})
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""); err != nil {
+	if err := fenceThenReclaim(ctx, svc, "acme", "reports", ""); err != nil {
 		t.Fatalf("a store without history = %v", err)
 	}
 
@@ -199,7 +204,7 @@ func TestKeyspaceReclaim_CompactionRecordSkipsAStoreWithoutHistory(t *testing.T)
 	broken.readErr = errors.New("unavailable")
 	svc = NewKeyspaceReclaimService(ReclaimTarget{KV: populatedStore(), Compaction: broken})
 	var rce *ReclaimCompactionError
-	if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""); !errors.As(err, &rce) || rce.Error() == "" || rce.Unwrap() == nil {
+	if err := fenceThenReclaim(ctx, svc, "acme", "reports", ""); !errors.As(err, &rce) || rce.Error() == "" || rce.Unwrap() == nil {
 		t.Fatalf("an unreadable store = %v, want *ReclaimCompactionError", err)
 	}
 	if err := svc.ReclaimTenantKeyspace(ctx, "acme"); !errors.As(err, &rce) {

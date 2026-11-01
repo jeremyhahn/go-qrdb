@@ -136,7 +136,13 @@ func (m *mockRoleServicer) GetRole(ctx context.Context, id string) (*role.Role, 
 	return m.getRoleFn(ctx, id)
 }
 
+// GetRoleByName answers not-found, as a store holding no role by that name
+// does, unless the test supplies getRoleByNameFn: the role-assignment gate
+// asks for the tenant's SO role on every write that names a role.
 func (m *mockRoleServicer) GetRoleByName(ctx context.Context, tenantID, name string) (*role.Role, error) {
+	if m.getRoleByNameFn == nil {
+		return nil, &role.RoleNotFoundError{ID: name}
+	}
 	return m.getRoleByNameFn(ctx, tenantID, name)
 }
 
@@ -1827,6 +1833,24 @@ func TestListCerts_Empty(t *testing.T) {
 	}
 	if len(resp.Certs) != 0 {
 		t.Errorf("expected 0 certs, got %d", len(resp.Certs))
+	}
+}
+
+func TestListCerts_EmptyTenantIsCallers(t *testing.T) {
+	var listed string
+	mock := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			listed = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
+	tr := newAuthTransport(t, WithCertProvider(mock))
+
+	if _, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listed != "tenant-a" {
+		t.Fatalf("listed tenant = %q, want the caller's own %q", listed, "tenant-a")
 	}
 }
 

@@ -57,6 +57,9 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	if err != nil {
 		return nil, err
 	}
+	if err := n.recordSeparationPosture(ctx); err != nil {
+		return nil, err
+	}
 	if svcNode := n.svcNode.Load(); svcNode != nil {
 		n.reconcileAwaitingAdminCredential(ctx, users, svcNode.Watch)
 	}
@@ -113,6 +116,9 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	if err != nil {
 		return nil, err
 	}
+	if err := n.recordSeparationPosture(ctx); err != nil {
+		return nil, err
+	}
 	// Re-decide the "awaiting admin credential" probe now that first boot
 	// has run: wireClientAndServer's own decision ran before this call, so
 	// on a fresh node -- no admin user yet, at that point -- it always
@@ -132,6 +138,20 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
 	}
 	return result, nil
+}
+
+// recordSeparationPosture records the separation-of-duties posture the node
+// resolved in the replicated system record once first boot has run, leaving
+// one event in the node's audit log on a first recording or a change from
+// the recorded posture (go-qrdb#1128). A node with no services yet has no
+// store to record into.
+func (n *Node) recordSeparationPosture(ctx context.Context) error {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil || svcNode.KV == nil {
+		return nil
+	}
+	_, err := svcNode.RecordSeparationPosture(ctx, n.auditLogger, n.separationConfigured.Load())
+	return err
 }
 
 // reconcileAwaitingAdminCredential (re-)decides n's "awaiting admin
