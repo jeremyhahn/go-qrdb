@@ -16,10 +16,12 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -211,6 +213,43 @@ func TestMVCCEngine_TransactionRead_ReadsAloneReportTheObservedRevision(t *testi
 	}, nil)
 	if int64(write.Value) != observed+1 {
 		t.Fatalf("next write committed at revision %d, want %d", write.Value, observed+1)
+	}
+}
+
+// TestMVCCEngine_TransactionRead_AFailedReadFailsTheTransaction verifies that
+// a storage read fault on a get inside a mixed branch fails the whole
+// transaction and commits none of its writes, rather than answering the get
+// as if the key were absent.
+func TestMVCCEngine_TransactionRead_AFailedReadFailsTheTransaction(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(1, []byte("k"), []byte("v1"), 0)})
+	before := mvccRevision(t, eng)
+	corrupt := stg.Batch()
+	if err := corrupt.Set(mvcc.EncodeDataKey([]byte("k"), before), []byte{0xff}); err != nil {
+		t.Fatalf("corrupt the data entry: %v", err)
+	}
+	if err := corrupt.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	_ = corrupt.Close()
+
+	cmd := mustEncode(protocol.EncodeTransaction(nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("other"), []byte("o"), nil, 0)),
+		txnGetOp("k"),
+	}, nil))
+	err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: cmd}}, make([]sm.Result, 1))
+	var encErr *mvcc.EncodingError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("Update = %v, want the read fault (an EncodingError) to fail the transaction", err)
+	}
+	if got, gerr := eng.Store().Get([]byte("other")); gerr == nil {
+		t.Fatalf("other = %v, want the failed transaction's write not applied", got)
+	}
+	if after := mvccRevision(t, eng); after != before {
+		t.Fatalf("revision moved from %d to %d on a failed transaction", before, after)
 	}
 }
 
