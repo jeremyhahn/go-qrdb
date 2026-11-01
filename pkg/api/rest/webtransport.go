@@ -73,6 +73,10 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: &WebTransportNotHTTP3Error{}})
 		return
 	}
+	if err := webTransportClientRequirementsMet(w, r); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})
+		return
+	}
 	// What we rely on from webtransport-go v0.13.0 (server.go):
 	// Server.Upgrade returns an error, having written no response and
 	// opened no session, unless the request is CONNECT, its :protocol is
@@ -91,6 +95,50 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.webTransportFunc(sess, caller, tenantID)
 }
 
+// settingsWTEnabled is SETTINGS_WT_ENABLED, draft-ietf-webtrans-http3-16
+// section 9.2: the draft-16 codepoint a client must send with the value 1.
+const settingsWTEnabled = 0x2c7cf000
+
+// webTransportClientRequirements are the client requirements of
+// draft-ietf-webtrans-http3-16 section 3.1 that webtransport-go v0.13.0's
+// Upgrade does not check: it opens a session for a client that sends neither.
+// The others it does check (the :protocol token and SETTINGS_H3_DATAGRAM), and
+// quic-go's http3.Server closes a connection whose SETTINGS_H3_DATAGRAM is not
+// backed by the max_datagram_frame_size transport parameter.
+var webTransportClientRequirements = []struct {
+	name string
+	met  func(*http3.Settings, quic.ConnectionState) bool
+}{
+	{"SETTINGS_WT_ENABLED", func(s *http3.Settings, _ quic.ConnectionState) bool { return s.Other[settingsWTEnabled] == 1 }},
+	{"the reset_stream_at transport parameter", func(_ *http3.Settings, cs quic.ConnectionState) bool {
+		return cs.SupportsStreamResetPartialDelivery.Remote
+	}},
+}
+
+// webTransportClientRequirementsMet waits for the client's SETTINGS, which may
+// arrive after its CONNECT (section 3.1), and returns a
+// *WebTransportClientRequirementError when the connection lacks one of
+// webTransportClientRequirements. Section 3.1 makes such a session malformed.
+func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request) error {
+	settingser, ok := w.(http3.Settingser)
+	conn, connOK := r.Context().Value(quicConnContextKey{}).(*quic.Conn)
+	if !ok || !connOK {
+		return &WebTransportNotHTTP3Error{}
+	}
+	select {
+	case <-settingser.ReceivedSettings():
+	case <-r.Context().Done():
+		return r.Context().Err()
+	}
+	settings, state := settingser.Settings(), conn.ConnectionState()
+	for _, req := range webTransportClientRequirements {
+		if !req.met(settings, state) {
+			return &WebTransportClientRequirementError{Requirement: req.name}
+		}
+	}
+	return nil
+}
+
 // webTransportServer serves the HTTP/3 listener's connections through
 // webtransport-go, which has no ServeListener of its own.
 type webTransportServer struct {
@@ -99,10 +147,23 @@ type webTransportServer struct {
 
 // newWebTransportServer wraps h3. webtransport-go configures h3 (datagrams,
 // extended CONNECT, the WebTransport SETTINGS, and a ConnContext chained
-// onto any h3 already has) on its first use.
+// onto any h3 already has) on its first use. Before that, it chains one more
+// ConnContext, which puts each connection in its requests' contexts so
+// serveWebTransport can read the client's transport parameters.
 func newWebTransportServer(h3 *http3.Server) *webTransportServer {
+	prev := h3.ConnContext
+	h3.ConnContext = func(ctx context.Context, c *quic.Conn) context.Context {
+		if prev != nil {
+			ctx = prev(ctx, c)
+		}
+		return context.WithValue(ctx, quicConnContextKey{}, c)
+	}
 	return &webTransportServer{wt: &webtransport.Server{H3: h3}}
 }
+
+// quicConnContextKey is the request context key of the request's QUIC
+// connection on the WebTransport listener.
+type quicConnContextKey struct{}
 
 // serveListener accepts connections from ln and serves each through the
 // WebTransport server, so a connection-limiting listener keeps its limit. It

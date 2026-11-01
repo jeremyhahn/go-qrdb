@@ -26,10 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// settingsWTEnabled is SETTINGS_WT_ENABLED, draft-ietf-webtrans-http3-16
-// section 9.2.
-const settingsWTEnabled = 0x2c7cf000
-
 const wtTestPath = "/wt"
 
 // wtSession is what the test handler saw of one session.
@@ -357,7 +353,7 @@ func TestWebTransportErrors_Messages(t *testing.T) {
 	if !errors.Is(up, cause) || !strings.Contains(up.Error(), cause.Error()) {
 		t.Fatalf("upgrade error %q does not carry its cause", up)
 	}
-	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}, &InvalidWebTransportHandlerError{Path: "/health", PublicPath: true}} {
+	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}, &InvalidWebTransportHandlerError{Path: "/health", PublicPath: true}, &WebTransportClientRequirementError{Requirement: "SETTINGS_WT_ENABLED"}} {
 		if !strings.Contains(err.Error(), "WebTransport") {
 			t.Errorf("%T message %q does not name WebTransport", err, err)
 		}
@@ -379,6 +375,45 @@ func TestWebTransportServer_ServeListenerEndsOnAcceptError(t *testing.T) {
 	}
 	if err := wt.serveListener(acceptErrListener{err: net.ErrClosed}); !errors.Is(err, net.ErrClosed) {
 		t.Errorf("failed accept: %v, want the accept error", err)
+	}
+}
+
+// TestWebTransportClientRequirementsMet_NotHTTP3 covers the guard's refusal of
+// a request that did not come from the WebTransport listener: its writer is
+// not an HTTP/3 one and its context carries no QUIC connection.
+func TestWebTransportClientRequirementsMet_NotHTTP3(t *testing.T) {
+	err := webTransportClientRequirementsMet(httptest.NewRecorder(), httptest.NewRequest(http.MethodConnect, wtTestPath, nil))
+	var target *WebTransportNotHTTP3Error
+	if !errors.As(err, &target) {
+		t.Fatalf("err %v, want *WebTransportNotHTTP3Error", err)
+	}
+}
+
+// TestNewWebTransportServer_ChainsConnContext pins that the connection is
+// added on top of the ConnContext the server already had, which still runs.
+func TestNewWebTransportServer_ChainsConnContext(t *testing.T) {
+	type prevKey struct{}
+	for name, tc := range map[string]struct {
+		h3      *http3.Server
+		hadPrev bool
+	}{
+		"no previous": {h3: &http3.Server{}},
+		"previous": {h3: &http3.Server{ConnContext: func(ctx context.Context, _ *quic.Conn) context.Context {
+			return context.WithValue(ctx, prevKey{}, true)
+		}}, hadPrev: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h3, hadPrev := tc.h3, tc.hadPrev
+			newWebTransportServer(h3)
+			conn := new(quic.Conn)
+			ctx := h3.ConnContext(context.Background(), conn)
+			if got, _ := ctx.Value(quicConnContextKey{}).(*quic.Conn); got != conn {
+				t.Fatal("the connection is not in the context")
+			}
+			if ran, _ := ctx.Value(prevKey{}).(bool); ran != hadPrev {
+				t.Fatalf("previous ConnContext ran = %v, want %v", ran, hadPrev)
+			}
+		})
 	}
 }
 
@@ -405,56 +440,118 @@ func TestWebTransport_PathBesidePublicOneServesSessions(t *testing.T) {
 	}
 }
 
+// wtHandshake is what a raw client sends of draft-ietf-webtrans-http3-16
+// section 3.1's client requirements.
+type wtHandshake struct {
+	protocol      string // the extended CONNECT :protocol
+	wtEnabled     bool   // SETTINGS_WT_ENABLED = 1, the draft's version codepoint
+	h3Datagram    bool   // SETTINGS_H3_DATAGRAM = 1
+	quicDatagram  bool   // the max_datagram_frame_size transport parameter
+	resetStreamAt bool   // the reset_stream_at transport parameter
+}
+
+// validWTHandshake meets every client requirement of draft-16 section 3.1.
+var validWTHandshake = wtHandshake{protocol: "webtransport-h3", wtEnabled: true, h3Datagram: true, quicDatagram: true, resetStreamAt: true}
+
 // rawWTConnect sends one authenticated extended CONNECT to wtTestPath over a
-// bare HTTP/3 client connection, with protocol as its :protocol and the
-// HTTP/3 datagram setting as datagrams says, and returns the status.
-func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, protocol string, datagrams bool) int {
+// bare HTTP/3 client connection that advertises what hs says, and returns the
+// status with the body of a refusal, or the error that ended the request
+// before a status arrived.
+func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake) (int, string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
+		EnableDatagrams:                  hs.quicDatagram,
+		EnableStreamResetPartialDelivery: hs.resetStreamAt,
+	})
 	if err != nil {
-		t.Fatalf("DialAddr: %v", err)
+		return 0, "", err
 	}
 	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
-	cc := (&http3.Transport{EnableDatagrams: datagrams}).NewClientConn(conn)
+	settings := map[uint64]uint64{}
+	if hs.wtEnabled {
+		settings[settingsWTEnabled] = 1
+	}
+	cc := (&http3.Transport{EnableDatagrams: hs.h3Datagram, AdditionalSettings: settings}).NewClientConn(conn)
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Proto = protocol
+	req.Proto = hs.protocol
 	req.Header.Set("Authorization", "Bearer good")
 	resp, err := cc.RoundTrip(req)
 	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode
+	if resp.StatusCode == http.StatusOK {
+		// The body of an accepted CONNECT is the session stream.
+		return resp.StatusCode, "", nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body), err
 }
 
-// TestWebTransport_NegotiationFailureOpensNoSession covers webtransport-go's
-// Upgrade refusals on an authenticated CONNECT: a :protocol that is not
-// WebTransport, a WebTransport version it does not speak, and a client whose
-// SETTINGS lack HTTP/3 datagrams. Each is REST's 400 and no session.
+// TestWebTransport_NegotiationFailureOpensNoSession starts from a handshake
+// that meets every client requirement of draft-ietf-webtrans-http3-16 section
+// 3.1 and breaks exactly one per case: the :protocol, the version it names,
+// SETTINGS_WT_ENABLED, SETTINGS_H3_DATAGRAM, and the max_datagram_frame_size
+// and reset_stream_at transport parameters. None opens a session.
 func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 	h := newWTRecorder()
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
+
+	// The baseline: the valid handshake opens a session, so each case below
+	// fails for the one requirement it breaks.
+	if status, body, err := rawWTConnect(t, srv, pool, validWTHandshake); err != nil || status != http.StatusOK {
+		t.Fatalf("valid draft-16 handshake: status %d (%s), err %v; want 200", status, body, err)
+	}
+	select {
+	case <-h.sessions:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the valid handshake's session never reached the handler")
+	}
+
+	broken := func(f func(*wtHandshake)) wtHandshake {
+		hs := validWTHandshake
+		f(&hs)
+		return hs
+	}
+	// refusal is REST's 400 whose body names the cause.
+	refusal := func(cause string) func(*testing.T, int, string, error) {
+		return func(t *testing.T, status int, body string, err error) {
+			if err != nil || status != http.StatusBadRequest || !strings.Contains(body, cause) {
+				t.Fatalf("status %d (%s), err %v; want 400 naming %q", status, body, err, cause)
+			}
+		}
+	}
 	for name, tc := range map[string]struct {
-		protocol  string
-		datagrams bool
+		hs   wtHandshake
+		want func(*testing.T, int, string, error)
 	}{
-		"other protocol":      {protocol: "connect-udp", datagrams: true},
-		"unsupported version": {protocol: "webtransport-h4", datagrams: true},
-		"no datagram setting": {protocol: "webtransport-h3", datagrams: false},
+		"other protocol":      {broken(func(hs *wtHandshake) { hs.protocol = "connect-udp" }), refusal("unexpected protocol")},
+		"unsupported version": {broken(func(hs *wtHandshake) { hs.protocol = "webtransport-h4" }), refusal("unexpected protocol")},
+		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), refusal("did not send SETTINGS_WT_ENABLED")},
+		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), refusal("datagram")},
+		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), refusal("did not send the reset_stream_at transport parameter")},
+		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
+		// without the max_datagram_frame_size transport parameter is
+		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1).
+		"no QUIC datagrams": {broken(func(hs *wtHandshake) { hs.quicDatagram = false }), func(t *testing.T, status int, body string, err error) {
+			var appErr *quic.ApplicationError
+			if !errors.As(err, &appErr) || appErr.ErrorCode != quic.ApplicationErrorCode(http3.ErrCodeSettingsError) || !appErr.Remote {
+				t.Fatalf("status %d (%s), err %v; want the server's H3_SETTINGS_ERROR", status, body, err)
+			}
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if status := rawWTConnect(t, srv, pool, tc.protocol, tc.datagrams); status != http.StatusBadRequest {
-				t.Fatalf("status %d, want 400", status)
-			}
+			status, body, err := rawWTConnect(t, srv, pool, tc.hs)
+			tc.want(t, status, body, err)
 		})
 	}
-	if n := h.calls.Load(); n != 0 {
-		t.Fatalf("handler ran %d times for refused negotiations", n)
+	if n := h.calls.Load(); n != 1 {
+		t.Fatalf("handler ran %d times, want once, for the valid handshake alone", n)
 	}
 }
 

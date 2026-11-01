@@ -226,6 +226,17 @@ func (e *WebTransportNotHTTP3Error) Error() string {
 	return "WebTransport is served over HTTP/3 only"
 }
 
+// WebTransportClientRequirementError is the cause of a WebTransport CONNECT
+// whose client did not send Requirement, one that
+// draft-ietf-webtrans-http3-16 section 3.1 requires of every client.
+type WebTransportClientRequirementError struct {
+	Requirement string
+}
+
+func (e *WebTransportClientRequirementError) Error() string {
+	return "WebTransport client did not send " + e.Requirement
+}
+
 // WebTransportUpgradeError refuses a CONNECT on the WebTransport path that
 // could not be upgraded to a session.
 type WebTransportUpgradeError struct {
