@@ -2872,3 +2872,165 @@ func TestAuthConfig_ZeroValueAuditFailurePolicy(t *testing.T) {
 		t.Fatalf("zero AuthConfig.AuditFailurePolicy = %q, want empty", c.AuditFailurePolicy)
 	}
 }
+
+func TestValidate_Seal_InvalidStrategy(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "hashicorp"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid seal strategy")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+	if ve.Field != "seal.strategy" {
+		t.Errorf("Field: got %q, want seal.strategy", ve.Field)
+	}
+}
+
+func TestValidate_Seal_ShamirThresholdTooLow(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "shamir"
+	cfg.Seal.ShamirThreshold = 1
+	cfg.Seal.ShamirTotal = 5
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for shamir_threshold < 2")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+	if ve.Field != "seal.shamir_threshold" {
+		t.Errorf("Field: got %q, want seal.shamir_threshold", ve.Field)
+	}
+}
+
+func TestValidate_Seal_ShamirTotalBelowThreshold(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "shamir"
+	cfg.Seal.ShamirThreshold = 3
+	cfg.Seal.ShamirTotal = 2
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for shamir_total < shamir_threshold")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+	if ve.Field != "seal.shamir_total" {
+		t.Errorf("Field: got %q, want seal.shamir_total", ve.Field)
+	}
+}
+
+func TestValidate_Seal_InvalidCredentialStrategy(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "passphrase"
+	cfg.Seal.CredentialStrategy = "vault"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid credential strategy")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+	if ve.Field != "seal.credential_strategy" {
+		t.Errorf("Field: got %q, want seal.credential_strategy", ve.Field)
+	}
+}
+
+func TestValidate_Seal_ValidShamirConfig(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = "shamir"
+	cfg.Seal.ShamirThreshold = 3
+	cfg.Seal.ShamirTotal = 5
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid shamir config, got: %v", err)
+	}
+}
+
+// TestValidate_AuthEnabledRequiresSeal: auth on with seal off is refused,
+// and the reason names both ways out (go-qrdb#548).
+func TestValidate_AuthEnabledRequiresSeal(t *testing.T) {
+	cfg := validConfig()
+	cfg.Seal.Enabled = false
+
+	err := cfg.Validate()
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("Validate() = %v, want *ValidationError", err)
+	}
+	if verr.Field != "seal.enabled" {
+		t.Errorf("Field = %q, want %q", verr.Field, "seal.enabled")
+	}
+	if !strings.Contains(verr.Reason, "seal.enabled: true") || !strings.Contains(verr.Reason, "strategy: none") {
+		t.Errorf("Reason = %q, want it to name both requirements", verr.Reason)
+	}
+}
+
+func TestValidate_AuthDisabledToleratesSealDisabled(t *testing.T) {
+	cfg := validConfig()
+	cfg.Auth.Enabled = BoolPtr(false)
+	cfg.Seal.Enabled = false
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(): %v", err)
+	}
+}
+
+func TestValidate_Seal_Disabled_SkipsValidation(t *testing.T) {
+	cfg := validConfig()
+	// Auth requires seal (go-qrdb#548); this test is about seal validation
+	// being skipped when seal is disabled, not that interaction, so auth is
+	// explicitly disabled too.
+	cfg.Auth.Enabled = BoolPtr(false)
+	cfg.Seal.Enabled = false
+	cfg.Seal.Strategy = "hashicorp" // would fail if seal were enabled
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid config when seal is disabled, got: %v", err)
+	}
+}
+
+func TestValidate_QUICPort_OutOfRange(t *testing.T) {
+	tests := []struct {
+		name  string
+		port  int
+		valid bool
+	}{
+		{"zero", 0, true},
+		{"max_valid", 65535, true},
+		{"negative", -1, false},
+		{"too_high", 65536, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Server.QUICPort = tc.port
+			err := cfg.Validate()
+			if tc.valid {
+				if err != nil {
+					t.Errorf("QUICPort=%d: expected valid, got %v", tc.port, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("QUICPort=%d: expected error, got nil", tc.port)
+			}
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			if ve.Field != "server.quic_port" {
+				t.Errorf("Field: got %q, want server.quic_port", ve.Field)
+			}
+		})
+	}
+}
