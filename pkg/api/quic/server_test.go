@@ -646,3 +646,30 @@ func TestLogRequest_ErrorStatus(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	srv.logRequest("kv.Get", 2, 1, time.Now())
 }
+
+func TestMaxLimitOptions_Resolve(t *testing.T) {
+	tests := map[string]struct {
+		n           int
+		wantPayload int
+		wantStreams int
+	}{
+		"zero takes the defaults":     {n: 0, wantPayload: DefaultMaxPayloadBytes, wantStreams: DefaultMaxStreamsPerConn},
+		"negative takes the defaults": {n: -1, wantPayload: DefaultMaxPayloadBytes, wantStreams: DefaultMaxStreamsPerConn},
+		"positive is kept":            {n: 7, wantPayload: 7, wantStreams: 7},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(&mockKVService{}, &mockAdminService{},
+				WithMaxPayloadBytes(tc.n), WithMaxStreamsPerConn(tc.n))
+			if srv.maxPayloadBytes != tc.n || srv.maxStreamsPerConn != tc.n {
+				t.Fatalf("options stored (%d, %d), want %d", srv.maxPayloadBytes, srv.maxStreamsPerConn, tc.n)
+			}
+			if got := resolveMaxPayloadBytes(srv.maxPayloadBytes); got != tc.wantPayload {
+				t.Fatalf("resolveMaxPayloadBytes = %d, want %d", got, tc.wantPayload)
+			}
+			if got := resolveMaxStreamsPerConn(srv.maxStreamsPerConn); got != tc.wantStreams {
+				t.Fatalf("resolveMaxStreamsPerConn = %d, want %d", got, tc.wantStreams)
+			}
+		})
+	}
+}
