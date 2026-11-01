@@ -596,8 +596,8 @@ func TestTransactionService_Execute_GetInSuccessBranchReturnsTheRead(t *testing.
 	}
 
 	svc := NewTransactionService(host, 1)
-	// A get's range end is dropped, so it never widens into a range.
-	successOps := []Op{{Type: OpGet, Key: []byte("k"), RangeEnd: []byte("z"), Value: []byte("ignored")}}
+	// A get's value is dropped, so it is never coerced into a write.
+	successOps := []Op{{Type: OpGet, Key: []byte("k"), Value: []byte("ignored")}}
 	resp, err := svc.Execute(context.Background(), nil, successOps, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -924,14 +924,13 @@ func TestEncodeServiceOp_UnknownOpType(t *testing.T) {
 }
 
 func TestEncodeServiceOp_OpGetEncodesAKeyOnlyRead(t *testing.T) {
-	// A get is a read of one key: whatever value, range end or lease the
-	// caller set, it must never be coerced into a write or widen into a range.
+	// A get is a read of one key: whatever value or lease the caller set, it
+	// must never be coerced into a write.
 	op := Op{
-		Type:     OpGet,
-		Key:      []byte("getkey"),
-		Value:    []byte("getval"),
-		RangeEnd: []byte("getkez"),
-		LeaseID:  7,
+		Type:    OpGet,
+		Key:     []byte("getkey"),
+		Value:   []byte("getval"),
+		LeaseID: 7,
 	}
 
 	encoded, err := encodeServiceOp(op)
@@ -945,6 +944,44 @@ func TestEncodeServiceOp_OpGetEncodesAKeyOnlyRead(t *testing.T) {
 	if got.Type != protocol.OpMVCCRange || string(got.Key) != "getkey" ||
 		len(got.Value) != 0 || len(got.RangeEnd) != 0 || got.LeaseID != 0 {
 		t.Fatalf("decoded = %+v, want a key-only OpMVCCRange of getkey", got)
+	}
+}
+
+func TestEncodeServiceOp_RefusesAGetWithARangeEnd(t *testing.T) {
+	op := Op{Type: OpGet, Key: []byte("getkey"), RangeEnd: []byte("getkez")}
+	encoded, err := encodeServiceOp(op)
+	var rangedGet *TransactionGetRangeEndError
+	if !errors.As(err, &rangedGet) || string(rangedGet.Key) != "getkey" {
+		t.Fatalf("encodeServiceOp = (%x, %v), want a TransactionGetRangeEndError for getkey", encoded, err)
+	}
+}
+
+// TestTransactionService_RefusesARangedGetWithoutProposing verifies that a
+// get carrying a range end is refused on both entry points before anything
+// is proposed: a get reads one key, and a dropped range end would let the
+// hard-confinement guard and the executor disagree about what is read.
+func TestTransactionService_RefusesARangedGetWithoutProposing(t *testing.T) {
+	proposals := 0
+	host := &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			proposals++
+			return sm.Result{}, nil
+		},
+	}
+	svc := NewTransactionService(host, 1)
+	ops := []Op{{Type: OpGet, Key: []byte("k"), RangeEnd: []byte("!")}}
+
+	_, execErr := svc.Execute(context.Background(), nil, ops, nil)
+	_, modeErr := svc.ExecuteWithMode(context.Background(), nil, nil, ops, writemode.WALDurable)
+	for name, err := range map[string]error{"Execute": execErr, "ExecuteWithMode": modeErr} {
+		var rangedGet *TransactionGetRangeEndError
+		var encodeErr *EncodeRequestError
+		if !errors.As(err, &encodeErr) || !errors.As(err, &rangedGet) {
+			t.Fatalf("%s = %v (%T), want a TransactionGetRangeEndError inside an EncodeRequestError", name, err, err)
+		}
+	}
+	if proposals != 0 {
+		t.Fatalf("%d proposals, want none", proposals)
 	}
 }
 

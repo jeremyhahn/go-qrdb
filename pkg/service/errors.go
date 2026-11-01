@@ -945,6 +945,21 @@ func (e *UnsupportedTransactionOpError) Error() string {
 		" (transaction branches support only Put and Delete)"
 }
 
+// TransactionGetRangeEndError is returned when a transaction branch carries
+// a Get with a range end. A transaction get reads exactly its key
+// (docs/transactions/api.md); a read of [key, range_end) is a Range. The
+// request is refused before the hard-confinement guard and before encoding,
+// so the guard and the executor never disagree about what a get reads.
+type TransactionGetRangeEndError struct {
+	Key []byte
+}
+
+// Error returns a human-readable description of the ranged get.
+func (e *TransactionGetRangeEndError) Error() string {
+	return "service: transaction get of key " + strconv.Quote(string(e.Key)) +
+		" carries a range end (a get reads one key; use a range)"
+}
+
 // ---------------------------------------------------------------------------
 // Import errors
 // ---------------------------------------------------------------------------

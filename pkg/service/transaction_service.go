@@ -71,6 +71,9 @@ func NewTransactionService(host Host, shardID uint64) TransactionServicer {
 // operation set through Raft consensus. When all compares succeed, successOps
 // are applied; otherwise failureOps are applied.
 func (s *TransactionService) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
+	if err := refuseRangedGets(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	if err := s.refuseInactiveReads(successOps, failureOps); err != nil {
 		return nil, err
 	}
@@ -97,6 +100,9 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 // Raft consensus. When all compares succeed, successOps are applied;
 // otherwise failureOps are applied.
 func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
+	if err := refuseRangedGets(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	if err := s.refuseInactiveReads(successOps, failureOps); err != nil {
 		return nil, err
 	}
@@ -364,11 +370,31 @@ func encodeServiceOp(op Op) ([]byte, error) {
 	}
 	switch op.Type {
 	case OpGet:
+		if len(op.RangeEnd) != 0 {
+			return nil, &TransactionGetRangeEndError{Key: op.Key}
+		}
 		return protocol.EncodeOp(protocolOp, op.Key, nil, nil, 0)
 	case OpRange:
 		return protocol.EncodeOp(protocolOp, op.Key, nil, op.RangeEnd, 0)
 	}
 	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
+}
+
+// refuseRangedGets refuses a transaction whose branches carry a Get with a
+// range end. A transaction get reads one key, so a range end on it is a
+// client error; it is refused here, ahead of the hard-confinement guard and
+// the executor, rather than dropped, because the guard reads a nonempty
+// range end as a range and a dropped one would let the guard and the
+// executor disagree about which key is read.
+func refuseRangedGets(opSets ...[]Op) error {
+	for _, ops := range opSets {
+		for _, op := range ops {
+			if op.Type == OpGet && len(op.RangeEnd) != 0 {
+				return &EncodeRequestError{Err: &TransactionGetRangeEndError{Key: op.Key}}
+			}
+		}
+	}
+	return nil
 }
 
 // hasReadOp reports whether either branch of a transaction holds a read.
