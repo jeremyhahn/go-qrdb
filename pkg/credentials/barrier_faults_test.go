@@ -33,6 +33,7 @@ var errInjectedFault = errors.New("credentials test: injected storage fault")
 // a lost race, without writing, while casLosses is above zero.
 type faultBackend struct {
 	*seal.MemoryBackend
+	failGet    atomic.Pointer[string]
 	failPut    atomic.Pointer[string]
 	failDelete atomic.Pointer[string]
 	failList   atomic.Pointer[string]
@@ -53,6 +54,13 @@ type faultBackend struct {
 var _ seal.StorageBackend = (*faultBackend)(nil)
 
 // Put fails with errInjectedFault when key ends with the armed Put suffix.
+func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if s := f.failGet.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return nil, errInjectedFault
+	}
+	return f.MemoryBackend.Get(ctx, key)
+}
+
 func (f *faultBackend) Put(ctx context.Context, key string, data []byte) error {
 	if s := f.failPut.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return errInjectedFault
