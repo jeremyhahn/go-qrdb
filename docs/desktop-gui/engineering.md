@@ -222,6 +222,32 @@ request a spec leaves unmocked is refused rather than proxied to whatever
 another job's `qrdbd` serves on the conventional admin port. `reuseExistingServer`
 stays off in CI, so a run never tests against another job's server.
 
+A refused request is not enough on its own: the UI tolerates many failed
+requests (a fallback form, a retry with backoff), so an unmocked call would let
+the spec pass. Every mocked-tier fixture and spec therefore extends `test` from
+`e2e/fixtures/api-guard.ts`, never `@playwright/test`'s. The guard registers a
+catch-all route for every API path before any mock does, matching the prefix
+list in `api-routes.ts`, the one list the Vite proxy is built from too.
+Playwright tries the most recently registered matching route first, so each
+mock answers its own requests and a mock that declines one calls
+`route.fallback()`, which hands it to the guard. The guard aborts the request
+as the dead proxy would and fails the spec at teardown, naming each unmocked
+`METHOD /path`. Specs wait on conditions (a locator, a request, a load state),
+never on `waitForTimeout`.
+
+The mocked and DOM tiers serve the UI over **https**, as `qrdbd` serves web
+mode: the REST server that carries the embedded UI binds TLS only, and every
+secret-bearing SDK call refuses an `http` base URL, so a tier served over
+`http` would test an origin production never has and fail its secret-bearing
+specs at the SDK. `playwright.tls.ts` generates a self-signed ECDSA P-256
+certificate for `localhost` and `127.0.0.1` per run, in memory with
+`node:crypto` alone (no dependency, no file written or committed), and hands
+it to the Vite server in `QRDB_VITE_TLS_CERT` and `QRDB_VITE_TLS_KEY`, which
+`vite.config.ts` reads for both `vite` and `vite preview`. The browser accepts
+the certificate only through each tier's `ignoreHTTPSErrors`; no application
+code path changes. The real-backend tier starts no web server and talks to
+`qrdbd` over https directly.
+
 The mocked tier runs against the **production bundle**, the one `build-client`
 embeds. `make test-typescript` builds it (`npm run build`) as its own step
 before Playwright starts, and the config's web server only serves `dist/` with

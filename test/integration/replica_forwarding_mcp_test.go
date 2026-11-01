@@ -92,6 +92,7 @@ func (mcpFwdTransport) call(t *testing.T, c *fwdCluster, i int, caller fwdCaller
 	if p, coded := wire.DecodeErrorPayload(res.StructuredContent); coded {
 		a.denied = p.Code == wire.CodePermissionDenied
 		a.notFound = p.Code == wire.CodeNotFound
+		a.unavailable = p.Code == wire.CodeUnavailable
 		if p.Reason == "NOT_A_REPLICA" && p.Code == wire.CodeUnavailable {
 			a.refusal = p.Metadata
 		}

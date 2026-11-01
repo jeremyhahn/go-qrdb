@@ -1005,6 +1005,14 @@ func (s *scopedVector) UpdateMetadata(ctx context.Context, a1 *service.UpdateVec
 	return svc.UpdateMetadata(ctx, a1)
 }
 
+func (s *scopedVector) UpdateNamespace(ctx context.Context, a1 *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	svc, err := s.scope.registry.VectorService(s.scope.tenant(ctx), s.scope.database)
+	if err != nil {
+		return nil, err
+	}
+	return svc.UpdateNamespace(ctx, a1)
+}
+
 func (s *scopedVector) UpsertVector(ctx context.Context, a1 *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
 	svc, err := s.scope.registry.VectorService(s.scope.tenant(ctx), s.scope.database)
 	if err != nil {

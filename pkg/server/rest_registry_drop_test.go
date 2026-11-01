@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -41,14 +42,15 @@ import (
 // Dropping flag is set directly (standing in for a Manager.Drop already in
 // flight).
 func TestRESTServiceRegistry_RefusesPreRegisteredDatabaseWhileDropping(t *testing.T) {
-	dbMgr := database.NewManager(nil, t.TempDir())
+	dir := t.TempDir()
+	dbMgr := databasetest.NewManager(nil, dir)
 	db, err := dbMgr.Create(database.DatabaseConfig{
 		Name: "mydb", Backend: database.BackendMemory,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	db.SetDropping(true)
+	fenceDropping(t, dir, db)
 
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr))
 
@@ -59,11 +61,28 @@ func TestRESTServiceRegistry_RefusesPreRegisteredDatabaseWhileDropping(t *testin
 	}
 }
 
+// fenceDropping marks db as a drop in flight does: in its catalog record,
+// which resolution reconciles the open entry against before answering, and
+// on the entry itself. Setting the entry alone is a fence the next
+// resolution clears, because the record says the database is not dropping.
+func fenceDropping(t *testing.T, dataDir string, db *database.Database) {
+	t.Helper()
+	err := databasetest.Catalog(dataDir).Update(context.Background(), db.TenantID(), db.Name(), db.Incarnation(),
+		func(meta *database.DatabaseMeta) error {
+			meta.Dropping = true
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("Catalog.Update(dropping) error = %v", err)
+	}
+	db.SetDropping(true)
+}
+
 // TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping is
 // the control: a database.Manager wired in must not itself break ordinary
 // resolution of a pre-registered database that is not being dropped.
 func TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping(t *testing.T) {
-	dbMgr := database.NewManager(nil, t.TempDir())
+	dbMgr := databasetest.NewManager(nil, t.TempDir())
 	if _, err := dbMgr.Create(database.DatabaseConfig{
 		Name: "mydb", Backend: database.BackendMemory,
 	}); err != nil {
@@ -90,14 +109,15 @@ func TestRESTServiceRegistry_PreRegisteredDatabaseResolvesWhenNotDropping(t *tes
 // the other tenant's database exists and is mid-drop. Both must now answer
 // the same NotFoundError.
 func TestRESTServiceRegistry_CrossTenantDroppingDatabaseIndistinguishableFromMissing(t *testing.T) {
-	dbMgr := database.NewManager(nil, t.TempDir())
+	dir := t.TempDir()
+	dbMgr := databasetest.NewManager(nil, dir)
 	db, err := dbMgr.Create(database.DatabaseConfig{
 		Name: "acme-ledger", TenantID: "acme", Backend: database.BackendMemory,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	db.SetDropping(true)
+	fenceDropping(t, dir, db)
 
 	// A real DatabaseCatalog, not the no-catalog fallback: without one,
 	// resolve's dbReg.GetOrDefault/databaseExists short-circuit answers
@@ -226,7 +246,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop(t *testing
 // drop works independently of incarnation tracking: a legacy or provisioned
 // database needs the same protection a reclaimer-tracked one does.
 func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncarnation(t *testing.T) {
-	dbMgr := database.NewManager(nil, t.TempDir())
+	dbMgr := databasetest.NewManager(nil, t.TempDir())
 	if _, err := dbMgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -262,7 +282,7 @@ func TestNamespacedVectorService_StaleHandleRefusedAfterCompletedDrop_EmptyIncar
 // as it did before the fence existed -- a NotFoundError from Manager.Get is
 // not a refusal.
 func TestRESTServiceRegistry_UnmanagedDatabaseUnaffectedByDropFence(t *testing.T) {
-	dbMgr := database.NewManager(nil, t.TempDir())
+	dbMgr := databasetest.NewManager(nil, t.TempDir())
 
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", withDatabaseManager(dbMgr))
 

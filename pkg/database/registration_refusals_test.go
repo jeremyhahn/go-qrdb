@@ -45,7 +45,7 @@ func TestShamirDatabase_RegistrationFailures(t *testing.T) {
 	if err := bm.EnsureBarrier(ctx, "twice", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); !errors.As(err, &create) || create.Name != "twice" {
 		t.Fatalf("a second registration = %v, want *BarrierCreateError", err)
 	}
-	if _, _, err := bm.Holders("twice"); err != nil {
+	if _, _, err := bm.Holders("twice", "acme"); err != nil {
 		t.Fatalf("the first registration after a refused second = %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestShamirDatabase_RegistrationFailures(t *testing.T) {
 	if err := noCA.EnsureBarrier(ctx, "no-ca", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); err != nil {
 		t.Fatalf("registration without a ceremony CA = %v, want success", err)
 	}
-	if _, _, err := noCA.Holders("no-ca"); err != nil {
+	if _, _, err := noCA.Holders("no-ca", "acme"); err != nil {
 		t.Fatalf("the holder authority of a database registered without a CA = %v", err)
 	}
 
@@ -66,15 +66,15 @@ func TestShamirDatabase_RegistrationFailures(t *testing.T) {
 	if err := refused.EnsureBarrier(ctx, "refused", "acme", cfg, seal.NewMemoryBackend(), seal.Credentials{}); !errors.As(err, &create) || !errors.Is(err, ceremony.ErrNilLogger) {
 		t.Fatalf("registration whose holder authority is refused = %v, want *BarrierCreateError wrapping ErrNilLogger", err)
 	}
-	if _, err := refused.registry.GetTenant("refused"); err == nil {
+	if _, err := refused.registry.GetTenant(barrierKey("refused", "acme")); err == nil {
 		t.Fatal("a refused registration left its barrier in the registry")
 	}
 
-	if err := bm.registry.RemoveTenant("twice"); err != nil {
+	if err := bm.registry.RemoveTenant(barrierKey("twice", "acme")); err != nil {
 		t.Fatal(err)
 	}
 	var notShamir *NotShamirBarrierError
-	if _, _, err := bm.Holders("twice"); !errors.As(err, &notShamir) {
+	if _, _, err := bm.Holders("twice", "acme"); !errors.As(err, &notShamir) {
 		t.Fatalf("Holders with the barrier gone = %v, want *NotShamirBarrierError", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestDatabaseErrors_MessagesAndUnwrap(t *testing.T) {
 // and does not abort the call.
 func TestSetBarrierManager_ARegistrationFailureSkipsOnlyThatDatabase(t *testing.T) {
 	ca, _ := ceremonytest.NewCA(t, "Database Holder CA")
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(holderBarrierManager(t, ca)))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(holderBarrierManager(t, ca)))
 	defer func() { _ = mgr.Close() }()
 	if _, err := mgr.CreateWithCredentials(context.Background(), shamirDBConfig(t, "vault"), seal.Credentials{}); err != nil {
 		t.Fatal(err)
@@ -156,10 +156,10 @@ func TestSetBarrierManager_ARegistrationFailureSkipsOnlyThatDatabase(t *testing.
 
 	noCustody := newTestBarrierManager(t)
 	mgr.SetBarrierManager(noCustody)
-	if noCustody.GetBarrier("vault") != nil {
+	if noCustody.GetBarrier("vault", "acme") != nil {
 		t.Fatal("a manager with no holder custody registered a Shamir database")
 	}
-	if _, _, err := noCustody.Holders("vault"); err == nil {
+	if _, _, err := noCustody.Holders("vault", "acme"); err == nil {
 		t.Fatal("a manager with no holder custody has a holder authority for the database")
 	}
 }

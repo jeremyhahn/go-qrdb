@@ -104,7 +104,7 @@ func buildTenantRaftConfigs(dataRoot string) (quicraftconfig.HostConfig, quicraf
 // opens the encrypted Pebble immediately and a sealed barrier would fail every
 // file open with seal.ErrSealed. The caller (TenantHostRegistry) drives the
 // barrier through Initialize (create) or Unseal (boot re-attach) first.
-func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.TenantBarrier, importSessionCfg qrdbconfig.ImportSessionConfig, logger *slog.Logger) (*tenantHost, error) {
+func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.TenantBarrier, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, watchHubOpts []watch.HubOption, logger *slog.Logger) (*tenantHost, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -133,7 +133,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 	// every Pebble file the state machine creates with AES-256-GCM keyed by the
 	// tenant DEK.
 	lessor := lease.NewLessor()
-	hub := watch.NewHub()
+	hub := watch.NewHub(watchHubOpts...)
 	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
 
 	members := map[uint64]string{1: hostCfg.RaftAddress}
@@ -165,7 +165,7 @@ func newTenantHost(ctx context.Context, tenantID, dataRoot string, tb *seal.Tena
 		lessor:   lessor,
 		cancel:   cancel,
 		logger:   logger,
-		services: buildDataPlaneServices(adapter, tenantHostShardID, hub, importSessionCfg),
+		services: buildDataPlaneServices(adapter, tenantHostShardID, hub, importSessionCfg, indexCfg, tsCfg),
 	}
 
 	// Leader-side lease-expiry sweeper. The tenant host is a single-node
@@ -296,6 +296,30 @@ func WaitForShardServing(ctx context.Context, host *quicraft.Host, shardID uint6
 func WaitForShardLeader(ctx context.Context, src LeaderSource, shardID uint64, budget time.Duration) error {
 	clock := realShardLeaderClock{}
 	return awaitShardLeader(ctx, src, shardID, clock.Now(), budget, shardLeaderPollInterval, clock)
+}
+
+// AwaitShardLeader waits until shardID has a known leader for as long as ctx
+// lives. A boot waits for a leader with no budget of its own: each node is
+// unsealed by its own operator, so a quorum may come up long after this node
+// does. leaderWait is one round of WaitForShardLeader; a round that runs out is
+// logged and the wait goes on, so the operator sees why the boot has not
+// finished. It returns nil once a leader is known and ctx's error when ctx
+// ends first.
+func AwaitShardLeader(ctx context.Context, src LeaderSource, leaderWait time.Duration, shardID uint64) error {
+	if _, ok, err := src.LeaderID(shardID); err == nil && ok {
+		return nil
+	}
+	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",
+		"shard_id", shardID)
+	for {
+		err := WaitForShardLeader(ctx, src, shardID, leaderWait)
+		var we *ShardLeaderWaitError
+		if !errors.As(err, &we) {
+			return err
+		}
+		slog.Warn("still waiting for a Raft leader; a quorum of members must be running and unsealed",
+			"shard_id", shardID, "error", err)
+	}
 }
 
 // shardLeaderClock is the time source waitForShardServingWithin reads. It is
@@ -548,14 +572,20 @@ func newDataPlaneCreateFunc(tb *seal.TenantBarrier, lessor *lease.Lessor, hub *w
 // (config.ImportSession, "import_session:" in YAML); the zero value
 // resolves to the package defaults WithImportSessionLimits documents.
 //
+// indexCfg caps the shard's secondary indexes (config.Index, "index:" in
+// YAML); the zero value leaves them unlimited.
+//
+// tsCfg caps the shard's metric names (config.TimeSeries.MaxMetrics,
+// "timeseries.max_metrics" in YAML); the zero value leaves them unlimited.
+//
 // mvccOpts configure the MVCC service: a dedicated per-database raft shard
 // passes service.WithDedicatedKeyspace, because the shard is that one
 // database's whole keyspace; the volume Host, which every database of the
 // tenant shares, passes nothing, so it refuses the empty compaction prefix.
-func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
+func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, importSessionCfg qrdbconfig.ImportSessionConfig, indexCfg qrdbconfig.IndexConfig, tsCfg qrdbconfig.TimeSeriesConfig, mvccOpts ...service.MVCCKVServiceOption) *DatabaseServices {
 	kv := service.NewKVService(host, shardID)
 	mvcc := service.NewMVCCKVService(host, shardID, mvccOpts...)
-	idx := service.NewIndexService(host, shardID)
+	idx := service.NewIndexService(host, shardID, service.WithMaxIndexes(indexCfg.MaxIndexes))
 	txn := service.NewTransactionService(host, shardID)
 	return &DatabaseServices{
 		Name:    "",
@@ -570,7 +600,7 @@ func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub, i
 		)),
 		Transaction: txn,
 		Lease:       service.NewLeaseService(host, shardID),
-		TimeSeries:  service.NewTimeSeriesService(host, shardID),
+		TimeSeries:  service.NewTimeSeriesService(host, shardID, service.WithMaxMetrics(tsCfg.MaxMetrics)),
 		Index:       idx,
 		Watch:       service.NewWatchService(hub),
 		// SequenceServicer backs Collection's IDStrategyIncrement document

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -39,15 +40,15 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 		t.Fatalf("shard.NewClaimer: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = m.Close() })
 
 	cfg := DatabaseConfig{Name: "early", Backend: BackendMemory, Raft: validRaftConfig(0)}
 	_, err = m.Create(cfg)
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
-		t.Fatalf("raft create before activation = %v, want *featuregate.NotActiveError", err)
+		t.Fatalf("raft create before activation = %v, want *feature.NotActiveError", err)
 	}
 	if inactive.Error() == "" {
 		t.Fatal("empty error text")
@@ -55,7 +56,7 @@ func TestShardIDs_RaftCreateWaitsForClusterShardIDs(t *testing.T) {
 	if _, err := m.Get("early"); err == nil {
 		t.Fatal("a refused raft create left a catalog entry")
 	}
-	if _, err := os.Stat(m.dbDir("early")); !os.IsNotExist(err) {
+	if _, err := os.Stat(m.dbDir("", "early")); !os.IsNotExist(err) {
 		t.Fatalf("a refused raft create left its directory: %v", err)
 	}
 

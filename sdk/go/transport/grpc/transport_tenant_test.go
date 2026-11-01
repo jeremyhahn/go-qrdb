@@ -101,6 +101,14 @@ func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, 
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
 
+func (f *fakeTenantServicer) TenantBarrierInitBegin(context.Context, *tenantpkg.TenantBarrierInitBeginRequest) (*tenantpkg.TenantBarrierInitBeginResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
+
+func (f *fakeTenantServicer) TenantBarrierInitComplete(context.Context, *tenantpkg.TenantBarrierInitCompleteRequest) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
+
 func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
 	if err := f.callInitFn(ctx, id, string(passphrase), threshold, shares); err != nil {
 		return nil, err

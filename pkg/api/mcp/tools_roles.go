@@ -139,6 +139,45 @@ func handleRoleReconcile(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
 	}
 }
 
+// roleReconcileAllTools returns the all-tenant built-in role reconcile tool.
+// It is a family of its own because it needs the tenant service, which the
+// other role tools do not.
+func roleReconcileAllTools(roleSvc role.RoleServicer, tenants role.TenantLister) []serverTool {
+	return []serverTool{
+		{
+			Tool:    toolRoleReconcileAllTenants(),
+			Perm:    permission.RolesReconcileAll,
+			Handler: handleRoleReconcileAllTenants(roleSvc, tenants),
+		},
+	}
+}
+
+// toolRoleReconcileAllTenants defines the
+// qrdb_role_reconcile_builtin_all_tenants tool schema.
+func toolRoleReconcileAllTenants() mcp.Tool {
+	return mcp.NewTool("qrdb_role_reconcile_builtin_all_tenants",
+		mcp.WithDescription("Converge the stored built-in roles of every tenant on this node onto this build's definitions, tenant by tenant, leaving custom roles untouched. Platform operator only. Sealed or refused tenants are reported as skipped and a tenant's failure is reported without stopping the pass. Idempotent."),
+	)
+}
+
+// handleRoleReconcileAllTenants returns a tool handler that delegates to
+// role.ReconcileAllTenants.
+func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		report, err := role.ReconcileAllTenants(ctx, roleSvc, tenants)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(report)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
 // toolRoleCreate defines the qrdb_role_create tool schema.
 func toolRoleCreate() mcp.Tool {
 	return mcp.NewTool("qrdb_role_create",
@@ -420,7 +459,7 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, auth
 
 		// The same gate every role-assignment write passes: roles:assign in
 		// the user's tenant, and the role must exist there.
-		if err := authMW.AuthorizeRoleAssignmentWrite(ctx, userSvc, roleSvc, userID, []string{roleID}, nil); err != nil {
+		if err := authMW.AuthorizeRoleAssignment(ctx, userSvc, roleSvc, userID, roleID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_assign", Err: err}
 		}
 
@@ -441,6 +480,7 @@ func handleRoleAssign(roleSvc role.RoleServicer, userSvc user.UserServicer, auth
 		roleIDs = append(roleIDs, roleID)
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {
@@ -483,7 +523,7 @@ func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware
 			return mcp.NewToolResultError("role_id is required"), nil
 		}
 
-		if err := authMW.AuthorizeRoleUnassignment(ctx, userSvc, userID); err != nil {
+		if err := authMW.AuthorizeRoleUnassignment(ctx, userSvc, userID, roleID); err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_unassign", Err: err}
 		}
 
@@ -500,6 +540,7 @@ func handleRoleUnassign(userSvc user.UserServicer, authMW *authmw.AuthMiddleware
 		}
 
 		if _, updateErr := userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+			Guard:   authMW.SORoleGuard(ctx),
 			ID:      userID,
 			RoleIDs: roleIDs,
 		}); updateErr != nil {

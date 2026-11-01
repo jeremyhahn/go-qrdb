@@ -17,6 +17,8 @@ package bootstrap
 import (
 	"strconv"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
 // MissingAdminCredentialError is returned by ProvisionTenant in cert mode when
@@ -165,13 +167,105 @@ func (e *InvalidAdminUsernameError) Error() string {
 // without the tenant's Admin role: it is not the account a previous attempt
 // created, so it is never adopted. An operator resolves the conflict (rename
 // or remove that account) and the completion is retried on the next unseal.
+//
+// Role names the role the pending account was onboarded for; empty is the
+// first admin (role.RoleNameAdmin). The tenant SO's pending account
+// (TenantProvisionConfig.SO) conflicts the same way with role.RoleNameSO.
 type PendingAdminAccountConflictError struct {
 	TenantID string
 	Username string
+	Role     string
 }
 
-// Error names the tenant and the account.
+// Error names the tenant, the account and the role it lacks.
 func (e *PendingAdminAccountConflictError) Error() string {
+	r := e.Role
+	if r == "" {
+		r = role.RoleNameAdmin
+	}
 	return "bootstrap: tenant " + e.TenantID + " already has an account named " + e.Username +
-		" that does not hold the tenant's Admin role; it is not adopted as the onboarded admin"
+		" that does not hold the tenant's " + r + " role; it is not adopted as the onboarded " + r
 }
+
+// IncompleteTenantSOError is returned by ProvisionTenant when tenant create's
+// optional SO (TenantProvisionConfig.SO) is given in part: the SO is the
+// username, exactly one of a CSR or a certificate, and the PIN together, or
+// is omitted altogether. Field names the first part missing.
+type IncompleteTenantSOError struct {
+	Field string
+}
+
+// Error names the missing part.
+func (e *IncompleteTenantSOError) Error() string {
+	return "bootstrap: the tenant SO is given in part: " + e.Field + " is missing (give so_username, so_csr_pem or so_cert_pem, and so_pin together, or none)"
+}
+
+// ConflictingSOCredentialError is returned when both a CSR and a certificate
+// are given for the tenant SO: exactly one names the SO's key.
+type ConflictingSOCredentialError struct{}
+
+// Error implements error.
+func (e *ConflictingSOCredentialError) Error() string {
+	return "bootstrap: supply the tenant SO's CSR or certificate, not both"
+}
+
+// SOMatchesAdminError is returned under strict separation of duties when the
+// tenant SO is the first admin by another name: the same username, or a
+// credential over the same key (SPKI). Strict separation needs two
+// principals, so the SO and the admin never share an account or a key. Field
+// is "username" or "key".
+type SOMatchesAdminError struct {
+	Field string
+}
+
+// Error implements error.
+func (e *SOMatchesAdminError) Error() string {
+	return "bootstrap: the tenant SO must differ from the first admin; they share a " + e.Field
+}
+
+// SOPartlyMatchesAdminError is returned outside strict separation of duties
+// when the tenant SO shares exactly one of the first admin's username and key
+// (SPKI). The SO may be the admin there, named by the admin's username and
+// key together, but one key binds one account, so the SO is either the admin
+// or a principal distinct from it in both. Field is the one they share,
+// "username" or "key".
+type SOPartlyMatchesAdminError struct {
+	Field string
+}
+
+// Error implements error.
+func (e *SOPartlyMatchesAdminError) Error() string {
+	return "bootstrap: the tenant SO shares the first admin's " + e.Field + " but not the other; name the admin by username and key, or a distinct SO"
+}
+
+// SOCredentialRejectedError is returned when the tenant SO's CSR or
+// certificate is refused before anything is written, for the reasons
+// AdminCredentialRejectedError gives for the admin's.
+type SOCredentialRejectedError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *SOCredentialRejectedError) Error() string {
+	return "bootstrap: the tenant SO's credential was refused: " + e.Cause.Error()
+}
+
+// Unwrap exposes the cause.
+func (e *SOCredentialRejectedError) Unwrap() error { return e.Cause }
+
+// TenantSOEnrollmentError wraps a failure to enrol the tenant SO after its
+// inputs were accepted: creating its account, issuing or binding its
+// certificate, recording, reading or completing its pending record, or
+// committing its PIN. Op names the step.
+type TenantSOEnrollmentError struct {
+	Op    string
+	Cause error
+}
+
+// Error implements error.
+func (e *TenantSOEnrollmentError) Error() string {
+	return "bootstrap: tenant SO " + e.Op + " failed: " + e.Cause.Error()
+}
+
+// Unwrap exposes the cause.
+func (e *TenantSOEnrollmentError) Unwrap() error { return e.Cause }

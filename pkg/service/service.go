@@ -34,6 +34,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -552,7 +553,7 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 
 func (s *KVService) DeleteRange(ctx context.Context, start, end []byte) error {
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.RangeDelete) {
-		return &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.RangeDelete, ShardID: s.shardID}
 	}
 	cmd, err := protocol.EncodeDeleteRange(start, end)
 	if err != nil {

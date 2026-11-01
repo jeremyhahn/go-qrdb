@@ -3,15 +3,20 @@
 > **Status: REFERENCE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Companion reference; the feature folders under `docs/` are the contract and win on any disagreement.
 
-QRDB supports five consistency levels for read operations (`consistency.Level`, `pkg/consistency/level.go`), allowing applications to trade latency for staleness depending on their needs.
+QRDB supports five consistency levels for read operations (`consistency.Level`,
+`pkg/consistency/level.go`), allowing applications to trade latency for staleness.
+`consistency.ParseLevel` accepts the wire name in lower or upper case.
 
-| Level | Latency | Guarantee | Use Case |
-|-------|---------|-----------|----------|
-| **Strong** | 1–5ms | SyncRead (ReadIndex), the same path as Linearizable | Financial transactions, account balance |
-| **Linearizable** | 1–5ms | ReadIndex optimization (default) | Most applications, user-facing data |
-| **LeaseRead** | <1ms | Linearizable; leader serves locally while its lease holds | High-throughput reads, caching |
-| **Eventual** | <1ms | Local stale read | Analytics, dashboards, non-critical reads |
-| **FollowerRead** | 1–5ms | ReadIndex on the receiving replica, leader or follower | Linearizable reads spread across replicas |
+| Level | Wire name | Guarantee | Cost | Use Case |
+|-------|-----------|-----------|------|----------|
+| **Strong** | `strong` | Linearizable (ReadIndex) | one heartbeat quorum round | Financial transactions, account balance |
+| **Linearizable** (default) | `linearizable` | Linearizable (ReadIndex) | one heartbeat quorum round | Most applications, user-facing data |
+| **LeaseRead** | `lease_read`, `leaseread` | Linearizable; leader serves locally while its lease holds | local lookup while the lease holds | High-throughput reads, caching |
+| **FollowerRead** | `follower_read`, `followerread` | Every entry this replica knew committed when the read began; leadership not confirmed | wait for the local replica to apply | Reads spread over replicas |
+| **Eventual** | `eventual`, `stale` | None: local stale read | local lookup | Analytics, dashboards, non-critical reads |
+
+A standalone node (`pkg/backend/local.go`) has one replica: `LocalBackend.ReadWithConsistency`
+ignores the level and every read sees every committed write.
 
 ## 1. Strong Consistency
 
@@ -19,14 +24,17 @@ Strong consistency ensures that every read sees the effects of all writes that c
 
 **Behavior:**
 
-`Strong` is the zero value of `consistency.Level`, so it cannot be told apart from an unset level. `HostAdapter.ReadWithConsistency` (`pkg/backend/raft/adapter.go`) sends it to go-quicraft's `SyncRead`, the ReadIndex path `Linearizable` uses (section 2); with `AllowStale` set it is a stale local read instead. The read is not proposed through the Raft log.
+The Raft adapter (`HostAdapter.ReadWithConsistency`, `pkg/backend/raft/adapter.go`) sends a
+Strong read down go-quicraft's `SyncRead`, the ReadIndex path of
+[Linearizable](#2-linearizable-consistency-default). `Strong` is the zero value of
+`consistency.Level` and cannot be told apart from an unset level, so a Strong read that
+also sets `AllowStale` is served stale.
 
 **When to use:** Correctness-critical operations where seeing stale data could cause logical errors.
 
 **Example:** Checking account balance before transferring funds.
 
 ```go
-// Application code
 value, err := kvService.GetWithConsistency(ctx, key, consistency.ReadOptions{
     Consistency: consistency.Strong,
 })
@@ -57,9 +65,9 @@ Read applied against local state machine (no consensus needed)
 Result returned to client
 ```
 
-**Latency:** 1–5ms (single RTT to a quorum + local execution)
+**Latency:** one round trip to a quorum, then a local lookup.
 
-**Guarantee:** Causally consistent with all writes before the read.
+**Guarantee:** Linearizable: the read reflects every write that completed before it started.
 
 **When to use:** Most applications that need reasonable consistency without sacrificing performance. Default choice.
 
@@ -67,7 +75,7 @@ Result returned to client
 
 ```go
 value, err := kvService.Get(ctx, key)
-// Implicitly uses consistency.Linearizable
+// KVServicer.Get always reads at Linearizable
 // Guarantees: value reflects all writes that completed before this read
 ```
 
@@ -77,11 +85,11 @@ LeaseRead is a sub-millisecond consistency level based on the **Raft PhD thesis 
 
 **Mechanism:** Leader lease on the monotonic clock
 
-go-qrdb's Raft adapter (`pkg/backend/raft/adapter.go`) sends `LeaseRead` and
-`Linearizable` down the same path, go-quicraft's `SyncRead` (ReadIndex). Whether
-the leader may answer that read from its lease is the shard's `lease_read`
-setting (`raft.lease_read`, `--lease-read`), which defaults to `true`
-(`pkg/config/config.go`). So the two levels give the same guarantee.
+go-qrdb's Raft adapter (`pkg/backend/raft/adapter.go`) sends `Strong`, `LeaseRead`
+and `Linearizable` down the same path, go-quicraft's `SyncRead` (ReadIndex). Whether
+the leader may answer that read from its lease is the shard's lease setting
+(`raft.lease_read`, `--lease-read`), which defaults to `true`
+(`pkg/config/config.go`). So the three levels give the same guarantee.
 
 The lease is measured on the leader's **monotonic** clock and anchored at the
 time the leader **sent** a heartbeat round, not the time the acknowledgments
@@ -127,19 +135,19 @@ a clock that stops or runs backward, which Go's monotonic clock does not do.
 
 **Requirements:**
 
-
-1. **go-quicraft config:** `LeaseRead: true`
-2. **Leader commitment:** `CheckQuorum: true` (leader steps down if it can't reach a quorum)
-3. **Timing:** `ElectionRTT >= 5` (lease duration must be meaningful).
-   The lease is `ElectionRTT - 2` ticks — a **fixed** 2-tick margin, so lowering
+1. **Lease reads on:** `raft.lease_read: true` (the default), which sets go-quicraft's `LeaseRead`.
+2. **Leader commitment:** `raft.check_quorum: true` (the default; the leader steps down if it can't reach a quorum). go-quicraft refuses `LeaseRead` without `CheckQuorum`.
+3. **Timing:** go-quicraft `ElectionRTT >= 5` (lease duration must be meaningful).
+   go-quicraft's own message on that check recommends 10, and the lease is
+   `ElectionRTT - 2` ticks — a **fixed** 2-tick margin, so lowering
    `ElectionRTT` shrinks the lease disproportionately. Those 2 ticks absorb
    goroutine scheduling jitter between the leader's lease check and followers'
    election timeout, which is what prevents split-brain reads: a correctness
    property, not a latency one. **Do not lower `ElectionRTT` on a multi-node
    shard.** A single-node shard is exempt as a matter of fact rather than
-   prudence — its quorum is itself, so `hasValidLease` is unconditionally true
-   and the lease cannot be lost. That exemption is what
-   `cluster.SingleNodeElectionRTT` applies, and only to shards on
+   prudence — its quorum is itself, so the lease cannot be lost. That
+   exemption is what `cluster.SingleNodeElectionRTT` applies
+   (`cluster.ApplyTransportlessShardTuning`), and only to shards on
    transport-less hosts.
 4. **Same timing on every replica:** every replica of a shard runs the same
    `ElectionRTT` and tick interval (`RTTMillisecond`); the lease length on the
@@ -218,7 +226,25 @@ stats, err := kvService.ScanWithConsistency(ctx, "stats:", consistency.ReadOptio
 // Benefit: Instant response, zero overhead
 ```
 
-## 5. Consistency-Level Selection Matrix
+## 5. FollowerRead
+
+FollowerRead lets any replica, leader or follower, serve a read without a ReadIndex
+round trip to the leader. The Raft adapter sends it to go-quicraft's `FollowerRead`.
+
+**Mechanism:** The replica waits until its state machine has applied the commit index
+it knows, then reads locally. If the replica is far behind, the read blocks until it
+catches up or the context expires.
+
+**Guarantee:** The read reflects every entry the replica knew to be committed when the
+read began. Leadership is not confirmed, so during a network partition the read can miss
+writes committed after the replica lost contact with the leader. For strict
+linearizability use Linearizable.
+
+**Exposure:** REST and MCP (`follower_read`) and the embedded SDK
+(`transport.ConsistencyFollower`). The gRPC and QUIC `ConsistencyLevel` enum has no
+value for it.
+
+## 6. Consistency-Level Selection Matrix
 
 Choose a consistency level based on your data and use case:
 
@@ -233,36 +259,33 @@ Choose a consistency level based on your data and use case:
 | Config value | Yes | No | Linearizable |
 | Audit log | Yes | No | Strong or Linearizable |
 
-## 6. Read Path Routing
+## 7. Read Path Routing
 
-When a read arrives at a follower node, it is automatically forwarded to the leader:
+A read on a follower is served by the follower:
 
 ```
 Follower receives read
   |
   v
-Follower detects not leader
+Strong / Linearizable / LeaseRead: follower asks the leader for its
+commit index (ReadIndex); the leader confirms leadership, or answers
+from its lease
   |
   v
-Forwards request to leader via Raft
+Follower waits until its state machine has applied that index
   |
   v
-Leader executes read (using selected consistency level)
-  |
-  v
-Leader returns result to follower
-  |
-  v
-Follower returns result to client
+Follower executes the read locally and returns the result
 ```
 
-**Note:** Forwarding adds latency. For the lowest latency, clients should connect directly to the leader when possible.
+FollowerRead skips the leader and Eventual skips the wait. A read on a follower pays one
+round trip to the leader that a read on the leader does not.
 
-## 7. Configuration
+## 8. Configuration
 
 Consistency levels are specified at read-time via the service API. There is no global default configuration; each read operation chooses its level.
 
-**Default (if not specified):** Linearizable
+**Default (if not specified):** Linearizable (`consistency.Default`)
 
 ```go
 // Default: Linearizable
@@ -284,7 +307,7 @@ value, err := kvService.GetWithConsistency(ctx, key, consistency.ReadOptions{
 })
 ```
 
-## 7a. Transport Exposure
+## 8a. Transport Exposure
 
 Read consistency and write durability are selectable on every transport for
 the KV, MVCC, and time-series read/write operations. The wire contract uses an
@@ -295,41 +318,31 @@ default (linearizable reads / sync writes).
 |-----------|--------------------|---------------------|
 | **gRPC / Unix** | `ConsistencyLevel` enum on the request (`CONSISTENCY_LEVEL_STRONG/LINEARIZABLE/EVENTUAL`; `UNSPECIFIED`=default) | `WriteMode` enum (`WRITE_MODE_SYNC/WAL_DURABLE/BATCHED`) |
 | **QUIC** | Same protobuf request enums as gRPC | Same |
-| **REST** | `?consistency=strong\|linearizable\|eventual` query param | `?write_mode=sync\|wal_durable\|batched` query param |
-| **MCP** | optional `consistency` tool argument | optional `write_mode` tool argument |
-| **Embedded / SDK** | `transport.WithConsistency(level)` / `WithAllowStale()` read option | `transport.WithWriteMode(mode)` write option |
+| **REST** | `?consistency=` query param, any wire name in the table at the top | `?write_mode=sync\|wal_durable\|batched` query param |
+| **MCP** | optional `consistency` tool argument, any wire name in the table at the top | optional `write_mode` tool argument |
+| **Embedded / SDK** | `transport.WithConsistency(level)` (`ConsistencyStrong/Linearizable/Eventual/Follower`) / `WithAllowStale()` read option | `transport.WithWriteMode(mode)` write option |
 | **Time-series** | `Consistency` field on the TS request structs (SDK) / `consistency` arg/param/enum on each transport | n/a (writes go through Raft proposal) |
 
 **CLI flags** (the `qrdb` tool, via the SDK):
 
 ```bash
 qrdb kv get mykey   --consistency eventual     # local stale read
-qrdb kv list app/   --consistency strong       # full-consensus read
+qrdb kv list app/   --consistency strong       # ReadIndex read
 qrdb kv put mykey v --write-mode batched       # amortized durable write
 qrdb kv del mykey   --write-mode wal_durable
 qrdb kv range a z   --consistency linearizable
 ```
 
-Accepted CLI values: consistency `strong`/`linearizable`/`eventual`; write mode
+Accepted CLI values (`transport.ParseConsistencyLevel`): consistency
+`strong`/`linearizable`/`eventual` (alias `stale`)/`follower`; write mode
 `sync`/`wal_durable`/`batched`. Omitting the flag uses the server default.
 
-## 8. Performance Impact
+## 9. Scaling
 
 - **Strong/Linearizable:** Latency scales with quorum round-trip time (RTT). Larger clusters = larger RTT.
 - **LeaseRead:** Latency is independent of cluster size while the leader holds its lease (local lookup); near or after lease expiry a read pays one heartbeat round.
+- **FollowerRead:** Latency is independent of cluster size; it grows with how far the replica lags.
 - **Eventual:** Latency is independent of cluster size (purely local).
-
-## 9. Comparison Table
-
-| Property | Strong | Linearizable | LeaseRead | Eventual |
-|----------|--------|--------------|-----------|----------|
-| Requires Raft consensus | Yes (heartbeat) | Yes (heartbeat) | No (lease check) | No |
-| Requires network RTT | Yes | Yes | No (while the lease holds) | No |
-| Sees all prior writes | Yes | Yes | Yes (clock-rate drift < 1 %) | No |
-| Latency | 1–5ms | 1–5ms | <1ms | <1ms |
-| Suitable for leader | Yes | Yes | Yes | Yes |
-| Suitable for follower | Yes (forward) | Yes (forward) | Yes (forward) | Yes |
-| Recovers on crash | Yes | Yes | Yes | Degraded |
 
 ## Cross-References
 

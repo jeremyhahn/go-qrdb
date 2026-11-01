@@ -22,8 +22,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -34,13 +33,13 @@ var errFileFault = errors.New("injected file fault")
 // faultFS creates real files through the wrapped FS and hands them back
 // wrapped in a faultFile that fails the one operation named by failOn.
 type faultFS struct {
-	vfs.FS
+	filesys.FS
 	failOn string
 }
 
 // Create creates the file and wraps it so failOn fails.
-func (fs faultFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	f, err := fs.FS.Create(name, category)
+func (fs faultFS) Create(name string) (filesys.File, error) {
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +49,7 @@ func (fs faultFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File,
 // faultFile fails Write, Sync or Close when failOn names it. A failed Close
 // still closes the underlying file so the test leaks no descriptor.
 type faultFile struct {
-	vfs.File
+	filesys.File
 	failOn string
 }
 

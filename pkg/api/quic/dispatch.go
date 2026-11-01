@@ -216,6 +216,7 @@ func (s *Server) buildHandlers() {
 
 	// Vector
 	s.handle("vector.CreateNamespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.handle("vector.UpdateNamespace", permission.VectorNamespaceUpdate, s.handleVectorUpdateNamespace)
 	s.handle("vector.DeleteNamespace", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
 	s.handle("vector.ListNamespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
 	s.handle("vector.GetNamespaceInfo", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)
@@ -274,6 +275,7 @@ func (s *Server) buildHandlers() {
 	// dedicated permission would be missing from every role seeded before it
 	// existed, so nobody could hold the grant needed to repair that absence.
 	s.handle("role.ReconcileBuiltIn", permission.RolesCreate, s.handleReconcileRoles)
+	s.handle("role.ReconcileBuiltInAllTenants", permission.RolesReconcileAll, s.handleReconcileRolesAllTenants)
 
 	// Certificate management
 	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)
@@ -338,6 +340,7 @@ func (s *Server) buildHandlers() {
 	// Barrier
 	s.handle("barrier.Initialize", permission.SealBootstrap, s.handleBarrierInitialize)
 	s.handle("barrier.Unseal", permission.SealUnseal, s.handleBarrierUnseal)
+	s.handle("barrier.ChangePassphrase", permission.SealRekey, s.handleBarrierChangePassphrase)
 	s.handle("barrier.Seal", permission.SealSeal, s.handleBarrierSeal)
 	s.handle("barrier.Status", permission.SealStatus, s.handleBarrierStatus)
 	s.handle("barrier.ClusterUnseal", permission.SealUnseal, s.handleBarrierClusterUnseal)
@@ -438,6 +441,8 @@ func (s *Server) buildHandlers() {
 	// AuthorizeTenantBarrierSealedOp), identical to REST, gRPC, and MCP.
 	s.handleIf(tenantOn, "tenant.BarrierInitBegin", permission.IdentityGated, s.handleTenantBarrierInitBegin)
 	s.handleIf(tenantOn, "tenant.BarrierInitComplete", permission.IdentityGated, s.handleTenantBarrierInit)
+	s.handleIf(tenantOn, "tenant.BarrierSignedInitBegin", permission.IdentityGated, s.handleTenantBarrierSignedInitBegin)
+	s.handleIf(tenantOn, "tenant.BarrierSignedInitComplete", permission.IdentityGated, s.handleTenantBarrierSignedInitComplete)
 	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.IdentityGated, s.handleTenantBarrierUnseal)
 	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
 	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.IdentityGated, s.handleTenantBarrierStatus)

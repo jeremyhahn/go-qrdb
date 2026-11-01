@@ -75,6 +75,18 @@ func (e *AlreadyExistsError) Error() string {
 }
 
 // NotFoundError is returned when a requested database does not exist.
+// AmbiguousNameError is returned when a database is named without its
+// tenant and more than one tenant holds a database of that name on this
+// node. The name alone does not say which is meant, so none is resolved.
+type AmbiguousNameError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the ambiguous name.
+func (e *AmbiguousNameError) Error() string {
+	return "database: more than one tenant holds a database named " + strconv.Quote(e.Name) + "; name its tenant"
+}
+
 type NotFoundError struct {
 	Name string
 }
@@ -127,7 +139,7 @@ func (e *CloseError) Unwrap() error {
 	return e.Err
 }
 
-// MetaReadError is returned when reading the on-disk metadata (meta.json) fails.
+// MetaReadError is returned when reading the on-disk metadata (a drop-ledger record or another node-local file) fails.
 type MetaReadError struct {
 	Path string
 	Err  error
@@ -143,28 +155,7 @@ func (e *MetaReadError) Unwrap() error {
 	return e.Err
 }
 
-// LegacyMetadataError is returned when a database's on-disk meta.json still
-// carries a field this version no longer understands -- today, only the
-// "engine" field removed in v0.45 (OD-13). The no-backward-compat ruling of
-// 2026-10-02 supersedes the alternative of silently stripping the field and
-// rewriting the file: the format is refused outright, fail-closed, and the
-// database must be recreated.
-type LegacyMetadataError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description of the unsupported format.
-func (e *LegacyMetadataError) Error() string {
-	return "database: unsupported metadata format " + strconv.Quote(e.Path) + ": " + e.Err.Error() + "; recreate the database"
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *LegacyMetadataError) Unwrap() error {
-	return e.Err
-}
-
-// MetaWriteError is returned when writing the on-disk metadata (meta.json) fails.
+// MetaWriteError is returned when writing the on-disk metadata (a drop-ledger record or another node-local file) fails.
 type MetaWriteError struct {
 	Path string
 	Err  error
@@ -178,6 +169,90 @@ func (e *MetaWriteError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *MetaWriteError) Unwrap() error {
 	return e.Err
+}
+
+// CatalogReadError is returned when a database catalog record cannot be read
+// or decoded.
+type CatalogReadError struct {
+	Key string
+	Err error
+}
+
+// Error returns a human-readable description of the catalog read failure.
+func (e *CatalogReadError) Error() string {
+	return "database: failed to read catalog record " + strconv.Quote(e.Key) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *CatalogReadError) Unwrap() error {
+	return e.Err
+}
+
+// CatalogWriteError is returned when a database catalog record cannot be
+// encoded, written or deleted.
+type CatalogWriteError struct {
+	Key string
+	Err error
+}
+
+// Error returns a human-readable description of the catalog write failure.
+func (e *CatalogWriteError) Error() string {
+	return "database: failed to write catalog record " + strconv.Quote(e.Key) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *CatalogWriteError) Unwrap() error {
+	return e.Err
+}
+
+// CatalogStoreError is returned when the store holding a tenant's catalog
+// records cannot be resolved.
+type CatalogStoreError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description of the resolution failure.
+func (e *CatalogStoreError) Error() string {
+	return "database: cannot resolve the catalog store of tenant " + strconv.Quote(e.TenantID) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *CatalogStoreError) Unwrap() error {
+	return e.Err
+}
+
+// CatalogStoreNotAtomicError is returned when a tenant's home store cannot
+// create a record only if it is absent, which the catalog needs so two nodes
+// creating one name cannot both succeed.
+type CatalogStoreNotAtomicError struct {
+	TenantID string
+}
+
+// Error returns a human-readable description of the missing capability.
+func (e *CatalogStoreNotAtomicError) Error() string {
+	return "database: the catalog store of tenant " + strconv.Quote(e.TenantID) + " has no atomic put-if-absent"
+}
+
+// CatalogStoreRequiredError is returned by NewKVCatalog when it is given no
+// system store.
+type CatalogStoreRequiredError struct{}
+
+// Error returns a human-readable description of the missing store.
+func (e *CatalogStoreRequiredError) Error() string {
+	return "database: the catalog needs a system store"
+}
+
+// CatalogRequiredError is returned by a Manager operation that reads or
+// writes the catalog before one is attached (Manager.SetCatalog). A Manager
+// never falls back to a record of its own: that record would be node-local.
+type CatalogRequiredError struct {
+	Operation string
+}
+
+// Error returns a human-readable description of the missing catalog.
+func (e *CatalogRequiredError) Error() string {
+	return "database: " + e.Operation + " needs the database catalog, and none is attached"
 }
 
 // DropError is returned when a database cannot be dropped (deleted).
@@ -214,6 +289,23 @@ func (e *DropInProgressError) Error() string {
 	return "database: drop already in progress for database " + strconv.Quote(e.Name)
 }
 
+// DropSupersededError is returned by a drop whose incarnation of the database
+// is no longer the one the name holds: another drop took this one over and
+// finished it, and the name may since have been created again. The store
+// refuses the drop's fence and every delete of its reclamation in the same
+// Raft command as the write (KeyspaceReclaimer), so a drop that resumes after
+// it was superseded removes nothing of the successor's (go-qrdb#893).
+type DropSupersededError struct {
+	Name     string
+	TenantID string
+}
+
+// Error returns a human-readable description of the superseded drop.
+func (e *DropSupersededError) Error() string {
+	return "database: drop of database " + strconv.Quote(e.Name) + " in tenant " + strconv.Quote(e.TenantID) +
+		" was superseded: another drop finished it, and the name no longer holds this incarnation"
+}
+
 // DroppingError is returned by Manager.Get when the named database has a
 // Drop in flight on this node. Manager.Drop sets this fence (step 0) BEFORE
 // it reclaims the database's keyspace, so a caller that resolves the
@@ -228,7 +320,7 @@ func (e *DropInProgressError) Error() string {
 // that needs it -- DatabaseService.Drop's tenant lookup, in particular --
 // can recover it without resolving the database, which is exactly what this
 // error refuses (go-qrdb#482 round 3): a node that restarts mid-drop reopens
-// the database still fenced (Open restores Dropping from meta.json), so
+// the database still fenced (Open restores Dropping from the catalog record), so
 // Manager.Get keeps returning this error across the restart, and a caller
 // that could only get the tenant ID from a successful Get would never be
 // able to resume the drop at all.
@@ -240,6 +332,68 @@ type DroppingError struct {
 // Error returns a human-readable description of the in-flight drop.
 func (e *DroppingError) Error() string {
 	return "database: database is being dropped: " + strconv.Quote(e.Name)
+}
+
+// CatalogOrphanError is returned when a create failed and could not
+// establish that no record of its own was left behind in the catalog. Either
+// its catalog write failed with an indeterminate outcome -- it may have
+// committed -- and reading the record back failed, removing it failed, or
+// the record carries no incarnation that would tell this create's record
+// apart from another node's; or the write committed, a later step failed,
+// and removing the record failed. The catalog may hold a record with no
+// database behind it, which refuses every later create of the name until it
+// is dropped; the create's local directories, which hold the database's
+// storage and barrier metadata, are left in place for that drop.
+type CatalogOrphanError struct {
+	Name     string
+	TenantID string
+
+	// Err is the error that failed the create: the indeterminate catalog
+	// write, or the later step that failed after the write committed.
+	Err error
+
+	// Cleanup is the error that kept the record from being resolved; nil
+	// when the record could not be attributed.
+	Cleanup error
+}
+
+// Error returns a human-readable description of the possible orphan.
+func (e *CatalogOrphanError) Error() string {
+	msg := "database: catalog may hold an orphan record for " + strconv.Quote(e.Name) + ": " + e.Err.Error()
+	if e.Cleanup != nil {
+		msg += "; cleanup: " + e.Cleanup.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the indeterminate catalog write error.
+func (e *CatalogOrphanError) Unwrap() error {
+	return e.Err
+}
+
+// StaleDatabaseError is returned for a database whose local copy is an
+// incarnation the catalog no longer records, when that copy could not be
+// released: another operation held the name, or the catalog could not be read
+// again to confirm the release. The obsolete copy is never served; a retry
+// succeeds once the release completes.
+type StaleDatabaseError struct {
+	Name     string
+	TenantID string
+	Err      error // nil when another operation held the name
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *StaleDatabaseError) Error() string {
+	msg := "database: obsolete local copy of database " + strconv.Quote(e.Name) + " is not yet released"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the catalog read error, if any.
+func (e *StaleDatabaseError) Unwrap() error {
+	return e.Err
 }
 
 // KeyspaceFenceError is returned when a database's drop fence could not be
@@ -319,6 +473,24 @@ type ReclaimerRequiredError struct {
 func (e *ReclaimerRequiredError) Error() string {
 	return "database: database " + strconv.Quote(e.Name) +
 		" was dropped on this node; creating it again requires the data plane to be attached"
+}
+
+// UnmigratedDatabasesError is returned when a node opens its databases and
+// finds database records written before the catalog became the record of
+// databases: a meta.json in a database's directory. This version reads no
+// such record, so opening the node would leave those databases' data on disk
+// with nothing that lists or resolves them. The node refuses to start
+// instead; the databases are recreated, and their old directories removed.
+type UnmigratedDatabasesError struct {
+	// Records are the paths of the meta.json files found, sorted.
+	Records []string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *UnmigratedDatabasesError) Error() string {
+	return "database: " + strconv.Itoa(len(e.Records)) +
+		" database record(s) predate the catalog and are not read by this version (first: " +
+		strconv.Quote(e.Records[0]) + "); recreate those databases and remove their directories"
 }
 
 // ShardIDClaimError reports that a database could not be created because a
@@ -600,22 +772,6 @@ func (e *EtcdListenAddrRequiredError) Error() string {
 	return "database: etcd listen_addr is required when etcd is enabled"
 }
 
-// MigrationError is returned when a step in the one-time layout migration fails.
-type MigrationError struct {
-	Step string
-	Err  error
-}
-
-// Error returns a human-readable description of the migration failure.
-func (e *MigrationError) Error() string {
-	return "database: migration failed at step " + strconv.Quote(e.Step) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *MigrationError) Unwrap() error {
-	return e.Err
-}
-
 // TenantIDRequiredError is returned when a tenant-scoped operation is
 // called without a tenant ID in the context.
 type TenantIDRequiredError struct {
@@ -785,8 +941,8 @@ func (e *InvalidDataDirError) Unwrap() error {
 // DataDirReservedPathError is returned when a caller-supplied per-database
 // DataDir resolves to, or overlaps, a path the manager reserves for its own
 // catalog or node-internal state (the manager's own data root, its shared
-// databases catalog directory, or a database's own meta.json/barrier
-// bookkeeping directory).
+// databases catalog directory, or a database's own barrier bookkeeping
+// directory).
 type DataDirReservedPathError struct {
 	Name     string
 	DataDir  string

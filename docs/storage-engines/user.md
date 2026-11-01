@@ -31,6 +31,20 @@ storage:
   max_open_files: 0
 ```
 
+An `objstore` backend's cloud credential is never written into the YAML. Put
+the access key ID and the secret in two files only the `qrdbd` user can read
+(`chmod 600`) and reference them under `storage.objstore.credentials` as
+`key_file` and `secret_file` ([cli.md](cli.md#selecting-an-engine--qrdbd-configuration));
+leave both out to use the provider's default chain (instance role, workload
+identity). `qrdbd` reads the files into locked memory at open and wipes them
+once the provider is configured. A credential pasted under `settings` stops
+`qrdbd start` with an error naming the key, not the value. Reference only what
+the provider reads: `s3` takes both files, `azure` only `secret_file` (the
+account key), and `gcs`, `local` and `memory` neither — `gcs` authenticates
+through Google application default credentials. A reference the provider
+would ignore stops the open with an error naming the provider and the file,
+rather than letting the store open under the host's ambient identity.
+
 **There is no `qrdb` storage backend here.** `qrdbd` does not store through
 another go-qrdb node.
 

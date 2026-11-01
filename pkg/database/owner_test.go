@@ -17,6 +17,7 @@ package database
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -81,6 +82,36 @@ func TestGetOwned_AnswersAnotherTenantsDatabaseAsMissing(t *testing.T) {
 		if _, err := m.GetOwned(c.name, c.tenantID); !errors.As(err, &nf) {
 			t.Errorf("GetOwned(%q, %q) = %v, want *NotFoundError", c.name, c.tenantID, err)
 		}
+	}
+}
+
+func TestLocal_AnswersOnlyTheOwnersOpenDatabase(t *testing.T) {
+	m := newOwnedFixture(t)
+	if db, ok := m.Local("acmedb", "acme"); !ok || db.Name() != "acmedb" {
+		t.Fatalf("owner: %v, %v", db, ok)
+	}
+	if _, ok := m.Local("boot", tenantid.System); !ok {
+		t.Fatal("system on its untagged database: not found")
+	}
+	for _, c := range []struct{ name, tenantID string }{
+		{"acmedb", tenantid.System}, {"acmedb", "globex"}, {"boot", "acme"}, {"absent", "acme"},
+	} {
+		if db, ok := m.Local(c.name, c.tenantID); ok {
+			t.Errorf("Local(%q, %q) = %v, want not found", c.name, c.tenantID, db)
+		}
+	}
+}
+
+// Local is the lookup beneath the catalog: with no catalog attached a miss is
+// a plain miss, where GetOwned has to ask the catalog and is refused.
+func TestLocal_NeverConsultsTheCatalog(t *testing.T) {
+	m := NewManager(slog.New(slog.DiscardHandler), t.TempDir())
+	if db, ok := m.Local("absent", "acme"); ok {
+		t.Fatalf("Local on an empty node = %v, want not found", db)
+	}
+	var required *CatalogRequiredError
+	if _, err := m.GetOwned("absent", "acme"); !errors.As(err, &required) {
+		t.Fatalf("GetOwned with no catalog = %v, want *CatalogRequiredError", err)
 	}
 }
 

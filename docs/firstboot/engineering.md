@@ -16,10 +16,13 @@ type AdminLookup interface {
 func VerifyAdminCertBinding(ctx context.Context, users AdminLookup, now time.Time) error
 
 // pkg/bootstrap — orchestration entry points
-//   System bootstrap        — system barrier + system tenant + system admin + admin-mTLS
-//   Provision tenant        — control-plane tenant record + tenant-admin enrollment
-//                             (AdminEnrollmentMode: cert [default] | deferred/pending-invite)
-//   Initialize tenant barrier — tenant-admin self-service, authenticated
+// BootstrapSystem: system barrier + system tenant + system admin + admin-mTLS.
+func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (*SystemResult, error)
+// ProvisionTenant: control-plane tenant record + tenant-admin enrollment
+// (AdminEnrollmentMode: AdminEnrollCert "cert" [default] | AdminEnrollDeferred "deferred").
+func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies) (*TenantProvisionResult, error)
+// InitializeTenantBarrier: tenant-admin self-service, authenticated.
+func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal.StrategyID, creds seal.Credentials, deps Dependencies) error
 ```
 
 `sdk/go` exposes the bootstrap and firstboot types through `types_bootstrap.go`
@@ -85,8 +88,8 @@ a second, unrelated credential bound instead.
   `operator`, `user`, `auditor`, plus `owner` unless `SeparationOfDuties` is
   set. Rename, re-permission and delete refuse them with
   `SystemRoleImmutableError`. They persist at `__sys:roles/id/<id>`.
-- **Bootstrap is idempotent.** Existing roles and the admin user cause an
-  immediate return without duplicates.
+- **Bootstrap is idempotent.** Existing roles and an existing admin user are
+  verified and reused, never duplicated.
 - **Only the leader creates.** Followers detect `NotLeader` and wait for
   replication.
 - **A role's or user's boot-time create is ONE guarded batch, not several
@@ -127,11 +130,9 @@ a second, unrelated credential bound instead.
   `CreateRole` returns for those collisions.
   `RegisterBuiltInRoles` resolves EITHER refusal by reading the persisted
   record back (`role.NameResolver.GetRoleByName`) and comparing tenant,
-  canonical name, the `System` flag, and permission set against the
-  canonical built-in definition — an id collision additionally requires the
-  persisted id to match exactly, while a name collision does not, since
-  `role.SystemRoleID` is a pure function of tenant and name and an idempotent
-  re-attempt derives the identical id anyway. The
+  canonical name, the `System` flag, permission set and the exact persisted
+  id against the canonical built-in definition (`RoleMatchesSeed`), on
+  either collision. The
   `System` check exists because a role persisted with `System: false` is
   mutable and deletable through the ordinary role APIs: matching
   id/tenant/permissions while accepting that flag mismatch would leave a
@@ -192,10 +193,11 @@ wired a way to issue a certificate but not a way to bind it is a wiring bug,
 caught before any side effect (`checkBindingPosture`). A `CertBinder` with
 nothing to bind is the ordinary case this doc's "awaiting admin credential"
 state exists for, not a refusal.
-Every other reason — no credential path configured at all, a missing admin,
-or all bindings expired — refuses neither `Initialize` pre-flight nor its
-post-run outcome check (`verifyRequiredOutcome`): the admin is
-created or left unbound, and it is the composer's own
+With no credential path configured, an admin with no binding
+(`AdminBindingNone`) or only expired ones (`AdminBindingAllExpired`) refuses
+neither `Initialize` pre-flight nor its post-run outcome check
+(`verifyRequiredOutcome`), and a missing admin passes pre-flight because first
+boot is about to create it: the admin is created or left unbound, and it is the composer's own
 `firstboot.AwaitingAdminCredentialProbe` (below) that gates traffic on the
 result, not a boot refusal. `AdminBindingCannotAuthenticate` and
 `AdminBindingMTLSNotPermitted` — a lifecycle or permitted-method policy a
@@ -273,9 +275,10 @@ request re-driving the check.
 
 `role.BuiltInRoles(tenantID)` returns `so`, `admin`, `operator`, `user` and
 `auditor`; first boot adds `role.OwnerRole` unless `SeparationOfDuties` is set.
-Each role's permission set is `permission.RolePermissions(<role>)`, read from
-the grant registry in `pkg/permission/role_grant.go`, so the registry, not
-this document, is the matrix. Role semantics and the separation-of-duties
+Each of the five has the permission set `permission.RolePermissions(<role>)`,
+read from the grant registry in `pkg/permission/role_grant.go`, so the
+registry, not this document, is the matrix; `role.OwnerRole` builds the
+owner's set itself. Role semantics and the separation-of-duties
 constraints: [auth/roles.md](../auth/roles.md).
 
 ## Configuration
@@ -314,8 +317,7 @@ contract. Changing the derivation would orphan every existing role assignment.
   missing pool, rejected certificate. **Path-C-first ordering is its own test**:
   a deployment presenting a certificate with a CA also configured must adopt,
   not issue.
-- **Idempotence**: a second `Initialize` must create nothing and return
-  immediately.
+- **Idempotence**: a second `Initialize` must create nothing.
 - **Deterministic role IDs**: the same name must yield the same UUID across
   runs.
 - **Error tests** per function.

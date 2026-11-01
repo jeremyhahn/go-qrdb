@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 // While the composer's per-node-barrier-keys check refuses, an isolated
@@ -42,7 +43,7 @@ func TestTenantService_CreateTenant_IsolatedBeforePerNodeBarrierKeysActivation(t
 
 	for _, isolation := range []IsolationType{IsolationBarrier, IsolationVolume, IsolationRaft} {
 		_, err := svc.CreateTenant(ctx, "acme", "Acme", isolation, WithIsolationPolicy(TenantIsolationPolicyStrict))
-		var notActive *featuregate.NotActiveError
+		var notActive *feature.NotActiveError
 		if !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
 			t.Fatalf("CreateTenant(%s) before activation = %v, want NotActiveError(%s)", isolation, err, featuregate.PerNodeBarrierKeys)
 		}
@@ -68,7 +69,7 @@ func TestTenantService_UpdateTenant_ToIsolatedBeforePerNodeBarrierKeysActivation
 	if _, err := svc.CreateTenant(ctx, "shared", "Shared", IsolationPrefix); err != nil {
 		t.Fatalf("CreateTenant(prefix): %v", err)
 	}
-	var notActive *featuregate.NotActiveError
+	var notActive *feature.NotActiveError
 	if _, err := svc.UpdateTenant(ctx, "shared", TenantPatch{IsolationType: IsolationRaft}); !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
 		t.Fatalf("UpdateTenant(prefix -> raft) before activation = %v, want NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)
 	}
@@ -88,5 +89,5 @@ func TestWithPerNodeBarrierKeysGate_NilGatesNothing(t *testing.T) {
 // notActivePerNodeBarrierKeys is the refusal the composer's check returns
 // before activation (pkg/server/lifecycle featureRequired).
 func notActivePerNodeBarrierKeys() error {
-	return &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
+	return &feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
 }

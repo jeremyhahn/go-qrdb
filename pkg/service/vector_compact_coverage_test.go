@@ -542,7 +542,7 @@ func TestVectorPerformIndexRebuild_Success(t *testing.T) {
 	svc.rebuildJobs[jobID] = job
 	svc.jobMu.Unlock()
 
-	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", nil)
+	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, nil)
 
 	require.NoError(t, err)
 
@@ -563,7 +563,7 @@ func TestVectorPerformIndexRebuild_Success(t *testing.T) {
 func TestVectorPerformIndexRebuild_JobNotFound(t *testing.T) {
 	svc, _ := newCoverageVecSvc(t, "rebuild-ns", 3, 0)
 
-	err := svc.performIndexRebuild(context.Background(), "nonexistent-job", "rebuild-ns", nil)
+	err := svc.performIndexRebuild(context.Background(), "nonexistent-job", "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, nil)
 
 	require.Error(t, err)
 	requireErrorAs[*VectorJobNotFoundError](t, err)
@@ -588,7 +588,7 @@ func TestVectorPerformIndexRebuild_ScanError(t *testing.T) {
 	svc.rebuildJobs[jobID] = job
 	svc.jobMu.Unlock()
 
-	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", nil)
+	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, nil)
 
 	require.Error(t, err)
 	requireErrorAs[*VectorOperationError](t, err)
@@ -624,7 +624,7 @@ func TestVectorPerformIndexRebuild_WithCustomConfig(t *testing.T) {
 		"ef_search":       "100",
 	}
 
-	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", indexConfig)
+	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, indexConfig)
 
 	require.NoError(t, err)
 
@@ -660,7 +660,7 @@ func TestVectorPerformIndexRebuild_InvalidConfigValues(t *testing.T) {
 		"ef_search":       "bad-value",
 	}
 
-	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", indexConfig)
+	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, indexConfig)
 
 	require.NoError(t, err)
 }
@@ -703,7 +703,7 @@ func TestVectorPerformIndexRebuild_MultipleBatches(t *testing.T) {
 	svc.rebuildJobs[jobID] = job
 	svc.jobMu.Unlock()
 
-	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", nil)
+	err := svc.performIndexRebuild(context.Background(), jobID, "rebuild-ns", &vector.NamespaceInfo{Name: "rebuild-ns", Dimension: 3}, nil)
 
 	require.NoError(t, err)
 

@@ -16,6 +16,8 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { API_PREFIXES } from "./api-routes.ts";
+import { TLS_CERT_ENV, TLS_KEY_ENV } from "./playwright.tls.ts";
 
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
@@ -56,24 +58,36 @@ export default defineConfig({
     // overrides it via QRDB_PROXY_TARGET (the mocked tier with a per-run port
     // nothing listens on, the DOM tier with its daemon's admin port).
     proxy: buildApiProxy(process.env.QRDB_PROXY_TARGET ?? "https://localhost:63002"),
+    // `vite preview` inherits this, so both servers take the same TLS.
+    https: serverTLS(),
   },
 });
 
 /**
- * buildApiProxy maps every server-side API route prefix to the given backend
+ * serverTLS returns the certificate and key the Playwright tiers generate per
+ * run (playwright.tls.ts), so the app is served over https as qrdbd serves web
+ * mode: every secret-bearing SDK call refuses an http origin. Unset, the
+ * server speaks plain http, for an interactive `npm run dev` only.
+ */
+function serverTLS(): { cert: string; key: string } | undefined {
+  const cert = process.env[TLS_CERT_ENV];
+  const key = process.env[TLS_KEY_ENV];
+  if (cert && key) {
+    return { cert, key };
+  }
+  if (cert || key) {
+    throw new Error(`${TLS_CERT_ENV} and ${TLS_KEY_ENV} must be set together`);
+  }
+  return undefined;
+}
+
+/**
+ * buildApiProxy maps every server-side API route prefix (api-routes.ts) to the given backend
  * target. `secure: false` accepts the daemon's self-signed TLS certificate.
  */
 function buildApiProxy(target: string): Record<string, { target: string; secure: boolean }> {
-  const prefixes = [
-    "/health", "/status", "/peers", "/capabilities", "/kv", "/ts", "/tx",
-    "/batch", "/watch", "/lease", "/index", "/vector", "/certs", "/sql",
-    "/snapshot", "/drain", "/membership", "/v1", "/users", "/roles",
-    "/permissions", "/tenants", "/audit", "/barrier", "/ceremony",
-    "/authfactor", "/databases", "/seal", "/collection", "/cluster",
-    "/rebalance", "/backup", "/metrics", "/admin",
-  ];
   const proxy: Record<string, { target: string; secure: boolean }> = {};
-  for (const p of prefixes) {
+  for (const p of API_PREFIXES) {
     proxy[p] = { target, secure: false };
   }
   return proxy;

@@ -554,15 +554,12 @@ test.describe("Admin Views - No Uncaught Errors on Load", () => {
     await enterAdminMode(page);
     await navigateTo(page, "Tenants");
 
-    // Wait for the tenant list to finish loading (Create Tenant button visible
-    // confirms the view rendered successfully).
+    // The mocked tenant's row confirms TenantBinding.List resolved and the
+    // view rendered its result, so any error from the load has surfaced.
     const main = page.locator("main");
     await expect(
-      main.getByRole("button", { name: "Create Tenant" }),
+      main.getByRole("cell", { name: "Default Tenant", exact: true }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    // Give any async errors a moment to surface.
-    await page.waitForTimeout(500);
 
     expect(
       pageErrors.map((e) => e.message),
@@ -577,14 +574,13 @@ test.describe("Admin Views - No Uncaught Errors on Load", () => {
     await enterAdminMode(page);
     await navigateTo(page, "Certificates");
 
-    // Wait for the action panel header to render.
+    // The empty-store message confirms CertBinding.List resolved and the view
+    // rendered its result, so any error from the load has surfaced.
     const main = page.locator("main");
     await expect(
       main.getByRole("button", { name: "Issue", exact: true }),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    // Give any async errors a moment to surface.
-    await page.waitForTimeout(500);
+    await expect(main.getByText("No certificates issued.")).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     expect(
       pageErrors.map((e) => e.message),
@@ -592,35 +588,26 @@ test.describe("Admin Views - No Uncaught Errors on Load", () => {
     ).toHaveLength(0);
   });
 
-  test("TenantManager renders empty state when API returns no tenants", async ({ page }) => {
-    // Override TenantBinding.List to return an empty list before the page loads.
-    await page.addInitScript(() => {
-      const originalAddInitScript = Object.getOwnPropertyDescriptor(
-        window,
-        "__QRDB_MOCK_TENANT_OVERRIDE__",
-      );
-      if (originalAddInitScript) return;
-      (window as unknown as Record<string, unknown>).__QRDB_MOCK_TENANT_OVERRIDE__ = true;
+  test.describe("with no tenants", () => {
+    test.use({ mockState: { ...stateWithDefault, tenants: [] } });
+
+    test("TenantManager renders empty state when API returns no tenants", async ({ page }) => {
+      const pageErrors: Error[] = [];
+      page.on("pageerror", (err) => pageErrors.push(err));
+
+      await enterAdminMode(page);
+      await navigateTo(page, "Tenants");
+
+      // The empty-list message renders only once TenantBinding.List has
+      // resolved, so any error from the load has surfaced.
+      const main = page.locator("main");
+      await expect(main.getByText("No tenants found.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      expect(
+        pageErrors.map((e) => e.message),
+        "TenantManager must not produce uncaught errors with empty tenant list",
+      ).toHaveLength(0);
     });
-
-    const pageErrors: Error[] = [];
-    page.on("pageerror", (err) => pageErrors.push(err));
-
-    await enterAdminMode(page);
-    await navigateTo(page, "Tenants");
-
-    const main = page.locator("main");
-    // The view should render without errors regardless of empty data.
-    await expect(
-      main.getByRole("button", { name: "Create Tenant" }),
-    ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    await page.waitForTimeout(500);
-
-    expect(
-      pageErrors.map((e) => e.message),
-      "TenantManager must not produce uncaught errors with empty tenant list",
-    ).toHaveLength(0);
   });
 
   test("CertManager renders empty state when API returns no certificates", async ({ page }) => {
@@ -631,12 +618,11 @@ test.describe("Admin Views - No Uncaught Errors on Load", () => {
     await navigateTo(page, "Certificates");
 
     const main = page.locator("main");
-    // Empty state message shown when cert store is empty.
+    // Empty state message shown when cert store is empty; it renders only once
+    // the load has resolved.
     await expect(
       main.getByText("No certificates issued."),
     ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-    await page.waitForTimeout(500);
 
     expect(
       pageErrors.map((e) => e.message),

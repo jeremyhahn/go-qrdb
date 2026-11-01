@@ -312,7 +312,7 @@ func (s *Server) collectionSweepTargets(ctx context.Context) ([]collectionSweepT
 	}
 	if s.opts.dbManager != nil {
 		for _, info := range s.opts.dbManager.List() {
-			dbase, err := s.opts.dbManager.Get(info.Name)
+			dbase, err := s.opts.dbManager.GetOwned(info.Name, info.TenantID)
 			if err != nil {
 				continue
 			}

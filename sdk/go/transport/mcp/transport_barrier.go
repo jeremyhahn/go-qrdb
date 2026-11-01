@@ -83,6 +83,35 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return nil
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient via the
+// qrdb_barrier_change_passphrase tool.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	// The server verifies the SO PIN the arguments carry, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
+	}
+	args := map[string]any{}
+	putSecret(args, "current", req.Current)
+	putSecret(args, "next", req.Next)
+	if soPIN != "" {
+		putStringSecret(args, "so_pin", soPIN)
+	}
+	if _, err := t.callTool(ctx, "qrdb_barrier_change_passphrase", args); err != nil {
+		return &transport.RequestError{Method: "BarrierChangePassphrase", Err: err}
+	}
+
+	return nil
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again. Calls the qrdb_barrier_seal MCP tool.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
@@ -402,6 +431,9 @@ func (t *Transport) OfficerList(ctx context.Context) ([]*transport.OfficerStatus
 
 // ShareClaimBegin issues a claim nonce to an unseal-key holder.
 func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimBeginResponse
 	if err := t.callHolderTool(ctx, "ShareClaimBegin", "qrdb_barrier_share_claim_begin", req, &resp); err != nil {
 		return nil, err
@@ -411,6 +443,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 
 // ShareClaimComplete delivers an unseal-key holder's sealed envelope once.
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimCompleteResponse
 	if err := t.callHolderTool(ctx, "ShareClaimComplete", "qrdb_barrier_share_claim_complete", req, &resp); err != nil {
 		return nil, err
@@ -420,6 +455,9 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 
 // RecoveryShareClaimBegin issues a claim nonce to a recovery holder.
 func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.ShareClaimBeginRequest) (*transport.ShareClaimBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimBeginResponse
 	if err := t.callHolderTool(ctx, "RecoveryShareClaimBegin", "qrdb_barrier_recovery_share_claim_begin", req, &resp); err != nil {
 		return nil, err
@@ -429,6 +467,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 
 // RecoveryShareClaimComplete delivers a recovery holder's envelope once.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
+	}
 	var resp transport.ShareClaimCompleteResponse
 	if err := t.callHolderTool(ctx, "RecoveryShareClaimComplete", "qrdb_barrier_recovery_share_claim_complete", req, &resp); err != nil {
 		return nil, err

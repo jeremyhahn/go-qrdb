@@ -74,8 +74,8 @@ func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*
 		return nil, &timeseries.EmptyDirError{}
 	}
 	cfg := pebblestore.DefaultConfig(dataDir)
-	if enc != nil {
-		cfg.FS = enc.FS()
+	if enc.Enabled() {
+		cfg.FS = pebblestore.WrapVFS(nil, enc.Wrap)
 	}
 	pstg, err := pebblestore.New(cfg)
 	if err != nil {

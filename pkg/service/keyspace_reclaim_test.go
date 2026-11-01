@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -111,6 +114,17 @@ type reclaimVectorStore struct {
 	delErr  error
 }
 
+// fenceThenReclaim drives the store side of a drop in the order
+// Manager.drop does: fence the name, then reclaim its keyspace under the
+// guard that the marker still holds the tombstone. A reclamation the fence
+// did not precede is refused by that guard.
+func fenceThenReclaim(ctx context.Context, svc *KeyspaceReclaimService, tenantID, db, incarnation string) error {
+	if err := svc.FenceDatabaseKeyspace(ctx, tenantID, db, incarnation, ""); err != nil {
+		return err
+	}
+	return svc.ReclaimDatabaseKeyspace(ctx, tenantID, db, incarnation, "")
+}
+
 func newReclaimVectorStore(names ...string) *reclaimVectorStore {
 	v := &reclaimVectorStore{spaces: make(map[string]struct{}, len(names))}
 	for _, n := range names {
@@ -154,11 +168,10 @@ func (v *reclaimVectorStore) remaining() []string {
 
 // fixedStoreResolver reports one answer for every tenant.
 type fixedStoreResolver struct {
-	target      ReclaimTarget
-	dedicated   bool
-	perDatabase bool
-	err         error
-	calls       int
+	target    ReclaimTarget
+	dedicated bool
+	err       error
+	calls     int
 }
 
 func (r *fixedStoreResolver) ReclaimTarget(context.Context, string) (ReclaimTarget, bool, error) {
@@ -167,10 +180,11 @@ func (r *fixedStoreResolver) ReclaimTarget(context.Context, string) (ReclaimTarg
 }
 
 // FenceTarget answers with the same store ReclaimTarget does: the fixture
-// routes a database's fence to where its keys are.
-func (r *fixedStoreResolver) FenceTarget(context.Context, string, string) (FenceStore, bool, error) {
+// routes a database's fence to where its keys are, which is never a store
+// of the database's own (dedicatedRaftResolver is that shape).
+func (r *fixedStoreResolver) FenceTarget(context.Context, string, string, string) (FenceStore, bool, error) {
 	r.calls++
-	return FenceStore{KV: r.target.KV, PerDatabase: r.perDatabase}, r.dedicated, r.err
+	return FenceStore{KV: r.target.KV}, r.dedicated, r.err
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +270,10 @@ func survivors() []string {
 		collectionDataPrefix + "reports:users/1",
 		collectionDataPrefix + "reports:users/2",
 		collectionMetadataPrefix + "reports/users",
+
+		// The drop's own fence: the tombstone stays, refusing a write to the
+		// dropped name until a create marks a new incarnation live.
+		DropFenceKey("acme", "reports"),
 	}
 	sort.Strings(keep)
 	return keep
@@ -289,7 +307,7 @@ func TestKeyspaceReclaim_ReclaimsEveryShapeADatabaseOwns(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(context.Background(), svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv),
 		"dropping a shared-store database must leave exactly the keys that belong to other databases and other tenants")
@@ -309,7 +327,7 @@ func TestKeyspaceReclaim_ReclaimsTheNamespacedCollectionSurface(t *testing.T) {
 	require.NotEmpty(t, before, "fixture must carry a namespaced collection document")
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	for _, prefix := range []string{ns + collectionMetadataPrefix, ns + collectionDataPrefix} {
 		keys, lErr := kv.ListAll(ctx, prefix)
@@ -357,7 +375,7 @@ func TestKeyspaceReclaim_LeavesUnattributableCollectionResidue(t *testing.T) {
 	catalog := newReclaimIndexCatalog(nsA+"by_region", nsB+"by_region", "reports.orders.sku")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	// 1. The unattributable residue is untouched -- all of it, including the
 	//    dropping tenant's share of it, because there is no such thing as a
@@ -423,7 +441,7 @@ func TestKeyspaceReclaim_ReclaimsEverySequenceUnderTheDatabase(t *testing.T) {
 	require.Len(t, before, 5, "fixture must carry __tableid, __autoinc, __rowid, __usq and __collection")
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	after, err := kv.ListAll(ctx, ns+"__seq:")
 	require.NoError(t, err)
@@ -446,7 +464,7 @@ func TestKeyspaceReclaim_ReclaimsBothIndexNameShapes(t *testing.T) {
 	)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Index: catalog})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(context.Background(), svc, "acme", "reports", ""))
 
 	assert.Equal(t, []string{
 		"__sys_internal",
@@ -470,7 +488,7 @@ func TestKeyspaceReclaim_ReclaimsVectorNamespaces(t *testing.T) {
 	)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc(), Vector: vec})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(context.Background(), svc, "acme", "reports", ""))
 
 	assert.Equal(t, []string{
 		tenant.ComposeNamespace("acme", "ledger") + "docs",
@@ -495,7 +513,7 @@ func TestKeyspaceReclaim_RecreatedNameInheritsNothing(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	// Everything a database of that name would address, from a fresh create.
 	// The legacy root-keyed prefixes are NOT in this list, and that is not a
@@ -523,10 +541,10 @@ func TestKeyspaceReclaim_IsIdempotent(t *testing.T) {
 	vec := newReclaimVectorStore(tenant.ComposeNamespace("acme", "reports") + "docs")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog, Vector: vec})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 	first := allKeys(t, kv)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""),
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""),
 		"reclaiming an already-empty keyspace must succeed so a re-issued drop can finish an interrupted one")
 	assert.Equal(t, first, allKeys(t, kv))
 	assert.Empty(t, catalog.remaining())
@@ -543,7 +561,7 @@ func TestKeyspaceReclaim_RetryAfterAFailureCompletes(t *testing.T) {
 	catalog.dropErr = errors.New("index catalog unavailable")
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog})
 
-	err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "")
+	err := fenceThenReclaim(ctx, svc, "acme", "reports", "")
 	var idxErr *ReclaimIndexError
 	require.ErrorAs(t, err, &idxErr, "an index that cannot be dropped must fail the reclamation, not be skipped")
 
@@ -551,7 +569,7 @@ func TestKeyspaceReclaim_RetryAfterAFailureCompletes(t *testing.T) {
 	assert.NotEmpty(t, catalog.remaining())
 
 	catalog.dropErr = nil
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 	assert.Equal(t, survivors(), allKeys(t, kv))
 	assert.Empty(t, catalog.remaining())
 }
@@ -640,7 +658,7 @@ func TestKeyspaceReclaim_FailuresAreTyped(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := NewKeyspaceReclaimService(tc.target())
-			err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
+			err := fenceThenReclaim(context.Background(), svc, "acme", "reports", "")
 			require.Error(t, err)
 			tc.assert(t, err)
 		})
@@ -668,7 +686,9 @@ func (f *failingReclaimKV) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (f *failingReclaimKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
-	return false, f.putErr
+	// The store holds no value, so a put that does not fail finds the key
+	// absent and writes it.
+	return f.putErr == nil, f.putErr
 }
 
 func (f *failingReclaimKV) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
@@ -691,7 +711,7 @@ func TestKeyspaceReclaim_RefusesAnUnscopedRequest(t *testing.T) {
 	before := allKeys(t, kv)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "", "")
+	err := fenceThenReclaim(context.Background(), svc, "acme", "", "")
 
 	var want *ReclaimScopeError
 	require.ErrorAs(t, err, &want)
@@ -709,9 +729,10 @@ func TestKeyspaceReclaim_EmptyTenantIsTheSystemTenant(t *testing.T) {
 	require.NoError(t, kv.Put(ctx, ns+"k", []byte("v")))
 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "", "bootstrap", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "", "bootstrap", ""))
 
-	assert.Empty(t, allKeys(t, kv))
+	assert.Equal(t, []string{DropFenceKey("", "bootstrap")}, allKeys(t, kv),
+		"the database's keys are gone and only its fence remains")
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +747,7 @@ func TestKeyspaceReclaim_DeletesEveryKeyIndividually(t *testing.T) {
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(context.Background(), svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv))
 }
@@ -756,7 +777,7 @@ func TestKeyspaceReclaim_UsesRangeDeletePerPrefix(t *testing.T) {
 	}
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
 	assert.Greater(t, kv.ranges, 1)
@@ -790,11 +811,11 @@ func populatedRefusingRangeKV(t *testing.T, allowed int, err error) *refusingRan
 }
 
 func TestKeyspaceReclaim_GateNotActiveFallsBackToPerKeyDeletes(t *testing.T) {
-	kv := populatedRefusingRangeKV(t, 0, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	kv := populatedRefusingRangeKV(t, 0, &feature.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
 	ctx := context.Background()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
 	assert.Zero(t, kv.ranges)
@@ -802,11 +823,11 @@ func TestKeyspaceReclaim_GateNotActiveFallsBackToPerKeyDeletes(t *testing.T) {
 }
 
 func TestKeyspaceReclaim_GateNotActiveMidPrefixDeletesTheRest(t *testing.T) {
-	kv := populatedRefusingRangeKV(t, 1, &featuregate.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
+	kv := populatedRefusingRangeKV(t, 1, &feature.NotActiveError{Feature: featuregate.RangeDelete, ShardID: 1})
 	ctx := context.Background()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv.memoryKVSvc))
 	assert.Equal(t, 1, kv.ranges)
@@ -819,7 +840,7 @@ func TestKeyspaceReclaim_RangeDeleteFailureFailsTheDrop(t *testing.T) {
 	kv := populatedRefusingRangeKV(t, 0, boom)
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
+	err := fenceThenReclaim(context.Background(), svc, "acme", "reports", "")
 
 	var prefixErr *ReclaimPrefixError
 	require.ErrorAs(t, err, &prefixErr)
@@ -846,9 +867,10 @@ func TestKeyspaceReclaim_RoutesToTheTenantsOwnStore(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	svc.SetStoreResolver(resolver)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", ""))
 
-	assert.Empty(t, allKeys(t, volume), "the tenant's own store must be reclaimed")
+	assert.Equal(t, []string{DropFenceKey("acme", "reports")}, allKeys(t, volume),
+		"the tenant's own store must be reclaimed, and it holds the drop's fence")
 	// The system store is not touched at all. Everything the drop owns is
 	// namespaced, and for this tenant the namespace lives on the volume; the
 	// only thing of that database's NAME in the system store is
@@ -856,7 +878,11 @@ func TestKeyspaceReclaim_RoutesToTheTenantsOwnStore(t *testing.T) {
 	remaining, err := system.ListAll(ctx, collectionDataPrefix+"reports:")
 	require.NoError(t, err)
 	assert.NotEmpty(t, remaining, "a drop routed to a dedicated store must not reach into the shared one")
-	assert.Equal(t, 1, resolver.calls)
+	_, err = system.Get(ctx, DropFenceKey("acme", "reports"))
+	assert.Error(t, err, "the fence belongs in the dedicated store, not the shared one")
+	// The fence, then the reclamation's store and the fence its deletes are
+	// guarded by.
+	assert.Equal(t, 3, resolver.calls)
 }
 
 // TestKeyspaceReclaim_UsesTheSystemStoreForANonDedicatedTenant is the control
@@ -867,7 +893,7 @@ func TestKeyspaceReclaim_UsesTheSystemStoreForANonDedicatedTenant(t *testing.T) 
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 	svc.SetStoreResolver(resolver)
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, fenceThenReclaim(context.Background(), svc, "acme", "reports", ""))
 
 	assert.Equal(t, survivors(), allKeys(t, kv))
 }
@@ -883,7 +909,7 @@ func TestKeyspaceReclaim_ResolverFailureFailsTheDrop(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 	svc.SetStoreResolver(resolver)
 
-	err := svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "")
+	err := fenceThenReclaim(context.Background(), svc, "acme", "reports", "")
 
 	var want *ReclaimStoreUnavailableError
 	require.ErrorAs(t, err, &want)
@@ -896,11 +922,534 @@ func TestKeyspaceReclaim_ResolverFailureFailsTheDrop(t *testing.T) {
 		"a drop that could not resolve its store must not have deleted anything")
 }
 
+// TestKeyspaceReclaim_AnotherIncarnationsStoreIsLeftAsItIs checks the three
+// calls when the store the name resolves to is another incarnation's: the
+// fence and the reclamation are refused as superseded, not reported as a
+// store that is unavailable, and the unfence is a no-op. Nothing in the
+// store changes.
+func TestKeyspaceReclaim_AnotherIncarnationsStoreIsLeftAsItIs(t *testing.T) {
+	kv := populatedStore()
+	before := allKeys(t, kv)
+	resolver := &fixedStoreResolver{
+		dedicated: true,
+		err:       &database.DropSupersededError{Name: "reports", TenantID: "acme"},
+	}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+	svc.SetStoreResolver(resolver)
+	ctx := context.Background()
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "stale", ""), &superseded)
+	require.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "stale", ""), &superseded)
+	var unavailable *ReclaimStoreUnavailableError
+	assert.NotErrorAs(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "stale", ""), &unavailable)
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "stale", ""))
+	assert.Equal(t, before, allKeys(t, kv), "another incarnation's store must be left as it is")
+}
+
 // TestKeyspaceReclaim_NilEnginesAreSkipped covers a composition that serves
 // no indexes or vectors: the reclamation must not panic or refuse.
 func TestKeyspaceReclaim_NilEnginesAreSkipped(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{})
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", ""))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(context.Background(), "acme", "reports", "", ""))
+}
+
+// TestKeyspaceReclaim_StaleDropperLeavesTheSuccessorIntact replays the
+// takeover go-qrdb#893 describes: node A fences incarnation inc-a and stalls,
+// a takeover finishes the drop, and a create marks inc-c live and writes to
+// the name. When A resumes, the store refuses its fence and its reclamation
+// alike, and the successor's marker, keys and vector namespace survive.
+func TestKeyspaceReclaim_StaleDropperLeavesTheSuccessorIntact(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	kv := newMemoryKVSvc()
+	vec := newReclaimVectorStore(ns + "docs")
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Vector: vec})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "the takeover finishes the drop")
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-c", ""), "the successor's create")
+	require.NoError(t, kv.Put(ctx, ns+"successor", []byte("v")))
+	vec.spaces[ns+"docs"] = struct{}{}
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+	require.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+
+	marker, err := kv.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, "inc-c", string(marker), "the stale fence must not tombstone the successor")
+	_, err = kv.Get(ctx, ns+"successor")
+	assert.NoError(t, err, "the stale reclamation deleted the successor's data")
+	assert.Contains(t, vec.spaces, ns+"docs", "the stale reclamation deleted the successor's vector namespace")
+}
+
+// interleavingKV runs once, before the first list a reclamation makes, what
+// another node does in the window between that list and its deletes.
+type interleavingKV struct {
+	*memoryKVSvc
+	before func()
+}
+
+func (k *interleavingKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	if hook := k.before; hook != nil {
+		k.before = nil
+		hook()
+	}
+	return k.memoryKVSvc.ListAll(ctx, prefix)
+}
+
+// TestKeyspaceReclaim_DeletesAreRefusedOnceASuccessorIsLive proves the
+// guard is evaluated where each delete applies, not checked once up front:
+// node A has fenced and begun reclaiming when the takeover finishes the drop
+// and a successor writes to the name. A's list then sees the successor's key,
+// and the store refuses the delete it proposes for it.
+func TestKeyspaceReclaim_DeletesAreRefusedOnceASuccessorIsLive(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	kv := &interleavingKV{memoryKVSvc: newMemoryKVSvc()}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, kv.Put(ctx, ns+"old", []byte("v")))
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	kv.before = func() {
+		require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "the takeover finishes the drop")
+		require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-c", ""), "the successor's create")
+		require.NoError(t, kv.Put(ctx, ns+"successor", []byte("v")))
+	}
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+
+	_, err := kv.Get(ctx, ns+"successor")
+	assert.NoError(t, err, "the stale reclamation deleted the successor's data")
+	_, err = kv.Get(ctx, ns+"old")
+	assert.Error(t, err, "the takeover reclaimed the dropped incarnation's data")
+}
+
+// reclaimEvents is the ordered record lockingReclaimVector and markerReadKV
+// share, so a test can see where the fence read falls relative to the
+// vector namespace's reclamation lock.
+type reclaimEvents struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (e *reclaimEvents) add(event string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, event)
+}
+
+func (e *reclaimEvents) snapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.events...)
+}
+
+// lockingReclaimVector is a reclaimVectorStore with the vectorService's
+// namespace lock: writes share it and reclamation holds it exclusively.
+// beforeLock, when set, runs once just before the reclamation lock is
+// acquired -- the window between a fence check made before the lock and the
+// lock itself.
+type lockingReclaimVector struct {
+	*reclaimVectorStore
+	lock       sync.RWMutex
+	events     *reclaimEvents
+	beforeLock func()
+}
+
+var _ VectorNamespaceLocker = (*lockingReclaimVector)(nil)
+
+func (v *lockingReclaimVector) LockVectorNamespaceWrite(string) func() {
+	v.lock.RLock()
+	return v.lock.RUnlock
+}
+
+func (v *lockingReclaimVector) LockVectorNamespaceReclaim(string) func() {
+	if hook := v.beforeLock; hook != nil {
+		v.beforeLock = nil
+		hook()
+	}
+	v.lock.Lock()
+	v.events.add("lock")
+	return func() {
+		v.events.add("unlock")
+		v.lock.Unlock()
+	}
+}
+
+func (v *lockingReclaimVector) ListNamespaces(ctx context.Context, req *ListNamespacesRequest) (*ListNamespacesResponse, error) {
+	v.events.add("list")
+	return v.reclaimVectorStore.ListNamespaces(ctx, req)
+}
+
+func (v *lockingReclaimVector) DeleteNamespace(ctx context.Context, req *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error) {
+	v.events.add("delete")
+	return v.reclaimVectorStore.DeleteNamespace(ctx, req)
+}
+
+// markerReadKV records every read of one drop fence marker.
+type markerReadKV struct {
+	*memoryKVSvc
+	marker string
+	events *reclaimEvents
+}
+
+func (k *markerReadKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == k.marker {
+		k.events.add("fence")
+	}
+	return k.memoryKVSvc.Get(ctx, key)
+}
+
+// TestKeyspaceReclaim_VectorFenceIsCheckedUnderTheLock drives the window
+// between a fence check and the vector reclamation lock: the takeover
+// finishes the drop and the name is created again, with vectors, before the
+// stale drop takes the lock. The fence read under the lock refuses, so the
+// successor's vectors survive (go-qrdb#893).
+func TestKeyspaceReclaim_VectorFenceIsCheckedUnderTheLock(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	events := &reclaimEvents{}
+	kv := &markerReadKV{memoryKVSvc: newMemoryKVSvc(), marker: DropFenceKey("acme", "reports"), events: events}
+	vec := &lockingReclaimVector{reclaimVectorStore: newReclaimVectorStore(ns + "old"), events: events}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Vector: vec})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	vec.beforeLock = func() {
+		require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "the takeover finishes the drop")
+		require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-c", ""), "the successor's create")
+		unlock := vec.LockVectorNamespaceWrite(ns + "docs")
+		vec.mu.Lock()
+		vec.spaces[ns+"docs"] = struct{}{}
+		vec.mu.Unlock()
+		unlock()
+	}
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+
+	assert.Contains(t, vec.remaining(), ns+"docs", "the stale reclamation deleted the successor's vector namespace")
+	assert.NotContains(t, vec.remaining(), ns+"old", "the takeover reclaimed the dropped incarnation's vectors")
+	marker, err := kv.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, "inc-c", string(marker))
+}
+
+// TestKeyspaceReclaim_VectorFenceHoldingReclaimsEveryNamespace proves a drop
+// whose fence holds under the lock reclaims every vector namespace it owns,
+// and only those.
+func TestKeyspaceReclaim_VectorFenceHoldingReclaimsEveryNamespace(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	other := tenant.ComposeNamespace("acme", "ledger")
+	events := &reclaimEvents{}
+	kv := &markerReadKV{memoryKVSvc: newMemoryKVSvc(), marker: DropFenceKey("acme", "reports"), events: events}
+	vec := &lockingReclaimVector{reclaimVectorStore: newReclaimVectorStore(ns+"docs", ns+"images", ns+"chunks", other+"docs"), events: events}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Vector: vec})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", "inc-a"))
+
+	assert.ElementsMatch(t, []string{other + "docs"}, vec.remaining())
+}
+
+// TestKeyspaceReclaim_VectorLockHeldFromFenceThroughDelete asserts the order:
+// the reclamation lock is taken, then the fence marker is read, then every
+// namespace is listed and deleted, and only then is the lock released.
+func TestKeyspaceReclaim_VectorLockHeldFromFenceThroughDelete(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	events := &reclaimEvents{}
+	kv := &markerReadKV{memoryKVSvc: newMemoryKVSvc(), marker: DropFenceKey("acme", "reports"), events: events}
+	vec := &lockingReclaimVector{reclaimVectorStore: newReclaimVectorStore(ns+"docs", ns+"images"), events: events}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Vector: vec})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	before := len(events.snapshot())
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+
+	got := events.snapshot()[before:]
+	lock := slices.Index(got, "lock")
+	require.GreaterOrEqual(t, lock, 0, "the reclamation lock was never taken: %v", got)
+	for i, event := range got[:lock] {
+		assert.NotEqual(t, "list", event, "listed before the lock at %d: %v", i, got)
+		assert.NotEqual(t, "delete", event, "deleted before the lock at %d: %v", i, got)
+	}
+	assert.Equal(t, []string{"lock", "fence", "list", "delete", "delete", "unlock"}, got[lock:],
+		"the fence must be read under the lock, and the lock held through every delete")
+}
+
+// TestKeyspaceReclaim_VectorFenceRefusalUnderTheLockDeletesNothing proves a
+// fence that fails under the lock deletes no namespace -- it does not even
+// list them -- and still releases the lock.
+func TestKeyspaceReclaim_VectorFenceRefusalUnderTheLockDeletesNothing(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	events := &reclaimEvents{}
+	vec := &lockingReclaimVector{reclaimVectorStore: newReclaimVectorStore(ns + "docs"), events: events}
+	refusal := &database.DropSupersededError{Name: "reports", TenantID: "acme"}
+
+	err := reclaimVectorNamespaces(ctx, vec, ns, func(context.Context) error {
+		events.add("fence")
+		return refusal
+	})
+
+	assert.Same(t, refusal, err)
+	assert.Equal(t, []string{"lock", "fence", "unlock"}, events.snapshot())
+	assert.Contains(t, vec.remaining(), ns+"docs")
+}
+
+// dedicatedRaftResolver routes as the server's resolver does for a tenant
+// under raft isolation: the database's data and fence are in its own shard,
+// its namespaced keyspace is reclaimed from the system store.
+type dedicatedRaftResolver struct {
+	shard ReclaimKV
+}
+
+func (r *dedicatedRaftResolver) ReclaimTarget(context.Context, string) (ReclaimTarget, bool, error) {
+	return ReclaimTarget{}, false, nil
+}
+
+func (r *dedicatedRaftResolver) FenceTarget(context.Context, string, string, string) (FenceStore, bool, error) {
+	return FenceStore{KV: r.shard, PerDatabase: true}, true, nil
+}
+
+// TestKeyspaceReclaim_DedicatedDropLeavesASystemStoreSuccessorIntact pins
+// the system-store half of a dedicated-raft database's drop: a stale
+// reclamation resumed after the name was created again with its data in the
+// system store deletes none of it, refused by the guard on each delete.
+func TestKeyspaceReclaim_DedicatedDropLeavesASystemStoreSuccessorIntact(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	system := &interleavingKV{memoryKVSvc: newMemoryKVSvc()}
+	shard := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: shard})
+	successor := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, system.Put(ctx, ns+"old", []byte("v")))
+	require.NoError(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	system.before = func() {
+		require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "the takeover finishes the drop")
+		require.NoError(t, successor.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-c", ""), "the successor's create")
+		require.NoError(t, system.Put(ctx, ns+"successor", []byte("v")))
+	}
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+
+	_, err := system.Get(ctx, ns+"successor")
+	assert.NoError(t, err, "the stale reclamation deleted the successor's data")
+	_, err = system.Get(ctx, ns+"old")
+	assert.Error(t, err, "the takeover reclaimed the dropped incarnation's keyspace")
+}
+
+// TestKeyspaceReclaim_DedicatedFenceRefusesASystemStoreSuccessor proves a
+// stale dedicated-raft drop resumed before its fence is refused by the
+// system store's marker, and fences nothing: neither the successor nor the
+// shard.
+func TestKeyspaceReclaim_DedicatedFenceRefusesASystemStoreSuccessor(t *testing.T) {
+	ctx := context.Background()
+	system := newMemoryKVSvc()
+	shard := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: shard})
+	successor := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", "inc-a"), "the takeover finishes the drop")
+	require.NoError(t, shard.Delete(ctx, DropFenceKey("acme", "reports")), "the dropped shard is retired")
+	require.NoError(t, successor.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-c", ""))
+
+	var superseded *database.DropSupersededError
+	require.ErrorAs(t, svc.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), &superseded)
+
+	marker, err := system.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, "inc-c", string(marker), "the stale fence must not tombstone the successor")
+	_, err = shard.Get(ctx, DropFenceKey("acme", "reports"))
+	assert.Error(t, err, "a refused fence must leave the shard unfenced")
+}
+
+// TestKeyspaceReclaim_DedicatedDropReclaimsTheSystemStore proves the guard
+// admits the drop it was written for: the fence tombstones both stores, the
+// reclamation empties the system store's keyspace, and a dedicated database
+// created again under the name is live in its shard.
+func TestKeyspaceReclaim_DedicatedDropReclaimsTheSystemStore(t *testing.T) {
+	ctx := context.Background()
+	ns := tenant.ComposeNamespace("acme", "reports")
+	system := newMemoryKVSvc()
+	shard := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: shard})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	require.NoError(t, system.Put(ctx, ns+"old", []byte("v")))
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", "inc-a"))
+
+	_, err := system.Get(ctx, ns+"old")
+	assert.Error(t, err, "the drop left the system store's keyspace behind")
+	for _, kv := range []*memoryKVSvc{system, shard} {
+		marker, err := kv.Get(ctx, DropFenceKey("acme", "reports"))
+		require.NoError(t, err)
+		assert.Equal(t, dropFenceTombstone, marker)
+	}
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-b", ""))
+	_, err = shard.Get(ctx, DropFenceKey("acme", "reports"))
+	assert.Error(t, err, "the re-created database's shard must be live")
+	marker, err := system.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, "inc-b", string(marker), "the re-created database must claim the system store's marker")
+}
+
+// pausingKV parks the first ListAll -- the first read a reclamation makes
+// after it has resolved its fence target -- until resume is closed, so
+// another caller can run between a reclamation's resolution and its
+// deletes.
+type pausingKV struct {
+	*memoryKVSvc
+	once   sync.Once
+	paused chan struct{}
+	resume chan struct{}
+}
+
+func (k *pausingKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	k.once.Do(func() {
+		close(k.paused)
+		<-k.resume
+	})
+	return k.memoryKVSvc.ListAll(ctx, prefix)
+}
+
+// guardedIndexCatalog evaluates the write guard a drop carries against the
+// store its marker is in before each index drop, as the Raft group holding
+// both does when the drop is proposed.
+type guardedIndexCatalog struct {
+	*reclaimIndexCatalog
+	store *memoryKVSvc
+}
+
+func (c *guardedIndexCatalog) DropIndex(ctx context.Context, name string) error {
+	c.store.mu.Lock()
+	err := c.store.guardRefusal(ctx)
+	c.store.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return c.reclaimIndexCatalog.DropIndex(ctx, name)
+}
+
+// TestKeyspaceReclaim_DedicatedSuccessorSurvivesAResumedReclamation pins the
+// reclamation-store marker of a dedicated-raft database: a reclamation that
+// resolved its fence target and paused, while another caller finished the
+// drop and the name was created again as a dedicated database, resumes to
+// find the marker claimed by the successor's incarnation and deletes none of
+// the successor's keys, indexes or vectors in the system store
+// (go-qrdb#893).
+func TestKeyspaceReclaim_DedicatedSuccessorSurvivesAResumedReclamation(t *testing.T) {
+	tests := []struct {
+		name string
+		keys bool
+	}{
+		{name: "collection data, indexes and vectors", keys: true},
+		{name: "indexes and vectors alone", keys: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			ns := tenant.ComposeNamespace("acme", "reports")
+			mem := newMemoryKVSvc()
+			system := &pausingKV{memoryKVSvc: mem, paused: make(chan struct{}), resume: make(chan struct{})}
+			idx := &guardedIndexCatalog{reclaimIndexCatalog: newReclaimIndexCatalog(ns + "old_idx"), store: mem}
+			vec := newReclaimVectorStore(ns + "old_vec")
+			target := ReclaimTarget{KV: system, Index: idx, Vector: vec}
+
+			stale := NewKeyspaceReclaimService(target)
+			stale.SetStoreResolver(&dedicatedRaftResolver{shard: newMemoryKVSvc()})
+			takeover := NewKeyspaceReclaimService(ReclaimTarget{KV: mem, Index: idx, Vector: vec})
+			takeover.SetStoreResolver(&dedicatedRaftResolver{shard: newMemoryKVSvc()})
+			successor := NewKeyspaceReclaimService(ReclaimTarget{KV: mem, Index: idx, Vector: vec})
+			successor.SetStoreResolver(&dedicatedRaftResolver{shard: newMemoryKVSvc()})
+
+			require.NoError(t, stale.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+			require.NoError(t, mem.Put(ctx, ns+"old", []byte("v")))
+			require.NoError(t, stale.FenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+
+			done := make(chan error, 1)
+			go func() { done <- stale.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", "") }()
+			<-system.paused
+
+			require.NoError(t, takeover.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "the takeover finishes the drop")
+			require.NoError(t, successor.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-b", ""), "the dedicated successor's create")
+			if tt.keys {
+				require.NoError(t, mem.Put(ctx, ns+"successor", []byte("v")))
+			}
+			idx.mu.Lock()
+			idx.names[ns+"successor_idx"] = struct{}{}
+			idx.mu.Unlock()
+			vec.mu.Lock()
+			vec.spaces[ns+"successor_vec"] = struct{}{}
+			vec.mu.Unlock()
+			close(system.resume)
+
+			var superseded *database.DropSupersededError
+			require.ErrorAs(t, <-done, &superseded)
+
+			if tt.keys {
+				_, err := mem.Get(ctx, ns+"successor")
+				assert.NoError(t, err, "the resumed reclamation deleted the successor's collection data")
+			}
+			assert.Equal(t, []string{ns + "successor_idx"}, idx.remaining(), "the resumed reclamation dropped the successor's index")
+			assert.Equal(t, []string{ns + "successor_vec"}, vec.remaining(), "the resumed reclamation deleted the successor's vectors")
+			_, err := mem.Get(ctx, ns+"old")
+			assert.Error(t, err, "the takeover reclaimed the dropped incarnation's keyspace")
+		})
+	}
+}
+
+// TestKeyspaceReclaim_DedicatedFenceTakesAnUnclaimedReclaimStoreMarker
+// proves a dedicated-raft database whose reclamation-store marker was never
+// claimed -- created before the claim existed -- still drops: the fence
+// tombstones the absent marker, as it tombstones a claimed one.
+func TestKeyspaceReclaim_DedicatedFenceTakesAnUnclaimedReclaimStoreMarker(t *testing.T) {
+	ctx := context.Background()
+	system := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: newMemoryKVSvc()})
+
+	require.NoError(t, fenceThenReclaim(ctx, svc, "acme", "reports", "inc-a"))
+	marker, err := system.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, dropFenceTombstone, marker)
+}
+
+// TestKeyspaceReclaim_DedicatedCreateWithoutAShardClaimsTheReclaimStore
+// proves the reclamation-store claim does not wait for the shard: a
+// dedicated-raft database created before its shard exists still claims its
+// incarnation there, and a claim held by another live incarnation refuses
+// the create.
+func TestKeyspaceReclaim_DedicatedCreateWithoutAShardClaimsTheReclaimStore(t *testing.T) {
+	ctx := context.Background()
+	system := newMemoryKVSvc()
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
+	svc.SetStoreResolver(&dedicatedRaftResolver{})
+
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""))
+	marker, err := system.Get(ctx, DropFenceKey("acme", "reports"))
+	require.NoError(t, err)
+	assert.Equal(t, "inc-a", string(marker))
+	require.NoError(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-a", ""), "a retried create is idempotent")
+
+	var exists *database.AlreadyExistsError
+	require.ErrorAs(t, svc.UnfenceDatabaseKeyspace(ctx, "acme", "reports", "inc-b", ""), &exists)
 }
 
 // ListAll mirrors List on this double: it applies no internal-key guard,

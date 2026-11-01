@@ -837,6 +837,19 @@ func (f *faultStore) Put(ctx context.Context, k string, v []byte) error {
 	return f.fakeKVStore.Put(ctx, k, v)
 }
 
+// PutIfAbsent injects exactly as Put does: a create claims its name with it,
+// so the name-index write is this call, not a Put.
+func (f *faultStore) PutIfAbsent(ctx context.Context, k string, v []byte) (bool, error) {
+	if f.onPut != nil {
+		f.onPut(k)
+	}
+	if n := f.failPut[k]; n > 0 {
+		f.failPut[k] = n - 1
+		return false, errInjected
+	}
+	return f.fakeKVStore.PutIfAbsent(ctx, k, v)
+}
+
 func (f *faultStore) Delete(ctx context.Context, k string) error {
 	if n := f.failDelete[k]; n > 0 {
 		f.failDelete[k] = n - 1
@@ -1131,9 +1144,9 @@ func TestRoutingRoleService_RollbackDeletesOnlyWhatThisCallWrote(t *testing.T) {
 	const winnerID = "winner-id"
 
 	// The winner's name-index write lands while the loser is between its own
-	// uniqueness check and its failure.
+	// uniqueness check and its name claim, whose answer is then lost.
 	tenantStore.onPut = func(key string) {
-		if key == "__sys:roles/id/loser-id" {
+		if key == nameKey {
 			tenantStore.onPut = nil
 			if perr := tenantStore.fakeKVStore.Put(ctx, nameKey, []byte(winnerID)); perr != nil {
 				t.Errorf("seed the winner's name index: %v", perr)
@@ -1141,8 +1154,8 @@ func TestRoutingRoleService_RollbackDeletesOnlyWhatThisCallWrote(t *testing.T) {
 		}
 	}
 
-	// The loser fails on its NAME-index write, so `written` holds its primary
-	// and tenant index but NOT the name key.
+	// The loser's NAME claim fails, so the rollback's guarded release runs
+	// against a key that now holds the winner's id, not the loser's.
 	tenantStore.failPut[nameKey] = 1
 	if _, lerr := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID: "loser-id", Name: "shared-name", TenantID: "acme",
@@ -1183,9 +1196,10 @@ func TestRoutingRoleService_RollbackKeepsTheClaimWhenCleanupFails(t *testing.T) 
 	}
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 
-	// Fail the NAME-index write, so the primary and tenant index are written
-	// and must be rolled back — then fail the primary's cleanup delete.
-	tenantStore.failPut["__sys:role_idx/name/acme/doomed"] = 1
+	// Fail the TENANT-index write, the last, so the name claim and the
+	// primary are written and must be rolled back — then fail the primary's
+	// cleanup delete.
+	tenantStore.failPut["__sys:roles/tenant/acme/stuck-id"] = 1
 	tenantStore.failDelete["__sys:roles/id/stuck-id"] = 1
 
 	if _, cerr := svc.CreateRole(ctx, &CreateRoleRequest{

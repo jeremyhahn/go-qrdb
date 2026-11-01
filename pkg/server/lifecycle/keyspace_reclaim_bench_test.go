@@ -106,7 +106,7 @@ func BenchmarkReclaimDatabaseKeyspace(b *testing.B) {
 							svc := service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: mode.kv(kv)})
 							b.StartTimer()
 
-							if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", ""); err != nil {
+							if err := svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports", "", ""); err != nil {
 								b.Fatal(err)
 							}
 

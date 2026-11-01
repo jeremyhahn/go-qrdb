@@ -461,15 +461,44 @@ func startThreeNodeClusterWithSpareSPIFFE(t *testing.T, smType string) (adminPor
 		adminPort: allAdminPorts[n-1],
 	}
 
-	removeCode, removeBody := httpMembershipRemove(t, ca, leaderPort, spare.shardID, spare.replicaID)
-	if removeCode != http.StatusOK {
-		t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: setup removal of spare replica %d: status %d, body %s",
-			spare.replicaID, removeCode, removeBody)
-	}
+	removeSpareReplica(t, ca, allAdminPorts, leaderPort, spare, 60*time.Second)
 
 	// The 3 control nodes' admin ports, in the same order startThreeNodeClusterSPIFFE
 	// would have returned them for a plain 3-node cluster.
 	return allAdminPorts[:n-1], ca, spare
+}
+
+// removeSpareReplica removes spare from its shard through leaderPort. A 503
+// is the server's typed retry: the remove met an election after it was
+// submitted, so it may still commit (main run 70834: "not leader for shard 1,
+// leader unknown (already submitted to raft; it may still commit)"). The step
+// then waits for the next leader among ports, reads that leader's membership,
+// and re-issues the remove only while spare is still a member. window is the
+// setup's leader-election bound and covers the whole step: resolving an
+// ambiguous remove is one more election, not a new kind of wait.
+func removeSpareReplica(t *testing.T, ca *testCA, ports []int, leaderPort int, spare spareClusterReplica, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	port := leaderPort
+	for {
+		code, body := httpMembershipRemove(t, ca, port, spare.shardID, spare.replicaID)
+		if code == http.StatusOK {
+			return
+		}
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: setup removal of spare replica %d via port %d: status %d, body %s",
+				spare.replicaID, port, code, body)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("startThreeNodeClusterWithSpareSPIFFE: setup removal of spare replica %d still unresolved after %v: last status %d, body %s",
+				spare.replicaID, window, code, body)
+		}
+		port = waitForLeaderViaAdmin(t, ca, ports, remaining)
+		if !membershipPeersContainsReplica(httpPeers(t, ca, port), spare.shardID, spare.replicaID) {
+			return
+		}
+	}
 }
 
 // waitForSettledFollowerView polls port's own /status until it reports a

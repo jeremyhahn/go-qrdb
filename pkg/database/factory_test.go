@@ -236,7 +236,7 @@ func TestEmbeddedBackendFactory_Create_RaftBackend(t *testing.T) {
 	// A dedicated-raft database's authoritative data plane is a per-database
 	// shard on the shared system Host managed by the server-layer
 	// RaftBackendFactory (IsolationRaft). The Manager still opens a Backend so
-	// the database's meta.json, catalog membership, and shard-ID allocation are
+	// the database's catalog record and shard-ID allocation are
 	// tracked uniformly; that bookkeeping role is served by a lightweight
 	// in-memory placeholder, which must be created without error.
 	backend, err := factory.Create(cfg, "")
@@ -620,7 +620,8 @@ func TestOpenStorage_Raft(t *testing.T) {
 	// openStorage returns a lightweight in-memory placeholder for the raft
 	// backend: the authoritative data plane is the per-database shard on the
 	// shared system Host (IsolationRaft), wired at the server layer. The
-	// placeholder lets the Manager track meta.json/catalog/shard-ID uniformly.
+	// placeholder lets the Manager track the catalog record and shard ID
+	// uniformly.
 	store, err := openStorage("raft-db", BackendRaft, "")
 	if err != nil {
 		t.Fatalf("openStorage raft: unexpected error: %v", err)

@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -123,6 +125,40 @@ func (b *bookDouble) ClaimTenantShamirInit(_ context.Context, tenantID string, p
 	}
 	b.claims = append(b.claims, initClaim{tenantID, seal.StrategyShamir, "", string(statement)})
 	return nil
+}
+
+// PrepareTenantInit encodes the terms it was given as both the statement and
+// the message, so a test signs what the node prepared; it refuses an empty
+// key as the real book refuses an unparsable one.
+func (b *bookDouble) PrepareTenantInit(tenantID string, strategy seal.StrategyID, keyRef string, prepared *seal.ShamirInitParams, signerSPKI []byte, issuedAt time.Time) ([]byte, []byte, error) {
+	if len(signerSPKI) == 0 {
+		return nil, nil, errStatementMismatch
+	}
+	statement := []byte(tenantID + "|" + string(strategy) + "|" + keyRef + "|" + string(signerSPKI) + "|" + strconv.FormatInt(issuedAt.Unix(), 10))
+	if prepared != nil {
+		statement = shamirStatement(prepared)
+	}
+	return statement, append([]byte("msg:"), statement...), nil
+}
+
+// AttachTenantInit admits exactly signDouble's signature over the message
+// PrepareTenantInit returned for statement, and hands the statement on to be
+// claimed.
+func (b *bookDouble) AttachTenantInit(statement, signature []byte) ([]byte, error) {
+	if !bytes.Equal(signature, signDouble(append([]byte("msg:"), statement...))) {
+		return nil, errBadSignature
+	}
+	return statement, nil
+}
+
+// errBadSignature is the double's refusal of a signature it did not expect.
+var errBadSignature = errors.New("signature does not verify")
+
+// signDouble is the detached signature bookDouble.AttachTenantInit admits: a
+// signer outside the node computes it over the message begin returned.
+func signDouble(message []byte) []byte {
+	sum := sha256.Sum256(append([]byte("sig:"), message...))
+	return sum[:]
 }
 
 func (b *bookDouble) claimed() []initClaim {

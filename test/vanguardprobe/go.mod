@@ -3,7 +3,7 @@ module github.com/jeremyhahn/go-qrdb/test/vanguardprobe
 go 1.27.3
 
 require (
-	connectrpc.com/connect/v2 v2.0.0
+	connectrpc.com/connect/v2 v2.0.2
 	connectrpc.com/vanguard v0.5.0
 	google.golang.org/grpc v1.84.0
 )

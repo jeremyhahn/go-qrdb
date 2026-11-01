@@ -1,6 +1,6 @@
 # Secondary Indexes — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb index` — create, drop, query, scan and list secondary
@@ -11,6 +11,11 @@ Indexes declared with struct tags on an entity type are registered
 automatically at DAO construction and do **not** need `index create`. This
 command group is for indexes on data with no Go entity type, and for
 inspection.
+
+## Exit codes
+
+Every verb below exits `0` on success and `1` on any error, which it prints to
+stderr.
 
 ## `qrdb index create <index-name>`
 

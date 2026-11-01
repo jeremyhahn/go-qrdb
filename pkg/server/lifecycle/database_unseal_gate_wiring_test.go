@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -35,7 +36,7 @@ func TestBuildServices_WiresTheDatabaseUnsealGate(t *testing.T) {
 	hub := watch.NewHub()
 	defer hub.Close()
 	barrier, registry, credSvc := newTestBarrier(t)
-	dbs := database.NewManager(nil, t.TempDir())
+	dbs := databasetest.NewManager(nil, t.TempDir())
 	sealer := clustersealtest.New(true)
 
 	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
@@ -66,10 +67,13 @@ func TestBuildServices_WiresTheDatabaseUnsealGate(t *testing.T) {
 	if bm == nil {
 		t.Fatal("BuildServices wired no database barrier manager")
 	}
-	if !bm.UnsealRefused("orders") {
+	if !bm.UnsealRefused("orders", "acme") {
 		t.Fatal("the database barrier manager does not veto a database whose record is sealed: the gate is not wired")
 	}
-	if bm.UnsealRefused("ledger") {
+	if bm.UnsealRefused("ledger", "acme") {
 		t.Fatal("the database barrier manager vetoes a database whose record is clear")
+	}
+	if bm.UnsealRefused("orders", "beta") {
+		t.Fatal("the database barrier manager vetoes another tenant's database of the same name")
 	}
 }

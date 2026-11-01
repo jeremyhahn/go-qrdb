@@ -50,7 +50,33 @@ func (r *Role) RetiredPermissionError() error   // nil when there is no drift
 // RetiredPermissionError, RetiredPermissions.
 // sdk/go/transport: RoleClient.ReconcileBuiltInRoles(ctx, *ReconcileRolesRequest)
 //                   (*ReconcileRolesResponse, error)
+
+// Every tenant in one pass, platform operator only (roles:reconcile_all).
+type TenantLister interface {
+    ListTenants(ctx context.Context) ([]tenant.TenantInfo, error)
+}
+func ReconcileAllTenants(ctx context.Context, roles RoleServicer, tenants TenantLister) (*AllTenantsReconcileReport, error)
+
+type AllTenantsReconcileReport struct {
+    Tenants []ReconcileReport // system first, then by id
+    Skipped []SkippedTenant   // Reason: SkipReasonSealed | SkipReasonRefused
+    Failed  []FailedTenant    // TenantID, Error; the pass continues past them
+}
+func (r *AllTenantsReconcileReport) Changed() bool
+
+// sdk/go: PermissionRolesReconcileAll.
+// sdk/go/transport: RoleClient.ReconcileBuiltInRolesAllTenants(ctx)
+//                   (*ReconcileAllTenantsRolesResponse, error)
 ```
+
+`ReconcileAllTenants` returns `*tenant.PlatformOperatorRequiredError` for a
+caller bound to any tenant but the system tenant, before it lists a single
+tenant. The gRPC and Unix servers and the QUIC handler build their response
+through one conversion, `grpc.AllTenantsReconcileReportToProto`. The gRPC, Unix
+and QUIC clients read it back through one conversion too,
+`sdk/go/transport/internal/roleconv.AllTenantsFromProto`. REST and MCP carry
+JSON: REST uses snake_case fields and MCP the domain type's own tags. Each
+transport's unit tests pin its field names against its decoder.
 
 Tenant-issued delegations (see
 [architecture.md](architecture.md#tenant-issued-delegations)):
@@ -530,6 +556,17 @@ in its own tenant except SO/custodian custody (see
 SAME `certTargetGuard` function `certs:issue` does. Nothing here re-derives who
 may hold a certificate.
 
+**A re-invite calls `InvitationStore.Reissue`, never `Create`,** for an account
+the store already records, so the earlier tokens are superseded in the same
+guarded write that makes the new one live (see
+[architecture.md](architecture.md), "A re-invitation supersedes every
+earlier token"). `ErrUserNotFound` falls back
+to `Create`; `ErrUserActive` becomes `*InvitationAccountActiveError`;
+`ErrReissueConflict` is returned unchanged and classifies as Aborted. A
+successful redemption calls `InvitationStore.Activate` after the account is
+active; a failure there is ignored, because the re-invite path checks the
+account's own lifecycle state before it reaches the store.
+
 **The invitation-store layer (`pkg/invite`) is a bearer-secret store, not a
 generic KV wrapper.** `Entity.TokenHash` is the only representation of the
 token that ever reaches storage; `Entity.KeyPin`, when set, is NOT a secret
@@ -935,6 +972,14 @@ Unix socket, MCP and the embedded transport — carries the full surface.
   in this repository. The branch means "an internal, unauthenticated pipeline",
   not "an unauthenticated request"; the guard is what keeps those two apart and
   is pinned by a test.
+- **The all-tenant reconcile is a platform-operator verb, gated twice.**
+  `roles:reconcile_all` is cross-scope and granted only to the system tenant's
+  built-in Admin; independently of the role store, `role.ReconcileAllTenants`
+  refuses a caller bound to any other tenant with
+  `tenant.PlatformOperatorRequiredError`. Each tenant converges through its own
+  store with the per-tenant `ReconcileBuiltInRoles`, the system tenant first; a
+  sealed or refusing tenant is skipped with its reason, another error lands in
+  `failed`, and no tenant's outcome stops the pass.
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
@@ -994,6 +1039,47 @@ one role being added (`roles:assign` in the user's tenant, and the role must
 exist there), and `UnassignRole` is `AuthorizeRoleUnassignment`
 (`roles:unassign` in the user's tenant; removing a grant names no role to
 validate).
+
+Under strict separation of duties (`middleware.WithStrictSeparation`, set from
+`wiring.ResolveStrictSeparation`, the one resolver, which FIPS 140-3 mode
+forces on), every one of those gates also refuses, with `SORoleRequiredError`,
+a write that changes whether the target holds its tenant's `so` role unless the
+caller is a Security Officer of that same tenant; outside it the `so` role is
+assigned like any other. Both sides are read by
+`heldRoleIDs`: the target's `RoleIDs` and `RoleBindings`, and the caller's
+`Roles` and `RoleBindings` (`callerRoleIDs`), counting a binding only where it
+is scoped to the target tenant. The gate reads the record before the write;
+to bind the decision to the version the write replaces, each handler also
+passes `AuthMiddleware.SORoleGuard` as `user.UpdateUserRequest.Guard`. The
+user store calls the guard with the decoded record it commits over and the
+record as the request writes it, before any index mutation, and the commit is
+conditional on those bytes, so a Security Officer grant that lands after the
+gate is either seen by the guard (`SORoleRequiredError`) or fails the write
+(`ConcurrentUpdateError`); it is never overwritten.
+
+The resolved posture is recorded and its changes are audited.
+`wiring.RecordSeparationPosture` compares the posture
+`ResolveStrictSeparation` gives with the replicated system record
+`__sys:cluster/separation_of_duties` (`wiring.SeparationPostureKey`, value
+`strict` or `standard`). It runs once first boot has run: in the daemon at
+every start (`recordSeparationPostureAtStart` in `cmd/qrdbd`), and in an
+embedded node in `Node.FirstBoot` and `Node.FirstBootWithCeremony`, through
+`lifecycle.Node.RecordSeparationPosture`. When no posture is recorded, or the
+recorded one differs, it **writes the record first**: `PutIfAbsent` on a first
+recording, `CompareAndSwap` against the value it read on a change, retried
+from a fresh read up to three times. Only then does it emit **one** compliance
+audit event: actor `system`, resource `auth/separation_of_duties`, action
+`posture-change` (`wiring.ActionSeparationPostureChange`), with the attributes
+`previous` (`none` when no posture was recorded), `posture`, and
+`fips_forced`. The event is sent through `audit.EmitBestEffort`. Only the
+node whose conditional write wins emits it, so nodes starting together under
+one change leave exactly one event. An unchanged posture writes and emits
+nothing. A record that cannot be read or written answers
+`*wiring.SeparationPostureError` (`Op` is `read`, `create`, `swap` or
+`contended`), which refuses the daemon's start and fails the embedded first
+boot. The write needs no Raft opcode of its own. Embedders read the posture
+the node resolved through `node.Node.StrictSeparation()`, and the resolver
+itself as `sdk.ResolveStrictSeparation`.
 
 The target tenant for `UpdateUser` is resolved by READING THE EXISTING RECORD
 (`userSvc.GetUser(ctx, id).TenantID`), never taken from the caller's ambient
@@ -1248,6 +1334,7 @@ authenticated value — whether or not the authenticator set one.
 | Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
 | The linearizable user lookup for a NON-system tenant does not answer | each attempt bounded at 2 s and retried while the store's shard elects a leader (`service.LeadershipTransient`), up to 10 s (`service.DefaultSettlePolicy`) or the request's own deadline; then `StoreUnavailableError` (503, retryable): the StaleRead fallback holds the system tenant only and is not consulted, because its "no such user" says nothing about another tenant | **yes** |
 | The user lookup fails with anything but an election (a corrupt record, a decrypt refusal, a cancelled request) | that error, at once, with no retry | **yes** |
+| An authenticator, a consumer's fallback included, fails because the shard behind its read is electing a leader or moving it (`service.LeadershipTransient`: `*service.NotLeaderError` or a go-quicraft timeout, abort, not-leader, shard-not-ready, ReadIndex-not-ready or transfer-in-progress, however wrapped) | `AuthFailureUnavailable`: 503 / `UNAVAILABLE` on every transport, retryable — never 401, even beside an `*auth.AuthError` in the same chain, because an election is never a credential failure; `sdk.IsLeadershipTransient` classifies it | **yes** |
 | The user lookup meets a sealed node barrier (`seal.ErrBarrierSealed` from go-quicraft on a node re-sealed at runtime, or `seal.ErrSealed`) | `*middleware.BarrierSealedError` (503, retryable once unsealed) — never `StoreUnavailableError`, and never logged as a store outage | **yes** |
 | The linearizable role resolution for a NON-system tenant (permission resolution, the SO deny-list, or the strict-SoD Owner strip) does not answer within the same settle policy | `*rbac.ResolveError` wrapping `context.DeadlineExceeded` (503, retryable): the StaleRead role fallback holds the system tenant only and is not consulted | **yes** |
 | A role a user still holds was deleted (one of the two windows `DeleteRole`'s holder strip leaves, see Invariants), on ANY tenant including the system tenant | `*rbac.ResolveError` wrapping `*role.RoleNotFoundError` (**not** retried against the fallback — a stale replica could still grant the deleted role's permissions — and **not** reclassified as retryable) | **yes** |
@@ -1418,6 +1505,11 @@ unchecked call panics rather than failing cleanly.
   `__sys:abac_policy/<name>` in the tenant's own store, resolved through
   `tenant.StoreResolver`, so no tenant's policies share a keyspace with
   another's.
+- The separation-of-duties posture last recorded, `strict` or `standard`, is
+  the cluster record `__sys:cluster/separation_of_duties`, beside
+  `__sys:cluster/isolation_policy`. It is written only through
+  `wiring.RecordSeparationPosture` (see
+  [Authorization model](#authorization-model)).
 - Email lookup is `POST /users/lookup` with the key in the **body**. It is
   deliberately not a path parameter: the canonical login identifier would then
   be captured by access logs, proxies, tracing and browser history on every
@@ -1436,7 +1528,7 @@ and no resolution step a caller must go through to find it.
 | Identifier → role | A stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve it directly. |
 | Tenant + name → identifier | `pkg/role.SystemRoleID` derives the identifier directly from the tenant ID and role name. Bootstrap and first boot use it when assigning system roles. |
 | "Is this identifier role X?" (voiding a grant) | `roleIDsHoldSystemRole` (the SO deny-list) and `stripOwnerRole` (the strict-separation-of-duties Owner strip) compare a role id against the role NAME and the canonical identifier directly, in memory — see the paragraph above. |
-| Cluster permissions | `admin:add_member`, `admin:remove_member`, `admin:drain`, `admin:snapshot`, `admin:start_shard`, `admin:stop_shard`, `admin:shard_state`, `admin:topology`, `admin:replica_state` (every replica's applied index and state-machine hash, held by no built-in role but Owner), `admin:node_compaction` (the node keyspace's compaction policy, which the built-in Admin role carries and only the system tenant's Admin can therefore use), every `rebalance:*` and every `backup:*` permission are `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): they act on shards every tenant shares and name no tenant, so as ScopeSelf the built-in Admin and SO roles would let any tenant's Admin remove replicas from the system shard. `admin:peers` stays ScopeSelf for the etcd listener's tenant-facing `Cluster.MemberList`. See [../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only). |
+| Cluster permissions | `admin:add_member`, `admin:remove_member`, `admin:drain`, `admin:snapshot`, `admin:start_shard` (which the built-in Admin role carries beside `admin:add_member`, `admin:remove_member` and `admin:drain`, so only the system tenant's Admin can use it), `admin:stop_shard`, `admin:shard_state`, `admin:topology`, `admin:replica_state` (every replica's applied index and state-machine hash, held by no built-in role but Owner), `admin:node_compaction` (the node keyspace's compaction policy, which the built-in Admin role carries and only the system tenant's Admin can therefore use), every `rebalance:*` and every `backup:*` permission are `ScopeCross` (`pkg/permission/cluster_admin_scope.go`): they act on shards every tenant shares and name no tenant, so as ScopeSelf the built-in Admin and SO roles would let any tenant's Admin remove replicas from the system shard. `admin:peers` stays ScopeSelf for the etcd listener's tenant-facing `Cluster.MemberList`. See [../auth/roles.md](../auth/roles.md#cluster-membership-permissions-are-platform-operator-only). |
 | Node-barrier permissions | Every `seal:*` permission but `seal:status` -- including `seal:officer_register`, `seal:officer_list` and `seal:officer_revoke` -- and `ceremony:initialize` and `ceremony:sign_csr` are `ScopeCross` (`pkg/permission/node_barrier_scope.go`): the node barrier is a platform singleton, so ScopeSelf -- which compares the caller's tenant with itself for an operation that names no tenant -- would let any tenant's SO rekey it, and register officers into its unseal and recovery domains, each of which receives a share of the node key at every distribution. See [../auth/roles.md](../auth/roles.md#node-barrier-permissions-are-platform-operator-only). |
 | "Does this caller hold role X?" (admitting) | `role.HoldsSystemRole` matches only the identifier the role store persists the role under, in the caller's own tenant. It never matches the role *name*: a control that ADMITS a caller must under-match, where a control that voids a grant over-matches. The SO dual-factor gate uses it. `Identity.Roles` holds role identifiers, so comparing a role name against it (`Identity.HasRole("so")`) refuses every real holder and admits any identity whose roles carry the literal string. |
 
@@ -1490,8 +1582,10 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   and invitation stores** (`pkg/service.newInvitationFixture`), never a
   double for the store itself: a replay, a cross-tenant redemption, the
   inviter redeeming with their own key, a pinned invitation presented with
-  the wrong key, and a concurrent-activation race are all asserted through
-  the actual CAS commit path, not a mock that could assert the bug. Each
+  the wrong key, a concurrent-activation race, a token superseded by a
+  re-invite, and concurrent re-invites leaving exactly one live invitation
+  (`pkg/invite/reissue_test.go`) are all asserted through the actual CAS
+  commit path, not a mock that could assert the bug. Each
   wired transport (REST, native QUIC, embedded, MCP) repeats the
   unauthenticated-redemption and opaque-refusal assertions at its own
   handler, so a transport that forgot to skip authentication for this one
@@ -1522,6 +1616,16 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   transport of one node: create, get, update (the creation time survives,
   `spec.enabled` flips), list and delete, and the refusals of a duplicate
   name, a missing policy and another tenant.
+  `TestRoles_CLI_ReconcileAllTenants_PerProtocol` (same target) runs
+  `qrdb roles reconcile --all-tenants` on every transport: every live tenant
+  converges with nothing to change, a second pass changes nothing, the
+  tenant's Admin and Operator hold no stranded permission afterwards, and a
+  tenant Admin and another tenant's SO are refused. A built-in role stored
+  with a stranded permission cannot be produced on a running node (`roles
+  update` refuses built-in permissions and the role keyspace is reserved), so
+  that convergence is pinned against the real role store by
+  `TestReconcileAllTenants_ConvergesEveryTenantsStrandedBuiltIns` in
+  `pkg/role`, beside the sealed, refused, failed and non-system-caller cases.
 - **An embedder reaches the delegation seams through `sdk/go` alone**: the
   external-composer build gate (`test/buildgates`) reads a grant with
   `sdk.DelegationFromCertificate` and composes `node.WithServicePrincipal` from

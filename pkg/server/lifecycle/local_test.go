@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -42,6 +43,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore/objstoretest"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -66,7 +70,7 @@ func TestNewLocalStorage_EveryBackend(t *testing.T) {
 	} {
 		t.Run(string(tc.backend), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				tc.backend, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
 			}
@@ -94,7 +98,7 @@ func TestNewLocalStorage_UnsupportedBackend(t *testing.T) {
 	for _, backend := range []database.BackendType{database.BackendRaft, "", "not-a-backend"} {
 		t.Run(string(backend), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				backend, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 			if err == nil {
 				t.Fatalf("NewLocalStorage(%q) returned no error", backend)
 			}
@@ -134,7 +138,7 @@ func TestNewLocalStorage_OpenFailureNamesTheBackend(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(string(tc.backend), func(t *testing.T) {
-			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, tc.dataDir, nil, tc.objCfg)
+			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, tc.dataDir, nil, qrdbconfig.StorageConfig{Objstore: tc.objCfg})
 			var target *lifecycle.LocalStorageError
 			if !asError(err, &target) {
 				t.Fatalf("error = %T (%v), want *LocalStorageError", err, err)
@@ -163,7 +167,7 @@ func TestNewLocalStorage_OnDiskBackendsEncryptThroughTheEncryptor(t *testing.T) 
 	for _, backend := range []database.BackendType{database.BackendPebble, database.BackendFile} {
 		t.Run(string(backend), func(t *testing.T) {
 			dataDir := t.TempDir()
-			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.ObjstoreConfig{})
+			stg, _, err := lifecycle.NewLocalStorage(backend, dataDir, enc, qrdbconfig.StorageConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", backend, err)
 			}
@@ -243,7 +247,7 @@ func newUnsealedBarrier(t *testing.T) *seal.StorageBarrier {
 func TestNewLocalStorage_ObjstoreDefaultsUnderDataDir(t *testing.T) {
 	dataDir := t.TempDir()
 	stg, _, err := lifecycle.NewLocalStorage(
-		database.BackendObjstore, dataDir, nil, qrdbconfig.ObjstoreConfig{})
+		database.BackendObjstore, dataDir, nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage(objstore): %v", err)
 	}
@@ -261,7 +265,7 @@ func TestNewLocalStorage_ObjstoreHonoursAnExplicitPath(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "elsewhere")
 
 	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, dataDir, nil,
-		qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": explicit}})
+		qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": explicit}}})
 	if err != nil {
 		t.Fatalf("NewLocalStorage(objstore): %v", err)
 	}
@@ -275,13 +279,75 @@ func TestNewLocalStorage_ObjstoreHonoursAnExplicitPath(t *testing.T) {
 	}
 }
 
+func TestNewLocalStorage_ObjstoreOpensWithReferencedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	keyFile, secretFile := filepath.Join(dir, "key"), filepath.Join(dir, "secret")
+	if err := os.WriteFile(keyFile, []byte("FAKEACCESSKEYID0000"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretFile, []byte("fake-secret-access-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := objstoretest.NewProvider(t)
+	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: provider.Name(), Credentials: qrdbconfig.ObjstoreCredentialsConfig{KeyFile: keyFile, SecretFile: secretFile}}})
+	if err != nil {
+		t.Fatalf("NewLocalStorage(objstore, credentials): %v", err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+
+	got := provider.Deliveries()
+	if len(got) != 1 || got[0].Key != "FAKEACCESSKEYID0000" {
+		t.Fatalf("the provider received %+v, want one delivery of the referenced key file", got)
+	}
+	if ok, err := got[0].Secret.EqualBytes([]byte("fake-secret-access-key")); err != nil || !ok {
+		t.Fatalf("the provider's secret is not the referenced secret file's contents (equal=%t, err=%v)", ok, err)
+	}
+}
+
+func TestNewLocalStorage_ObjstoreCredentialFileFailureNamesTheReference(t *testing.T) {
+	provider := objstoretest.NewProvider(t)
+	missing := filepath.Join(t.TempDir(), "absent-secret")
+	_, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: provider.Name(), Credentials: qrdbconfig.ObjstoreCredentialsConfig{SecretFile: missing}}})
+	var lse *lifecycle.LocalStorageError
+	if !errors.As(err, &lse) || lse.Backend != database.BackendObjstore {
+		t.Fatalf("err = %v, want a *LocalStorageError naming objstore", err)
+	}
+	var fileErr *objstore.CredentialFileError
+	if !errors.As(err, &fileErr) || fileErr.File != missing || fileErr.Credential != objstore.CredentialSecret {
+		t.Fatalf("err = %v, want a *objstore.CredentialFileError naming %q", err, missing)
+	}
+	if got := provider.Deliveries(); len(got) != 0 {
+		t.Fatalf("the provider was opened %d times; a failed credential read must stop the open", len(got))
+	}
+}
+
+// TestNewLocalStorage_ObjstoreRefusesCredentialsTheProviderIgnores pins the
+// memory provider's intentional refusal: it reads no credential, so a
+// reference to one is refused before the file is read, which the missing
+// file proves.
+func TestNewLocalStorage_ObjstoreRefusesCredentialsTheProviderIgnores(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent-secret")
+	_, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil,
+		qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "memory", Credentials: qrdbconfig.ObjstoreCredentialsConfig{SecretFile: missing}}})
+	var lse *lifecycle.LocalStorageError
+	if !errors.As(err, &lse) || lse.Backend != database.BackendObjstore {
+		t.Fatalf("err = %v, want a *LocalStorageError naming objstore", err)
+	}
+	var ignored *objstore.CredentialIgnoredError
+	if !errors.As(err, &ignored) || ignored.Provider != "memory" || ignored.Credential != objstore.CredentialSecret || ignored.File != missing {
+		t.Fatalf("err = %v, want a *objstore.CredentialIgnoredError naming memory's secret %q", err, missing)
+	}
+}
+
 // TestNewLocalStorage_DoesNotMutateTheCallerSettings: the settings map belongs
 // to the caller's config, which is shared. Defaulting "path" into it in place
 // would pin the FIRST node's data directory into every later composition built
 // from the same config.
 func TestNewLocalStorage_DoesNotMutateTheCallerSettings(t *testing.T) {
 	settings := map[string]string{}
-	cfg := qrdbconfig.ObjstoreConfig{Provider: "local", Settings: settings}
+	cfg := qrdbconfig.StorageConfig{Objstore: qrdbconfig.ObjstoreConfig{Provider: "local", Settings: settings}}
 
 	stg, _, err := lifecycle.NewLocalStorage(database.BackendObjstore, t.TempDir(), nil, cfg)
 	if err != nil {
@@ -292,6 +358,91 @@ func TestNewLocalStorage_DoesNotMutateTheCallerSettings(t *testing.T) {
 	if got, ok := settings["path"]; ok {
 		t.Errorf("the caller's settings map was mutated: path = %q", got)
 	}
+}
+
+// TestNewLocalStorage_PebbleTakesTheStorageTuning pins that the storage
+// section's cache_size, wal_dir and max_open_files reach Pebble: the OPTIONS
+// file Pebble records at open carries them, and the write-ahead log is in
+// wal_dir rather than under the data directory.
+func TestNewLocalStorage_PebbleTakesTheStorageTuning(t *testing.T) {
+	dataDir := t.TempDir()
+	walDir := filepath.Join(t.TempDir(), "wal")
+	cfg := qrdbconfig.StorageConfig{CacheSize: 64 << 20, WALDir: walDir, MaxOpenFiles: 321}
+
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, nil, cfg)
+	if err != nil {
+		t.Fatalf("NewLocalStorage(pebble): %v", err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+	if pdb == nil {
+		t.Fatal("the pebble backend returned no *pebble.DB handle")
+	}
+
+	pebbleDir := filepath.Join(dataDir, "pebble")
+	options := pebbleOptionsFile(t, pebbleDir)
+	for _, want := range []string{"cache_size=67108864", "max_open_files=321", "wal_dir=" + walDir} {
+		if !strings.Contains(options, want) {
+			t.Errorf("pebble OPTIONS lacks %q", want)
+		}
+	}
+	if got := walFiles(t, walDir); len(got) == 0 {
+		t.Errorf("no WAL file in wal_dir %s", walDir)
+	}
+	if got := walFiles(t, pebbleDir); len(got) != 0 {
+		t.Errorf("WAL files %v under the data directory, want them only in wal_dir", got)
+	}
+}
+
+// TestNewLocalStorage_ZeroTuningKeepsThePebbleDefaults pins that a zero
+// cache_size and max_open_files and an empty wal_dir leave Pebble on
+// pebbleStorage.DefaultConfig's values, with the WAL beside the data.
+func TestNewLocalStorage_ZeroTuningKeepsThePebbleDefaults(t *testing.T) {
+	dataDir := t.TempDir()
+	stg, _, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, nil, qrdbconfig.StorageConfig{})
+	if err != nil {
+		t.Fatalf("NewLocalStorage(pebble): %v", err)
+	}
+	t.Cleanup(func() { _ = stg.Close() })
+
+	pebbleDir := filepath.Join(dataDir, "pebble")
+	defaults := pebbleStorage.DefaultConfig(pebbleDir)
+	options := pebbleOptionsFile(t, pebbleDir)
+	for _, want := range []string{
+		fmt.Sprintf("cache_size=%d", defaults.CacheSize),
+		fmt.Sprintf("max_open_files=%d", defaults.MaxOpenFiles),
+	} {
+		if !strings.Contains(options, want) {
+			t.Errorf("pebble OPTIONS lacks the default %q", want)
+		}
+	}
+	if got := walFiles(t, pebbleDir); len(got) == 0 {
+		t.Error("no WAL file under the data directory with wal_dir unset")
+	}
+}
+
+// pebbleOptionsFile returns the newest OPTIONS file Pebble wrote in dir,
+// which records the options the store was opened with.
+func pebbleOptionsFile(t *testing.T, dir string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "OPTIONS-*"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no pebble OPTIONS file in %s (err %v)", dir, err)
+	}
+	data, err := os.ReadFile(matches[len(matches)-1])
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", matches[len(matches)-1], err)
+	}
+	return string(data)
+}
+
+// walFiles returns the Pebble write-ahead log files in dir.
+func walFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "*.log"))
+	if err != nil {
+		t.Fatalf("Glob(%s): %v", dir, err)
+	}
+	return matches
 }
 
 // TestNewLocalEngine_EngineBoundary pins the documented behaviour: every
@@ -313,7 +464,7 @@ func TestNewLocalEngine_EngineBoundary(t *testing.T) {
 	} {
 		t.Run(string(tc), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				tc, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}
@@ -357,7 +508,7 @@ func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 			if got := lifecycle.LocalEngineKeepsLeases(tc.backend); got != tc.want {
 				t.Fatalf("LocalEngineKeepsLeases(%s) = %v; want %v", tc.backend, got, tc.want)
 			}
-			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+			stg, pdb, err := lifecycle.NewLocalStorage(tc.backend, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc.backend, err)
 			}
@@ -389,7 +540,7 @@ func TestLocalEngineKeepsLeases_MatchesTheComposedEngine(t *testing.T) {
 // so a nil hub means "nothing is watching", not "misconfigured".
 func TestNewLocalEngine_NilHubIsAccepted(t *testing.T) {
 	stg, pdb, err := lifecycle.NewLocalStorage(
-		database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+		database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage: %v", err)
 	}
@@ -419,7 +570,7 @@ func TestNewLocalEngine_AttachesAuditChainUnconditionally(t *testing.T) {
 	} {
 		t.Run(string(tc), func(t *testing.T) {
 			stg, pdb, err := lifecycle.NewLocalStorage(
-				tc, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+				tc, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 			if err != nil {
 				t.Fatalf("NewLocalStorage(%s): %v", tc, err)
 			}

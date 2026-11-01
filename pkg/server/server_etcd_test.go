@@ -42,7 +42,7 @@ var etcdListenCfg = &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0
 
 func TestStartEtcd_Success(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	if err != nil {
 		t.Fatalf("startEtcd failed: %v", err)
 	}
@@ -52,8 +52,58 @@ func TestStartEtcd_Success(t *testing.T) {
 	if addr == "" || addr == "127.0.0.1:0" {
 		t.Fatalf("etcd server Addr = %q, want a bound address", addr)
 	}
-	if got := f.srv.EtcdAddr("app"); got != addr {
+	if got := f.srv.EtcdAddr("acme", "app"); got != addr {
 		t.Fatalf("EtcdAddr = %q, want %q", got, addr)
+	}
+}
+
+// TestStartEtcd_TwoTenantsHoldingOneName checks each tenant's etcd listener
+// serves that tenant's own database when another tenant holds a database of
+// the same name: the database is looked up as the tenant's, not by a name
+// that is ambiguous, and the two listeners run side by side.
+func TestStartEtcd_TwoTenantsHoldingOneName(t *testing.T) {
+	f := newEtcdScopeFixture(t, true)
+	if _, err := f.mgr.Create(database.DatabaseConfig{TenantID: "globex", Name: "app", Backend: database.BackendMemory}); err != nil {
+		t.Fatalf("create globex's app: %v", err)
+	}
+
+	acme, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
+	if err != nil {
+		t.Fatalf("startEtcd for acme's app: %v", err)
+	}
+	t.Cleanup(func() { f.srv.StopEtcd("acme", "app") })
+	globex, err := startEtcd(f.srv, "globex", "app", etcdListenCfg)
+	if err != nil {
+		t.Fatalf("startEtcd for globex's app: %v", err)
+	}
+	t.Cleanup(func() { f.srv.StopEtcd("globex", "app") })
+	if got := f.srv.EtcdAddr("acme", "app"); got != acme.Addr() {
+		t.Fatalf("EtcdAddr(acme, app) = %q, want acme's listener %q", got, acme.Addr())
+	}
+	if got := f.srv.EtcdAddr("globex", "app"); got != globex.Addr() {
+		t.Fatalf("EtcdAddr(globex, app) = %q, want globex's listener %q", got, globex.Addr())
+	}
+
+	// The fixture's caller is alice of acme: acme's listener serves her
+	// acme's keyspace.
+	kv := f.kv(t, acme.Addr(), f.clientTLS)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := kv.Range(ctx, &pb.RangeRequest{Key: []byte{0}, RangeEnd: []byte{0}})
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Key) != "visible" {
+		t.Fatalf("Range over acme's app listener returned %d keys, want exactly [visible]", len(resp.Kvs))
+	}
+
+	// Stopping one tenant's listener leaves the other's running.
+	f.srv.StopEtcd("acme", "app")
+	if got := f.srv.EtcdAddr("acme", "app"); got != "" {
+		t.Fatalf("EtcdAddr(acme, app) after StopEtcd = %q, want none", got)
+	}
+	if got := f.srv.EtcdAddr("globex", "app"); got != globex.Addr() {
+		t.Fatalf("EtcdAddr(globex, app) after acme's StopEtcd = %q, want %q", got, globex.Addr())
 	}
 }
 
@@ -67,7 +117,7 @@ func TestStartEtcd_Failure_PortOccupied(t *testing.T) {
 	blockedPort, _ := strconv.Atoi(portStr)
 
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{
 		Enabled:    true,
 		ListenAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(blockedPort)),
 	})
@@ -79,7 +129,7 @@ func TestStartEtcd_Failure_PortOccupied(t *testing.T) {
 
 func TestStartEtcd_NilConfig(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	if etcdSrv, err := startEtcd(f.srv, "app", nil); err == nil {
+	if etcdSrv, err := startEtcd(f.srv, "acme", "app", nil); err == nil {
 		stopEtcd(etcdSrv)
 		t.Fatal("expected startEtcd to fail with nil config")
 	}
@@ -87,7 +137,7 @@ func TestStartEtcd_NilConfig(t *testing.T) {
 
 func TestStartEtcd_MissingListenAddr(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	if etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{Enabled: true}); err == nil {
+	if etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{Enabled: true}); err == nil {
 		stopEtcd(etcdSrv)
 		t.Fatal("expected startEtcd to fail with empty ListenAddr")
 	}
@@ -98,7 +148,7 @@ func TestStartEtcd_MissingListenAddr(t *testing.T) {
 func TestStartEtcd_RefusedWithoutTLS(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
 	f.srv.opts.tlsConfig = nil
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	var required *etcd.AuthRequiredError
 	if !errors.As(err, &required) {
 		if etcdSrv != nil {
@@ -114,7 +164,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 	t.Run("no catalog", func(t *testing.T) {
 		f := newEtcdScopeFixture(t, true)
 		f.srv.opts.dbManager = nil
-		etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+		etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 		var unscoped *etcd.ScopeUnavailableError
 		if !errors.As(err, &unscoped) {
 			if etcdSrv != nil {
@@ -126,7 +176,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 	t.Run("no registry", func(t *testing.T) {
 		f := newEtcdScopeFixture(t, true)
 		f.srv.opts.dbRegistry = nil
-		etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+		etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 		var unscoped *etcd.ScopeUnavailableError
 		if !errors.As(err, &unscoped) {
 			if etcdSrv != nil {
@@ -137,7 +187,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 	})
 	t.Run("unknown database", func(t *testing.T) {
 		f := newEtcdScopeFixture(t, true)
-		if etcdSrv, err := startEtcd(f.srv, "nosuchdb", etcdListenCfg); err == nil {
+		if etcdSrv, err := startEtcd(f.srv, "acme", "nosuchdb", etcdListenCfg); err == nil {
 			stopEtcd(etcdSrv)
 			t.Fatal("startEtcd served a database that does not exist")
 		}
@@ -148,7 +198,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 	t.Run("standalone mode", func(t *testing.T) {
 		f := newEtcdScopeFixture(t, true)
 		f.srv.opts.standaloneMode = true
-		etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+		etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 		var unsupported *service.CapabilityUnsupportedError
 		if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), StandaloneModeHint) {
 			if etcdSrv != nil {
@@ -161,7 +211,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 		f := newEtcdScopeFixture(t, true)
 		db, _ := f.mgr.Get("app")
 		db.SetStatus(database.StatusSealed)
-		if etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg); err == nil {
+		if etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg); err == nil {
 			stopEtcd(etcdSrv)
 			t.Fatal("startEtcd served a sealed database")
 		}
@@ -170,7 +220,7 @@ func TestStartEtcd_RefusedWithoutScope(t *testing.T) {
 
 func TestStopEtcd_Active(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	if err != nil {
 		t.Fatalf("startEtcd failed: %v", err)
 	}
@@ -179,7 +229,7 @@ func TestStopEtcd_Active(t *testing.T) {
 
 func TestEtcdAddr_NotRunning(t *testing.T) {
 	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
-	if addr := srv.EtcdAddr("nonexistent"); addr != "" {
+	if addr := srv.EtcdAddr("acme", "nonexistent"); addr != "" {
 		t.Fatalf("expected empty EtcdAddr for non-existent database, got %q", addr)
 	}
 }
@@ -192,7 +242,7 @@ func TestEtcdListener_RefusesOtherTenant(t *testing.T) {
 		&etcdPeerIdentity{identity: &auth.Identity{Subject: "mallory", TenantID: "globex"}}))
 	var logs lockedBuffer
 	f.srv.logger = slog.New(slog.NewTextHandler(&logs, nil))
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	if err != nil {
 		t.Fatalf("startEtcd: %v", err)
 	}
@@ -245,10 +295,11 @@ func TestEtcdListener_OwnerAdmittedEveryoneElseRefused(t *testing.T) {
 		{"sysapp", "system", true},
 		{"sysapp", "acme", false},
 	}
+	owners := map[string]string{"app": "acme", "sysapp": ""}
 	for _, c := range cases {
 		t.Run(c.db+" as "+c.caller, func(t *testing.T) {
 			f.srv.opts.authMW = authmw.New(allowAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(&etcdPeerIdentity{identity: callers[c.caller]}))
-			etcdSrv, err := startEtcd(f.srv, c.db, etcdListenCfg)
+			etcdSrv, err := startEtcd(f.srv, owners[c.db], c.db, etcdListenCfg)
 			if err != nil {
 				t.Fatalf("startEtcd: %v", err)
 			}
@@ -275,7 +326,7 @@ func TestEtcdListener_RefusesWithoutPermission(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
 	f.srv.opts.authMW = authmw.New(denyAll{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)), authmw.WithAuthenticator(
 		&etcdPeerIdentity{identity: &auth.Identity{Subject: "alice", TenantID: "acme"}}))
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	if err != nil {
 		t.Fatalf("startEtcd: %v", err)
 	}
@@ -299,7 +350,7 @@ func TestEtcdListener_RefusesWithoutPermission(t *testing.T) {
 // the listener re-resolves the database on every call.
 func TestEtcdListener_SealedAfterStartFailsClosed(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", etcdListenCfg)
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", etcdListenCfg)
 	if err != nil {
 		t.Fatalf("startEtcd: %v", err)
 	}

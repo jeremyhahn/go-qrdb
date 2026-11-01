@@ -126,8 +126,8 @@ type Config struct {
 
 	// FS is an optional Pebble vfs.FS used to back all on-disk I/O. When
 	// non-nil it is threaded into pebble.Options.FS unchanged. The
-	// canonical use case is wrapping vfs.Default with the encrypting
-	// FS from pkg/seal/encfs so the underlying sstables, WAL, manifest
+	// canonical use case is WrapVFS(vfs.Default, ...) with the encrypting
+	// filesys.FS from pkg/atrest (pkg/seal/encfs) so the underlying sstables, WAL, manifest
 	// and snapshot files are transparently encrypted at rest. When nil
 	// PebbleDB falls back to its default OS-backed FS.
 	FS vfs.FS

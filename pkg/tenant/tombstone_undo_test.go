@@ -28,7 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// errUndoInactive stands in for the composer's featuregate.NotActiveError.
+// errUndoInactive stands in for the composer's feature.NotActiveError.
 var errUndoInactive = errors.New("tenant-undo not active")
 
 // undoActive is a tenant-undo activation check that reports the feature on.

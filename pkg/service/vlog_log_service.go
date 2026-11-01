@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -121,14 +122,14 @@ func (s *logService) checkDatabase(tenantID, name string) error {
 // logs applies; logKeyFeatures adds the head-signing-key wire a create and a
 // key rotation carry, which an older replica refuses.
 var (
-	logFeatures    = []featuregate.Feature{featuregate.VerifiableLog}
-	logKeyFeatures = []featuregate.Feature{featuregate.VerifiableLog, featuregate.VerifiableLogKeys}
+	logFeatures    = []feature.Feature{featuregate.VerifiableLog}
+	logKeyFeatures = []feature.Feature{featuregate.VerifiableLog, featuregate.VerifiableLogKeys}
 )
 
 // propose sends one encoded OpVerifiableLog command to the tenant's group,
 // refused while any of features is not active there, and returns the apply's
 // value.
-func (s *logService) propose(ctx context.Context, id vlog.LogID, features []featuregate.Feature, encode func() ([]byte, error)) (uint64, error) {
+func (s *logService) propose(ctx context.Context, id vlog.LogID, features []feature.Feature, encode func() ([]byte, error)) (uint64, error) {
 	g, err := s.admit(ctx, id.TenantID, features)
 	if err != nil {
 		return 0, err
@@ -145,7 +146,7 @@ type logGroup struct {
 // admit resolves the tenant's group and refuses the write while any of
 // features is not active there. A write that mints a key admits first, so a
 // refused tenant never has a key created for it.
-func (s *logService) admit(ctx context.Context, tenantID string, features []featuregate.Feature) (logGroup, error) {
+func (s *logService) admit(ctx context.Context, tenantID string, features []feature.Feature) (logGroup, error) {
 	host, shardID, err := s.resolver.ResolveAuditShard(ctx, tenantID)
 	if err != nil {
 		return logGroup{}, err

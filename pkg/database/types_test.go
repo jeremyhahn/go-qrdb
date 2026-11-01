@@ -17,6 +17,7 @@ package database
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -29,6 +30,7 @@ func TestBackendType_Valid_RecognizedTypes(t *testing.T) {
 		{"file", BackendFile},
 		{"pebble", BackendPebble},
 		{"raft", BackendRaft},
+		{"objstore", BackendObjstore},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -36,6 +38,32 @@ func TestBackendType_Valid_RecognizedTypes(t *testing.T) {
 				t.Errorf("BackendType(%q).Valid() = false, want true", tt.backend)
 			}
 		})
+	}
+}
+
+func TestBackends_ListsExactlyTheValidSet(t *testing.T) {
+	got := Backends()
+	if len(got) != len(validBackends) {
+		t.Fatalf("Backends() = %v, want the %d valid backends", got, len(validBackends))
+	}
+	for _, b := range got {
+		if !b.Valid() {
+			t.Errorf("Backends() lists %q, which Valid rejects", b)
+		}
+	}
+	if !slices.Contains(got, BackendObjstore) {
+		t.Errorf("Backends() = %v, missing %q", got, BackendObjstore)
+	}
+}
+
+func TestBackends_SortedAndFresh(t *testing.T) {
+	got := Backends()
+	if !slices.IsSorted(got) {
+		t.Errorf("Backends() = %v, want sorted", got)
+	}
+	got[0] = "mutated"
+	if Backends()[0] == "mutated" {
+		t.Error("Backends() returned a shared slice; a caller's write leaked into the next call")
 	}
 }
 

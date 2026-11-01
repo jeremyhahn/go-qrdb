@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -25,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -80,12 +82,49 @@ type OnboardTenantRequest struct {
 	// TrustAnchorsPEM registers the tenant's trust anchors. Required for
 	// AdminCertPEM, optional otherwise.
 	TrustAnchorsPEM []byte
+
+	// SOUsername, one of SOCSRPEM and SOCertPEM, and SOPIN name the tenant's
+	// optional security officer, enrolled with the so role alone: all of
+	// them or none. The SO differs from the admin by name and by key.
+	SOUsername string
+	SOCSRPEM   []byte
+	SOCertPEM  []byte
+	// SOChainPEM holds intermediates for SOCertPEM. Optional.
+	SOChainPEM []byte
+	SOPIN      []byte
+}
+
+// so is the request's SO, or nil when it names none. The PIN is sealed into
+// a *secure.Secret here, at the service boundary, and r.SOPIN is wiped;
+// bootstrap.ProvisionTenant destroys the Secret.
+func (r *OnboardTenantRequest) so(ctx context.Context) (*bootstrap.TenantSOConfig, error) {
+	if r.SOUsername == "" && len(r.SOCSRPEM) == 0 && len(r.SOCertPEM) == 0 && len(r.SOChainPEM) == 0 && len(r.SOPIN) == 0 {
+		return nil, nil
+	}
+	cfg := &bootstrap.TenantSOConfig{
+		Username: r.SOUsername,
+		CSRPEM:   r.SOCSRPEM,
+		CertPEM:  r.SOCertPEM,
+		ChainPEM: r.SOChainPEM,
+	}
+	// A missing PIN stays nil, for bootstrap to refuse as incomplete.
+	if len(r.SOPIN) > 0 {
+		pin, err := secure.NewSecret(ctx, r.SOPIN)
+		if err != nil {
+			return nil, &bootstrap.TenantSOEnrollmentError{Op: "PIN seal", Cause: err}
+		}
+		cfg.PIN = pin
+	}
+	return cfg, nil
 }
 
 // OnboardTenantResult is a created tenant and its first admin's credential.
 type OnboardTenantResult struct {
 	Tenant *tenant.TenantInfo
 	Admin  TenantAdminCredential
+	// SO is the tenant's security officer's credential, shaped like the
+	// admin's; nil when the request named no SO.
+	SO *TenantAdminCredential
 }
 
 // TenantAdminCredential is the first admin as onboarding left it.
@@ -128,6 +167,10 @@ type TenantOnboardingService struct {
 	barrierPins bootstrap.FirstAdminPinner
 	pendingSign firstboot.CertSigner
 	clientTrust ClientTrustRefresher
+	pendingSOs  tenantadmin.Store
+	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
+	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
+	strictSoD bool
 }
 
 // DefaultTenantOnboardingTimeout bounds an onboarding from the service's
@@ -207,6 +250,21 @@ type TenantOnboardingDeps struct {
 	// on this node's next handshake. Nil skips the rebuild, which is right
 	// only for a node whose handshakes do not check client certificates.
 	ClientTrust ClientTrustRefresher
+
+	// PendingSOs records a tenant SO pending behind its tenant's own
+	// barrier (bootstrap.Dependencies.PendingSOs), beside Pending.
+	PendingSOs tenantadmin.Store
+
+	// SOPINs commits a tenant SO's PIN (bootstrap.Dependencies.SOPINs). A
+	// node whose SO authenticator is built after this service attaches it
+	// with AttachSOPINs. Nil refuses a request that names an SO.
+	SOPINs bootstrap.SOPINSetter
+
+	// SeparationOfDuties is the strict separation-of-duties posture, as
+	// wiring.ResolveStrictSeparation resolves it: under it the tenant SO
+	// must differ from the first admin by username and by key, outside it
+	// the SO may be the admin (bootstrap.Dependencies.SeparationOfDuties).
+	SeparationOfDuties bool
 }
 
 // NewTenantOnboardingService returns the production TenantOnboardingServicer.
@@ -215,7 +273,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 	if timeout <= 0 {
 		timeout = DefaultTenantOnboardingTimeout
 	}
-	return &TenantOnboardingService{
+	s := &TenantOnboardingService{
 		timeout:     timeout,
 		tenants:     deps.Tenants,
 		users:       deps.Users,
@@ -231,7 +289,27 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		barrierPins: deps.BarrierAnchors,
 		pendingSign: deps.PendingAdminSigner,
 		clientTrust: deps.ClientTrust,
+		pendingSOs:  deps.PendingSOs,
+		strictSoD:   deps.SeparationOfDuties,
 	}
+	if deps.SOPINs != nil {
+		s.AttachSOPINs(deps.SOPINs)
+	}
+	return s
+}
+
+// AttachSOPINs sets the seam a tenant SO's PIN is committed through, for a
+// node whose SO authenticator is built after this service.
+func (s *TenantOnboardingService) AttachSOPINs(pins bootstrap.SOPINSetter) {
+	s.soPINs.Store(&pins)
+}
+
+// sopins is the attached SO PIN seam, or nil.
+func (s *TenantOnboardingService) sopins() bootstrap.SOPINSetter {
+	if p := s.soPINs.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // onboardEvent renders a tenant-onboarding event keyed by req.ID -- the
@@ -322,6 +400,9 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		BarrierAnchors:     s.barrierPins,
 		TrustDomain:        s.trustDomain,
 		Homes:              s.homes,
+		PendingSOs:         s.pendingSOs,
+		SOPINs:             s.sopins(),
+		SeparationOfDuties: s.strictSoD,
 		Logger:             s.logger,
 	}
 	// The service bounds the provisioning; the caller's sooner deadline still
@@ -329,6 +410,11 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 	// onboarding the deadline cut short is still recorded.
 	provisionCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+	soCfg, err := req.so(provisionCtx)
+	if err != nil {
+		settle(err)
+		return nil, err
+	}
 	result, err := bootstrap.ProvisionTenant(provisionCtx, bootstrap.TenantProvisionConfig{
 		TenantID:        req.ID,
 		DisplayName:     req.Name,
@@ -341,6 +427,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		CreateOptions:   opts,
 		AdminEnrollment: bootstrap.AdminEnrollCert,
 		Exclusive:       true,
+		SO:              soCfg,
 	}, deps)
 	if err != nil {
 		settle(err)
@@ -358,7 +445,19 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 	// The record the create committed is the answer: reading it back would
 	// spend the request's budget on one more read and, failing, report a
 	// committed tenant as not created.
+	var so *TenantAdminCredential
+	if result.SOUsername != "" {
+		so = &TenantAdminCredential{
+			UserID:            result.SOUserID,
+			Username:          result.SOUsername,
+			CertPEM:           result.SOCertPEM,
+			Serial:            result.SOCertSerial,
+			Thumbprint:        result.SOCertThumbprint,
+			AwaitsBarrierInit: result.SOAwaitsBarrierInit,
+		}
+	}
 	return &OnboardTenantResult{
+		SO:     so,
 		Tenant: result.Tenant,
 		Admin: TenantAdminCredential{
 			UserID:            result.AdminUserID,

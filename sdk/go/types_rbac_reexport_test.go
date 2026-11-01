@@ -4,6 +4,7 @@
 package sdk_test
 
 import (
+	"crypto/fips140"
 	"errors"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ var (
 	_ rbac.Option                                                  = sdk.RBACOption(nil)
 	_ func(time.Duration) rbac.Option                              = sdk.WithRBACCacheTTL
 	_ func(bool) rbac.Option                                       = sdk.WithRBACStrictSeparation
+	_ func(bool) bool                                              = sdk.ResolveStrictSeparation
 	_ func(role.RoleServicer) rbac.Option                          = sdk.WithRBACRoleServiceFallback
 	_ func(permission.ScopeResolver) rbac.Option                   = sdk.WithRBACScopeResolver
 	_ *rbac.ResolveError                                           = (*sdk.RBACResolveError)(nil)
@@ -85,5 +87,22 @@ func TestSDK_PermissionReexport_IdentityRBACAuditRead(t *testing.T) {
 		if !sdk.IsPermissionRegistered(tc.sdkValue) {
 			t.Errorf("%q is not registered", tc.sdkValue)
 		}
+	}
+}
+
+// TestSDK_ResolveStrictSeparation_SettingOnIsStrict proves the setting on
+// resolves to strict separation in every mode.
+func TestSDK_ResolveStrictSeparation_SettingOnIsStrict(t *testing.T) {
+	if !sdk.ResolveStrictSeparation(true) {
+		t.Fatal("ResolveStrictSeparation(true) = false, want true")
+	}
+}
+
+// TestSDK_ResolveStrictSeparation_SettingOffFollowsFIPS proves the setting
+// off resolves to what FIPS 140-3 mode forces: strict under it, standard
+// outside it.
+func TestSDK_ResolveStrictSeparation_SettingOffFollowsFIPS(t *testing.T) {
+	if got, want := sdk.ResolveStrictSeparation(false), fips140.Enabled(); got != want {
+		t.Fatalf("ResolveStrictSeparation(false) = %v, want fips140.Enabled() = %v", got, want)
 	}
 }

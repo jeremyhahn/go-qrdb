@@ -19,7 +19,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 // HighWaterKey is the replicated record a Claimer allocates from: the next
@@ -61,7 +61,7 @@ type Claimer struct {
 	store ClaimStore
 
 	// feature and active gate every claim; see WithActivation.
-	feature featuregate.Feature
+	feature feature.Feature
 	active  func() bool
 }
 
@@ -69,12 +69,12 @@ type Claimer struct {
 type ClaimerOption func(*Claimer)
 
 // WithActivation makes every claim wait for feature: while active reports
-// false the claim is refused with *featuregate.NotActiveError and the store is
+// false the claim is refused with *feature.NotActiveError and the store is
 // not touched. A cluster whose nodes do not all claim -- a rolling upgrade
 // from a binary that allocated shard IDs per node -- could otherwise issue
 // one ID twice, from the old node's counter and from the mark. A Claimer
 // with no activation serves a host whose groups hold only this binary.
-func WithActivation(feature featuregate.Feature, active func() bool) ClaimerOption {
+func WithActivation(feature feature.Feature, active func() bool) ClaimerOption {
 	return func(c *Claimer) {
 		c.feature = feature
 		c.active = active
@@ -103,7 +103,7 @@ func NewClaimer(store ClaimStore, opts ...ClaimerOption) (*Claimer, error) {
 // caller then fails leaves a gap, never a reuse.
 func (c *Claimer) ClaimShardID(ctx context.Context) (uint64, error) {
 	if c.active != nil && !c.active() {
-		return 0, &featuregate.NotActiveError{Feature: c.feature}
+		return 0, &feature.NotActiveError{Feature: c.feature}
 	}
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {

@@ -16,12 +16,11 @@ package service
 
 import (
 	"encoding/hex"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -73,14 +72,8 @@ func TestDatabaseHolders_RekeyOutcomeSurvivesAFailedSchemeRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The catalog record cannot be written: its path is a directory now.
-	meta := filepath.Join(mgr.DataDir(), "databases", "vault", "meta.json")
-	if err := os.Remove(meta); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(meta, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	// The catalog record cannot be written: the catalog refuses every Put.
+	mgr.SetCatalog(putRefusingCatalog{Catalog: databasetest.Catalog(mgr.DataDir())})
 
 	if _, err := submitDBSvc(t, svc, ctx, seal.OpRekey, holders[0]); err != nil {
 		t.Fatal(err)

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -43,7 +44,7 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 	ctx := context.Background()
 	root := newMockKVService()
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	mgr.SetKeyspaceReclaimer(service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: root}))
 
@@ -147,7 +148,7 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 	ctx := context.Background()
 	root := newMockKVService()
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	dbReg := NewDatabaseServiceRegistry("system")
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: root})

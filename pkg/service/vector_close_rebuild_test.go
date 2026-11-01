@@ -89,7 +89,7 @@ func TestVectorPerformIndexRebuild_CancelledBeforeScan(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := svc.performIndexRebuild(ctx, "job-cancel", "cancel-rebuild-ns", nil)
+	err := svc.performIndexRebuild(ctx, "job-cancel", "cancel-rebuild-ns", &vector.NamespaceInfo{Name: "cancel-rebuild-ns", Dimension: 3}, nil)
 	opErr := requireErrorAs[*VectorOperationError](t, err)
 	assert.ErrorIs(t, opErr, context.Canceled)
 	assert.False(t, reached.Load())

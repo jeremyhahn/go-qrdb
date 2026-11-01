@@ -18,12 +18,9 @@ package node
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,14 +37,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
-	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -56,10 +46,7 @@ import (
 // names. The account's permitted-method policy is WebAuthn only: the host
 // minted the token after a WebAuthn ceremony, so the token carries no method
 // the chain could compare, and the authenticator declares that.
-const (
-	hostBearerToken   = "Bearer host-issued-token"
-	hostBearerSubject = "bearer-admin"
-)
+const hostBearerToken = "Bearer host-issued-token"
 
 // hostTokenAuthenticator is an embedder's bearer validator in the shape
 // go-quicbaas and go-xkms register, written against the SDK alone: it reads
@@ -81,26 +68,9 @@ func (hostTokenAuthenticator) Name() string { return "host-bearer" }
 
 func (hostTokenAuthenticator) MethodUnobservable() bool { return true }
 
-// callerCredential is what a test caller presents: an Authorization value, a
-// client certificate, both or neither.
-type callerCredential struct {
-	authorization string
-	cert          *tls.Certificate
-}
-
 // bearer is a credential carrying only an Authorization value.
 func bearer(authorization string) callerCredential {
 	return callerCredential{authorization: authorization}
-}
-
-// clientTLS is the client side of a call to the node: it trusts the node's
-// CA and presents cred's certificate, if any.
-func (cred callerCredential) clientTLS(ca *qrdbdharness.CA) *tls.Config {
-	cfg := &tls.Config{RootCAs: ca.Pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS13}
-	if cred.cert != nil {
-		cfg.Certificates = []tls.Certificate{*cred.cert}
-	}
-	return cfg
 }
 
 // bearerTransport is one transport's way of making an admin:status call with
@@ -267,75 +237,10 @@ func bearerTransports() []bearerTransport {
 	}
 }
 
-// newBearerNode boots a standalone node serving one transport with opts (the
-// authenticators under test), and the account the host bearer names seeded
-// with admin:status and a WebAuthn-only method policy.
-func newBearerNode(t *testing.T, configure func(*testing.T, *qrdbconfig.Config), opts ...NodeOption) (*Node, *qrdbdharness.CA) {
-	t.Helper()
-	certDir := t.TempDir()
-	ca, err := qrdbdharness.NewCA(certDir)
-	require.NoError(t, err)
-	serverKP, err := ca.Issue(certDir, qrdbdharness.WithSubject("node", ""), qrdbdharness.WithServerAuth())
-	require.NoError(t, err)
-	serverCert, err := serverKP.TLSCertificate()
-	require.NoError(t, err)
-
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
-	cfg.Server.Host = "127.0.0.1"
-	cfg.Protocols.REST = false
-	cfg.Protocols.GRPC = false
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
-	cfg.Protocols.MCP = false
-	configure(t, cfg)
-
-	// VerifyClientCertIfGiven: a bearer-only caller presents no certificate
-	// and must still complete the handshake and reach the auth middleware.
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientCAs:    ca.Pool,
-		ClientAuth:   tls.VerifyClientCertIfGiven,
-		MinVersion:   tls.VersionTLS13,
-	}
-	n, err := NewStandaloneNode(context.Background(), cfg,
-		[]server.ServerOption{server.WithTLS(tlsCfg), server.WithCACertPool(ca.Pool)}, opts...)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = n.Close() })
-
-	ctx := context.Background()
-	statusRole, err := n.Services().Role.CreateRole(ctx, &role.CreateRoleRequest{
-		Name:        "bearer-status",
-		TenantID:    tenantid.System,
-		Permissions: []permission.Permission{permission.AdminStatus},
-	})
-	require.NoError(t, err)
-	_, err = n.Services().User.CreateUser(ctx, &user.CreateUserRequest{
-		WithoutEmailLoginKey: true,
-		Username:             hostBearerSubject,
-		TenantID:             tenantid.System,
-		RoleIDs:              []string{statusRole.ID},
-		AuthMethods:          []string{auth.MethodWebAuthn},
-	})
-	require.NoError(t, err)
-	return n, ca
-}
-
 // bearerHTTPClient trusts the node's CA and presents cred's client
 // certificate, if any.
 func bearerHTTPClient(ca *qrdbdharness.CA, cred callerCredential) *http.Client {
 	return &http.Client{Transport: &http.Transport{TLSClientConfig: cred.clientTLS(ca)}}
-}
-
-// shortSocketPath returns a unix socket path short enough for sun_path,
-// which t.TempDir under a long test name can exceed.
-func shortSocketPath(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "qb")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, "s.sock")
 }
 
 type restStatusError struct{ code int }

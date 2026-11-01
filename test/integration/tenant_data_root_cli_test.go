@@ -142,11 +142,11 @@ func provisionTenantCLIIdentity(t *testing.T, ca *testCA, adminPort int, tenantA
 	// tenant create just bound), not the system admin: the system tenant can
 	// no longer provision records inside another tenant's IAM at all (owner
 	// ruling, 2026-10-01: ScopeSelf has no system-tenant lift). The tenant's
-	// built-in Admin role cannot create a NEW role (RolesCreate is
-	// SO-exclusive), so it self-assigns its own pre-seeded SO role first,
-	// exactly like tenant_isolation_cli_test.go's provisionTenantIdentityFor.
+	// built-in Admin role lets it seat a second account with
+	// Admin and Operator (seatTenantProvisioner), which creates the role
+	// from what it holds (the grant rule, go-qrdb#1278).
 	adminClient := mtlsHTTPClientFromFiles(t, ca, tenantAdminCertPath, tenantAdminKeyPath, 15*time.Second)
-	selfAssignTenantSO(t, adminPort, tenantID, adminClient)
+	adminClient = seatTenantProvisioner(t, ca, adminPort, tenantID, adminClient, false)
 
 	roleBody, roleStatus := iraftAPIPost(t, adminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),

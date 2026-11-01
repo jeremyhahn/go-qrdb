@@ -43,6 +43,7 @@ import (
 type mockBarrierService struct {
 	initializeFn       func(ctx context.Context, secret []byte) error
 	unsealFn           func(ctx context.Context, secret []byte) error
+	changePassphraseFn func(ctx context.Context, current, next []byte) error
 	sealFn             func(ctx context.Context) error
 	statusFn           func(ctx context.Context) (*service.BarrierStatusInfo, error)
 	initializeShamirFn func(ctx context.Context, threshold, total int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
@@ -77,6 +78,13 @@ func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byt
 func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, secret)
+	}
+	return nil
+}
+
+func (m *mockBarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error {
+	if m.changePassphraseFn != nil {
+		return m.changePassphraseFn(ctx, current, next)
 	}
 	return nil
 }
@@ -121,9 +129,9 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 	return nil
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (m *mockBarrierService) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	if m.hasRecoveryKeysFn != nil {

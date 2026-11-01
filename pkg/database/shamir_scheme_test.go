@@ -61,7 +61,7 @@ func TestDatabaseBarrierConfig_ValidateShamirScheme(t *testing.T) {
 // manager writes anything: no database directory and no catalog entry.
 func TestManager_CreateRefusesAnUnsplittableShamirScheme(t *testing.T) {
 	dir := t.TempDir()
-	m := NewManager(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), dir)
+	m := newCatalogManager(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), dir)
 	t.Cleanup(func() { _ = m.Close() })
 	_, err := m.CreateWithCredentials(context.Background(), DatabaseConfig{
 		Name: "vault", Backend: BackendMemory, DataDir: t.TempDir(),
@@ -94,7 +94,7 @@ func TestDatabaseBarrierManager_WithBarrierAuditTrail(t *testing.T) {
 	if err := mgr.EnsureBarrier(context.Background(), "vault", "acme", cfg, seal.NewMemoryBackend(), seal.MustCredentials(context.Background(), []byte("database-passphrase"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.SealDatabase("vault"); err != nil {
+	if err := mgr.SealDatabase("vault", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	actions := map[string]audit.AuditEvent{}

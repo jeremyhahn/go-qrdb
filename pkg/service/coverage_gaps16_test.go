@@ -150,28 +150,6 @@ func TestUserAuthFactorService_Rotate_LookupKVFail(t *testing.T) {
 	}
 }
 
-func TestUserAuthFactorService_Rotate_OldFactorRevokeFails(t *testing.T) {
-	// 3 puts for Add, 7th put (4th in Rotate) fails = old factor revoke put.
-	kv := newFailAfterNKV(6)
-	svc := makeAuthSvcWithKV(t, kv)
-	ctx := context.Background()
-	userID := uint64(5003)
-
-	oldF := mtlsFactor("old-rev", userID, []byte("old-cert-rev"))
-	if err := svc.Add(ctx, userID, oldF); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-
-	newF := &auth.AuthFactor{
-		Type:       auth.AuthFactorMTLS,
-		UserID:     userID,
-		Credential: []byte("new-cert-rev"),
-	}
-	err := svc.Rotate(ctx, oldF.ID, newF)
-	// May succeed or fail depending on order.
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // user_auth_factor_service.go – Rotate: already revoked old factor
 // Line 324-326

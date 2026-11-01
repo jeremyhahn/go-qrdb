@@ -75,6 +75,28 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 	return &emptypb.Empty{}, nil
 }
 
+// BarrierChangePassphrase re-wraps the root key of the unsealed,
+// passphrase-sealed barrier under req.Next once req.Current opens it. Both
+// passphrases are wiped on return.
+func (s *qrdbServiceServer) BarrierChangePassphrase(ctx context.Context, req *pb.BarrierChangePassphraseRequest) (*emptypb.Empty, error) {
+	defer secure.Wipe(req.GetCurrent())
+	defer secure.Wipe(req.GetNext())
+
+	if s.barrierSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "barrier"})
+	}
+
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	if err := s.barrierSvc.BarrierChangePassphrase(ctx, req.GetCurrent(), req.GetNext()); err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
 // BarrierSeal transitions the storage barrier to the sealed state -- on every
 // node once the cluster has activated cluster-seal -- under the configured SO
 // PIN, verified by the PIN backend exactly as on every other transport;

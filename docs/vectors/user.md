@@ -1,7 +1,7 @@
 # Vector Database — User Guide
 
 > **Status: NORMATIVE for shipped behaviour; APPROVED, not yet implemented, for the target design** ·
-> Scope: go-qrdb · Last verified: 2026-10-26
+> Scope: go-qrdb · Last verified: 2026-10-29
 > Conflicts with this document are defects. Fix them here first.
 >
 > "Target" notes describe the vector half of the multi-model database program
@@ -39,12 +39,14 @@ qrdb vector search --namespace docs --vector 0.11,0.97,-0.40 --k 5
 
 ## Choosing the namespace shape
 
-You pick these at creation and cannot change them afterwards.
+You pick these at creation and cannot change them afterwards. A namespace's
+index parameters and its metadata can change in place; see "Update a
+namespace's index parameters or metadata" below.
 
 | Choice | Options | Rule of thumb |
 |---|---|---|
 | `--dimension` | your model's output size | must match your embedding model exactly |
-| `--distance-metric` | `cosine` (default), `euclidean`, `dot-product` | `cosine` for normalized text embeddings |
+| `--distance-metric` | `cosine` (default), `euclidean`, `dot-product`, `manhattan` | `cosine` for normalized text embeddings |
 | `--index-type` | `hnsw` (default), `flat`, `ivf-flat` | `hnsw` for speed at scale; `flat` for exact results on small sets |
 
 `flat` is exhaustive, so it is exact and slow. `hnsw` is approximate and fast.
@@ -102,11 +104,42 @@ qrdb vector list --namespace docs --limit 100
 qrdb vector list --namespace docs --limit 100 --cursor "$NEXT"
 ```
 
+Vectors come back in ascending vector-ID order, each at its latest version.
+The cursor is opaque: pass back exactly the one the previous page returned. It
+resumes after the last ID that page returned, so a walk sees every vector once,
+and a vector written or deleted between pages does not shift the rest. An empty
+cursor means there are no more vectors. A cursor the service did not return is
+refused as an invalid argument rather than read as the first page.
+
 **Update metadata without re-sending the vector.**
 
 ```bash
 qrdb vector update-metadata --namespace docs --id 1 --metadata '{"page":4}'
 ```
+
+**Update a namespace's index parameters or metadata** without re-creating it.
+Every vector stays where it is. Each key you give is merged over the stored
+value; a key you leave out keeps its value.
+
+```bash
+qrdb vector namespace update --namespace docs \
+     --metadata '{"owner":"search-team"}' \
+     --index-param ef_construction=400 --index-param m=32
+```
+
+The reply says whether the index needs a rebuild (`Requires rebuild: true`):
+it does when an index parameter was added or given a new value, and not when
+only metadata changed or every parameter kept its value. The update does not
+rebuild the index itself. Run `rebuild-index` (below) to make search use the
+new parameters; until then, search keeps working on the existing index.
+`qrdb vector namespace info --namespace docs --output json` shows the merged
+`index_config` and `metadata`.
+
+`--dimension` is optional. When you give it, it must equal the namespace's
+dimension: the update refuses any other value with "dimension mismatch" and
+changes nothing. A namespace that does not exist is refused with "namespace
+not found". The update is never a create. The update needs the
+`vector:namespace_update` permission.
 
 **Reclaim space after lots of deletions, or rebuild a degraded index.** Both are
 asynchronous — start them, then poll.
@@ -152,6 +185,12 @@ embedding model the namespace was sized for.
 
 **You need a different dimension, metric or index type.** Create a new namespace
 and re-upsert. Geometry is fixed at creation; there is no in-place migration.
+`vector namespace update` changes index parameters and metadata only, and
+refuses a different `--dimension`.
+
+**"namespace not found" on `namespace update`.** The update changes an existing
+namespace and never creates one. Check the name with `vector namespace list`,
+or create the namespace first.
 
 **Search results look poor.** In order of likelihood: the metric does not match
 your embeddings (normalized text embeddings want `cosine`); `--ef-search` is too

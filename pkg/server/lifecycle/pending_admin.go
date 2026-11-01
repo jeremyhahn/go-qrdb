@@ -56,13 +56,14 @@ import (
 // that loses a race to another reports success.
 func (n *Node) completePendingTenantAdmin(log *slog.Logger) tenant.BarrierReadyHook {
 	return func(ctx context.Context, tenantID string, mode tenant.AdminCompletion) error {
-		if n.PendingAdmins == nil || n.User == nil || n.Role == nil {
+		if (n.PendingAdmins == nil && n.PendingSOs == nil) || n.User == nil || n.Role == nil {
 			return nil
 		}
 		deps := bootstrap.Dependencies{
 			Users:         n.User,
 			Roles:         n.Role,
 			PendingAdmins: n.PendingAdmins,
+			PendingSOs:    n.PendingSOs,
 			Logger:        log,
 			HomeLeader:    nodeHomeLeader{n: n},
 		}
@@ -86,6 +87,16 @@ func (n *Node) completePendingTenantAdmin(log *slog.Logger) tenant.BarrierReadyH
 			return nil
 		}
 		return err
+	}
+}
+
+// AttachSOPINs gives tenant create the seam a tenant security officer's PIN
+// is committed through (bootstrap.SOPINSetter): the node's SO authenticator,
+// built after the services. Until it is attached, and on a node with no
+// tenant onboarding, a create that names an SO is refused.
+func (n *Node) AttachSOPINs(pins bootstrap.SOPINSetter) {
+	if n.onboarding != nil && pins != nil {
+		n.onboarding.AttachSOPINs(pins)
 	}
 }
 

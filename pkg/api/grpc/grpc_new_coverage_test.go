@@ -320,6 +320,8 @@ func TestMapServiceError_LeaseErrors(t *testing.T) {
 		{&service.BatchError{Err: errors.New("err")}, codes.Internal},
 		{&service.IndexNotFoundError{Name: "idx"}, codes.NotFound},
 		{&service.IndexExistsError{Name: "idx"}, codes.AlreadyExists},
+		{&service.IndexLimitError{Max: 2}, codes.ResourceExhausted},
+		{&service.MetricLimitError{Max: 2}, codes.ResourceExhausted},
 		{&service.TimeSeriesError{Op: "ts", Err: errors.New("err")}, codes.Internal},
 		{&service.ConsistencyError{}, codes.FailedPrecondition},
 		{&service.VectorNotFoundError{}, codes.NotFound},

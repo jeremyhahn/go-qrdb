@@ -52,6 +52,8 @@ func newTenantCmd() *cobra.Command {
 		newTenantListDeletedCmd(),
 		newTenantReconcileDeletedCmd(),
 		newTenantBarrierInitCmd(),
+		newTenantBarrierInitBeginCmd(),
+		newTenantBarrierInitCompleteCmd(),
 		newTenantBarrierUnsealCmd(),
 		newTenantBarrierSealCmd(),
 		newTenantBarrierStatusCmd(),
@@ -104,6 +106,11 @@ func newTenantCreateCmd() *cobra.Command {
 		adminCertFile     string
 		adminChainFile    string
 		trustAnchorsFile  string
+		soUsername        string
+		soCSRFile         string
+		soCertFile        string
+		soChainFile       string
+		soPin             string
 		outDir            string
 	)
 
@@ -117,10 +124,17 @@ The first admin keeps its own key: pass either the admin's certificate signing
 request (--admin-csr; the admin makes one with "qrdb ca csr"), which the
 tenant's own CA signs, or the admin's own certificate (--admin-cert), which
 must chain to one of the tenant's trust anchors (--trust-anchors). The admin's
-certificate is printed, or written to --out as admin-cert.pem.`,
+certificate is printed, or written to --out as admin-cert.pem.
+
+A tenant may be created with its security officer as well: --so-username,
+--so-pin and exactly one of --so-csr and --so-cert, given together or not at
+all. The SO is enrolled with the tenant's so role, and its certificate is
+printed beside the admin's, or written to --out as so-cert.pem. Under strict
+separation of duties (auth.separation_of_duties, forced on by FIPS 140-3) the
+SO must differ from the admin by username and by key; otherwise the admin may
+be named the SO, by its username and key together.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			files := map[string]*string{}
 			req := &transport.CreateTenantRequest{
 				ID:                id,
 				Name:              name,
@@ -128,12 +142,25 @@ certificate is printed, or written to --out as admin-cert.pem.`,
 				BarrierAutoUnseal: barrierAutoUnseal,
 				VolumePool:        volumePool,
 				AdminUsername:     adminUsername,
+				SOUsername:        soUsername,
+				SOPin:             soPin,
 			}
-			files[adminCSRFile] = &req.AdminCSRPEM
-			files[adminCertFile] = &req.AdminCertPEM
-			files[adminChainFile] = &req.AdminChainPEM
-			files[trustAnchorsFile] = &req.TrustAnchorsPEM
-			for path, dest := range files {
+			// A list, not a map keyed by path: one file may serve two
+			// flags, as when the admin is named the SO with its own CSR.
+			files := []struct {
+				path string
+				dest *string
+			}{
+				{adminCSRFile, &req.AdminCSRPEM},
+				{adminCertFile, &req.AdminCertPEM},
+				{adminChainFile, &req.AdminChainPEM},
+				{trustAnchorsFile, &req.TrustAnchorsPEM},
+				{soCSRFile, &req.SOCSRPEM},
+				{soCertFile, &req.SOCertPEM},
+				{soChainFile, &req.SOChainPEM},
+			}
+			for _, f := range files {
+				path, dest := f.path, f.dest
 				if path == "" {
 					continue
 				}
@@ -149,7 +176,11 @@ certificate is printed, or written to --out as admin-cert.pem.`,
 				return err
 			}
 			if outDir != "" {
-				if err := writePEMFiles(outDir, map[string][]byte{"admin-cert.pem": []byte(resp.Admin.CertPEM)}); err != nil {
+				certs := map[string][]byte{"admin-cert.pem": []byte(resp.Admin.CertPEM)}
+				if resp.SO != nil {
+					certs["so-cert.pem"] = []byte(resp.SO.CertPEM)
+				}
+				if err := writePEMFiles(outDir, certs); err != nil {
 					return err
 				}
 			}
@@ -172,14 +203,20 @@ certificate is printed, or written to --out as admin-cert.pem.`,
 	cmd.Flags().StringVar(&adminCertFile, "admin-cert", "", "The first admin's own PEM certificate (must chain to --trust-anchors)")
 	cmd.Flags().StringVar(&adminChainFile, "admin-chain", "", "Optional PEM intermediates for --admin-cert")
 	cmd.Flags().StringVar(&trustAnchorsFile, "trust-anchors", "", "A PEM bundle of CA certificates to register as the tenant's trust anchors")
-	cmd.Flags().StringVar(&outDir, "out", "", "Also write the admin's certificate to this directory as admin-cert.pem")
+	cmd.Flags().StringVar(&soUsername, "so-username", "", "The tenant's security officer (optional; enrolled with the so role alone)")
+	cmd.Flags().StringVar(&soCSRFile, "so-csr", "", "The SO's PEM certificate signing request")
+	cmd.Flags().StringVar(&soCertFile, "so-cert", "", "The SO's own PEM certificate (must chain to --trust-anchors)")
+	cmd.Flags().StringVar(&soChainFile, "so-chain", "", "Optional PEM intermediates for --so-cert")
+	cmd.Flags().StringVar(&soPin, "so-pin", "", "The SO's PIN, the second factor the SO gate asks for")
+	cmd.Flags().StringVar(&outDir, "out", "", "Also write the admin's certificate to this directory as admin-cert.pem, and the SO's as so-cert.pem")
 	cmd.MarkFlagsMutuallyExclusive("admin-csr", "admin-cert")
 	cmd.MarkFlagsOneRequired("admin-csr", "admin-cert")
+	cmd.MarkFlagsMutuallyExclusive("so-csr", "so-cert")
 
 	return cmd
 }
 
-// printCreatedTenant prints a created tenant and its first admin.
+// printCreatedTenant prints a created tenant, its first admin and its SO.
 func printCreatedTenant(resp *transport.CreateTenantResponse) error {
 	switch outputFormat {
 	case "json":
@@ -190,18 +227,26 @@ func printCreatedTenant(resp *transport.CreateTenantResponse) error {
 		if err := printTenant(resp.Tenant); err != nil {
 			return err
 		}
-		a := resp.Admin
-		_, _ = fmt.Fprintf(outputWriter, "Admin:      %s\n", a.Username)
-		_, _ = fmt.Fprintf(outputWriter, "Thumbprint: %s\n", a.Thumbprint)
-		if a.Serial != "" {
-			_, _ = fmt.Fprintf(outputWriter, "Serial:     %s\n", a.Serial)
+		printTenantAccount("Admin", "admin", resp.Admin)
+		if resp.SO != nil {
+			_, _ = fmt.Fprintln(outputWriter)
+			printTenantAccount("SO", "SO", *resp.SO)
 		}
-		if a.AwaitsBarrierInit {
-			_, _ = fmt.Fprintf(outputWriter, "The admin's account is created when the admin runs \"tenant barrier-init\" with this certificate.\n")
-		}
-		_, _ = fmt.Fprintf(outputWriter, "\n--- Admin certificate ---\n%s\n", a.CertPEM)
 		return nil
 	}
+}
+
+// printTenantAccount prints an account tenant create enrolled under label.
+func printTenantAccount(label, noun string, a transport.TenantAdminCredential) {
+	_, _ = fmt.Fprintf(outputWriter, "%-11s %s\n", label+":", a.Username)
+	_, _ = fmt.Fprintf(outputWriter, "Thumbprint: %s\n", a.Thumbprint)
+	if a.Serial != "" {
+		_, _ = fmt.Fprintf(outputWriter, "Serial:     %s\n", a.Serial)
+	}
+	if a.AwaitsBarrierInit {
+		_, _ = fmt.Fprintf(outputWriter, "The %s's account is created when the admin runs \"tenant barrier-init\" with the admin's certificate.\n", noun)
+	}
+	_, _ = fmt.Fprintf(outputWriter, "\n--- %s certificate ---\n%s\n", label, a.CertPEM)
 }
 
 // newTenantGetCmd creates the "tenant get" subcommand.
@@ -495,20 +540,9 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"goes to --server's node and the others initialize their own keys from it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			officerRoster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
+			officerRoster, err := tenantBarrierRoster(officers, custodians, shares)
 			if err != nil {
 				return err
-			}
-			custodianRoster, err := parseTenantOfficerFlags("--custodians", transport.RoleCustodian, custodians)
-			if err != nil {
-				return err
-			}
-			officerRoster = append(officerRoster, custodianRoster...)
-			if len(officerRoster) > 0 && len(officerRoster) != shares {
-				return &InvalidArgError{
-					Arg:    "--shares",
-					Reason: "must equal the number of --officers plus --custodians (" + strconv.Itoa(len(officerRoster)) + ")",
-				}
 			}
 
 			keyFile, _ := cmd.Root().PersistentFlags().GetString("key-file")
@@ -592,6 +626,27 @@ func initProofSigner(keyFile string) (crypto.Signer, error) {
 		return nil, nil
 	}
 	return readSigner(keyFile)
+}
+
+// tenantBarrierRoster is a Shamir init's inline roster from the --officers and
+// --custodians flags, whose combined count must equal shares.
+func tenantBarrierRoster(officers, custodians []string, shares int) ([]transport.OfficerRegisterRequest, error) {
+	roster, err := parseTenantOfficerFlags("--officers", transport.RoleSecurityOfficer, officers)
+	if err != nil {
+		return nil, err
+	}
+	custodianRoster, err := parseTenantOfficerFlags("--custodians", transport.RoleCustodian, custodians)
+	if err != nil {
+		return nil, err
+	}
+	roster = append(roster, custodianRoster...)
+	if len(roster) > 0 && len(roster) != shares {
+		return nil, &InvalidArgError{
+			Arg:    "--shares",
+			Reason: "must equal the number of --officers plus --custodians (" + strconv.Itoa(len(roster)) + ")",
+		}
+	}
+	return roster, nil
 }
 
 // parseTenantOfficerFlags parses repeatable holder flag values

@@ -133,6 +133,53 @@ func TestBarrierSecret_SameHostRedirectIsFollowed(t *testing.T) {
 	}
 }
 
+// createTenantWithSOPIN creates a tenant that enrols an SO with a PIN.
+func createTenantWithSOPIN(tr *Transport) error {
+	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
+		ID: "acme", Name: "acme", AdminUsername: "admin", AdminCSRPEM: "csr",
+		SOUsername: "so", SOCSRPEM: "csr", SOPin: soTLSTestPIN,
+	})
+	return err
+}
+
+// TestCreateTenantSOPIN_RedirectIsRefused: a 307 or 308 does not resend a
+// tenant's SO PIN to another host or to an http:// URL.
+func TestCreateTenantSOPIN_RedirectIsRefused(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status)+" to another host", func(t *testing.T) {
+			foreign := &bodyRecorder{}
+			foreignSrv := httptest.NewTLSServer(foreign)
+			t.Cleanup(foreignSrv.Close)
+			origin := httptest.NewTLSServer(redirectTo(foreignSrv.URL, status))
+			t.Cleanup(origin.Close)
+			// One trust store for both: httptest servers share a certificate.
+			err := createTenantWithSOPIN(connectREST(t, origin.URL, trusting(origin)))
+			var hostErr *transport.SOPINForeignHostError
+			if !errors.As(err, &hostErr) || hostErr.Transport != "rest" {
+				t.Fatalf("err = %v, want *transport.SOPINForeignHostError from rest", err)
+			}
+			if n, body := foreign.seen(); n != 0 || body != 0 {
+				t.Fatalf("the foreign host saw %d requests and %d body bytes, want none", n, body)
+			}
+		})
+		t.Run(http.StatusText(status)+" to http", func(t *testing.T) {
+			plain := &bodyRecorder{}
+			plainSrv := httptest.NewServer(plain)
+			t.Cleanup(plainSrv.Close)
+			origin := httptest.NewTLSServer(redirectTo(plainSrv.URL, status))
+			t.Cleanup(origin.Close)
+			err := createTenantWithSOPIN(connectREST(t, origin.URL, trusting(origin)))
+			var tlsErr *transport.SOPINRequiresTLSError
+			if !errors.As(err, &tlsErr) || tlsErr.Transport != "rest" {
+				t.Fatalf("err = %v, want *transport.SOPINRequiresTLSError from rest", err)
+			}
+			if n, body := plain.seen(); n != 0 || body != 0 {
+				t.Fatalf("the http:// target saw %d requests and %d body bytes, want none", n, body)
+			}
+		})
+	}
+}
+
 // redirectTo answers /health, so Connect succeeds, and redirects every other
 // request to the same path on target with status.
 func redirectTo(target string, status int) http.Handler {

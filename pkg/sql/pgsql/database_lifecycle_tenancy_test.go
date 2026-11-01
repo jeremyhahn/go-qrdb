@@ -38,6 +38,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -149,7 +150,7 @@ type pgLifecycleFixture struct {
 
 func newPGLifecycleFixture(t *testing.T, databaseQuota int64) *pgLifecycleFixture {
 	t.Helper()
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return &pgLifecycleFixture{
 		mgr:    mgr,

@@ -16,11 +16,10 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
-	"io/fs"
 	"log/slog"
-	"os"
 	"strings"
 	"testing"
 
@@ -31,7 +30,7 @@ import (
 func newCompactionManager(t *testing.T) (*Manager, string) {
 	t.Helper()
 	dir := t.TempDir()
-	m := NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
+	m := newCatalogManager(slog.New(slog.NewTextHandler(io.Discard, nil)), dir)
 	t.Cleanup(func() { _ = m.Close() })
 	for _, cfg := range []DatabaseConfig{
 		{Name: "acme-db", TenantID: "acme", Backend: BackendMemory},
@@ -81,7 +80,9 @@ func TestManager_CompactionOwnerForTenant_OwnDatabasesOnly(t *testing.T) {
 func TestManager_CompactionOwnerForTenant_DroppingDatabase(t *testing.T) {
 	m, _ := newCompactionManager(t)
 	db, _ := m.Get("acme-db")
-	db.SetDropping(true)
+	if err := m.claimDrop(context.Background(), db, "test-claim"); err != nil {
+		t.Fatalf("fence: %v", err)
+	}
 
 	var dropping *DroppingError
 	if _, err := m.CompactionOwnerForTenant(tenant.WithTenantID(context.Background(), "acme"), "acme-db"); !errors.As(err, &dropping) {
@@ -93,33 +94,22 @@ func TestManager_CompactionOwnerForTenant_DroppingDatabase(t *testing.T) {
 	}
 }
 
-// TestManager_CatalogHoldsNoCompactionPolicy: the catalog record -- each
-// database's node-local meta.json -- carries no compaction policy. The policy
-// is replicated state in the database's own store (pkg/compaction), never
-// node-local.
+// TestManager_CatalogHoldsNoCompactionPolicy: the catalog record carries no
+// compaction policy. The policy is state in the database's own store
+// (pkg/compaction), never in the catalog.
 func TestManager_CatalogHoldsNoCompactionPolicy(t *testing.T) {
 	_, dir := newCompactionManager(t)
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatalf("OpenRoot: %v", err)
+	records, err := testCatalogFor(dir).List(context.Background())
+	if err != nil || len(records) == 0 {
+		t.Fatalf("catalog List: %d records, %v", len(records), err)
 	}
-	t.Cleanup(func() { _ = root.Close() })
-	found := 0
-	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != metaFile {
-			return err
-		}
-		found++
-		data, rerr := root.ReadFile(path)
-		if rerr != nil {
-			return rerr
+	for _, meta := range records {
+		data, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
 		}
 		if strings.Contains(string(data), "compaction") {
-			t.Errorf("%s carries a compaction field: %s", path, data)
+			t.Errorf("record of %q carries a compaction field: %s", meta.Name, data)
 		}
-		return nil
-	})
-	if err != nil || found == 0 {
-		t.Fatalf("walked the catalog: %d meta files, %v", found, err)
 	}
 }

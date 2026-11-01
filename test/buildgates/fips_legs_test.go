@@ -19,6 +19,8 @@
 package buildgates
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,13 +215,86 @@ func fipsPartitionProblems(legs []string, legPkgs map[string][]string, split map
 // goList lists the import paths patterns match in dir under tags.
 func goList(t *testing.T, dir, tags string, patterns ...string) []string {
 	t.Helper()
+	pkgs, err := listPackages(dir, tags, patterns...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkgs
+}
+
+// goListError is a failed go list, carrying the stderr that names its cause:
+// an exit status alone says nothing about which package or file failed.
+type goListError struct {
+	dir      string
+	patterns []string
+	err      error
+	stderr   string
+}
+
+func (e *goListError) Error() string {
+	return "go list " + strings.Join(e.patterns, " ") + " in " + e.dir + ": " + e.err.Error() + "\n" + e.stderr
+}
+
+func (e *goListError) Unwrap() error { return e.err }
+
+// listPackages runs go list under tags in dir and returns the import paths it
+// prints, or a *goListError holding go list's stderr.
+func listPackages(dir, tags string, patterns ...string) ([]string, error) {
 	cmd := exec.Command("go", append([]string{"list", "-tags", tags}, patterns...)...) // #nosec G204 -- patterns come from the Makefile's own TEST_PKGS
 	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list %s in %s: %v", strings.Join(patterns, " "), dir, err)
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	if err := cmd.Run(); err != nil {
+		return nil, &goListError{dir: dir, patterns: patterns, err: err, stderr: errOut.String()}
 	}
-	return strings.Fields(string(out))
+	return strings.Fields(out.String()), nil
+}
+
+// TestFIPSLegs_ListPackagesReportsStderr proves a failing go list's own
+// message reaches the gate's failure text, not only its exit status: run
+// 70728 failed with "exit status 1" and nothing to say which package broke.
+func TestFIPSLegs_ListPackagesReportsStderr(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/broken\n\ngo 1.21\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.go"), []byte("packag broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := listPackages(dir, "", "./...")
+	var gle *goListError
+	if !errors.As(err, &gle) {
+		t.Fatalf("listPackages on a broken package: err = %v, want a *goListError", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("goListError does not unwrap to the *exec.ExitError: %v", err)
+	}
+	for _, want := range []string{"broken.go", "expected 'package'", "in " + dir} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("failure text lacks %q:\n%s", want, err)
+		}
+	}
+}
+
+// TestFIPSLegs_ListPackagesListsAPackage is the passing case: the import paths
+// go list prints come back, and stderr is not mixed into them.
+func TestFIPSLegs_ListPackagesListsAPackage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/fine\n\ngo 1.21\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fine.go"), []byte("package fine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := listPackages(dir, "", "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pkgs, []string{"example.com/fine"}) {
+		t.Errorf("listPackages = %q, want [example.com/fine]", pkgs)
+	}
 }
 
 func TestFIPSLegs_PartitionTheSuites(t *testing.T) {

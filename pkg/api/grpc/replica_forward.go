@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
@@ -198,6 +199,10 @@ func (f *ReplicaForwarder) forward(ctx context.Context, fullMethod string, req a
 	if ferr != nil {
 		var noTarget *replicaforward.NoTargetServedError
 		var lookup *replicaforward.MemberLookupError
+		var ownerErr *database.BindingOwnerUnavailableError
+		if errors.As(ferr, &ownerErr) {
+			return nil, mapServiceError(ferr)
+		}
 		if errors.As(ferr, &noTarget) || errors.As(ferr, &lookup) {
 			return nil, refusalErr
 		}

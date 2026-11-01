@@ -77,8 +77,9 @@ func newKVCmd() *cobra.Command {
 // newKVPutCmd creates the "kv put" subcommand.
 func newKVPutCmd() *cobra.Command {
 	var (
-		leaseID   int64
-		writeMode string
+		leaseID      int64
+		writeMode    string
+		showRevision bool
 	)
 
 	cmd := &cobra.Command{
@@ -93,10 +94,15 @@ func newKVPutCmd() *cobra.Command {
 				return err
 			}
 
-			if leaseID != 0 {
+			// A put with no lease is PutWithLease with lease 0: the one call
+			// that returns the written key's version and revisions.
+			if leaseID != 0 || showRevision {
 				kv, err := client.MVCC().PutWithLease(cmd.Context(), key, []byte(value), leaseID, wopts...)
 				if err != nil {
 					return err
+				}
+				if showRevision {
+					return printMVCCKeyValue(kv)
 				}
 				switch outputFormat {
 				case "json":
@@ -118,6 +124,7 @@ func newKVPutCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Int64Var(&leaseID, "lease-id", 0, "Attach a lease to the key")
+	cmd.Flags().BoolVar(&showRevision, "revision", false, "Print the written key's MVCC version and revisions")
 	cmd.Flags().StringVar(&writeMode, "write-mode", "", "Write durability: sync, wal_durable, or batched")
 
 	return cmd

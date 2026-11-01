@@ -15,6 +15,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"maps"
@@ -126,6 +127,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		AdminCertPEM:      []byte(req.AdminCertPEM),
 		AdminChainPEM:     []byte(req.AdminChainPEM),
 		TrustAnchorsPEM:   []byte(req.TrustAnchorsPEM),
+		SOUsername:        req.SOUsername,
+		SOCSRPEM:          []byte(req.SOCSRPEM),
+		SOCertPEM:         []byte(req.SOCertPEM),
+		SOChainPEM:        []byte(req.SOChainPEM),
+		SOPIN:             []byte(req.SOPin),
 	})
 	if err != nil {
 		// An undone id a serving node has not yet released names its retry
@@ -135,15 +141,31 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 
 	return &transport.CreateTenantResponse{
 		Tenant: mapTenantInfo(result.Tenant),
-		Admin: transport.TenantAdminCredential{
-			UserID:            result.Admin.UserID,
-			Username:          result.Admin.Username,
-			CertPEM:           string(result.Admin.CertPEM),
-			Serial:            result.Admin.Serial,
-			Thumbprint:        result.Admin.Thumbprint,
-			AwaitsBarrierInit: result.Admin.AwaitsBarrierInit,
-		},
+		Admin:  tenantAdminCredential(result.Admin),
+		SO:     tenantSOCredential(result.SO),
 	}, nil
+}
+
+// tenantAdminCredential converts an account onboarding enrolled.
+func tenantAdminCredential(c service.TenantAdminCredential) transport.TenantAdminCredential {
+	return transport.TenantAdminCredential{
+		UserID:            c.UserID,
+		Username:          c.Username,
+		CertPEM:           string(c.CertPEM),
+		Serial:            c.Serial,
+		Thumbprint:        c.Thumbprint,
+		AwaitsBarrierInit: c.AwaitsBarrierInit,
+	}
+}
+
+// tenantSOCredential converts the tenant's SO; nil, for a tenant created
+// without one, is nil.
+func tenantSOCredential(c *service.TenantAdminCredential) *transport.TenantAdminCredential {
+	if c == nil {
+		return nil
+	}
+	so := tenantAdminCredential(*c)
+	return &so
 }
 
 // anchorsToTransport converts a tenant's trust anchors.
@@ -497,6 +519,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.tenantSvc == nil {
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 	if err := t.authorizeTenantTarget(ctx, req.TenantID, permission.TenantsSetEntitlements); err != nil {
 		return nil, err
 	}
@@ -591,6 +616,105 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 			AdminPending:   result.AdminPending,
 		}, nil
 	})
+}
+
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node and the single-use reference that redeems it.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	ctx, err := t.admit(ctx, "TenantBarrierSignedInitBegin")
+	if err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &transport.NilRequestError{}}
+	}
+	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
+	var roster *tenant.TenantBarrierShamirRoster
+	if len(req.Officers) > 0 {
+		roster = &tenant.TenantBarrierShamirRoster{
+			Officers: holderwire.TenantBarrierRosterFrom(req.Officers),
+			Policy:   seal.FactorPolicy(req.Policy),
+		}
+	}
+	begun, err := t.tenantSvc.TenantBarrierInitBegin(ctx, &tenant.TenantBarrierInitBeginRequest{
+		TenantID:        req.TenantID,
+		Strategy:        seal.StrategyID(req.Strategy),
+		KeyRef:          req.KeyRef,
+		Threshold:       req.Threshold,
+		Shares:          req.Shares,
+		Roster:          roster,
+		SignerPublicKey: req.PublicKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierSignedInitBeginResponse{
+		TenantID:    begun.TenantID,
+		Strategy:    begun.Strategy,
+		Reference:   begun.Reference,
+		Statement:   begun.Statement,
+		ExpiresAt:   begun.ExpiresAt,
+		Threshold:   begun.Threshold,
+		TotalShares: begun.TotalShares,
+		ShareCount:  begun.ShareCount,
+		Holders:     holderwire.TenantBarrierHoldersTo(begun.Holders),
+	}, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	ctx, err := t.admit(ctx, "TenantBarrierSignedInitComplete")
+	if err != nil {
+		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &transport.NilRequestError{}}
+	}
+	if err := t.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
+		return nil, err
+	}
+	// The caller's passphrase is borrowed, as for TenantBarrierInit: a copy,
+	// not the caller's bytes, moves into protected memory and is wiped.
+	passphrase, err := tenant.NewSignedInitPassphrase(bytes.Clone(req.Passphrase))
+	if err != nil {
+		return nil, err
+	}
+	defer passphrase.Destroy()
+	result, err := t.tenantSvc.TenantBarrierInitComplete(ctx, &tenant.TenantBarrierInitCompleteRequest{
+		TenantID:   req.TenantID,
+		Reference:  req.Reference,
+		Signature:  req.Signature,
+		Passphrase: passphrase,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       result.TenantID,
+		Strategy:       result.Strategy,
+		ShareCount:     result.ShareCount,
+		Threshold:      result.Threshold,
+		TotalShares:    result.TotalShares,
+		Holders:        holderwire.TenantBarrierHoldersTo(result.Holders),
+		Roster:         result.Roster,
+		UnsealKeyCheck: result.UnsealKeyCheck,
+		AdminPending:   result.AdminPending,
+	}, nil
 }
 
 // TenantBarrierUnseal unseals a per-tenant barrier by delegating to

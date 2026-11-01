@@ -343,6 +343,16 @@ func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
 	return batch.Commit()
 }
 
+// tsRefusalResult is the application result of a time-series write that
+// tsAutoCommit refused: a metric-cap refusal carries its typed encoding, any
+// other failure the generic refusal.
+func tsRefusalResult(err error) sm.Result {
+	if refusal, ok := engine.MetricLimitResult(err); ok {
+		return refusal
+	}
+	return statemachine.RefusalResult(err)
+}
+
 // SetTimeSeriesEnabled instructs the PebbleStateMachine to create a
 // time-series storage engine when the database is opened. Must be
 // called before Open().
@@ -2261,7 +2271,13 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	valueType := engine.IndexCreateValueType(opts)
-	if existing, exists := s.indexes[name]; exists {
+	existing, exists := s.indexes[name]
+	// The shard's index cap is checked against the index set the create
+	// applies over, so every replica reaches the same verdict.
+	if index.CreateExceedsCap(exists, len(s.indexes), opts.MaxIndexes) {
+		return sm.Result{Data: protocol.EncodeLimitRefusal(protocol.LimitIndexes, opts.MaxIndexes)}, nil, nil
+	}
+	if exists {
 		// A create naming an index ANOTHER owner holds is refused rather than
 		// adopted (go-qrdb#426), as an application error so consensus advances.
 		owner := s.indexOwners[name]
@@ -2559,9 +2575,12 @@ func (s *PebbleStateMachine) pebbleHandleTSWrite(_ *PebbleStateMachine, _ *pebbl
 	}
 
 	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		if err := timeseries.AdmitMetrics(b, []string{params.Metric}, params.MaxMetrics); err != nil {
+			return err
+		}
 		return s.ts.Write(b, params.Metric, params.Value, time.Unix(0, params.Timestamp), params.Tags)
 	}); err != nil {
-		return statemachine.RefusalResult(err), nil, nil
+		return tsRefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil
@@ -2573,7 +2592,7 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
-	params, err := protocol.DecodeTSWriteBatch(payload)
+	params, maxMetrics, err := protocol.DecodeTSWriteBatch(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -2589,9 +2608,12 @@ func (s *PebbleStateMachine) pebbleHandleTSWriteBatch(_ *PebbleStateMachine, _ *
 	}
 
 	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		if err := timeseries.AdmitMetrics(b, engine.TSBatchMetrics(params), maxMetrics); err != nil {
+			return err
+		}
 		return s.ts.WriteBatch(b, points)
 	}); err != nil {
-		return statemachine.RefusalResult(err), nil, nil
+		return tsRefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: uint64(len(points))}, nil, nil
@@ -2615,9 +2637,12 @@ func (s *PebbleStateMachine) pebbleHandleTSWritePoint(_ *PebbleStateMachine, _ *
 		Tags:      params.Tags,
 	}
 	if err := s.tsAutoCommit(func(b storage.Batch) error {
+		if err := timeseries.AdmitMetrics(b, []string{params.Metric}, params.MaxMetrics); err != nil {
+			return err
+		}
 		return s.ts.WritePoint(b, dp)
 	}); err != nil {
-		return statemachine.RefusalResult(err), nil, nil
+		return tsRefusalResult(err), nil, nil
 	}
 
 	return sm.Result{Value: 1}, nil, nil

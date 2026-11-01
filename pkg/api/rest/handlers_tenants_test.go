@@ -140,6 +140,14 @@ func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, t
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
+func (m *mockTenantService) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantService) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
 func (m *mockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {
 	if m.tenantBarrierUnsealFn != nil {
 		return m.tenantBarrierUnsealFn(ctx, tenantID, key)
@@ -460,6 +468,18 @@ func TestHandleUpdateTenant_SameIsolationIsANoOp(t *testing.T) {
 	assertStatus(t, rec, http.StatusOK)
 }
 
+func TestHandleUpdateTenant_IsolationChangedNoRegistry(t *testing.T) {
+	svc := authtest.NewTenants(t, "acme")
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(`{"isolation_type":"volume"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertIsolation(t, svc, tenant.IsolationPrefix)
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -520,6 +540,54 @@ func TestHandleCreateTenant_Success(t *testing.T) {
 	}
 	if resp.CreatedAt != tenantTimeStr {
 		t.Fatalf("createdAt = %q, want %q", resp.CreatedAt, tenantTimeStr)
+	}
+}
+
+// TestHandleCreateTenant_SO proves the so_* fields reach OnboardTenant and the
+// SO's credential is answered (go-qrdb#1042); without an SO, none is.
+func TestHandleCreateTenant_SO(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		so         *service.TenantAdminCredential
+	}{
+		{
+			name: "with an SO",
+			body: `{"id":"acme","name":"Acme Corp","so_username":"so","so_cert_pem":"so-cert","so_chain_pem":"so-chain","so_pin":"so-pin"}`,
+			so:   &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Thumbprint: "tp"},
+		},
+		{name: "without an SO", body: `{"id":"acme","name":"Acme Corp"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockTenantService{
+				createTenantFn: func(context.Context, string, string, tenant.IsolationType) (*tenant.TenantInfo, error) {
+					return testTenantInfo(), nil
+				},
+			}
+			onboarding := &fakeTenantOnboarding{tenants: svc, so: tc.so}
+			srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+				WithTenantService(svc), WithTenantOnboarding(onboarding))
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, httptest.NewRequest(http.MethodPost, "/v1/tenants", strings.NewReader(tc.body)))
+			assertStatus(t, rec, http.StatusCreated)
+
+			var resp struct {
+				SO *tenantAdminResponse `json:"so"`
+			}
+			decodeJSON(t, rec, &resp)
+			if tc.so == nil {
+				if resp.SO != nil {
+					t.Fatalf("SO credential = %+v, want none", resp.SO)
+				}
+				return
+			}
+			if resp.SO == nil || resp.SO.UserID != 2 || resp.SO.Username != "so" || resp.SO.CertPEM != "so-cert" || resp.SO.Thumbprint != "tp" {
+				t.Errorf("SO credential = %+v, want so's", resp.SO)
+			}
+			got := onboarding.gotReq
+			if got.SOUsername != "so" || string(got.SOCertPEM) != "so-cert" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" {
+				t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+			}
+		})
 	}
 }
 
@@ -1115,6 +1183,18 @@ func TestMapTenantError_HasData(t *testing.T) {
 	got := mapHTTPError(tenant.ErrTenantHasData)
 	if got != http.StatusConflict {
 		t.Fatalf("mapHTTPError(ErrTenantHasData) = %d, want %d", got, http.StatusConflict)
+	}
+}
+
+func TestMapTenantError_EmptyPassphrase(t *testing.T) {
+	if got := mapHTTPError(tenant.ErrEmptyPassphrase); got != http.StatusBadRequest {
+		t.Fatalf("got %d, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestTenantToResponse_Nil(t *testing.T) {
+	if tenantToResponse(nil) != nil {
+		t.Error("tenantToResponse(nil) should return nil")
 	}
 }
 

@@ -52,8 +52,11 @@ import (
 // encrypted under the same barrier by the same mechanism (the seal barrier's
 // encfs). A nil or disabled enc leaves them plaintext. The memory backend
 // holds nothing on disk and the objstore backend is not a local file system,
-// so both ignore enc.
-func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+// so both ignore enc. storageCfg is the node's storage configuration: the
+// objstore backend reads its Objstore section, and the pebble backend takes
+// its block cache size, WAL directory and open-file limit from CacheSize,
+// WALDir and MaxOpenFiles, a zero value keeping pebbleStorage.DefaultConfig's.
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
 	switch backendType {
 	case database.BackendMemory:
 		return memory.NewStorage(), nil, nil
@@ -66,8 +69,12 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		return stg, nil, nil
 
 	case database.BackendObjstore:
+		objCfg := storageCfg.Objstore
 		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
-		stg, err := objstore.New(provider, settings)
+		stg, err := objstore.New(provider, settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
+			KeyFile:    objCfg.Credentials.KeyFile,
+			SecretFile: objCfg.Credentials.SecretFile,
+		}))
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}
@@ -76,8 +83,15 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 	case database.BackendPebble:
 		pebbleDir := filepath.Join(dataDir, "pebble")
 		cfg := pebbleStorage.DefaultConfig(pebbleDir)
+		if storageCfg.CacheSize > 0 {
+			cfg.CacheSize = storageCfg.CacheSize
+		}
+		if storageCfg.MaxOpenFiles > 0 {
+			cfg.MaxOpenFiles = storageCfg.MaxOpenFiles
+		}
+		cfg.WALDir = storageCfg.WALDir
 		if enc.Enabled() {
-			cfg.FS = enc.FS()
+			cfg.FS = pebbleStorage.WrapVFS(nil, enc.Wrap)
 		}
 		stg, err := pebbleStorage.New(cfg)
 		if err != nil {

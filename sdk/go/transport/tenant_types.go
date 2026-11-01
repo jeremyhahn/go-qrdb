@@ -161,6 +161,22 @@ type CreateTenantRequest struct {
 	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
 	// TrustAnchorsPEM registers the tenant's trust anchors with it.
 	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
+	// SOUsername is the tenant's security officer, optional: a second
+	// principal, distinct from the admin by name and by key, holding the
+	// tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
+	// SOCertPEM, and SOPin are given together or not at all.
+	SOUsername string `json:"so_username,omitempty"`
+	// SOCSRPEM is the SO's certificate signing request, signed as
+	// AdminCSRPEM is.
+	SOCSRPEM string `json:"so_csr_pem,omitempty"`
+	// SOCertPEM is the SO's own certificate, leaf first; it must chain to
+	// one of TrustAnchorsPEM.
+	SOCertPEM string `json:"so_cert_pem,omitempty"`
+	// SOChainPEM holds intermediates for SOCertPEM.
+	SOChainPEM string `json:"so_chain_pem,omitempty"`
+	// SOPin is the SO's second factor, the PIN the SO gate
+	// (auth.so_dual_factor) asks the SO for.
+	SOPin string `json:"so_pin,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.
@@ -193,10 +209,15 @@ type CreateTenantResponse struct {
 
 	// Admin is the tenant's first admin as onboarding left it.
 	Admin TenantAdminCredential `json:"admin"`
+
+	// SO is the tenant's security officer as onboarding left it, when the
+	// request named one.
+	SO *TenantAdminCredential `json:"so,omitempty"`
 }
 
-// TenantAdminCredential is a tenant's first admin and the login certificate
-// bound to it. There is never a private key: the admin keeps its own.
+// TenantAdminCredential is a tenant's first admin, or its SO, and the login
+// certificate bound to it. There is never a private key: the account keeps
+// its own.
 type TenantAdminCredential struct {
 	// UserID is zero while AwaitsBarrierInit.
 	UserID   uint64 `json:"user_id,omitempty,string"`
@@ -459,6 +480,64 @@ type TenantBarrierInitResponse struct {
 	// certificates above are what they unseal with; a retried init answers
 	// already-initialized.
 	AdminPending bool `json:"admin_pending,omitempty"`
+}
+
+// TenantBarrierSignedInitBeginRequest asks for the first half of a two-phase
+// signed tenant barrier init: the init statement the tenant's first admin
+// signs away from the node, for a caller whose key cannot sign over the
+// connection that carries the call (TenantBarrierInitRequest.Signer). The
+// fields are TenantBarrierInitRequest's, plus PublicKey and KeyRef.
+type TenantBarrierSignedInitBeginRequest struct {
+	TenantID string `json:"tenant_id"`
+	// Strategy selects the seal strategy; empty is passphrase.
+	Strategy string `json:"strategy,omitempty"`
+	// KeyRef is the strategy's reference to the tenant's key, for a
+	// strategy that names one; empty otherwise.
+	KeyRef    string `json:"key_ref,omitempty"`
+	Threshold int    `json:"threshold,omitempty"`
+	Shares    int    `json:"shares,omitempty"`
+	// Officers and Policy are a Shamir init's inline roster, as on
+	// TenantBarrierInitRequest.
+	Officers []OfficerRegisterRequest `json:"officers,omitempty"`
+	Policy   string                   `json:"policy,omitempty"`
+	// PublicKey is the DER SubjectPublicKeyInfo of the key that signs the
+	// statement: the tenant's pending first admin's.
+	PublicKey []byte `json:"public_key"`
+}
+
+// TenantBarrierSignedInitBeginResponse carries the statement to sign and the
+// reference TenantBarrierSignedInitComplete redeems it with.
+type TenantBarrierSignedInitBeginResponse struct {
+	TenantID string `json:"tenant_id"`
+	Strategy string `json:"strategy"`
+	// Reference names the statement to TenantBarrierSignedInitComplete. It
+	// is single-use, spent by any complete attempt, and lapses at ExpiresAt.
+	Reference []byte `json:"reference"`
+	// Statement is the exact message to sign, detached: ECDSA over its
+	// SHA-256 digest in ASN.1 form, RSA PKCS #1 v1.5 over its SHA-256 digest,
+	// or pure Ed25519 over the bytes themselves.
+	Statement []byte `json:"statement"`
+	// ExpiresAt is when Reference lapses.
+	ExpiresAt time.Time `json:"expires_at"`
+	// Threshold, TotalShares, ShareCount and Holders report a Shamir init's
+	// prepared split; zero for every other strategy.
+	Threshold   int                       `json:"threshold,omitempty"`
+	TotalShares int                       `json:"total_shares,omitempty"`
+	ShareCount  int                       `json:"share_count,omitempty"`
+	Holders     []TenantBarrierHolderCert `json:"holders,omitempty"`
+}
+
+// TenantBarrierSignedInitCompleteRequest redeems a begun statement with the
+// detached signature over it.
+type TenantBarrierSignedInitCompleteRequest struct {
+	TenantID string `json:"tenant_id"`
+	// Reference is TenantBarrierSignedInitBeginResponse.Reference.
+	Reference []byte `json:"reference"`
+	// Signature is the detached signature over
+	// TenantBarrierSignedInitBeginResponse.Statement.
+	Signature []byte `json:"signature"`
+	// Passphrase is the passphrase strategy's credential; nil otherwise.
+	Passphrase []byte `json:"passphrase,omitempty"`
 }
 
 // UpdateTenantQuotasRequest contains parameters for updating tenant quotas.

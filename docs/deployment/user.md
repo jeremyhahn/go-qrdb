@@ -141,7 +141,7 @@ debugger that is already attached refuses to run unless the opt-out is set.
 
 ## Keep replica clocks disciplined
 
-Lease reads (`lease_read`, on by default) are linearizable only while the
+Lease reads (`raft.lease_read`, on by default) are linearizable only while the
 clock rate drift between the replicas of a shard stays under 1 %, and only
 while every replica uses the same Raft timing. For a cluster of more than one
 node:
@@ -168,7 +168,7 @@ nothing needs configuring for that. See [../05-consistency.md](../05-consistency
   above.
 - **`secure memory budget N MiB rejected ... exceeds the process's
   locked-memory limit`** — you configured a budget larger than the host
-  allows. Raise the limit as above, or lower `secure_memory_budget_mib`.
+  allows. Raise the limit as above, or lower `server.secure_memory_budget_mib`.
 - **`QRDB_SECURE_ALLOW_PROCESS_INSPECTION="..." is not a boolean`** — the
   opt-out holds something other than `true`/`false`/`1`/`0`. Unset it, or set
   it to `true` to debug.
@@ -185,8 +185,7 @@ nothing needs configuring for that. See [../05-consistency.md](../05-consistency
   `start` could not read `TracerPid` from `/proc/self/status`. This is
   typical of a sandbox or minimal container with no `/proc` mounted. Without
   that line `qrdbd` cannot show that nothing is already attached to it, so it
-  refuses to start (`ProcessHardeningError`, mechanism `tracer check`) rather
-  than assume it is untraced. Mount procfs in the container (`/proc` is
+  refuses to start rather than assume it is untraced. Mount procfs in the container (`/proc` is
   present by default in Docker, Kubernetes and systemd services), or set the
   opt-out for a debugging session.
 - **`QRDB_SECURE_ALLOW_PROCESS_INSPECTION is refused in FIPS 140-3 mode`** — a

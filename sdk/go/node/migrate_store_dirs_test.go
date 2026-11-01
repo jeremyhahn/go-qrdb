@@ -87,6 +87,129 @@ func TestExistingDirs_KeepsOnlyExistingDirectories(t *testing.T) {
 	require.Nil(t, existingDirs(filepath.Join(root, "missing")))
 }
 
+// TestNodeMigrationProvider_StoreDirs_RefusesAnExternalPebbleWAL pins that a
+// Pebble store opened with storage.wal_dir outside its directory is refused
+// before the migration starts: the migration moves the store directory
+// alone, so WAL-only records would be lost and the external WAL left under
+// the old encryption.
+func TestNodeMigrationProvider_StoreDirs_RefusesAnExternalPebbleWAL(t *testing.T) {
+	dataDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dataDir, "pebble"), 0o700))
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Storage.WALDir = t.TempDir()
+
+	p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
+	got, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
+	var notSupported *MigrationNotSupportedError
+	require.ErrorAs(t, err, &notSupported)
+	require.Contains(t, notSupported.Reason, "storage.wal_dir")
+	require.Empty(t, got.Dirs())
+}
+
+// TestNodeMigrationProvider_StoreDirs_WALDirWithoutAnExternalPebbleWAL pins
+// the cases storage.wal_dir does not refuse: a wal_dir naming the store's
+// own directory, and a node with no Pebble store for it to apply to.
+func TestNodeMigrationProvider_StoreDirs_WALDirWithoutAnExternalPebbleWAL(t *testing.T) {
+	t.Run("wal_dir is the store directory", func(t *testing.T) {
+		dataDir := t.TempDir()
+		pebbleDir := filepath.Join(dataDir, "pebble")
+		require.NoError(t, os.Mkdir(pebbleDir, 0o700))
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Storage.WALDir = pebbleDir + string(filepath.Separator)
+
+		p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
+		got, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
+		require.NoError(t, err)
+		require.Equal(t, []string{pebbleDir}, got.Pebble)
+	})
+	t.Run("no pebble store", func(t *testing.T) {
+		dataDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dataDir, "file"), 0o700))
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Storage.WALDir = t.TempDir()
+
+		p := &nodeMigrationProvider{node: &Node{retainedStandalone: &pendingStandaloneBoot{dataDir: dataDir, cfg: cfg}}}
+		got, err := p.StoreDirs(context.Background(), service.BarrierScope{Kind: service.ScopeSystem})
+		require.NoError(t, err)
+		require.Equal(t, []string{filepath.Join(dataDir, "file")}, got.File)
+	})
+}
+
+// TestExternalPebbleWAL_OnlyAWALOutsideTheStore pins externalPebbleWAL: no
+// configuration, an unset wal_dir and one naming the store directory are
+// not external; any other directory is.
+func TestExternalPebbleWAL_OnlyAWALOutsideTheStore(t *testing.T) {
+	dataDir := t.TempDir()
+	require.Empty(t, externalPebbleWAL(nil, dataDir))
+	cfg := qrdbconfig.DefaultConfig()
+	require.Empty(t, externalPebbleWAL(cfg, dataDir))
+	cfg.Storage.WALDir = filepath.Join(dataDir, "pebble")
+	require.Empty(t, externalPebbleWAL(cfg, dataDir))
+	cfg.Storage.WALDir = filepath.Join(dataDir, "wal")
+	require.Equal(t, filepath.Join(dataDir, "wal"), externalPebbleWAL(cfg, dataDir))
+}
+
+// TestNode_EnableEncryption_ExternalPebbleWALRefusedAndIntact drives the
+// combination end to end: a Pebble node with storage.wal_dir outside its
+// data directory acknowledges writes, the system migration is refused
+// before it touches anything, and every write is still served, then served
+// again after a restart under the unchanged none barrier.
+func TestNode_EnableEncryption_ExternalPebbleWALRefusedAndIntact(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walDir := t.TempDir()
+	newConfig := func() *qrdbconfig.Config {
+		cfg := qrdbconfig.DefaultConfig()
+		cfg.Auth.Enabled = qrdbconfig.BoolPtr(false) // not an authorization test; see testhelpers_test.go
+		cfg.Raft.DataDir = dataDir
+		cfg.Storage.WALDir = walDir
+		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+		cfg.Seal.Enabled = true
+		cfg.Seal.Strategy = "none"
+		cfg.Protocols.REST = false
+		cfg.Protocols.GRPC = false
+		cfg.Protocols.QUIC = false
+		cfg.Protocols.Unix = false
+		cfg.Protocols.MCP = false
+		return cfg
+	}
+
+	n, err := NewStandaloneNode(ctx, newConfig(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+
+	want := map[string]string{}
+	for i := 0; i < 20; i++ {
+		k, v := fmt.Sprintf("key/%02d", i), fmt.Sprintf("value-%d", i)
+		require.NoError(t, n.KVService().Put(ctx, k, []byte(v)))
+		want[k] = v
+	}
+
+	err = n.EnableEncryption(ctx, service.BarrierScope{Kind: service.ScopeSystem}, seal.MigrationOptions{
+		TargetStrategy: seal.StrategyPassphrase,
+		Mechanism:      seal.MechanismSwap,
+		Availability:   seal.AvailabilityQuiesced,
+		Credentials:    seal.MustCredentials(ctx, []byte("external-wal-pass")),
+	})
+	var notSupported *MigrationNotSupportedError
+	require.ErrorAs(t, err, &notSupported)
+	for k, v := range want {
+		got, gerr := n.KVService().Get(ctx, k)
+		require.NoErrorf(t, gerr, "Get(%q) after the refused migration", k)
+		require.Equal(t, v, string(got))
+	}
+	require.NoError(t, n.Close())
+
+	n2, err := NewStandaloneNode(ctx, newConfig(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n2.Close() })
+	for k, v := range want {
+		got, gerr := n2.KVService().Get(ctx, k)
+		require.NoErrorf(t, gerr, "Get(%q) after restart", k)
+		require.Equal(t, v, string(got))
+	}
+}
+
 // TestNode_EnableEncryption_SystemNoneToPassphrase_FileBackend is the file
 // backend's acceptance for a system encryption migration: a node whose store
 // is storage.backend: file moves from strategy none to a passphrase, serves

@@ -30,7 +30,7 @@ import (
 func clusterNode(t *testing.T, replicated kvstore.AtomicKVStore) *Manager {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(claimerOver(t, replicated))
 	t.Cleanup(func() { _ = m.Close() })
 	return m
@@ -146,7 +146,7 @@ func (f failingClaimer) ClaimShardID(context.Context) (uint64, error) { return 0
 func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	storeDown := errors.New("system store unavailable")
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(failingClaimer{err: storeDown})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -161,7 +161,7 @@ func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	if _, err := m.Get("refused"); err == nil {
 		t.Fatal("a refused create left a catalog entry")
 	}
-	if _, err := os.Stat(m.dbDir("refused")); !os.IsNotExist(err) {
+	if _, err := os.Stat(m.dbDir("", "refused")); !os.IsNotExist(err) {
 		t.Fatalf("a refused create left its directory: %v", err)
 	}
 }

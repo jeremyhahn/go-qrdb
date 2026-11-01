@@ -36,8 +36,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
@@ -102,7 +101,7 @@ var (
 // directory must be on a local filesystem (flock is not reliable over NFS).
 type Engine struct {
 	dir    string
-	fs     vfs.FS
+	fs     filesys.FS
 	atRest string
 	closed atomic.Bool
 
@@ -241,7 +240,7 @@ const (
 // satisfies it. One whose Enabled reports false leaves the engine plaintext.
 type Encryptor interface {
 	Enabled() bool
-	Wrap(base vfs.FS) vfs.FS
+	Wrap(base filesys.FS) filesys.FS
 }
 
 // Option configures New.
@@ -312,9 +311,9 @@ func New(dir string, opts ...Option) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext, lock: lock, syncs: cfg.syncs}
+	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext, lock: lock, syncs: cfg.syncs}
 	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
-		e.fs = cfg.encryptor.Wrap(vfs.Default)
+		e.fs = cfg.encryptor.Wrap(filesys.Default)
 		e.atRest = atRestEncrypted
 	}
 	if err := e.recoverUnderLock(); err != nil {
@@ -1126,7 +1125,7 @@ func isNotExist(err error) bool {
 // engine's file system decrypts when the engine is encrypted. Under a sealed
 // barrier an encrypted file cannot be opened and the barrier's error is
 // returned unwrapped (seal.ErrSealed).
-func readFile(fs vfs.FS, path string) ([]byte, error) {
+func readFile(fs filesys.FS, path string) ([]byte, error) {
 	f, err := fs.Open(path)
 	if err != nil {
 		return nil, err
@@ -1148,9 +1147,9 @@ func readFile(fs vfs.FS, path string) ([]byte, error) {
 // (go-qrdb#268). A crash leaves either the old file or the new one, never a
 // torn one; a leftover temp file is removed at open, and a failed write's
 // temp file through discardTemp. path lies beneath the store root.
-func (e *Engine) writeDurable(fs vfs.FS, path, tmpPrefix string, data []byte) error {
+func (e *Engine) writeDurable(fs filesys.FS, path, tmpPrefix string, data []byte) error {
 	tmpName := filepath.Join(filepath.Dir(path), tmpPrefix+rand.Text())
-	f, err := fs.Create(tmpName, vfs.WriteCategoryUnspecified)
+	f, err := fs.Create(tmpName)
 	if err != nil {
 		return err
 	}
@@ -1198,7 +1197,7 @@ func (e *Engine) ensureFormatMarker() error {
 	}
 
 	markerPath := filepath.Join(e.dir, formatMarkerFileName)
-	data, err := readFile(vfs.Default, markerPath)
+	data, err := readFile(filesys.Default, markerPath)
 	switch {
 	case err == nil:
 		version, atRest, _ := strings.Cut(string(data), "/")
@@ -1235,7 +1234,7 @@ func (e *Engine) ensureFormatMarker() error {
 // must be read, so it has to be readable before that choice is made, and it
 // holds no data.
 func (e *Engine) writeFormatMarker() error {
-	return e.writeDurable(vfs.Default, filepath.Join(e.dir, formatMarkerFileName), tmpFormatPrefix, []byte(formatMarker(e.atRest)))
+	return e.writeDurable(filesys.Default, filepath.Join(e.dir, formatMarkerFileName), tmpFormatPrefix, []byte(formatMarker(e.atRest)))
 }
 
 // formatMarker is the content of formatMarkerFileName for a store with the

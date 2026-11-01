@@ -597,6 +597,14 @@ func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _ str
 	return nil, ErrBarrierNotEnabled
 }
 
+func (s *kvTenantService) TenantBarrierInitBegin(_ context.Context, _ *TenantBarrierInitBeginRequest) (*TenantBarrierInitBeginResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
+func (s *kvTenantService) TenantBarrierInitComplete(_ context.Context, _ *TenantBarrierInitCompleteRequest) (*TenantBarrierInitResult, error) {
+	return nil, ErrBarrierNotEnabled
+}
+
 // TenantBarrierUnseal returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
 func (s *kvTenantService) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {

@@ -264,15 +264,13 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 			ts := testTimestamp()
 			roleName := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
 			tenantID := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
-			admin.grantSecurityOfficer(t, cfg, proto)
-
-			var roleID string
-			t.Cleanup(func() {
-				if roleID != "" {
-					admin.exec(t, cfg, proto, "roles", "delete", roleID) //nolint:errcheck
-				}
-			})
+			// The kv:get role needs a creator holding kv:get, so a second
+			// account holding Admin and Operator writes it (the grant rule).
+			// It does not hold SO, the one built-in role that carries
+			// roles:delete, so the delete refused below is the Admin's own
+			// refusal. The tenant's delete, registered by
+			// newTenantBootstrapAdmin, removes the role with it.
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create a role with --tenant-id.
 			stdout, stderr, err := admin.exec(t, cfg, proto,
@@ -291,6 +289,7 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 				fmt.Sprintf("[%s] roles create --tenant-id should contain 'Name:'", proto))
 
 			// Extract role ID.
+			var roleID string
 			for _, line := range strings.Split(stdout, "\n") {
 				if strings.HasPrefix(line, "ID:") {
 					roleID = strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
@@ -301,16 +300,10 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 				t.Fatalf("[%s] roles create --tenant-id: could not extract role ID", proto)
 			}
 
-			// Cleanup: delete the role.
+			// roles:delete is the Security Officer's alone: the tenant Admin
+			// that created the role cannot delete it.
 			stdout, stderr, err = admin.exec(t, cfg, proto, "roles", "delete", roleID)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] roles delete failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "OK",
-				fmt.Sprintf("[%s] roles delete should output 'OK'", proto))
-			roleID = ""
+			assertPermissionDenied(t, proto, "roles delete (tenant Admin)", stdout, stderr, err)
 
 			t.Logf("[%s] roles create tenant passed for: %s", proto, roleName)
 		})
@@ -331,11 +324,14 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 
 			ts := testTimestamp()
 			tenantID := fmt.Sprintf("role-page-%s-%d", proto, ts)
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
-			admin.grantSecurityOfficer(t, cfg, proto)
+			// The kv:get roles need a creator holding kv:get, so a second
+			// account holding Admin and Operator writes them (the grant rule).
+			// The tenant's delete, registered by newTenantBootstrapAdmin,
+			// removes the roles with it: roles:delete is the Security
+			// Officer's alone, and the tenant Admin is not one.
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create 3 roles for pagination testing.
-			var roleIDs []string
 			for i := 1; i <= 3; i++ {
 				roleName := fmt.Sprintf("role-page-%d-%s-%d", i, proto, ts)
 
@@ -350,25 +346,9 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 					t.Fatalf("[%s] roles create %s failed: %v", proto, roleName, err)
 				}
 
-				var rid string
-				for _, line := range strings.Split(stdout, "\n") {
-					if strings.HasPrefix(line, "ID:") {
-						rid = strings.TrimSpace(strings.TrimPrefix(line, "ID:"))
-						break
-					}
-				}
-				if rid == "" {
-					t.Fatalf("[%s] failed to extract role ID from create output for %s", proto, roleName)
-				}
-				roleIDs = append(roleIDs, rid)
+				assertContains(t, stdout, "ID:",
+					fmt.Sprintf("[%s] roles create %s should contain 'ID:'", proto, roleName))
 			}
-
-			// Register cleanup to delete all created roles.
-			t.Cleanup(func() {
-				for _, rid := range roleIDs {
-					admin.exec(t, cfg, proto, "roles", "delete", rid) //nolint:errcheck
-				}
-			})
 
 			// List roles with pagination.
 			stdout, stderr, err := admin.exec(t, cfg, proto,
@@ -391,19 +371,6 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 			}
 			assertNotEmpty(t, stdout,
 				fmt.Sprintf("[%s] roles list --tenant-id should not be empty", proto))
-
-			// Delete all created roles.
-			for _, rid := range roleIDs {
-				stdout, stderr, err = admin.exec(t, cfg, proto, "roles", "delete", rid)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] roles delete %s failed: %v", proto, rid, err)
-				}
-			}
-
-			// Clear roleIDs so cleanup does not attempt redundant deletes.
-			roleIDs = nil
 
 			t.Logf("[%s] roles list pagination passed", proto)
 		})

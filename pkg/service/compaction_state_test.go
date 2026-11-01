@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -104,9 +105,9 @@ func TestCompactionState_RefusedBeforeTheGateActivates(t *testing.T) {
 		"sample": func() error { return svc.RecordCompactionSample(ctx, "acme/app/", time.Now(), 1) },
 		"clear":  func() error { return svc.ClearCompactionState(ctx, "acme/app/") },
 	} {
-		var gate *featuregate.NotActiveError
+		var gate *feature.NotActiveError
 		if err := write(); !errors.As(err, &gate) || gate.Feature != featuregate.PrefixCompaction {
-			t.Fatalf("%s before the gate opened = %v, want *featuregate.NotActiveError for prefix-compaction", name, err)
+			t.Fatalf("%s before the gate opened = %v, want *feature.NotActiveError for prefix-compaction", name, err)
 		}
 	}
 	if len(*cmds) != 0 {

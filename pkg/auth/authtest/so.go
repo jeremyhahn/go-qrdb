@@ -97,6 +97,7 @@ type Barrier struct {
 	revocations      atomic.Int64
 	deletes          atomic.Int64
 	seals            atomic.Int64
+	rewraps          atomic.Int64
 	generations      atomic.Int64
 	shamirInits      atomic.Int64
 	officerRegs      atomic.Int64
@@ -114,10 +115,10 @@ func (b *Barrier) BarrierInitialize(context.Context, []byte) error {
 	return nil
 }
 
-// BarrierInitialized reports false, consistent with this double's
-// BarrierInitialize, which records every call and never refuses one as
-// already initialized.
-func (b *Barrier) BarrierInitialized(context.Context) (bool, error) { return false, nil }
+// BarrierInitializePrecondition admits every initialize, consistent with
+// this double's BarrierInitialize, which records every call and never
+// refuses one.
+func (b *Barrier) BarrierInitializePrecondition(context.Context) error { return nil }
 
 // BarrierUnseal records the unseal.
 func (b *Barrier) BarrierUnseal(context.Context, []byte) error {
@@ -193,6 +194,15 @@ func (b *Barrier) BarrierSeal(context.Context) error {
 
 // Seals reports how many seals reached the service.
 func (b *Barrier) Seals() int64 { return b.seals.Load() }
+
+// BarrierChangePassphrase records the passphrase change.
+func (b *Barrier) BarrierChangePassphrase(context.Context, []byte, []byte) error {
+	b.rewraps.Add(1)
+	return nil
+}
+
+// PassphraseChanges returns how many passphrase changes reached the service.
+func (b *Barrier) PassphraseChanges() int64 { return b.rewraps.Load() }
 
 // BarrierDeleteRecoveryKeys records the deletion.
 func (b *Barrier) BarrierDeleteRecoveryKeys(context.Context) error {

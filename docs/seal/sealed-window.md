@@ -415,7 +415,7 @@ match it with `errors.Is`.
 
 With encfs enabled, the data-plane Pebble instance cannot be
 opened while the barrier is sealed: every file open in the
-encrypting `vfs.FS` returns `seal.ErrSealed`. The daemon therefore
+encrypting `filesys.FS` returns `seal.ErrSealed`. The daemon therefore
 restructures the boot sequence as follows:
 
 1. `cmd/qrdbd/seal_subsystem.go:initSealSubsystem` builds the seal
@@ -429,7 +429,8 @@ restructures the boot sequence as follows:
    `store.NewPebbleCreateFuncWith`) is built with
    `store.WithEncryptor(atrest.New(barrier))` as its first pebble option, so
    when `initializeNode` later opens the data-plane Pebble it does
-   so on top of the encfs `vfs.FS`.
+   so on top of the encfs `filesys.FS`, presented to Pebble by
+   `pebblestore.WrapVFS`.
 3. While `barrier.IsSealed()` is true, `awaitUnseal` brings up the
    sealed-window listener via the shared
    `pkg/server.ServeSealedWindow(ctx, cfg, probe, opts...)`: an

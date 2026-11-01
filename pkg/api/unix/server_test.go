@@ -1221,9 +1221,9 @@ func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatu
 }
 func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (s *stubBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (s *stubBarrierSvc) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error) { return false, nil }
 
@@ -1696,6 +1696,9 @@ func (s *stubMVCCSvc) CurrentRevision(_ context.Context) (int64, error) { return
 // stubVectorSvc satisfies service.VectorServicer for option propagation tests.
 type stubVectorSvc struct{}
 
+func (s *stubVectorSvc) UpdateNamespace(_ context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return nil, nil
+}
 func (s *stubVectorSvc) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	return nil, nil
 }

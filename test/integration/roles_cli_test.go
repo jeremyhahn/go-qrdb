@@ -595,20 +595,20 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 	// Own tenant: create, with no --tenant-id and naming the tenant, then
 	// update the name and the grant.
 	created := runRoleCLI(t, node, proto, connA, "create",
-		"--name", "app-reader-"+suffix, "--permissions", "kv:get")
+		"--name", "app-reader-"+suffix, "--permissions", "users:read")
 	if created.TenantID != tenantA || created.System {
 		t.Fatalf("[%s] created role = tenant %q system %v, want tenant %s, not system", proto.name, created.TenantID, created.System, tenantA)
 	}
 	named := runRoleCLI(t, node, proto, connA, "create",
-		"--name", "app-named-"+suffix, "--permissions", "kv:get", "--tenant-id", tenantA)
+		"--name", "app-named-"+suffix, "--permissions", "users:read", "--tenant-id", tenantA)
 	if named.TenantID != tenantA {
 		t.Fatalf("[%s] role created naming tenant %s landed in %q", proto.name, tenantA, named.TenantID)
 	}
 	updated := runRoleCLI(t, node, proto, connA, "update", created.ID,
-		"--name", "app-writer-"+suffix, "--permissions", "kv:get,kv:put")
+		"--name", "app-writer-"+suffix, "--permissions", "users:read,users:list")
 	if updated.ID != created.ID || updated.Name != "app-writer-"+suffix ||
-		!stringSliceEqualUnordered(updated.Permissions, []string{"kv:get", "kv:put"}) {
-		t.Fatalf("[%s] updated role = %+v, want %s renamed app-writer-%s with [kv:get kv:put]", proto.name, updated, created.ID, suffix)
+		!stringSliceEqualUnordered(updated.Permissions, []string{"users:read", "users:list"}) {
+		t.Fatalf("[%s] updated role = %+v, want %s renamed app-writer-%s with [users:read users:list]", proto.name, updated, created.ID, suffix)
 	}
 	if names := roleNamesIn(t, node, proto, connA, tenantA); !slices.Contains(names, "app-writer-"+suffix) {
 		t.Fatalf("[%s] tenant %s roles lack the updated role: %v", proto.name, tenantA, names)
@@ -617,19 +617,19 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 	// Another tenant: tenant B's own Admin creates a role there; tenant A's
 	// Admin can neither create in B nor update B's role.
 	victim := runRoleCLI(t, node, proto, connB, "create",
-		"--name", "b-reader-"+suffix, "--permissions", "kv:get")
+		"--name", "b-reader-"+suffix, "--permissions", "users:read")
 	intruder := "intruder-" + suffix
 	assertCrossTenantIAMForbidden(t, node, proto, connA, victim.Name,
-		"roles", "create", "--name", intruder, "--permissions", "kv:get", "--tenant-id", tenantB)
+		"roles", "create", "--name", intruder, "--permissions", "users:read", "--tenant-id", tenantB)
 	if out, err := runQRDB(t, node.cli, connA, "roles", "update", victim.ID,
-		"--name", intruder, "--permissions", "kv:get,kv:put"); err == nil {
+		"--name", intruder, "--permissions", "users:read,users:list"); err == nil {
 		t.Fatalf("[%s] tenant A admin updated tenant B's role %s: %s", proto.name, victim.ID, out)
 	} else if strings.Contains(out, victim.Name) {
 		t.Fatalf("[%s] refused update leaked tenant B's role name %q: %s", proto.name, victim.Name, out)
 	}
 	unchanged := runRoleCLI(t, node, proto, connB, "get", victim.ID)
-	if unchanged.Name != victim.Name || !stringSliceEqualUnordered(unchanged.Permissions, []string{"kv:get"}) {
-		t.Fatalf("[%s] tenant B's role after refused writes = %+v, want %s with [kv:get]", proto.name, unchanged, victim.Name)
+	if unchanged.Name != victim.Name || !stringSliceEqualUnordered(unchanged.Permissions, []string{"users:read"}) {
+		t.Fatalf("[%s] tenant B's role after refused writes = %+v, want %s with [users:read]", proto.name, unchanged, victim.Name)
 	}
 	if names := roleNamesIn(t, node, proto, connB, tenantB); slices.Contains(names, intruder) {
 		t.Fatalf("[%s] tenant B holds %q after a refused create: %v", proto.name, intruder, names)
@@ -637,7 +637,7 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 
 	// The system tenant: refused the same way, and nothing lands there.
 	assertCrossTenantIAMForbidden(t, node, proto, connA, "",
-		"roles", "create", "--name", intruder, "--permissions", "kv:get", "--tenant-id", "system")
+		"roles", "create", "--name", intruder, "--permissions", "users:read", "--tenant-id", "system")
 	if out, err := runCLIProto(t, node, proto, "--output", "json", "roles", "list"); err != nil {
 		t.Fatalf("[%s] system roles list: %v\noutput: %s", proto.name, err, out)
 	} else if strings.Contains(out, intruder) {
@@ -646,17 +646,69 @@ func testRolesTenantAdminOverProtocol(t *testing.T, node *multiProtoNode, proto 
 
 	// The built-in roles: the name is reserved, and the record is immutable.
 	if out, err := runQRDB(t, node.cli, connA, "roles", "create",
-		"--name", role.RoleNameAdmin, "--permissions", "kv:get"); err == nil {
+		"--name", role.RoleNameAdmin, "--permissions", "users:read"); err == nil {
 		t.Fatalf("[%s] tenant admin created a role named %q: %s", proto.name, role.RoleNameAdmin, out)
 	}
 	adminID := role.SystemRoleID(tenantA, role.RoleNameAdmin)
 	if out, err := runQRDB(t, node.cli, connA, "roles", "update", adminID,
-		"--permissions", "kv:get"); err == nil {
+		"--permissions", "users:read"); err == nil {
 		t.Fatalf("[%s] tenant admin re-permissioned the built-in admin role: %s", proto.name, out)
 	}
 	builtIn := runRoleCLI(t, node, proto, connA, "get", adminID)
 	if builtIn.Name != role.RoleNameAdmin || !builtIn.System ||
 		!slices.Contains(builtIn.Permissions, "roles:create") {
 		t.Fatalf("[%s] built-in admin role after refused update = %+v", proto.name, builtIn)
+	}
+}
+
+// TestRolesTenantAdminSOGrantRefused_CLI_PerProtocol drives `qrdb roles
+// assign` as a tenant's bootstrap Admin over every CLI transport: the Admin
+// holds roles:assign in its own tenant, yet granting the tenant's built-in SO
+// role is the tenant SO's alone (SORoleRequiredError, 403 /
+// PermissionDenied), so the Admin cannot make itself the Security Officer.
+func TestRolesTenantAdminSOGrantRefused_CLI_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startStrictSeparationNode(t)
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testRolesTenantAdminSOGrantRefusedOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testRolesTenantAdminSOGrantRefusedOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	tenantID := fmt.Sprintf("tso-%s-%d", proto.name, time.Now().UnixNano())
+	conn := tenantAdminConn(t, node, proto, tenantID)
+	cred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("[%s] no registered admin credential for tenant %s", proto.name, tenantID)
+	}
+	adminID := awaitTenantAdminID(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second))
+	soID := role.SystemRoleID(tenantID, role.RoleNameSO)
+
+	out, err := runQRDB(t, node.cli, conn, "roles", "assign", "--user", adminID, "--role", soID)
+	if err == nil {
+		t.Fatalf("[%s] tenant Admin granted itself the SO role %s: %s", proto.name, soID, out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "so role required") &&
+		!strings.Contains(lower, "permission denied") &&
+		!strings.Contains(lower, "forbidden") {
+		t.Fatalf("[%s] SO grant by the tenant Admin must be refused as a permission denial, got: %s", proto.name, out)
+	}
+
+	// The refusal changed nothing: the Admin still holds Admin, and not SO.
+	user, err := runQRDB(t, node.cli, conn, "--output", "json", "users", "get", adminID)
+	if err != nil {
+		t.Fatalf("[%s] users get %s: %v\noutput: %s", proto.name, adminID, err, user)
+	}
+	if !strings.Contains(user, role.SystemRoleID(tenantID, role.RoleNameAdmin)) {
+		t.Fatalf("[%s] tenant Admin %s lacks the Admin role: %s", proto.name, adminID, user)
+	}
+	if strings.Contains(user, soID) {
+		t.Fatalf("[%s] tenant Admin %s holds the SO role after a refused grant: %s", proto.name, adminID, user)
 	}
 }

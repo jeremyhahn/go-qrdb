@@ -120,60 +120,65 @@ func (m *DatabaseBarrierManager) registerShamir(ctx context.Context, dbName, ten
 	}
 	barrierCfg := m.barrierConfig(dbName, tenantID)
 	barrierCfg.Shamir = &seal.ShamirConfig{Threshold: cfg.SharesRequired, TotalShares: cfg.SharesTotal}
-	tb, err := m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
+	key := barrierKey(dbName, tenantID)
+	tb, err := m.registry.RegisterTenant(ctx, key, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 	svc, err := ceremony.NewDatabaseCeremonyService(tenantid.Normalize(tenantID), dbName, tb.Barrier(), *deps, m.logger)
 	if err != nil {
-		_ = m.registry.RemoveTenant(dbName)
+		_ = m.registry.RemoveTenant(key)
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
 	tb.Barrier().SetCeremonyDistributor(svc)
 	tb.Barrier().SetHolderVerifier(svc)
-	m.holders.Set(dbName, svc)
+	m.holders.Set(key, svc)
 	m.logger.Info("database shamir barrier registered",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName),
 		slog.Int("threshold", cfg.SharesRequired),
 		slog.Int("total", cfg.SharesTotal))
 	return nil
 }
 
-// Holders returns the holder authority and the barrier of dbName's Shamir
-// barrier, for the share-holder operations the database service serves.
-func (m *DatabaseBarrierManager) Holders(dbName string) (*ceremony.ScopedCeremonyService, *seal.StorageBarrier, error) {
-	svc, ok := m.holders.Get(dbName)
+// Holders returns the holder authority and the barrier of the Shamir barrier
+// of tenantID's dbName, for the share-holder operations the database service
+// serves.
+func (m *DatabaseBarrierManager) Holders(dbName, tenantID string) (*ceremony.ScopedCeremonyService, *seal.StorageBarrier, error) {
+	key := barrierKey(dbName, tenantID)
+	svc, ok := m.holders.Get(key)
 	if !ok {
 		return nil, nil, &NotShamirBarrierError{Name: dbName}
 	}
-	tb, err := m.registry.GetTenant(dbName)
+	tb, err := m.registry.GetTenant(key)
 	if err != nil {
 		return nil, nil, &NotShamirBarrierError{Name: dbName}
 	}
 	return svc, tb.Barrier(), nil
 }
 
-// SubmitHolderShare counts one authenticated holder's share toward dbName's
-// Shamir barrier round; a completed seal round runs seal
+// SubmitHolderShare counts one authenticated holder's share toward the
+// Shamir barrier round of tenantID's dbName; a completed seal round runs seal
 // (seal.BarrierRegistry.SubmitTenantHolderShare). An unseal submission is
 // ordered against the node seal, and an unseal it completes clears the
 // database's pending node unseal.
-func (m *DatabaseBarrierManager) SubmitHolderShare(ctx context.Context, dbName string, sub *seal.HolderSubmission, sealFn func() error) (*seal.QuorumOutcome, error) {
-	if _, ok := m.holders.Get(dbName); !ok {
+func (m *DatabaseBarrierManager) SubmitHolderShare(ctx context.Context, dbName, tenantID string, sub *seal.HolderSubmission, sealFn func() error) (*seal.QuorumOutcome, error) {
+	key := barrierKey(dbName, tenantID)
+	if _, ok := m.holders.Get(key); !ok {
 		if sub != nil {
 			secure.Wipe(sub.Share)
 		}
 		return nil, &NotShamirBarrierError{Name: dbName}
 	}
-	return m.registry.SubmitTenantHolderShare(ctx, dbName, sub, sealFn)
+	return m.registry.SubmitTenantHolderShare(ctx, key, sub, sealFn)
 }
 
-// InitializeShamir initializes dbName's Shamir barrier: it generates the root
-// key and splits it to the database's enrolled holders under policy, sealing
-// each share to its holder. The number of enrolled holders must equal the
-// barrier's share count.
-func (m *DatabaseBarrierManager) InitializeShamir(ctx context.Context, dbName string, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
-	holders, barrier, err := m.Holders(dbName)
+// InitializeShamir initializes the Shamir barrier of tenantID's dbName: it
+// generates the root key and splits it to the database's enrolled holders
+// under policy, sealing each share to its holder. The number of enrolled
+// holders must equal the barrier's share count.
+func (m *DatabaseBarrierManager) InitializeShamir(ctx context.Context, dbName, tenantID string, policy seal.FactorPolicy) (*seal.ShamirInitParams, error) {
+	holders, barrier, err := m.Holders(dbName, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +189,7 @@ func (m *DatabaseBarrierManager) InitializeShamir(ctx context.Context, dbName st
 		return nil, err
 	}
 	m.logger.Info("database shamir barrier initialized",
+		slog.String("tenant", tenantid.Normalize(tenantID)),
 		slog.String("database", dbName),
 		slog.Int("threshold", params.Threshold),
 		slog.Int("total", params.TotalShares))

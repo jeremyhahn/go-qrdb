@@ -79,6 +79,10 @@ type ragMockVecSvc struct {
 
 var _ VectorService = (*ragMockVecSvc)(nil)
 
+func (m *ragMockVecSvc) UpdateNamespace(_ context.Context, _ *UpdateNamespaceRequest) (*UpdateNamespaceResponse, error) {
+	return &UpdateNamespaceResponse{}, nil
+}
+
 func (m *ragMockVecSvc) CreateNamespace(_ context.Context, _ *CreateNamespaceRequest) (*CreateNamespaceResponse, error) {
 	return &CreateNamespaceResponse{}, nil
 }

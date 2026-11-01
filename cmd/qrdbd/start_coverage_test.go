@@ -478,6 +478,14 @@ func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ 
 	return nil, nil
 }
 
+func (m *mockTenantServicer) TenantBarrierInitBegin(context.Context, *tenantpkg.TenantBarrierInitBeginRequest) (*tenantpkg.TenantBarrierInitBeginResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantServicer) TenantBarrierInitComplete(context.Context, *tenantpkg.TenantBarrierInitCompleteRequest) (*tenantpkg.TenantBarrierInitResult, error) {
+	return nil, tenantpkg.ErrBarrierNotEnabled
+}
+
 func (m *mockTenantServicer) TenantBarrierUnseal(_ context.Context, _ string, _ []byte) error {
 	return nil
 }

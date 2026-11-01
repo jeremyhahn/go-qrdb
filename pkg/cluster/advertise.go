@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
 // APIProtocol names one of the client-facing API protocols a node serves. A
@@ -162,6 +164,38 @@ func BuildAPIEndpoints(host string, ports map[APIProtocol]int) (map[APIProtocol]
 		return nil, nil
 	}
 	return endpoints, nil
+}
+
+// AdvertisedAPIEndpoints returns the API endpoints a node configured by cfg
+// publishes in its member record: the advertise host (Server.AdvertiseHost,
+// else the host of Raft.RaftAddress -- the address peers already dial) joined
+// with the port of every client-facing protocol the node serves. A disabled
+// protocol is omitted, and a host no peer can dial (a wildcard) publishes
+// nothing rather than an address that cannot be reached. The derivation lives
+// here so the daemon and the embeddable node publish the same record from the
+// same configuration.
+func AdvertisedAPIEndpoints(cfg *config.Config) (map[APIProtocol]string, error) {
+	host := cfg.Server.AdvertiseHost
+	if host == "" {
+		host = HostFromAddress(cfg.Raft.RaftAddress)
+	}
+	served := []struct {
+		proto   APIProtocol
+		enabled bool
+		port    int
+	}{
+		{APIProtocolREST, cfg.Protocols.REST, cfg.Server.AdminPort},
+		{APIProtocolGRPC, cfg.Protocols.GRPC, cfg.Server.GRPCPort},
+		{APIProtocolQUIC, cfg.Protocols.QUIC, cfg.Server.QUICPort},
+		{APIProtocolMCP, cfg.Protocols.MCP, cfg.MCP.Port},
+	}
+	ports := make(map[APIProtocol]int, len(served))
+	for _, p := range served {
+		if p.enabled {
+			ports[p.proto] = p.port
+		}
+	}
+	return BuildAPIEndpoints(host, ports)
 }
 
 // HostFromAddress extracts the host portion of a "host:port" address. It is the

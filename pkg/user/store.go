@@ -1247,6 +1247,25 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 		}
 	}
 
+	// The caller's guard, judged the same way and for the same reason: against
+	// prior, the base of the swap below, so the decision is bound to the
+	// version this write commits over (UpdateUserRequest.Guard).
+	if req.Guard != nil {
+		next := *existing
+		if req.RoleIDs != nil {
+			next.RoleIDs = req.RoleIDs
+		}
+		if req.RoleBindings != nil {
+			next.RoleBindings = roleBindings
+		}
+		if req.Attributes != nil {
+			next.Attributes = req.Attributes
+		}
+		if gerr := req.Guard(&prior, &next); gerr != nil {
+			return nil, gerr
+		}
+	}
+
 	idBytes := encodeID(existing.ID)
 
 	// A handle change rewrites a SECONDARY INDEX BEFORE the primary record is

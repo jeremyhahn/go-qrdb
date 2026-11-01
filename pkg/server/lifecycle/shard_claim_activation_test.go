@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -30,12 +31,12 @@ import (
 // Host method is reached by newShardClaimer.
 type gatedHost struct {
 	service.Host
-	enabled map[featuregate.Feature]bool
+	enabled map[feature.Feature]bool
 }
 
 var _ service.Host = (*gatedHost)(nil)
 
-func (h gatedHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool { return h.enabled[f] }
+func (h gatedHost) FeatureEnabled(_ uint64, f feature.Feature) bool { return h.enabled[f] }
 
 var _ service.FeatureGatedHost = gatedHost{}
 
@@ -44,15 +45,15 @@ var _ service.FeatureGatedHost = gatedHost{}
 // still running a binary that allocates per node could issue the same ID.
 func TestNewShardClaimer_WaitsForClusterShardIDs(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
-	host := gatedHost{enabled: map[featuregate.Feature]bool{}}
+	host := gatedHost{enabled: map[feature.Feature]bool{}}
 	claimer, err := newShardClaimer(store, host)
 	if err != nil {
 		t.Fatalf("newShardClaimer: %v", err)
 	}
 	_, err = claimer.ClaimShardID(context.Background())
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if !errors.As(err, &inactive) || inactive.Feature != featuregate.ClusterShardIDs {
-		t.Fatalf("claim before activation = %v, want *featuregate.NotActiveError{cluster-shard-ids}", err)
+		t.Fatalf("claim before activation = %v, want *feature.NotActiveError{cluster-shard-ids}", err)
 	}
 	if raw, _ := store.Get(context.Background(), shard.HighWaterKey); raw != nil {
 		t.Fatalf("a refused claim wrote the high-water mark: %q", raw)
@@ -67,12 +68,12 @@ func TestNewShardClaimer_WaitsForClusterShardIDs(t *testing.T) {
 // Another feature being active does not stand in for cluster-shard-ids.
 func TestNewShardClaimer_OtherFeaturesDoNotActivateClaims(t *testing.T) {
 	claimer, err := newShardClaimer(kvstore.NewMemoryKVStore(),
-		gatedHost{enabled: map[featuregate.Feature]bool{featuregate.GuardedWrites: true}})
+		gatedHost{enabled: map[feature.Feature]bool{featuregate.GuardedWrites: true}})
 	if err != nil {
 		t.Fatalf("newShardClaimer: %v", err)
 	}
-	var inactive *featuregate.NotActiveError
+	var inactive *feature.NotActiveError
 	if _, err := claimer.ClaimShardID(context.Background()); !errors.As(err, &inactive) {
-		t.Fatalf("claim with only guarded-writes active = %v, want *featuregate.NotActiveError", err)
+		t.Fatalf("claim with only guarded-writes active = %v, want *feature.NotActiveError", err)
 	}
 }

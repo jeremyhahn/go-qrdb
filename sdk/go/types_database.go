@@ -25,11 +25,15 @@ type BackendType = database.BackendType
 
 // BackendType constants.
 const (
-	BackendMemory = database.BackendMemory
-	BackendFile   = database.BackendFile
-	BackendPebble = database.BackendPebble
-	BackendRaft   = database.BackendRaft
+	BackendMemory   = database.BackendMemory
+	BackendFile     = database.BackendFile
+	BackendPebble   = database.BackendPebble
+	BackendRaft     = database.BackendRaft
+	BackendObjstore = database.BackendObjstore
 )
+
+// Backends returns every valid BackendType in sorted order.
+var Backends = database.Backends
 
 // DatabaseMode identifies the operational mode (embedded, remote).
 type DatabaseMode = database.DatabaseMode

@@ -166,15 +166,21 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	// The 201 body is the tenant's fields with its first admin alongside.
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// The 201 body is the tenant's fields with its first admin, and its SO
+	// when one was given, alongside.
 	var wire struct {
 		restTenant
-		Admin transport.TenantAdminCredential `json:"admin"`
+		Admin transport.TenantAdminCredential  `json:"admin"`
+		SO    *transport.TenantAdminCredential `json:"so,omitempty"`
 	}
 	if err := t.postJSONDecode(ctx, "CreateTenant", "/v1/tenants", req, &wire); err != nil {
 		return nil, err
 	}
-	return &transport.CreateTenantResponse{Tenant: wire.toTenantInfo(), Admin: wire.Admin}, nil
+	return &transport.CreateTenantResponse{Tenant: wire.toTenantInfo(), Admin: wire.Admin, SO: wire.SO}, nil
 }
 
 // AddTrustAnchors registers trust anchors of req.TenantID. Maps to
@@ -397,6 +403,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 	data, err := json.Marshal(&req.Entitlements)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &jsonEncodeError{Err: err}}
@@ -553,6 +562,48 @@ func (t *Transport) tenantBarrierInitRound(ctx context.Context, client *http.Cli
 	var wire restTenantBarrierInitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierInit", Err: &jsonDecodeError{Err: err}}
+	}
+	return &transport.TenantBarrierInitResponse{
+		TenantID:       wire.TenantID,
+		Strategy:       wire.Strategy,
+		ShareCount:     wire.ShareCount,
+		Threshold:      wire.Threshold,
+		TotalShares:    wire.TotalShares,
+		Holders:        wire.Holders,
+		Roster:         wire.Roster,
+		UnsealKeyCheck: wire.UnsealKeyCheck,
+		AdminPending:   wire.AdminPending,
+	}, nil
+}
+
+// TenantBarrierSignedInitBegin returns a tenant barrier's init statement to
+// sign away from the node. Maps to
+// POST /v1/tenants/{id}/barrier/signed-init/begin.
+func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *transport.TenantBarrierSignedInitBeginRequest) (*transport.TenantBarrierSignedInitBeginResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitBegin", Err: &emptyTenantIDError{}}
+	}
+	var resp transport.TenantBarrierSignedInitBeginResponse
+	if err := t.tenantHolderPost(ctx, "TenantBarrierSignedInitBegin", req.TenantID, "/signed-init/begin", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// TenantBarrierSignedInitComplete initializes a tenant barrier under the
+// begun statement and the signature over it. Maps to
+// POST /v1/tenants/{id}/barrier/signed-init/complete.
+func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &emptyTenantIDError{}}
+	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var wire restTenantBarrierInitResponse
+	if err := t.tenantHolderPost(ctx, "TenantBarrierSignedInitComplete", req.TenantID, "/signed-init/complete", req, &wire); err != nil {
+		return nil, err
 	}
 	return &transport.TenantBarrierInitResponse{
 		TenantID:       wire.TenantID,

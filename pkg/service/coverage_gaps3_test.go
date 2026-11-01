@@ -355,18 +355,6 @@ func TestVectorService_RebuildIndex_DispatchPath(t *testing.T) {
 // GetRebuildProgress (4.2% → higher)
 // ---------------------------------------------------------------------------
 
-func TestVectorService_GetRebuildProgress_NoJobFound(t *testing.T) {
-	svc, _ := newVecSvcPreloaded(t, "rb-prog-ns", 3)
-	ctx := context.Background()
-
-	// Request with non-empty namespace but no active job.
-	resp, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{Namespace: "rb-prog-ns"})
-	// The service either returns no-job error or an empty response — both are acceptable.
-	// We just want the path exercised.
-	_ = resp
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // CreateNamespace (45.9% → higher) — non-Raft path
 // ---------------------------------------------------------------------------

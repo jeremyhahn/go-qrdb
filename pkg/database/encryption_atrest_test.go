@@ -67,7 +67,7 @@ func grepDirForMarker(t *testing.T, root string, marker []byte) bool {
 // the original plaintext.
 func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	dataDir := t.TempDir()
@@ -108,7 +108,7 @@ func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 
 	// Seal: the barrier's own registry seal must make Get fail closed
 	// through the SAME wrapped Backend the database uses for data ops.
-	if err := bm.SealDatabase("atrest-file-db"); err != nil {
+	if err := bm.SealDatabase("atrest-file-db", ""); err != nil {
 		t.Fatalf("SealDatabase() error = %v", err)
 	}
 	if _, err := db.Backend().Get(ctx, key); err == nil {
@@ -124,7 +124,7 @@ func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 	}
 
 	// Unseal: access must be restored and the original plaintext recovered.
-	if err := bm.UnsealDatabase(ctx, "atrest-file-db", testCreds()); err != nil {
+	if err := bm.UnsealDatabase(ctx, "atrest-file-db", "", testCreds()); err != nil {
 		t.Fatalf("UnsealDatabase() error = %v", err)
 	}
 	got2, err := db.Backend().Get(ctx, key)
@@ -138,7 +138,7 @@ func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 	// The barrier's own bootstrap key material lives in a directory separate
 	// from the data-plane DataDir and must never contain the plaintext
 	// either (defense-in-depth; it stores wrapped key bytes, not app data).
-	barrierDir := filepath.Join(mgr.dbDir("atrest-file-db"), barrierMetaSubDir)
+	barrierDir := filepath.Join(mgr.dbDir("", "atrest-file-db"), barrierMetaSubDir)
 	if grepDirForMarker(t, barrierDir, plaintextMarker) {
 		t.Error("plaintext marker found under the barrier metadata directory")
 	}
@@ -149,7 +149,7 @@ func TestBarrierBackend_EncryptsAtRest_FileBackend(t *testing.T) {
 // engine.
 func TestBarrierBackend_EncryptsAtRest_PebbleBackend(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	dataDir := t.TempDir()

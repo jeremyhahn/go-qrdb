@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 func TestBook_ClaimRecordsEpochOne(t *testing.T) {
@@ -151,7 +152,7 @@ func TestBook_ClaimRefusals(t *testing.T) {
 	})
 	t.Run("inactive feature", func(t *testing.T) {
 		kv := newMemKV()
-		var notActive *featuregate.NotActiveError
+		var notActive *feature.NotActiveError
 		err := NewBook(kv, notActivePerNodeBarrierKeys).Claim(ctx, signed(t, admin, unsigned(1, "")), anchors)
 		if !errors.As(err, &notActive) || notActive.Feature != featuregate.PerNodeBarrierKeys {
 			t.Fatalf("Claim before activation = %v, want NotActiveError(%s)", err, featuregate.PerNodeBarrierKeys)
@@ -247,7 +248,7 @@ func TestBook_AdvanceRefusals(t *testing.T) {
 		wantReason(t, err, ReasonUntrustedCertificate)
 	})
 	t.Run("inactive feature", func(t *testing.T) {
-		var notActive *featuregate.NotActiveError
+		var notActive *feature.NotActiveError
 		if err := NewBook(newMemKV(), notActivePerNodeBarrierKeys).Advance(ctx, s, anchors); !errors.As(err, &notActive) {
 			t.Fatalf("Advance before activation = %v, want NotActiveError", err)
 		}
@@ -377,7 +378,7 @@ func TestBook_ClaimAgainstACorruptRecordIsRefused(t *testing.T) {
 // notActivePerNodeBarrierKeys is the refusal the composer's check returns
 // before activation.
 func notActivePerNodeBarrierKeys() error {
-	return &featuregate.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
+	return &feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}
 }
 
 func mustEncode(t *testing.T, versions []InitStatement) []byte {

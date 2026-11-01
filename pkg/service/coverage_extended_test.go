@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -43,7 +44,7 @@ func newTestDatabaseServiceWithOpts(t *testing.T, opts ...DatabaseServiceOption)
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewDatabaseService(mgr, opts...)
 }

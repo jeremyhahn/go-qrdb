@@ -45,8 +45,8 @@ conflict instead of being shared.
 
 ## `qrdb collection info <name>`
 
-Show collection details: lifecycle state, ID strategy, storage codec, document
-count, creation time, and declared indexes. A collection that is not `active`
+Show collection details: lifecycle state, ID strategy, hashed field, storage
+codec, document count, creation time, declared indexes and schema. A collection that is not `active`
 shows when it entered its state, e.g. `State: dropping (since
 2026-09-25T12:00:00Z)`.
 
@@ -88,8 +88,7 @@ few minutes, and re-running the command finishes it immediately. If the index
 teardown fails the command reports the failure instead of succeeding.
 
 Also discards the collection's `increment` counter, so a collection later
-created with the same name starts at ID 1. The command is safe to re-run: if it
-fails partway, re-issuing it completes the drop.
+created with the same name starts at ID 1.
 
 | Flag | Type | Default |
 |---|---|---|

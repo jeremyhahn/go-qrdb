@@ -72,7 +72,7 @@ is available; nothing is installed on the host.
 | `make docker-build` | builds the `toolchain` and `integration` stages, with the versions in `scripts/tool-pins.sh` |
 | `make -s toolchain-image` | prints the toolchain image's tag |
 | `make docker-run CMD='make test'` | runs one command in the toolchain image, this checkout bind-mounted, as your uid, with no network |
-| `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them |
+| `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them. It builds the image first; given a digest `IT_IMAGE` (`...@sha256:<hex>`, as CI passes) it builds nothing and requires that image already pulled |
 | `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and its hold on the image (`IT_HOLD`, empty off CI), and keeps the image, which later runs of the same tree reuse |
 | `make -s it-image` | prints the integration image's content-addressed name, `qrdb-ci-it:<hash>` (`IT_IMAGE`) |
 | `make deps-check` | fails when a direct requirement is behind a latest release at least seven days old with no reason in its `go.mod`; a younger release is reported, not failed |

@@ -16,6 +16,7 @@ package vector
 
 import (
 	"context"
+	"maps"
 	"time"
 )
 
@@ -61,8 +62,16 @@ type NamespaceStats struct {
 
 // ScanOptions configures vector scanning behavior.
 type ScanOptions struct {
-	Limit      int
-	Offset     int
+	Limit int
+	// Offset skips that many results. The metadata scans page by it; a
+	// namespace scan applies it after FromID, in ascending ID order, and
+	// pages by FromID instead.
+	Offset int
+	// FromID is the inclusive lower bound on the vector ID of a namespace
+	// scan, which returns IDs in ascending order. The zero value scans from
+	// the namespace's first vector, so a pager resumes after a page by
+	// setting it to the page's last ID plus one.
+	FromID     uint64
 	OrderBy    string
 	Descending bool
 }
@@ -84,6 +93,45 @@ const (
 	FilterNotIn
 )
 
+// NamespaceUpdate carries the fields of a namespace that an in-place update
+// replaces. Each map replaces the stored one whole: the caller computes any
+// merge, so storage never has to decide what an absent key means.
+type NamespaceUpdate struct {
+	// IndexConfig replaces the namespace's index parameters.
+	IndexConfig map[string]string
+
+	// Metadata replaces the namespace's metadata.
+	Metadata map[string]string
+
+	// UpdatedAt is the update timestamp in Unix nanoseconds.
+	UpdatedAt int64
+}
+
+// MergeNamespaceUpdate builds the update that sets each key of indexConfig and
+// metadata over info's stored values, leaving every key they do not name as
+// it is. requiresRebuild reports that an index parameter was added or
+// changed, so an index built under the old parameters no longer matches.
+func MergeNamespaceUpdate(info *NamespaceInfo, indexConfig, metadata map[string]string, updatedAt int64) (update *NamespaceUpdate, requiresRebuild bool) {
+	mergedIndex := make(map[string]string, len(info.IndexConfig)+len(indexConfig))
+	maps.Copy(mergedIndex, info.IndexConfig)
+	for k, val := range indexConfig {
+		if current, ok := mergedIndex[k]; !ok || current != val {
+			requiresRebuild = true
+		}
+		mergedIndex[k] = val
+	}
+
+	mergedMeta := make(map[string]string, len(info.Metadata)+len(metadata))
+	maps.Copy(mergedMeta, info.Metadata)
+	maps.Copy(mergedMeta, metadata)
+
+	return &NamespaceUpdate{
+		IndexConfig: mergedIndex,
+		Metadata:    mergedMeta,
+		UpdatedAt:   updatedAt,
+	}, requiresRebuild
+}
+
 // Storage is the main interface for vector storage operations.
 type Storage interface {
 	// Vector Operations
@@ -100,6 +148,10 @@ type Storage interface {
 
 	// Namespace Operations
 	CreateNamespace(ctx context.Context, info *NamespaceInfo) error
+	// UpdateNamespace replaces a namespace's mutable fields in place and
+	// leaves its vectors, dimension, metric and index type untouched. It
+	// returns ErrNamespaceNotFound when the namespace does not exist.
+	UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error
 	DeleteNamespace(ctx context.Context, namespace string) error
 	ListNamespaces(ctx context.Context) ([]NamespaceInfo, error)
 	GetNamespaceInfo(ctx context.Context, namespace string) (*NamespaceInfo, error)

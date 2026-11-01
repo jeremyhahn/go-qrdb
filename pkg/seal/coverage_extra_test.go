@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -267,7 +268,7 @@ func (a *alwaysFailBarrier) Decrypt(_ []byte) ([]byte, error) {
 
 // TestChangePassword_PutError exercises the base.Put error path in
 // ChangePassword, which occurs when persisting the new sealed root key blob.
-func TestChangePassword_PutError(t *testing.T) {
+func TestChangePassword_RefusedSwapIsAConflict(t *testing.T) {
 	fb := newFailingBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root"}
 	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
@@ -279,13 +280,24 @@ func TestChangePassword_PutError(t *testing.T) {
 	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("old-pw"))); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
+	before, err := fb.inner.Get(ctx, cfg.RootKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Inject Put error so ChangePassword fails when writing the new blob.
-	fb.putErr = errStorageInject
-
-	err = b.ChangePassword(ctx, MustCredentials(context.Background(), []byte("new-pw")))
-	if err == nil {
-		t.Fatal("expected error when Put fails in ChangePassword")
+	// failingBackend's CompareAndSwap refuses every swap, which is what a
+	// write landing between the check and the swap looks like. The bound
+	// testSoftwareStrategy holds the passphrase the blob is under.
+	err = b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(testMasterPassword)), MustCredentials(context.Background(), []byte("new-pw")))
+	if !errors.Is(err, ErrPassphraseChangeConflict) {
+		t.Fatalf("ChangePassword over a refused swap = %v; want ErrPassphraseChangeConflict", err)
+	}
+	after, err := fb.inner.Get(ctx, cfg.RootKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a refused swap changed the persisted root-key blob")
 	}
 }
 

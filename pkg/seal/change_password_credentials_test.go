@@ -61,7 +61,7 @@ func TestChangePassword_KeepsCheckingCredentials(t *testing.T) {
 	require.NoError(t, b.Unseal(ctx, MustCredentials(context.Background(), []byte(original))),
 		"baseline: the original passphrase must be accepted")
 
-	require.NoError(t, b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(updated))))
+	require.NoError(t, b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(original)), MustCredentials(context.Background(), []byte(updated))))
 
 	// (1) A wrong passphrase must still be refused. This is the bypass.
 	require.NoError(t, b.Seal())
@@ -105,7 +105,7 @@ func TestChangePassword_ReSealedBlobUnsealsAfterRestart(t *testing.T) {
 	first, err := NewStorageBarrier(testLogger(), backend, cfg, NewDeferredSoftwareStrategy())
 	require.NoError(t, err)
 	require.NoError(t, first.Initialize(ctx, MustCredentials(context.Background(), []byte(original))))
-	require.NoError(t, first.ChangePassword(ctx, MustCredentials(context.Background(), []byte(updated))))
+	require.NoError(t, first.ChangePassword(ctx, MustCredentials(context.Background(), []byte(original)), MustCredentials(context.Background(), []byte(updated))))
 	require.NoError(t, first.Seal())
 
 	// "Restart": a brand-new barrier over the same persisted state.

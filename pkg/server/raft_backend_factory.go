@@ -209,6 +209,13 @@ type raftDatabaseInfoSource interface {
 	// DatabaseInfo flag; the placement source reads the replicated entry so a
 	// follower honors the same WAL routing the leader chose at create time.
 	dedicatedWAL(tenantID, db string) bool
+
+	// recordedIncarnation returns the incarnation the replicated catalog
+	// records for the (tenant, db) database, or ok=false when it records
+	// none. FenceServices reads it to refuse a shard the name resolves to
+	// that is not the dropping incarnation's. A catalog that cannot be read
+	// is an error, never "no record".
+	recordedIncarnation(ctx context.Context, tenantID, db string) (incarnation string, ok bool, err error)
 }
 
 // RaftBackendFactory manages the lifecycle of dedicated per-database raft groups
@@ -308,6 +315,20 @@ type RaftBackendFactory struct {
 	// documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
 
+	// indexCfg caps the secondary indexes of every shard this factory builds
+	// (config.Index, "index:" in YAML), each shard on its own. The zero value
+	// leaves them unlimited. See WithIndexConfig.
+	indexCfg qrdbconfig.IndexConfig
+
+	// tsCfg caps the metric names of every shard this factory builds
+	// (config.TimeSeries.MaxMetrics), each shard on its own. The zero value
+	// leaves them unlimited. See WithTimeSeriesConfig.
+	tsCfg qrdbconfig.TimeSeriesConfig
+
+	// watchHubOpts configures every shard's watch hub. See
+	// WithWatchHubOptions.
+	watchHubOpts []watch.HubOption
+
 	// snapshotEntries and compactionOverhead are the automatic snapshot
 	// cadence of every shard this factory starts: the system shard's
 	// raft.snapshot_entries and raft.compaction_overhead. Zero takes
@@ -351,6 +372,28 @@ func WithImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) RaftBackendOpti
 	return func(f *RaftBackendFactory) { f.importSessionCfg = cfg }
 }
 
+// WithIndexConfig caps the secondary indexes of every shard this factory
+// builds at cfg.MaxIndexes, each shard on its own. Omitting it leaves them
+// unlimited.
+func WithIndexConfig(cfg qrdbconfig.IndexConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.indexCfg = cfg }
+}
+
+// WithTimeSeriesConfig caps the metric names of every shard this factory
+// builds at cfg.MaxMetrics, each shard on its own. Omitting it leaves them
+// unlimited.
+func WithTimeSeriesConfig(cfg qrdbconfig.TimeSeriesConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.tsCfg = cfg }
+}
+
+// WithWatchHubOptions configures the watch hub of every shard this factory
+// builds: the node's watch.buffer_size and the watch.max_watchers limit its
+// other hubs share. Omitting it leaves each hub at the package defaults,
+// unlimited.
+func WithWatchHubOptions(opts ...watch.HubOption) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.watchHubOpts = opts }
+}
+
 // WithSnapshotSettings gives every shard the factory starts the system
 // shard's automatic snapshot cadence: a snapshot every snapshotEntries
 // applied entries, keeping compactionOverhead entries of log behind it. A
@@ -391,7 +434,7 @@ type LocalRootResolver func(ctx context.Context, tenantID string) (string, error
 // truth for resolving a dedicated-raft database's shard. When a placement entry
 // for (tenant, db) exists and assigns a replica to localNodeID, that entry's
 // shard ID and the local replica's DataRoot are used; otherwise resolution
-// falls back to the meta.json-derived source so Phase-4b single-node databases
+// falls back to the catalog-derived source so Phase-4b single-node databases
 // (created before placement) keep working unchanged. store and localNodeID must
 // be non-empty for the override to take effect.
 //
@@ -744,8 +787,29 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 // set before that write, so Services would refuse the very drop that set
 // it. Nothing else may use it: every data-plane resolution goes through
 // Services, which is what keeps a database being dropped unresolvable.
-func (f *RaftBackendFactory) FenceServices(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
-	return f.services(ctx, tenantID, db, false)
+//
+// The shard is resolved by name, so it is returned only while the catalog
+// records incarnation for the name: a drop that resumes after another drop
+// finished it and the name was created again would otherwise fence the
+// successor's new shard, which is live while its marker is absent. The
+// catalog is read after the shard is resolved, and a successor's shard
+// exists only after the successor's record does, which is only once this
+// incarnation's record is gone; so a record of incarnation read here means
+// the shard resolved is not a successor's. Anything else is refused with
+// *database.DropSupersededError (go-qrdb#893).
+func (f *RaftBackendFactory) FenceServices(ctx context.Context, tenantID, db, incarnation string) (*DatabaseServices, error) {
+	svcs, err := f.services(ctx, tenantID, db, false)
+	if err != nil {
+		return nil, err
+	}
+	recorded, ok, err := f.dbInfo.recordedIncarnation(ctx, tenantID, db)
+	if err != nil {
+		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "incarnation-lookup", Err: err}
+	}
+	if !ok || recorded != incarnation {
+		return nil, &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	return svcs, nil
 }
 
 // services is Services and FenceServices. honorFence selects whether the
@@ -1293,7 +1357,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 	}
 
 	lessor := lease.NewLessor()
-	hub := watch.NewHub()
+	hub := watch.NewHub(f.watchHubOpts...)
 	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
 
 	// 4d Option C: when the database opted into a per-tenant-KEY WAL and the
@@ -1345,7 +1409,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
-		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, service.WithDedicatedKeyspace()),
+		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, f.indexCfg, f.tsCfg, service.WithDedicatedKeyspace()),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
 
@@ -1654,24 +1718,23 @@ func (f *RaftBackendFactory) RestartAfterRestore(ctx context.Context, shardID ui
 
 // managerRaftInfoSource adapts a database.Manager to the raftDatabaseInfoSource
 // interface, resolving the persisted shard ID and DataDir for a (tenant, db)
-// pair and enforcing per-tenant ownership.
+// pair and enforcing per-tenant ownership. It reads only the databases open on
+// this node (Manager.Local): the factory sits beneath the database catalog,
+// which resolves an isolated tenant's home store through this factory, so a
+// catalog lookup from here would recurse.
 type managerRaftInfoSource struct {
 	manager *database.Manager
 }
 
 // databaseInfo resolves the shard ID and DataDir for a dedicated-raft database
-// owned by the tenant. It returns ok=false when the database does not exist, is
-// not raft-backed, or is owned by a different tenant.
+// owned by the tenant. It returns ok=false when the database is not open on
+// this node, is dropping (unless ignoreFence), or is not raft-backed.
 func (s *managerRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence bool) (uint64, string, bool) {
 	if s.manager == nil {
 		return 0, "", false
 	}
-	get := s.manager.GetOwned
-	if ignoreFence {
-		get = s.manager.GetOwnedIgnoringFence
-	}
-	dbase, err := get(db, tenantID)
-	if err != nil {
+	dbase, ok := s.manager.Local(db, tenantID)
+	if !ok || (!ignoreFence && dbase.Dropping()) {
 		return 0, "", false
 	}
 	info := dbase.Info()
@@ -1691,22 +1754,29 @@ func (s *managerRaftInfoSource) placementInfo(_ string, _ string) (*placement.Pl
 }
 
 // dedicatedWAL reports the persisted per-tenant-KEY WAL opt-in for the database.
-func (s *managerRaftInfoSource) dedicatedWAL(_ string, db string) bool {
+func (s *managerRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	if s.manager == nil {
 		return false
 	}
-	dbase, err := s.manager.Get(db)
-	if err != nil {
+	dbase, ok := s.manager.Local(db, tenantID)
+	if !ok || dbase.Dropping() {
 		return false
 	}
 	return dbase.Info().DedicatedWAL
+}
+
+func (s *managerRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
+	if s.manager == nil {
+		return "", false, ErrRaftBackendUnavailable
+	}
+	return s.manager.RecordedIncarnation(ctx, tenantID, db)
 }
 
 // compile-time check that managerRaftInfoSource satisfies the interface.
 var _ raftDatabaseInfoSource = (*managerRaftInfoSource)(nil)
 
 // placementRaftInfoSource resolves a dedicated-raft database's shard from the
-// replicated placement table, falling back to a meta.json-derived source when
+// replicated placement table, falling back to a catalog-derived source when
 // no placement entry exists. It makes the placement table the source of truth
 // for (tenant, db) -> (shardID, dataRoot) while preserving Phase-4b single-node
 // behavior: a single-replica placement whose only replica is the local node
@@ -1822,6 +1892,12 @@ func (s *placementRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 		return p.DedicatedWAL
 	}
 	return s.fallback.dedicatedWAL(tenantID, db)
+}
+
+// recordedIncarnation reads the catalog through the fallback: a placement
+// entry names a shard, never the incarnation it belongs to.
+func (s *placementRaftInfoSource) recordedIncarnation(ctx context.Context, tenantID, db string) (string, bool, error) {
+	return s.fallback.recordedIncarnation(ctx, tenantID, db)
 }
 
 // compile-time check that placementRaftInfoSource satisfies the interface.

@@ -130,6 +130,14 @@ func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id st
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 
+func (m *mockTenantSvc) TenantBarrierInitBegin(context.Context, *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
+func (m *mockTenantSvc) TenantBarrierInitComplete(context.Context, *tenant.TenantBarrierInitCompleteRequest) (*tenant.TenantBarrierInitResult, error) {
+	return nil, tenant.ErrBarrierNotEnabled
+}
+
 func (m *mockTenantSvc) IncrementQuotaUsage(_ context.Context, _ string, _ quota.Resource, _ int64) (*tenant.TenantInfo, error) {
 	return nil, nil
 }

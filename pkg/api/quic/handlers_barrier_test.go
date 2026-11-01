@@ -17,6 +17,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -26,6 +27,9 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -166,6 +170,106 @@ func TestHandleBarrierUnseal_UnmarshalError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unmarshal error")
 	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleBarrierChangePassphrase_Success(t *testing.T) {
+	var seenCurrent, seenNext []byte
+	barrierSvc := &mockBarrierService{
+		barrierChangePassphraseFn: func(_ context.Context, current, next []byte) error {
+			if string(current) != "old-pass" || string(next) != "new-pass" {
+				t.Errorf("got current %q next %q, want old-pass / new-pass", current, next)
+			}
+			seenCurrent, seenNext = current, next
+			return nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc), WithPINBackend(pintest.NewSOPINBackend(t)))
+
+	payload, _ := proto.Marshal(&pb.BarrierChangePassphraseRequest{SoPin: pintest.ThrottledSOPIN, Current: []byte("old-pass"), Next: []byte("new-pass")})
+	resp, err := srv.handleBarrierChangePassphrase(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != nil {
+		t.Fatal("expected nil response")
+	}
+	for _, b := range [][]byte{seenCurrent, seenNext} {
+		if len(b) == 0 || !bytes.Equal(b, make([]byte, len(b))) {
+			t.Fatalf("passphrase %q not wiped", b)
+		}
+	}
+}
+
+func TestHandleBarrierChangePassphrase_ServiceError(t *testing.T) {
+	barrierSvc := &mockBarrierService{
+		barrierChangePassphraseFn: func(context.Context, []byte, []byte) error { return seal.ErrCredentialMismatch },
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc), WithPINBackend(pintest.NewSOPINBackend(t)))
+	payload, _ := proto.Marshal(&pb.BarrierChangePassphraseRequest{SoPin: pintest.ThrottledSOPIN, Current: []byte("wrong"), Next: []byte("n")})
+	if _, err := srv.handleBarrierChangePassphrase(context.Background(), payload); !errors.Is(err, seal.ErrCredentialMismatch) {
+		t.Fatalf("err = %v, want ErrCredentialMismatch", err)
+	}
+}
+
+// TestHandleBarrierChangePassphrase_RequiresSOPIN verifies the passphrase
+// change is SO-gated like every other custody operation: no PIN backend fails
+// closed, a missing or wrong SO PIN is refused, and in none of those is the
+// barrier service reached; the right SO PIN reaches it.
+func TestHandleBarrierChangePassphrase_RequiresSOPIN(t *testing.T) {
+	cases := map[string]struct {
+		noBackend bool
+		soPIN     string
+		want      error
+	}{
+		"no pin backend": {noBackend: true, soPIN: pintest.ThrottledSOPIN, want: pin.ErrBackendNotConfigured},
+		"missing pin":    {soPIN: "", want: pin.ErrPINInvalid},
+		"wrong pin":      {soPIN: "wrong-pin-0000", want: pin.ErrPINInvalid},
+		"right pin":      {soPIN: pintest.ThrottledSOPIN},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			barrierSvc := &mockBarrierService{
+				barrierChangePassphraseFn: func(context.Context, []byte, []byte) error {
+					called = true
+					return nil
+				},
+			}
+			opts := []ServerOption{WithBarrierService(barrierSvc)}
+			if !tc.noBackend {
+				opts = append(opts, WithPINBackend(pintest.NewSOPINBackend(t)))
+			}
+			srv := newTestServer(&mockKVService{}, &mockAdminService{}, opts...)
+
+			payload, _ := proto.Marshal(&pb.BarrierChangePassphraseRequest{SoPin: tc.soPIN, Current: []byte("old-pass"), Next: []byte("new-pass")})
+			_, err := srv.handleBarrierChangePassphrase(context.Background(), payload)
+			if !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if reached := tc.want == nil; called != reached {
+				t.Fatalf("service reached = %v, want %v", called, reached)
+			}
+		})
+	}
+}
+
+func TestHandleBarrierChangePassphrase_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.BarrierChangePassphraseRequest{Current: []byte("a"), Next: []byte("b")})
+	_, err := srv.handleBarrierChangePassphrase(context.Background(), payload)
+	var sncErr *ServiceNotConfiguredError
+	if !errors.As(err, &sncErr) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T", err)
+	}
+}
+
+func TestHandleBarrierChangePassphrase_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(&mockBarrierService{}))
+	_, err := srv.handleBarrierChangePassphrase(context.Background(), []byte{0xff, 0xfe})
 	var ue *UnmarshalError
 	if !errors.As(err, &ue) {
 		t.Fatalf("expected *UnmarshalError, got %T", err)

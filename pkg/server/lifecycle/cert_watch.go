@@ -22,7 +22,7 @@ import "context"
 // concrete type, so an embedder's own CertProvider (server.WithCertProvider)
 // is never required to support it.
 type certDeletionWatcher interface {
-	WatchForDeletions(ctx context.Context) error
+	WatchForDeletions(ctx context.Context) (done <-chan struct{}, err error)
 }
 
 // WatchCertProviderEvictions starts n.CertProv's Key B cache eviction
@@ -38,6 +38,12 @@ type certDeletionWatcher interface {
 // finishes), right after BuildServices succeeds -- the same convention
 // EstablishClusterCA follows, and for the same reason: this starts
 // goroutines meant to outlive the call that starts them.
+//
+// They run until ctx is canceled or n stops. They are n's own work
+// (nodeWork), so Stop cancels them and waits for them to return before
+// running any closer: a watcher re-establishing its watch calls into the
+// watch service, and one still running when the service graph beneath it
+// closes outlives the node that started it.
 func WatchCertProviderEvictions(ctx context.Context, n *Node) error {
 	if n == nil || n.CertProv == nil {
 		return nil
@@ -46,5 +52,30 @@ func WatchCertProviderEvictions(ctx context.Context, n *Node) error {
 	if !ok {
 		return nil
 	}
-	return watcher.WatchForDeletions(ctx)
+	return watchCertEvictions(ctx, &n.work, watcher)
+}
+
+// watchCertEvictions starts watcher's eviction watchers and waits for them as
+// a piece of work, until ctx ends or work stops. Once work has stopped it
+// supervises nothing: the watchers it started are canceled and awaited before
+// it returns.
+func watchCertEvictions(ctx context.Context, work *nodeWork, watcher certDeletionWatcher) error {
+	ctx, cancel := context.WithCancel(ctx)
+	stopWithNode := context.AfterFunc(work.context(), cancel)
+	done, err := watcher.WatchForDeletions(ctx)
+	if err != nil || done == nil {
+		stopWithNode()
+		cancel()
+		return err
+	}
+	if !work.start(func(context.Context) {
+		defer cancel()
+		defer stopWithNode()
+		<-done
+	}) {
+		stopWithNode()
+		cancel()
+		<-done
+	}
+	return nil
 }

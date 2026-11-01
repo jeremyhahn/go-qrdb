@@ -39,6 +39,23 @@ func (e *DatabaseNotFoundError) Error() string {
 	return "provider: database not found: " + e.Name
 }
 
+// DatabaseEnumerationError is reported when the session tenant's databases
+// cannot be read from the replicated catalog. SHOW DATABASES and the
+// PostgreSQL catalog have no error return, so the provider raises it as an
+// error-level session warning rather than listing a partial set silently.
+type DatabaseEnumerationError struct {
+	TenantID string
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *DatabaseEnumerationError) Error() string {
+	return "provider: list databases for tenant " + e.TenantID + ": " + e.Err.Error()
+}
+
+// Unwrap returns the catalog error.
+func (e *DatabaseEnumerationError) Unwrap() error { return e.Err }
+
 // InvalidKeyError is returned when a key value cannot be used as a KV
 // store key (e.g., empty string or wrong type).
 type InvalidKeyError struct {

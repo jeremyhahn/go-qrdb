@@ -83,6 +83,12 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 	if b.state.Load() == stateUnsealed {
 		return ErrAlreadyUnsealed
 	}
+	// One operation against every root-key rewrite, as in unseal.
+	release := b.lockRootKeyForUnseal()
+	defer release()
+	if b.state.Load() == stateUnsealed {
+		return ErrAlreadyUnsealed
+	}
 	blob, err := b.base.Get(ctx, b.config.RootKeyPath)
 	if err != nil {
 		return err
@@ -112,9 +118,10 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 	}
 	defer func() { _ = recStrat.Close() }()
 	b.pinKnownEpochs(&sealed)
-	if err := b.barrier.Unseal(ctx, recStrat, Credentials{}); err != nil {
+	if err := b.unsealEpochBarrier(ctx, recStrat, Credentials{}); err != nil {
 		return err
 	}
+	release()
 
 	b.activeStrategy.Store(active)
 	b.state.Store(stateUnsealed)

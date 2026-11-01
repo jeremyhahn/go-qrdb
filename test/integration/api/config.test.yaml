@@ -104,7 +104,7 @@ embedding:
   cache_capacity: 1000
   providers:
     - name: "ollama"
-      base_url: "http://ollama:11434/v1"
+      base_url: "http://127.0.0.1:11434/v1"
       model: "nomic-embed-text"
       timeout: "60s"
       max_retries: 3

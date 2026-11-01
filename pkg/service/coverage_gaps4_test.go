@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,15 +138,6 @@ func TestUserAuthFactorService_Rotate_OldIDNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error rotating with non-existent old factor ID")
 	}
-}
-
-func TestUserAuthFactorService_MarkUsed_NoFactor(t *testing.T) {
-	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
-	ctx := context.Background()
-
-	err := svc.MarkUsed(ctx, "no-such-factor-id", time.Now())
-	// MarkUsed on a non-existent factor should either succeed (no-op) or error.
-	_ = err
 }
 
 func TestUserAuthFactorService_List_AfterAdd(t *testing.T) {

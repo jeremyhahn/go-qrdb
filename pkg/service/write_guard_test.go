@@ -246,36 +246,36 @@ func TestKeyspaceReclaimService_FenceAndUnfence(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	key := DropFenceKey("acme", "orders")
 
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("UnfenceDatabaseKeyspace: %v", err)
 	}
 	if v, err := system.Get(ctx, key); err != nil || string(v) != "inc-1" {
 		t.Fatalf("marker = (%q, %v), want the live incarnation", v, err)
 	}
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("FenceDatabaseKeyspace: %v", err)
 	}
 	if v, err := system.Get(ctx, key); err != nil || !bytes.Equal(v, dropFenceTombstone) {
 		t.Fatalf("marker = (%q, %v), want the dropped tombstone", v, err)
 	}
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("fencing twice must be idempotent: %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", ""); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); err != nil {
 		t.Fatalf("UnfenceDatabaseKeyspace with no incarnation: %v", err)
 	}
 	if _, err := system.Get(ctx, key); err == nil {
 		t.Fatal("an empty incarnation is live while the marker is ABSENT; the marker survived")
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", ""); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); err != nil {
 		t.Fatalf("removing an absent marker must succeed: %v", err)
 	}
 
 	var scopeErr *ReclaimScopeError
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", ""); !errors.As(err, &scopeErr) {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "", "", ""); !errors.As(err, &scopeErr) {
 		t.Fatalf("unscoped fence: error = %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "", "inc-1"); !errors.As(err, &scopeErr) {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "", "inc-1", ""); !errors.As(err, &scopeErr) {
 		t.Fatalf("unscoped unfence: error = %v", err)
 	}
 }
@@ -286,12 +286,12 @@ func TestKeyspaceReclaimService_UnfencePerDatabaseStoreRemovesTheMarker(t *testi
 	ctx := context.Background()
 	shard := newMemoryKVSvc()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: newMemoryKVSvc()})
-	svc.SetStoreResolver(&fixedStoreResolver{target: ReclaimTarget{KV: shard}, dedicated: true, perDatabase: true})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: shard})
 
-	if err := svc.FenceDatabaseKeyspace(ctx, "rt", "orders"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "rt", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("FenceDatabaseKeyspace: %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "rt", "orders", "inc-1"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "rt", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("UnfenceDatabaseKeyspace: %v", err)
 	}
 	if _, err := shard.Get(ctx, DropFenceKey("rt", "orders")); err == nil {
@@ -306,7 +306,7 @@ func TestKeyspaceReclaimService_FenceRoutesThroughTheResolver(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	svc.SetStoreResolver(&fixedStoreResolver{target: ReclaimTarget{KV: dedicated}, dedicated: true})
 
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); err != nil {
 		t.Fatalf("FenceDatabaseKeyspace: %v", err)
 	}
 	if _, err := dedicated.Get(ctx, DropFenceKey("acme", "orders")); err != nil {
@@ -317,7 +317,7 @@ func TestKeyspaceReclaimService_FenceRoutesThroughTheResolver(t *testing.T) {
 	}
 
 	svc.SetStoreResolver(&fixedStoreResolver{dedicated: false})
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "billing"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "billing", "", ""); err != nil {
 		t.Fatalf("FenceDatabaseKeyspace: %v", err)
 	}
 	if _, err := system.Get(ctx, DropFenceKey("acme", "billing")); err != nil {
@@ -333,10 +333,10 @@ func TestKeyspaceReclaimService_FenceFailures(t *testing.T) {
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	svc.SetStoreResolver(&fixedStoreResolver{err: errors.New("host down")})
 	var unavailable *ReclaimStoreUnavailableError
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); !errors.As(err, &unavailable) {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); !errors.As(err, &unavailable) {
 		t.Fatalf("resolver error: FenceDatabaseKeyspace = %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1"); !errors.As(err, &unavailable) {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); !errors.As(err, &unavailable) {
 		t.Fatalf("resolver error: UnfenceDatabaseKeyspace = %v", err)
 	}
 
@@ -345,27 +345,27 @@ func TestKeyspaceReclaimService_FenceFailures(t *testing.T) {
 	svc.SetStoreResolver(&fixedStoreResolver{dedicated: true})
 	var fenceErr *DropFenceError
 	var missing *FenceStoreMissingError
-	err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders")
+	err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "", "")
 	if !errors.As(err, &fenceErr) || !errors.As(err, &missing) {
 		t.Fatalf("missing store: FenceDatabaseKeyspace = %v, want DropFenceError wrapping FenceStoreMissingError", err)
 	}
 	if fenceErr.Error() == "" || missing.Error() == "" {
 		t.Fatal("the fence errors must describe themselves")
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); err != nil {
 		t.Fatalf("missing store: UnfenceDatabaseKeyspace = %v, want success", err)
 	}
 
 	// A store write failure is reported with the verb that failed.
 	boom := errors.New("disk")
 	svc = NewKeyspaceReclaimService(ReclaimTarget{KV: &failingReclaimKV{putErr: boom, deleteErr: boom}})
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); !errors.As(err, &fenceErr) || fenceErr.Op != "write" || !errors.Is(err, boom) {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); !errors.As(err, &fenceErr) || fenceErr.Op != "write" || !errors.Is(err, boom) {
 		t.Fatalf("Put failure: FenceDatabaseKeyspace = %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", ""); !errors.As(err, &fenceErr) || fenceErr.Op != "remove" || !errors.Is(err, boom) {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); !errors.As(err, &fenceErr) || fenceErr.Op != "remove" || !errors.Is(err, boom) {
 		t.Fatalf("Delete failure: UnfenceDatabaseKeyspace = %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1"); !errors.As(err, &fenceErr) || fenceErr.Op != "mark live" || !errors.Is(err, boom) {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "inc-1", ""); !errors.As(err, &fenceErr) || fenceErr.Op != "mark live" || !errors.Is(err, boom) {
 		t.Fatalf("Put failure: UnfenceDatabaseKeyspace = %v", err)
 	}
 }
@@ -424,28 +424,28 @@ func TestKeyspaceReclaimService_UnfenceNeverOverwritesALiveIncarnation(t *testin
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: system})
 	key := DropFenceKey("acme", "orders")
 
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-a-incarnation"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-a-incarnation", ""); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-b-incarnation"); err == nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-b-incarnation", ""); err == nil {
 		t.Fatal("a second create overwrote a live incarnation")
 	}
 	if v, _ := system.Get(ctx, key); string(v) != "node-a-incarnation" {
 		t.Fatalf("marker = %q, want node A's incarnation untouched", v)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", ""); err == nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "", ""); err == nil {
 		t.Fatal("removing the marker of a live incarnation must be refused")
 	}
 	if v, _ := system.Get(ctx, key); string(v) != "node-a-incarnation" {
 		t.Fatalf("marker = %q, want node A's incarnation untouched", v)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-a-incarnation"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-a-incarnation", ""); err != nil {
 		t.Fatalf("re-marking the live incarnation must be idempotent: %v", err)
 	}
-	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders"); err != nil {
+	if err := svc.FenceDatabaseKeyspace(ctx, "acme", "orders", "node-a-incarnation", ""); err != nil {
 		t.Fatalf("FenceDatabaseKeyspace: %v", err)
 	}
-	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-b-incarnation"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(ctx, "acme", "orders", "node-b-incarnation", ""); err != nil {
 		t.Fatalf("a create over the dropped tombstone must succeed: %v", err)
 	}
 }

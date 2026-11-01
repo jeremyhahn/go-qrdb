@@ -1282,8 +1282,10 @@ func TestHandler_MembershipRemove_NotLeader_NoResolver(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("POST /membership/remove (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// As on add: the declined forward falls through membershipChangeStatus
+	// to NotLeaderError's ordinary classification, a transient 503.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /membership/remove (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 
@@ -2062,6 +2064,15 @@ func TestWriteJSON(t *testing.T) {
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("status = %q, want %q", resp.Status, "ok")
+	}
+}
+
+func TestWriteJSON_IgnoresEncodeError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// A channel is not JSON-serializable; writeJSON ignores the error.
+	writeJSON(rec, make(chan int))
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 }
 

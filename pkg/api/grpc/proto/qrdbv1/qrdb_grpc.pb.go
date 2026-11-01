@@ -83,6 +83,7 @@ const (
 	QRDBService_TSSetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSSetRetention"
 	QRDBService_TSListMetrics_FullMethodName                     = "/qrdb.v1.QRDBService/TSListMetrics"
 	QRDBService_VectorCreateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorCreateNamespace"
+	QRDBService_VectorUpdateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorUpdateNamespace"
 	QRDBService_VectorDeleteNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
 	QRDBService_VectorListNamespaces_FullMethodName              = "/qrdb.v1.QRDBService/VectorListNamespaces"
 	QRDBService_VectorGetNamespaceInfo_FullMethodName            = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
@@ -163,6 +164,7 @@ const (
 	QRDBService_ListOwnPermissions_FullMethodName                = "/qrdb.v1.QRDBService/ListOwnPermissions"
 	QRDBService_Authorize_FullMethodName                         = "/qrdb.v1.QRDBService/Authorize"
 	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
+	QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName   = "/qrdb.v1.QRDBService/ReconcileBuiltInRolesAllTenants"
 	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
 	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
 	QRDBService_IssueDelegation_FullMethodName                   = "/qrdb.v1.QRDBService/IssueDelegation"
@@ -196,6 +198,7 @@ const (
 	QRDBService_DatabaseUpdateCompaction_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
 	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
 	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
+	QRDBService_BarrierChangePassphrase_FullMethodName           = "/qrdb.v1.QRDBService/BarrierChangePassphrase"
 	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
 	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
 	QRDBService_BarrierClusterUnseal_FullMethodName              = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
@@ -421,6 +424,9 @@ type QRDBServiceClient interface {
 	TSListMetrics(ctx context.Context, in *TSListMetricsRequest, opts ...grpc.CallOption) (*TSListMetricsResponse, error)
 	// VectorCreateNamespace creates a new vector namespace.
 	VectorCreateNamespace(ctx context.Context, in *VectorCreateNamespaceRequest, opts ...grpc.CallOption) (*VectorCreateNamespaceResponse, error)
+	// VectorUpdateNamespace changes a namespace's index parameters and
+	// metadata in place, keeping every vector.
+	VectorUpdateNamespace(ctx context.Context, in *VectorUpdateNamespaceRequest, opts ...grpc.CallOption) (*VectorUpdateNamespaceResponse, error)
 	// VectorDeleteNamespace removes a namespace and all its vectors.
 	VectorDeleteNamespace(ctx context.Context, in *VectorDeleteNamespaceRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// VectorListNamespaces returns all vector namespace names.
@@ -625,6 +631,14 @@ type QRDBServiceClient interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error)
+	// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+	// EVERY tenant the serving node knows onto this build's definitions, in
+	// one pass, leaving custom roles untouched. It writes every tenant's IAM
+	// data, so it carries the cross-scope roles:reconcile_all, effective only
+	// for a system-tenant caller. A tenant whose barrier is sealed, or that
+	// the node refuses, is reported skipped; one tenant's failure is
+	// reported in failed and never stops the pass.
+	ReconcileBuiltInRolesAllTenants(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReconcileBuiltInRolesAllTenantsResponse, error)
 	// IssueCert issues a certificate from a CSR for an EXISTING account of the
 	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
 	// to the account. The requester keeps its private key: no RPC generates
@@ -717,6 +731,11 @@ type QRDBServiceClient interface {
 	BarrierInitialize(ctx context.Context, in *BarrierInitializeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(ctx context.Context, in *BarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// BarrierChangePassphrase re-wraps the root key of the unsealed,
+	// passphrase-sealed barrier under the next passphrase once the current
+	// one opens it. A wrong current passphrase is PERMISSION_DENIED and
+	// changes nothing; a concurrent root-key write is ABORTED.
+	BarrierChangePassphrase(ctx context.Context, in *BarrierChangePassphraseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
 	BarrierSeal(ctx context.Context, in *BarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
@@ -1455,6 +1474,16 @@ func (c *qRDBServiceClient) VectorCreateNamespace(ctx context.Context, in *Vecto
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VectorCreateNamespaceResponse)
 	err := c.cc.Invoke(ctx, QRDBService_VectorCreateNamespace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) VectorUpdateNamespace(ctx context.Context, in *VectorUpdateNamespaceRequest, opts ...grpc.CallOption) (*VectorUpdateNamespaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VectorUpdateNamespaceResponse)
+	err := c.cc.Invoke(ctx, QRDBService_VectorUpdateNamespace_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2261,6 +2290,16 @@ func (c *qRDBServiceClient) ReconcileBuiltInRoles(ctx context.Context, in *Recon
 	return out, nil
 }
 
+func (c *qRDBServiceClient) ReconcileBuiltInRolesAllTenants(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReconcileBuiltInRolesAllTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReconcileBuiltInRolesAllTenantsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnrolledCertResponse)
@@ -2585,6 +2624,16 @@ func (c *qRDBServiceClient) BarrierUnseal(ctx context.Context, in *BarrierUnseal
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, QRDBService_BarrierUnseal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BarrierChangePassphrase(ctx context.Context, in *BarrierChangePassphraseRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_BarrierChangePassphrase_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3615,6 +3664,9 @@ type QRDBServiceServer interface {
 	TSListMetrics(context.Context, *TSListMetricsRequest) (*TSListMetricsResponse, error)
 	// VectorCreateNamespace creates a new vector namespace.
 	VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error)
+	// VectorUpdateNamespace changes a namespace's index parameters and
+	// metadata in place, keeping every vector.
+	VectorUpdateNamespace(context.Context, *VectorUpdateNamespaceRequest) (*VectorUpdateNamespaceResponse, error)
 	// VectorDeleteNamespace removes a namespace and all its vectors.
 	VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error)
 	// VectorListNamespaces returns all vector namespace names.
@@ -3819,6 +3871,14 @@ type QRDBServiceServer interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error)
+	// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+	// EVERY tenant the serving node knows onto this build's definitions, in
+	// one pass, leaving custom roles untouched. It writes every tenant's IAM
+	// data, so it carries the cross-scope roles:reconcile_all, effective only
+	// for a system-tenant caller. A tenant whose barrier is sealed, or that
+	// the node refuses, is reported skipped; one tenant's failure is
+	// reported in failed and never stops the pass.
+	ReconcileBuiltInRolesAllTenants(context.Context, *emptypb.Empty) (*ReconcileBuiltInRolesAllTenantsResponse, error)
 	// IssueCert issues a certificate from a CSR for an EXISTING account of the
 	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
 	// to the account. The requester keeps its private key: no RPC generates
@@ -3911,6 +3971,11 @@ type QRDBServiceServer interface {
 	BarrierInitialize(context.Context, *BarrierInitializeRequest) (*emptypb.Empty, error)
 	// BarrierUnseal unseals the barrier using the master key.
 	BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error)
+	// BarrierChangePassphrase re-wraps the root key of the unsealed,
+	// passphrase-sealed barrier under the next passphrase once the current
+	// one opens it. A wrong current passphrase is PERMISSION_DENIED and
+	// changes nothing; a concurrent root-key write is ABORTED.
+	BarrierChangePassphrase(context.Context, *BarrierChangePassphraseRequest) (*emptypb.Empty, error)
 	// BarrierSeal seals the barrier, preventing data access until unsealed.
 	BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error)
 	// BarrierStatus returns the current barrier state.
@@ -4303,6 +4368,9 @@ func (UnimplementedQRDBServiceServer) TSListMetrics(context.Context, *TSListMetr
 func (UnimplementedQRDBServiceServer) VectorCreateNamespace(context.Context, *VectorCreateNamespaceRequest) (*VectorCreateNamespaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VectorCreateNamespace not implemented")
 }
+func (UnimplementedQRDBServiceServer) VectorUpdateNamespace(context.Context, *VectorUpdateNamespaceRequest) (*VectorUpdateNamespaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VectorUpdateNamespace not implemented")
+}
 func (UnimplementedQRDBServiceServer) VectorDeleteNamespace(context.Context, *VectorDeleteNamespaceRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method VectorDeleteNamespace not implemented")
 }
@@ -4543,6 +4611,9 @@ func (UnimplementedQRDBServiceServer) Authorize(context.Context, *AuthorizeReque
 func (UnimplementedQRDBServiceServer) ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRoles not implemented")
 }
+func (UnimplementedQRDBServiceServer) ReconcileBuiltInRolesAllTenants(context.Context, *emptypb.Empty) (*ReconcileBuiltInRolesAllTenantsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRolesAllTenants not implemented")
+}
 func (UnimplementedQRDBServiceServer) IssueCert(context.Context, *IssueCertRequest) (*EnrolledCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
 }
@@ -4641,6 +4712,9 @@ func (UnimplementedQRDBServiceServer) BarrierInitialize(context.Context, *Barrie
 }
 func (UnimplementedQRDBServiceServer) BarrierUnseal(context.Context, *BarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierUnseal not implemented")
+}
+func (UnimplementedQRDBServiceServer) BarrierChangePassphrase(context.Context, *BarrierChangePassphraseRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method BarrierChangePassphrase not implemented")
 }
 func (UnimplementedQRDBServiceServer) BarrierSeal(context.Context, *BarrierSealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method BarrierSeal not implemented")
@@ -5801,6 +5875,24 @@ func _QRDBService_VectorCreateNamespace_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).VectorCreateNamespace(ctx, req.(*VectorCreateNamespaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_VectorUpdateNamespace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VectorUpdateNamespaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).VectorUpdateNamespace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_VectorUpdateNamespace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).VectorUpdateNamespace(ctx, req.(*VectorUpdateNamespaceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7245,6 +7337,24 @@ func _QRDBService_ReconcileBuiltInRoles_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_ReconcileBuiltInRolesAllTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRolesAllTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRolesAllTenants(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_IssueCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(IssueCertRequest)
 	if err := dec(in); err != nil {
@@ -7835,6 +7945,24 @@ func _QRDBService_BarrierUnseal_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).BarrierUnseal(ctx, req.(*BarrierUnsealRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BarrierChangePassphrase_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BarrierChangePassphraseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BarrierChangePassphrase(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BarrierChangePassphrase_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BarrierChangePassphrase(ctx, req.(*BarrierChangePassphraseRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -9641,6 +9769,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_VectorCreateNamespace_Handler,
 		},
 		{
+			MethodName: "VectorUpdateNamespace",
+			Handler:    _QRDBService_VectorUpdateNamespace_Handler,
+		},
+		{
 			MethodName: "VectorDeleteNamespace",
 			Handler:    _QRDBService_VectorDeleteNamespace_Handler,
 		},
@@ -9961,6 +10093,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_ReconcileBuiltInRoles_Handler,
 		},
 		{
+			MethodName: "ReconcileBuiltInRolesAllTenants",
+			Handler:    _QRDBService_ReconcileBuiltInRolesAllTenants_Handler,
+		},
+		{
 			MethodName: "IssueCert",
 			Handler:    _QRDBService_IssueCert_Handler,
 		},
@@ -10091,6 +10227,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BarrierUnseal",
 			Handler:    _QRDBService_BarrierUnseal_Handler,
+		},
+		{
+			MethodName: "BarrierChangePassphrase",
+			Handler:    _QRDBService_BarrierChangePassphrase_Handler,
 		},
 		{
 			MethodName: "BarrierSeal",
@@ -10462,6 +10602,8 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 const (
 	TenantBarrierService_InitBegin_FullMethodName          = "/qrdb.v1.TenantBarrierService/InitBegin"
 	TenantBarrierService_InitComplete_FullMethodName       = "/qrdb.v1.TenantBarrierService/InitComplete"
+	TenantBarrierService_SignedInitBegin_FullMethodName    = "/qrdb.v1.TenantBarrierService/SignedInitBegin"
+	TenantBarrierService_SignedInitComplete_FullMethodName = "/qrdb.v1.TenantBarrierService/SignedInitComplete"
 	TenantBarrierService_Unseal_FullMethodName             = "/qrdb.v1.TenantBarrierService/Unseal"
 	TenantBarrierService_Seal_FullMethodName               = "/qrdb.v1.TenantBarrierService/Seal"
 	TenantBarrierService_Status_FullMethodName             = "/qrdb.v1.TenantBarrierService/Status"
@@ -10507,6 +10649,19 @@ type TenantBarrierServiceClient interface {
 	// reason; the handler authorizes through
 	// middleware.AuthorizeTenantBarrierInitProof.
 	InitComplete(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
+	// SignedInitBegin is the first half of a two-phase signed initialization,
+	// for a client whose first admin signs away from the connection: it
+	// prepares the barrier's epoch-1 init statement naming public_key and
+	// returns the exact message to sign with a single-use reference. A Shamir
+	// init prepares its split here. identity:gated for InitBegin's reason; the
+	// handler authorizes through middleware.AuthorizeTenantBarrierInit. The
+	// signed statement, anchored to the tenant's first admin, is the proof of
+	// possession, so no channel-bound nonce is needed.
+	SignedInitBegin(ctx context.Context, in *TenantBarrierSignedInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierSignedInitBeginResponse, error)
+	// SignedInitComplete redeems SignedInitBegin's reference with the detached
+	// signature over its statement and initializes the barrier under it.
+	// identity:gated for InitBegin's reason; authorized as SignedInitBegin.
+	SignedInitComplete(ctx context.Context, in *TenantBarrierSignedInitCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -10566,6 +10721,26 @@ func (c *tenantBarrierServiceClient) InitComplete(ctx context.Context, in *Tenan
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TenantBarrierInitResponse)
 	err := c.cc.Invoke(ctx, TenantBarrierService_InitComplete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) SignedInitBegin(ctx context.Context, in *TenantBarrierSignedInitBeginRequest, opts ...grpc.CallOption) (*TenantBarrierSignedInitBeginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierSignedInitBeginResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_SignedInitBegin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tenantBarrierServiceClient) SignedInitComplete(ctx context.Context, in *TenantBarrierSignedInitCompleteRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantBarrierInitResponse)
+	err := c.cc.Invoke(ctx, TenantBarrierService_SignedInitComplete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -10714,6 +10889,19 @@ type TenantBarrierServiceServer interface {
 	// reason; the handler authorizes through
 	// middleware.AuthorizeTenantBarrierInitProof.
 	InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
+	// SignedInitBegin is the first half of a two-phase signed initialization,
+	// for a client whose first admin signs away from the connection: it
+	// prepares the barrier's epoch-1 init statement naming public_key and
+	// returns the exact message to sign with a single-use reference. A Shamir
+	// init prepares its split here. identity:gated for InitBegin's reason; the
+	// handler authorizes through middleware.AuthorizeTenantBarrierInit. The
+	// signed statement, anchored to the tenant's first admin, is the proof of
+	// possession, so no channel-bound nonce is needed.
+	SignedInitBegin(context.Context, *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error)
+	// SignedInitComplete redeems SignedInitBegin's reference with the detached
+	// signature over its statement and initializes the barrier under it.
+	// identity:gated for InitBegin's reason; authorized as SignedInitBegin.
+	SignedInitComplete(context.Context, *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
 	//
 	// identity:gated at the interceptor: unseal must remain reachable while
@@ -10764,6 +10952,12 @@ func (UnimplementedTenantBarrierServiceServer) InitBegin(context.Context, *Tenan
 }
 func (UnimplementedTenantBarrierServiceServer) InitComplete(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InitComplete not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) SignedInitBegin(context.Context, *TenantBarrierSignedInitBeginRequest) (*TenantBarrierSignedInitBeginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignedInitBegin not implemented")
+}
+func (UnimplementedTenantBarrierServiceServer) SignedInitComplete(context.Context, *TenantBarrierSignedInitCompleteRequest) (*TenantBarrierInitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignedInitComplete not implemented")
 }
 func (UnimplementedTenantBarrierServiceServer) Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Unseal not implemented")
@@ -10851,6 +11045,42 @@ func _TenantBarrierService_InitComplete_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TenantBarrierServiceServer).InitComplete(ctx, req.(*TenantBarrierInitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_SignedInitBegin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierSignedInitBeginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).SignedInitBegin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_SignedInitBegin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).SignedInitBegin(ctx, req.(*TenantBarrierSignedInitBeginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TenantBarrierService_SignedInitComplete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantBarrierSignedInitCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TenantBarrierServiceServer).SignedInitComplete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TenantBarrierService_SignedInitComplete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TenantBarrierServiceServer).SignedInitComplete(ctx, req.(*TenantBarrierSignedInitCompleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -11067,6 +11297,14 @@ var TenantBarrierService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InitComplete",
 			Handler:    _TenantBarrierService_InitComplete_Handler,
+		},
+		{
+			MethodName: "SignedInitBegin",
+			Handler:    _TenantBarrierService_SignedInitBegin_Handler,
+		},
+		{
+			MethodName: "SignedInitComplete",
+			Handler:    _TenantBarrierService_SignedInitComplete_Handler,
 		},
 		{
 			MethodName: "Unseal",

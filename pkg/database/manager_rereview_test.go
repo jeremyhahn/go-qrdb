@@ -33,16 +33,16 @@ import (
 // it created would refuse every write forever. It must be refused instead.
 func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 	dir := t.TempDir()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(&spyReclaimer{})
 	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	require.NoError(t, mgr.Close())
 
-	restarted := NewManager(nil, dir)
+	restarted := newCatalogManager(nil, dir)
 	t.Cleanup(func() { _ = restarted.Close() })
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	_, err = restarted.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.Error(t, err, "a dropped name was created with no way to mark it live")
 	var required *ReclaimerRequiredError
@@ -56,14 +56,14 @@ func TestManager_Create_WithoutAReclaimerRefusesADroppedName(t *testing.T) {
 	restarted.SetKeyspaceReclaimer(&spyReclaimer{})
 	_, err = restarted.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
-	dropped, err := restarted.droppedHere("orders")
+	dropped, err := restarted.droppedHere("", "orders")
 	require.NoError(t, err)
 	assert.False(t, dropped, "a re-created name is no longer a dropped one")
 }
 
 // A name never dropped here is created normally without a reclaimer.
 func TestManager_Create_WithoutAReclaimerCreatesANeverDroppedName(t *testing.T) {
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	}
 
 	replicated := kvstore.NewMemoryKVStore()
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	mgr.SetShardIDClaimer(claimerOver(t, replicated))
 	first, err := mgr.Create(raftCfg("a"))
 	require.NoError(t, err)
@@ -126,10 +126,10 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 	require.NoError(t, mgr.Drop(context.Background(), "b"))
 	require.NoError(t, mgr.Close())
 
-	restarted := NewManager(nil, dir)
+	restarted := newCatalogManager(nil, dir)
 	restarted.SetShardIDClaimer(claimerOver(t, replicated))
 	t.Cleanup(func() { _ = restarted.Close() })
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	again, err := restarted.Create(raftCfg("b"))
 	require.NoError(t, err)
 	assert.NotEqual(t, dropped, again.ShardID(), "a dropped database's shard ID was issued again after a restart")
@@ -137,12 +137,12 @@ func TestManager_ShardIDsNeverRepeatAcrossDropAndRestart(t *testing.T) {
 }
 
 // A create that fails leaves nothing of itself behind: not its catalog
-// directory (meta.json included), and not an external data directory this
+// directory, not its catalog record, and not an external data directory this
 // call created.
 func TestManager_Create_FailureRemovesWhatItCreated(t *testing.T) {
 	failing := &failingBackendFactory{BackendFactory: NewEmbeddedBackendFactory()}
 	root := t.TempDir()
-	mgr := NewManager(nil, filepath.Join(root, "catalog"), WithBackendFactory(failing))
+	mgr := newCatalogManager(nil, filepath.Join(root, "catalog"), WithBackendFactory(failing))
 	t.Cleanup(func() { _ = mgr.Close() })
 	external := filepath.Join(root, "external", "orders-data")
 	failing.err = os.ErrClosed
@@ -150,8 +150,11 @@ func TestManager_Create_FailureRemovesWhatItCreated(t *testing.T) {
 	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendFile, DataDir: external})
 	require.Error(t, err)
 
-	_, statErr := os.Stat(mgr.dbDir("orders"))
-	assert.True(t, os.IsNotExist(statErr), "the failed create left its catalog directory (and meta.json) behind")
+	_, statErr := os.Stat(mgr.dbDir("", "orders"))
+	assert.True(t, os.IsNotExist(statErr), "the failed create left its catalog directory behind")
+	_, getErr := testCatalogFor(mgr.dataDir).Get(context.Background(), "", "orders")
+	var notFound *NotFoundError
+	assert.ErrorAs(t, getErr, &notFound, "the failed create left its catalog record behind")
 	_, statErr = os.Stat(external)
 	assert.True(t, os.IsNotExist(statErr), "the failed create left the external data directory it created")
 }
@@ -161,7 +164,7 @@ func TestManager_Create_FailureRemovesWhatItCreated(t *testing.T) {
 func TestManager_Create_FailureKeepsAPreexistingDataDir(t *testing.T) {
 	failing := &failingBackendFactory{BackendFactory: NewEmbeddedBackendFactory(), err: os.ErrClosed}
 	root := t.TempDir()
-	mgr := NewManager(nil, filepath.Join(root, "catalog"), WithBackendFactory(failing))
+	mgr := newCatalogManager(nil, filepath.Join(root, "catalog"), WithBackendFactory(failing))
 	t.Cleanup(func() { _ = mgr.Close() })
 	external := filepath.Join(root, "external", "orders-data")
 	require.NoError(t, os.MkdirAll(external, 0o750))
@@ -195,7 +198,7 @@ func (f *siblingCreatingFactory) Create(cfg DatabaseConfig, dataDir string) (Bac
 // that a concurrent create of another name has put its own database in.
 func TestManager_Create_FailureKeepsAConcurrentSibling(t *testing.T) {
 	factory := &siblingCreatingFactory{BackendFactory: NewEmbeddedBackendFactory(), sibling: "invoices"}
-	mgr := NewManager(nil, filepath.Join(t.TempDir(), "catalog"), WithBackendFactory(factory))
+	mgr := newCatalogManager(nil, filepath.Join(t.TempDir(), "catalog"), WithBackendFactory(factory))
 	t.Cleanup(func() { _ = mgr.Close() })
 	factory.mgr = mgr
 
@@ -203,10 +206,10 @@ func TestManager_Create_FailureKeepsAConcurrentSibling(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrClosed)
 	require.NoError(t, factory.created)
 
-	_, statErr := os.Stat(mgr.dbDir("orders"))
+	_, statErr := os.Stat(mgr.dbDir("", "orders"))
 	assert.True(t, os.IsNotExist(statErr), "the failed create left its catalog directory behind")
-	_, statErr = os.Stat(filepath.Join(mgr.dbDir("invoices"), metaFile))
-	assert.NoError(t, statErr, "the failed create removed a concurrent create's meta.json")
+	_, err = testCatalogFor(mgr.dataDir).Get(context.Background(), "", "invoices")
+	assert.NoError(t, err, "the failed create removed a concurrent create's catalog record")
 	_, err = mgr.Get("invoices")
 	assert.NoError(t, err)
 }
@@ -221,7 +224,7 @@ func TestCreateUndo_RunRemovesOnlyItsOwnDirectory(t *testing.T) {
 	undo := &createUndo{}
 	require.NoError(t, undo.mkdirAll(mine))
 	require.NoError(t, (&createUndo{}).mkdirAll(theirs))
-	undo.run()
+	require.NoError(t, undo.run(context.Background(), nil))
 
 	_, statErr := os.Stat(mine)
 	assert.True(t, os.IsNotExist(statErr), "the rollback left the directory it created")
@@ -248,24 +251,24 @@ func TestCreateUndo_MkdirAllRecordsNothingThatExisted(t *testing.T) {
 func TestManager_Provision_ClearsTheTombstoneOfADroppedName(t *testing.T) {
 	dir := t.TempDir()
 	spy := &spyReclaimer{}
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(spy)
 	cfg := DatabaseConfig{Name: "orders", Backend: BackendMemory}
 	_, err := mgr.Create(cfg)
 	require.NoError(t, err)
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	require.NoError(t, mgr.Close())
-	require.Equal(t, spyTombstone, spy.markerOf("/orders"))
+	require.True(t, spy.isFenced("/orders"))
 
-	restarted := NewManager(nil, dir)
+	restarted := newCatalogManager(nil, dir)
 	t.Cleanup(func() { _ = restarted.Close() })
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	restarted.SetKeyspaceReclaimer(spy)
 	db, err := restarted.Provision(context.Background(), cfg)
 	require.NoError(t, err)
 	assert.Empty(t, db.Incarnation(), "a provisioned database carries the shared empty incarnation")
 	assert.Empty(t, spy.markerOf("/orders"), "the tombstone must be cleared to absent, which is live for the empty incarnation")
-	dropped, err := restarted.droppedHere("orders")
+	dropped, err := restarted.droppedHere("", "orders")
 	require.NoError(t, err)
 	assert.False(t, dropped)
 }
@@ -276,7 +279,7 @@ func TestManager_Provision_ClearsTheTombstoneOfADroppedName(t *testing.T) {
 func TestManager_Provision_ReturnsOrOpensAnExistingDatabase(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DatabaseConfig{Name: "orders", Backend: BackendMemory}
-	mgr := NewManager(nil, dir)
+	mgr := newCatalogManager(nil, dir)
 	created, err := mgr.Provision(context.Background(), cfg)
 	require.NoError(t, err)
 	again, err := mgr.Provision(context.Background(), cfg)
@@ -289,7 +292,7 @@ func TestManager_Provision_ReturnsOrOpensAnExistingDatabase(t *testing.T) {
 	created.SetDropping(false)
 	require.NoError(t, mgr.Close())
 
-	reopened := NewManager(nil, dir)
+	reopened := newCatalogManager(nil, dir)
 	t.Cleanup(func() { _ = reopened.Close() })
 	db, err := reopened.Provision(context.Background(), cfg)
 	require.NoError(t, err)
@@ -305,7 +308,7 @@ func TestManager_Provision_ReturnsOrOpensAnExistingDatabase(t *testing.T) {
 // elsewhere and leaves nothing behind.
 func TestManager_Provision_RefusesANameLiveElsewhere(t *testing.T) {
 	spy := &spyReclaimer{marker: map[string]string{"/orders": "incarnation-on-node-b"}}
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	mgr.SetKeyspaceReclaimer(spy)
 
@@ -317,7 +320,7 @@ func TestManager_Provision_RefusesANameLiveElsewhere(t *testing.T) {
 	assert.Equal(t, "incarnation-on-node-b", spy.markerOf("/orders"))
 	_, getErr := mgr.Get("orders")
 	assert.Error(t, getErr)
-	_, statErr := os.Stat(mgr.dbDir("orders"))
+	_, statErr := os.Stat(mgr.dbDir("", "orders"))
 	assert.True(t, os.IsNotExist(statErr), "the refused provisioning left its catalog directory behind")
 }
 
@@ -325,7 +328,7 @@ func TestManager_Provision_RefusesANameLiveElsewhere(t *testing.T) {
 // every transport classifies it as an already-exists conflict.
 func TestManager_Create_RefusesANameLiveElsewhere(t *testing.T) {
 	spy := &spyReclaimer{marker: map[string]string{"/orders": "incarnation-on-node-b"}}
-	mgr := NewManager(nil, t.TempDir())
+	mgr := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	mgr.SetKeyspaceReclaimer(spy)
 

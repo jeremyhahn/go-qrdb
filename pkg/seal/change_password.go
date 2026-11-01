@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 
@@ -39,23 +40,47 @@ type KDFDescriber interface {
 	KDFParams() KDFParams
 }
 
-// ChangePassword re-wraps the root key with a new password-derived wrapping
-// key. The barrier must be unsealed and have a passphrase (software) strategy
-// registered under StrategyPassphrase.
+// ChangePassword re-wraps the root key under a new passphrase. current is the
+// passphrase the root key is wrapped under now and next the one it is wrapped
+// under afterwards. The barrier must be unsealed and have a passphrase
+// (software) strategy registered under StrategyPassphrase.
+//
+// current is checked before anything is written, against the persisted blob
+// and through a credential-checking strategy, and a passphrase that does not
+// open it is refused with ErrCredentialMismatch: an unsealed barrier is not
+// proof that the caller knows the passphrase, so holding the session is not
+// enough to replace it (#631).
 //
 // For hardware-backed strategies (TPM2, PKCS#11, cloud KMS), this operation
 // is not applicable since they do not use password-derived keys.
 //
-// The operation is atomic with respect to the persisted sealed root key blob:
-// the new blob is written only after the re-seal succeeds.
-func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credentials) error {
+// The write is guarded: the new blob replaces the persisted one only while
+// the persisted one is still the blob current was checked against, so a
+// rotation, rekey or second passphrase change that lands in between is not
+// overwritten and the call fails with ErrPassphraseChangeConflict instead. A
+// storage backend with no guarded swap is refused with
+// ErrGuardedSwapUnsupported rather than written unguarded.
+//
+// The read of the live state, the guarded write and the live barrier's
+// adoption of the new state are one operation. A second passphrase change,
+// or a rotation, purge or backoff write through the barrier's state
+// persister, attempted while it runs is refused with
+// ErrRootKeyWriteInProgress and changes nothing: go-quicraft's scheduled
+// rotation then rotates on its next tick.
+//
+// The blob carries the barrier's load generation forward unchanged. A
+// passphrase change re-wraps the key this barrier already holds and is not a
+// new load of it: writing a lower generation reads, on the next load, as a
+// rollback of the blob ("load generation went BACKWARDS"), and a higher one
+// as another loader having claimed it, which supersedes this barrier.
+func (b *StorageBarrier) ChangePassword(ctx context.Context, current, next Credentials) error {
 	if b.IsSealed() {
 		return ErrSealed
 	}
 
 	// A nil secret is "no credentials supplied"; a destroyed one is a
 	// credential the caller has already released. Neither is a passphrase.
-	if newCreds.Secret == nil || !newCreds.Secret.IsAlive() {
+	if !credentialPresent(current) || !credentialPresent(next) {
 		return ErrInvalidPassphrase
 	}
 
@@ -67,6 +92,17 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return ErrStrategyNotFound
 	}
 
+	// Read the live state, write the re-wrapped blob and adopt it as one
+	// operation: a second change, or a rotation or purge persisting a clone
+	// of the live state, that landed between the write and the adoption
+	// would leave disk and the live barrier on different wrappers, and the
+	// next persist of the live state would restore the revoked passphrase.
+	// Those writers refuse while this is held (see rootKeyRewrap).
+	if !b.rootKeyRewrap.TryLock() {
+		return ErrRootKeyWriteInProgress
+	}
+	defer b.rootKeyRewrap.Unlock()
+
 	// Get the current root key from the unsealed barrier. RootKey() returns a
 	// fresh heap copy the caller owns; it must be wiped before this function
 	// returns (mirrors MintKeyedShamirSibling's defer secure.Wipe(rootKey)) —
@@ -77,6 +113,20 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return err
 	}
 	defer secure.Wipe(rootKey)
+
+	// The persisted blob is both what current is checked against and the
+	// guard of the write below.
+	persistedBlob, err := b.persistedRootKeyBlob(ctx)
+	if err != nil {
+		return err
+	}
+	var persisted SealedRootKey
+	if err := json.Unmarshal(persistedBlob, &persisted); err != nil {
+		return ErrCorruptRootKey
+	}
+	if persisted.Strategy != strategyKey {
+		return ErrStrategyMismatch
+	}
 
 	// Capture the current epoch state before re-sealing so we can
 	// carry it forward into the new sealed blob.
@@ -130,28 +180,46 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return err
 	}
 
+	// Check current through the deferred strategy, never the registered one:
+	// a bound strategy ignores the credentials it is handed, so asking it
+	// would accept any passphrase at all. The blob must open to the very key
+	// this barrier holds, compared in constant time.
+	if err := openedToLiveKey(ctx, newStrat, &persisted, current, rootKey); err != nil {
+		_ = newStrat.Close()
+		emitAudit(b.config.AuditLogger, "change_password", "barrier",
+			b.config.RootKeyPath, "deny", map[string]string{"error": err.Error()})
+		return err
+	}
+
 	// Re-seal the root key with the new strategy. The deferred path reads
-	// newCreds.Secret at this call, so the blob is wrapped under the NEW
+	// next.Secret at this call, so the blob is wrapped under the NEW
 	// passphrase.
-	sealed, err := newStrat.SealRootKey(ctx, rootKey, newCreds)
+	sealed, err := newStrat.SealRootKey(ctx, rootKey, next)
 	if err != nil {
 		// Close the new strategy to release its enclave.
 		_ = newStrat.Close()
 		return err
 	}
 
-	// Carry forward the epoch, salt, known epochs, and HKDF version
-	// from the existing sealed root key. SealRootKey only produces the
-	// ciphertext and strategy fields; the epoch state is managed by the
-	// EpochBarrier and must be preserved across re-wraps — dropping the
-	// HKDF version would re-derive DEKs under the legacy v1 layout and
-	// render existing data undecryptable.
+	// Carry forward the epoch state from the existing sealed root key.
+	// SealRootKey only produces the ciphertext and strategy fields; the epoch
+	// state is managed by the EpochBarrier and must be preserved across
+	// re-wraps — dropping the HKDF version would re-derive DEKs under the
+	// legacy v1 layout and render existing data undecryptable, dropping the
+	// load generation reads as a rollback on the next load (see the doc
+	// comment), and dropping the algorithm unrecords the data-path cipher.
+	// The persisted unseal-backoff state is carried too: a passphrase change
+	// is not a successful unseal and must not clear it.
 	if existing != nil {
 		sealed.Epoch = existing.Epoch
 		sealed.Salt = existing.Salt
 		sealed.KnownEpochs = existing.KnownEpochs
 		sealed.Version = existing.Version
 		sealed.HKDFVersion = existing.HKDFVersion
+		sealed.LoadGeneration = existing.LoadGeneration
+		sealed.Algorithm = existing.Algorithm
+		sealed.FailedAttempts = existing.FailedAttempts
+		sealed.LastFailedUnixNano = existing.LastFailedUnixNano
 	}
 
 	// Re-authenticate the metadata under the root key. SealRootKey produced
@@ -165,15 +233,30 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		return err
 	}
 
-	// Persist the new sealed root key blob.
+	// Persist the new sealed root key blob, guarded on the blob current was
+	// checked against.
 	blob, err := json.Marshal(sealed)
 	if err != nil {
 		_ = newStrat.Close()
 		return err
 	}
-	if err := b.base.Put(ctx, b.config.RootKeyPath, blob); err != nil {
+	guarded, ok := b.base.(guardedSwapBackend)
+	if !ok {
+		_ = newStrat.Close()
+		return ErrGuardedSwapUnsupported
+	}
+	swapped, err := guarded.CompareAndSwap(ctx, b.config.RootKeyPath, persistedBlob, blob)
+	if err != nil {
 		_ = newStrat.Close()
 		return err
+	}
+	if !swapped {
+		_ = newStrat.Close()
+		return ErrPassphraseChangeConflict
+	}
+
+	if hook := b.rootKeyWritten; hook != nil {
+		hook()
 	}
 
 	// Update the EpochBarrier's sealed state so SealedRootKeyData() is consistent.
@@ -193,5 +276,30 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	b.logger.Info("barrier password changed",
 		slog.String("strategy", string(strategyKey)))
 
+	return nil
+}
+
+// credentialPresent reports whether creds carries a live secret. A nil secret
+// is "no credentials supplied"; a destroyed one is a credential the caller
+// has already released.
+func credentialPresent(creds Credentials) bool {
+	return creds.Secret != nil && creds.Secret.IsAlive()
+}
+
+// openedToLiveKey unseals sealed with strategy and creds and reports whether
+// it opened to live, the key the barrier holds, compared in constant time. A
+// credential the strategy refuses and one that opens to a different key are
+// the same answer, ErrCredentialMismatch: which of the two happened says
+// nothing the caller may act on.
+func openedToLiveKey(ctx context.Context, strategy SealingStrategy, sealed *SealedRootKey, creds Credentials, live []byte) error {
+	candidate, err := strategy.UnsealRootKey(ctx, sealed, creds)
+	if err != nil {
+		return ErrCredentialMismatch
+	}
+	defer secure.Wipe(candidate)
+	if len(candidate) == 0 || len(candidate) != len(live) ||
+		subtle.ConstantTimeCompare(candidate, live) != 1 {
+		return ErrCredentialMismatch
+	}
 	return nil
 }

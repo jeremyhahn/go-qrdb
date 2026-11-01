@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 const (
@@ -341,7 +342,7 @@ func TestGate_RefusesToStartUnderAnUnknownActivatedFeature(t *testing.T) {
 	var unsupported *UnsupportedFeatureError
 	require.ErrorAs(t, err, &unsupported)
 	require.ErrorAs(t, g.Refusal(), &unsupported, "the refusal is kept for health reporting")
-	assert.Equal(t, Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 	assert.Contains(t, unsupported.Error(), "future-opcode")
 
 	require.ErrorAs(t, CheckActivated(context.Background(), kv), &unsupported)
@@ -502,7 +503,7 @@ func TestGate_ActivationCountsWitnesses(t *testing.T) {
 func TestGate_UndecidableIsNotEnabled(t *testing.T) {
 	m := threeNodes()
 	g := newGate(t, m)
-	assert.False(t, g.Enabled(systemShard, Feature("unknown")))
+	assert.False(t, g.Enabled(systemShard, feature.Feature("unknown")))
 	assert.False(t, g.Enabled(999, GuardedWrites), "an unknown shard")
 	m.set(dedicatedShard, 9, map[uint64]string{})
 	assert.False(t, g.Enabled(dedicatedShard, GuardedWrites), "an empty group")
@@ -552,8 +553,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys)}, SupportedNames())
+	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -759,7 +760,7 @@ func TestGate_RefreshRefusesAnAppliedUnknownActivation(t *testing.T) {
 	eventually(t, func() bool { return g.Refusal() != nil }, "an applied unknown activation was not refused")
 	var unsupported *UnsupportedFeatureError
 	require.ErrorAs(t, g.Refusal(), &unsupported)
-	assert.Equal(t, Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 }
 
 // A replica whose applied state cannot be read -- a witness applies none --

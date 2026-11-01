@@ -189,11 +189,12 @@ func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
 	// iterations, and 128 MiB of Argon2id apiece otherwise, which OOM-killed
 	// this test on CI (go-qrdb#151, run 6900) until it ran under an eager
 	// collector (#1234).
+	const initialPassword = "initial-password"
 	ctx := context.Background()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, cheapSoftwareStrategy(t, "initial-password"))
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, cheapSoftwareStrategy(t, initialPassword))
 	require.NoError(t, err)
-	require.NoError(t, b.Initialize(ctx, MustCredentials(context.Background(), []byte("initial-password"))))
+	require.NoError(t, b.Initialize(ctx, MustCredentials(context.Background(), []byte(initialPassword))))
 
 	stop := make(chan struct{})
 
@@ -208,9 +209,13 @@ func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
 
 	// Writer: ChangePassword replaces the StrategyPassphrase entry in
 	// b.strategies on every call (see change_password.go's setStrategy).
+	// ChangePassword checks the current passphrase against the one sealing
+	// the root key, so the first change presents the strategy's own.
+	current := initialPassword
 	for i := 0; i < 60; i++ {
 		pw := fmt.Sprintf("password-%d", i)
-		require.NoError(t, b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(pw))))
+		require.NoError(t, b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(current)), MustCredentials(context.Background(), []byte(pw))))
+		current = pw
 	}
 
 	close(stop)

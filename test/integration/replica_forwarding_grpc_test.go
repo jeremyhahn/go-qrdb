@@ -91,6 +91,7 @@ func grpcAnswer(err error, header metadata.MD) fwdAnswer {
 	}
 	a.denied = status.Code(err) == codes.PermissionDenied
 	a.notFound = status.Code(err) == codes.NotFound
+	a.unavailable = status.Code(err) == codes.Unavailable
 	for _, d := range status.Convert(err).Details() {
 		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetReason() == "NOT_A_REPLICA" && status.Code(err) == codes.Unavailable {
 			a.refusal = info.GetMetadata()

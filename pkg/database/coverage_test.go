@@ -249,7 +249,7 @@ func TestDatabaseBarrierManager_GetBarrier_ReturnsEncryptor(t *testing.T) {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
-	barrier := mgr.GetBarrier("enc-getbarrier")
+	barrier := mgr.GetBarrier("enc-getbarrier", "")
 	if barrier == nil {
 		t.Error("GetBarrier() returned nil, want non-nil BarrierEncryptor")
 	}
@@ -258,7 +258,7 @@ func TestDatabaseBarrierManager_GetBarrier_ReturnsEncryptor(t *testing.T) {
 func TestDatabaseBarrierManager_GetBarrier_NotRegistered(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 
-	barrier := mgr.GetBarrier("nonexistent")
+	barrier := mgr.GetBarrier("nonexistent", "")
 	if barrier != nil {
 		t.Error("GetBarrier() returned non-nil for unregistered database, want nil")
 	}
@@ -280,7 +280,7 @@ func TestDatabaseBarrierManager_RegisterBarrier_Success(t *testing.T) {
 	}
 
 	// Barrier should be registered but sealed (no init was done).
-	status, err := mgr.BarrierStatus("reg-barrier-db")
+	status, err := mgr.BarrierStatus("reg-barrier-db", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestDatabaseBarrierManager_RegisterBarrier_DisabledNoop(t *testing.T) {
 		t.Fatalf("RegisterBarrier with disabled config returned unexpected error: %v", err)
 	}
 
-	_, err = mgr.BarrierStatus("disabled-db")
+	_, err = mgr.BarrierStatus("disabled-db", "")
 	if err == nil {
 		t.Error("expected error for unregistered (disabled) database barrier")
 	}
@@ -322,7 +322,7 @@ func TestManager_CreateWithCredentials_WithBarrierManager(t *testing.T) {
 	bm := newTestBarrierManager(t)
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir, WithBarrierManager(bm))
+	mgr := newCatalogManager(logger, dataDir, WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -357,7 +357,7 @@ func TestManager_Open_ModeDefault(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 
 	// Create a database with memory backend.
 	cfg := validMemoryConfig("mode-default-db")
@@ -368,11 +368,11 @@ func TestManager_Open_ModeDefault(t *testing.T) {
 		t.Fatalf("Close(): %v", err)
 	}
 
-	// Re-open with a fresh manager to exercise meta.json reconstruction.
-	mgr2 := NewManager(logger, dataDir)
+	// Re-open with a fresh manager to exercise reconstruction from the catalog.
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("mode-default-db")
+	db, err := mgr2.Open(context.Background(), "", "mode-default-db")
 	if err != nil {
 		t.Fatalf("Open(): %v", err)
 	}

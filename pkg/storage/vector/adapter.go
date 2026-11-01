@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,13 +66,15 @@ type PebbleVectorStorage struct {
 // StorageOption configures a PebbleVectorStorage instance.
 type StorageOption func(*pebble.Options)
 
-// WithEncryptor applies enc to the Pebble options, wrapping the vfs.FS
-// with barrier-driven AES-256-GCM encryption. A nil enc or an enc whose
-// barrier is nil is a no-op, so plaintext deployments and tests are
-// unaffected.
+// WithEncryptor applies enc to the Pebble options, wrapping their FS with
+// barrier-driven AES-256-GCM encryption through pkg/storage/pebble's
+// adapter. A nil enc or an enc whose barrier is nil is a no-op, so
+// plaintext deployments and tests are unaffected.
 func WithEncryptor(enc *atrest.Encryptor) StorageOption {
 	return func(o *pebble.Options) {
-		enc.Apply(o)
+		if enc.Enabled() {
+			o.FS = pebblestore.WrapVFS(o.FS, enc.Wrap)
+		}
 	}
 }
 
@@ -746,51 +749,57 @@ func (s *PebbleVectorStorage) scanNamespace(namespace string, opts *ScanOptions)
 
 	s.metrics.scanOps.Inc()
 
+	var fromID uint64
+	skip, limit := 0, 0
+	if opts != nil {
+		fromID, skip, limit = opts.FromID, opts.Offset, opts.Limit
+	}
+
+	// Keys sort by ID and then by version, both big-endian, so the iterator
+	// yields ascending IDs and an ID's last key is its latest version.
 	prefix := schema.EncodeNamespacePrefix(namespace)
 	iter := newVectorIterator(s.db, prefix)
 	defer func() { _ = iter.Close() }()
+	if fromID > 0 && iter.iter != nil {
+		iter.iter.SetBounds(schema.EncodeVectorKeyPrefix(namespace, fromID), schema.PrefixSuccessor(prefix))
+	}
 
-	// Use map to deduplicate by ID (keep latest version)
-	vectorMap := make(map[uint64]*VectorValue)
+	var (
+		results  []*VectorValue
+		latest   *VectorValue
+		latestID uint64
+	)
+	// emit settles the previous ID's latest version, past the offset, and
+	// reports whether the page is full.
+	emit := func() bool {
+		if latest == nil {
+			return false
+		}
+		if skip > 0 {
+			skip--
+		} else {
+			results = append(results, latest)
+		}
+		latest = nil
+		return limit > 0 && len(results) >= limit
+	}
 
 	for iter.Next() {
-		_, id, _, err := schema.DecodeVectorKey(iter.iter.Key())
-		if err != nil {
-			continue
-		}
-
 		schemaVec, err := iter.Value()
 		if err != nil {
 			continue
 		}
-		vec := fromSchemaVectorValue(schemaVec)
-
-		// Keep latest version
-		if existing, exists := vectorMap[id]; !exists || vec.Version > existing.Version {
-			vectorMap[id] = vec
+		if latest != nil && iter.id != latestID && emit() {
+			return results, nil
 		}
+		latest, latestID = fromSchemaVectorValue(schemaVec), iter.id
 	}
 
 	if err := iter.Err(); err != nil {
 		s.metrics.errors.Inc()
 		return nil, err
 	}
-
-	// Convert map to slice
-	results := make([]*VectorValue, 0, len(vectorMap))
-	for _, vec := range vectorMap {
-		results = append(results, vec)
-	}
-
-	// Apply scan options
-	if opts != nil {
-		if opts.Offset > 0 && opts.Offset < len(results) {
-			results = results[opts.Offset:]
-		}
-		if opts.Limit > 0 && opts.Limit < len(results) {
-			results = results[:opts.Limit]
-		}
-	}
+	emit()
 
 	return results, nil
 }
@@ -850,6 +859,50 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 
 	s.logger.Infof("Created namespace: %s", info.Name)
 
+	return nil
+}
+
+// UpdateNamespace replaces the namespace's index parameters and metadata in
+// place, durably, without touching a vector or the ID sequence.
+func (s *PebbleVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+	if !s.enter() {
+		return ErrStorageClosed
+	}
+	defer s.leave()
+
+	if namespace == "" || update == nil {
+		return ErrInvalidNamespace
+	}
+
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+
+	cached, exists := s.nsCache[namespace]
+	if !exists {
+		return ErrNamespaceNotFound
+	}
+
+	// The cached record is shared with readers holding a copy of its
+	// pointer, so the update is written to a fresh record and swapped in.
+	updated := *cached
+	updated.IndexConfig = maps.Clone(update.IndexConfig)
+	updated.Metadata = maps.Clone(update.Metadata)
+	updated.UpdatedAt = update.UpdatedAt
+
+	value, err := schema.EncodeNamespaceInfo(toSchemaNamespaceInfo(&updated))
+	if err != nil {
+		return err
+	}
+	key := schema.EncodeNamespaceMetaKey(namespace)
+	if err := s.durably(func(o *pebble.WriteOptions) error {
+		return s.db.Set(key, value, o)
+	}); err != nil {
+		s.metrics.errors.Inc()
+		return err
+	}
+
+	s.nsCache[namespace] = &updated
+	s.metrics.namespaceOps.Inc()
 	return nil
 }
 

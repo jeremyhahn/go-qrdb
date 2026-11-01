@@ -26,11 +26,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -44,7 +44,7 @@ type replicaOpens struct {
 	dirs []string
 }
 
-func (r *replicaOpens) open(_, _ uint64, dir string, _ vfs.FS) (storage.Storage, error) {
+func (r *replicaOpens) open(_, _ uint64, dir string, _ filesys.FS) (storage.Storage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dirs = append(r.dirs, dir)
@@ -75,20 +75,20 @@ func TestWithReplicaStorageFactory_SetsTheOption(t *testing.T) {
 // into the replica directory and records the FS.
 type fsOpens struct {
 	mu  sync.Mutex
-	fss []vfs.FS
+	fss []filesys.FS
 }
 
 const replicaSentinel = "REPLICA-SENTINEL-PLAINTEXT"
 
-func (r *fsOpens) open(_, _ uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error) {
+func (r *fsOpens) open(_, _ uint64, dir string, dataPlaneFS filesys.FS) (storage.Storage, error) {
 	r.mu.Lock()
 	r.fss = append(r.fss, dataPlaneFS)
 	r.mu.Unlock()
 	fs := dataPlaneFS
 	if fs == nil {
-		fs = vfs.Default
+		fs = filesys.Default
 	}
-	f, err := fs.Create(filepath.Join(dir, "sentinel"), vfs.WriteCategoryUnspecified)
+	f, err := fs.Create(filepath.Join(dir, "sentinel"))
 	if err != nil {
 		return nil, err
 	}
@@ -102,10 +102,10 @@ func (r *fsOpens) open(_, _ uint64, dir string, dataPlaneFS vfs.FS) (storage.Sto
 	return memstore.NewStorage(), nil
 }
 
-func (r *fsOpens) handed() []vfs.FS {
+func (r *fsOpens) handed() []filesys.FS {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]vfs.FS(nil), r.fss...)
+	return append([]filesys.FS(nil), r.fss...)
 }
 
 func TestBindReplicaStorage_HandsOverTheBarrierFS(t *testing.T) {
@@ -118,7 +118,7 @@ func TestBindReplicaStorage_HandsOverTheBarrierFS(t *testing.T) {
 	s, err := open(3, 1, dir)
 	require.NoError(t, err)
 	require.NotNil(t, s)
-	require.Equal(t, []vfs.FS{sealed.FS()}, fo.handed())
+	require.Equal(t, []filesys.FS{sealed.FS()}, fo.handed())
 
 	raw, err := os.ReadFile(filepath.Join(dir, "sentinel"))
 	require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestBindReplicaStorage_BarrierOffHandsOverNil(t *testing.T) {
 		dir := t.TempDir()
 		_, err := bindReplicaStorage(fo.open, enc)(3, 1, dir)
 		require.NoError(t, err)
-		require.Equal(t, []vfs.FS{nil}, fo.handed())
+		require.Equal(t, []filesys.FS{nil}, fo.handed())
 
 		raw, err := os.ReadFile(filepath.Join(dir, "sentinel"))
 		require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestBindReplicaStorage_BarrierOffHandsOverNil(t *testing.T) {
 
 func TestBindReplicaStorage_PassesTheFactoryError(t *testing.T) {
 	want := errors.New("replica storage unavailable")
-	open := bindReplicaStorage(func(_, _ uint64, _ string, _ vfs.FS) (storage.Storage, error) {
+	open := bindReplicaStorage(func(_, _ uint64, _ string, _ filesys.FS) (storage.Storage, error) {
 		return nil, want
 	}, nil)
 	s, err := open(1, 1, t.TempDir())

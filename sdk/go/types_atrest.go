@@ -23,7 +23,7 @@ import (
 // At-rest filesystem encryption
 // ---------------------------------------------------------------------------
 
-// AtRestEncryptor wraps any Pebble store's vfs.FS with barrier-driven
+// AtRestEncryptor wraps a store's filesys.FS with barrier-driven
 // AES-256-GCM encryption. A nil or no-op Encryptor preserves plaintext
 // operation for tests and non-encrypted deployments.
 //

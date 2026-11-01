@@ -54,10 +54,16 @@ A deployment that does not want encryption runs the seal with strategy
 ## Running with no barrier at all
 
 `seal.enabled: false` is a step further than strategy `none`: there is no
-barrier object in front of the data plane at all, so none of the barrier
-commands above apply, and (per the previous section) it is only reachable
-with auth also disabled. Every node started this way logs one WARN at
-startup:
+barrier object in front of the data plane at all, and (per the previous
+section) it is only reachable with auth also disabled. The node still answers
+`barrier status`, on every transport and in process, with barrier protection
+`none`: strategy `none`, initialized, unsealed, with no `initialized_at`.
+Every barrier command that would change the barrier -- `init`, `unseal`,
+`seal`, `change-passphrase`, `init-shamir`, recovery keys, holder enrolment,
+share claims, quorum rounds, rekey and revocation -- is refused with
+`FailedPrecondition` (`409 Conflict` over REST; `service.SealDisabledError`):
+there is no key to act on, and a seal would report a sealed node while its
+data stayed readable. Every node started this way logs one WARN at startup:
 
 ```
 qrdb/seal: seal disabled; at-rest data is stored in plaintext
@@ -90,10 +96,11 @@ or an application-level re-seed — never a raw copy of the old data directory.
 up: it runs in the sealed window before anything is unsealed,
 initializes the system barrier with the strategy and secret you give it, and
 issues the bootstrap admin's certificate in the same call (see
-[../firstboot/user.md](../firstboot/user.md)). `qrdb barrier init` targeting
-the system barrier is refused with a typed error pointing back here — it
-remains the command for a tenant or database barrier, which a tenant admin
-initializes separately after the system is up.
+[../firstboot/user.md](../firstboot/user.md)). The server refuses
+`qrdb barrier init` and `qrdb barrier init-shamir` with a typed error naming
+`qrdb init`. A tenant barrier is initialized
+separately, after the system is up, by the tenant admin with
+`qrdb tenant barrier-init`.
 
 ```bash
 qrdb init --so-pin <so-pin> --user-pin <user-pin> \
@@ -106,6 +113,41 @@ After a restart:
 ```bash
 qrdb barrier unseal --passphrase '<passphrase>'
 ```
+
+Unsealing a barrier that was never initialized is refused with a typed
+"barrier not initialized" error (`seal.ErrNotInitialized`): run `qrdb init`
+first.
+
+### Embedding qrdb: a passphrase-sealed system barrier
+
+An application that embeds a node through `sdk/go/node` brings its system
+barrier up without the sealed-window listener. Set `seal.enabled: true` and
+`seal.strategy: passphrase` in the node's configuration, then either:
+
+- pass the passphrase at construction, and the node initializes the barrier
+  on first boot and unseals it on every later one:
+
+  ```go
+  n, err := node.NewStandaloneNode(ctx, cfg, nil, node.WithSealPassphrase(passphrase))
+  ```
+
+- or construct the node without it. The node starts sealed, and
+  `Node.Unseal` initializes the barrier the first time and unseals it after
+  that:
+
+  ```go
+  n, err := node.NewStandaloneNode(ctx, cfg, nil)
+  // ...
+  err = n.Unseal(ctx, seal.MustCredentials(ctx, passphrase))
+  ```
+
+On a node that runs the first-boot ceremony, `BarrierInitialize` over any
+transport is refused on the system barrier with
+`service.SystemBarrierInitRefusedError`: the ceremony (`qrdb init`,
+`Node.FirstBoot`) owns that barrier. Without a ceremony, the node's own
+constructor or `Node.Unseal` is the path; do not mix the two. A wrong passphrase on a
+later unseal returns an `*node.UnsealError` wrapping
+`seal.ErrDecryptionFailed`.
 
 ## Common tasks
 
@@ -142,12 +184,34 @@ unseal the node:
 A node that loses touch with the cluster is different: it stops serving but
 keeps its keys (see below).
 
-**Set up M-of-N custody.** Enrol the share holders first, then initialize;
-one envelope is sealed to each holder and each claims theirs once. The full
+**Change the passphrase** of a passphrase-sealed barrier. The barrier must be
+unsealed; the current passphrase must open it, and a wrong one is refused
+with a typed credential mismatch and changes nothing. The root key is not
+rotated: it is re-wrapped under the new passphrase, and the stored blob is
+replaced in one guarded swap, so the next unseal takes the new passphrase and
+the old one is refused. Data is not re-encrypted. It needs `seal:rekey` and
+the Security Officer PIN, checked before the barrier is touched exactly as for
+a seal or a rekey: a missing or wrong PIN is refused and changes nothing, and
+a node with no PIN backend configured refuses the change outright.
+
+```bash
+qrdb barrier change-passphrase --current '<current>' --next '<next>' --so-pin "$SO_PIN"
+```
+
+An embedder calls `Node.ChangePassphrase(ctx, current, next)`, which returns
+`seal.ErrCredentialMismatch` for a wrong current passphrase and
+`node.ErrSealNotEnabled` on a node without a seal barrier.
+
+**Set up M-of-N custody.** `qrdb init` enrols the share holders and
+initializes the system barrier under Shamir in one call; one envelope is
+sealed to each holder and each claims theirs once. The full
 custody workflow is [../shamir-custody/user.md](../shamir-custody/user.md).
 
 ```bash
-qrdb barrier init-shamir --threshold 3 --total 5
+qrdb init --barrier-strategy shamir --shares 5 --threshold 3 --admin-csr admin.csr \
+  --so-pin <so-pin> --user-pin <user-pin> \
+  --officers alice=alice.csr --officers bob=bob.csr --officers carol=carol.csr \
+  --custodians dave=dave.csr --custodians erin=erin.csr
 ```
 
 **Unseal, seal and rotate with the holders.** A Shamir barrier opens only when

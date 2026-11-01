@@ -1,7 +1,7 @@
 # Replica Forwarding — User Guide
 
-> **Status: SHIPPED — REST, gRPC, Unix socket, QUIC, MCP and embedded.** ·
-> Scope: go-qrdb · Last verified: 2026-10-23
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
+> Conflicts with this document are defects. Fix them here first.
 
 A database with its own Raft group lives on a few nodes of the cluster: its
 replicas. You do not need to know which. Send a request to any node, over any

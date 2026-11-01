@@ -188,6 +188,12 @@ type Pool struct {
 	// calls before Run gets to it collapse into a single rebuild, and
 	// Invalidate never blocks.
 	kick chan struct{}
+
+	// invalidated counts Invalidate calls; settled is the highest count a
+	// rebuild that read the store after it returned nil for. Settle compares
+	// the two to learn whether a change is still waiting on a rebuild.
+	invalidated atomic.Uint64
+	settled     atomic.Uint64
 }
 
 // TenantLister enumerates the tenants whose trust anchors join the widened
@@ -402,6 +408,7 @@ func (p *Pool) withdraw(keepKeyBOnly bool) {
 // Refresh instead -- and a deleted tenant's CA is still refused at once by VerifyIssuer's
 // per-request IsTenantIssuer check.
 func (p *Pool) Invalidate() {
+	p.invalidated.Add(1)
 	select {
 	case p.kick <- struct{}{}:
 	default:
@@ -448,18 +455,51 @@ func (p *Pool) Refresh(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
 	for {
+		// Read before the build: a change announced while the store is being
+		// read may be missing from it, so it stays unsettled.
+		gen := p.invalidated.Load()
 		prev := p.snapshot.Load()
 		snap := p.build(ctx)
 		if p.snapshot.CompareAndSwap(prev, snap) {
 			if snap.err != nil {
 				return snap.err
 			}
-			return snap.keptAcross
+			if snap.keptAcross != nil {
+				return snap.keptAcross
+			}
+			p.settle(gen)
+			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			return &RefreshSupersededError{Err: err}
 		}
 	}
+}
+
+// settle records that every change announced up to gen is in the published
+// snapshot. It only raises the mark: a rebuild that read the store earlier
+// and published later must not lower it.
+func (p *Pool) settle(gen uint64) {
+	for {
+		cur := p.settled.Load()
+		if cur >= gen || p.settled.CompareAndSwap(cur, gen) {
+			return
+		}
+	}
+}
+
+// Settle returns once the snapshot the handshake loads reflects every change
+// Invalidate has announced. When none is pending and the snapshot is current
+// it returns at once without reading storage; otherwise it is Refresh. A
+// caller that has just issued a certificate whose CA may have come into use
+// with it (cert.WithNewCAHook) calls Settle before answering, so this node's
+// next handshake admits that certificate, and pays for a rebuild only when
+// the issuance changed the trusted set.
+func (p *Pool) Settle(ctx context.Context) error {
+	if p.settled.Load() >= p.invalidated.Load() && p.current() != nil {
+		return nil
+	}
+	return p.Refresh(ctx)
 }
 
 // build reads one snapshot. The static pool, the cluster CA, every tenant's

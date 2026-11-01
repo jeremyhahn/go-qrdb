@@ -31,7 +31,7 @@ import (
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/raftharness"
 )
 
@@ -50,7 +50,7 @@ type alwaysEnabledHost struct {
 
 var _ AdminHost = (*alwaysEnabledHost)(nil)
 
-func (alwaysEnabledHost) FeatureEnabled(_ uint64, _ featuregate.Feature) bool { return true }
+func (alwaysEnabledHost) FeatureEnabled(_ uint64, _ feature.Feature) bool { return true }
 
 // startImportLeaderClusterShard starts a dedicated shard (distinct from the
 // cluster's own system shard) on every host of c, running c.CreateFn()

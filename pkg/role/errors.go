@@ -16,7 +16,9 @@ package role
 
 import (
 	"errors"
+	"strconv"
 
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -42,6 +44,32 @@ type NotAssignableError struct {
 // Error returns a human-readable description of the refusal.
 func (e *NotAssignableError) Error() string {
 	return "role: " + e.RoleID + " is not assignable within tenant " + e.TenantID
+}
+
+// GrantExceedsHolderError is returned when a principal creates or updates a
+// role carrying, or assigns a role granting, a permission the principal does
+// not itself hold in the target tenant (go-qrdb#1278). A grantor may grant
+// only what it holds; "holds" is the RBAC authorizer's evaluation of the
+// principal in that tenant, wildcards and scope included. Every transport
+// answers it with its permission-denied status.
+type GrantExceedsHolderError struct {
+	// Subject is the principal that attempted the grant.
+	Subject string
+	// TenantID is the tenant the grant would take effect in.
+	TenantID string
+	// Permission is the first concrete permission the principal lacks.
+	Permission string
+	// RoleID names the role being assigned; empty on a create or update.
+	RoleID string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *GrantExceedsHolderError) Error() string {
+	msg := "role: " + e.Subject + " cannot grant " + e.Permission + " in tenant " + e.TenantID
+	if e.RoleID != "" {
+		msg += " by assigning role " + e.RoleID
+	}
+	return msg + ": a grantor may grant only permissions it holds"
 }
 
 // ReferenceError is returned when a role-assignment write names a role that
@@ -330,3 +358,51 @@ func (e *HolderRevocationError) Error() string {
 
 // Unwrap exposes the revoker's own error.
 func (e *HolderRevocationError) Unwrap() error { return e.Err }
+
+// IndexCompensationError reports that a create failed AND its rollback could
+// not release the name claim it made: the name index may still name a role
+// whose record was never kept, so the name answers "already exists" until an
+// operator removes the entry. It mirrors pkg/user's IndexCompensationError,
+// the same failure for a username or email claim.
+//
+// Through As it is a non-retryable ErrDataLoss whatever its cause, as the
+// user store's is: a retry that succeeded under another name or id would hide
+// the stranded entry rather than repair it.
+type IndexCompensationError struct {
+	Op       string
+	ID       string
+	TenantID string
+	Cause    error
+	Failures []error
+}
+
+// Error returns a human-readable description naming both facts.
+func (e *IndexCompensationError) Error() string {
+	return "role: " + e.Op + " failed for id " + e.ID + " in tenant " + e.TenantID +
+		" and name claim rollback was incomplete (" + strconv.Itoa(len(e.Failures)) +
+		" cleanup failure(s)): " + e.Cause.Error()
+}
+
+// Unwrap returns the original failure, so errors.Is/As against the underlying
+// cause still match.
+func (e *IndexCompensationError) Unwrap() error { return e.Cause }
+
+// As lets errors.As match a **dberrors.QRDBError, presenting the failed
+// rollback as a non-retryable ErrDataLoss. errors.As consults it before
+// Unwrap, so a retryable cause does not make the failure look retryable.
+func (e *IndexCompensationError) As(target any) bool {
+	qe, ok := target.(**dberrors.QRDBError)
+	if !ok {
+		return false
+	}
+	*qe = &dberrors.QRDBError{Code: dberrors.ErrDataLoss, Op: "role." + e.Op, Err: e}
+	return true
+}
+
+// ErrStoreNotAtomic is returned when a role store is asked to claim a name but
+// its KVStore cannot do so atomically (kvstore.AtomicKVStore). It FAILS
+// CLOSED rather than degrading to a Get-then-Put, as pkg/user's
+// ErrStoreNotAtomic does: two creates can both observe the name absent, and
+// the later write silently takes the name from the earlier role. Every
+// production KVStore behind a role store implements kvstore.AtomicKVStore.
+var ErrStoreNotAtomic = errors.New("role: store cannot claim role names atomically")

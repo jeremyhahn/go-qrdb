@@ -120,11 +120,15 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 				}, http.StatusNoContent, "write to %s through node %d", gatedDatabase, i+1)
 			}
 
-			// Drop the database through node 1. The catalog is node-local, so
-			// nodes 2 and 3 still resolve it and admit a write to it; only
-			// the guard the write carries -- evaluated by the state machine
-			// against the tombstone the drop left -- refuses it. An unguarded
-			// write through them would land in the dropped keyspace.
+			// Drop the database through node 1. The drop is a catalog
+			// command, so every node applies it and releases the database:
+			// nodes 2 and 3 then answer a write to it with the typed
+			// database-not-found error, 404 Not Found (RFC 9110 §15.5.5),
+			// before the write is proposed. A write that reached a node
+			// before its release carries the guard and is refused by the
+			// state machine against the drop fence, 409 Conflict; the poll
+			// below waits through that window for the steady answer.
+			// Neither answer applies the write anywhere.
 			waitStatus(t, deadline, func() int {
 				req, err := http.NewRequest(http.MethodDelete,
 					fmt.Sprintf("https://127.0.0.1:%d/v1/databases/%s", adminPorts[0], gatedDatabase), nil)
@@ -141,15 +145,12 @@ func TestCluster_FeatureGateActivatesGuardedWrites(t *testing.T) {
 			for i, port := range adminPorts[1:] {
 				key := fmt.Sprintf("after-drop-%d", i)
 				waitStatus(t, deadline, func() int {
-					code, _ := kvRequest(t, client, http.MethodPut, port, gatedDatabase, key, []byte("v"), "")
-					return code
-				}, http.StatusConflict, "guarded write to the dropped %s through node %d", gatedDatabase, i+2)
-				for j, readPort := range adminPorts[1:] {
-					code, body := kvRequest(t, client, http.MethodGet, readPort, gatedDatabase, key, nil, "?consistency=eventual")
-					if code == http.StatusOK {
-						t.Fatalf("node %d applied the refused write %q (%s)", j+2, key, strings.TrimSpace(string(body)))
+					code, body := kvRequest(t, client, http.MethodPut, port, gatedDatabase, key, []byte("v"), "")
+					if code == http.StatusNoContent {
+						t.Fatalf("node %d accepted a write %q to the dropped %s (%s)", i+2, key, gatedDatabase, strings.TrimSpace(string(body)))
 					}
-				}
+					return code
+				}, http.StatusNotFound, "write to the dropped %s through node %d", gatedDatabase, i+2)
 			}
 		})
 	}
@@ -482,21 +483,22 @@ func TestCluster_FeatureGateActivatesGuardedWrites_CLI_PerProtocol(t *testing.T)
 			args := append(node.cliArgsFor(ca, certPath, keyPath, proto),
 				"--database", gatedDatabase, "kv", "put", key, "v")
 
+			// Every node released the dropped database, so each transport
+			// answers the write with the typed database-not-found error in
+			// its own not-found mapping (404 Not Found on REST), which the
+			// CLI reports as "database not found" on every transport. A
+			// node that has not yet released it refuses the guarded write
+			// against the drop fence instead; the poll waits through that.
 			var out string
 			var err error
-			pollUntil(20*time.Second, 250*time.Millisecond, func() bool {
+			if !pollUntil(20*time.Second, 250*time.Millisecond, func() bool {
 				out, err = runCLI(t, cli, args...)
-				return err != nil
-			})
-			if err == nil {
-				t.Fatalf("[%s] kv put %s/%s succeeded, want the guarded write refused (output: %s)", proto.name, gatedDatabase, key, out)
-			}
-
-			for j, n := range nodes[1:] {
-				code, body := kvRequest(t, client, http.MethodGet, n.admin, gatedDatabase, key, nil, "?consistency=eventual")
-				if code == http.StatusOK {
-					t.Fatalf("[%s] node %d applied the refused write %q (%s)", proto.name, j+2, key, strings.TrimSpace(string(body)))
+				if err == nil {
+					t.Fatalf("[%s] kv put %s/%s succeeded, want the write to the dropped database refused (output: %s)", proto.name, gatedDatabase, key, out)
 				}
+				return strings.Contains(out, "database not found")
+			}) {
+				t.Fatalf("[%s] kv put %s/%s = %q, want it to contain %q", proto.name, gatedDatabase, key, out, "database not found")
 			}
 		})
 	}

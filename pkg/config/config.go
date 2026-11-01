@@ -209,6 +209,11 @@ type TransportConfig struct {
 	// DefaultTransportMaxStreamsPerConn; a negative value is an explicit
 	// opt-out and means unlimited.
 	MaxStreamsPerConn int `yaml:"max_streams_per_conn"`
+
+	// ClientRateLimit is the pre-authentication request-rate limit per
+	// client address, shared by every transport. Unset (the default)
+	// applies no limit. See ClientRateLimitConfig.
+	ClientRateLimit ClientRateLimitConfig `yaml:"client_rate_limit"`
 }
 
 // DefaultTransportMaxMessageBytes is the pre-auth per-message cap applied
@@ -817,8 +822,41 @@ type ObjstoreConfig struct {
 	// Settings carries provider-specific configuration passed verbatim to the
 	// go-objstore factory (for example "bucket", "region", "endpoint",
 	// "path"). For the local provider an empty "path" defaults to the node
-	// data directory.
+	// data directory. A credential is never a setting: one found here is
+	// refused at validation; reference it under Credentials.
 	Settings map[string]string `yaml:"settings,omitempty"`
+
+	// Credentials references the provider credential by file. Empty means
+	// the provider authenticates through its SDK's default credential chain.
+	Credentials ObjstoreCredentialsConfig `yaml:"credentials,omitempty"`
+}
+
+// ObjstoreCredentialsConfig references the object-storage credential by file,
+// never by value: the configuration holds paths, and the storage engine reads
+// each file into a protected-memory handle only while it opens the provider.
+// Each file must be a regular file owned by the daemon's user and accessible
+// by nobody else (mode 0600 or 0400); one trailing line ending is ignored.
+type ObjstoreCredentialsConfig struct {
+	// KeyFile is the path to the access key identifier (an S3 access key
+	// ID). It requires SecretFile.
+	KeyFile string `yaml:"key_file,omitempty"`
+
+	// SecretFile is the path to the secret access key, or to the one key a
+	// provider authenticates with alone (an Azure storage account key).
+	SecretFile string `yaml:"secret_file,omitempty"`
+}
+
+// validate refuses a key file without a secret file. field is the
+// dot-separated path of the ObjstoreConfig, for the error. A credential
+// inline in Settings is refused by go-objstore's own
+// common.RejectCredentialSettings, which this package does not import: a
+// lean standalone embedder compiles pkg/config without go-objstore. qrdbd
+// start runs it at load, and objstore.New runs it at every open.
+func (c ObjstoreConfig) validate(field string) error {
+	if c.Credentials.KeyFile != "" && c.Credentials.SecretFile == "" {
+		return &ValidationError{Field: field + ".credentials.secret_file", Reason: "is required when key_file is set"}
+	}
+	return nil
 }
 
 // VolumePoolConfig maps one catalog pool name to this node's local mount
@@ -1035,7 +1073,7 @@ type MVCCConfig struct {
 // WatchConfig configures the real-time watch notification system.
 type WatchConfig struct {
 	// Enabled toggles the watch service in either mode. Nil means
-	// enabled.
+	// enabled; false removes the watch capability.
 	Enabled *bool `yaml:"enabled"`
 
 	// BufferSize is the per-watcher event channel buffer size. Larger
@@ -1117,13 +1155,34 @@ type IndexConfig struct {
 // TimeSeriesConfig configures the time-series storage engine.
 type TimeSeriesConfig struct {
 	// DefaultRetention is the default data retention period in seconds.
-	// Data points older than this are eligible for automatic deletion.
-	// Zero disables automatic retention.
+	// The retention scheduler applies it to every metric with no retention
+	// policy, and to every metric whose policy has a duration of zero: a
+	// zero duration means "use the default". Points older than it are
+	// deleted on the scheduler's next sweep. A policy with a non-zero
+	// duration always wins. Zero keeps such metrics' points for good.
 	DefaultRetention int64 `yaml:"default_retention"`
 
-	// MaxMetrics is the maximum number of distinct metric names allowed.
-	// Zero means unlimited.
+	// MaxMetrics is the maximum number of distinct metric names a shard's
+	// time-series store holds. A write that would create a metric past it
+	// is refused with service.MetricLimitError (429 REST,
+	// RESOURCE_EXHAUSTED gRPC); a write to an existing metric never is, and
+	// deleting a whole series frees its slot. Zero means unlimited.
 	MaxMetrics int `yaml:"max_metrics"`
+}
+
+// DefaultRetentionDuration is DefaultRetention as a time.Duration: the
+// retention the scheduler applies to a metric with no policy, or with a
+// policy of duration zero. Zero or less keeps such a metric's points.
+func (c TimeSeriesConfig) DefaultRetentionDuration() time.Duration {
+	if c.DefaultRetention <= 0 {
+		return 0
+	}
+	// A period too long for a Duration keeps everything a Duration can
+	// reach rather than wrapping negative.
+	if c.DefaultRetention > int64(math.MaxInt64/time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(c.DefaultRetention) * time.Second
 }
 
 // WriteModeConfig configures the default write durability mode and batch
@@ -2233,6 +2292,9 @@ func (c *Config) Validate() error {
 		// resolved to a cap, which would reopen go-qrdb#576.
 		return &ValidationError{Field: "transport.max_message_bytes", Reason: "must not be negative"}
 	}
+	if err := c.Transport.ClientRateLimit.validate(); err != nil {
+		return err
+	}
 
 	if c.Raft.DataDir == "" {
 		return &ValidationError{Field: "raft.data_dir", Reason: "must not be empty"}
@@ -2278,6 +2340,9 @@ func (c *Config) Validate() error {
 		if _, ok := validBackends[c.Storage.Backend]; !ok {
 			return &ValidationError{Field: "storage.backend", Reason: "must be one of: pebble, memory, file, objstore"}
 		}
+	}
+	if err := c.Storage.Objstore.validate("storage.objstore"); err != nil {
+		return err
 	}
 	if c.Storage.CacheSize < 0 {
 		return &ValidationError{Field: "storage.cache_size", Reason: "must not be negative"}
