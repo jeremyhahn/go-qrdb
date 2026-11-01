@@ -57,7 +57,10 @@ func TestWithWebTransportHandler_OmittedLeavesWebTransportOff(t *testing.T) {
 	if sess != nil {
 		_ = sess.CloseWithError(0, "")
 	}
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
-		t.Fatalf("a WebTransport session opened with the option omitted (status %d)", resp.StatusCode)
+		t.Fatal("a WebTransport session opened with the option omitted")
 	}
 }

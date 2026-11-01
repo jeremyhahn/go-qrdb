@@ -74,10 +74,12 @@ func wtClientTLS(pool *x509.CertPool) *tls.Config {
 
 // dialWT opens a WebTransport session on path, with authorization as the
 // Authorization header when it is not empty.
-func dialWT(t *testing.T, srv *Server, pool *x509.CertPool, path, authorization string) (*http.Response, *webtransport.Session, error) {
+func dialWT(t *testing.T, srv *Server, pool *x509.CertPool, path, authorization string) (int, *webtransport.Session, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// The CONNECT request's context is the session's: cancelling it on return
+	// would cancel the session stream, so it lives until the test ends.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
 	d := &webtransport.Transport{TLSClientConfig: wtClientTLS(pool)}
 	t.Cleanup(func() { _ = d.Close() })
 	hdr := http.Header{}
@@ -85,21 +87,28 @@ func dialWT(t *testing.T, srv *Server, pool *x509.CertPool, path, authorization 
 		hdr.Set("Authorization", authorization)
 	}
 	resp, sess, err := d.Dial(ctx, "https://"+srv.Addr()+path, hdr)
+	status := 0
+	if resp != nil {
+		// The body of a CONNECT response is the session stream: closing it
+		// now would end the session, so it closes when the test does.
+		status = resp.StatusCode
+		t.Cleanup(func() { _ = resp.Body.Close() })
+	}
 	if sess != nil {
 		t.Cleanup(func() { _ = sess.CloseWithError(0, "") })
 	}
-	return resp, sess, err
+	return status, sess, err
 }
 
 func TestWebTransport_AuthenticatedSessionReachesTheHandler(t *testing.T) {
 	h := newWTRecorder()
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
-	resp, _, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+	status, _, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d, want 200", resp.StatusCode)
+	if status != http.StatusOK {
+		t.Fatalf("status %d, want 200", status)
 	}
 	select {
 	case got := <-h.sessions:
@@ -133,6 +142,9 @@ func TestWebTransport_SessionAndStreamUnderReplicaForwarding(t *testing.T) {
 		_, err = str.Write(append([]byte(caller.Subject+":"), buf...))
 		_ = str.Close()
 		echoed <- err
+		// The session ends when the handler returns, so hold it until the
+		// client has read the answer and closed it.
+		<-sess.Context().Done()
 	}
 	fwd := replicaforward.Config{
 		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
@@ -142,12 +154,12 @@ func TestWebTransport_SessionAndStreamUnderReplicaForwarding(t *testing.T) {
 	if srv.replicaForwarder == nil {
 		t.Fatal("replica forwarding is not installed; the test would not cover the clustered wrapper")
 	}
-	resp, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+	status, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d, want 200", resp.StatusCode)
+	if status != http.StatusOK {
+		t.Fatalf("status %d, want 200", status)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -163,7 +175,7 @@ func TestWebTransport_SessionAndStreamUnderReplicaForwarding(t *testing.T) {
 	}
 	got, err := io.ReadAll(str)
 	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
+		t.Fatalf("ReadAll: %v (session: %v)", err, context.Cause(sess.Context()))
 	}
 	if string(got) != "alice:ping" {
 		t.Fatalf("stream answered %q, want %q", got, "alice:ping")
@@ -178,12 +190,12 @@ func TestWebTransport_UnauthenticatedSessionRefusedBeforeTheHandler(t *testing.T
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
 	for name, authorization := range map[string]string{"no credentials": "", "bad credentials": "Bearer bad"} {
 		t.Run(name, func(t *testing.T) {
-			resp, sess, err := dialWT(t, srv, pool, wtTestPath, authorization)
+			status, sess, err := dialWT(t, srv, pool, wtTestPath, authorization)
 			if err == nil || sess != nil {
 				t.Fatal("an unauthenticated session was established")
 			}
-			if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-				t.Fatalf("response %v, want REST's 401", resp)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("status %d, want REST's 401", status)
 			}
 		})
 	}
@@ -195,12 +207,12 @@ func TestWebTransport_UnauthenticatedSessionRefusedBeforeTheHandler(t *testing.T
 func TestWebTransport_OtherPathNotUpgraded(t *testing.T) {
 	h := newWTRecorder()
 	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
-	resp, sess, err := dialWT(t, srv, pool, "/not-wt", "Bearer good")
+	status, sess, err := dialWT(t, srv, pool, "/not-wt", "Bearer good")
 	if err == nil || sess != nil {
 		t.Fatal("a CONNECT to another path was upgraded")
 	}
-	if resp == nil || resp.StatusCode/100 == 2 {
-		t.Fatalf("response %v, want a refusal", resp)
+	if status == 0 || status/100 == 2 {
+		t.Fatalf("status %d, want a refusal", status)
 	}
 	if n := h.calls.Load(); n != 0 {
 		t.Fatalf("handler ran %d times", n)
