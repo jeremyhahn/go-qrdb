@@ -11,6 +11,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
 // TestWithWebTransportHandler_EmptyPathNilHandlerRefusedAtStart pins that an
@@ -30,6 +31,31 @@ func TestWithWebTransportHandler_EmptyPathNilHandlerRefusedAtStart(t *testing.T)
 	if e.Path != "" || !e.NilHandler {
 		t.Fatalf("refusal = %+v, want the empty path and the nil handler", e)
 	}
+}
+
+// TestWithWebTransportHandler_PublicPathRefusedAtStart pins that a path the
+// authentication middleware exempts as public is refused through the server
+// option as it is through REST's, and that a path beside it still starts.
+func TestWithWebTransportHandler_PublicPathRefusedAtStart(t *testing.T) {
+	h := func(*rest.WebTransportSession, *auth.Identity, string) {}
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/health", h))
+	err := srv.Start()
+	var e *rest.InvalidWebTransportHandlerError
+	if !errors.As(err, &e) {
+		if err == nil {
+			srv.Stop()
+		}
+		t.Fatalf("Start = %v, want *rest.InvalidWebTransportHandlerError", err)
+	}
+	if e.Path != "/health" || !e.PublicPath || e.NilHandler {
+		t.Fatalf("refusal = %+v, want the public /health path", e)
+	}
+
+	srv = New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/health/wt", h))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start with a non-public path = %v", err)
+	}
+	srv.Stop()
 }
 
 // TestWithWebTransportHandler_OmittedLeavesWebTransportOff pins that without
