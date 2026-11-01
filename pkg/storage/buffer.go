@@ -484,7 +484,13 @@ func (it *overlayIterator) Value() []byte {
 		return nil
 	}
 	if it.fromBase {
-		return it.base.Value()
+		v := it.base.Value()
+		if it.base.Error() != nil {
+			// A failed base value read ends the iteration; Error reports it.
+			it.valid = false
+			return nil
+		}
+		return v
 	}
 	return it.value
 }

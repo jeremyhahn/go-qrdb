@@ -148,6 +148,20 @@ docker ps -a --filter "name=^$prefix" \
     fi
   done
 
+# CUSTOMIZE (go-qrdb, #1275): scripts/in-toolchain-image.sh creates a
+# no-network stage's multicast marker volume with the stage, labelled
+# qrdb.ci.multicast-marker=1, and removes it in its EXIT trap. A launcher
+# killed before its trap ran leaves it behind. The stage mounts it from its
+# create to its removal, so one no container mounts (dangling) belongs to no
+# live stage, and goes.
+markers=0
+for vol in $(docker volume ls -q --filter label=qrdb.ci.multicast-marker=1 --filter dangling=true); do
+  case $vol in "$prefix"*) ;; *) continue ;; esac
+  echo "reap  marker volume $vol"
+  if run docker volume rm "$vol"; then markers=$((markers + 1)); else echo "warn  marker volume $vol not removed"; fi
+done
+# CUSTOMIZE (go-qrdb) end.
+
 # CUSTOMIZE (go-qrdb, DS-4701): scripts/ci-registry.sh tags the image a
 # toolchain hold holds <prefix>hold:<hold>, so a rebuild that moves the
 # content-hash tag cannot drop the image the job's stages run by ID. A hold
@@ -220,5 +234,5 @@ while read -r repo tag digest; do
 done < <(docker images --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}')
 
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi
-echo "reaper: $reaped compose project(s), $images image(s) and $holdtags hold tag(s) $done_as for prefix '$prefix'"
+echo "reaper: $reaped compose project(s), $images image(s), $markers marker volume(s) and $holdtags hold tag(s) $done_as for prefix '$prefix'"
 exit 0
