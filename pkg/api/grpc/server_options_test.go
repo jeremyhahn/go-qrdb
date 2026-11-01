@@ -39,3 +39,13 @@ func TestWithAuthMiddleware_StoresMiddleware(t *testing.T) {
 		t.Fatalf("authMW = %p, want %p", srv.authMW, mw)
 	}
 }
+
+// TestWithUserAuthFactorService_StoresService asserts the option stores the
+// user auth-factor service it was given on the Server.
+func TestWithUserAuthFactorService_StoresService(t *testing.T) {
+	svc := &stubUserAuthFactor{}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithUserAuthFactorService(svc))
+	if srv.userAuthFactorSvc != svc {
+		t.Fatalf("userAuthFactorSvc = %v, want %v", srv.userAuthFactorSvc, svc)
+	}
+}

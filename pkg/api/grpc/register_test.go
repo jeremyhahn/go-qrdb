@@ -21,6 +21,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -36,14 +37,33 @@ type (
 	stubDEKService         struct{ service.DEKServicer }
 	stubCertEnrollment     struct{ service.CertEnrollmentServicer }
 	stubInvitationService  struct{ service.InvitationServicer }
-	stubTenantOnboarding   struct{ service.TenantOnboardingServicer }
-	stubSQLService         struct{ service.SQLServicer }
-	stubServiceRegistry    struct{ service.Registry }
+	stubTenantOnboarding   struct {
+		service.TenantOnboardingServicer
+	}
+	stubSQLService      struct{ service.SQLServicer }
+	stubServiceRegistry struct{ service.Registry }
+	stubUserAuthFactor  struct{ service.UserAuthFactorServicer }
 )
+
+// TestWithRegisterPINBackend_StoresLockoutWrapper asserts the option stores
+// a backend, wrapped for lockout rather than the bare one it was given.
+func TestWithRegisterPINBackend_StoresLockoutWrapper(t *testing.T) {
+	backend := &struct{ pin.PINBackend }{}
+	s := &qrdbServiceServer{}
+	WithRegisterPINBackend(backend)(s)
+	if s.pinBackend == nil {
+		t.Fatal("pinBackend not set")
+	}
+	if s.pinBackend == pin.PINBackend(backend) {
+		t.Fatal("pinBackend stored unwrapped; want the lockout wrapper")
+	}
+}
 
 // TestRegisterOptions_AttachServices asserts each WithRegister* option
 // stores exactly the dependency it was given on the server.
 func TestRegisterOptions_AttachServices(t *testing.T) {
+	kv := newMockKVService()
+	admin := newMockAdminService()
 	mvcc := &mockMVCCService{}
 	tx := &mockTransactionService{}
 	batch := &mockBatchService{}
@@ -72,6 +92,8 @@ func TestRegisterOptions_AttachServices(t *testing.T) {
 		got  func(*qrdbServiceServer) any
 		want any
 	}{
+		{"KV", WithRegisterKVService(kv), func(s *qrdbServiceServer) any { return s.kvSvc }, kv},
+		{"Admin", WithRegisterAdminService(admin), func(s *qrdbServiceServer) any { return s.adminSvc }, admin},
 		{"MVCC", WithRegisterMVCC(mvcc), func(s *qrdbServiceServer) any { return s.mvccSvc }, mvcc},
 		{"Transaction", WithRegisterTransaction(tx), func(s *qrdbServiceServer) any { return s.txSvc }, tx},
 		{"Batch", WithRegisterBatch(batch), func(s *qrdbServiceServer) any { return s.batchSvc }, batch},
