@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -88,30 +87,6 @@ func TestLockService_NewLockService_Success(t *testing.T) {
 	if svc == nil {
 		t.Fatal("expected non-nil LockService")
 	}
-}
-
-func TestLockService_Lock_ContextCancelled(t *testing.T) {
-	svc := newTestLockService(t)
-
-	// Use a cancelled context to return immediately.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := svc.Lock(ctx, "test-key", "holder-1", time.Second, false)
-	// The lock may succeed or fail depending on implementation details with a
-	// cancelled context — we just want the path exercised.
-	_ = err
-}
-
-func TestLockService_TryLock_ContextCancelled(t *testing.T) {
-	svc := newTestLockService(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := svc.TryLock(ctx, "test-key", "holder-1", time.Second, false)
-	// Any error or timeout is acceptable — we just want the path covered.
-	_ = err
 }
 
 func TestLockService_Unlock_KeyNotLocked(t *testing.T) {
@@ -187,16 +162,6 @@ func TestLockService_Status_ReadErrorKeepsItsClass(t *testing.T) {
 	if !errors.As(err, &re) {
 		t.Fatalf("Status error = %v, want *ReadError", err)
 	}
-}
-
-func TestLockService_List_Empty(t *testing.T) {
-	svc := newTestLockService(t)
-	ctx := context.Background()
-
-	locks, err := svc.List(ctx, "")
-	// Empty list is acceptable.
-	_ = locks
-	_ = err
 }
 
 // ---------------------------------------------------------------------------

@@ -1145,6 +1145,13 @@ func TestResolveTransportExplicit(t *testing.T) {
 			wantType:      "quic",
 			wantAddr:      defaultQUICAddress,
 		},
+		{
+			name:          "explicit unknown no address keeps type and defaults to grpc address",
+			serverFlag:    "",
+			transportFlag: "custom-proto",
+			wantType:      "custom-proto",
+			wantAddr:      defaultGRPCAddress,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1345,8 +1352,14 @@ func TestPrintTable(t *testing.T) {
 
 	printTable([]string{"NAME", "VALUE"}, [][]string{{"key1", "val1"}, {"key2", "val2"}})
 	out := buf.String()
-	if !strings.Contains(out, "NAME") || !strings.Contains(out, "key1") {
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "key1") || !strings.Contains(out, "val2") {
 		t.Fatalf("expected table output, got: %q", out)
+	}
+
+	buf.Reset()
+	printTable([]string{"A", "B"}, nil)
+	if !strings.Contains(buf.String(), "A") || !strings.Contains(buf.String(), "B") {
+		t.Fatalf("expected headers with no rows, got: %q", buf.String())
 	}
 }
 
@@ -1365,7 +1378,7 @@ func TestPrintOK(t *testing.T) {
 	outputWriter = &buf
 
 	printOK()
-	if !strings.Contains(buf.String(), "OK\n") {
+	if buf.String() != "OK\n" {
 		t.Fatalf("expected 'OK', got: %q", buf.String())
 	}
 }
@@ -1433,6 +1446,10 @@ func TestValidateOutputFormat(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateOutputFormat(%q) error = %v, wantErr = %v", tt.format, err, tt.wantErr)
 			}
+			var ofe *OutputFormatError
+			if tt.wantErr && !errors.As(err, &ofe) {
+				t.Errorf("validateOutputFormat(%q) error = %T, want *OutputFormatError", tt.format, err)
+			}
 		})
 	}
 }
@@ -1449,6 +1466,9 @@ func TestNewTransportUnsupported(t *testing.T) {
 	var iae *InvalidArgError
 	if !errors.As(err, &iae) {
 		t.Fatalf("expected InvalidArgError, got: %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "invalid_transport") {
+		t.Fatalf("expected error to name the transport, got: %q", err.Error())
 	}
 }
 

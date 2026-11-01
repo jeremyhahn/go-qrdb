@@ -2152,16 +2152,15 @@ func TestVectorService_CompactNamespace_Async(t *testing.T) {
 	assert.NotEmpty(t, resp.OperationID)
 	assert.Greater(t, resp.StartedAt, int64(0))
 
-	// Wait for background compaction to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Check progress
+	// Poll progress until the background compaction completes.
 	progressReq := &GetCompactionProgressRequest{
 		OperationID: resp.OperationID,
 	}
-	progressResp, err := svc.GetCompactionProgress(ctx, progressReq)
-	require.NoError(t, err)
-	assert.False(t, progressResp.InProgress)
+	var progressResp *GetCompactionProgressResponse
+	require.Eventually(t, func() bool {
+		progressResp, err = svc.GetCompactionProgress(ctx, progressReq)
+		return err == nil && !progressResp.InProgress
+	}, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, float64(100), progressResp.PercentComplete)
 }
 
