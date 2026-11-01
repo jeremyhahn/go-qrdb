@@ -708,3 +708,19 @@ func TestWithAdminService_SetsField(t *testing.T) {
 		t.Errorf("adminSvc = %v, want the supplied service", srv.adminSvc)
 	}
 }
+
+func TestWithServiceRegistry_RoutesResolvers(t *testing.T) {
+	reg := &recordingRegistry{kv: &mockKVService{}}
+	srv := newTestServer(nil, &mockAdminService{}, WithServiceRegistry(reg))
+
+	got, err := srv.kvSvcFor(scopedCtx("acme", "db1"))
+	if err != nil {
+		t.Fatalf("kvSvcFor: %v", err)
+	}
+	if got != reg.kv {
+		t.Fatalf("kvSvcFor returned %p, want the registry's KV service %p", got, reg.kv)
+	}
+	if len(reg.calls) != 1 || reg.calls[0] != (scopeCall{service: "kv", tenant: "acme", db: "db1"}) {
+		t.Fatalf("registry calls = %+v, want one kv call for acme/db1", reg.calls)
+	}
+}
