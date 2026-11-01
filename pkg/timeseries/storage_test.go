@@ -994,6 +994,47 @@ func TestDecodeDataPoint_MetricLengthExceedsData(t *testing.T) {
 	}
 }
 
+// TestDecodeDataPoint_EveryTruncationIsDecodeError cuts a tagged encoding at
+// every length short of complete: each cut lands in a different field (metric,
+// value, timestamp, tag count, tag key length, key, value length, value) and
+// must fail as a DecodeError, never decode a partial point or panic.
+func TestDecodeDataPoint_EveryTruncationIsDecodeError(t *testing.T) {
+	encoded, err := encodeDataPoint(&DataPoint{
+		Metric:    "cpu",
+		Value:     1.5,
+		Timestamp: ts(2026, 2, 24, 10, 30, 0),
+		Tags:      map[string]string{"host": "srv1"},
+	})
+	if err != nil {
+		t.Fatalf("encodeDataPoint: %v", err)
+	}
+	for n := range len(encoded) {
+		_, err := decodeDataPoint(encoded[:n])
+		var de *DecodeError
+		if !errors.As(err, &de) {
+			t.Errorf("decodeDataPoint(%d of %d bytes) = %v, want *DecodeError", n, len(encoded), err)
+		}
+	}
+	if _, err := decodeDataPoint(encoded); err != nil {
+		t.Fatalf("decodeDataPoint(complete) = %v, want nil", err)
+	}
+}
+
+// TestStorage_GetRetentionPolicy_CorruptData verifies stored policy bytes
+// too short to decode surface as a DecodeError.
+func TestStorage_GetRetentionPolicy_CorruptData(t *testing.T) {
+	s := newStorage(t)
+	if err := s.stg.Set([]byte(KeyPrefixRetention+"corrupt.metric"), []byte{0x01, 0x02}); err != nil {
+		t.Fatalf("stg.Set: %v", err)
+	}
+
+	_, err := s.GetRetentionPolicy("corrupt.metric")
+	var de *DecodeError
+	if !errors.As(err, &de) {
+		t.Fatalf("GetRetentionPolicy = %v, want *DecodeError", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Key ordering (chronological sort in PebbleDB)
 // ---------------------------------------------------------------------------
