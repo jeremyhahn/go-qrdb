@@ -135,9 +135,9 @@ type OpType = lock.OpType
 
 // Op type constants — alias the canonical pkg/lock values.
 var (
-	OpPut    = lock.OpPut
-	OpGet    = lock.OpGet
-	OpDelete = lock.OpDelete
+	OpPut     = lock.OpPut
+	OpGet     = lock.OpGet
+	OpDelete  = lock.OpDelete
 	OpRange   = lock.OpRange
 	OpUnknown = lock.OpUnknown
 )
