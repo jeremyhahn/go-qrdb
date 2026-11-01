@@ -107,6 +107,47 @@ func TestNodeServiceRegistry_StreamRefusalWithoutARefuser(t *testing.T) {
 	}
 }
 
+// The node's registry resolves every service family through the live
+// server's registry, so it answers exactly what that registry answers.
+func TestNodeServiceRegistry_DelegatesEveryFamily(t *testing.T) {
+	n := newBareStandaloneNode(t)
+	r := &nodeServiceRegistry{node: n}
+	direct := n.srv.Load().ServiceRegistry()
+	if direct == nil {
+		t.Fatal("a started standalone node has no service registry")
+	}
+	const tenant, db = "acme", "absent"
+	resolvers := map[string][2]func() error{
+		"KV":          {func() error { _, err := r.KVService(tenant, db); return err }, func() error { _, err := direct.KVService(tenant, db); return err }},
+		"MVCC":        {func() error { _, err := r.MVCCService(tenant, db); return err }, func() error { _, err := direct.MVCCService(tenant, db); return err }},
+		"Watch":       {func() error { _, err := r.WatchService(tenant, db); return err }, func() error { _, err := direct.WatchService(tenant, db); return err }},
+		"Lease":       {func() error { _, err := r.LeaseService(tenant, db); return err }, func() error { _, err := direct.LeaseService(tenant, db); return err }},
+		"Index":       {func() error { _, err := r.IndexService(tenant, db); return err }, func() error { _, err := direct.IndexService(tenant, db); return err }},
+		"TimeSeries":  {func() error { _, err := r.TimeSeriesService(tenant, db); return err }, func() error { _, err := direct.TimeSeriesService(tenant, db); return err }},
+		"Vector":      {func() error { _, err := r.VectorService(tenant, db); return err }, func() error { _, err := direct.VectorService(tenant, db); return err }},
+		"Transaction": {func() error { _, err := r.TransactionService(tenant, db); return err }, func() error { _, err := direct.TransactionService(tenant, db); return err }},
+		"Batch":       {func() error { _, err := r.BatchService(tenant, db); return err }, func() error { _, err := direct.BatchService(tenant, db); return err }},
+		"Table":       {func() error { _, err := r.TableService(tenant, db); return err }, func() error { _, err := direct.TableService(tenant, db); return err }},
+		"Sequence":    {func() error { _, err := r.SequenceService(tenant, db); return err }, func() error { _, err := direct.SequenceService(tenant, db); return err }},
+		"Privilege":   {func() error { _, err := r.PrivilegeService(tenant, db); return err }, func() error { _, err := direct.PrivilegeService(tenant, db); return err }},
+		"Collection":  {func() error { _, err := r.CollectionService(tenant, db); return err }, func() error { _, err := direct.CollectionService(tenant, db); return err }},
+		"Lock":        {func() error { _, err := r.LockService(tenant, db); return err }, func() error { _, err := direct.LockService(tenant, db); return err }},
+	}
+	for name, pair := range resolvers {
+		via, want := pair[0](), pair[1]()
+		if via == nil || want == nil || via.Error() != want.Error() {
+			t.Errorf("%s for an absent database: via node = %v, direct = %v; want the same refusal", name, via, want)
+		}
+	}
+	var wantRefusal error
+	if refuser, ok := direct.(service.StreamRefuser); ok {
+		wantRefusal = refuser.StreamRefusal(tenant, db)
+	}
+	if got := r.StreamRefusal(tenant, db); (got == nil) != (wantRefusal == nil) || (got != nil && got.Error() != wantRefusal.Error()) {
+		t.Errorf("StreamRefusal = %v, want %v", got, wantRefusal)
+	}
+}
+
 // The default database cannot be dropped through the embedded client, with
 // the same typed refusal every network transport returns.
 func TestNode_EmbeddedDropOfTheDefaultDatabaseIsRefused(t *testing.T) {

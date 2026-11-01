@@ -30,8 +30,11 @@ import (
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -440,6 +443,41 @@ func TestWithRaftMTLS_SetsConfig(t *testing.T) {
 	assert.Equal(t, []byte("key-pem"), o.raftMTLS.Key)
 }
 
+func TestNodeOptions_RecordTheirSeams(t *testing.T) {
+	var o nodeOptions
+	WithAuthorizerWrapper(func(inner auth.Authorizer) auth.Authorizer { return inner })(&o)
+	if o.authorizerWrapper == nil || o.authorizerWrapper(nil) != nil {
+		t.Fatal("WithAuthorizerWrapper did not record the wrapper")
+	}
+
+	WithVolumeKeyProvider(refusingVolumeKeyProvider{})(&o)
+	if _, ok := o.volumeKeyProvider.(refusingVolumeKeyProvider); !ok {
+		t.Fatalf("WithVolumeKeyProvider recorded %T", o.volumeKeyProvider)
+	}
+	WithVolumeKeyProvider(nil)(&o)
+	if _, ok := o.volumeKeyProvider.(refusingVolumeKeyProvider); !ok {
+		t.Fatal("WithVolumeKeyProvider(nil) replaced the configured provider")
+	}
+
+	WithABACPolicyDir("/etc/qrdb/abac")(&o)
+	if o.abacPolicyDir != "/etc/qrdb/abac" {
+		t.Fatalf("abacPolicyDir = %q", o.abacPolicyDir)
+	}
+}
+
+func TestNodeOptions_RecordKeyDeliveryAndClusterCA(t *testing.T) {
+	var o nodeOptions
+	dec := &stubDecrypter{}
+	WithKeyDeliveryDecrypter(dec)(&o)
+	if o.keyDecrypter != keydelivery.Decrypter(dec) {
+		t.Fatalf("keyDecrypter = %v, want the configured decrypter", o.keyDecrypter)
+	}
+	WithClusterCAMaterial([]byte("ca-cert"), []byte("ca-key"))(&o)
+	if string(o.clusterCACertPEM) != "ca-cert" || string(o.clusterCAKeyPEM) != "ca-key" {
+		t.Fatalf("cluster CA material = %q, %q", o.clusterCACertPEM, o.clusterCAKeyPEM)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IsSealed / Unseal — passphrase + software strategy
 // ---------------------------------------------------------------------------
@@ -834,6 +872,151 @@ func TestBuildNodeSealSubsystem_InvalidShamirConfig(t *testing.T) {
 	var sce *StorageCreateError
 	require.True(t, errors.As(err, &sce))
 	assert.Equal(t, "seal-strategy", sce.Backend)
+}
+
+// A malformed audit failure policy or mTLS binding policy fails the boot
+// with a typed error, on the unsealed and the auto-unsealed path alike. The
+// malformed revocation cache TTL is covered by
+// TestNewStandaloneNode_FailedBootLeavesNoReclaimSweeper.
+func TestNewStandaloneNode_MalformedAuthSettingFailsBoot(t *testing.T) {
+	isServices := func(err error) bool { var e *ServicesCreateError; return errors.As(err, &e) }
+	for name, set := range map[string]func(*qrdbconfig.Config){
+		"audit failure policy": func(c *qrdbconfig.Config) { c.Auth.AuditFailurePolicy = "shrug" },
+		"mtls binding policy":  func(c *qrdbconfig.Config) { c.Auth.MTLSBindingPolicy = "sometimes" },
+	} {
+		t.Run(name+"/unsealed", func(t *testing.T) {
+			cfg := qrdbconfig.DefaultConfig()
+			cfg.Raft.DataDir = t.TempDir()
+			cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
+			cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
+			cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
+			set(cfg)
+			if n, err := NewStandaloneNode(context.Background(), cfg, nil); n != nil || !isServices(err) {
+				t.Fatalf("node = %v, err = %v", n, err)
+			}
+		})
+		t.Run(name+"/auto-unsealed", func(t *testing.T) {
+			cfg := sealedStandaloneConfig(t, t.TempDir())
+			set(cfg)
+			if n, err := NewStandaloneNode(context.Background(), cfg, nil, WithSealPassphrase([]byte("correct horse"))); n != nil || !isServices(err) {
+				t.Fatalf("node = %v, err = %v", n, err)
+			}
+		})
+	}
+}
+
+func TestAttemptAutoUnseal_FailuresKeepTheBarrierSealed(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	passphrase := qrdbconfig.SealConfig{Strategy: string(seal.StrategyPassphrase)}
+
+	t.Run("wrong passphrase", func(t *testing.T) {
+		barrier, cleanup := newTestBarrier(t)
+		t.Cleanup(cleanup)
+		if !attemptAutoUnseal(ctx, barrier, passphrase, []byte("correct horse"), log) {
+			t.Fatal("first boot did not initialize and unseal")
+		}
+		if err := barrier.Seal(); err != nil {
+			t.Fatal(err)
+		}
+		if attemptAutoUnseal(ctx, barrier, passphrase, []byte("battery staple"), log) {
+			t.Fatal("a wrong passphrase unsealed the barrier")
+		}
+		if !barrier.IsSealed() {
+			t.Fatal("barrier unsealed after a failed attempt")
+		}
+	})
+
+	t.Run("already unsealed", func(t *testing.T) {
+		barrier, cleanup := newTestBarrier(t)
+		t.Cleanup(cleanup)
+		if !attemptAutoUnseal(ctx, barrier, passphrase, []byte("correct horse"), log) {
+			t.Fatal("first boot did not initialize and unseal")
+		}
+		if !attemptAutoUnseal(ctx, barrier, passphrase, []byte("correct horse"), log) || barrier.IsSealed() {
+			t.Fatal("an attempt on an unsealed barrier must report it unsealed")
+		}
+	})
+
+	t.Run("unknown strategy cannot initialize without hardware", func(t *testing.T) {
+		barrier, cleanup := newTestBarrier(t)
+		t.Cleanup(cleanup)
+		if attemptAutoUnseal(ctx, barrier, qrdbconfig.SealConfig{Strategy: "hsm-of-the-future"}, nil, log) {
+			t.Fatal("an unknown strategy with no credentials unsealed the barrier")
+		}
+		if !barrier.IsSealed() {
+			t.Fatal("barrier unsealed")
+		}
+	})
+}
+
+// An explicitly ephemeral node (no data directory) keeps its seal store in
+// memory, defaults the root-key path and credential strategy, and configures
+// Shamir from the seal settings -- and leaves no seal directory behind in
+// the process's working directory.
+func TestBuildNodeSealSubsystem_EphemeralShamirDefaults(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = string(seal.StrategyShamir)
+	cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal = 2, 3
+	cfg.Seal.RootKeyPath = ""
+	cfg.Seal.CredentialStrategy = ""
+
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, "", slog.New(slog.DiscardHandler), nil, server.CryptoOptions{})
+	if err != nil {
+		t.Fatalf("buildNodeSealSubsystem: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.close() })
+	if !sub.barrier.IsSealed() {
+		t.Error("a freshly built barrier must be sealed")
+	}
+	if sub.credCoreSvc == nil || sub.barrierRegistry == nil || sub.pinBackend == nil {
+		t.Fatalf("subsystem = %+v; want credentials, registry and PIN backend", sub)
+	}
+	if _, err := os.Stat(sub.sealDataDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ephemeral seal store touched %q on disk: %v", sub.sealDataDir, err)
+	}
+}
+
+// Each construction step's failure is the typed StorageCreateError naming
+// the step, with its cause unwrapping.
+func TestBuildNodeSealSubsystem_Refusals(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		dataDir string
+		set     func(*qrdbconfig.Config)
+		backend string
+		cause   func(error) bool
+	}{
+		"seal store under a file": {dataDir: notADir, set: func(*qrdbconfig.Config) {}, backend: "seal",
+			cause: func(err error) bool { return err != nil }},
+		"unknown strategy": {set: func(c *qrdbconfig.Config) { c.Seal.Strategy = "hsm-of-the-future" }, backend: "seal-strategy",
+			cause: func(err error) bool {
+				var e *seal.StrategyNotRegisteredError
+				return errors.As(err, &e) && e.Name == "hsm-of-the-future"
+			}},
+		"unknown credential strategy": {set: func(c *qrdbconfig.Config) { c.Seal.CredentialStrategy = "carrier-pigeon" }, backend: "seal-credentials",
+			cause: func(err error) bool { return errors.Is(err, credentials.ErrInvalidStrategy) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := qrdbconfig.DefaultConfig()
+			cfg.Seal.Enabled = true
+			cfg.Seal.Strategy = string(seal.StrategyPassphrase)
+			tc.set(cfg)
+			dataDir := tc.dataDir
+			if dataDir == "" {
+				dataDir = t.TempDir()
+			}
+			sub, err := buildNodeSealSubsystem(context.Background(), cfg, dataDir, slog.New(slog.DiscardHandler), nil, server.CryptoOptions{})
+			var create *StorageCreateError
+			if sub != nil || !errors.As(err, &create) || create.Backend != tc.backend || !tc.cause(create.Err) {
+				t.Fatalf("buildNodeSealSubsystem = %v, %v; want *StorageCreateError for %s", sub, err, tc.backend)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -160,3 +160,20 @@ func TestNodeReplicaForwarder_StoppedServerDoesNotForward(t *testing.T) {
 		}
 	}
 }
+
+// A standalone server has no replica forwarding configured, so the
+// embedded forwarder declines rather than forwarding anywhere.
+func TestNodeReplicaForwarder_StandaloneServerDeclines(t *testing.T) {
+	n := newBareStandaloneNode(t)
+	f := &nodeReplicaForwarder{node: n}
+	if _, _, ok := f.Forward(context.Background(), nil, "kv.Put", "default", nil, &placement.NotAReplicaError{}); ok {
+		t.Fatal("Forward forwarded on a standalone server")
+	}
+	if _, _, ok := f.ForwardToLeader(context.Background(), nil, "kv.Put", "default", nil, "127.0.0.1:1"); ok {
+		t.Fatal("ForwardToLeader forwarded on a standalone server")
+	}
+	idle := &nodeReplicaForwarder{node: &Node{}}
+	if _, _, ok := idle.ForwardToLeader(context.Background(), nil, "kv.Put", "default", nil, "127.0.0.1:1"); ok {
+		t.Fatal("ForwardToLeader forwarded with no server")
+	}
+}
