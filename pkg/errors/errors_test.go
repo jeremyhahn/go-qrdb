@@ -527,6 +527,7 @@ func TestErrorCode_String(t *testing.T) {
 		{ErrMissingTenantContext, "missing_tenant_context"},
 		{ErrMissingJustification, "missing_justification"},
 		{ErrMissingUserContext, "missing_user_context"},
+		{ErrCircuitOpen, "circuit_open"},
 		{ErrorCode(9999), "unknown"},
 	}
 
@@ -562,6 +563,8 @@ func TestErrorCode_HTTPStatus(t *testing.T) {
 		{ErrNotImplemented, 501},
 		{ErrRateLimited, 429},
 		{ErrSplitBrain, 500},
+		{ErrCircuitOpen, 503},
+		{ErrorCode(9999), 500},
 	}
 
 	for _, tt := range tests {
@@ -771,6 +774,11 @@ func TestIsResourceExhausted(t *testing.T) {
 			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
+		{
+			name: "plain error",
+			err:  errors.New("standard error"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -780,6 +788,37 @@ func TestIsResourceExhausted(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	assert.True(t, IsNotFound(NotFound("test.Op", "resource")))
+	assert.False(t, IsNotFound(nil))
+	assert.False(t, IsNotFound(New(ErrStorage, "test.Op", "storage error")))
+	assert.False(t, IsNotFound(errors.New("plain error")))
+}
+
+func TestIsCanceled(t *testing.T) {
+	assert.True(t, IsCanceled(New(ErrCanceled, "test.Op", "canceled")))
+	assert.False(t, IsCanceled(nil))
+	assert.False(t, IsCanceled(New(ErrTimeout, "test.Op", "timeout")))
+	assert.False(t, IsCanceled(errors.New("plain error")))
+}
+
+func TestIsInvalidInput(t *testing.T) {
+	assert.True(t, IsInvalidInput(InvalidInput("test.Op", "invalid input")))
+	assert.False(t, IsInvalidInput(nil))
+	assert.False(t, IsInvalidInput(New(ErrStorage, "test.Op", "storage error")))
+	assert.False(t, IsInvalidInput(errors.New("plain error")))
+}
+
+func TestWrappedMessageError(t *testing.T) {
+	cause := errors.New("database connection failed")
+	wrapped := &WrappedMessageError{Message: "service unavailable", Cause: cause}
+
+	assert.Contains(t, wrapped.Error(), "service unavailable")
+	assert.Contains(t, wrapped.Error(), "database connection failed")
+	assert.Same(t, cause, wrapped.Unwrap())
+	assert.ErrorIs(t, wrapped, cause)
 }
 
 func TestIsMissingJustification(t *testing.T) {

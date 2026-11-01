@@ -14,6 +14,7 @@
 package errors
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,4 +31,21 @@ func TestNotImplemented(t *testing.T) {
 	assert.Equal(t, "feature.X", de.Op)
 	assert.Contains(t, err.Error(), "not yet available")
 	assert.False(t, IsRetryable(err))
+}
+
+func TestCircuitOpen(t *testing.T) {
+	err := CircuitOpen("downstream.Call", "payment-service")
+	require.Error(t, err)
+
+	var de *QRDBError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, ErrCircuitOpen, de.Code)
+	assert.Equal(t, "downstream.Call", de.Op)
+}
+
+func TestIsCircuitOpen(t *testing.T) {
+	assert.True(t, IsCircuitOpen(CircuitOpen("op", "my-service")))
+	assert.False(t, IsCircuitOpen(nil))
+	assert.False(t, IsCircuitOpen(New(ErrTimeout, "op", "timed out")))
+	assert.False(t, IsCircuitOpen(errors.New("plain error")))
 }
