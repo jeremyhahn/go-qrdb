@@ -1463,6 +1463,45 @@ func TestSnapshot_IteratorWithBounds(t *testing.T) {
 // Iterator Error method
 // ---------------------------------------------------------------------------
 
+// TestIterator_NilInner_AllMethods verifies that a pebbleIterator without an
+// inner iterator, the sentinel newIterator returns when pebble refuses to
+// open one, is inert: every positioning method reports false, Key and Value
+// are nil, and Error and Close report nothing.
+func TestIterator_NilInner_AllMethods(t *testing.T) {
+	it := &pebbleIterator{}
+
+	if it.SeekToFirst() {
+		t.Error("SeekToFirst with nil iter should return false")
+	}
+	if it.SeekToLast() {
+		t.Error("SeekToLast with nil iter should return false")
+	}
+	if it.Seek([]byte("k")) {
+		t.Error("Seek with nil iter should return false")
+	}
+	if it.Next() {
+		t.Error("Next with nil iter should return false")
+	}
+	if it.Prev() {
+		t.Error("Prev with nil iter should return false")
+	}
+	if it.Valid() {
+		t.Error("Valid with nil iter should return false")
+	}
+	if it.Key() != nil {
+		t.Error("Key with nil iter should return nil")
+	}
+	if it.Value() != nil {
+		t.Error("Value with nil iter should return nil")
+	}
+	if err := it.Error(); err != nil {
+		t.Errorf("Error with nil iter and no err should be nil, got %v", err)
+	}
+	if err := it.Close(); err != nil {
+		t.Errorf("Close with nil iter: %v", err)
+	}
+}
+
 func TestIterator_Error_NoError(t *testing.T) {
 	s := openTestStorage(t)
 
