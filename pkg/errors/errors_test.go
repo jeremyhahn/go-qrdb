@@ -16,6 +16,9 @@ package errors
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQRDBError_Error(t *testing.T) {
@@ -514,6 +517,16 @@ func TestErrorCode_String(t *testing.T) {
 		{ErrTimeout, "timeout"},
 		{ErrConflict, "conflict"},
 		{ErrInternal, "internal"},
+		{ErrQuorumLost, "quorum_lost"},
+		{ErrSplitBrain, "split_brain"},
+		{ErrRateLimited, "rate_limited"},
+		{ErrNotImplemented, "not_implemented"},
+		{ErrNotAllowed, "not_allowed"},
+		{ErrSystemKeyspaceViolation, "system_keyspace_violation"},
+		{ErrCrossTenantAccess, "cross_tenant_access"},
+		{ErrMissingTenantContext, "missing_tenant_context"},
+		{ErrMissingJustification, "missing_justification"},
+		{ErrMissingUserContext, "missing_user_context"},
 		{ErrorCode(9999), "unknown"},
 	}
 
@@ -539,6 +552,16 @@ func TestErrorCode_HTTPStatus(t *testing.T) {
 		{ErrForbidden, 403},
 		{ErrUnavailable, 503},
 		{ErrInternal, 500},
+		{ErrNotAllowed, 403},
+		{ErrSystemKeyspaceViolation, 403},
+		{ErrCrossTenantAccess, 403},
+		{ErrMissingTenantContext, 400},
+		{ErrMissingJustification, 400},
+		{ErrMissingUserContext, 400},
+		{ErrQuorumLost, 503},
+		{ErrNotImplemented, 501},
+		{ErrRateLimited, 429},
+		{ErrSplitBrain, 500},
 	}
 
 	for _, tt := range tests {
@@ -559,6 +582,7 @@ func TestErrorCode_IsRetryable(t *testing.T) {
 		ErrDeadlineExceeded,
 		ErrResourceExhausted,
 		ErrAborted,
+		ErrRateLimited,
 	}
 
 	for _, code := range retryable {
@@ -879,5 +903,95 @@ func TestNewMissingUserContextError(t *testing.T) {
 	msg := err.Error()
 	if msg == "" {
 		t.Error("Error() should return non-empty message")
+	}
+}
+
+func TestNewSystemKeyspaceViolationError(t *testing.T) {
+	err := NewSystemKeyspaceViolationError("kv.Put", "__system/config")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrSystemKeyspaceViolation, err.Code)
+	assert.Equal(t, "kv.Put", err.Op)
+	assert.Contains(t, err.Error(), "__system/config")
+	assert.Contains(t, err.Error(), "system keyspace")
+	assert.Equal(t, "__system/config", err.Context["key"])
+}
+
+func TestIsSystemKeyspaceViolation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "system keyspace violation error", err: NewSystemKeyspaceViolationError("op", "key"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrSystemKeyspaceViolation}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsSystemKeyspaceViolation(tt.err))
+		})
+	}
+}
+
+func TestNewCrossTenantAccessError(t *testing.T) {
+	err := NewCrossTenantAccessError("kv.Get", "tenant-A", "tenant-B")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrCrossTenantAccess, err.Code)
+	assert.Equal(t, "kv.Get", err.Op)
+	assert.Contains(t, err.Error(), "tenant-A")
+	assert.Contains(t, err.Error(), "tenant-B")
+	assert.Contains(t, err.Error(), "cross-tenant access denied")
+	assert.Equal(t, "tenant-A", err.Context["requesting_tenant"])
+	assert.Equal(t, "tenant-B", err.Context["target_tenant"])
+}
+
+func TestNewMissingTenantContextError(t *testing.T) {
+	err := NewMissingTenantContextError("kv.List")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrMissingTenantContext, err.Code)
+	assert.Equal(t, "kv.List", err.Op)
+	assert.Contains(t, err.Error(), "tenant context is required")
+}
+
+func TestIsCrossTenantAccess(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "cross tenant access error", err: NewCrossTenantAccessError("op", "a", "b"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrCrossTenantAccess}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsCrossTenantAccess(tt.err))
+		})
+	}
+}
+
+func TestIsMissingTenantContext(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "missing tenant context error", err: NewMissingTenantContextError("op"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrMissingTenantContext}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsMissingTenantContext(tt.err))
+		})
 	}
 }
