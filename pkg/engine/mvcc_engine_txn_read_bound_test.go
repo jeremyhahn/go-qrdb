@@ -60,7 +60,7 @@ func assertTxnReadRefused(t *testing.T, r sm.Result) int64 {
 	t.Helper()
 	limit, read, refused := protocol.DecodeTxnReadRefusal(r.Data)
 	if !refused {
-		t.Fatalf("result %q is not a transaction-read refusal", r.Data)
+		t.Fatalf("result of %d bytes (%q...) is not a transaction-read refusal", len(r.Data), r.Data[:min(len(r.Data), 16)])
 	}
 	if limit != txnReadResultMaxBytes || read <= limit {
 		t.Fatalf("refusal limit=%d read=%d, want limit %d crossed", limit, read, txnReadResultMaxBytes)
@@ -179,6 +179,27 @@ func TestMVCCEngine_TransactionRead_ARangeStopsAtTheBound(t *testing.T) {
 	read := assertTxnReadRefused(t, updateTxn(t, eng, 21, [][]byte{txnPutOp("other", []byte("o")), rangeOp}))
 	if read > txnReadResultMaxBytes+1+txnBoundValueSize {
 		t.Fatalf("range collected %d bytes before refusing, want it stopped at the key that crossed %d", read, txnReadResultMaxBytes)
+	}
+	assertNotWritten(t, eng, "other")
+}
+
+func TestMVCCEngine_TransactionRead_ARangeWithNoBudgetLeftStopsAtItsFirstKey(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	// Sixteen gets of k spend the whole bound; the range after them must
+	// stop at its first key rather than scan all twenty.
+	entries := []sm.Entry{mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize), 0)}
+	for i := range 20 {
+		entries = append(entries, mvccPutEntry(uint64(i+2), []byte{'A' + byte(i)}, []byte("v"), 0))
+	}
+	applyMVCCEntries(t, eng, entries)
+
+	rangeOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCRange, []byte("A"), nil, []byte("Z"), 0))
+	ops := append(txnGets("k", 16), rangeOp, txnPutOp("other", []byte("o")))
+	if read := assertTxnReadRefused(t, updateTxn(t, eng, 22, ops)); read != txnReadResultMaxBytes+2 {
+		t.Fatalf("refused at %d bytes, want %d: the range read past its first key", read, txnReadResultMaxBytes+2)
 	}
 	assertNotWritten(t, eng, "other")
 }
