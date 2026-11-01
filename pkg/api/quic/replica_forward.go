@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 )
@@ -193,7 +194,7 @@ func (f *FrameForwarder) Forward(ctx context.Context, caller *auth.Identity, met
 	defer cancel()
 	if _, ferr := f.cfg.Locator.Forward(ctx, refusal, cluster.APIProtocolQUIC, send); ferr != nil {
 		var sendErr *replicaforward.SendError
-		if errors.As(ferr, &sendErr) {
+		if errors.As(ferr, &sendErr) || isOwnerUnavailable(ferr) {
 			st, b := mapServiceError(ferr)
 			return st, b, true
 		}
@@ -383,4 +384,12 @@ func classifyQUICAnswer(status uint16, body []byte) (replicaforward.Result, bool
 		return replicaforward.Result{Outcome: replicaforward.NotLeader, LeaderRaftAddr: replicaforward.LeaderRaftAddr(p.Info.Metadata)}, true
 	}
 	return replicaforward.Result{}, false
+}
+
+// isOwnerUnavailable reports whether err, a failed forward, is a local
+// binding's owner that did not serve: answered as itself, naming the owner,
+// rather than as the refusal that started the forward.
+func isOwnerUnavailable(err error) bool {
+	var ownerErr *database.BindingOwnerUnavailableError
+	return errors.As(err, &ownerErr)
 }

@@ -200,3 +200,50 @@ func TestOnboardTenant_SO_PendingRecordedUnderThePendingSOKey(t *testing.T) {
 		t.Fatalf("pending admin = %+v, %v; want the admin recorded beside the SO", rec, err)
 	}
 }
+
+func TestOnboardTenantRequest_SO_SealsThePINAndWipesTheWireBytes(t *testing.T) {
+	req := &OnboardTenantRequest{SOUsername: "officer", SOCSRPEM: []byte("csr"), SOPIN: []byte("so-pin-1234")}
+	cfg, err := req.so(context.Background())
+	if err != nil {
+		t.Fatalf("so: %v", err)
+	}
+	t.Cleanup(cfg.PIN.Destroy)
+	if cfg.Username != "officer" || string(cfg.CSRPEM) != "csr" {
+		t.Fatalf("so = %+v, want the request's SO fields", cfg)
+	}
+	if cfg.PIN == nil || !cfg.PIN.IsAlive() {
+		t.Fatal("so: PIN not sealed into a live Secret")
+	}
+	if err := cfg.PIN.WithBytes(context.Background(), func(b []byte) error {
+		if string(b) != "so-pin-1234" {
+			t.Fatalf("sealed PIN = %q, want so-pin-1234", b)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
+	if slices.ContainsFunc(req.SOPIN, func(b byte) bool { return b != 0 }) {
+		t.Fatalf("request SOPIN = %q after sealing, want it wiped", req.SOPIN)
+	}
+}
+
+func TestOnboardTenantRequest_SO_NoSOAndNoPIN(t *testing.T) {
+	cfg, err := (&OnboardTenantRequest{}).so(context.Background())
+	if err != nil || cfg != nil {
+		t.Fatalf("so(no SO) = %+v, %v; want nil, nil", cfg, err)
+	}
+	cfg, err = (&OnboardTenantRequest{SOUsername: "officer"}).so(context.Background())
+	if err != nil || cfg == nil || cfg.PIN != nil {
+		t.Fatalf("so(no PIN) = %+v, %v; want a config with a nil PIN", cfg, err)
+	}
+}
+
+func TestOnboardTenantRequest_SO_SealFailureIsTyped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (&OnboardTenantRequest{SOUsername: "officer", SOPIN: []byte("pin")}).so(ctx)
+	var enrol *bootstrap.TenantSOEnrollmentError
+	if !errors.As(err, &enrol) || enrol.Op != "PIN seal" {
+		t.Fatalf("so(cancelled) = %v, want *bootstrap.TenantSOEnrollmentError{PIN seal}", err)
+	}
+}

@@ -340,6 +340,93 @@ func TestAuthorizeRoleAssignmentWrite_OwnTenantBindingValidated(t *testing.T) {
 	}
 }
 
+// grantRuleFixture is acme's built-in User role and a custom role, both
+// carrying keys:sign, which an assigner granted roles:assign alone lacks.
+func grantRuleFixture() (builtIn, custom string, roles *roleAssignmentFixture) {
+	builtIn = role.SystemRoleID("acme", role.RoleNameUser)
+	signer := []permission.Permission{permission.KeysSign}
+	return builtIn, "r-signer", &roleAssignmentFixture{roles: map[string]*role.Role{
+		builtIn:    {ID: builtIn, Name: role.RoleNameUser, TenantID: "acme", System: true, Permissions: signer},
+		"r-signer": {ID: "r-signer", Name: "signer", TenantID: "acme", Permissions: signer},
+	}}
+}
+
+// selfCtx is acme's admin resolved to account 1.
+func selfCtx() context.Context {
+	id := &auth.Identity{Subject: auth.UserSubject(1), UserID: 1, TenantID: "acme", Roles: []string{"admin"}}
+	return tenant.WithTenantID(auth.WithIdentity(context.Background(), id), "acme")
+}
+
+// The tenant Admin assigns the built-in User role, whose crypto-use duty it
+// does not hold, to another principal: the duty split (go-qrdb#1278).
+func TestAuthorizeRoleAssignmentWrite_BuiltInRoleToAnotherPrincipalAllowed(t *testing.T) {
+	mw := mwWithPerms(permission.RolesAssign)
+	builtIn, _, roles := grantRuleFixture()
+	other := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme"}}
+	if err := mw.AuthorizeRoleAssignmentWrite(selfCtx(), other, roles, 7, []string{builtIn}, nil); err != nil {
+		t.Fatalf("built-in User to another principal: %v", err)
+	}
+	if err := mw.AuthorizeRoleAssignmentWriteOnCreate(selfCtx(), roles, "acme", []string{builtIn}); err != nil {
+		t.Fatalf("built-in User to a new account: %v", err)
+	}
+}
+
+// No principal binds to itself a role carrying a permission it does not
+// hold, built-in or custom (go-qrdb#1278).
+func TestAuthorizeRoleAssignmentWrite_SelfBindingBeyondHoldingsRefused(t *testing.T) {
+	mw := mwWithPerms(permission.RolesAssign)
+	builtIn, custom, roles := grantRuleFixture()
+	self := &userTenantFixture{u: &user.User{ID: 1, TenantID: "acme"}}
+	for _, write := range []struct {
+		name     string
+		roleIDs  []string
+		bindings []user.RoleBinding
+	}{
+		{name: "built-in role id", roleIDs: []string{builtIn}},
+		{name: "built-in binding", bindings: []user.RoleBinding{{RoleID: builtIn, TenantID: "acme"}}},
+		{name: "custom role id", roleIDs: []string{custom}},
+	} {
+		err := mw.AuthorizeRoleAssignmentWrite(selfCtx(), self, roles, 1, write.roleIDs, write.bindings)
+		var exceeds *role.GrantExceedsHolderError
+		if !errors.As(err, &exceeds) || exceeds.Permission != permission.KeysSign.String() {
+			t.Fatalf("%s to self: err = %v, want *role.GrantExceedsHolderError for keys:sign", write.name, err)
+		}
+	}
+}
+
+// A custom role is literal for every holder: the assigner must hold what it
+// carries.
+func TestAuthorizeRoleAssignmentWrite_CustomRoleBeyondHoldingsRefused(t *testing.T) {
+	mw := mwWithPerms(permission.RolesAssign)
+	_, custom, roles := grantRuleFixture()
+	other := &userTenantFixture{u: &user.User{ID: 7, TenantID: "acme"}}
+	var exceeds *role.GrantExceedsHolderError
+	if err := mw.AuthorizeRoleAssignmentWrite(selfCtx(), other, roles, 7, []string{custom}, nil); !errors.As(err, &exceeds) {
+		t.Fatalf("custom role to another principal: err = %v, want *role.GrantExceedsHolderError", err)
+	}
+	if err := mw.AuthorizeRoleAssignmentWriteOnCreate(selfCtx(), roles, "acme", []string{custom}); !errors.As(err, &exceeds) {
+		t.Fatalf("custom role to a new account: err = %v, want *role.GrantExceedsHolderError", err)
+	}
+}
+
+func TestAssignsToSelf(t *testing.T) {
+	acme1 := &user.User{ID: 1, TenantID: "acme"}
+	for name, tt := range map[string]struct {
+		ctx  context.Context
+		want bool
+	}{
+		"the account itself":    {selfCtx(), true},
+		"no principal":          {context.Background(), false},
+		"unresolved identity":   {roleAssignmentCtx("acme"), false},
+		"same id, other tenant": {auth.WithIdentity(context.Background(), &auth.Identity{UserID: 1, TenantID: "globex"}), false},
+		"another account":       {auth.WithIdentity(context.Background(), &auth.Identity{UserID: 2, TenantID: "acme"}), false},
+	} {
+		if got := assignsToSelf(tt.ctx, acme1); got != tt.want {
+			t.Errorf("%s: assignsToSelf = %v, want %v", name, got, tt.want)
+		}
+	}
+}
+
 // TestAuthorizeRoleAssignmentWrite_AuthorizationPrecedesBindingCheck: a
 // caller refused roles:assign in the user's tenant learns that, not whether
 // the binding it named would have been accepted.

@@ -63,8 +63,8 @@ func testTenantOwnerDemotionOverProtocol(t *testing.T, node *multiProtoNode, pro
 
 	firstCert, firstKey := createTenantWithAdminCert(t, node, proto, tenantID, "Tenant Owner", "prefix", false, tenantID+"-admin")
 	firstClient := mtlsHTTPClientFromFiles(t, node.ca, firstCert, firstKey, 15*time.Second)
-	// The tenant's first admin creates the reader role once its account is
-	// completed.
+	// The tenant's first admin holds users:read, so under the grant rule it
+	// may create the reader role itself, once its account is completed.
 	awaitTenantAdminID(t, node.restPort, tenantID, firstClient)
 
 	roleBody, status := iraftAPIPost(t, firstClient, fmt.Sprintf("https://127.0.0.1:%d/roles", node.restPort),

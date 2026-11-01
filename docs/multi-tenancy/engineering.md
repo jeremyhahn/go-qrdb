@@ -1335,7 +1335,7 @@ Store key:
 | Revocation markers | `__sys:certs_revoked/{serial}` (`prefixCertsRevoked`, `pkg/cert/default_provider.go`) | home store for a certificate an isolated tenant's CA issued; SYS otherwise | `RevokeCert` | `IsPeerRevoked`, `pkg/auth/mtls.go` | Tenant-issued: **No**, in the home store. Node and platform certificates: stay. |
 | SO PIN commitment | `__sys:so-pin-commit/{t}` (`soPINCommitPrefix`, `pkg/auth/so_auth.go`) | SYS, unconfined root store (`cmd/qrdbd/start.go`) | `SOAuthenticator` | the same | **No: moves** to the bootstrap record |
 | Tenant officer roster | `ceremony/tenants/{id}/officers/` (`pkg/ceremony/barrier_scope.go`) | TB | tenant ceremony (`pkg/ceremony`) | claim and unseal | **No: moves**, plus the unseal roster in the bootstrap record |
-| Database catalog | `{dataDir}/databases/{name}/meta.json` (`pkg/database/manager.go`) | node-local, creating node only | `database.Manager.Create` | `pkg/server/rest_registry.go` | **No: moves** to the home store, replicated |
+| Database catalog | `__sys:dbcatalog/{t}/{name}` (`pkg/database/catalog.go`, `CatalogKey`) | home store for an isolated tenant; SYS for the system and shared tenants | `Manager.Create`, `Update*`, `Drop` through `database.KVCatalog` | `Manager.OpenAll`, `Manager.ListForTenant`, `Manager.Open` | **No**: in the home store |
 | Collection work journal | `__sys:collection-work/{t}/…` (`CollectionWorkPrefix`, `pkg/service/collection_types.go`) | SYS for prefix/barrier tenants | `pkg/server/collection_work_journal.go` | `pkg/server/collection_sweeper.go` | **No: moves** |
 | Drop fence | `__sys:dropfence/{t}/{db}/` (`DropFencePrefix`, `pkg/service/drop_fence.go`) | the data's group; SYS for shared tenants | `pkg/service/keyspace_reclaim.go` | `DropFenceGuard` | **No: moves** with the database store |
 | Reclaim index | `__reclaim:index/{job}` (`reclaimIndexPrefix`, `pkg/service/reclaim_job.go`) | SYS | `TableService` | `ReclaimSweeper` | **No: moves** |
@@ -1982,8 +1982,8 @@ Measured against the contract above:
   (`service.DefaultTenantOnboardingTimeout`), the same on every transport and
   for every isolated tenant whatever its type or policy.
 - **Not yet moved into the home store** (still in the system shard): the
-  custodian records and groups, the SO PIN commitment and the unseal roster,
-  encryption migration state and journals, the database catalog, the pending first-admin record, and the tenant audit
+  SO PIN commitment and the unseal roster,
+  encryption migration state and journals, the pending first-admin record, and the tenant audit
   trail. A tenant whose audit entitlement is on has its events appended to
   the replicated chain (`OpAuditAppend`, `service.ReplicatedLogger`) in the
   system shard; `service.SystemShardAuditResolver` refuses a `volume` or

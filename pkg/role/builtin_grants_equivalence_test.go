@@ -105,6 +105,7 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.TenantsDelete, permission.TenantsList,
 	permission.TenantBarrierInit, permission.TenantBarrierUnseal,
 	permission.TenantBarrierSeal, permission.TenantBarrierStatus,
+	permission.TenantBarrierEnableEncryption,
 	permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
 	permission.TenantBarrierOfficerRevoke, permission.TenantBarrierRekey,
 	permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
@@ -126,11 +127,25 @@ var goldenAdminPermissions = []permission.Permission{
 	// Replica state hashes, ScopeCross: effective only for system-tenant
 	// Admin.
 	permission.AdminStateHash,
+	// Starting a shard, ScopeCross: effective only for system-tenant Admin.
+	permission.AdminStartShard,
 	// Minting a cluster join token, ScopeCross: effective only for
 	// system-tenant Admin (owner ruling, 2026-10-06 -- see
 	// pkg/permission/cluster_join_token_scope.go).
 	permission.ClusterJoinToken,
 	permission.MVCCRestore,
+	// Database lifecycle, seal and unseal included, own tenant only
+	// (go-qrdb#1278). Key custody -- rekey, initialize_shamir, officer_* --
+	// stays out.
+	permission.DatabasesCreate, permission.DatabasesRead, permission.DatabasesList,
+	permission.DatabasesUpdate, permission.DatabasesDelete,
+	permission.DatabasesCreateRaft, permission.DatabasesCreateVolume, permission.DatabasesScale,
+	permission.DatabasesBarrierStatus, permission.DatabasesSeal, permission.DatabasesUnseal,
+	// The credentials:* family, held in its own tenant (go-qrdb#1185).
+	permission.CredentialsSubmit, permission.CredentialsStore, permission.CredentialsStrategy,
+	permission.CredentialsRetrieve, permission.CredentialsDelete, permission.CredentialsList,
+	permission.CredentialsRotate, permission.CredentialsRetrieveVersion,
+	permission.CredentialsListVersions, permission.CredentialsGCExpired,
 	permission.AuditRead, permission.AuditQuery, permission.AuditDelete,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
 	permission.TenantsReadCross, permission.TenantsDeleteCross, permission.TenantsUpdateCross,
@@ -143,6 +158,7 @@ var goldenAdminPermissions = []permission.Permission{
 	// Retired-tenant listing and reconcile, cross-scope: effective only for
 	// system-tenant Admin.
 	permission.TenantsListDeleted, permission.TenantsReconcileDeleted,
+	permission.RolesReconcileAll,
 	permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
 	permission.VolumePoolUpdate, permission.VolumePoolDelete,
 	permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
@@ -198,7 +214,7 @@ var goldenOperatorPermissions = []permission.Permission{
 	permission.IndexQuery, permission.IndexScan,
 	permission.TSWrite, permission.TSWriteBatch,
 	permission.TSQuery, permission.TSAggregate,
-	permission.VectorNamespaceCreate, permission.VectorNamespaceDelete,
+	permission.VectorNamespaceCreate, permission.VectorNamespaceUpdate, permission.VectorNamespaceDelete,
 	permission.VectorNamespaceList, permission.VectorNamespaceInfo,
 	permission.VectorUpsert, permission.VectorGet, permission.VectorDelete,
 	permission.VectorBatchUpsert, permission.VectorBatchDelete, permission.VectorList,

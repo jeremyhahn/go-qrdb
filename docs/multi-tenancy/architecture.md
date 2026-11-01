@@ -312,9 +312,9 @@ An unbounded keyspace walk inside a synchronous API call would be a denial of
 service on the control plane; bottom-up refusal is what bounds the walk.
 
 The reclamation scope is nonetheless the tenant's WHOLE namespace, not just
-the identity residue, because the database catalog is node-local while the
-keyspace is replicated: a node whose catalog under-reports would otherwise
-leave a tenant's data behind with nothing left to name it.
+the identity residue: the database catalog names the tenant's databases, but
+a key outside every recorded database would otherwise be left behind with
+nothing left to name it.
 
 ### What a tenant owns
 
@@ -932,13 +932,14 @@ is in
 | Invitations and redemptions | home store | home store |
 | Permission-scope overrides | home store | home store |
 | DEK keyring | home store | home store |
+| Named credentials (`credentials:*`) | the tenant's own barrier; a `prefix` tenant has none and is refused ([../credentials/architecture.md](../credentials/architecture.md#tenant-stores)) | the tenant's own barrier |
 | Identity index (user and role id → tenant) | `system/__sys:identity_idx/…` | **removed**; see [Identity routing without a global index](#identity-routing-without-a-global-index) |
 | Tenant CA private key and CA certificate | home store; the public CA certificate is also published at `__sys:cert_ca_pub/{t}/` | home store, with the public certificate published |
 | Issued-certificate records | home store | home store |
 | Revocation of tenant-issued certificates | `__sys:certs_revoked/{serial}` (global) | home store, enforced by the serving replicas when they authenticate the tenant's users |
 | SO PIN commitment | `__sys:so-pin-commit/{t}` (unconfined root store) | each node's tenant bootstrap record (below), because it gates operations on a sealed tenant |
 | Tenant officer roster | tenant barrier store; **falls back to the replicated system store before init** | Home store, plus the unseal roster in each node's tenant bootstrap record. Before init, the roster is held in memory by the init ceremony. |
-| Database catalog | node-local `meta.json` on the creating node only | home store, as one replicated catalog for the tenant |
+| Database catalog | home store, one record per database under `__sys:dbcatalog/{t}/` | home store |
 | Collection work journal, drop fence, reclaim index, locks, leases, sequences, row locks, index catalog, time series | system shard under `{t}/…` and `__sys:…/{t}/…` | the database's own store, per the databases binding design. Tenant-wide journals go to the home store. |
 | Tenant-scope encryption-migration records | `__sys:encmig/{t}/{db}` | home store |
 | Audit events about the tenant's identities and data | one node-local file shared by every tenant | a per-tenant, hash-chained trail replicated in the tenant's home group, under the tenant's key (S9). Platform events about the tenant go to the platform trail. |

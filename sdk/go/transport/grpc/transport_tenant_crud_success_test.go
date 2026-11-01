@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
@@ -103,4 +104,20 @@ func TestGRPCTenant_CRUDMethods_Success(t *testing.T) {
 			t.Fatalf("UpdateTenantQuotas: %v", err)
 		}
 	})
+}
+
+// TestGRPCTenant_UpdateTenantEntitlements_NilRequest refuses a nil request
+// with a typed error rather than dereferencing it.
+func TestGRPCTenant_UpdateTenantEntitlements_NilRequest(t *testing.T) {
+	addr, stop := startTenantCRUDServer(t)
+	defer stop()
+	tr, cleanup := connectTenantCRUDTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "UpdateTenantEntitlements" || !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
 }

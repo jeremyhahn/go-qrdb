@@ -171,37 +171,45 @@ func (t *Transport) Connect(ctx context.Context) error {
 	// serves the unseal call, which an operator MUST be able to reach over
 	// REST — gating Connect on 200 alone would make the CLI unable to unseal
 	// a node at all. Other statuses (e.g. 500) and transport errors are
-	// treated as unreachable.
-	if !t.reachable(ctx) {
-		return &transport.ConnectionError{
-			Address: t.config.Address,
-			Err:     &healthCheckError{},
-		}
-	}
-
-	return nil
+	// treated as unreachable; a 429 is the client-address limiter's refusal.
+	return t.probe(ctx)
 }
 
-// reachable reports whether the server is connectable: /health answers with
+// probe returns nil when the server is connectable: /health answers with
 // 200 (healthy) or 503 (sealed / not-ready). It is intentionally more
 // permissive than Healthy so the client can attach to a sealed server and
-// run the allowlisted barrier/seal commands. Transport errors and other
-// status codes return false.
-func (t *Transport) reachable(ctx context.Context) bool {
+// run the allowlisted barrier/seal commands. A 429 returns the server's
+// typed refusal; transport errors and other status codes return a
+// ConnectionError.
+func (t *Transport) probe(ctx context.Context) error {
+	unreachable := &transport.ConnectionError{
+		Address: t.config.Address,
+		Err:     &healthCheckError{},
+	}
 	if t.closed.Load() || t.client == nil {
-		return false
+		return unreachable
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.baseURL+"/health", nil)
 	if err != nil {
-		return false
+		return unreachable
 	}
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return false
+		return unreachable
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusServiceUnavailable:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	case http.StatusTooManyRequests:
+		// A server that refuses the caller's address under the
+		// client-address rate limit has answered: its typed refusal, with
+		// the Retry-After it sent, is the result, not a connectivity failure.
+		return t.decodeErrorResponse("Health", resp)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusServiceUnavailable
+	return unreachable
 }
 
 // Close shuts down the REST transport and releases idle connections.
@@ -654,6 +662,9 @@ var _ transport.ClusterJoinTokenMinter = (*Transport)(nil)
 func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTokenRequest) (*transport.MintJoinTokenResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
 	}
 
 	var resp transport.MintJoinTokenResponse

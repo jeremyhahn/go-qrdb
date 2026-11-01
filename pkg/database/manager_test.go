@@ -54,7 +54,7 @@ func newTestManager(t *testing.T) *Manager {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	// Every production Manager has a shard ID claimer; so does a test one, so
 	// a raft database created here gets a real shard ID.
-	m := NewManager(logger, dataDir)
+	m := newCatalogManager(logger, dataDir)
 	m.SetShardIDClaimer(testShardClaimer(t))
 	return m
 }
@@ -163,7 +163,7 @@ func TestManager_Create_Duplicate(t *testing.T) {
 func TestManager_Create_PebbleBackend(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -181,17 +181,15 @@ func TestManager_Create_PebbleBackend(t *testing.T) {
 		t.Errorf("Status() = %q, want %q", db.Status(), StatusOpen)
 	}
 
-	// Verify the meta.json file was written.
-	metaPath := filepath.Join(dataDir, databasesDir, "pebble-db", metaFile)
-	if _, err := os.Stat(metaPath); os.IsNotExist(err) {
-		t.Errorf("meta.json not found at %s", metaPath)
+	if meta := catalogRecord(t, mgr, "", "pebble-db"); meta.Backend != BackendPebble {
+		t.Errorf("catalog record Backend = %q, want %q", meta.Backend, BackendPebble)
 	}
 }
 
 func TestManager_Create_FileBackend(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -224,7 +222,7 @@ func TestManager_Open(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create a database with the first manager, then close the manager.
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	cfg := validMemoryConfig("open-db")
 	if _, err := mgr1.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
@@ -234,10 +232,10 @@ func TestManager_Open(t *testing.T) {
 	}
 
 	// Create a new manager and open the existing database.
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("open-db")
+	db, err := mgr2.Open(context.Background(), "", "open-db")
 	if err != nil {
 		t.Fatalf("Open() returned unexpected error: %v", err)
 	}
@@ -256,13 +254,13 @@ func TestManager_Open_NotFound(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	_, err := mgr.Open("nonexistent")
+	_, err := mgr.Open(context.Background(), "", "nonexistent")
 	if err == nil {
 		t.Fatal("Open() returned nil, want error for non-existent database")
 	}
-	var metaErr *MetaReadError
-	if !errors.As(err, &metaErr) {
-		t.Fatalf("Open() error type = %T, want *MetaReadError", err)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("Open() error type = %T, want *NotFoundError", err)
 	}
 }
 
@@ -277,7 +275,7 @@ func TestManager_Open_AlreadyOpen(t *testing.T) {
 	}
 
 	// Open the same database again; it should return the existing instance.
-	opened, err := mgr.Open("already-open-db")
+	opened, err := mgr.Open(context.Background(), "", "already-open-db")
 	if err != nil {
 		t.Fatalf("Open() returned unexpected error: %v", err)
 	}
@@ -325,7 +323,7 @@ func TestManager_Get_NotFound(t *testing.T) {
 func TestManager_Drop(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validMemoryConfig("drop-db")
@@ -449,7 +447,7 @@ func TestManager_OpenAll(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create two databases and close the manager.
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	names := []string{"openall-a", "openall-b"}
 	for _, name := range names {
 		if _, err := mgr1.Create(validMemoryConfig(name)); err != nil {
@@ -461,10 +459,10 @@ func TestManager_OpenAll(t *testing.T) {
 	}
 
 	// Create a fresh manager and call OpenAll.
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() returned unexpected error: %v", err)
 	}
 
@@ -490,7 +488,7 @@ func TestManager_OpenAll_EmptyDir(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	// No databases directory exists yet; OpenAll should succeed without error.
-	if err := mgr.OpenAll(); err != nil {
+	if err := mgr.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() on empty data dir returned unexpected error: %v", err)
 	}
 
@@ -503,7 +501,7 @@ func TestManager_OpenAll_EmptyDir(t *testing.T) {
 func TestManager_DataDir(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	if got := mgr.DataDir(); got != dataDir {
@@ -524,7 +522,7 @@ func TestManager_DataDir_Stable(t *testing.T) {
 
 func TestManager_NewManager_NilLogger(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir)
+	mgr := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Should use slog.Default() without panicking.
@@ -547,7 +545,7 @@ func TestManager_Create_RaftBackend_PlaceholderBackend(t *testing.T) {
 		Backend: BackendRaft,
 	}
 	// A raft-backed database is created with an in-memory placeholder Backend so
-	// its meta.json and catalog membership are tracked; the authoritative data
+	// its catalog record is tracked; the authoritative data
 	// plane is the per-database shard on the shared system Host (IsolationRaft),
 	// wired at the server layer.
 	db, err := mgr.Create(cfg)
@@ -586,7 +584,7 @@ func TestManager_List_SortOrder(t *testing.T) {
 func TestManager_Drop_VerifiesDirectoryCleanup(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -627,11 +625,11 @@ func TestManager_OpenAll_SkipsNonDirectoryEntries(t *testing.T) {
 		t.Fatalf("WriteFile() returned unexpected error: %v", err)
 	}
 
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// OpenAll should skip files and not return an error.
-	if err := mgr.OpenAll(); err != nil {
+	if err := mgr.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() returned unexpected error: %v", err)
 	}
 
@@ -659,10 +657,10 @@ func TestManager_Close_Idempotent(t *testing.T) {
 	}
 }
 
-func TestManager_Create_VerifiesMetaJSON(t *testing.T) {
+func TestManager_Create_RecordsInTheCatalog(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -673,50 +671,9 @@ func TestManager_Create_VerifiesMetaJSON(t *testing.T) {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
 
-	metaPath := filepath.Join(dataDir, databasesDir, "meta-check", metaFile)
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) returned unexpected error: %v", metaPath, err)
-	}
-
-	content := string(data)
-	if len(content) == 0 {
-		t.Fatal("meta.json is empty")
-	}
-
-	// Verify basic content without importing encoding/json in assertions.
-	if !containsSubstring(content, `"name": "meta-check"`) {
-		t.Errorf("meta.json missing name field, content: %s", content)
-	}
-	if !containsSubstring(content, `"backend": "memory"`) {
-		t.Errorf("meta.json missing backend field, content: %s", content)
-	}
-}
-
-func TestManager_Open_CorruptedMetaJSON(t *testing.T) {
-	dataDir := t.TempDir()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	// Create the database directory with corrupted meta.json.
-	dbDir := filepath.Join(dataDir, databasesDir, "corrupt-db")
-	if err := os.MkdirAll(dbDir, 0o750); err != nil {
-		t.Fatalf("MkdirAll() returned unexpected error: %v", err)
-	}
-	metaPath := filepath.Join(dbDir, metaFile)
-	if err := os.WriteFile(metaPath, []byte("{invalid json"), 0o600); err != nil {
-		t.Fatalf("WriteFile() returned unexpected error: %v", err)
-	}
-
-	mgr := NewManager(logger, dataDir)
-	defer func() { _ = mgr.Close() }()
-
-	_, err := mgr.Open("corrupt-db")
-	if err == nil {
-		t.Fatal("Open() returned nil, want *MetaReadError for corrupted JSON")
-	}
-	var metaErr *MetaReadError
-	if !errors.As(err, &metaErr) {
-		t.Fatalf("Open() error type = %T, want *MetaReadError", err)
+	meta := catalogRecord(t, mgr, "", "meta-check")
+	if meta.Name != "meta-check" || meta.Backend != BackendMemory {
+		t.Errorf("catalog record = %+v, want name meta-check, backend memory", meta)
 	}
 }
 
@@ -751,7 +708,7 @@ func TestManager_OpenAll_SkipsCorruptedDatabases(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create a valid database.
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	if _, err := mgr1.Create(validMemoryConfig("valid-db")); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
@@ -759,17 +716,17 @@ func TestManager_OpenAll_SkipsCorruptedDatabases(t *testing.T) {
 		t.Fatalf("Close() returned unexpected error: %v", err)
 	}
 
-	// Create a corrupted database directory (directory with no meta.json).
+	// A stray database directory the catalog has no record of.
 	corruptDir := filepath.Join(dataDir, databasesDir, "broken-db")
 	if err := os.MkdirAll(corruptDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll() returned unexpected error: %v", err)
 	}
 
 	// OpenAll should open the valid database and skip the broken one.
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() returned unexpected error: %v", err)
 	}
 
@@ -787,7 +744,7 @@ func TestManager_Open_PebbleBackend(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create a pebble-backed database, then close the manager.
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	cfg := DatabaseConfig{
 		Name:    "pebble-reopen",
 		Backend: BackendPebble,
@@ -800,10 +757,10 @@ func TestManager_Open_PebbleBackend(t *testing.T) {
 	}
 
 	// Reopen with a new manager.
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("pebble-reopen")
+	db, err := mgr2.Open(context.Background(), "", "pebble-reopen")
 	if err != nil {
 		t.Fatalf("Open(pebble) returned unexpected error: %v", err)
 	}
@@ -824,10 +781,13 @@ func TestManager_Drop_CloseError(t *testing.T) {
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-drop-db")
-	mgr.databases.Store("fail-drop-db", db)
-	// The catalog directory a real database has, so the drop gets past
-	// persisting its local fence to the close under test.
-	if err := os.MkdirAll(mgr.dbDir("fail-drop-db"), 0o750); err != nil {
+	mgr.databases.Store(keyFor("", "fail-drop-db"), db)
+	// The catalog record and directory a real database has, so the drop
+	// gets past persisting its local fence to the close under test.
+	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), metaFromConfig(cfg, false, "")); err != nil {
+		t.Fatalf("catalog Create: %v", err)
+	}
+	if err := os.MkdirAll(mgr.dbDir("", "fail-drop-db"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
@@ -853,7 +813,7 @@ func TestManager_Close_WithFailingBackend(t *testing.T) {
 		Backend: BackendMemory,
 	}
 	db := NewDatabase(cfg, &failingCloseBackend{}, "/tmp/test/fail-close-mgr-db")
-	mgr.databases.Store("fail-close-mgr-db", db)
+	mgr.databases.Store(keyFor("", "fail-close-mgr-db"), db)
 
 	err := mgr.Close()
 	if err == nil {
@@ -950,7 +910,7 @@ func TestManager_WithBackendFactory(t *testing.T) {
 
 	// Use a custom factory via WithBackendFactory option.
 	customFactory := NewEmbeddedBackendFactory()
-	mgr := NewManager(logger, dataDir, WithBackendFactory(customFactory))
+	mgr := newCatalogManager(logger, dataDir, WithBackendFactory(customFactory))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validMemoryConfig("factory-db")
@@ -1091,7 +1051,7 @@ func TestManager_UpdateBarrier_Enable_RejectedNotMigrated(t *testing.T) {
 // decrypting data that is still encrypted on disk.
 func TestManager_UpdateBarrier_Disable_RejectedWhenActive(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validDedicatedMemoryConfig(t, "barrier-active-disable-db")
@@ -1128,7 +1088,7 @@ func TestManager_UpdateBarrier_Disable_RejectedWhenActive(t *testing.T) {
 // without changing the active encryption state.
 func TestManager_UpdateBarrier_IdempotentRefresh_Allowed(t *testing.T) {
 	bm := newTestBarrierManager(t)
-	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	mgr := newCatalogManager(nil, t.TempDir(), WithBarrierManager(bm))
 	defer func() { _ = mgr.Close() }()
 
 	cfg := validDedicatedMemoryConfig(t, "barrier-idempotent-db")
@@ -1262,14 +1222,14 @@ func TestManager_UpdateConnection_NilConfig(t *testing.T) {
 	}
 }
 
-// TestManager_UpdateReplicas_NotFound verifies UpdateReplicas returns
+// TestManager_UpdateReplicas_NotFound verifies UpdateReplicasForTenant returns
 // *NotFoundError for a database that does not exist, mirroring UpdateRaft's
 // not-found behavior.
 func TestManager_UpdateReplicas_NotFound(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	err := mgr.UpdateReplicas("nonexistent", 3)
+	err := mgr.UpdateReplicasForTenant(context.Background(), "nonexistent", 3)
 	if err == nil {
 		t.Fatal("UpdateReplicas() returned nil, want *NotFoundError")
 	}
@@ -1292,7 +1252,7 @@ func TestManager_UpdateReplicas_UpdatesInMemoryConfig(t *testing.T) {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
 
-	if err := mgr.UpdateReplicas("replicas-mem-db", 3); err != nil {
+	if err := mgr.UpdateReplicasForTenant(context.Background(), "replicas-mem-db", 3); err != nil {
 		t.Fatalf("UpdateReplicas() returned unexpected error: %v", err)
 	}
 
@@ -1308,36 +1268,36 @@ func TestManager_UpdateReplicas_UpdatesInMemoryConfig(t *testing.T) {
 	}
 }
 
-// TestManager_UpdateReplicas_PersistsToMetaJSON verifies UpdateReplicas
-// round-trips through meta.json: a manager reopened against the same data
+// TestManager_UpdateReplicas_PersistsToCatalog verifies UpdateReplicas
+// round-trips through the catalog: a manager reopened against the same data
 // directory after UpdateReplicas observes the new replica count, exactly like
 // UpdateRaft's persisted DatabaseRaftConfig does.
-func TestManager_UpdateReplicas_PersistsToMetaJSON(t *testing.T) {
+func TestManager_UpdateReplicas_PersistsToCatalog(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	cfg := validMemoryConfig("replicas-persist-db")
 	cfg.Replicas = 1
 	if _, err := mgr1.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
-	if err := mgr1.UpdateReplicas("replicas-persist-db", 5); err != nil {
+	if err := mgr1.UpdateReplicasForTenant(context.Background(), "replicas-persist-db", 5); err != nil {
 		t.Fatalf("UpdateReplicas() returned unexpected error: %v", err)
 	}
 	if err := mgr1.Close(); err != nil {
 		t.Fatalf("Close() returned unexpected error: %v", err)
 	}
 
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("replicas-persist-db")
+	db, err := mgr2.Open(context.Background(), "", "replicas-persist-db")
 	if err != nil {
 		t.Fatalf("Open() returned unexpected error: %v", err)
 	}
 	if got := db.Info().Replicas; got != 5 {
-		t.Errorf("reopened Info().Replicas = %d, want 5 (persisted via meta.json)", got)
+		t.Errorf("reopened Info().Replicas = %d, want 5 (persisted in the catalog)", got)
 	}
 }
 
@@ -1353,7 +1313,7 @@ func TestManager_BarrierManager_ReturnsNil(t *testing.T) {
 func TestManager_Create_WithSQL(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -1384,18 +1344,8 @@ func TestManager_Create_WithSQL(t *testing.T) {
 		t.Error("Info().Protocol.PostgreSQL = false, want true")
 	}
 
-	// Verify meta.json contains the Protocol config.
-	metaPath := filepath.Join(dataDir, databasesDir, "sql-create-db", metaFile)
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) returned unexpected error: %v", metaPath, err)
-	}
-	content := string(data)
-	if !containsSubstring(content, `"mysql": true`) {
-		t.Errorf("meta.json missing mysql field, content: %s", content)
-	}
-	if !containsSubstring(content, `"postgresql": true`) {
-		t.Errorf("meta.json missing postgresql field, content: %s", content)
+	if meta := catalogRecord(t, mgr, "", "sql-create-db"); !meta.Protocol.MySQL || !meta.Protocol.PostgreSQL {
+		t.Errorf("catalog record Protocol = %+v, want MySQL and PostgreSQL", meta.Protocol)
 	}
 }
 
@@ -1404,7 +1354,7 @@ func TestManager_Open_ReadsSQL(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// Create a database with Protocol config, then close the manager.
-	mgr1 := NewManager(logger, dataDir)
+	mgr1 := newCatalogManager(logger, dataDir)
 	cfg := DatabaseConfig{
 		Name:     "sql-reopen-db",
 		Backend:  BackendMemory,
@@ -1418,10 +1368,10 @@ func TestManager_Open_ReadsSQL(t *testing.T) {
 	}
 
 	// Create a new manager and reopen the database.
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("sql-reopen-db")
+	db, err := mgr2.Open(context.Background(), "", "sql-reopen-db")
 	if err != nil {
 		t.Fatalf("Open() returned unexpected error: %v", err)
 	}
@@ -1486,7 +1436,7 @@ func TestManager_UpdateProtocol_NotFound(t *testing.T) {
 func TestManager_UpdateProtocol_PersistsToMeta(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	cfg := DatabaseConfig{
@@ -1503,29 +1453,19 @@ func TestManager_UpdateProtocol_PersistsToMeta(t *testing.T) {
 		t.Fatalf("UpdateProtocol() returned unexpected error: %v", err)
 	}
 
-	// Read meta.json directly from disk and verify.
-	metaPath := filepath.Join(dataDir, databasesDir, "sql-persist-db", metaFile)
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) returned unexpected error: %v", metaPath, err)
-	}
-	content := string(data)
-	if !containsSubstring(content, `"mysql": true`) {
-		t.Errorf("meta.json missing mysql=true after UpdateProtocol, content: %s", content)
-	}
-	if !containsSubstring(content, `"postgresql": true`) {
-		t.Errorf("meta.json missing postgresql=true after UpdateProtocol, content: %s", content)
+	if meta := catalogRecord(t, mgr, "", "sql-persist-db"); !meta.Protocol.MySQL || !meta.Protocol.PostgreSQL {
+		t.Errorf("catalog record Protocol = %+v after UpdateProtocol, want MySQL and PostgreSQL", meta.Protocol)
 	}
 
-	// Also verify the meta.json can be re-read by a fresh manager.
+	// A fresh manager over the same catalog reads it back.
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("Close() returned unexpected error: %v", err)
 	}
 
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
 
-	db, err := mgr2.Open("sql-persist-db")
+	db, err := mgr2.Open(context.Background(), "", "sql-persist-db")
 	if err != nil {
 		t.Fatalf("Open() returned unexpected error: %v", err)
 	}

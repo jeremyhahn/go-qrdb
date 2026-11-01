@@ -185,7 +185,14 @@ The optional security officer (SO), given whole or not at all:
 | `so_csr_pem` | the SO's certificate signing request, signed as `admin_csr_pem` is |
 | `so_cert_pem` | the SO's own certificate, leaf first; must chain to `trust_anchors_pem` |
 | `so_chain_pem` | optional intermediates for `so_cert_pem` |
-| `so_pin` | the SO's PIN, the second factor the SO gate asks for |
+| `so_pin` | the SO's PIN, the second factor the SO gate asks for; the SDK sends it only over TLS |
+
+A request carrying `so_pin` is a secret carrier in the Go SDK, as the barrier's
+secrets are: over a connection that is not TLS (plaintext gRPC, a Unix
+socket without TLS, an `http://` REST or MCP address) the SDK refuses it with
+`SOPINRequiresTLSError` before anything is sent, and on REST and MCP a redirect
+to `http://` or to another host is refused before the PIN is resent. A request
+without `so_pin` is sent on any transport.
 
 With an SO, `so_username`, `so_pin` and exactly one of `so_csr_pem` and
 `so_cert_pem` are required; a partial set or both a CSR and a certificate is

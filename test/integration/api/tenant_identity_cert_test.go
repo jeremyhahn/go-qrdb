@@ -42,9 +42,10 @@ func newTenantAdminIdentity(t *testing.T, cfg *TestConfig, proto ProtocolType, t
 	roleName := fmt.Sprintf("tadmin-role-%s-%d", proto, ts)
 
 	// The role and user are created by the tenant's own bootstrap admin: the
-	// built-in Admin role holds roles:create, users:create and roles:assign
-	// in its own tenant, while the system tenant's admin holds no
-	// cross-tenant roles:create / users:create.
+	// system tenant's admin holds no cross-tenant roles:create / users:create,
+	// and a tenant's first admin is the supported way to populate it. Under
+	// the grant rule (go-qrdb#1278) perms must be ones the built-in Admin
+	// holds.
 	boot := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
 
 	run := func(what string, args ...string) string {
@@ -133,6 +134,63 @@ func newTenantBootstrapAdmin(t *testing.T, cfg *TestConfig, proto ProtocolType, 
 		tenantID: tenantID,
 		username: username,
 		certFile: filepath.Join(certDir, "admin-cert.pem"),
+		keyFile:  filepath.Join(csrDir, "key.pem"),
+	}
+}
+
+// seatProvisioner gives a second account in the admin's tenant the tenant's
+// built-in Admin and Operator roles, and the Security Officer role when withSO,
+// and returns that account's identity. Under the grant rule (go-qrdb#1278) a
+// principal binds to itself no role carrying a permission it does not hold,
+// and creates no role past its holdings, so the admin cannot take SO itself
+// or write a kv:* role; assigning a built-in role to another account is
+// allowed. The certificate is issued before SO is assigned: the certificate
+// target guard refuses an SO target. Test setup only.
+func (a *tenantAdminIdentity) seatProvisioner(t *testing.T, cfg *TestConfig, proto ProtocolType, withSO bool) *tenantAdminIdentity {
+	t.Helper()
+
+	run := func(what string, args ...string) string {
+		t.Helper()
+		stdout, stderr, err := a.exec(t, cfg, proto, args...)
+		if err != nil {
+			t.Logf("stdout: %s", stdout)
+			t.Logf("stderr: %s", stderr)
+			t.Fatalf("[%s] %s failed: %v", proto, what, err)
+		}
+		return stdout
+	}
+
+	username := fmt.Sprintf("tprov-%s-%d", proto, testTimestamp())
+	userID := parseIDResponse(t, proto, "users create", run("users create",
+		"--output", "json", "users", "create", "--without-email-login-key",
+		"--username", username, "--tenant-id", a.tenantID))
+	for _, name := range []string{"admin", "operator"} {
+		roleID := parseIDResponse(t, proto, "roles get-by-name "+name,
+			run("roles get-by-name "+name, "--output", "json", "roles", "get-by-name", name))
+		run("roles assign ("+name+")", "roles", "assign", "--user", userID, "--role", roleID)
+	}
+
+	csrDir := t.TempDir()
+	stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
+		"ca", "csr", "--username", username, "--out", csrDir)
+	if err != nil {
+		t.Logf("stdout: %s", stdout)
+		t.Logf("stderr: %s", stderr)
+		t.Fatalf("[%s] ca csr for %s failed: %v", proto, username, err)
+	}
+	certDir := t.TempDir()
+	run("ca issue (provisioner)", "ca", "issue", "--username", username,
+		"--csr", filepath.Join(csrDir, "csr.pem"), "--out", certDir)
+
+	if withSO {
+		soRoleID := parseIDResponse(t, proto, "roles get-by-name so",
+			run("roles get-by-name so", "--output", "json", "roles", "get-by-name", "so"))
+		run("roles assign (security officer)", "roles", "assign", "--user", userID, "--role", soRoleID)
+	}
+	return &tenantAdminIdentity{
+		tenantID: a.tenantID,
+		username: username,
+		certFile: filepath.Join(certDir, "cert.pem"),
 		keyFile:  filepath.Join(csrDir, "key.pem"),
 	}
 }

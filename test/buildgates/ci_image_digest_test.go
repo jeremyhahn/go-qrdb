@@ -385,9 +385,10 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 		}
 		i, ok := pulled[family]
 		switch {
-		case !ok && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf):
-			// A nightly job (nightlyIf, draft guard aside) never runs on a
-			// push to main: the local path is its only one.
+		case !ok && tierCondition(job.If) == withoutDraftSkip(nightlyIf):
+			// A nightly job (nightlyIf, draft guard and schedule guard
+			// aside) never runs on a push to main: the local path is its
+			// only one.
 		case !ok:
 			problems = append(problems, name+" runs the "+family+" image but never pulls it with scripts/ci-registry.sh pull: "+
 				"on main it would run an image docker-build did not push")
@@ -485,7 +486,7 @@ func TestCIImageDigest_EveryNamedConsumerNeedsBothPaths(t *testing.T) {
 					return paths[path].MatchString(s.Run)
 				})
 				if len(kept) == len(job.Steps) {
-					if path == "pull" && withoutDraftSkip(job.If) == withoutDraftSkip(nightlyIf) {
+					if path == "pull" && tierCondition(job.If) == withoutDraftSkip(nightlyIf) {
 						return
 					}
 					t.Fatalf("%s has no %s step to drop", name, path)
@@ -643,6 +644,7 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          RELEASE_REGISTRY_TOKEN: x\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
 		{name: "a job env sets the runner's registry", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
 		{name: "the workflow env sets the runner's user", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY_USER: x\n  CI_PUBLISH"},
+		{name: "a non-consumer on the release runner", old: "  typescript:\n    runs-on: ubuntu-latest", new: "  typescript:\n    runs-on: release"},
 		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},
 		{name: "a consumer on the release runner by expression", old: "  legs:\n    runs-on: bigdisk", new: "  legs:\n    runs-on: ${{ github.ref == 'refs/heads/main' && 'release' || 'bigdisk' }}"},
 		{name: "CI_PUBLISH widened to every branch", old: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "${{ github.ref == 'refs/heads/main' }}"},

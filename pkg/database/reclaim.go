@@ -47,17 +47,36 @@ type KeyspaceReclaimer interface {
 	// serving it, and the scheduled-compaction record the dropped
 	// incarnation of the database set there. An empty tenantID means the
 	// system tenant, matching tenant.ComposeNamespace.
-	ReclaimDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation string) error
+	//
+	// Every delete it proposes carries the guard that the database is still
+	// fenced, evaluated by the state machine in the same command as the
+	// delete: once the name is created again its marker holds the
+	// successor's incarnation, and a reclamation resumed after that -- a
+	// drop another drop took over and finished -- deletes nothing, with
+	// *DropSupersededError. The guard names the tombstone of claim, the
+	// drop's own claim (see FenceDatabaseKeyspace), so a reclamation of a
+	// drop another drop has since taken over deletes nothing either.
+	ReclaimDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation, claim string) error
 
-	// FenceDatabaseKeyspace fences the (tenantID, database) database in the
-	// Raft group that holds its data, before any of it is reclaimed. Every
-	// write to the database carries a guard naming the database's live
-	// incarnation, evaluated by the state machine in the same command as the
-	// write, and the fence is a value no incarnation matches -- so once this
-	// returns no write the fence did not precede can land, including one
-	// already proposed. It must be idempotent: a retried drop fences an
-	// already-fenced database.
-	FenceDatabaseKeyspace(ctx context.Context, tenantID, database string) error
+	// FenceDatabaseKeyspace fences incarnation of the (tenantID, database)
+	// database in the Raft group that holds its data, before any of it is
+	// reclaimed. Every write to the database carries a guard naming the
+	// database's live incarnation, evaluated by the state machine in the
+	// same command as the write, and the fence is a value no incarnation
+	// matches -- so once this returns no write the fence did not precede can
+	// land, including one already proposed. The fence replaces only
+	// incarnation, in one compare-and-swap: a marker holding another
+	// incarnation is a database created again under the name, and the fence
+	// is refused with *DropSupersededError. It must be idempotent: a retried
+	// drop fences an already-fenced database.
+	//
+	// The fence is stamped with claim, the drop's claim on the catalog
+	// record: the drop's fencing token in the store as well. A drop that
+	// takes another over re-stamps an already-fenced marker with its own
+	// claim, so the reclamation and the rollback of the drop it took over,
+	// both conditional on that drop's claim, are refused in the state
+	// machine (go-qrdb#893).
+	FenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation, claim string) error
 
 	// UnfenceDatabaseKeyspace makes incarnation the live incarnation of the
 	// (tenantID, database) database in the store holding its data. Create
@@ -66,7 +85,14 @@ type KeyspaceReclaimer interface {
 	// of the name refused -- and Drop calls it with the database's own
 	// incarnation to roll a failed drop back. It must be idempotent, and
 	// marking a store that does not exist yet is success.
-	UnfenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation string) error
+	//
+	// Create passes an empty claim. A rollback passes the failed drop's
+	// claim, and the store clears only that claim's fence, in one
+	// compare-and-swap applied through Raft: a fence another drop has
+	// re-stamped since is that drop's, and the rollback is refused with
+	// *DropSupersededError rather than readmitting writes to the keyspace
+	// it is reclaiming.
+	UnfenceDatabaseKeyspace(ctx context.Context, tenantID, database, incarnation, claim string) error
 }
 
 // WithKeyspaceReclaimer sets the KeyspaceReclaimer a Drop uses to reclaim a

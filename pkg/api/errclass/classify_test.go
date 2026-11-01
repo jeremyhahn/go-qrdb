@@ -22,6 +22,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/barrierinit"
@@ -34,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -225,6 +227,29 @@ func TestClassify_RaftTimeoutIsUnavailable(t *testing.T) {
 	}
 }
 
+// TestClassify_LeadershipUnderAuthIsUnavailableNotItsWrapper pins how the
+// auth classifier's election rule (go-qrdb#1280) meets this table: an
+// authenticator's verdict beside an election is Unavailable on every
+// transport, while a dominant wrapper over the same election -- a failed
+// rollback -- keeps its own class rather than becoming a retryable 503.
+func TestClassify_LeadershipUnderAuthIsUnavailableNotItsWrapper(t *testing.T) {
+	notLeader := &service.NotLeaderError{ShardID: 1}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"an election beside an authentication refusal", errors.Join(auth.ErrUnauthenticated, notLeader), Unavailable},
+		{"an election beside an authorization refusal", errors.Join(auth.ErrUnauthorized, notLeader), Unavailable},
+		{"an election under an auth chain", &authmw.AuthChainError{Err: notLeader}, Unavailable},
+		{"a failed rollback over an election", &user.IndexCompensationError{Op: "create", Cause: notLeader}, DataLoss},
+	} {
+		if got := Classify(tc.err); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestClassify_ClusterMigNotLeaderIsUnavailable pins the cluster
 // enable-encryption coordinator's not-leader refusal to Unavailable, as
 // quicraft.ErrNotLeader is: an election in progress is a retryable condition,
@@ -304,6 +329,7 @@ func TestClassify_ServiceConditionsTheTableOnceMissed(t *testing.T) {
 		{"leader transfer not supported by the admin service", &service.LeaderTransferUnsupportedError{}, Unimplemented},
 		{"shard snapshot export timed out", &service.ShardSnapshotTimeoutError{ShardID: 1}, Unavailable},
 		{"factor migration left records behind", &service.FactorMigrationRefusedError{}, FailedPrecondition},
+		{"barrier verb on a seal-disabled node", &service.SealDisabledError{Op: "barrier seal"}, FailedPrecondition},
 		{"database store keeps no compaction policy", &service.CompactionPolicyUnavailableError{Database: "d"}, Unprocessable},
 		{"node keyspace compaction not composed", &service.NodeCompactionUnavailableError{}, Unprocessable},
 	} {
@@ -335,6 +361,33 @@ func TestClassify_NumericScanBoundIsInvalidArgument(t *testing.T) {
 	}
 	if got := Classify(&service.ReadError{Err: errors.New("disk")}); got != Internal {
 		t.Errorf("a read fault is still a fault: got %s, want %s", got, Internal)
+	}
+}
+
+// TestClassify_LockErrors pins every lock error's class: a malformed request
+// (empty key, non-positive TTL) is the caller's to fix, not a server fault,
+// and the typed outcomes keep the classes every transport maps them by.
+func TestClassify_LockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"empty key", lock.ErrEmptyKey, InvalidArgument},
+		{"non-positive TTL", lock.ErrInvalidTTL, InvalidArgument},
+		{"held by another holder", &lock.LockHeldError{Key: "k", HolderID: "other"}, Aborted},
+		{"stale fencing token", &lock.NotLockHolderError{Key: "k", ExpectedToken: 1, ActualToken: 2}, PermissionDenied},
+		{"not locked", &lock.LockNotFoundError{Key: "k"}, NotFound},
+		{"unlock contended", lock.ErrUnlockContended, Aborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+	if got := Classify(errors.New("lock: key must not be empty")); got == InvalidArgument {
+		t.Errorf("an unrelated error with the sentinel's text must not match it: got %s", got)
 	}
 }
 

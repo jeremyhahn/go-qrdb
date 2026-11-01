@@ -29,7 +29,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
@@ -399,54 +398,4 @@ func TestSealSubsystem_Close_WithRealSealStore(t *testing.T) {
 	require.NoError(t, sub.Close())
 	// Second Close is a no-op (Pebble guards against double-close).
 	require.NoError(t, sub.Close())
-}
-
-// ---------------------------------------------------------------------------
-// runStart: dbManager.OpenAll failure when databases/ cannot be read
-//
-// Covers start.go line 869-871: the error return from dbManager.OpenAll when
-// os.ReadDir("{dataDir}/databases") fails with anything other than
-// os.IsNotExist, causing database.Manager.OpenAll to return *MetaReadError.
-// ---------------------------------------------------------------------------
-
-func TestRunStart_OpenAll_DatabasesDirUnreadable(t *testing.T) {
-	dir := t.TempDir()
-
-	// Put a regular file where the databases/ directory belongs, so that
-	// os.ReadDir inside OpenAll fails with ENOTDIR rather than ENOENT.
-	//
-	// A 0o000 directory would be the more obvious way to provoke the same
-	// branch, but permission bits are not a fault-injection mechanism here:
-	// CI job containers run as root, which bypasses the check entirely, and
-	// runStart would then go on to start a real node and block until the test
-	// binary's deadline (testing-guidelines.md, Fault Injection).
-	dbsPath := filepath.Join(dir, "databases")
-	require.NoError(t, os.WriteFile(dbsPath, nil, 0o600))
-
-	raftPort, portErr := netport.FreePortOn(raftListenHost, netport.NetworkUDP)
-	require.NoError(t, portErr)
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		// authEnabled=false skips generateAdminClientCert so the only
-		// blockage between resolveTLS and dbManager.OpenAll is removed.
-		authEnabled: false,
-		host:        testBindHost,
-	}
-
-	err := runStart(f)
-	require.Error(t, err, "runStart must fail when databases/ cannot be read")
-
-	var metaErr *database.MetaReadError
-	require.True(t, errors.As(err, &metaErr),
-		"error must be *database.MetaReadError, got %T: %v", err, err)
 }

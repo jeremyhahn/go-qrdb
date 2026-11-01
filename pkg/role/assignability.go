@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -34,7 +35,41 @@ import (
 // *RoleNotFoundError; any other lookup failure is returned verbatim. A role
 // whose deletion has begun is a *RoleDeletingError. A role that exists in
 // another tenant is a *NotAssignableError.
-func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID string) error {
+//
+// Last, the grant rule (go-qrdb#1278): a grantor may grant only what it
+// holds, whether it writes the permission into a role or hands over a role
+// that already carries it. The assigner -- the principal in ctx -- must hold
+// every permission a custom role grants, in tenantID, as authz evaluates it
+// (ValidateGrantable). A built-in role (IsBuiltIn) keeps the duty split the
+// built-ins encode instead: the tenant Admin assigns the built-in User role,
+// whose crypto-use duty it does not hold, to the principals who perform that
+// duty. Binding a role to the assigner itself is ValidateSelfAssignable. A
+// refusal is a *GrantExceedsHolderError naming the role. It runs after every
+// check above, so each of those keeps its own error. A nil authz (no RBAC) or
+// a context with no principal skips it.
+func ValidateAssignable(ctx context.Context, svc RoleServicer, authz auth.Authorizer, roleID, tenantID string) error {
+	return validateAssignable(ctx, svc, authz, roleID, tenantID, false)
+}
+
+// ValidateSelfAssignable is ValidateAssignable for a binding whose holder is
+// the assigner itself, and applies the grant rule to every role, built-in or
+// custom: no principal binds to itself a role carrying a permission it does
+// not hold. That closes the self-grant of go-qrdb#1278 through the built-in
+// roles, the one path ValidateAssignable leaves to the duty split.
+func ValidateSelfAssignable(ctx context.Context, svc RoleServicer, authz auth.Authorizer, roleID, tenantID string) error {
+	return validateAssignable(ctx, svc, authz, roleID, tenantID, true)
+}
+
+// IsBuiltIn reports whether r is one of its tenant's built-in roles, the
+// record ReconcileBuiltInRoles seeds: a system role under the deterministic
+// identifier SystemRoleID gives its tenant and name. A role a caller created
+// under a reserved name is immutable (IsSystemRoleName) but carries an
+// identifier of its own, so it is not built in.
+func IsBuiltIn(r *Role) bool {
+	return r != nil && r.System && r.ID == SystemRoleID(r.TenantID, r.Name)
+}
+
+func validateAssignable(ctx context.Context, svc RoleServicer, authz auth.Authorizer, roleID, tenantID string, self bool) error {
 	r, err := svc.GetRole(ctx, roleID)
 	var notFound *RoleNotFoundError
 	if errors.As(err, &notFound) {
@@ -51,8 +86,16 @@ func ValidateAssignable(ctx context.Context, svc RoleServicer, roleID, tenantID 
 	if r.Deleting {
 		return &RoleDeletingError{ID: roleID, Op: "assigned"}
 	}
-	if tenantid.Normalize(r.TenantID) == tenantid.Normalize(tenantID) {
+	if tenantid.Normalize(r.TenantID) != tenantid.Normalize(tenantID) {
+		return &NotAssignableError{RoleID: roleID, TenantID: tenantID}
+	}
+	if !self && IsBuiltIn(r) {
 		return nil
 	}
-	return &NotAssignableError{RoleID: roleID, TenantID: tenantID}
+	err = ValidateGrantable(ctx, authz, tenantID, r.Permissions)
+	var exceeds *GrantExceedsHolderError
+	if errors.As(err, &exceeds) {
+		exceeds.RoleID = roleID
+	}
+	return err
 }

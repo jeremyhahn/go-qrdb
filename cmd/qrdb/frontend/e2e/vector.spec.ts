@@ -367,8 +367,8 @@ async function dismissToasts(
       // Toast may have already auto-dismissed
     }
   }
-  // Brief pause for DOM cleanup
-  await page.waitForTimeout(100);
+  // Wait until every dismissed toast has left the DOM.
+  await expect(dismissButtons).toHaveCount(0, { timeout: 5_000 });
 }
 
 /** Create a namespace via the UI. */
@@ -397,9 +397,9 @@ async function selectNamespace(
   await page.locator("select").first().selectOption(name);
   // Wait for the namespace info to load by checking the select value is set
   await expect(page.locator("select").first()).toHaveValue(name, { timeout: 5_000 });
-  // Wait for the UI to react - the CrudTable "Upsert Vector" button or
-  // stat cards should appear once the namespace is selected and data loads
-  await page.waitForTimeout(500);
+  // The namespace's loads show a spinner or skeleton until they resolve,
+  // successfully or not; none left means the view has settled.
+  await expect(page.locator("main").locator(".loading, .skeleton")).toHaveCount(0, { timeout: 5_000 });
 }
 
 /** Upsert a vector via the slide panel. */

@@ -572,6 +572,37 @@ the build no longer defines. It is never persisted — one marshal seam clears i
 — so it can only ever report the current disagreement, and it is the field an
 operator reads on a listing to see which tenants need converging.
 
+**Converging every tenant.** A rename strands every tenant, not one, and the
+per-tenant verb needs each tenant's own Admin, because the system tenant may not
+act on another tenant's roles. `role.ReconcileAllTenants` is the platform
+operator's single pass. It enumerates the live tenants from the tenant service
+(`TenantLister`), with retired IDs excluded, because `pkg/role` cannot import
+`pkg/tenant`'s service. It then converges each tenant through the routed role
+service's own store for that tenant. For a barrier tenant that is the tenant's
+sealed store, not the shared one. The system tenant goes first and the rest
+follow in order, each one independently:
+
+- a tenant whose barrier is sealed (`tenant.ErrTenantSealed`) is **skipped**
+  with reason `sealed`, and the next run reaches it once it is unsealed;
+- a tenant that refuses the call is **skipped** with reason `refused`;
+- any other error is reported in **failed** and does not stop the pass. The
+  report is the answer, and the CLI turns a non-empty `failed` into a non-zero
+  exit.
+
+It is gated twice. First by the cross-scope permission `roles:reconcile_all`,
+granted only to the system tenant's built-in Admin. Second, inside the function,
+by a refusal of any caller whose context is bound to a tenant other than the
+system tenant (`tenant.PlatformOperatorRequiredError`, a 403). The second gate
+does not depend on the role store being correct, which is what this verb
+repairs. The per-tenant write is the same `ReconcileBuiltInRoles` convergence,
+so every property above holds per tenant. Custom roles are untouched and a
+converged tenant writes nothing.
+
+A system Admin role stored before `roles:reconcile_all` existed does not hold
+it. That case needs no migration: the single-tenant reconcile of the system
+tenant needs only `roles:create`, and it converges the system Admin onto a
+definition that includes `roles:reconcile_all`. The operator runs that first.
+
 ### Device onboarding and OTA updates
 
 Device onboarding and over-the-air update control are **permissions, not
@@ -608,6 +639,62 @@ for the caller itself, or, with `permissions:resolve`, for another identity in
 the caller's own tenant. A caller never gets an answer about another tenant's
 identity. The task-shaped version, with commands, is in
 [user.md](user.md#common-tasks).
+
+#### The grant rule
+
+A grantor may grant only permissions it holds. The rule is enforced once, in
+`pkg/role`, and every transport inherits it:
+
+- `CreateRole` and `UpdateRole` are refused when the role would carry a
+  permission the calling principal does not hold in the role's tenant
+  (`role.NewGrantGuard`, wired in the server for every network transport,
+  and by the embedded node for the embedded transport, over the same
+  authorizer).
+  Every permission counts, cluster-wide ones included, and a held wildcard
+  covers what it matches.
+- Assigning a custom role is refused unless the assigner holds every
+  permission the role carries (`role.ValidateAssignable`).
+- A built-in role is assigned to another account under its usual rules, so
+  the tenant Admin still gives the built-in `user` role, which carries the
+  crypto-use duty that Admin lacks, to the accounts that sign. No principal
+  may bind to itself a role, built-in or custom, that carries a permission it
+  does not hold (`role.ValidateSelfAssignable`).
+- The separation-of-duties checks on assignment run first, with their own
+  errors.
+- Work with no principal (bootstrap, first boot, the tenant seeder,
+  `ReconcileBuiltInRoles`) is not a grant and is not checked.
+
+A refusal is `*role.GrantExceedsHolderError`, which names the caller, the
+tenant, the first permission it lacks and, on assignment, the role. Every
+transport maps it to its permission-denied status: REST 403, gRPC
+`PermissionDenied`, and the same denial on QUIC, MCP and the Unix socket.
+
+Because a role can be written only by a principal that holds what it carries,
+some built-in role must hold each permission a tenant hands out. The tenant
+Admin holds its own tenant's database lifecycle (`databases:create`,
+`databases:read`, `databases:list`, `databases:update`, `databases:delete`,
+`databases:create_raft`, `databases:create_volume`, `databases:scale`,
+`databases:barrier_status`, `databases:seal`, `databases:unseal`) and
+`tenant_barrier:enable_encryption`, beside the tenant barrier's init, seal,
+unseal and rekey, for that reason; a database's key custody
+(`databases:rekey`, `databases:initialize_shamir`, `databases:officer_*`) is in
+none of the five built-in roles. It holds the `credentials:*` family
+(`credentials:submit`, `credentials:store`, `credentials:strategy`,
+`credentials:retrieve`, `credentials:delete`, `credentials:list`,
+`credentials:rotate`, `credentials:retrieve_version`,
+`credentials:list_versions`, `credentials:gc_expired`) in its own tenant for
+the same reason, so a tenant administrator can grant its tenant's accounts use
+of the tenant's credential store.
+To write a role mixing the Admin's and the Operator's permissions, such as one
+carrying `databases:create` and `kv:put`, the Admin gives a second account in
+its tenant the built-in `admin` and `operator` roles, and that account writes
+the role.
+
+The property that remains is designed: a tenant Admin who assigns a built-in
+role to another account it controls acts through that account with that
+role's permissions. Given User, it gets crypto-use; given Admin or Operator, it
+gets the second seat described above. The fix for that is the Admin/User duty
+split itself, not this guard.
 
 #### Granting device onboarding through a custom role
 
@@ -689,6 +776,34 @@ judged by the SAME certificate target guard `certs:issue` is
 (`pkg/service.certTargetGuard`, see [Trust boundaries](#trust-boundaries)):
 no Security Officer target, and an Owner target only when the caller itself
 holds Owner.
+
+**A re-invitation supersedes every earlier token.** Re-inviting a pending
+account goes through `invite.TenantStore.Reissue`. The store keeps a
+per-user record whose generation names the one live invitation: the new
+invitation is written at the next generation, not yet redeemable, and one
+compare-and-swap of the user's generation then supersedes every earlier
+invitation and makes the new one live together. At most one token for an
+account is therefore ever redeemable; a token sent before the re-invite gets
+the same opaque refusal as a spent one (`invite.ErrSuperseded` inside the
+store), and the garbage collector removes superseded records with expired
+ones. Superseded means minted below the live generation: a record minted
+above it is a re-invite staged before its swap, about to become the live
+token, and the collector keeps it until it expires, since after a swap with
+an unknown outcome it cannot tell whether that happened. That swap orders every race: of two concurrent re-invites exactly one
+wins, and a re-invite that a concurrent redemption beat loses too; the loser
+gets `invite.ErrReissueConflict` (`pkg/api/errclass`: Aborted), which a
+retry resolves. Redemption records only that the token was redeemed;
+activation is recorded separately (`invite.TenantStore.Activate`) once the
+service has activated the account, and a re-invite of a user recorded active
+is refused with `invite.ErrUserActive`, reported as the same precondition
+failure a re-invite of a non-pending account gets. Keeping the two apart
+keeps a redemption whose activation then failed recoverable: the account is
+still pending and can be re-invited. A pending account the invite store has
+no record of (`invite.ErrUserNotFound`) gets a first invitation instead. A
+user's record begins at generation 1, and an invitation written before the
+store kept these records carries generation 0, so that first invitation
+supersedes any such earlier token as a re-invite would: an upgraded database
+never holds two redeemable tokens for one account.
 
 **Redemption is the one verb a caller may invoke with no credential at
 all.** `InvitationService.RedeemInvitation` takes the tenant, the token, and

@@ -225,8 +225,8 @@ type DatabaseBarrierConfig struct {
 
 	// Secret carries the barrier passphrase for the initial Initialize call
 	// when Enabled is set on a CreateDatabaseRequest. It is never persisted
-	// (the server's on-disk DatabaseBarrierConfig / meta.json has no secret
-	// field) and is only meaningful on the request path; a DatabaseInfo
+	// (the DatabaseBarrierConfig in the server's database catalog record has
+	// no secret field) and is only meaningful on the request path; a DatabaseInfo
 	// reports the barrier as a DatabaseBarrierInfo, which has no secret.
 	Secret string `json:"secret,omitempty"`
 }

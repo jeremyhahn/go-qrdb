@@ -100,7 +100,8 @@ sign it.
 
 An invitation expires after `auth.invitation_ttl` (24 hours by default) and
 can be redeemed exactly once; re-running step 1 with just `--username` issues
-a fresh token for the same still-pending account. If the operator has set
+a fresh token for the same still-pending account and cancels every token sent
+before it, so only the newest one works. If the operator has set
 `auth.invitation_require_key_pin`, step 1 also needs alice's key fingerprint
 (computed from her CSR — ask her to send it first) as `--key-pin-fingerprint`,
 and only a CSR over that exact key redeems it.
@@ -128,6 +129,13 @@ Anything not in that list will be refused when you create a role.
 qrdb roles create --name readonly --tenant-id acme \
      --permissions "kv:get,kv:list,kv:range"
 ```
+
+You can grant only what you hold yourself. The tenant Admin holds no data-plane
+or key-custody permission, so a role carrying `kv:get` or `keys:sign` is made by
+an account that holds them. An Admin's `roles create` with them is refused, as
+is assigning yourself a role carrying a permission you lack, the built-in
+`user` role included. Assigning `user` to somebody else is how their account
+gets crypto-use ([architecture.md](architecture.md#the-grant-rule)).
 
 **Let a release team activate and confirm updates on your devices.** The
 `ota:activate` and `ota:confirm` permissions belong to your tenant, so a custom
@@ -199,7 +207,7 @@ the name in the first column:
 | Role | For |
 |---|---|
 | `so` (Security Officer) | governance — barrier, certificates, roles, users, key escrow. **Crypto operations are explicitly denied**, on purpose |
-| `admin` | key lifecycle, tenants, backups, key escrow |
+| `admin` | key lifecycle, tenants, backups, key escrow; its own tenant's databases and tenant barrier, including database seal and unseal and turning on tenant encryption, but no database key custody |
 | `operator` | routine operations, including seal and unseal |
 | `user` | crypto operations only |
 | `auditor` | read-only everywhere |
@@ -621,7 +629,16 @@ roles and tenant-scoped bindings.
 predates the change. `qrdb roles get <id>` shows a `Retired:` line if the role
 also carries verbs the build has dropped — either way,
 `qrdb roles reconcile --tenant <id>` converges it. This is the one supported way
-to change a built-in role's permissions; `roles update` refuses.
+to change a built-in role's permissions; `roles update` refuses. After an
+upgrade, the platform operator converges every tenant in one pass with
+`qrdb roles reconcile --all-tenants`; it lists sealed tenants as skipped and
+exits non-zero if any tenant failed.
+
+**`roles reconcile --all-tenants` is refused for the system Admin.** The node
+was upgraded from a build that predates `roles:reconcile_all`, so the stored
+system Admin role does not hold it yet. Run `qrdb roles reconcile` as the system
+Admin first; converging the system tenant grants the permission. Then rerun
+`--all-tenants`.
 
 **Creating a role failed on a permission string.** The vocabulary is a fixed
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists

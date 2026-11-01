@@ -18,9 +18,12 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"sort"
 	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/vitess/go/mysql"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -248,39 +251,43 @@ func NewProvider(dbName string, kvSvc service.KVServicer, opts ...func(*Provider
 // protocol-level filtering.
 func NewManagerProvider(manager *database.Manager, kvSvc service.KVServicer, opts ...func(*Provider)) *Provider {
 	p := &Provider{
-		manager:     manager,
-		kvSvc:       kvSvc,
-		sqlConfigOf: managerSQLConfig(manager),
-		estimates:   newRowEstimates(),
+		manager:   manager,
+		kvSvc:     kvSvc,
+		estimates: newRowEstimates(),
 	}
+	p.sqlConfigOf = p.managerSQLConfig
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
 }
 
-// managerSQLConfig resolves a database's SQL settings from manager's
-// catalog.
-func managerSQLConfig(manager *database.Manager) SQLConfigResolver {
-	return func(_, name string) *database.SQLConfig {
-		db, err := manager.Get(name)
-		if err != nil {
-			return nil
-		}
-		return db.SQLConfig()
+// managerSQLConfig resolves the SQL settings of name as tenantID addresses
+// it (tenantDatabase) from the manager's catalog.
+func (p *Provider) managerSQLConfig(tenantID, name string) *database.SQLConfig {
+	db, err := p.tenantDatabase(tenantID, name)
+	if err != nil {
+		return nil
 	}
+	return db.SQLConfig()
 }
 
 // isAllowed reports whether the given database is visible under the
 // provider's current protocol filter. ProtocolAny allows all databases.
 func (p *Provider) isAllowed(db *database.Database) bool {
+	return p.servesProtocol(db.ProtocolConfig())
+}
+
+// servesProtocol reports whether a database with protocol configuration cfg
+// is served by this provider's wire protocol.
+func (p *Provider) servesProtocol(cfg database.ProtocolConfig) bool {
 	switch p.protocol {
 	case ProtocolAny:
 		return true
 	case ProtocolMySQL:
-		return db.ProtocolConfig().MySQL
+		return cfg.MySQL
 	case ProtocolPostgreSQL:
-		return db.ProtocolConfig().PostgreSQL
+		return cfg.PostgreSQL
 	default:
 		return true
 	}
@@ -409,52 +416,77 @@ func (p *Provider) HasDatabase(ctx *sqle.Context, name string) bool {
 // cross-tenant name 404s), but the names themselves were, and a tenant's
 // schema is its own business.
 func (p *Provider) AllDatabases(ctx *sqle.Context) []sqle.Database {
-	if p.manager != nil {
-		tenantID := providerSessionTenantID(ctx)
-		infos := p.manager.List()
-		dbs := make([]sqle.Database, 0, len(infos))
-		for _, info := range infos {
-			if !p.visibleTo(info, tenantID) {
-				continue
-			}
-			if p.protocol != ProtocolAny {
-				db, err := p.manager.Get(info.Name)
-				if err != nil {
-					continue
-				}
-				if !p.isAllowed(db) {
-					continue
-				}
-			}
-			dbs = append(dbs, p.newDatabase(info.Name))
-		}
-		return dbs
+	if p.manager == nil {
+		return []sqle.Database{p.newDatabase(p.dbName)}
 	}
-	return []sqle.Database{p.newDatabase(p.dbName)}
+	// The replicated catalog, not what this node has opened: a database
+	// created through another node is listed before anything here opens it.
+	tenantID := providerSessionTenantID(ctx)
+	metas, err := p.manager.TenantRecords(providerContext(ctx), tenantID)
+	if err != nil {
+		p.warnEnumeration(ctx, &DatabaseEnumerationError{TenantID: tenantID, Err: err})
+		return nil
+	}
+	names := make([]string, 0, len(metas)+1)
+	shadowed := false
+	for _, meta := range metas {
+		// A tenant's own database of the shared default's name is the one
+		// its session resolves (tenantDatabase), so it hides the shared one
+		// -- open here or not, and whichever protocols it serves.
+		if p.sharedDefaultDB != "" && strings.EqualFold(meta.Name, p.sharedDefaultDB) {
+			shadowed = true
+		}
+		// A fenced database fails every lookup (GetOwned), so it is not listed.
+		if meta.Dropping || !p.servesProtocol(meta.Protocol) {
+			continue
+		}
+		names = append(names, meta.Name)
+	}
+	if p.sharedDefaultDB != "" && !shadowed && tenantid.Normalize(tenantID) != tenantid.System {
+		if db, err := p.tenantDatabase(tenantID, p.sharedDefaultDB); err == nil && p.isAllowed(db) {
+			names = append(names, p.sharedDefaultDB)
+			sort.Strings(names)
+		}
+	}
+	dbs := make([]sqle.Database, 0, len(names))
+	for _, name := range names {
+		dbs = append(dbs, p.newDatabase(name))
+	}
+	return dbs
+}
+
+// warnEnumeration raises err, a failed database enumeration, as an
+// error-level warning on the session: AllDatabases has no error return, and
+// an empty list on its own would read as a tenant with no databases.
+func (p *Provider) warnEnumeration(ctx *sqle.Context, err *DatabaseEnumerationError) {
+	if ctx == nil || ctx.Session == nil {
+		return
+	}
+	ctx.Session.Warn(&sqle.Warning{Level: "Error", Message: err.Error(), Code: mysql.ERUnknownError})
 }
 
 // sessionDatabase returns the managed database name when the session's tenant
 // owns it, with the same ownership rule AllDatabases lists by.
 func (p *Provider) sessionDatabase(ctx *sqle.Context, name string) (*database.Database, bool) {
-	db, err := p.manager.Get(name)
+	db, err := p.tenantDatabase(providerSessionTenantID(ctx), name)
 	if err != nil {
-		return nil, false
-	}
-	if !p.visibleTo(db.Info(), providerSessionTenantID(ctx)) {
 		return nil, false
 	}
 	return db, true
 }
 
-// visibleTo reports whether tenantID's sessions see the managed database
-// info: the tenant owns it (database.OwnedBy, the one ownership rule, under
-// which a database recorded with no owner is the system tenant's), or it is
-// the shared default SQL database.
-func (p *Provider) visibleTo(info database.DatabaseInfo, tenantID string) bool {
-	if p.sharedDefaultDB != "" && strings.EqualFold(info.Name, p.sharedDefaultDB) {
-		return true
+// tenantDatabase resolves name as tenantID addresses it: tenantID's own
+// database of that name (GetOwned), or -- for the shared default database,
+// which the system tenant owns and every tenant sees -- the system tenant's
+// when tenantID has none of that name. A name two tenants hold resolves to
+// the caller's own, never to *database.AmbiguousNameError.
+func (p *Provider) tenantDatabase(tenantID, name string) (*database.Database, error) {
+	db, err := p.manager.GetOwned(name, tenantID)
+	var notFound *database.NotFoundError
+	if errors.As(err, &notFound) && p.sharedDefaultDB != "" && strings.EqualFold(name, p.sharedDefaultDB) && tenantID != tenantid.System {
+		return p.manager.GetOwned(name, tenantid.System)
 	}
-	return database.OwnedBy(info.TenantID, tenantID)
+	return db, err
 }
 
 // providerSessionTenantID returns the tenant of the session driving ctx,

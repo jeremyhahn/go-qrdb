@@ -200,7 +200,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	)
 	attempt := 0
 	var tenantStatus int
-	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+	createClient := tenantCreateClient(sysClient)
+	if !pollUntil(tenantCreateWindow, 500*time.Millisecond, func() bool {
 		attempt++
 		tenantID = fmt.Sprintf("aud-acme-%d", attempt)
 		keyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
@@ -208,7 +209,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 			t.Fatalf("certtest.NewCSR: %v", err)
 		}
 		adminKeyPEM = keyPEM
-		tenantBody, tenantStatus = iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+		tenantBody, tenantStatus = iraftAPIPost(t, createClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 			map[string]interface{}{
 				"id":             tenantID,
 				"name":           "Audit Acme",
@@ -230,8 +231,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 
 	// The system tenant cannot provision records inside another tenant's IAM
 	// (owner ruling: ScopeSelf has no system-tenant lift), so the role and
-	// user below are created as the tenant's own onboarded admin, once
-	// awaitTenantAdminID sees that account completed.
+	// user below are created by a second account the tenant's own onboarded
+	// admin seats (seatTenantProvisioner).
 	var createResp struct {
 		Admin struct {
 			CertPEM string `json:"cert_pem"`
@@ -245,7 +246,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 		t.Fatalf("X509KeyPair for the onboarded tenant admin: %v", err)
 	}
 	tenantAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-	awaitTenantAdminID(t, leaderPort, tenantID, tenantAdminClient)
+	// audit:verify_replicated is the SO's, so the provisioner holds SO too.
+	tenantAdminClient = seatTenantProvisioner(t, ca, leaderPort, tenantID, tenantAdminClient, true)
 
 	roleBody, roleStatus := iraftAPIPost(t, tenantAdminClient, fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{

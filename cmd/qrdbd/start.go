@@ -331,6 +331,13 @@ type startFlags struct {
 	// When no config file is provided, defaults from DefaultConfig are used.
 	sealConfig qrdbconfig.SealConfig
 
+	// transport is the transport: section loaded from YAML, carried whole
+	// into the server config: the per-message and per-peer bounds and the
+	// pre-authentication client-address rate limit every listener shares
+	// (go-qrdb#1197). Its zero value resolves each bound to its default
+	// and applies no rate limit.
+	transport qrdbconfig.TransportConfig
+
 	// storageConfig holds the storage subsystem configuration loaded
 	// from YAML — including volume pools that barrier-mode tenants
 	// draw from when allocating a per-tenant Pebble. When no config
@@ -358,6 +365,23 @@ type startFlags struct {
 	// ("import_session:"). When no config file is provided, the zero value
 	// resolves to the package defaults WithImportSessionLimits documents.
 	importSessionConfig qrdbconfig.ImportSessionConfig
+
+	// indexConfig caps every shard's secondary indexes, loaded from YAML
+	// ("index:"). When no config file is provided, the zero value leaves
+	// them unlimited.
+	indexConfig qrdbconfig.IndexConfig
+
+	// timeSeriesConfig is the timeseries section of the YAML config
+	// ("timeseries:"): default_retention reaches the retention scheduler
+	// and max_metrics caps every shard's metric names. With no config file
+	// the zero value keeps every point and leaves metric names unlimited.
+	timeSeriesConfig qrdbconfig.TimeSeriesConfig
+
+	// watchConfig is the watch section of the YAML config ("watch:"):
+	// buffer_size and max_watchers reach every watch hub the node builds
+	// through server.WatchHubOptions. With no config file the zero value
+	// keeps the package default buffer and no watcher cap.
+	watchConfig qrdbconfig.WatchConfig
 
 	// leaseConfig sets the lease checkpoint interval and failover grace,
 	// loaded from YAML ("lease:"). The zero value resolves to the lease
@@ -1007,6 +1031,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// Seal config is always inherited from YAML (no CLI flag equivalent).
 	f.sealConfig = cfg.Seal
 
+	// The transport section is likewise YAML-only.
+	f.transport = cfg.Transport
+
 	// Storage config (including volume_pools) is always inherited from
 	// YAML — there is no CLI flag equivalent for the multi-path pool
 	// definitions that barrier-mode tenants depend on. The one exception
@@ -1026,6 +1053,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// Import session config is always inherited from YAML — there is no
 	// CLI flag equivalent for a chunked import session's quotas.
 	f.importSessionConfig = cfg.ImportSession
+	f.indexConfig = cfg.Index
+	f.timeSeriesConfig = cfg.TimeSeries
+	f.watchConfig = cfg.Watch
 	f.leaseConfig = cfg.Lease
 }
 
@@ -1474,26 +1504,17 @@ func runStart(f *startFlags) (err error) {
 	// opcode is ever proposed is the featuregate.AuditAppend gate's
 	// decision, not this attachment's.
 	lr := lease.NewLessor()
-	watchHub := watch.NewHub()
-
-	// Run one-time migration from flat layout to per-database structure.
-	if err := database.MigrateIfNeeded(slog.Default(), f.dataDir); err != nil {
-		return err
-	}
+	// One set of options for the node's hub and every tenant hub: the
+	// watcher limit in it is the node's single watch.max_watchers cap.
+	watchHubOpts := server.WatchHubOptions(f.watchConfig)
+	watchHub := watch.NewHub(watchHubOpts...)
 
 	// Initialize the database manager. A raft database's shard ID is claimed
-	// from the replicated store (lifecycle.BuildServices wires the claimer),
-	// never issued from anything on this node's disk.
+	// from the replicated store, and its record is kept in the replicated
+	// catalog (lifecycle.BuildServices wires both and opens every recorded
+	// database), never in anything on this node's disk.
 	dbManager := database.NewManager(slog.Default(), f.dataDir)
 	defer func() { _ = dbManager.Close() }()
-
-	// Rehydrate every database persisted under {dataDir}/databases so that
-	// databases created in a prior run are known after restart. This is
-	// idempotent with the config-listed open loop below (Open/Create are
-	// no-ops for already-open databases).
-	if err := dbManager.OpenAll(); err != nil {
-		return err
-	}
 
 	// Use default database configs when no YAML config was provided.
 	if len(f.databases) == 0 {
@@ -1774,7 +1795,7 @@ func runStart(f *startFlags) (err error) {
 				if localBackend == database.BackendRaft {
 					return &StandaloneRaftBackendError{}
 				}
-				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig.Objstore)
+				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig)
 				if lerr != nil {
 					return lerr
 				}
@@ -2021,6 +2042,8 @@ func runStart(f *startFlags) (err error) {
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
 				ImportSession:             f.importSessionConfig,
+				Index:                     f.indexConfig,
+				TimeSeries:                f.timeSeriesConfig,
 				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 				Encryptor:                 enc,
@@ -2163,7 +2186,7 @@ func runStart(f *startFlags) (err error) {
 			// closed host, and is only the backstop for an error return.
 			var gateCloser io.Closer = nopCloser{}
 			if host != nil {
-				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode, nodeSeal)
+				gateCloser, err = startFeatureGate(bootCtx, featureGate, svcNode, rnode, nodeSeal)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					var unsupported *featuregate.UnsupportedFeatureError
@@ -2475,6 +2498,9 @@ func runStart(f *startFlags) (err error) {
 				FeatureGate:          featureGate,
 				ClusterSealer:        tenantSealer,
 				ImportSession:        f.importSessionConfig,
+				Index:                f.indexConfig,
+				TimeSeries:           f.timeSeriesConfig,
+				WatchHub:             watchHubOpts,
 				SnapshotEntries:      f.snapshotEntries,
 				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
@@ -2717,6 +2743,7 @@ func runStart(f *startFlags) (err error) {
 				server.WithLeaderForwarding(registry),
 				server.WithBatch(batchSvc),
 				server.WithTimeSeries(tsSvc),
+				server.WithDefaultRetention(f.timeSeriesConfig.DefaultRetentionDuration()),
 				server.WithIndex(indexSvc),
 				server.WithVector(vectorSvc),
 				server.WithCollectionService(collectionSvc),
@@ -3108,7 +3135,7 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
-				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, nodeSeal)
+				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
 				if mErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
@@ -3373,7 +3400,8 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			Host:    f.host,
 			GRPCWeb: f.grpcWeb,
 		},
-		CORS: f.cors,
+		CORS:      f.cors,
+		Transport: f.transport,
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
 			GRPC:       f.enableGRPC,
@@ -3629,6 +3657,7 @@ func startDynamicMembership(
 	mvccSvc service.MVCCKVServicer,
 	leaseSvc service.LeaseServicer,
 	watchSvc service.WatchServicer,
+	leaders server.LeaderSource,
 	nodeSeal cluster.SealProbe,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
@@ -3660,7 +3689,7 @@ func startDynamicMembership(
 	// Each attempt is bounded: a settling leader drops a registration without
 	// answering it, and the next attempt re-registers the same record. The
 	// manager's loops outlive the attempt; Close ends them.
-	if err := server.WhileSystemShardSettling(ctx, "dynamic membership start", mgr.Start); err != nil {
+	if err := server.WhileSystemShardSettling(ctx, leaders, "dynamic membership start", mgr.Start); err != nil {
 		return nil, err
 	}
 	return mgr, nil
@@ -5013,9 +5042,9 @@ func requireGuardedBatch(ctx context.Context, guarded kvstore.MultiGuardedBatchK
 }
 
 // waitForLeaderElection waits, within leaderWait, until shardID has a known
-// leader, reporting a failure as an auth-bootstrap step (see awaitLeader).
+// leader, reporting a failure as an auth-bootstrap step (see server.AwaitShardLeader).
 func waitForLeaderElection(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64) error {
-	if err := awaitLeader(ctx, node, leaderWait, shardID); err != nil {
+	if err := server.AwaitShardLeader(ctx, node, leaderWait, shardID); err != nil {
 		return &AuthBootstrapError{Step: "wait for leader", Err: err}
 	}
 	return nil
@@ -5052,35 +5081,6 @@ func leaderWaitBudget(f *startFlags) time.Duration {
 	sc.SetDefaults()
 	electionTimeout := time.Duration(sc.ElectionRTT*hc.RTTMillisecond) * time.Millisecond
 	return leaderWaitElections * electionTimeout
-}
-
-// awaitLeader waits until shardID has a known leader for as long as ctx lives,
-// and returns ctx's error if it ends first. The wait has no budget of its own:
-// each node is unsealed by its own operator, so a quorum can form minutes
-// after this node is ready -- and after a system encryption migration's
-// in-process restart, only once the peers have restarted and been unsealed
-// too. A node that gave up instead would exit, and its peers would then be
-// waiting on it.
-//
-// leaderWait (leaderWaitBudget) is the length of one round of the wait. A
-// round that ends without a leader is logged with its
-// *server.ShardLeaderWaitError -- naming the shard, the budget and the time
-// actually spent -- and the next round begins.
-func awaitLeader(ctx context.Context, node server.LeaderSource, leaderWait time.Duration, shardID uint64) error {
-	if _, ok, err := node.LeaderID(shardID); err == nil && ok {
-		return nil
-	}
-	slog.Info("waiting for a Raft leader; a quorum of members must be running and unsealed",
-		"shard_id", shardID)
-	for {
-		err := server.WaitForShardLeader(ctx, node, shardID, leaderWait)
-		var we *server.ShardLeaderWaitError
-		if !errors.As(err, &we) {
-			return err
-		}
-		slog.Warn("still waiting for a Raft leader; a quorum of members must be running and unsealed",
-			"shard_id", shardID, "error", err)
-	}
 }
 
 // adminExists checks whether the admin user already exists using a local

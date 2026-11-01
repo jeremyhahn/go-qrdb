@@ -591,6 +591,21 @@ services and to the server, which wraps the node's sealed-window probe with
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
   close it.
+- **An encrypted Pebble store refuses work once its barrier seals, with a
+  typed error.** A sealed barrier refuses every file `encfs` would create, and
+  Pebble retries a refused flush at once and forever and panics when it cannot
+  create its next WAL file. Every Pebble database under a barrier opens
+  through `pebble.Open` in `pkg/storage/pebble`, which attaches a `SealWatch`:
+  it logs the first sealed background error of an episode and counts the rest,
+  and its `Flush` and `Check` return a `*SealedError` wrapping
+  `ErrBarrierSealed` instead of waiting. `PebbleStorage` checks before every
+  flush, durable write and compaction, and the state machines' `Sync` flushes
+  through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
+  node closes its own data-plane store before it seals its barriers, so a
+  clean `Close` never meets the refusal. The check and Pebble's next file
+  creation are not atomic, so a seal landing between them is still a crash;
+  closing that window is the planned seal-quiesce row in
+  [SPEC.md](../SPEC.md).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -757,6 +772,15 @@ re-encrypted with the WAL into a keyed sibling, recorded in the journal's
 `StagedSnapshots`, and renamed into place once the swaps commit. A
 verification mismatch rolls the migration back before any swap, leaving every
 store under the old key.
+
+A standalone node whose `pebble` store keeps its write-ahead log outside the
+store directory (`storage.wal_dir` naming another directory) is refused
+before anything is minted or quiesced, with `MigrationNotSupportedError`
+naming `storage.wal_dir`. The migration copies, verifies and swaps the store
+directory alone: records still only in the external WAL would be lost, and
+that WAL would stay under the old encryption. A node that will migrate keeps
+`storage.wal_dir` empty from its first boot: Pebble refuses to reopen a store
+whose WAL directory has changed.
 
 ### A tenant-scope migration right after a system-scope recycle
 
@@ -1808,10 +1832,45 @@ database's backend *is* the node's store. `objstore` is a node-store backend
 only: the database manager refuses to open a database with it
 (`database.InvalidBackendError`).
 
+### `seal.enabled: false` barrier service
+
+A seal-disabled node still serves the barrier verbs. Protection `none` is a
+valid barrier, not a missing one, so a caller that asks a seal-disabled node
+for `BarrierStatus` gets an answer on every transport (REST, gRPC, QUIC,
+Unix, MCP and in process), not "barrier service is not configured".
+`lifecycle.BuildServices` sets `Services.Barrier` to
+`service.NewSealDisabledBarrierService` when `!infra.SealEnabled`. Every
+composer wires the barrier routes from that field, so `qrdbd` and both
+`sdk/go/node` builders (`NewStandaloneNode`, `NewClusteredNode`) get the same
+service from one place. No node option turns it on.
+
+The service reads its status from a `StorageBarrier` over `seal.StrategyNone`,
+initialized on a private in-memory backend that nothing else reads:
+
+| Verb | Answer |
+|------|--------|
+| `BarrierStatus` | strategy `none`, initialized, unsealed, not hardware-backed; `initialized_at` is zero, because no one initialized it, so `/v1/config/initialized` reads as before |
+| `BarrierInitialized` | true |
+| `BarrierHasRecoveryKeys` | false |
+| `BarrierOfficerList` | an empty list |
+| every verb that changes a barrier (initialize, unseal, seal, change passphrase, cluster unseal, Shamir initialize, recovery keys, officer register/revoke, share claim, quorum, rekey) | `*service.SealDisabledError`, classified `FailedPrecondition` (409 over REST) |
+
+The changing verbs are refused because the barrier guards nothing: the node's
+data never passes through it. A `seal` that succeeded would report a sealed
+node whose data was still readable. The barrier logs to a discard handler for
+the same reason, since go-quicraft's `StrategyNone` WARN would describe a
+barrier the node does not have. The node reports running unencrypted with the
+startup warning below.
+
+A barrier that was *requested* but failed to construct (`SealEnabled` true,
+`SealBarrier` nil) gets no barrier service. It is a failure, not protection
+`none`, and reporting it as an unsealed `none` barrier would hide it.
+
 ### `seal.enabled: false` startup warning
 
-`seal.enabled: false` is not a barrier operation — there is no barrier
-instance to audit — so it is not in the table above. `lifecycle.BuildServices`
+`seal.enabled: false` is not a barrier operation — the barrier service above
+guards nothing, so there is nothing to audit — so it is not in the table
+above. `lifecycle.BuildServices`
 is the single construction path `cmd/qrdbd`, the embedded `sdk/go/node`
 composer, and the Wails GUI's `cmd/qrdb` composer all call on every
 successful boot, sealed or not, so it is where the warning is logged exactly

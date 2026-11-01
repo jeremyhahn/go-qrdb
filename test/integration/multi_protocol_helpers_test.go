@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -279,14 +280,11 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	dekKeyDir := t.TempDir()
 	writeDEKKeyFile(t, dekKeyDir, "system")
 
+	// The REST, gRPC, QUIC and MCP ports are left to StartReady, which
+	// reserves them and, if another process takes one before qrdbd binds it,
+	// starts the node again on fresh ones. The Raft port is the test's: every
+	// peer names it.
 	raftPorts := allocatePorts(t, 1)
-	quicPorts := allocatePorts(t, 1)
-	tcpPorts := allocateTCPPorts(t, 3) // admin (REST), grpc, mcp
-
-	restPort := tcpPorts[0]
-	grpcPort := tcpPorts[1]
-	mcpPort := tcpPorts[2]
-	quicPort := quicPorts[0]
 
 	const passphrase = "multi-protocol-harness-passphrase"
 
@@ -300,14 +298,12 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPorts[0]),
 		"--shard-id", "1",
 		"--replica-id", "1",
-		"--admin-port", fmt.Sprintf("%d", restPort),
-		"--grpc-port", fmt.Sprintf("%d", grpcPort),
 		"--auth-enabled",
 		// Enable every transport the multi-protocol tests target.
 		"--enable-rest",
 		"--enable-grpc",
-		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
-		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
+		"--enable-quic",
+		"--enable-mcp",
 		"--enable-unix", "--unix-socket-path", unixSocket,
 		"--backup-key-dir", backupKeyDir,
 		"--dek-key-dir", dekKeyDir,
@@ -318,13 +314,24 @@ func startMultiProtocolNodeWithConfig(t *testing.T, smType, extraYAML string, ex
 	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
-	proc := startNode(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType))
-
 	// The barrier subsystem runs a pre-host sealed-window REST listener
 	// (unauthenticated by design -- the secret itself is the
 	// authorization) that must be initialized and unsealed before the Raft
-	// host, and therefore every other transport, comes up.
-	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
+	// host, and therefore every other transport, comes up. Reaching it is
+	// the node's readiness; a node that exits first fails the wait at once.
+	adminCert, _, _ := ca.adminIdentity(t, t.TempDir())
+	proc := startNodeReady(t, bin, args, fmt.Sprintf("[multi-proto sm=%s] ", smType), func(d *qrdbdharness.Daemon) error {
+		port, err := flagPort(d.Cmd().Args, "--admin-port")
+		if err != nil {
+			return err
+		}
+		return d.WaitForHTTPUp(fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/status", port), ca.Pool, &adminCert, 90*time.Second)
+	})
+	args = proc.Args[1:]
+	restPort := mustFlagPort(t, args, "--admin-port")
+	grpcPort := mustFlagPort(t, args, "--grpc-port")
+	quicPort := mustFlagPort(t, args, "--quic-port")
+	mcpPort := mustFlagPort(t, args, "--mcp-port")
 	clientCert, clientKey := initAndUnsealBarrier(t, ca, restPort, passphrase)
 
 	waitForHealthy(t, dataDir, 60*time.Second)
@@ -807,7 +814,7 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 
 	// Admission comes first: the joiner exits if it sees no leader within
 	// its fixed internal budget -- see startJoiningSelfIssuedCANode.
-	out, err = runCLIProto(t, nodes[0], multiProtocols[0], "admin", "member", "add", joinerAddr,
+	out, err = runMemberAddWhenAdvertised(t, nodes[0], multiProtocols[0], joinerAddr,
 		"--shard-id", "1", "--replica-id", "3", "--identity", joinerIdentity)
 	if err != nil {
 		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: admin member add %s: %v\noutput: %s", joinerAddr, err, out)
@@ -830,4 +837,31 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	waitForVolumePoolReady(t, adminClient, listeners[0].restPort, "default", len(nodes), 60*time.Second)
 
 	return nodes
+}
+
+// memberAddUnadvertisedRefusal is the text of featuregate's
+// UnsupportedReplicaError: the founder refuses to add a replica on a node
+// whose feature advertisement is not yet live.
+const memberAddUnadvertisedRefusal = "no live feature advertisement from that node"
+
+// runMemberAddWhenAdvertised runs `admin member add` with args through node
+// over proto, acting as the operator who retries the featuregate refusal
+// once the joiner advertises. Advertisements refresh every
+// featuregate.DefaultRefreshInterval, so it retries that refusal alone for
+// twelve intervals, polling five times per interval, and returns any other
+// outcome at once.
+func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
+	t.Helper()
+	cmd := append([]string{"admin", "member", "add"}, args...)
+	var out string
+	var err error
+	pollUntil(12*featuregate.DefaultRefreshInterval, featuregate.DefaultRefreshInterval/5, func() bool {
+		out, err = runCLIProto(t, node, proto, cmd...)
+		if err == nil || !strings.Contains(out, memberAddUnadvertisedRefusal) {
+			return true
+		}
+		t.Logf("[%s] %s refused until the joiner advertises, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
+		return false
+	})
+	return out, err
 }

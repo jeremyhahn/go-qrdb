@@ -1,6 +1,6 @@
 # Deployment — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -106,8 +106,10 @@ has a single owner in the code:
   server. `cmd/qrdbd` starts it on the first node during TLS resolution and on
   every other member after start, wherever the node holds qrdb's self-issued
   cluster CA.
-- **Noise NK member join**: `lifecycle.StartClusterJoin` →
-  `clusterenroll.JoinServer`, when `cluster_join.enabled` is set.
+- **Member join** (Noise NK or P-256 AES-GCM):
+  `lifecycle.StartClusterJoin` → `clusterenroll.StartJoinServer`, on
+  `cluster_join.listen_host` and `cluster_join.listen_port`, when
+  `cluster_join.enabled` is set.
 
 ## Trust boundaries
 
@@ -175,14 +177,16 @@ non-root user lose access to `qrdbd`'s entries.
 
 go-quicraft serves a lease read from the leader's lease, which runs on the
 leader's monotonic clock from the time it sent a heartbeat round, for
-`ElectionRTT - 2` ticks less 1 % (`leaseDriftDivisor`). The followers' vote
-denial runs on their own clocks and their own `ElectionRTT`, so the lease is
-safe only when:
+`ElectionRTT - 2` ticks (`RTTMillisecond` each) less `MaxClockDrift` of that
+span. qrdb leaves `MaxClockDrift` at its 1 % default. Each follower's heartbeat
+acknowledgement promises a vote window on its own clock, and the leader counts
+an acknowledgement toward the lease only when that window covers the lease. So:
 
-- the clock rate drift between replicas stays under 1 %, which chrony on every
-  replica provides; and
-- every replica runs the same `ElectionRTT` and tick interval
-  (`RTTMillisecond`).
+- the lease is safe only while the clock rate drift between replicas stays
+  under 1 %, which chrony on every replica provides; and
+- the lease is fast only when every replica runs the same `ElectionRTT`,
+  `RTTMillisecond` and `raft.lease_read`: a follower that promises a shorter
+  window backs no lease.
 
 A wall-clock step does not affect the lease. When the lease is out the read
 falls back to the heartbeat quorum round. [user.md](user.md#keep-replica-clocks-disciplined)

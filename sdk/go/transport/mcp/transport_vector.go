@@ -43,6 +43,14 @@ type serverCreateNamespaceResponse struct {
 	Success   bool   `json:"Success"`
 }
 
+// serverUpdateNamespaceResponse mirrors service.UpdateNamespaceResponse.
+type serverUpdateNamespaceResponse struct {
+	Namespace       string `json:"Namespace"`
+	RequiresRebuild bool   `json:"RequiresRebuild"`
+	Timestamp       int64  `json:"Timestamp"`
+	Success         bool   `json:"Success"`
+}
+
 // serverDeleteNamespaceResponse mirrors service.DeleteNamespaceResponse.
 type serverDeleteNamespaceResponse struct {
 	Success        bool   `json:"Success"`
@@ -303,7 +311,7 @@ func serverNamespaceInfoToTransport(n *serverNamespaceInfo) *transport.Namespace
 		Dimension:      n.Dimension,
 		VectorCount:    n.VectorCount,
 		DistanceMetric: n.DistanceMetric,
-		IndexType:      n.IndexType,
+		IndexType:      transport.ParseVectorIndexType(n.IndexType),
 		IndexConfig:    n.IndexConfig,
 		Metadata:       n.Metadata,
 		CreatedAt:      n.CreatedAt,
@@ -357,6 +365,50 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 		Dimension: raw.Dimension,
 		Timestamp: raw.Timestamp,
 		Success:   raw.Success,
+	}, nil
+}
+
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place through the qrdb_vector_update_namespace tool, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{"namespace": req.Namespace}
+	if req.Dimension != 0 {
+		args["dimension"] = req.Dimension
+	}
+	if len(req.IndexConfig) > 0 {
+		data, err := json.Marshal(req.IndexConfig)
+		if err != nil {
+			return nil, &transport.RequestError{Method: "UpdateNamespace", Err: &jsonDecodeError{Err: err}}
+		}
+		args["index_config"] = string(data)
+	}
+	if len(req.Metadata) > 0 {
+		data, err := json.Marshal(req.Metadata)
+		if err != nil {
+			return nil, &transport.RequestError{Method: "UpdateNamespace", Err: &jsonDecodeError{Err: err}}
+		}
+		args["metadata"] = string(data)
+	}
+
+	text, err := t.callTool(ctx, "qrdb_vector_update_namespace", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverUpdateNamespaceResponse
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "UpdateNamespace", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.UpdateNamespaceResponse{
+		Namespace:       raw.Namespace,
+		RequiresRebuild: raw.RequiresRebuild,
+		Timestamp:       raw.Timestamp,
+		Success:         raw.Success,
 	}, nil
 }
 
@@ -448,13 +500,17 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "GetNamespaceInfo", Err: &jsonDecodeError{Err: jsonErr}}
 	}
+	metric, err := transport.ParseDistanceMetric(raw.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 
 	return &transport.GetNamespaceInfoResponse{
 		Namespace:      raw.Namespace,
 		Dimension:      raw.Dimension,
 		VectorCount:    raw.VectorCount,
-		DistanceMetric: raw.DistanceMetric,
-		IndexType:      raw.IndexType,
+		DistanceMetric: metric,
+		IndexType:      transport.ParseVectorIndexType(raw.IndexType),
 		IndexConfig:    raw.IndexConfig,
 		Metadata:       raw.Metadata,
 		CreatedAt:      raw.CreatedAt,
@@ -1079,7 +1135,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	return &transport.GetIndexStatsResponse{
 		Namespace:         raw.Namespace,
-		IndexType:         raw.IndexType,
+		IndexType:         transport.ParseVectorIndexType(raw.IndexType),
 		VectorCount:       raw.VectorCount,
 		Dimension:         raw.Dimension,
 		IndexSizeBytes:    raw.IndexSizeBytes,

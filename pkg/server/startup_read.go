@@ -44,8 +44,8 @@ const StartupWaitReportInterval = 5 * time.Second
 type StartupRead struct {
 	// Op names the read in its error and in the boot-failure log line.
 	Op string
-	// Budget is the startup deadline, measured from the first attempt. A
-	// budget of zero still makes one attempt.
+	// Budget is the startup deadline, measured from the first attempt over
+	// the time Counts counts. A budget of zero still makes one attempt.
 	Budget time.Duration
 	// AttemptTimeout bounds each attempt; zero means
 	// StartupReadAttemptTimeout. No attempt runs past the startup deadline.
@@ -57,6 +57,12 @@ type StartupRead struct {
 	// startup read does: quicraft.ErrReadIndexNotReady and an attempt that
 	// hit its bound. Nil adds none.
 	Retryable func(error) bool
+	// Counts reports whether the wait counts against Budget at this moment.
+	// It is asked before the first attempt and after each attempt that
+	// failed with a transient; the stretch between two asks counts only when
+	// both say so, and the deadline moves out by every other stretch. Nil
+	// counts all of the wait.
+	Counts func(context.Context) bool
 	// ReportInterval paces the progress lines of a read still retrying; zero
 	// means StartupWaitReportInterval.
 	ReportInterval time.Duration
@@ -96,6 +102,7 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 	}
 	start := time.Now()
 	giveUpAt := start.Add(r.Budget)
+	counted, counting := start, r.Counts == nil || r.Counts(ctx)
 	failure := &StartupReadError{Op: r.Op, Budget: r.Budget, AttemptTimeout: timeout}
 	var progress atomic.Pointer[StartupReadError]
 	defer reportStartupRead(logger, r.Op, r.Budget, report, start, &progress)()
@@ -124,6 +131,15 @@ func RunStartupRead[T any](ctx context.Context, r StartupRead, read func(context
 			return v, err
 		}
 		now := time.Now()
+		if r.Counts != nil {
+			was := counting
+			if counting = r.Counts(ctx); !was || !counting {
+				// The probe's own time does not count either.
+				now = time.Now()
+				giveUpAt = giveUpAt.Add(now.Sub(counted))
+			}
+		}
+		counted = now
 		if !now.Before(giveUpAt) {
 			logger.Error("startup read did not succeed before its deadline",
 				slog.String("op", r.Op),

@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,8 +86,8 @@ func TestManager_Create_DataDir_ReservedSubdir(t *testing.T) {
 }
 
 // TestManager_Create_DataDir_OwnCatalogDir verifies that a database cannot
-// point its own DataDir at its own catalog directory (meta.json + barrier
-// metadata store), which would let application data collide with barrier
+// point its own DataDir at its own catalog directory (its barrier metadata
+// store), which would let application data collide with barrier
 // bootstrap key material.
 func TestManager_Create_DataDir_OwnCatalogDir(t *testing.T) {
 	mgr := newTestManager(t)
@@ -94,7 +95,7 @@ func TestManager_Create_DataDir_OwnCatalogDir(t *testing.T) {
 
 	name := "self-catalog-db"
 	cfg := validMemoryConfig(name)
-	cfg.DataDir = mgr.dbDir(name)
+	cfg.DataDir = mgr.dbDir("", name)
 
 	_, err := mgr.Create(cfg)
 	if err == nil {
@@ -174,7 +175,7 @@ func TestManager_Create_DataDir_ConflictsWithOtherDatabase(t *testing.T) {
 
 // TestManager_Create_DataDir_ConflictsWithOtherDatabase_DbDir verifies that
 // a new database's DataDir cannot be pointed at another database's catalog
-// directory (dbDir, holding meta.json and barrier metadata) even when that
+// directory (dbDir, holding its barrier metadata) even when that
 // database used the package-computed default data path (no custom DataDir
 // of its own).
 func TestManager_Create_DataDir_ConflictsWithOtherDatabase_DbDir(t *testing.T) {
@@ -186,7 +187,7 @@ func TestManager_Create_DataDir_ConflictsWithOtherDatabase_DbDir(t *testing.T) {
 	}
 
 	attacker := validMemoryConfig("attacker-dbdir-db")
-	attacker.DataDir = mgr.dbDir("default-path-db")
+	attacker.DataDir = mgr.dbDir("", "default-path-db")
 
 	_, err := mgr.Create(attacker)
 	if err == nil {
@@ -251,31 +252,31 @@ func TestManager_Create_DataDir_SymlinkEscape(t *testing.T) {
 // silently trusting it.
 func TestManager_Open_DataDir_RevalidatesReservedPath(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(nil, dataDir)
+	mgr := newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Create normally first so the database's catalog directory exists,
 	// then simulate on-disk metadata tampering (or a pre-validation-era
-	// record) by overwriting meta.json with a reserved-path DataDir.
+	// record) by overwriting its catalog record with a reserved-path DataDir.
 	if _, err := mgr.Create(validMemoryConfig("tampered-datadir-db")); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	mgr = NewManager(nil, dataDir)
+	mgr = newCatalogManager(nil, dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	meta := DatabaseMeta{
 		Name:    "tampered-datadir-db",
 		Backend: BackendMemory,
-		DataDir: filepath.Join(dataDir, databasesDir), // the reserved catalog dir
+		DataDir: filepath.Join(dataDir, databasesDir), // the reserved databases root
 	}
-	if err := mgr.writeMeta(mgr.dbDir("tampered-datadir-db"), meta); err != nil {
-		t.Fatalf("writeMeta: %v", err)
+	if err := testCatalogFor(mgr.dataDir).Update(context.Background(), meta.TenantID, meta.Name, meta.Incarnation, replaceRecord(meta)); err != nil {
+		t.Fatalf("catalog Update: %v", err)
 	}
 
-	_, err := mgr.Open("tampered-datadir-db")
+	_, err := mgr.Open(context.Background(), "", "tampered-datadir-db")
 	if err == nil {
 		t.Fatal("Open() with a tampered reserved-path DataDir = nil, want *DataDirReservedPathError")
 	}
@@ -291,7 +292,7 @@ func TestManager_Create_DataDir_Empty_AlwaysValid(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	if err := mgr.validateDataDir("any-db", ""); err != nil {
+	if err := mgr.validateDataDir("", "any-db", ""); err != nil {
 		t.Errorf("validateDataDir(\"\") returned unexpected error: %v", err)
 	}
 }

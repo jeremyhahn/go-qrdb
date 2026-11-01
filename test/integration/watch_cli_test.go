@@ -35,20 +35,15 @@
 // event-delivery waits below poll with a generous shared timeout rather
 // than asserting a fixed latency.
 //
-// Watch cancellation: `qrdb watch`'s RunE (cmd/qrdb/watch.go) is built on
-// cmd.Context(), and cmd/qrdb/main.go calls the bare rootCmd.Execute() (not
-// ExecuteContext), so that context is never wired to OS signals or to the
-// root --timeout flag -- confirmed empirically: `qrdb watch <key> --timeout
-// 3s` only actually stops the stream on REST (whose SSE transport applies
-// an http.Client timeout to the whole request); on gRPC/QUIC/MCP/Unix the
-// process hangs past the flag's deadline until something else closes the
-// connection (see the transport-parity finding reported alongside this
-// file). Because of that inconsistency, this file does not use --timeout to
-// test cancellation. Instead it verifies the property that IS both
-// meaningful and consistent across every transport: the CLI process
-// terminates promptly (no hang, no leaked connection) when the operator
-// stops it (SIGTERM), both after events have been delivered and while still
-// idle with no events seen yet.
+// Watch cancellation: `qrdb watch`'s RunE (cmd/qrdb/watch.go) bounds the
+// whole watch by the persistent --timeout flag and ends it on SIGINT/SIGTERM
+// (signal.NotifyContext in cmd/qrdb/main.go), exiting 0 either way. A
+// background watch here must outlive every put its test issues, so
+// startBackgroundWatch passes --timeout 0 and the test ends the process
+// itself. This file verifies that the CLI process terminates promptly (no
+// hang, no leaked connection) when the operator stops it (SIGTERM), both
+// after events have been delivered and while still idle with no events seen
+// yet.
 //
 // Product bugs found while originally writing this file (reported, not
 // worked around at the time -- see each site below for the precise
@@ -84,9 +79,9 @@
 //     not required to observe the fix -- see TestWatchReplay_CLI_MCP_NoLoss
 //     for the no-retry proof), but the loss it was originally written to
 //     tolerate no longer occurs.
-//  3. --timeout does not apply uniformly to `qrdb watch` across transports:
-//     see the cancellation paragraph above. Unaffected by the replay fix and
-//     still true; not covered by the new tests.
+//  3. --timeout used to bound `qrdb watch` on REST alone. It now bounds the
+//     watch on every transport (cmd/qrdb/watch.go), which is why
+//     startBackgroundWatch overrides it.
 package integration_test
 
 import (
@@ -99,6 +94,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // watchCancelGrace is the maximum time a background `qrdb watch` process
@@ -115,6 +112,27 @@ const watchCancelGrace = 5 * time.Second
 // 1-second per-poll tool timeout, see sdk/go/transport/mcp/
 // transport_watch.go), the slowest of the five mechanisms.
 const watchEventGrace = 20 * time.Second
+
+// watchOutputPollCadence is how often waitForWatchOutput re-reads a
+// background watch's captured output.
+const watchOutputPollCadence = 150 * time.Millisecond
+
+// mcpWatchPollInterval mirrors watchPollInterval in
+// sdk/go/transport/mcp/transport_watch.go: the pause between two qrdb_watch
+// tool calls.
+const mcpWatchPollInterval = 500 * time.Millisecond
+
+// mcpNoLossDeliveryBound is the longest a committed mutation can take to reach
+// a cursor-based MCP watch's output when nothing is lost. The qrdb_watch call
+// in flight when the mutation commits may return without it; one
+// mcpWatchPollInterval later the next call replays it from the cursor. Each
+// call is one request bounded by the transport's per-call timeout, which is
+// transport.DefaultConfig's because startBackgroundWatch passes --timeout 0,
+// and the call's server-side collection window lies inside that bound. So the
+// bound is two calls, the pause between them and one output check. A loaded
+// host may use all of it; a lost mutation is never observed however long it
+// is given.
+var mcpNoLossDeliveryBound = 2*transport.DefaultConfig().Timeout + mcpWatchPollInterval + watchOutputPollCadence
 
 // watchSubscribeGrace is a fixed pause after starting the idle background
 // watch, before it is signaled, so the SIGTERM lands while the process is
@@ -197,7 +215,13 @@ func (b *bgWatch) output() string {
 // explicitly calls stop().
 func startBackgroundWatch(t *testing.T, node *multiProtoNode, proto multiProtocol, watchArgs ...string) *bgWatch {
 	t.Helper()
-	full := append(append([]string{}, node.cliArgsFor(proto)...), append([]string{"watch"}, watchArgs...)...)
+	// cmd/qrdb/watch.go ends a watch, silently and with exit 0, when the
+	// persistent --timeout elapses. cliArgsFor's --timeout bounds one request,
+	// not a watch that lives for the whole test, so it is overridden (the last
+	// --timeout wins) with 0, which disables that bound: stop() ends the
+	// process instead.
+	full := append(append([]string{}, node.cliArgsFor(proto)...), "--timeout", "0", "watch")
+	full = append(full, watchArgs...)
 	cmd := exec.Command(node.cli, full...)
 	buf := &watchOutputBuf{}
 	cmd.Stdout = buf
@@ -216,7 +240,7 @@ func startBackgroundWatch(t *testing.T, node *multiProtoNode, proto multiProtoco
 // waitForWatchOutput polls b's captured output until it contains want or
 // timeout elapses, returning whether it was found.
 func waitForWatchOutput(b *bgWatch, timeout time.Duration, want string) bool {
-	return pollUntil(timeout, 150*time.Millisecond, func() bool {
+	return pollUntil(timeout, watchOutputPollCadence, func() bool {
 		return strings.Contains(b.output(), want)
 	})
 }
@@ -226,23 +250,12 @@ func waitForWatchOutput(b *bgWatch, timeout time.Duration, want string) bool {
 // does not appear within a short per-attempt window, until timeout elapses
 // overall.
 //
-// A single put-then-wait would be sufficient for REST/gRPC/QUIC/Unix, whose
-// Watch/WatchPrefix implementations hold one always-live connection with an
-// internally buffered event channel (pkg/watch/watcher.go's
-// defaultEventBufferSize), so no event delivered while the watcher is
-// registered can be missed. MCP cannot make that guarantee: it has no
-// native streaming, so its SDK transport (sdk/go/transport/mcp/
-// transport_watch.go) polls by creating a brand-new bounded watcher per
-// poll cycle (~1s collection window, see pkg/api/mcp/tools_watch.go's
-// defaultWatchTimeout/timeout_seconds) and tearing it down between cycles
-// (~500ms pollInterval gap). No revision-indexed replay backfills that
-// gap -- the entire start-revision/replay mechanism is a confirmed no-op
-// (see the "known bugs" note atop this file) -- so a put that lands in the
-// gap between two MCP poll cycles is silently and permanently lost. Retried
-// puts give a put landing inside one of the ~67%-duty-cycle live windows a
-// fair, bounded number of chances, without weakening the assertion for the
-// four transports that have no such gap (their very first attempt always
-// succeeds).
+// A single put-then-wait is sufficient on every transport: REST, gRPC, QUIC
+// and Unix hold one always-live stream, and MCP's cursor-based poll replays
+// from the last delivered revision, so a put landing between two polls is
+// delivered by the next one (TestWatchReplay_CLI_MCP_NoLoss proves it without
+// retries). The retry is a conservative choice for the watch-flag coverage
+// that calls this, not a tolerance for loss: it reissues an idempotent put.
 func putUntilObserved(t *testing.T, node *multiProtoNode, proto multiProtocol, w *bgWatch, key, value string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -807,10 +820,10 @@ func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
 		if out, err := runCLIProto(t, node, proto, "kv", "put", key, value); err != nil {
 			t.Fatalf("[mcp] kv put %s=%s (attempt %d/%d): %v\noutput: %s", key, value, i+1, attempts, err, out)
 		}
-		if !waitForWatchOutput(w, watchEventGrace, value) {
+		if !waitForWatchOutput(w, mcpNoLossDeliveryBound, value) {
 			t.Fatalf("[mcp] watch %s: single-shot put %q (attempt %d/%d, NO retry) was not observed within %v -- "+
 				"the cursor-based poll should make every mutation gap-free; captured output so far: %q",
-				key, value, i+1, attempts, watchEventGrace, w.output())
+				key, value, i+1, attempts, mcpNoLossDeliveryBound, w.output())
 		}
 		// Stagger successive puts so they land at different phases of the
 		// poll cycle (pollInterval 500ms + ~1s collection window), covering
@@ -823,4 +836,41 @@ func TestWatchReplay_CLI_MCP_NoLoss(t *testing.T) {
 	if d := w.stop(); d > watchCancelGrace {
 		t.Fatalf("[mcp] watch %s: SIGTERM to exit took %v, want <= %v", key, d, watchCancelGrace)
 	}
+}
+
+// TestWatch_CLI_MaxWatchersRefusesPastTheCap starts qrdbd with
+// watch.max_watchers 1, holds the one slot with a subscribed `qrdb watch`
+// over REST, and proves every transport then refuses a further watch with
+// the watcher-limit error instead of opening it. The cap is node-wide, so one
+// holder fills it for all five transports; the node's own watchers do not
+// count against it, which the node coming up healthy at a cap of 1 shows.
+func TestWatch_CLI_MaxWatchersRefusesPastTheCap(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", "watch:\n  max_watchers: 1\n")
+
+	holderProto := multiProtocol{name: "rest", scheme: "https"}
+	holdKey := "watchcap/held"
+	holder := startBackgroundWatch(t, node, holderProto, holdKey)
+	// An observed event proves the holder is subscribed, so it has the slot.
+	putUntilObserved(t, node, holderProto, holder, holdKey, "held", watchEventGrace)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			key := "watchcap/" + proto.name + "/refused"
+			out, err := runCLIProto(t, node, proto, "watch", key, "--timeout", watchReplayTimeout)
+			if !strings.Contains(strings.ToLower(out), "watcher limit reached") {
+				t.Fatalf("[%s] watch %s past max_watchers 1: err = %v, output = %q, want the watcher-limit refusal",
+					proto.name, key, err, out)
+			}
+			// REST refuses before the event stream opens: a non-zero exit, as
+			// for any request-time watch error (see the compacted case).
+			if proto.name == "rest" && err == nil {
+				t.Fatalf("[rest] watch %s past max_watchers 1 exited 0, want a non-zero exit; output: %s", key, out)
+			}
+		})
+	}
+
+	// The holder is untouched by the refusals.
+	putUntilObserved(t, node, holderProto, holder, holdKey, "still-held", watchEventGrace)
 }

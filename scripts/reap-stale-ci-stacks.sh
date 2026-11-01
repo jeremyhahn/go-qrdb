@@ -148,6 +148,27 @@ docker ps -a --filter "name=^$prefix" \
     fi
   done
 
+# CUSTOMIZE (go-qrdb, DS-4701): scripts/ci-registry.sh tags the image a
+# toolchain hold holds <prefix>hold:<hold>, so a rebuild that moves the
+# content-hash tag cannot drop the image the job's stages run by ID. A hold
+# tag whose hold container is gone belongs to a job that died before its
+# teardown (its stale hold went above, or a teardown untagged its own first):
+# it is removed, never forced, so the image goes only when no other name or
+# container keeps it. The hold is created before its tag and removed before
+# it, so a live hold's tag always has its container.
+holdtags=0
+for ref in $(docker images --filter "reference=${prefix}hold" --format '{{.Repository}}:{{.Tag}}'); do
+  case $ref in "${prefix}hold:"*) ;; *) continue ;; esac
+  name=${ref#"${prefix}hold:"}
+  if docker container inspect "$name" >/dev/null 2>&1; then
+    echo "keep  hold tag $ref (hold $name exists)"
+    continue
+  fi
+  echo "reap  hold tag $ref (hold $name is gone)"
+  if run docker image rm "$ref"; then holdtags=$((holdtags + 1)); else echo "warn  hold tag $ref not removed"; fi
+done
+# CUSTOMIZE (go-qrdb) end.
+
 # Content-addressed integration images (v2, above).
 images=0
 for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Repository}}:{{.Tag}}'); do
@@ -199,5 +220,5 @@ while read -r repo tag digest; do
 done < <(docker images --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}')
 
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi
-echo "reaper: $reaped compose project(s) and $images image(s) $done_as for prefix '$prefix'"
+echo "reaper: $reaped compose project(s), $images image(s) and $holdtags hold tag(s) $done_as for prefix '$prefix'"
 exit 0

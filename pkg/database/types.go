@@ -394,6 +394,11 @@ const (
 	// when the drop completes (the catalog entry is removed) or a failed
 	// drop rolls the fence back so the drop can be retried.
 	StatusDropping StatusType = "dropping"
+
+	// StatusRemote indicates the database is held by another node (see
+	// DatabaseMeta.OwnerNode): this node opens no store for it and forwards its
+	// requests to the owner. Only a listing reports it.
+	StatusRemote StatusType = "remote"
 )
 
 // ---------------------------------------------------------------------------
@@ -672,7 +677,7 @@ func (c *DatabaseConfig) BarrierOnDataPath() bool {
 // Metadata
 // ---------------------------------------------------------------------------
 
-// DatabaseMeta is the on-disk metadata stored in meta.json for each database.
+// DatabaseMeta is a database's record in the Catalog.
 type DatabaseMeta struct {
 	TenantID     string                    `json:"tenant_id,omitempty"`
 	Name         string                    `json:"name"`
@@ -699,10 +704,28 @@ type DatabaseMeta struct {
 	// than stuck.
 	Dropping bool `json:"dropping,omitempty"`
 
+	// DropClaim identifies the drop that set Dropping: a random value each
+	// Manager.Drop call writes with the fence, in one compare-and-swap, so
+	// the record names one drop however many nodes attempt one. Only that
+	// drop removes the record or rolls the fence back; a drop whose claim
+	// was taken over -- a retry, on any node, of a drop that crashed or
+	// stalled -- leaves both to the drop that holds it. Empty while
+	// Dropping is false.
+	DropClaim string `json:"drop_claim,omitempty"`
+
 	// Incarnation is the database's incarnation (see
 	// Database.Incarnation). Absent in metadata written before incarnations
 	// existed, which reopens the database with an empty one.
 	Incarnation string `json:"incarnation,omitempty"`
+
+	// OwnerNode is the node that holds a database whose backend is not raft:
+	// the identity (Manager.SetLocalNode) of the node that created it. Only
+	// that node opens the database's store; every other node forwards the
+	// database's requests to it (OD-2). Empty for a raft database, whose
+	// placement names its replicas, for a provisioned database, which every
+	// node holds for itself, and for a database created where no node
+	// identity is set (a standalone node); such a record opens on any node.
+	OwnerNode string `json:"owner_node,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -731,4 +754,7 @@ type DatabaseInfo struct {
 	// read for its scheduled-compaction policy, so Compaction is unknown --
 	// not off. The rest of the information stands.
 	CompactionUnavailable bool `json:"compaction_unavailable,omitempty"`
+	// OwnerNode is the node that holds the database (DatabaseMeta.OwnerNode); empty
+	// when any node opens it.
+	OwnerNode string `json:"owner_node,omitempty"`
 }

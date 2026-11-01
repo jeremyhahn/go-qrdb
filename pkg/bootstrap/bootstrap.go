@@ -646,6 +646,11 @@ type TenantProvisionResult struct {
 // binding; PendingAdmins for a tenant whose identity records are behind its
 // barrier. Barriers and CA are unused.
 func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies) (*TenantProvisionResult, error) {
+	// The SO's PIN is held only for this call: destroyed on every return,
+	// once committed, on a failure, and on a refused request.
+	if cfg.SO != nil && cfg.SO.PIN != nil {
+		defer cfg.SO.PIN.Destroy()
+	}
 	if deps.Logger == nil {
 		return nil, &MissingLoggerError{}
 	}

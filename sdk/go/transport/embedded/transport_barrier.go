@@ -653,6 +653,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	return t.claimBegin(ctx, seal.DomainUnseal, req)
 }
 
@@ -665,6 +668,9 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 	}
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	return t.claimComplete(ctx, seal.DomainUnseal, req)
 }
@@ -679,6 +685,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	return t.claimBegin(ctx, seal.DomainRecovery, req)
 }
 
@@ -691,6 +700,9 @@ func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transpo
 	}
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	return t.claimComplete(ctx, seal.DomainRecovery, req)
 }

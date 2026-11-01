@@ -408,10 +408,11 @@ func runIsolationRaftRebalanceMove(t *testing.T, submitFromNonMember bool) {
 
 	// The system tenant can no longer provision records inside another
 	// tenant's IAM at all (owner ruling, 2026-10-01), so this authenticates
-	// as the tenant's own onboarded admin, once awaitTenantAdminID sees
-	// that account completed.
+	// as the tenant's own onboarded admin; its built-in Admin role lets it seat a second account with
+	// Admin and Operator (seatTenantProvisioner), which creates the role
+	// from what it holds (the grant rule, go-qrdb#1278).
 	raftAdminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody)
-	awaitTenantAdminID(t, leaderPort, rebalMoveTenantID, raftAdminClient)
+	raftAdminClient = seatTenantProvisioner(t, ca, leaderPort, rebalMoveTenantID, raftAdminClient, false)
 	roleBody, roleStatus := iraftAPIPost(t, raftAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{

@@ -78,6 +78,10 @@ func TestBarrierSecretCarriers(t *testing.T) {
 		{"TenantQuorumSubmit nil", (*TenantQuorumSubmitRequest)(nil), ""},
 		{"TenantQuorumSubmit empty", &TenantQuorumSubmitRequest{TenantID: "acme"}, ""},
 		{"TenantQuorumSubmit share", &TenantQuorumSubmitRequest{Share: b}, BarrierSecretShare},
+		{"CreateTenant nil", (*CreateTenantRequest)(nil), ""},
+		{"CreateTenant without an SO", &CreateTenantRequest{ID: "acme", AdminUsername: "admin"}, ""},
+		{"CreateTenant SO without a PIN", &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so"}, ""},
+		{"CreateTenant SO PIN", &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: testSecret}, soPINSecret},
 		{"DatabaseQuorumSubmit nil", (*DatabaseQuorumSubmitRequest)(nil), ""},
 		{"DatabaseQuorumSubmit empty", &DatabaseQuorumSubmitRequest{Database: "db1"}, ""},
 		{"DatabaseQuorumSubmit share", &DatabaseQuorumSubmitRequest{QuorumSubmitRequest: QuorumSubmitRequest{Share: b}}, BarrierSecretShare},
@@ -139,6 +143,53 @@ func TestRequireTLSForBarrierSecret_SOPINKeepsItsError(t *testing.T) {
 	var tlsErr *BarrierSecretRequiresTLSError
 	if errors.As(err, &tlsErr) {
 		t.Fatal("an SO PIN is reported as a barrier secret")
+	}
+}
+
+// TestRequireTLSForBarrierSecret_CreateTenantSOPIN: tenant creation that
+// enrols an SO with a PIN is refused over plaintext with the SO PIN's error,
+// and the same request without a PIN, or over TLS, is let through.
+func TestRequireTLSForBarrierSecret_CreateTenantSOPIN(t *testing.T) {
+	withPIN := &CreateTenantRequest{ID: "acme", AdminUsername: "admin", SOUsername: "so", SOPin: testSecret}
+	err := RequireTLSForBarrierSecret("grpc", false, withPIN)
+	var soErr *SOPINRequiresTLSError
+	if !errors.As(err, &soErr) || soErr.Transport != "grpc" {
+		t.Fatalf("err = %v, want *SOPINRequiresTLSError from grpc", err)
+	}
+	if strings.Contains(err.Error(), testSecret) {
+		t.Fatalf("message %q names the PIN", err)
+	}
+	if err := RequireTLSForBarrierSecret("grpc", true, withPIN); err != nil {
+		t.Fatalf("SO PIN over TLS: %v", err)
+	}
+	if err := RequireTLSForBarrierSecret("grpc", false, &CreateTenantRequest{ID: "acme", AdminUsername: "admin"}); err != nil {
+		t.Fatalf("tenant creation without a PIN over plaintext: %v", err)
+	}
+}
+
+// TestGuardBarrierSecret_CreateTenantSOPIN: over TLS the SO PIN marks the
+// context, so the round tripper refuses a plaintext or foreign-host redirect;
+// a request without a PIN leaves the context unmarked.
+func TestGuardBarrierSecret_CreateTenantSOPIN(t *testing.T) {
+	ctx := context.Background()
+	marked, err := GuardBarrierSecret(ctx, "rest", true, &CreateTenantRequest{ID: "acme", SOPin: testSecret})
+	if err != nil {
+		t.Fatalf("GuardBarrierSecret over TLS: %v", err)
+	}
+	if kind, ok := barrierSecretInContext(marked); !ok || kind != soPINSecret {
+		t.Fatalf("context mark = %q, %v; want the SO PIN", kind, ok)
+	}
+	unmarked, err := GuardBarrierSecret(ctx, "mcp", false, &CreateTenantRequest{ID: "acme"})
+	if err != nil {
+		t.Fatalf("GuardBarrierSecret without a PIN: %v", err)
+	}
+	if _, ok := barrierSecretInContext(unmarked); ok {
+		t.Fatal("tenant creation without a PIN marks its context")
+	}
+	_, err = GuardBarrierSecret(ctx, "mcp", false, &CreateTenantRequest{ID: "acme", SOPin: testSecret})
+	var soErr *SOPINRequiresTLSError
+	if !errors.As(err, &soErr) || soErr.Transport != "mcp" {
+		t.Fatalf("err = %v, want *SOPINRequiresTLSError from mcp", err)
 	}
 }
 

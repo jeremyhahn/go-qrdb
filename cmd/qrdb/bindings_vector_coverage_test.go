@@ -33,6 +33,10 @@ import (
 
 type noopVectorService struct{}
 
+func (s *noopVectorService) UpdateNamespace(_ context.Context, _ *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return &service.UpdateNamespaceResponse{}, nil
+}
+
 func (s *noopVectorService) CreateNamespace(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
 	return &service.CreateNamespaceResponse{}, nil
 }
@@ -46,7 +50,7 @@ func (s *noopVectorService) ListNamespaces(_ context.Context, _ *service.ListNam
 }
 
 func (s *noopVectorService) GetNamespaceInfo(_ context.Context, _ *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
-	return &service.GetNamespaceInfoResponse{}, nil
+	return &service.GetNamespaceInfoResponse{DistanceMetric: "L2"}, nil
 }
 
 func (s *noopVectorService) UpsertVector(_ context.Context, _ *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {

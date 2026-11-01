@@ -45,12 +45,12 @@ func TestBuildDataPlaneServices_EmptyPrefixOnlyForADedicatedKeyspace(t *testing.
 	ctx := context.Background()
 
 	var unsafe *service.CompactPrefixInvalidError
-	shared := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}).MVCC.(service.PrefixCompactor)
+	shared := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}).MVCC.(service.PrefixCompactor)
 	if err := shared.CompactPrefix(ctx, "", 1); !errors.As(err, &unsafe) {
 		t.Fatalf("a shared store's CompactPrefix(\"\") = %v, want *service.CompactPrefixInvalidError", err)
 	}
 
-	dedicated := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}, service.WithDedicatedKeyspace()).MVCC.(service.PrefixCompactor)
+	dedicated := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{}, service.WithDedicatedKeyspace()).MVCC.(service.PrefixCompactor)
 	if err := dedicated.CompactPrefix(ctx, "", 1); errors.As(err, &unsafe) {
 		t.Fatalf("a dedicated store refused the empty prefix: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestBuildDataPlaneServices_ImportSessionConfigWired(t *testing.T) {
 	t.Cleanup(hub.Close)
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{TenantID: "acme", Subject: "alice"})
 
-	svcs := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{MaxSessionsPerTenant: 1})
+	svcs := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{MaxSessionsPerTenant: 1}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{})
 	opts := service.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"}
 
 	if _, err := svcs.Batch.ImportBegin(ctx, opts); err != nil {
@@ -106,7 +106,7 @@ func TestBuildDataPlaneServices_ImportSession_LeaseExpiryReclaims(t *testing.T) 
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{TenantID: "acme", Subject: "alice"})
 
 	// The minimum TTL Lessor.Grant accepts (whole seconds, > 0).
-	svcs := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{SessionTTLSeconds: 1})
+	svcs := buildDataPlaneServices(host, 1, hub, qrdbconfig.ImportSessionConfig{SessionTTLSeconds: 1}, qrdbconfig.IndexConfig{}, qrdbconfig.TimeSeriesConfig{})
 
 	sessionID, err := svcs.Batch.ImportBegin(ctx, service.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"})
 	if err != nil {

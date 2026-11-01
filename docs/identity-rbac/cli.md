@@ -54,7 +54,10 @@ Creates a pending account in your own tenant -- or, given only `--username`,
 re-invites one still pending -- and returns a single-use enrolment token
 **exactly once**. Deliver it to the invited user out of band; they redeem it
 themselves with `qrdb enroll`. You never hold a credential for their
-account.
+account. A re-invite supersedes every token issued for the account before
+it: only the newest token redeems, and an earlier one is refused exactly as a
+spent token is. If two re-invites of one account race, one of them fails with
+an aborted error; run it again.
 
 ```bash
 qrdb users invite --username alice --email alice@acme.com --roles "$OPERATOR_ROLE_ID"
@@ -250,6 +253,23 @@ qrdb roles create --name readonly --tenant-id acme \
 Permission strings are validated against the registry; an unregistered one is
 refused.
 
+**A grantor may grant only permissions it holds.** `roles create` and
+`roles update` are refused with a permission denial when the role would carry
+any permission the caller does not hold in the role's tenant, a wildcard
+counting for what it covers. The tenant Admin holds no data-plane or
+key-custody permission, so it creates roles only within its own holdings:
+`--permissions "kv:get"` or `"keys:sign"` from a tenant Admin is refused. The
+example above is run by a principal that holds `kv:get`, `kv:list` and
+`kv:range`. A tenant Admin may write a role carrying its own tenant's database
+lifecycle (`databases:create`, `databases:read`, `databases:list`,
+`databases:update`, `databases:delete`, `databases:create_raft`,
+`databases:create_volume`, `databases:scale`, `databases:barrier_status`,
+`databases:seal`, `databases:unseal`) or `tenant_barrier:enable_encryption`,
+which it holds; for a role that also carries `kv:*`, it first gives a second
+account in its tenant the built-in `admin` and `operator` roles, and that
+account runs `roles create`. See
+[architecture.md](architecture.md#the-grant-rule).
+
 Requires `roles:create`. Under strict separation of duties
 (`auth.separation_of_duties`, always on in FIPS 140-3 mode) it additionally
 runs only as a separate Security Officer of the tenant: the tenant Admin is
@@ -299,6 +319,14 @@ qrdb roles unassign --user 1f2e... --role "$ROLE"
 
 **Both flags take IDs, not names.** This is the most common mistake in this
 group.
+
+Assigning a custom role is refused unless the assigner holds every permission
+the role carries. A built-in role is assigned to another account under its
+usual rules, which is how the tenant Admin gives the built-in `user` role, and
+its crypto-use duty, to the accounts that do the signing. No caller may assign
+itself a role, built-in or custom, that carries a permission it does not hold:
+`roles assign --user <your own id> --role <user>` from a tenant Admin is
+refused.
 
 Under strict separation of duties only the tenant's own Security Officer
 grants or revokes the `so` role, and no account may hold `so` together with
@@ -363,6 +391,7 @@ custom roles alone.
 | Flag | Meaning |
 |---|---|
 | `--tenant` | Tenant to reconcile. Defaults to the caller's own tenant. |
+| `--all-tenants` | Reconcile every live tenant in one pass, the system tenant first. Platform operator only; cannot be combined with `--tenant`. |
 
 ```bash
 qrdb roles reconcile --tenant acme
@@ -396,6 +425,41 @@ which holds `roles:create` and not `admin`, reconciles it.
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
 how you know to run it.
+
+#### `--all-tenants`
+
+After an upgrade that renamed or added a permission, the platform operator
+converges every tenant at once instead of asking each tenant's Admin:
+
+```bash
+qrdb roles reconcile --all-tenants
+```
+
+```
+Tenant system: built-in roles already current
+Tenant acme:
+  admin (5aee453e-…) updated
+    + certs:issue
+    - certs:generate
+Tenant vault: skipped (sealed): tenant barrier is sealed
+Tenant broken: FAILED: role store unavailable
+```
+
+Each tenant is reconciled independently. A tenant whose barrier is sealed, or
+that refuses the call, is listed as skipped and left for a later run. A tenant
+that fails is listed with its error and does not stop the pass; the command
+then exits non-zero naming every failed tenant. `--output json` and
+`--output yaml` print the same report as `tenants`, `skipped` and `failed`
+lists.
+
+Requires `roles:reconcile_all`, a cross-tenant permission held only by the
+system tenant's built-in Admin. A tenant's own Admin, or any other tenant
+principal, is refused even if it holds `roles:create`.
+
+A node upgraded from a build that predates `roles:reconcile_all` has a stored
+system Admin role without it. Run `qrdb roles reconcile` as the system Admin
+first; that converges the system tenant and grants the permission. Then run
+`--all-tenants`.
 
 ## ABAC policies
 
@@ -486,7 +550,8 @@ supported way to change them is `qrdb roles reconcile`, which converges them
 onto the build's own definitions rather than onto anything a caller supplies.
 
 A tenant's Admin creates and updates its tenant's custom roles (`roles create`,
-`roles update`); deleting a role stays with the Security Officer. Both verbs
+`roles update`) within its own holdings; deleting a role stays with the
+Security Officer. Both verbs
 act in the caller's own tenant only: `--tenant-id` naming another tenant, or
 `system`, is refused, and another tenant's role id is not found. A built-in
 role's name is reserved, so `roles create --name admin` is refused, and

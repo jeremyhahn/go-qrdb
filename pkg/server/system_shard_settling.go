@@ -22,11 +22,14 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// SystemShardSettleBudget bounds how long WhileSystemShardSettling waits out
-// the system shard settling.
+// SystemShardSettleBudget bounds how long WhileSystemShardSettling waits on
+// a system shard whose leader has committed in its term. The time without
+// such a leader does not count: the cluster is still forming, and that wait
+// runs for as long as the boot does.
 const SystemShardSettleBudget = 15 * time.Second
 
 // systemShardSettlePoll paces WhileSystemShardSettling's attempts.
@@ -34,10 +37,20 @@ const systemShardSettlePoll = 100 * time.Millisecond
 
 // WhileSystemShardSettling runs fn until it succeeds, fails with anything but
 // the system shard settling, ctx ends, or the settling outlasts
-// SystemShardSettleBudget. Settling is the ReadIndex warm-up of a freshly
-// elected leader, or an election in progress: a boot waited for a leader,
-// but a peer that restarts meanwhile -- every node in turn during a rolling
-// enable-encryption -- can take it away before the boot's next read.
+// SystemShardSettleBudget counted over the time the system shard has a
+// leader that has committed in its term. Settling is the ReadIndex warm-up of
+// a freshly elected leader, or an election in progress: a boot waited for a
+// leader, but a peer that restarts meanwhile -- every node in turn during a
+// rolling enable-encryption -- can take it away before the boot's next read.
+//
+// After each attempt that fails with a settling answer or is cut off
+// unanswered, leaders is asked whether the system shard has a leader that
+// has committed in its term (systemShardCommitted). While it has not, the
+// wait is the open-ended leader wait: it runs on under ctx, its progress
+// logged, and only a leader that has committed and still does not answer
+// within the budget fails the boot. A node does not exit because the
+// cluster is still forming (docs/decisions/startup-wait-cascade.md, option
+// A). A nil leaders counts all of the time.
 //
 // It is a startup read (RunStartupRead), and op names it. fn gets each
 // attempt's context, bounded by StartupReadAttemptTimeout, and a read in fn
@@ -48,19 +61,52 @@ const systemShardSettlePoll = 100 * time.Millisecond
 // fn is not run once ctx has ended: a read that does not itself consult ctx
 // -- an in-process one -- would otherwise let a boot its caller abandoned
 // carry on.
-func WhileSystemShardSettling(ctx context.Context, op string, fn func(context.Context) error) error {
+func WhileSystemShardSettling(ctx context.Context, leaders LeaderSource, op string, fn func(context.Context) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, err := RunStartupRead(ctx, StartupRead{
+	read := StartupRead{
 		Op:        op,
 		Budget:    SystemShardSettleBudget,
 		Delay:     systemShardSettlePoll,
 		Retryable: SystemShardSettling,
-	}, func(actx context.Context) (struct{}, error) {
+	}
+	if leaders != nil {
+		read.Counts = func(ctx context.Context) bool { return systemShardCommitted(ctx, leaders) }
+	}
+	_, err := RunStartupRead(ctx, read, func(actx context.Context) (struct{}, error) {
 		return struct{}{}, fn(actx)
 	})
 	return err
+}
+
+// systemShardCommitted reports whether the system shard has a leader that has
+// committed in its term: leaders knows one, and, when leaders can probe it, a
+// linearizable read answers. A leader without the probe is taken as
+// committed once known.
+func systemShardCommitted(ctx context.Context, leaders LeaderSource) bool {
+	if _, ok, err := leaders.LeaderID(shard.ShardKV); err != nil || !ok {
+		return false
+	}
+	var probe shardLeaderSource
+	switch s := leaders.(type) {
+	case shardLeaderSource:
+		probe = s
+	case *quicraft.Host:
+		probe = quicraftShardSource{host: s}
+	default:
+		return true
+	}
+	return probe.ReadReady(ctx, shard.ShardKV) == nil
+}
+
+// systemShardLeaders is host as a LeaderSource for WhileSystemShardSettling:
+// nil when there is no host, rather than an interface holding a nil pointer.
+func systemShardLeaders(host *quicraft.Host) LeaderSource {
+	if host == nil {
+		return nil
+	}
+	return host
 }
 
 // SystemShardSettling reports whether err is the system shard settling: the

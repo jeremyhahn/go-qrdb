@@ -107,3 +107,33 @@ func TestPrefixRangeEnd_Empty(t *testing.T) {
 		t.Errorf("prefixRangeEnd(nil) = %v, want nil", end)
 	}
 }
+
+func TestProtoToNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	got, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{
+		Namespace:      "ns",
+		Dimension:      4,
+		VectorCount:    3,
+		DistanceMetric: pb.DistanceMetric_DISTANCE_COSINE,
+		IndexType:      pb.VectorIndexType_INDEX_HNSW,
+		IndexConfig:    map[string]string{"ef_construction": "321"},
+		MetadataJson:   `{"owner":"team-a","rank":2}`,
+	})
+	if err != nil {
+		t.Fatalf("protoToNamespaceInfo: %v", err)
+	}
+	if got.Namespace != "ns" || got.Dimension != 4 || got.VectorCount != 3 || got.IndexType != transport.IndexHNSW {
+		t.Fatalf("got %+v", got)
+	}
+	if got.IndexConfig["ef_construction"] != "321" {
+		t.Fatalf("IndexConfig = %v, want ef_construction=321", got.IndexConfig)
+	}
+	if got.Metadata["owner"] != "team-a" || got.Metadata["rank"] != float64(2) {
+		t.Fatalf("Metadata = %v, want owner=team-a rank=2", got.Metadata)
+	}
+}
+
+func TestProtoToNamespaceInfo_InvalidMetadata(t *testing.T) {
+	if _, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{Namespace: "ns", MetadataJson: "{bad-json"}); err == nil {
+		t.Fatal("protoToNamespaceInfo accepted malformed metadata JSON")
+	}
+}

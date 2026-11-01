@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 )
 
 // ---------------------------------------------------------------------------
@@ -179,7 +180,7 @@ func TestStopPgSQL_ActiveServer(t *testing.T) {
 
 func TestStartPgSQL_WithDatabaseManager(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := database.NewManager(slog.Default(), dataDir)
+	mgr := databasetest.NewManager(slog.Default(), dataDir)
 	defer func() { _ = mgr.Close() }()
 
 	// Create a database so the manager-backed provider has something to serve.

@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -220,4 +221,19 @@ func TestMCP_Membership_RefusalsAndClosed(t *testing.T) {
 	requireClosed(t, err)
 	_, err = tr.ListPendingJoinRequests(ctx)
 	requireClosed(t, err)
+}
+
+func TestMCP_Membership_MintJoinTokenNilRequest(t *testing.T) {
+	admin := &membershipAdmin{mockAdminService: newMockAdminService()}
+	tr := connectMembership(t, admin)
+
+	_, err := tr.MintJoinToken(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "MintJoinToken" || !errors.As(err, &nre) {
+		t.Fatalf("MintJoinToken(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if len(admin.calls) != 0 {
+		t.Fatalf("a nil request reached the admin service: %v", admin.calls)
+	}
 }

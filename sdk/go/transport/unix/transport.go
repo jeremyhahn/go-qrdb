@@ -291,7 +291,9 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 		return nil
 	case err != nil && (reachableButUnauthorized(err) || reachableButSealed(err)):
 		return nil
-	case status.Code(err) == codes.Unauthenticated:
+	case status.Code(err) == codes.Unauthenticated || status.Code(err) == codes.ResourceExhausted:
+		// The server answered with a typed refusal of the caller -- its
+		// credential, or its address under the client-address rate limit.
 		return mapGRPCError("Health", err)
 	}
 	return &transport.ConnectionError{
@@ -749,6 +751,9 @@ func (t *Transport) MintJoinToken(ctx context.Context, req *transport.MintJoinTo
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "MintJoinToken", Err: &transport.NilRequestError{}}
+	}
 
 	resp, err := t.client.MintJoinToken(ctx, &pb.MintJoinTokenRequest{
 		NodeId:     req.NodeID,
@@ -895,30 +900,32 @@ func mapGRPCError(method string, err error) error {
 		return &transport.BarrierSealedError{Message: st.Message()}
 	}
 
-	switch st.Code() {
-	case codes.NotFound:
-		return &transport.KeyNotFoundError{Key: st.Message()}
-	case codes.Unimplemented:
-		// The unix transport is gRPC over a domain socket, talking to the same
-		// pkg/api/grpc server as the TCP transport, so it receives the same
-		// Unimplemented a capability refusal is mapped to (go-qrdb#141).
-		// Without this case it would fall through to a generic RequestError and
-		// a unix client would lose the graceful degradation its TCP twin gets,
-		// against the identical server-side condition.
-		return &transport.CapabilityUnsupportedError{Message: st.Message()}
-	default:
-		reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
-		if typed := transport.RefusalError(reason, md); typed != nil {
-			err = typed
+	// A structured refusal names the typed error exactly, whatever its code:
+	// a missing lock is NotFound and must not be read as a missing key.
+	reason, md := errorinfo.Refusal(st, transport.RefusalDomain)
+	if typed := transport.RefusalError(reason, md); typed != nil {
+		err = typed
+	} else {
+		switch st.Code() {
+		case codes.NotFound:
+			return &transport.KeyNotFoundError{Key: st.Message()}
+		case codes.Unimplemented:
+			// The unix transport is gRPC over a domain socket, talking to the same
+			// pkg/api/grpc server as the TCP transport, so it receives the same
+			// Unimplemented a capability refusal is mapped to (go-qrdb#141).
+			// Without this case it would fall through to a generic RequestError and
+			// a unix client would lose the graceful degradation its TCP twin gets,
+			// against the identical server-side condition.
+			return &transport.CapabilityUnsupportedError{Message: st.Message()}
 		}
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(st.Code()),
-			Err:        err,
-			RetryAfter: retryinfo.Delay(st),
-			Reason:     reason,
-			Metadata:   md,
-		}
+	}
+	return &transport.RequestError{
+		Method:     method,
+		StatusCode: int(st.Code()),
+		Err:        err,
+		RetryAfter: retryinfo.Delay(st),
+		Reason:     reason,
+		Metadata:   md,
 	}
 }
 

@@ -45,6 +45,20 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	return &resp, nil
 }
 
+// UpdateNamespace changes a namespace's index parameters and metadata in
+// place via POST /vector/namespace/update, keeping every vector.
+func (t *Transport) UpdateNamespace(ctx context.Context, req *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.UpdateNamespaceResponse
+	if err := t.postJSONDecode(ctx, "UpdateNamespace", "/vector/namespace/update", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // DeleteNamespace removes a namespace and all its vectors. Maps to
 // POST /vector/namespace/delete with a JSON body.
 func (t *Transport) DeleteNamespace(ctx context.Context, req *transport.DeleteNamespaceRequest) (*transport.DeleteNamespaceResponse, error) {
@@ -95,6 +109,9 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "ListNamespaces", Err: &jsonDecodeError{Err: err}}
 	}
+	for _, ns := range wireResp.Namespaces {
+		ns.IndexType = transport.ParseVectorIndexType(ns.IndexType)
+	}
 
 	return &wireResp, nil
 }
@@ -132,6 +149,10 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	var wireResp transport.GetNamespaceInfoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "GetNamespaceInfo", Err: &jsonDecodeError{Err: err}}
+	}
+	wireResp.IndexType = transport.ParseVectorIndexType(wireResp.IndexType)
+	if wireResp.DistanceMetric, err = transport.ParseDistanceMetric(wireResp.DistanceMetric); err != nil {
+		return nil, err
 	}
 
 	return &wireResp, nil
@@ -470,6 +491,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "GetIndexStats", Err: &jsonDecodeError{Err: err}}
 	}
+	wireResp.IndexType = transport.ParseVectorIndexType(wireResp.IndexType)
 
 	return &wireResp, nil
 }

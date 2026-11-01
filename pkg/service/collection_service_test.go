@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -85,6 +86,32 @@ func (m *memoryKVSvc) view(tenantID, db string) *memoryKVSvc {
 	return &memoryKVSvc{mu: m.mu, data: m.data, ns: tenant.ComposeNamespace(tenantID, db)}
 }
 
+// guardRefusal evaluates the write guard ctx carries the way the state
+// machine evaluates an OpGuarded command: against the raw store, in the same
+// critical section as the write, so a refused write applies nothing. The
+// caller holds m.mu.
+func (m *memoryKVSvc) guardRefusal(ctx context.Context) error {
+	guard := WriteGuardFrom(ctx)
+	if guard.IsZero() {
+		return nil
+	}
+	payload, err := guard.wrap([]byte("write"))
+	if err != nil {
+		return err
+	}
+	compares, _, err := protocol.DecodeGuarded(payload[1:])
+	if err != nil {
+		return err
+	}
+	refusedKey, ok, err := protocol.EvaluateGuard(compares, func(key []byte) ([]byte, error) {
+		return m.data[string(key)], nil
+	})
+	if err != nil || ok {
+		return err
+	}
+	return guardRefusalError(refusedKey)
+}
+
 // rawKeys returns every key in the underlying store, whichever view asks and
 // whatever its namespace, sorted and unguarded. It is how a test asserts WHERE
 // a write landed.
@@ -101,9 +128,12 @@ func (m *memoryKVSvc) rawKeys(prefix string) []string {
 	return keys
 }
 
-func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
+func (m *memoryKVSvc) Put(ctx context.Context, key string, value []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return err
+	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
 	m.data[m.ns+key] = cp
@@ -118,9 +148,12 @@ func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
 // now landed three times in this repo (go-qrdb#489). The real backends
 // (database.StandaloneBackend, the Raft state machine) are exactly this
 // strong, so the double is not stronger than production either.
-func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+func (m *memoryKVSvc) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return false, err
+	}
 	if _, occupied := m.data[m.ns+key]; occupied {
 		return false, nil
 	}
@@ -132,9 +165,12 @@ func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (
 
 // CompareAndSwap replaces key's value only when it holds exactly expected.
 // An absent key matches nothing, as in every KVServicer.
-func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+func (m *memoryKVSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return false, err
+	}
 	current, present := m.data[m.ns+key]
 	if !present || !bytes.Equal(current, expected) {
 		return false, nil
@@ -146,9 +182,12 @@ func (m *memoryKVSvc) CompareAndSwap(_ context.Context, key string, expected, ne
 }
 
 // CompareAndDelete removes key only when it holds exactly expected.
-func (m *memoryKVSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+func (m *memoryKVSvc) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return false, err
+	}
 	current, present := m.data[m.ns+key]
 	if !present || !bytes.Equal(current, expected) {
 		return false, nil
@@ -169,16 +208,22 @@ func (m *memoryKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 	return cp, nil
 }
 
-func (m *memoryKVSvc) Delete(_ context.Context, key string) error {
+func (m *memoryKVSvc) Delete(ctx context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return err
+	}
 	delete(m.data, m.ns+key)
 	return nil
 }
 
-func (m *memoryKVSvc) DeleteRange(_ context.Context, start, end []byte) error {
+func (m *memoryKVSvc) DeleteRange(ctx context.Context, start, end []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.guardRefusal(ctx); err != nil {
+		return err
+	}
 	for key := range m.data {
 		if key < string(start) {
 			continue

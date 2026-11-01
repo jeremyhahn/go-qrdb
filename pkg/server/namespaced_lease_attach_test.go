@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -36,7 +37,7 @@ func (l *sharedLessor) PutWithLeaseAndMode(ctx context.Context, key string, valu
 // named "app".
 func leaseRegistry(t *testing.T, lessor *sharedLessor) *restServiceRegistry {
 	t.Helper()
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, owner := range []string{"acme", "globex"} {
 		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: owner + "app", Backend: database.BackendMemory}); err != nil {

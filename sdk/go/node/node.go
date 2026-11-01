@@ -133,6 +133,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -1435,6 +1436,13 @@ type Node struct {
 	// constructor).
 	tenantIsolation bool
 
+	// watchHubOpts configures every watch hub this node builds, its own and
+	// its tenants': watch.buffer_size and the one watch.max_watchers limit
+	// they share (server.WatchHubOptions). Set once by the constructor so a
+	// data-plane rebuild draws from the same limit as the tenant hubs that
+	// outlive it.
+	watchHubOpts []watch.HubOption
+
 	// defaultTenantEntitlements are forwarded to lifecycle.Infra so the built-in
 	// TenantService permits the isolation modes and features the embedder needs.
 	defaultTenantEntitlements *quota.Entitlements
@@ -1736,14 +1744,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		encryptor = atrest.New(barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -1754,13 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(pending.dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		n.stg = nil
-		return err
-	}
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1790,6 +1792,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Backend:           pending.backendType,
 		DatabaseManager:   dbManager,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -1871,6 +1875,9 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
@@ -1929,22 +1936,17 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 	n.stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(n.background(), lr, leaseSvc, n.logger)
 }
 
-// openStandaloneDatabaseManager opens the standalone node's database catalog
-// under dataDir, reopening every database a previous run created, and records
-// it on the node, which owns its lifetime. It is the standalone counterpart of
-// the clustered boot's manager: the manager is handed to BuildServices and to
-// the server, so a named database resolves through the server's registry, is
-// confined to its owning tenant, and is refused while sealed. It used to be
-// built inside BuildServices, which never reopened a previous run's databases
-// and which the server never saw.
-func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
+// newStandaloneDatabaseManager builds the standalone node's database manager
+// under dataDir and records it on the node, which owns its lifetime. It is the
+// standalone counterpart of the clustered boot's manager: the manager is
+// handed to BuildServices, which attaches the database catalog and opens every
+// database it records, and to the server, so a named database resolves
+// through the server's registry, is confined to its owning tenant, and is
+// refused while sealed.
+func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
 	dbManager := database.NewManager(n.logger, dataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = dbManager.Close()
-		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
-	return dbManager, nil
+	return dbManager
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2313,7 +2315,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		encryptor = atrest.New(barrier)
 	}
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(encryptor)}
@@ -2341,20 +2343,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.host = host
 
-	// Build the database manager. OpenAll re-scans the databases directory and
-	// loads persisted meta.json records -- the same sequence the daemon
-	// performs before BuildServices. Shard IDs are claimed from the replicated
+	// Build the database manager. lifecycle.BuildServices attaches the
+	// replicated database catalog and opens every database it records, as it
+	// does for the daemon. Shard IDs are claimed from the replicated
 	// store (lifecycle.BuildServices wires the claimer), not from this node. The manager is shared with
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = host.Close()
-		_ = dbManager.Close()
-		return &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -2409,6 +2406,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -2489,6 +2488,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Host is the shared quicraft.Host that carries IsolationRaft shards.
 			// Passing it here enables NewRaftBackendFactoryFromManager and
 			// reattachRaftTenants so clustered embedded nodes gain full
@@ -2922,6 +2924,15 @@ func (n *Node) Close() error {
 		record(n.tenantHosts.CloseAll())
 		n.tenantHosts = nil
 	}
+	// Close the node's own store BEFORE sealing: with encryption at rest it
+	// sits on encfs over the system barrier, and a store still open when that
+	// barrier seals has every file it creates refused -- a background
+	// compaction's table, or the WAL Pebble cannot live without.
+	if n.stg != nil {
+		record(n.stg.Close())
+		n.stg = nil
+		n.pebbleDB = nil
+	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
 	// service.SealWholeNode seals every database barrier, every tenant
@@ -2951,11 +2962,6 @@ func (n *Node) Close() error {
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
-	}
-	if n.stg != nil {
-		record(n.stg.Close())
-		n.stg = nil
-		n.pebbleDB = nil
 	}
 	// Close the database manager last — after all raft shards, host, and
 	// storage are down — mirroring the daemon's deferred dbManager.Close()
@@ -3046,6 +3052,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3126,14 +3133,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Seal disabled: build storage + engine + services immediately.
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: string(backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -3143,12 +3150,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		return nil, err
-	}
+	dbManager := n.newStandaloneDatabaseManager(dataDir)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
@@ -3164,6 +3166,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		Backend:         backendType,
 		DatabaseManager: dbManager,
 		ReplicaID:       cfg.Raft.ReplicaID,
+		Index:           cfg.Index,
+		TimeSeries:      cfg.TimeSeries,
 		Profile:         &profile,
 		Logger:          log,
 		SealEnabled:     cfg.Seal.Enabled,
@@ -3273,6 +3277,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3361,7 +3366,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	// Seal disabled: build the host and services immediately.
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(atrest.New(nil))}
@@ -3408,6 +3413,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
 		ReplicaID:         cfg.Raft.ReplicaID,
+		Index:             cfg.Index,
+		TimeSeries:        cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            log,
 		SealEnabled:       cfg.Seal.Enabled,
@@ -4238,6 +4245,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.contextBinder != nil {
 		embeddedOpts = append(embeddedOpts, n.contextBinder)
 	}
+	// The caller's watch is a client's: it holds a watch.max_watchers slot
+	// like one opened over the network. The feature client above does not.
+	embeddedOpts = append(embeddedOpts, embedded.WithCountedWatch())
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
@@ -4270,6 +4280,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if fwdOpt != nil {
 		allOpts = append(allOpts, fwdOpt)
 	}
+	allOpts = append(allOpts, server.WithDefaultRetention(cfg.TimeSeries.DefaultRetentionDuration()))
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
@@ -4471,6 +4482,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
 	}
+	if svcNode.Credential != nil {
+		opts = append(opts, embedded.WithCredentialService(svcNode.Credential))
+	}
 	if svcNode.Policy != nil {
 		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
 	}
@@ -4478,7 +4492,6 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
 	if svcNode.Role != nil {
-		opts = append(opts, embedded.WithRoleService(svcNode.Role))
 		// Construct the qrdb RBAC authorizer the SAME way the standalone
 		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
 		// rbac.New(roleService, WithStrictSeparation(strictSoD)). Without
@@ -4510,7 +4523,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 			}
 		}
 		n.authorizer = authorizer
-		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))
+		// The embedded transport's role writes go through the same grant
+		// guard the server puts on every network transport
+		// (server.wireRoleGrantGuard), over this same final authorizer: a
+		// caller cannot create or widen a role past its own permissions.
+		// rbac.New above keeps the raw service, since it only reads roles,
+		// and server.WithRoleService gets the raw service too, because the
+		// server wraps it itself.
+		opts = append(opts,
+			embedded.WithRoleService(role.NewGrantGuard(svcNode.Role, authorizer)),
+			embedded.WithRBACAuthorizer(authorizer),
+		)
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
@@ -4886,7 +4909,7 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
 	if factory != nil {
 		// A composer's storage writes its files through the barrier's
 		// encrypting file system whatever the backend type names.
@@ -4907,7 +4930,7 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 	default:
 		backendType = database.BackendPebble
 	}
-	return lifecycle.NewLocalStorage(backendType, dataDir, enc, objCfg)
+	return lifecycle.NewLocalStorage(backendType, dataDir, enc, storageCfg)
 }
 
 // createNodeEngine creates the appropriate store engine via the canonical

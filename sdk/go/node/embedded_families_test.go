@@ -19,7 +19,6 @@ package node
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -54,24 +53,4 @@ func TestClusteredNode_EmbeddedClientServesTheRaftOnlyFamilies(t *testing.T) {
 	lease, err := n.Client().Lease().LeaseGrant(ctx, 30)
 	require.NoError(t, err, "the lease family must be served in process on a raft node")
 	require.NotZero(t, lease.ID)
-}
-
-// awaitWritable waits for the single member to elect itself and accept a
-// write, bounded so a node that never becomes writable fails the test.
-func awaitWritable(ctx context.Context, t *testing.T, n *Node) {
-	t.Helper()
-	deadline := time.After(15 * time.Second)
-	tick := time.NewTicker(50 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		err := n.Client().KV().Put(ctx, "embedded/ready", []byte("1"))
-		if err == nil {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("the clustered node never accepted a write: %v", err)
-		case <-tick.C:
-		}
-	}
 }

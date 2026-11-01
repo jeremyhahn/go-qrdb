@@ -154,7 +154,9 @@ func provisionTenantWithSQLReader(t *testing.T, ca *testCA, adminClient *http.Cl
 	// tenant's IAM at all (owner ruling, 2026-10-01), so the "sql-reader"
 	// role below is created authenticating as the tenant's own onboarded
 	// admin (a prefix tenant's admin account and cert are bound
-	// synchronously in this same create call, not deferred).
+	// synchronously in this same create call, not deferred); its built-in Admin role lets it seat a second account with
+	// Admin and Operator (seatTenantProvisioner), which creates the role
+	// from what it holds (the grant rule, go-qrdb#1278).
 	var createResp struct {
 		Admin struct {
 			CertPEM string `json:"cert_pem"`
@@ -168,7 +170,7 @@ func provisionTenantWithSQLReader(t *testing.T, ca *testCA, adminClient *http.Cl
 		t.Fatalf("provisionTenantWithSQLReader: X509KeyPair for the onboarded admin: %v", err)
 	}
 	onboardedAdminClient := qrdbdharness.HTTPSClient(ca.Pool, &adminTLSCert, 15*time.Second)
-	awaitTenantAdminID(t, adminPort, tenantID, onboardedAdminClient)
+	onboardedAdminClient = seatTenantProvisioner(t, ca, adminPort, tenantID, onboardedAdminClient, false)
 
 	roleBody := adminPostJSON(t, onboardedAdminClient, adminPort, "/roles", map[string]any{
 		"name":        "sql-reader",

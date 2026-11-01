@@ -4,7 +4,7 @@
 #   usage: scripts/in-toolchain-image.sh <image> <command...>
 #   e.g.   scripts/in-toolchain-image.sh go-enclave-toolchain:abc make build
 #
-# in-toolchain-template: v3 (ci-template v1.22.2). Ships beside ci.yml; copy it to
+# in-toolchain-template: v4 (ci-template v1.29.5). Ships beside ci.yml; copy it to
 # scripts/ with the workflow. From go-quicraft's scripts/in-toolchain-image.sh
 # (a141c3c), with the container prefix and uid taken from the environment.
 #
@@ -105,6 +105,14 @@
 # CUSTOMIZE (go-qrdb): every container the script starts carries the label
 # qrdb.ci.job=<GITHUB_RUN_ID>-<GITHUB_JOB> (local-local off CI), so a teardown
 # or a sweep tells the job a container belongs to without guessing by age.
+# v4 (ci-template v1.29.4 and v1.29.5, Company Agent rulings 261(c) and
+# 262(a)): Go's build and link scratch (TMPDIR,
+# GOTMPDIR) is an anonymous volume on the image's /var/tmp (IN_IMAGE_SCRATCH
+# overrides), on the daemon's data disk, removed with the container. A scratch directory that is missing or not writable fails
+# the stage by name. A bridge stage's GOPROXY puts DEVCACHE_GOPROXY (Athens)
+# first when the runner sets it: <DEVCACHE_GOPROXY>|https://proxy.golang.org|direct,
+# so any error falls through to the public proxy; GOPRIVATE travels with it.
+#
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -160,6 +168,11 @@ if ! [[ $memory =~ ^[1-9][0-9]*[mg]?$ ]]; then
   echo "IN_IMAGE_MEMORY must be a size in bytes, m or g, e.g. 16g: $memory" >&2
   exit 2
 fi
+scratch=${IN_IMAGE_SCRATCH:-/var/tmp}
+case $scratch in
+  /*) ;;
+  *) echo "IN_IMAGE_SCRATCH must be an absolute path: $scratch" >&2; exit 2 ;;
+esac
 cgroup_parent=${CI_CGROUP_PARENT-ci.slice}
 if [ -n "$cgroup_parent" ] && ! [[ $cgroup_parent =~ ^[A-Za-z0-9][A-Za-z0-9_.@:/-]*$ ]]; then
   echo "CI_CGROUP_PARENT must be a cgroup name such as ci.slice, or empty: $cgroup_parent" >&2
@@ -193,6 +206,10 @@ args=(
   # CUSTOMIZE (go-qrdb): no tmpfs on /tmp, a 2 GiB /dev/shm, and the network
   # chosen below (see the header).
   --shm-size 2g
+  # Go's build and link scratch on its own volume (v4, above).
+  -v "$scratch"
+  --env TMPDIR="$scratch"
+  --env GOTMPDIR="$scratch"
   --user "$uid:$uid"
   --workdir /src
   --env HOME=/tmp
@@ -221,7 +238,7 @@ if [ "$network" = bridge ]; then
   # the cache on that is the gomod volume, kept across jobs; with CI_CACHE=off
   # the run takes a writable copy of the baked cache on the container's own
   # layer, so nothing baked is downloaded twice.
-  args+=(--network bridge --env "GOPROXY=https://proxy.golang.org,direct" --env "GOMODCACHE=$modcache")
+  args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org|direct" --env "GOMODCACHE=$modcache")
   if [ "$cache" = off ]; then cmd="cp -a /gomodcache/. $modcache/ && $cmd"; fi
   # CUSTOMIZE (go-qrdb) end.
   for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
@@ -247,7 +264,11 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-docker create "${args[@]}" "$image" sh -c "$cmd" >/dev/null
+# The scratch directory is checked in the container first (v4), so a missing
+# or unwritable one fails the stage here by name, not later as ENOSPC or EACCES.
+# shellcheck disable=SC2016 # expands in the container, not here
+guard='[ -d "$TMPDIR" ] && [ -w "$TMPDIR" ] || { echo "in-toolchain-image: scratch directory $TMPDIR is missing or not writable" >&2; exit 2; }'
+docker create "${args[@]}" "$image" sh -c "$guard; $cmd" >/dev/null
 # DS-3998 (ruling 108): the volume roots go to the run's uid only after the
 # create, while the stage's container holds the volumes. Another job's
 # scripts/trim-ci-caches.sh removes a cache volume no container holds, so a

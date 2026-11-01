@@ -197,9 +197,11 @@ func TestWithPINBackend_InstallsTheLockout(t *testing.T) {
 	}
 }
 
-// TestInitializeOnInitialized_RefusedBeforePIN: both initialize paths refuse
-// an initialized barrier before comparing the SO PIN, so a right and a wrong
-// PIN get the same answer and neither counts against the lockout.
+// TestInitializeOnInitialized_RefusedBeforePIN: both initialize paths of a
+// node built with the first-boot ceremony refuse before comparing the SO PIN
+// -- with *service.SystemBarrierInitRefusedError, the refusal the initialize
+// itself returns -- so a right and a wrong PIN get the same answer and
+// neither counts against the lockout.
 func TestInitializeOnInitialized_RefusedBeforePIN(t *testing.T) {
 	pins := pintest.NewBackend(t)
 	if err := pins.SetSOPIN("", rekeySOPIN); err != nil {
@@ -209,11 +211,12 @@ func TestInitializeOnInitialized_RefusedBeforePIN(t *testing.T) {
 	ctx := context.Background()
 	for _, presented := range []string{"wrong-pin-0000", rekeySOPIN} {
 		for i := 0; i < auth.SOPINFreeFailures; i++ {
-			if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: []byte("secret-secret-1234"), SOPin: presented}); !errors.Is(err, seal.ErrAlreadyInitialized) {
-				t.Fatalf("initialize with SO PIN %q = %v, want seal.ErrAlreadyInitialized", presented, err)
+			var refused *service.SystemBarrierInitRefusedError
+			if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: []byte("secret-secret-1234"), SOPin: presented}); !errors.As(err, &refused) {
+				t.Fatalf("initialize with SO PIN %q = %v, want *service.SystemBarrierInitRefusedError", presented, err)
 			}
-			if _, err := tr.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 2, SOPin: presented}); !errors.Is(err, seal.ErrAlreadyInitialized) {
-				t.Fatalf("Shamir initialize with SO PIN %q = %v, want seal.ErrAlreadyInitialized", presented, err)
+			if _, err := tr.BarrierInitializeShamir(ctx, &transport.BarrierInitializeShamirRequest{Threshold: 2, TotalShares: 2, SOPin: presented}); !errors.As(err, &refused) {
+				t.Fatalf("Shamir initialize with SO PIN %q = %v, want *service.SystemBarrierInitRefusedError", presented, err)
 			}
 		}
 	}

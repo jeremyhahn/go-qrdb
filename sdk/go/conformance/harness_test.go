@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,8 +341,11 @@ func unixSocketPath(t *testing.T) string {
 
 // raftPortSeed hands each raft cell a distinct advertised address. A
 // single-member group runs with the transport disabled so nothing binds, but
-// distinct addresses keep the node identities apart.
-var raftPortSeed = 63940
+// distinct addresses keep the node identities apart. It counts up from
+// raftPortBase, and is atomic because cells boot from parallel subtests.
+var raftPortSeed atomic.Int32
+
+const raftPortBase = 63940
 
 func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	t.Helper()
@@ -375,8 +379,7 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
 	case raft:
-		raftPortSeed++
-		cfg.Raft.RaftAddress = fmt.Sprintf("127.0.0.1:%d", raftPortSeed)
+		cfg.Raft.RaftAddress = fmt.Sprintf("127.0.0.1:%d", raftPortBase+raftPortSeed.Add(1))
 		cfg.Raft.ReplicaID = 1
 		cfg.Raft.SMType = c.smType
 		cfg.Raft.SMStorage = c.smStorage
@@ -408,6 +411,19 @@ func (c cell) dataDir(t *testing.T) string {
 		return memdir.TempDir(t)
 	}
 	return t.TempDir()
+}
+
+// parallel marks t, a subtest that boots c, parallel unless c's data
+// directory is on tmpfs. Every other cell boots its own node on its own ports
+// and directories and shares nothing with its siblings. The tmpfs cells share
+// /dev/shm, which a container mounts at 64 MiB by default: a dozen file
+// journals side by side exhaust it, so those cells keep running one at a time
+// before the parallel ones resume. go test's -parallel bounds the rest.
+func (c cell) parallel(t *testing.T) {
+	t.Helper()
+	if c.backend != database.BackendFile {
+		t.Parallel()
+	}
 }
 
 // keepsRevisions reports whether the cell's engine keeps MVCC revisions and

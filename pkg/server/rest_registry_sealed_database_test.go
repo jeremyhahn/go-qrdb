@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -54,7 +55,7 @@ var everyDataPlaneAccessor = []sealedResolution{
 // holding one database, owned by owner, and returns both.
 func newSealedDatabaseRegistry(t *testing.T, owner, name string) (*restServiceRegistry, *database.Database) {
 	t.Helper()
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	db, err := mgr.Create(database.DatabaseConfig{
 		TenantID: owner,

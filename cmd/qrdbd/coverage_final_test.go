@@ -222,7 +222,7 @@ func TestStartDynamicMembership_ZeroMinPeersDefaultsTo3(t *testing.T) {
 	// embedded.New(nil, nil) still fails first, so the default branch
 	// executes but the error is from embedded.New. The test just confirms
 	// there is no panic on the zero-minPeers path.
-	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil)
+	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil, nil)
 	require.Error(t, err)
 }
 
@@ -233,7 +233,7 @@ func TestStartDynamicMembership_NegativeMinPeersDefaultsTo3(t *testing.T) {
 		shardID:         1,
 		clusterMinPeers: -5, // triggers default branch (line 1595-1597)
 	}
-	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil)
+	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil, nil)
 	require.Error(t, err)
 }
 
@@ -367,46 +367,6 @@ func TestInit_MVCCFactoryClosure_InvokedWhenResolved(t *testing.T) {
 	// Invoke the CreateFunc to exercise the mvcc factory closure.
 	sm := fn(1, 1)
 	require.NotNil(t, sm)
-}
-
-// ---------------------------------------------------------------------------
-// runStart: MigrateIfNeeded failure (line 783-785)
-// ---------------------------------------------------------------------------
-
-func TestRunStart_MigrateIfNeededFails(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Write TLS files to a separate dir.
-	bundle, err := generateCATLS()
-	require.NoError(t, err)
-	tlsDir := t.TempDir()
-	caFile := filepath.Join(tlsDir, "ca.pem")
-	certFile := filepath.Join(tlsDir, "cert.pem")
-	keyFile := filepath.Join(tlsDir, "key.pem")
-	require.NoError(t, os.WriteFile(caFile, bundle.CACertPEM, 0o600))
-	require.NoError(t, os.WriteFile(certFile, bundle.CertPEM, 0o600))
-	require.NoError(t, os.WriteFile(keyFile, bundle.KeyPEM, 0o600))
-
-	// Create a FILE (not a dir) at the dataDir path.
-	dataDirFile := filepath.Join(tmpDir, "data-as-file")
-	require.NoError(t, os.WriteFile(dataDirFile, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dataDirFile,
-		smType:          "memory",
-		discoveryMethod: "static",
-		listen:          "0.0.0.0:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		tlsCAFile:       caFile,
-		tlsCertFile:     certFile,
-		tlsKeyFile:      keyFile,
-		host:            testBindHost,
-	}
-
-	err = runStart(f)
-	require.Error(t, err, "runStart must fail when dataDir is a file")
 }
 
 // ---------------------------------------------------------------------------

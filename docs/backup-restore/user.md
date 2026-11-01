@@ -11,8 +11,8 @@ This is disaster recovery. For undoing a handful of keys, use
 
 ## Prerequisites
 
-- **Raft mode.** Backups are shard snapshots; standalone has no shards to
-  snapshot and refuses with `requires mode: raft`.
+- **Raft mode.** Backups are shard snapshots; a standalone server has no
+  shards to snapshot and runs without the backup service.
 - A reachable server, client certificates, and the relevant `backup:*`
   permissions. Note `backup:restore` is a separate grant from `backup:create` —
   restore overwrites shard state.
@@ -59,9 +59,6 @@ qrdb backup create --destination /backups/nightly --encryption-key-file backup.k
 
 The backup lands in the server's `--backup-dir`; `--destination` is a label
 recorded with it. Copy that directory off the machine with your usual tooling.
-
-`--encryption aes256` is implied here; naming it is optional as long as a key
-reference is supplied.
 
 Keep `/etc/qrdb/keys/backup.key` somewhere you will still have it when the
 machine you are backing up is gone. A backup you cannot decrypt is not a
@@ -115,7 +112,12 @@ qrdb backup create --destination /backups/scratch --encryption none
 ```
 
 The CLI prints a warning when you do this, and the server logs it (and
-audits it, where a compliance audit trail is configured).
+audits it, where a compliance audit trail is configured). Restoring a
+plaintext backup is refused unless you add `--allow-plaintext`:
+
+```bash
+qrdb backup restore --id 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43 --allow-plaintext --validate
+```
 
 **See what you have and clear out the old.**
 
@@ -125,8 +127,8 @@ qrdb backup get 3f8e2a1c-7b4d-4e9a-9c61-2d5f0b8a7e43
 qrdb backup delete a91d04e6-52c3-4f0b-8e7a-6b3c9f1d2e85
 ```
 
-There is no built-in retention policy — deleting old backups is your scheduler's
-job, same as creating them.
+There is no built-in scheduler and no retention policy: running `create`,
+`verify` and `delete` is your scheduler's job.
 
 ## Troubleshooting
 
@@ -166,17 +168,16 @@ ones that succeeded; fix the underlying storage problem and re-run the
 restore for just those shards with `--shards`.
 
 **A backup shows `status: failed` in `list`.** A failed create is recorded
-rather than discarded, and `error_message` says why. That is deliberate — a
-backup that failed silently would just be an absence nobody noticed until it
-mattered.
+rather than discarded, and `error_message` says why.
 
 **Backups keep getting bigger and slower.** Every backup is a **full** capture
 of the shards it names; there are no incremental or differential backups, and
 shard data is stored uncompressed (`--compression` is recorded, not applied).
 Prune old ones.
 
-**`qrdb backup` says "requires mode: raft".** The server is standalone. Backups
-operate on shard snapshots and there are none.
+**`qrdb backup` says the backup service is not configured or not
+implemented.** The server is standalone. Backups operate on shard snapshots
+and there are none.
 
 **Restore fails with a format-marker error (`FormatMarkerMissingError`).**
 `qrdbd start --restore-backup-id <id> --backup-dir <dir>` and any
@@ -192,7 +193,3 @@ backup with the binary that wrote it. A backup made with
 Backup and restore is the usual route, but note the shard snapshot format is the
 compatibility surface — restoring onto a materially different topology is not a
 supported migration path. For a logical export, use SQL or `kv range`.
-
-**Nobody is checking the backups.** Worth saying plainly: this feature has no
-scheduler and no retention policy. If nothing outside the database is running
-`create`, `verify` and `delete`, then nothing is happening.

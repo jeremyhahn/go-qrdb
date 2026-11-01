@@ -166,6 +166,10 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// The 201 body is the tenant's fields with its first admin, and its SO
 	// when one was given, alongside.
 	var wire struct {
@@ -398,6 +402,9 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
 	}
 	data, err := json.Marshal(&req.Entitlements)
 	if err != nil {

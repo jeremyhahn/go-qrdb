@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -29,7 +30,7 @@ import (
 // The database service NewDatabaseService returns sets and reports a
 // database's policy through the installed port.
 func TestNewDatabaseService_InstallsThePort(t *testing.T) {
-	mgr := database.NewManager(slog.New(slog.DiscardHandler), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.DiscardHandler), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := NewDatabaseService(t, mgr)
 	ctx := tenant.WithTenantID(context.Background(), tenantid.System)

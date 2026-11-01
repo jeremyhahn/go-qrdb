@@ -548,7 +548,7 @@ Invariants:
     `DatabaseMeta.Dropping`), independent of `Database.Status()` — Status keeps answering only "is there an open
     backend", so Close (a dependent of the fence, not the other way round)
     and the boot-time barrier re-registration cannot clear it as a side
-    effect — and it is persisted in the database's own metadata, so a
+    effect — and it is persisted in the database's catalog record, so a
     restart mid-drop reopens the database fenced (Status open or sealed as
     normal, Dropping true) rather than silently resolvable again.
   - **The store fence makes every write atomic with the drop.** Each
@@ -565,7 +565,7 @@ Invariants:
     `database.DroppingError` if it applies after the fence, and removed by
     the reclamation if it applied before.
   - **Handles are incarnation-scoped.** `Manager.Create` chooses a new
-    incarnation, records it in the database's metadata, and marks it live
+    incarnation, records it in the database's catalog record, and marks it live
     (`UnfenceDatabaseKeyspace`) as its LAST fallible step before the
     database becomes resolvable — a create that fails earlier leaves the
     store exactly as the drop left it. A handle to an earlier database of
@@ -588,13 +588,23 @@ Invariants:
     marks an incarnation live with `PutIfAbsent`, then
     `CompareAndSwap(tombstone -> incarnation)`, then a read: the incarnation
     it already holds is success (a retried create or rollback), any other
-    live value is `*database.AlreadyExistsError` with `Elsewhere` set — the
-    name was created on another node, since the catalog is node-local until
-    it is replicated — and a marker that keeps changing under the claim is
+    live value is `*database.AlreadyExistsError` with `Elsewhere` set —
+    another database's incarnation holds the name — and a marker that keeps changing under the claim is
     `*service.MarkerContendedError`. Clearing to absent is
     `CompareAndDelete(tombstone)`. `Manager.Create` returns the
     already-exists refusal unwrapped, so every transport maps it as a
     conflict.
+  - **The tombstone carries the drop's claim.** `FenceDatabaseKeyspace`
+    writes `"\x00dropped"` followed by the drop's catalog claim, and a
+    takeover re-stamps a tombstone of another claim with its own;
+    `ReclaimDatabaseKeyspace` guards its deletes on its own stamped
+    tombstone, and `UnfenceDatabaseKeyspace` with a claim swaps or deletes
+    only that tombstone. A drop whose claim was taken over is refused at the
+    store with `*database.DropSupersededError`, inside the Raft-applied
+    compare-and-swap, so `Manager.Drop`'s rollback never clears the fence
+    the takeover is reclaiming under, whatever the order of the two
+    proposals. A create passes the empty claim, which claims any drop's
+    tombstone.
   - **A claim whose outcome is unknown is released.** When the
     `PutIfAbsent` or `CompareAndSwap` that claims the marker fails — a
     propose that timed out may still be applied after the create has
@@ -608,13 +618,17 @@ Invariants:
     the tombstone. A release that fails too is
     `*service.MarkerReleaseError`, which unwraps to the claim's failure
     (so a timeout stays a retryable 503) and names both errors; the marker
-    may then hold the orphaned incarnation until a drop of the name fences
-    it.
+    may then hold the orphaned incarnation, which no catalog entry names and
+    so no drop can fence (a drop fences only the incarnation its catalog
+    entry records), and every create of the name is refused as existing
+    elsewhere. The same release covers the claim a database with a store of
+    its own makes on the marker in its reclaim store.
   - **A dropped name is re-created only through the store.** The node
-    records each drop under `<data-dir>/dropped/<name>`; a manager with no
-    reclaimer refuses such a name with `*database.ReclaimerRequiredError`,
-    and qrdbd provisions its configured databases (`Manager.Provision`,
-    with the shared empty incarnation) only after `lifecycle.BuildServices`
+    records each drop in a node-local ledger under `<data-dir>/dropped/`; a
+    manager with no reclaimer refuses such a name with
+    `*database.ReclaimerRequiredError`, and qrdbd provisions its configured
+    databases (`Manager.Provision`, which opens a recorded one and otherwise
+    creates it with the shared empty incarnation) only after `lifecycle.BuildServices`
     has attached the reclaimer and the system shard has a known leader —
     marking the name live is a Raft write. An invalid configured database
     is still rejected before the node starts.
@@ -624,7 +638,10 @@ Invariants:
     `database.DropRollbackContext`, which the failed request's cancellation
     cannot reach. Only when that succeeds is the local fence cleared;
     otherwise the database stays fenced until the drop is retried, rather
-    than looking live while the store refuses its writes.
+    than looking live while the store refuses its writes. Only the drop
+    that holds the record's drop claim rolls back: one whose claim a retry
+    took over leaves both fences to that retry, and reports the drop as not
+    rolled back.
   - **The reclamation runs before the catalog record is removed**, so an
     interrupted drop leaves a fenced, empty database rather than an
     unreachable keyspace, and re-issuing the drop finishes it. The owning
@@ -642,10 +659,9 @@ Invariants:
   - **A dedicated-raft database is fenced twice, once per source of
     truth.** `database.Manager`'s local fence is complete for the shared
     system store and per-tenant volume hosts, which always resolve through
-    the local catalog — but a dedicated-raft database's existence and
-    ownership are authoritative in the *replicated* placement table
-    instead, and its local catalog entry may legitimately be absent on a
-    node that did not create it. `DropForTenant`/`Drop` therefore ALSO
+    `database.Manager` — but a dedicated-raft database's group is placed by
+    the *replicated* placement table, and a node that did not create it may
+    serve its shard without the manager having it open. `DropForTenant`/`Drop` therefore ALSO
     commit `placement.Placement.Dropping` (`Store.SetDropping`) to the
     database's placement entry before reclaiming anything, and
     `RaftBackendFactory.Services` — the resolution seam every node uses,
@@ -653,7 +669,8 @@ Invariants:
     every call and refuses with the same `database.DroppingError`. Because
     the placement table is replicated, this fence holds on every node,
     survives a leader change, and (like the rest of the entry) survives a
-    restart, unlike the node-local one. It is removed together with the
+    restart, while the manager's in-memory fence is held by each node
+    separately. It is removed together with the
     whole placement entry at the very end of a successful drop; a failed
     reclamation clears it the same way the local fence is cleared. The
     placement marker refuses NEW resolutions; the store fence, written into
@@ -665,8 +682,8 @@ Invariants:
     placement entry is what removes the replicated fence, so a failure
     there is surfaced rather than logged and ignored: the fence survives
     with the entry, keeping the database refused everywhere instead of
-    simultaneously gone from the local catalog and unrefused in placement.
-    A retry recognizes the local catalog entry already being gone
+    simultaneously gone from the catalog and unrefused in placement.
+    A retry recognizes the catalog record already being gone
     (`database.NotFoundError` from the manager-level drop) as "finish the
     placement teardown", not as a fresh failure, so it completes rather
     than rolling back a fence a finished drop has no business rolling
@@ -786,13 +803,13 @@ Invariants:
   - **The local fence's in-memory flag commits before its durable one.**
     `Manager.Drop`'s step 0 sets `Database.Dropping` in memory FIRST, then
     persists it: `loadDatabase` refuses the instant the in-memory flag reads
-    true, and `rewriteMeta` always reads it fresh (never a cached value), so
-    a concurrent `Update*` call can never observe it still false and
-    silently persist a stale `Dropping: false` over the durable write
-    moments later. `meta.json` itself writes through a temp-file/fsync/
-    rename sequence rather than a direct write to the final path, so a crash
-    mid-write can never leave it truncated, and concurrent writers settle on
-    "the later rename wins" rather than an interleaved, invalid file.
+    true. An `Update*` call already past that check, on this node or
+    another, cannot clear the durable fence: `rewriteMeta` writes only its
+    own field, into the record as the catalog holds it, and refuses a record
+    that is dropping with `database.DroppingError`, so it never writes a
+    `Dropping` value at all. The catalog record is one key replaced by one
+    compare-and-swap, so a crash leaves the previous record or the new one,
+    never a partial one.
 - **A second concurrent drop of the same database is refused**, not merged.
   Exactly one caller may report success, because the tenant-scoped drop
   releases quota on success.
@@ -1017,7 +1034,12 @@ How a claim works:
 | The local drop fence cannot be persisted | `database.LocalFenceError`; nothing else was touched, and a placement fence the call set is rolled back | **yes** |
 | A create names a database live on another node | `database.AlreadyExistsError` with `Elsewhere` set; the other node's marker is untouched | **yes** |
 | A create does not finish within the service's create deadline (`service.DefaultDatabaseCreateTimeout`, 10 s, bounding `CreateWithCredentials` and `CreateForTenantWithCredentials` and so every transport) because a consensus step has no leader or quorum | `service.DatabaseCreateTimeoutError` wrapping the step's error, 503 / `UNAVAILABLE`; the quota reservations, the half-created database and its placement are rolled back under a context detached from the expired one (`database.DropRollbackContext`), so the create is retryable. A caller's own deadline or cancellation that ends the create first is returned as it is. A dedicated shard started on the way waits for its leader under the same context, so the deadline bounds that wait too | **yes** |
+| A create fails after its catalog record committed, and its rollback cannot delete that record | `database.CatalogOrphanError` carrying the create's own failure (`Err`) and the delete's (`Cleanup`); the data directories are kept because the surviving record still names them, and the record is removed by an explicit drop | no, drop first |
+| A create fails clearing its predecessor's seal record | the seal failure; the create is rolled back by its tenant and name (`DropForTenant`), so another tenant's database of the same name is left alone | **yes** |
+| The database catalog is listed at boot while the system shard is still electing or warming up its ReadIndex | the open waits within `server.SystemShardSettleBudget` (15 s), counted only while the system shard has a leader that has committed in its term, so a cluster still forming holds the open for as long as the boot runs; any other failure, or the budget running out against such a leader, fails the boot with `lifecycle.DatabaseCatalogError` | n/a |
 | A create names a database this node dropped, with no keyspace reclaimer attached | `database.ReclaimerRequiredError`; nothing is created | **yes** |
+| A create names a database this node holds open but a drop through another node removed from the catalog | the obsolete entry is released and the database created; a catalog read that fails returns its error and creates nothing | **yes** |
+| The data directory holds a database record written before the catalog (a `meta.json` in a database's directory) | `database.UnmigratedDatabasesError` from `OpenAll`, naming every such file; the node does not start | **yes** — never started with those databases unlisted |
 | The placement table cannot be read while resolving a dedicated-raft fence | the read error surfaces; it is never reported as an unknown database | **yes** |
 | A key, index or vector namespace cannot be reclaimed | `database.KeyspaceReclaimError` wrapping the cause; the drop fails and both fences clear (Status was never touched) | **yes** |
 | A drop names the default database | `database.DefaultDatabaseDropError` (REST 400 / gRPC and QUIC InvalidArgument), before anything is touched | **yes** |
@@ -1081,9 +1103,88 @@ See [../configuration/](../configuration/) and
 
 ### Shipped
 
-Database metadata is `meta.json` under the database's configuration directory,
-node-local. Dedicated-raft databases additionally have a replicated placement
-record, which is their existence authority across nodes. A database with a
+**The catalog is the record of databases.** `database.Catalog`
+(`database.KVCatalog`) holds one record per database, a JSON `DatabaseMeta`
+under `__sys:dbcatalog/<tenant>/<name>` (`database.CatalogKey`). The record
+holds the tenant, name, backend, protocols, data directory, mode, storage
+codec, replicas, the dedicated-WAL flag, the raft options with the issued
+shard ID, the barrier, connection and SQL settings, the incarnation, and the
+drop fence (`dropping`). The manager has no other record of a database, and
+no path falls back to a node's disk: with no catalog attached, every
+operation is refused with `*database.CatalogRequiredError`.
+
+The catalog is replicated with the tenant's store. The system tenant's and
+every shared tenant's records are in the system store; an isolated tenant's
+are in its home store (`database.CatalogHomes`, which the tenant store
+resolver implements), never in the system store. A home store that cannot be
+resolved fails the operation with `*database.CatalogStoreError` rather than
+reading or writing the system store in its place. Records decode strictly
+(`json.Decoder.DisallowUnknownFields`): a record carrying a field this build
+does not know is refused with `*database.CatalogReadError`, never rewritten
+without it.
+
+- **Create** writes the record create-if-absent (`PutIfAbsent`) after the
+  database's directories exist and its shard ID is issued, and before the
+  backend opens. A name any node has already recorded is refused with
+  `*database.AlreadyExistsError`. A database this node already holds open is
+  a duplicate only while the catalog still records its incarnation: create
+  reads the record first, as resolution does, and releases an entry whose
+  record a drop through another node removed (or replaced) before going on,
+  so a name dropped elsewhere can be created here again with no lookup in
+  between. A record that cannot be read fails the create. A create that fails
+  after the write removes the record with the rest of what it made.
+- **Reconfiguration** (`Update*`) and the drop fence change the record with
+  `Catalog.Update`: read the record, apply the one change to it, and
+  compare-and-swap the result against the record as read, only while it is
+  the same incarnation: a node still holding a database dropped,
+  or dropped and created again, through another node gets
+  `*database.NotFoundError` and neither recreates the record nor overwrites
+  its successor's. A swap lost to a concurrent write applies the change again
+  to the new record, so each update writes only its own field: a change
+  another node made to another field is kept, and a reconfiguration never
+  writes the drop fence. A reconfiguration of a record that is dropping is
+  refused with `*database.DroppingError`.
+- **Drop** sets `dropping` in the record first, reclaims what the database
+  owns, and removes the record last (see "What a drop reclaims" in
+  [architecture.md](architecture.md)). The fence write carries a random
+  `drop_claim`, won in the catalog by one compare-and-swap, so a retry on any
+  node takes over a fence an earlier drop left. The record is removed by a
+  compare-and-delete of exactly the incarnation dropped under that claim: a
+  drop whose claim was taken over fails with a `*database.DropError` wrapping
+  `*database.DropInProgressError`, one whose database was dropped and created
+  again meanwhile with one wrapping `*database.NotFoundError`, and neither
+  removes the record it finds.
+- **Restart** opens what the catalog records: `Manager.OpenAll` opens every
+  record in the system store, and `Manager.ListForTenant` opens an isolated
+  tenant's recorded databases from its home store. A directory under the data
+  directory is not a database unless a record names it. A data directory that
+  still holds a record from before the catalog (a `meta.json` in a database's
+  directory) is refused: `OpenAll` returns `*database.UnmigratedDatabasesError`,
+  naming every such file, and the node does not start, rather than starting
+  with those databases unlisted while their data stays on disk. Nothing reads
+  the old record; those databases are recreated and their directories
+  removed. Listing also releases
+  a database whose record is gone or now carries another incarnation, so a
+  database created or dropped through another node is seen on this one. The
+  release reads the record again first, under the claim a create holds from
+  its catalog write to its open, and keeps the database when the record is
+  its own or cannot be read: a create that finished after the list's read is
+  not released. Listing applies a drop fence set through another node, and
+  clears one that node rolled back, unless a drop of the database is in
+  flight on this node.
+- **Resolution** reconciles the same way: `Manager.GetOwned`, which every
+  per-database authorization goes through, reads the record of a database
+  this node holds open before answering. A database dropped through another
+  node is released and answered `*database.NotFoundError` (or, when the name
+  was created again, its successor is opened), and a drop fence set or rolled
+  back there is applied, so the caller is refused or admitted as the record
+  says. The read is the catalog's linearizable read (a ReadIndex, not a Raft
+  proposal), the cheapest that observes every committed drop; a record that
+  cannot be read fails the resolution with the read error rather than
+  answering from the cache.
+
+Dedicated-raft databases additionally have a replicated placement record,
+which places their Raft group. A database with a
 `DataDir` owns that directory; one without shares the default store — and for a
 shared-store database the directory holds configuration only, which is why its
 teardown cannot be a directory removal.
@@ -1104,15 +1205,14 @@ namespace. It holds the database's incarnation while the database is live, a
 tombstone after it is dropped, and the next incarnation once the name is
 created again, so a dropped database leaves exactly one small record behind
 in the store that held it. A database's incarnation is recorded in its
-metadata (`meta.json`, `incarnation`); metadata with no incarnation reopens
-with an empty one.
+catalog record (`incarnation`); a record with no incarnation reopens with an
+empty one.
 
-**The database catalog is node-local while the fence marker is replicated.**
-A name live on one node cannot be created on another: the marker is claimed
-only from absent or the tombstone, so the second create is refused with
-`*database.AlreadyExistsError` (`Elsewhere` set) and the first database's
-handles keep writing. Until the catalog is replicated, create a name through
-one node. Boot-provisioned configured databases share the empty incarnation
+**The marker is claimed only from absent or the tombstone.** The catalog
+refuses a second create of a recorded name before the marker is reached; a
+marker that still holds another live incarnation refuses the create with
+`*database.AlreadyExistsError` (`Elsewhere` set), and that database's handles
+keep writing. Boot-provisioned configured databases share the empty incarnation
 on every node, so their stale handles are refused by the tombstone only
 while the name stays dropped.
 
@@ -1125,19 +1225,11 @@ not two. See
 tenant scope and for why deleting a tenant refuses while it still owns
 databases.
 
-`Manager.TenantDatabases` is the catalog that refusal reads. It reports what
-**this node's** catalog holds: a database's `meta.json` is node-local while
-its keys are in the replicated store, which is why the tenant reclamation
-scans the tenant's whole namespace rather than trusting the list to have
-bounded it.
-
-### Target: the catalog record
-
-The replicated catalog record — the placement table extended to
-every backend — carries the full database record: backend, raft options with
-the resolved state storage, replicas, data directory, barrier settings,
-protocols, the owning node for a local binding, and the generation. `meta.json`
-becomes a node-local cache rebuilt from it at boot.
+`Manager.TenantDatabases` is the list that refusal reads: the tenant's catalog
+records (`Catalog.ListTenant`), from whichever store holds them. A failure to
+list is an error, never an empty list, so the refusal fails closed. The
+tenant reclamation still scans the tenant's whole namespace rather than
+trusting the list to have bounded the keys.
 
 **A local binding is a degenerate, one-replica placement (shipped).** Rather
 than a second record shape, a local binding is `Placement{RF:
@@ -1167,8 +1259,31 @@ binding everywhere. It is unsupported (`*StoreError` wrapping
 The per-node reconciler (`TenantShardReconciler`) skips every placement
 `IsLocalBinding()` reports true for, in both its poll (`ReconcileOnce`) and
 watch (`handleEvent`) paths: a local binding has no Raft group for it to
-attach, start or tear down. The owning node opens it from `meta.json`;
-**Target:** it materializes it through database resolution.
+attach, start or tear down. The owning node opens it from its catalog record.
+
+**The catalog record names the owner (OD-2, shipped).** `Manager.Create`
+stamps `DatabaseMeta.OwnerNode` (`owner_node`) with `Manager.LocalNode()`,
+which `lifecycle` sets through `Manager.SetLocalNode` to the node's Raft
+address. `Manager.ownerFor` leaves it empty for a provisioned database, for
+`BackendRaft` and for any config carrying a Raft block (a raft-isolated
+tenant's databases are forced onto Raft by the service), and a standalone node
+has no local node to stamp. The field is additive to the record; no Raft
+opcode changes.
+
+`Manager.openRecord` consults `ownerRefusal` before it touches a store: a
+record whose owner is set and is not this node returns a
+`*placement.NotAReplicaError` with `ShardID` 0 and one replica, the owner
+(`NotAReplicaError.LocalBinding()` reports true). `ListForTenant` reports such
+a record with `StatusRemote` from the record alone (`remoteInfo`, which keeps
+`StatusDropping` for a record being dropped) and `OpenAll` skips it.
+
+`replicaforward.Locator.Forward` sends a local-binding refusal to its one
+replica's API endpoint for the request's protocol. It never writes the leader
+cache for it (shard 0 names no group), and wraps every failure (owner not a
+member, member read failed, send error, no answer) as
+`*database.BindingOwnerUnavailableError{TenantID, Name, Owner, Err}`, which
+`errclass` maps to Unavailable. pgwire and the MySQL server have no
+forwarding layer; the refusal reaches the client through `errclass` as it is.
 
 ### No `engine` field
 
@@ -1176,12 +1291,8 @@ Every database serves every engine, so nothing records one.
 
 - `DatabaseMeta` and `DatabaseConfig` have no `Engine` field, and there is no
   engine type.
-- `readMeta` decodes `meta.json` strictly (`json.Decoder.DisallowUnknownFields`):
-  a file carrying `"engine"`, or any other field this version does not
-  understand, is refused with `*database.LegacyMetadataError` naming the path
-  and the decode failure. Nothing is stripped or rewritten and there is no
-  migration; the database is recreated. A `meta.json` this version wrote never
-  carries the key, so the check costs nothing on the common path.
+- A catalog record carrying `"engine"`, like any field this build does not
+  know, is refused with `*database.CatalogReadError`.
 - The protobuf field 2 of `DatabaseCreateRequest` and `DatabaseInfoResponse` is
   `reserved 2; reserved "engine";`.
 - Every request is decoded strictly, by a generic rule rather than an
@@ -1354,7 +1465,10 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   through the holder authority; a reopen re-installs it; drop destroys the
   scope. `Holders(name)` answers `NotShamirBarrierError` for any database
   without one. `Manager.UpdateBarrier` refuses a strategy or M-of-N change, and
-  `RecordShamirScheme` records the M-of-N a completed rekey produced. The
+  `RecordShamirScheme` records the M-of-N a completed rekey produced on the
+  `*Database` the service resolved and authorized for the caller's tenant,
+  never by looking the name up again, since two tenants may each hold a
+  database of that name. The
   rekey has already completed when it runs, so a failure there is logged and
   the completed outcome is still returned: the barrier's own record of the
   scheme is the new one, and only the catalog's copy is stale.
@@ -1403,7 +1517,7 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   (a concurrent `Get` is refused with `DroppingError` rather than resolving
   the database and, were the fence not refused, an actual write to the
   backend is proven rather than merely asserting the resolution failed; the
-  fence survives a simulated crash because it is persisted in `meta.json`,
+  fence survives a simulated crash because it is persisted in the catalog record,
   and a restart followed by a retried `Drop` completes the job — closing
   and removing the backend the crash left open — rather than getting stuck
   because Status looks as though a drop already got that far; a failed
@@ -1447,7 +1561,7 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
   resolution across nodes; `DatabaseService.DropForTenant`/`Drop` commit the
   fence before reclaiming, leave it set and the entry intact when the final
   placement-entry removal fails rather than swallowing that failure, and a
-  retry recognizes the local catalog already being gone as "finish the
+  retry recognizes the catalog record already being gone as "finish the
   placement teardown" and completes it), **what a drop must
   NOT reclaim** (two tenants with a
   database of the same name and unattributable pre-namespace collection
@@ -1484,7 +1598,7 @@ Breaking rows land in one MINOR release, recorded in the CHANGELOG.
 ## Compaction policy
 
 A database's scheduled-compaction policy (`compaction.Policy` (`pkg/compaction`), the
-`compaction` block of `DatabaseConfig`, its `meta.json` record and
+`compaction` block of `DatabaseConfig`, its catalog record and
 `DatabaseInfo`) is **off unless its owning tenant set one**, and is set only by
 `UpdateDatabaseCompaction` on any transport, which requires `mvcc:compact`
 (`ScopeSelfStrict`) and refuses -- as not found -- a database the caller's

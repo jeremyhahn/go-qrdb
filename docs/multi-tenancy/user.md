@@ -110,6 +110,12 @@ qrdb tenant create --id acme --name "Acme Corp" \
      --so-username sam --so-csr sam/csr.pem --so-pin "$SO_PIN" --out ./acme
 ```
 
+The SO PIN goes only over TLS, as the barrier's secrets do: on a connection
+without it, a Unix socket included, `tenant create` with `--so-pin` is
+refused before anything is sent, with an error saying the SO PIN "is sent only
+over TLS; this connection is not TLS". A redirect to an `http://` URL or to
+another host is refused too. A tenant created without an SO is sent as before.
+
 `--out` writes `so-cert.pem` beside `admin-cert.pem`. On an isolated tenant the
 SO's account is created right after the admin's, when the admin runs
 `barrier-init`.
@@ -381,11 +387,11 @@ tenant:
 
 **An isolated tenant keeps its own identity.** For a `barrier`, `volume` or
 `raft` tenant, under either policy, its users, roles, role bindings, data-key
-keyring, invitations, CA and the certificates its CA issues are kept under the
-tenant's own key, not with the platform's, and its admin signs in through any
-node. The tenant's custodians, audit trail and database catalog stay with the
-platform. The policy decides only what an operator may do, so a tenant may be
-made strict, or the floor raised to `strict`, at any time.
+keyring, invitations, CA, the certificates its CA issues and its database
+catalog are kept under the tenant's own key, not with the platform's, and its
+admin signs in through any node. The tenant's custodians and audit trail stay
+with the platform. The policy decides only what an operator may do, so a tenant
+may be made strict, or the floor raised to `strict`, at any time.
 
 On a cluster, `tenant create` for an isolated tenant takes longer than for a
 `prefix` tenant. A node that has just joined answers a tenant's requests with a

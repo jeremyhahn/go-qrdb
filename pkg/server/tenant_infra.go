@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // listTenantsWhenReady lists tenants at boot, waiting out the ReadIndex
@@ -157,6 +158,23 @@ type TenantInfraConfig struct {
 	// defaults WithImportSessionLimits documents, not unbounded staging.
 	ImportSession qrdbconfig.ImportSessionConfig
 
+	// Index caps the secondary indexes of every database this builds,
+	// IsolationVolume and IsolationRaft alike (config.Index, "index:" in
+	// YAML), each shard on its own. The zero value leaves them unlimited.
+	Index qrdbconfig.IndexConfig
+
+	// TimeSeries caps the metric names of every tenant shard, under
+	// IsolationVolume and IsolationRaft alike (config.TimeSeries.MaxMetrics,
+	// "timeseries.max_metrics" in YAML), each shard on its own. The zero
+	// value leaves them unlimited.
+	TimeSeries qrdbconfig.TimeSeriesConfig
+
+	// WatchHub configures the watch hub of every database this builds,
+	// IsolationVolume and IsolationRaft alike: the node's watch.buffer_size
+	// and the watch.max_watchers limit the node's own hub shares. Nil
+	// leaves each hub at the package defaults, unlimited.
+	WatchHub []watch.HubOption
+
 	// SnapshotEntries and CompactionOverhead are the system shard's automatic
 	// snapshot cadence (raft.snapshot_entries, raft.compaction_overhead),
 	// given to every IsolationRaft shard, an isolated tenant's home group among
@@ -218,7 +236,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 			func(ctx context.Context, backend seal.StorageBackend, rootKeyPath string) error {
 				return database.RecoverInterruptedMigration(ctx, backend, rootKeyPath, nil)
 			}),
-			seal.WithStartupReadRetry(WhileSystemShardSettling))
+			seal.WithStartupReadRetry(func(ctx context.Context, op string, read func(context.Context) error) error {
+				return WhileSystemShardSettling(ctx, systemShardLeaders(cfg.Host), op, read)
+			}))
 	}
 
 	// Restore every per-tenant barrier (IsolationVolume + IsolationRaft) from
@@ -257,7 +277,10 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 	// a restart; tenants with no local barrier are deferred to lazy attach.
 	if cfg.BarrierReg != nil && cfg.TenantSvc != nil && cfg.VolumePoolConfigured {
 		ti.Hosts = NewTenantHostRegistryFromLookup(cfg.BarrierReg, cfg.TenantLookup, logger,
-			WithTenantHostImportSessionConfig(cfg.ImportSession))
+			WithTenantHostImportSessionConfig(cfg.ImportSession),
+			WithTenantHostIndexConfig(cfg.Index),
+			WithTenantHostTimeSeriesConfig(cfg.TimeSeries),
+			WithTenantHostWatchHubOptions(cfg.WatchHub...))
 		if cfg.ClusterSealer != nil {
 			logger.Info("start: volume tenants attach on first access; their cluster seal records are not read yet")
 		} else if err := reattachVolumeTenants(cfg.Ctx, cfg.TenantSvc, cfg.BarrierReg, ti.Hosts, logger); err != nil {
@@ -298,6 +321,9 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 		}
 		raftOpts = append(raftOpts,
 			WithImportSessionConfig(cfg.ImportSession),
+			WithIndexConfig(cfg.Index),
+			WithTimeSeriesConfig(cfg.TimeSeries),
+			WithWatchHubOptions(cfg.WatchHub...),
 			WithSnapshotSettings(cfg.SnapshotEntries, cfg.CompactionOverhead),
 			WithLeaseConfig(cfg.Lease))
 		ti.Raft = NewRaftBackendFactoryFromManager(
@@ -508,8 +534,8 @@ func reattachRaftTenants(
 		}
 		// Eagerly re-start every dedicated raft database shard owned by this
 		// tenant that the local manager knows about. The databases were
-		// re-opened by dbManager.OpenAll (placeholder backend + meta.json
-		// carrying the persisted shard ID); here we re-bind the live shard on
+		// opened from the database catalog (placeholder backend + the
+		// catalog record carrying the persisted shard ID); here we re-bind the live shard on
 		// the shared host. Databases not present locally are attached by the
 		// reconciler instead.
 		for _, info := range allDatabases {

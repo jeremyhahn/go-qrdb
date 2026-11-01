@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -46,9 +47,11 @@ type TenantSOConfig struct {
 	// ChainPEM holds intermediates for CertPEM's chain. Optional.
 	ChainPEM []byte
 
-	// PIN is the SO's second factor, committed through
-	// Dependencies.SOPINs. The seam wipes it once it is committed.
-	PIN []byte
+	// PIN is the SO's second factor, sealed by the caller with
+	// secure.NewSecret and committed through Dependencies.SOPINs.
+	// ProvisionTenant takes it over: it destroys the Secret on return, on
+	// every path, committed, failed or refused.
+	PIN *secure.Secret
 }
 
 // SOPINSetter commits a tenant's SO PIN: the second factor the SO gate
@@ -86,7 +89,7 @@ var accountKinds = map[string]accountKind{
 // soPlan is a judged TenantSOConfig: the SO's name, PIN and credential plan.
 type soPlan struct {
 	username string
-	pin      []byte
+	pin      *secure.Secret
 	plan     *adminPlan
 	// isAdmin marks a standard-posture SO that is the first admin itself:
 	// the admin's account takes the so role and keeps its one credential.
@@ -111,7 +114,7 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 		return nil, &IncompleteTenantSOError{Field: "so_username"}
 	case len(so.CSRPEM) == 0 && len(so.CertPEM) == 0:
 		return nil, &IncompleteTenantSOError{Field: "so_csr_pem or so_cert_pem"}
-	case len(so.PIN) == 0:
+	case so.PIN == nil || !so.PIN.IsAlive():
 		return nil, &IncompleteTenantSOError{Field: "so_pin"}
 	case len(so.CSRPEM) > 0 && len(so.CertPEM) > 0:
 		return nil, &ConflictingSOCredentialError{}
@@ -372,8 +375,13 @@ func recordAdminAsPendingSO(ctx context.Context, tenantID string, deps Dependenc
 // enrollment: the PIN record has no undo, and an undone provisioning deletes
 // the tenant, whose id is then retired and never reused. A convergent re-run
 // finds it already committed and keeps it.
-func commitSOPIN(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, pin []byte) error {
-	if err := deps.SOPINs.SetSOPIN(ctx, cfg.TenantID, pin); err != nil {
+func commitSOPIN(ctx context.Context, cfg TenantProvisionConfig, deps Dependencies, pin *secure.Secret) error {
+	// The PIN is opened for exactly this call; the opened buffer is
+	// destroyed when it returns.
+	err := pin.WithBytes(ctx, func(b []byte) error {
+		return deps.SOPINs.SetSOPIN(ctx, cfg.TenantID, b)
+	})
+	if err != nil {
 		if !cfg.Exclusive && errors.Is(err, auth.ErrSOPINAlreadySet) {
 			return nil
 		}

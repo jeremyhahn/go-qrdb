@@ -37,6 +37,8 @@ const (
 	fwdAsNoKV
 	// fwdAsOtherTenant belongs to a tenant that does not exist.
 	fwdAsOtherTenant
+	// fwdAsSystem is the system tenant's bootstrap admin.
+	fwdAsSystem
 )
 
 // certFor returns the client certificate and key of caller.
@@ -46,6 +48,8 @@ func (c *fwdCluster) certFor(caller fwdCaller) (string, string) {
 		return c.noKVCert, c.noKVKey
 	case fwdAsOtherTenant:
 		return c.otherCert, c.otherKey
+	case fwdAsSystem:
+		return c.sysCert, c.sysKey
 	}
 	return c.writerCert, c.writerKey
 }
@@ -63,6 +67,8 @@ type fwdAnswer struct {
 	refusal  map[string]string
 	denied   bool
 	notFound bool
+	// unavailable is the transport's unavailability, the refusal included.
+	unavailable bool
 	// detail describes the answer for a failure message.
 	detail string
 }

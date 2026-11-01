@@ -457,46 +457,6 @@ func TestBuildNodeReport(t *testing.T) {
 	}
 }
 
-// blockDatabasesDir puts a regular file where the database manager expects
-// its databases directory, so OpenAll cannot read it.
-func blockDatabasesDir(t *testing.T, dataDir string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dataDir, "databases"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// wantDatabaseManagerOpenError asserts err is the typed refusal a node
-// returns when its database manager cannot read the databases directory.
-func wantDatabaseManagerOpenError(t *testing.T, n *Node, err error) {
-	t.Helper()
-	var create *StorageCreateError
-	var meta *database.MetaReadError
-	if n != nil || !errors.As(err, &create) || create.Backend != "database-manager" || !errors.As(err, &meta) {
-		t.Fatalf("node = %v, err = %v; want *StorageCreateError for the database manager wrapping *database.MetaReadError", n, err)
-	}
-}
-
-func TestNewStandaloneNode_DatabaseManagerOpenFailure(t *testing.T) {
-	t.Run("unsealed", func(t *testing.T) {
-		dataDir := t.TempDir()
-		cfg := qrdbconfig.DefaultConfig()
-		cfg.Raft.DataDir = dataDir
-		cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
-		cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
-		cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
-		blockDatabasesDir(t, dataDir)
-		n, err := NewStandaloneNode(context.Background(), cfg, nil)
-		wantDatabaseManagerOpenError(t, n, err)
-	})
-	t.Run("auto-unsealed", func(t *testing.T) {
-		dataDir := t.TempDir()
-		blockDatabasesDir(t, dataDir)
-		n, err := NewStandaloneNode(context.Background(), sealedStandaloneConfig(t, dataDir), nil, WithSealPassphrase([]byte("correct horse")))
-		wantDatabaseManagerOpenError(t, n, err)
-	})
-}
-
 // A malformed auth setting fails boot at the step that first parses it --
 // the service build for the audit and binding policies, the server wiring
 // (the last step) for the revocation cache TTL -- and the node tears down

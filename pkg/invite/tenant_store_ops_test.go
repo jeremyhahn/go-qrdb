@@ -152,6 +152,48 @@ func TestTenantStoreRedeemFailsClosedOnASealedTenant(t *testing.T) {
 	}
 }
 
+func TestTenantStoreActivateRefusesALaterReissueWithinTheTenant(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewTenantStore(newStubResolver())
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+
+	token, _, err := store.Create(ctx, "user-1", "tenant-a", time.Hour)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.Redeem(ctx, "tenant-a", token); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	if err := store.Activate(ctx, "user-1", "tenant-a", time.Now()); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	if _, _, err := store.Reissue(ctx, "user-1", "tenant-a", time.Hour); !errors.Is(err, ErrUserActive) {
+		t.Fatalf("Reissue after Activate = %v, want ErrUserActive", err)
+	}
+	// The activation is the tenant's own: the same user id in another
+	// tenant was never invited there.
+	if err := store.Activate(ctx, "user-1", "tenant-b", time.Now()); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("Activate in another tenant = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestTenantStoreActivateFailsClosedOnASealedTenant(t *testing.T) {
+	resolver := newStubResolver()
+	resolver.fail["tenant-sealed"] = errors.New("tenant is sealed")
+
+	store, err := NewTenantStore(resolver)
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+
+	if err := store.Activate(context.Background(), "user-1", "tenant-sealed", time.Now()); err == nil {
+		t.Fatal("Activate on a sealed tenant must fail")
+	}
+}
+
 // TestErrorMessagesNameTheirOperation covers the typed errors. Invitation
 // failures surface to an operator issuing or redeeming a credential, so the
 // message has to say which step failed.

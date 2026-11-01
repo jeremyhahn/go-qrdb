@@ -607,6 +607,27 @@ func TestUnixProtoToVectorData_InvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestUnixProtoToNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	got, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{
+		Namespace:    "ns",
+		Dimension:    4,
+		IndexConfig:  map[string]string{"ef_construction": "321"},
+		MetadataJson: `{"owner":"team-a"}`,
+	})
+	if err != nil {
+		t.Fatalf("protoToNamespaceInfo: %v", err)
+	}
+	if got.Dimension != 4 || got.IndexConfig["ef_construction"] != "321" || got.Metadata["owner"] != "team-a" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestUnixProtoToNamespaceInfo_InvalidMetadata(t *testing.T) {
+	if _, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{Namespace: "ns", MetadataJson: "not-json"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestUnixProtoToSearchResults_Valid(t *testing.T) {
 	in := []*pb.VectorSearchResultProto{
 		{Id: "1", Score: 0.9, Vector: []float32{0.1}, MetadataJson: `{"a":"b"}`},

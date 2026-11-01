@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -136,7 +137,7 @@ func newTestLogService(t *testing.T, host *mockHost, signers vlog.HeadSignerProv
 // database it has no record of, which the log service lets through.
 func noDatabases(t *testing.T) *database.Manager {
 	t.Helper()
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return mgr
 }

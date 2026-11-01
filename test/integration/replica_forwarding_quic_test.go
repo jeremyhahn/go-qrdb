@@ -92,6 +92,8 @@ func quicAnswer(st uint16, body []byte, err error) fwdAnswer {
 		denied:   st == wire.StatusPermissionDenied,
 		notFound: st == wire.StatusNotFound,
 		detail:   wire.StatusName(st),
+
+		unavailable: st == wire.StatusUnavailable,
 	}
 	if st != wire.StatusOK {
 		if p, derr := wire.DecodeErrorPayload(body); derr == nil {

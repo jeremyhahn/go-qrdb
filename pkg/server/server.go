@@ -50,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -108,8 +109,22 @@ var (
 )
 
 // startEtcdFn is a function that creates and starts an etcd protocol server
-// for a specific database.
-type startEtcdFn func(s *Server, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error)
+// for a specific tenant's database.
+type startEtcdFn func(s *Server, tenantID, dbName string, cfg *database.EtcdConfig) (EtcdProtocolServer, error)
+
+// etcdServerKey identifies a running etcd protocol server by the tenant
+// owning its database and the database's name: two tenants may each hold a
+// database of the same name, and each gets its own listener.
+type etcdServerKey struct {
+	tenantID string
+	database string
+}
+
+// newEtcdServerKey returns the key for tenantID's database dbName, with the
+// empty tenant read as the system tenant.
+func newEtcdServerKey(tenantID, dbName string) etcdServerKey {
+	return etcdServerKey{tenantID: tenantid.Normalize(tenantID), database: dbName}
+}
 
 // stopEtcdFn is a function that stops an etcd protocol server.
 type stopEtcdFn func(srv EtcdProtocolServer)
@@ -159,12 +174,13 @@ type Server struct {
 	adminSvc    service.AdminServicer
 	restSrv     *rest.Server
 	grpcSrv     *grpcapi.Server
+	clientLimit *clientlimit.Limiter // shared by every transport (go-qrdb#1197); nil when unset
 	quicSrv     *quicapi.Server
 	unixSrv     *unixapi.Server
 	mcpSrv      *mcpapi.Server
 	mysqlSrv    SQLProtocolServer
 	pgsqlSrv    SQLProtocolServer
-	etcdServers sync.Map // database name (string) -> EtcdProtocolServer
+	etcdServers sync.Map // etcdServerKey -> EtcdProtocolServer
 	wg          sync.WaitGroup
 	logger      *slog.Logger
 	opts        serverOptions
@@ -276,6 +292,11 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+
+	// defaultRetention is the retention the scheduler applies to a metric
+	// with no policy, or a policy of duration zero. Zero keeps its points.
+	// See WithDefaultRetention.
+	defaultRetention time.Duration
 	// collectionSweepLeader reports whether this node leads the system
 	// shard; see WithCollectionSweepLeader. Nil means a single node.
 	collectionSweepLeader func() bool
@@ -1478,6 +1499,7 @@ func New(cfg *config.Config, kvSvc service.KVServicer, adminSvc service.AdminSer
 	s.wireReclaimStoreResolver()
 	s.wireCompactionPolicies()
 	s.wireProvisioningAuthorization()
+	s.wireRoleGrantGuard()
 	s.wireTenantReplicaHosts()
 
 	return s
@@ -1512,6 +1534,18 @@ func (s *Server) wireProvisioningAuthorization() {
 		tenants = s.opts.tenantSvc
 	}
 	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
+}
+
+// wireRoleGrantGuard wraps the role service every transport is handed in
+// role.NewGrantGuard over the authorizer the transports authorize against, so
+// a role create or update over REST, gRPC, QUIC, Unix or MCP is refused when
+// it would grant a permission its caller does not hold (go-qrdb#1278). The
+// embedded transport does not reach this service: sdk/go/node's
+// buildEmbeddedOpts wraps the role service it hands that transport in the same
+// guard, over the same authorizer. Without authentication there is no authorizer, and the service is left as
+// it is.
+func (s *Server) wireRoleGrantGuard() {
+	s.opts.roleSvc = role.NewGrantGuard(s.opts.roleSvc, s.opts.authMW.Authorizer())
 }
 
 // wireTenantDataProbe gives the tenant service the data probe its
@@ -1743,6 +1777,7 @@ func (s *Server) Start() error {
 		// sockets back half-used: they are closed, as a caller that gave
 		// them up would otherwise leak them.
 		s.closePreboundSockets()
+		s.closeClientLimiter()
 		return err
 	}
 	return nil
@@ -1751,6 +1786,9 @@ func (s *Server) Start() error {
 // start is Start without the pre-bound socket cleanup.
 func (s *Server) start() error {
 	if err := s.checkPreboundSockets(); err != nil {
+		return err
+	}
+	if err := s.openClientLimiter(); err != nil {
 		return err
 	}
 	// Refused before any transport binds: /v1/ca/bootstrap has one owner and
@@ -1972,6 +2010,7 @@ func (s *Server) Stop() {
 	s.stopREST()
 	s.stopModules()
 	s.stopReplicaForwarder()
+	s.closeClientLimiter()
 	s.wg.Wait()
 	s.logger.Info("server orchestrator stopped")
 }
@@ -2065,6 +2104,7 @@ func (s *Server) startREST() error {
 	restOpts = append(restOpts,
 		rest.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		rest.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		rest.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.restListener != nil {
 		ln, err := newLifetimeListener("rest", s.opts.restListener)
@@ -2211,8 +2251,8 @@ func (s *Server) startREST() error {
 	if len(s.opts.caBootstrapCert) > 0 {
 		restOpts = append(restOpts, rest.WithCABootstrap(s.opts.caBootstrapCert))
 	}
-	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(dbName string, cfg *database.EtcdConfig) error {
-		return s.StartEtcd(dbName, cfg)
+	restOpts = append(restOpts, rest.WithOnEtcdUpdated(func(tenantID, dbName string, cfg *database.EtcdConfig) error {
+		return s.StartEtcd(tenantID, dbName, cfg)
 	}))
 	if s.opts.webUI != nil {
 		restOpts = append(restOpts, rest.WithWebUI(s.opts.webUI))
@@ -2377,9 +2417,10 @@ func (s *Server) streamAdmitter() service.StreamAdmitter {
 // listenerWatch is the singleton watch service every listener receives: the
 // WithWatch service under the same stream admitter the registry installs, so
 // a watch opened before its tenant was suspended ends on its next event in
-// both configurations.
+// both configurations. Every watch a listener opens is a client's, so it
+// counts against watch.max_watchers (service.NewCountedWatch).
 func (s *Server) listenerWatch() service.WatchServicer {
-	return service.NewAdmittedWatch(s.opts.watchSvc, s.streamAdmitter())
+	return service.NewAdmittedWatch(service.NewCountedWatch(s.opts.watchSvc), s.streamAdmitter())
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -2396,6 +2437,7 @@ func (s *Server) startGRPC() error {
 	grpcOpts = append(grpcOpts,
 		grpcapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()),
 		grpcapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		grpcapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.grpcListener != nil {
 		ln, err := newLifetimeListener("grpc", s.opts.grpcListener)
@@ -2577,6 +2619,7 @@ func (s *Server) startQUIC() error {
 		quicapi.WithMaxPayloadBytes(s.config.Transport.ResolvedMaxMessageBytes()),
 		quicapi.WithMaxStreamsPerConn(s.config.Transport.ResolvedMaxStreamsPerConn()),
 		quicapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		quicapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.quicPacketConn != nil {
 		quicOpts = append(quicOpts, quicapi.WithPacketConn(newLifetimePacketConn(s.opts.quicPacketConn)))
@@ -2747,6 +2790,7 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
 	}
 	unixOpts = append(unixOpts, unixapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()))
+	unixOpts = append(unixOpts, unixapi.WithClientLimiter(s.clientLimit))
 	if s.opts.userSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserService(s.opts.userSvc))
 	}
@@ -2923,6 +2967,7 @@ func (s *Server) startMCP() error {
 	mcpOpts = append(mcpOpts,
 		mcpapi.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		mcpapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		mcpapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.mcpListener != nil {
 		ln, err := newLifetimeListener("mcp", s.opts.mcpListener)
@@ -3145,35 +3190,35 @@ func (s *Server) PgSQLAddr() string {
 	return ""
 }
 
-// StartEtcd starts an etcd protocol server for the named database. If etcd
-// support is not compiled into this binary, it refuses with the same
-// service.CapabilityUnsupportedError every transport already maps to
+// StartEtcd starts an etcd protocol server for tenantID's database dbName.
+// If etcd support is not compiled into this binary, it refuses with the
+// same service.CapabilityUnsupportedError every transport already maps to
 // Unimplemented, naming the missing build tag, rather than silently
 // accepting a configuration it can never serve.
-func (s *Server) StartEtcd(dbName string, cfg *database.EtcdConfig) error {
+func (s *Server) StartEtcd(tenantID, dbName string, cfg *database.EtcdConfig) error {
 	if startEtcdServerFn == nil {
 		return notImplemented("etcd", "requires build tag qrdb_etcd")
 	}
-	_, err := startEtcdServerFn(s, dbName, cfg)
+	_, err := startEtcdServerFn(s, tenantID, dbName, cfg)
 	return err
 }
 
-// StopEtcd stops the etcd protocol server for the named database if one
-// is running.
-func (s *Server) StopEtcd(dbName string) {
+// StopEtcd stops the etcd protocol server for tenantID's database dbName if
+// one is running.
+func (s *Server) StopEtcd(tenantID, dbName string) {
 	if stopEtcdServerFn == nil {
 		return
 	}
-	val, ok := s.etcdServers.LoadAndDelete(dbName)
+	val, ok := s.etcdServers.LoadAndDelete(newEtcdServerKey(tenantID, dbName))
 	if ok {
 		stopEtcdServerFn(val.(EtcdProtocolServer)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 }
 
-// EtcdAddr returns the etcd server's listener address for the given
-// database, or empty string if etcd is not running for that database.
-func (s *Server) EtcdAddr(dbName string) string {
-	val, ok := s.etcdServers.Load(dbName)
+// EtcdAddr returns the listener address of the etcd server for tenantID's
+// database dbName, or empty string if etcd is not running for it.
+func (s *Server) EtcdAddr(tenantID, dbName string) string {
+	val, ok := s.etcdServers.Load(newEtcdServerKey(tenantID, dbName))
 	if !ok {
 		return ""
 	}

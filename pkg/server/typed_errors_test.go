@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
@@ -555,7 +556,7 @@ type noopEncryptionMigrator struct{ service.EncryptionMigrator }
 // database.Manager rooted at a temp dir, with "system" as the system tenant.
 func newBarrierResolveRegistry(t *testing.T) (*restServiceRegistry, *database.Manager) {
 	t.Helper()
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return &restServiceRegistry{
 		dbManager:      mgr,

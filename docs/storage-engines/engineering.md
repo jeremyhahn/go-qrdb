@@ -100,12 +100,16 @@ Windows exactly as one over `vfs.Default` does.
 ```go
 // pkg/server/lifecycle
 func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor,
-	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+	storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error)
 ```
 
 `NewLocalStorage` opens `pebble` and `file` through `enc`; it is the
 constructor every standalone node store goes through — the daemon, the SDK
-node and the embedded server. A raft replica's `file` storage takes the same
+node and the embedded server. It opens `pebble` with `storageCfg`'s
+`CacheSize`, `WALDir` and `MaxOpenFiles` (a zero keeps
+`pebbleStorage.DefaultConfig`'s value) and `objstore` with its `Objstore`
+section; the embedded server's `standalone.ServerConfig` carries the three
+Pebble fields itself. A raft replica's `file` storage takes the same
 encryptor from `statemachine.StorageConfig.Encryptor`.
 
 `pkg/database` — re-encrypting a `file` store under a new key, the file
@@ -205,9 +209,9 @@ The volume pool surface is in
 ```yaml
 storage:
   backend: pebble        # pebble | memory | file | objstore
-  cache_size: 0          # pebble block cache bytes; 0 = pebble default
+  cache_size: 0          # pebble block cache bytes; 0 = 512 MiB
   wal_dir: ""            # separate pebble WAL directory; empty = data dir
-  max_open_files: 0      # 0 = pebble default
+  max_open_files: 0      # 0 = 2000
   objstore:              # used when a backend is objstore
     provider: local      # local | memory | s3 | gcs | azure
     settings: {}         # passed verbatim to the go-objstore factory; never a credential
@@ -215,6 +219,10 @@ storage:
       key_file: ""       # owner-only file holding the access key ID
       secret_file: ""    # owner-only file holding the secret (alone: an account key)
 ```
+
+`cache_size`, `wal_dir` and `max_open_files` tune the standalone data plane's
+Pebble store, the one `NewLocalStorage` opens. A raft replica's state machines
+open their own Pebble stores and do not read them.
 
 The provider credential is a **file reference**, never a value. A credential
 setting in `settings` (go-objstore's `common.RejectCredentialSettings` list,
@@ -428,7 +436,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   property tests); objstore object-name encoding. Every function has a happy
   path and an error path.
 - **Parity cells**: the storage parity tests and the `sdk/go/conformance`
-  matrix run every engine through the same cells; the file-engine cells run on
+  matrix run every engine through the same cells. The binary-key cells
+  (`pkg/storage/binary_parity_test.go`, `binary_key_parity_test.go`) hold every
+  engine to the same answer for every single byte, a NUL-prefixed table under
+  scans and `List`, keys shaped like paths (separators, `..`, a drive letter,
+  control characters, an embedded NUL), a key long enough that objstore names
+  it by hash, and binary keys through a batch, a rollback and a snapshot. The
+  file-engine cells run on
   tmpfs (`pkg/testutil/memdir`), so a deadline measures the code, not the disk.
 - **Fault-injection seams**: a slow fake sync for group commit, a failing
   record sync recovered from the journal, failing lock and unlock calls, and

@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -259,7 +260,7 @@ func TestDatabaseHolders_Refusals(t *testing.T) {
 		t.Fatalf("holders of a database with no Shamir barrier = %v, want NotShamirBarrierError", err)
 	}
 
-	noBarrier, ok := NewDatabaseService(database.NewManager(nil, t.TempDir())).(*DatabaseService)
+	noBarrier, ok := NewDatabaseService(databasetest.NewManager(nil, t.TempDir())).(*DatabaseService)
 	if !ok {
 		t.Fatal("not a *DatabaseService")
 	}

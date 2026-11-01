@@ -264,9 +264,13 @@ func TestCLIMultiProtocolRolesCreateTenant(t *testing.T) {
 			ts := testTimestamp()
 			roleName := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
 			tenantID := fmt.Sprintf("role-tenant-%s-%d", proto, ts)
-			// The tenant's delete, registered by newTenantBootstrapAdmin,
-			// removes the role with it.
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
+			// The kv:get role needs a creator holding kv:get, so a second
+			// account holding Admin and Operator writes it (the grant rule).
+			// It does not hold SO, the one built-in role that carries
+			// roles:delete, so the delete refused below is the Admin's own
+			// refusal. The tenant's delete, registered by
+			// newTenantBootstrapAdmin, removes the role with it.
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create a role with --tenant-id.
 			stdout, stderr, err := admin.exec(t, cfg, proto,
@@ -320,10 +324,12 @@ func TestCLIMultiProtocolRolesListPagination(t *testing.T) {
 
 			ts := testTimestamp()
 			tenantID := fmt.Sprintf("role-page-%s-%d", proto, ts)
+			// The kv:get roles need a creator holding kv:get, so a second
+			// account holding Admin and Operator writes them (the grant rule).
 			// The tenant's delete, registered by newTenantBootstrapAdmin,
 			// removes the roles with it: roles:delete is the Security
 			// Officer's alone, and the tenant Admin is not one.
-			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID)
+			admin := newTenantBootstrapAdmin(t, cfg, proto, tenantID).seatProvisioner(t, cfg, proto, false)
 
 			// Create 3 roles for pagination testing.
 			for i := 1; i <= 3; i++ {

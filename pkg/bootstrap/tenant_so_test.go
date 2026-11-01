@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -52,7 +53,19 @@ var _ SOPINSetter = (*auth.SOAuthenticator)(nil)
 // soConfig is a complete TenantSOConfig over a fresh key.
 func soConfig(t *testing.T) *TenantSOConfig {
 	t.Helper()
-	return &TenantSOConfig{Username: "officer", CSRPEM: validAdminCSR(t), PIN: []byte("so-pin-1234")}
+	return &TenantSOConfig{Username: "officer", CSRPEM: validAdminCSR(t), PIN: sealedPIN(t, "so-pin-1234")}
+}
+
+// sealedPIN seals pin into a *secure.Secret, as a caller of ProvisionTenant
+// does. The test's cleanup destroys it in case ProvisionTenant never ran.
+func sealedPIN(t *testing.T, pin string) *secure.Secret {
+	t.Helper()
+	s, err := secure.NewSecret(context.Background(), []byte(pin))
+	if err != nil {
+		t.Fatalf("secure.NewSecret: %v", err)
+	}
+	t.Cleanup(s.Destroy)
+	return s
 }
 
 // provisionWithSO provisions tenant acme, prefix isolation, with so.
@@ -136,7 +149,7 @@ func TestProvisionTenant_SO_UsesTheInjectedSignerAndBinder(t *testing.T) {
 
 func TestProvisionTenant_SO_UsesTheInjectedBYOCVerification(t *testing.T) {
 	root := newOnboardingRoot(t, "Acme Root")
-	so := &TenantSOConfig{Username: "officer", CertPEM: onboardingPEM(root.clientLeaf(t, "officer", "acme")), PIN: []byte("pin")}
+	so := &TenantSOConfig{Username: "officer", CertPEM: onboardingPEM(root.clientLeaf(t, "officer", "acme")), PIN: sealedPIN(t, "pin")}
 	signer := &fakeSigner{cert: realCertPEM(t)}
 	users := &fakeCertBindingUsers{}
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
@@ -202,6 +215,9 @@ func TestProvisionTenant_SO_RefusedBeforeTheTenantIsCreated(t *testing.T) {
 			}
 			if len(tenants.createCalls) != 0 || len(users.createCalls) != 0 {
 				t.Fatalf("tenant creates = %d, user creates = %d; want nothing written", len(tenants.createCalls), len(users.createCalls))
+			}
+			if so.PIN != nil && so.PIN.IsAlive() {
+				t.Fatal("the refused SO's PIN is still alive; want it destroyed")
 			}
 		})
 	}

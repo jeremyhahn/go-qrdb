@@ -387,6 +387,19 @@ func TestUpdateTenantEntitlements_Closed(t *testing.T) {
 	}
 }
 
+func TestUpdateTenantEntitlements_NilRequest(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "UpdateTenantEntitlements" || !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // mcpTenantInfoToTransport
 // ---------------------------------------------------------------------------

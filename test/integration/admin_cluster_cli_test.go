@@ -349,7 +349,7 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "capabilities")
+			out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "capabilities")
 			if err != nil {
 				t.Fatalf("[%s] admin capabilities: %v\noutput: %s", proto.name, err, out)
 			}
@@ -366,7 +366,7 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 			}
 
 			// Table-format sanity: every feature name must be listed.
-			tableOut, err := runCLIProto(t, node, proto, "admin", "capabilities")
+			tableOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "capabilities")
 			if err != nil {
 				t.Fatalf("[%s] admin capabilities (table): %v\noutput: %s", proto.name, err, tableOut)
 			}
@@ -393,7 +393,11 @@ func TestAdminCapabilities_CLI_PerProtocol(t *testing.T) {
 // lands on a node that has since become the leader is served there, which is
 // equally correct, and a follower that has since lost track of the leader
 // answers with its own refusal, which fails the test rather than being
-// retried.
+// retried. The one refusal any step that is expected to succeed retries,
+// within its own cliStepTimeout, is the auth middleware's retryable
+// UNAVAILABLE, answered before any handler runs
+// (runCLIProtoRetryingAuthRefusal): every request, read or write, membership
+// or not, passes the same role lookup first.
 func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 	nodes, spares := start3NodeMultiProtocolCluster(t)
 
@@ -436,7 +440,7 @@ func TestAdminCluster_CLI_PerProtocol(t *testing.T) {
 func testAdminTopologyOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, role string) {
 	t.Helper()
 
-	out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "topology")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "topology")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin topology: %v\noutput: %s", proto.name, role, err, out)
 	}
@@ -469,7 +473,7 @@ func testAdminTopologyOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 
 	// Table-format sanity.
-	tableOut, err := runCLIProto(t, node, proto, "admin", "topology")
+	tableOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "topology")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin topology (table): %v\noutput: %s", proto.name, role, err, tableOut)
 	}
@@ -502,46 +506,32 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 
 	key := "admincluster/replica-states/" + proto.name
 	writer := adminClusterFollower(t, nodes, 30*time.Second)
-	if out, err := runCLIProto(t, writer, proto, "kv", "put", key, "replica-state-value"); err != nil {
+	if out, err := runCLIProtoRetryingAuthRefusal(t, writer, proto, "kv", "put", key, "replica-state-value"); err != nil {
 		t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, key, err, out)
 	}
 
+	// Shard 1 keeps applying the node's own background proposals, so its
+	// applied index moves under the poll. Each round reads the three replicas
+	// at once, and every (index, hash) a replica reports is kept across rounds:
+	// the check passes once all three have reported one hash at one index,
+	// whether or not they did so in the same round.
 	var readings [3]adminReplicaStatesDisplay
+	seen := replicaReadingsSeen{}
+	var agreed replicaReading
 	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
-		for i, node := range nodes {
-			out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
-			if err != nil {
-				t.Fatalf("[%s] node %d admin replica-states: %v\noutput: %s", proto.name, i, err, out)
-			}
-			var r adminReplicaStatesDisplay
-			if jerr := json.Unmarshal([]byte(out), &r); jerr != nil {
-				t.Fatalf("[%s] node %d decode `admin replica-states` JSON: %v\noutput: %s", proto.name, i, jerr, out)
-			}
-			if len(r.Replicas) != 1 || r.Replicas[0].ShardID != 1 {
-				t.Fatalf("[%s] node %d admin replica-states --shard-id 1: want exactly one shard-1 replica, got %+v", proto.name, i, r)
-			}
-			readings[i] = r
-		}
-		return replicaReadingsAgree(readings)
+		readings = readReplicaStatesConcurrently(t, nodes, proto)
+		var ok bool
+		agreed, ok = seen.add(readings)
+		return ok
 	}) {
-		r0 := readings[0].Replicas[0]
-		for _, r := range readings {
-			if r.Replicas[0].AppliedIndex != r0.AppliedIndex {
-				t.Fatalf("[%s] the 3 replicas of shard 1 never reported one applied index: %+v", proto.name, readings)
-			}
-		}
-		for i, r := range readings {
-			if r.Replicas[0].Hash != r0.Hash {
-				t.Fatalf("[%s] shard 1 at applied index %d: node %d hash %016x, node 0 hash %016x; replicas at one index must agree",
-					proto.name, r.Replicas[0].AppliedIndex, i, r.Replicas[0].Hash, r0.Hash)
-			}
-		}
+		t.Fatalf("[%s] the 3 replicas of shard 1 never reported one hash at one applied index across %d distinct readings; last round: %+v",
+			proto.name, len(seen), readings)
 	}
 
 	// A shard holding the key just written has applied entries and a
 	// non-empty state; zeroes would agree without proving anything.
-	if r := readings[0].Replicas[0]; r.AppliedIndex == 0 || r.Hash == 0 {
-		t.Fatalf("[%s] shard 1 reported applied index %d hash %d; want both non-zero", proto.name, r.AppliedIndex, r.Hash)
+	if agreed.AppliedIndex == 0 || agreed.Hash == 0 {
+		t.Fatalf("[%s] shard 1 reported applied index %d hash %d; want both non-zero", proto.name, agreed.AppliedIndex, agreed.Hash)
 	}
 	nodeIDs := map[string]bool{}
 	replicaIDs := map[uint64]bool{}
@@ -553,7 +543,7 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 		t.Fatalf("[%s] want 3 distinct nodes and replicas answering, got %+v", proto.name, readings)
 	}
 
-	tableOut, err := runCLIProto(t, nodes[0], proto, "admin", "replica-states", "--shard-id", "1")
+	tableOut, err := runCLIProtoRetryingAuthRefusal(t, nodes[0], proto, "admin", "replica-states", "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin replica-states (table): %v\noutput: %s", proto.name, err, tableOut)
 	}
@@ -564,25 +554,77 @@ func testAdminReplicaStatesOverProtocol(t *testing.T, nodes [3]*multiProtoNode, 
 	}
 }
 
-// replicaReadingsAgree reports whether the three shard-1 readings name one
-// applied index and one state hash.
+// readReplicaStatesConcurrently reads `admin replica-states --shard-id 1`
+// from the three nodes at once, so the readings of one round are as close in
+// time as three CLI processes allow. A failed or malformed reading fails the
+// test from the calling goroutine.
+func readReplicaStatesConcurrently(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol) [3]adminReplicaStatesDisplay {
+	t.Helper()
+	var (
+		readings [3]adminReplicaStatesDisplay
+		outs     [3]string
+		errs     [3]error
+		wg       sync.WaitGroup
+	)
+	for i, node := range nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outs[i], errs[i] = runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "replica-states", "--shard-id", "1")
+		}()
+	}
+	wg.Wait()
+	for i := range nodes {
+		if errs[i] != nil {
+			t.Fatalf("[%s] node %d admin replica-states: %v\noutput: %s", proto.name, i, errs[i], outs[i])
+		}
+		if jerr := json.Unmarshal([]byte(outs[i]), &readings[i]); jerr != nil {
+			t.Fatalf("[%s] node %d decode `admin replica-states` JSON: %v\noutput: %s", proto.name, i, jerr, outs[i])
+		}
+		if r := readings[i]; len(r.Replicas) != 1 || r.Replicas[0].ShardID != 1 {
+			t.Fatalf("[%s] node %d admin replica-states --shard-id 1: want exactly one shard-1 replica, got %+v", proto.name, i, r)
+		}
+	}
+	return readings
+}
+
+// replicaReading is one replica's reported state: its applied index and the
+// hash it reported with it.
+type replicaReading struct {
+	AppliedIndex uint64
+	Hash         uint64
+}
+
+// replicaReadingsSeen records, for every reading reported so far, which of
+// the three nodes reported it (bit i for node i).
 //
 // A single reading is not an atomic (index, hash) pair: go-quicraft's
 // Host.StateMachineHash loads the applied index and then hashes the state
 // machine, and on the concurrent and on-disk tiers the hash runs alongside
 // Update while the index advances only after a batch has applied. A replica
 // can therefore report index i with the hash of a later state, so equal
-// indexes with unequal hashes in one round are not yet a divergence. The poll
-// asks again instead: a transient pair resolves on the next reading, while a
-// real divergence never converges and fails the test at its deadline.
-func replicaReadingsAgree(readings [3]adminReplicaStatesDisplay) bool {
-	r0 := readings[0].Replicas[0]
-	for _, r := range readings[1:] {
-		if r.Replicas[0].AppliedIndex != r0.AppliedIndex || r.Replicas[0].Hash != r0.Hash {
-			return false
+// indexes with unequal hashes are not yet a divergence, and the record keeps
+// every hash reported at an index rather than the first. A real divergence
+// never yields one hash from all three replicas at one index and fails the
+// test at its deadline.
+type replicaReadingsSeen map[replicaReading]uint8
+
+// allReplicasSeen is the mask of a reading every node has reported.
+const allReplicasSeen = 1<<3 - 1
+
+// add records one round of readings and returns a reading all three nodes
+// have now reported, if there is one.
+func (s replicaReadingsSeen) add(readings [3]adminReplicaStatesDisplay) (replicaReading, bool) {
+	for i, r := range readings {
+		k := replicaReading{AppliedIndex: r.Replicas[0].AppliedIndex, Hash: r.Replicas[0].Hash}
+		s[k] |= 1 << i
+	}
+	for k, mask := range s {
+		if mask == allReplicasSeen {
+			return k, true
 		}
 	}
-	return true
+	return replicaReading{}, false
 }
 
 // testAdminSnapshotOverProtocol runs `admin snapshot --shard-id 1` against
@@ -593,12 +635,12 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	t.Helper()
 
 	key := fmt.Sprintf("admincluster/snapshot/%s/%s", proto.name, role)
-	out, err := runCLIProto(t, node, proto, "kv", "put", key, "pre-snapshot-value")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "kv", "put", key, "pre-snapshot-value")
 	if err != nil {
 		t.Fatalf("[%s/%s] kv put %s: %v\noutput: %s", proto.name, role, key, err, out)
 	}
 
-	out, err = runCLIProto(t, node, proto, "admin", "snapshot", "--shard-id", "1")
+	out, err = runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "snapshot", "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s/%s] admin snapshot --shard-id 1: %v\noutput: %s", proto.name, role, err, out)
 	}
@@ -607,14 +649,14 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 	}
 
 	// admin snapshot requires --shard-id.
-	out, err = runCLIProto(t, node, proto, "admin", "snapshot")
+	out, err = runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "snapshot")
 	if err == nil {
 		t.Fatalf("[%s/%s] admin snapshot (missing --shard-id) unexpectedly succeeded, output: %s", proto.name, role, out)
 	}
 
 	// The shard must remain fully readable across the leader/replica set
 	// after the snapshot request completes.
-	getOut, err := runCLIProto(t, node, proto, "kv", "get", key)
+	getOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "kv", "get", key)
 	if err != nil {
 		t.Fatalf("[%s/%s] kv get %s (post-snapshot): %v\noutput: %s", proto.name, role, key, err, getOut)
 	}
@@ -657,7 +699,7 @@ func testAdminSnapshotOverProtocol(t *testing.T, node *multiProtoNode, proto mul
 func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol, observerReplicaID, newReplicaID uint64, spare adminClusterSpareReplica) {
 	t.Helper()
 
-	removeSpareOut, err := runCLIProto(t, node, proto, "admin", "member", "remove",
+	removeSpareOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "remove",
 		fmt.Sprintf("%d", spare.replicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (spare replica %d): %v\noutput: %s", proto.name, spare.replicaID, err, removeSpareOut)
@@ -676,7 +718,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 	observerSum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-observer-%d", observerReplicaID)))
 	observerIdentity := "spki:" + hex.EncodeToString(observerSum[:])
 
-	addObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "add-observer", spare.raftAddr,
+	addObserverOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "add-observer", spare.raftAddr,
 		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", observerReplicaID), "--identity", observerIdentity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add-observer (replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, addObserverOut)
@@ -685,7 +727,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 		t.Fatalf("[%s] admin member add-observer: expected OK, got: %s", proto.name, addObserverOut)
 	}
 
-	promoteObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "promote",
+	promoteObserverOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "promote",
 		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member promote (observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, promoteObserverOut)
@@ -700,7 +742,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 		t.Fatalf("[%s] admin peers: promoted observer replica %d not present after admin member promote", proto.name, observerReplicaID)
 	}
 
-	removeObserverOut, err := runCLIProto(t, node, proto, "admin", "member", "remove",
+	removeObserverOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "remove",
 		fmt.Sprintf("%d", observerReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (promoted observer replica %d): %v\noutput: %s", proto.name, observerReplicaID, err, removeObserverOut)
@@ -717,7 +759,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 	sum := sha256.Sum256([]byte(fmt.Sprintf("throwaway-replica-%d", newReplicaID)))
 	identity := "spki:" + hex.EncodeToString(sum[:])
 
-	out, err := runCLIProto(t, node, proto, "admin", "member", "add", spare.raftAddr,
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "add", spare.raftAddr,
 		"--shard-id", "1", "--replica-id", fmt.Sprintf("%d", newReplicaID), "--identity", identity)
 	if err != nil {
 		t.Fatalf("[%s] admin member add (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
@@ -735,7 +777,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 	// always votes (there is no observer-mode add yet). This proves the
 	// verb dispatches end-to-end on every protocol and that the typed
 	// refusal (service.MemberNotObserverError) reaches the CLI.
-	promoteOut, err := runCLIProto(t, node, proto, "admin", "member", "promote",
+	promoteOut, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "promote",
 		fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
 	if err == nil {
 		t.Fatalf("[%s] admin member promote (voter replica %d) unexpectedly succeeded, output: %s", proto.name, newReplicaID, promoteOut)
@@ -746,7 +788,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 
 	// admin member remove takes the replica ID as a positional argument and
 	// --shard-id as a flag.
-	out, err = runCLIProto(t, node, proto, "admin", "member", "remove", fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
+	out, err = runCLIProtoRetryingAuthRefusal(t, node, proto, "admin", "member", "remove", fmt.Sprintf("%d", newReplicaID), "--shard-id", "1")
 	if err != nil {
 		t.Fatalf("[%s] admin member remove (replica %d): %v\noutput: %s", proto.name, newReplicaID, err, out)
 	}
@@ -769,7 +811,7 @@ func testAdminMemberLifecycleOverProtocol(t *testing.T, node *multiProtoNode, pr
 // against node over proto lists replicaID as a peer.
 func adminPeersContainsReplica(t *testing.T, node *multiProtoNode, proto multiProtocol, replicaID uint64) bool {
 	t.Helper()
-	out, err := runCLIProto(t, node, proto, "--output", "json", "admin", "peers")
+	out, err := runCLIProtoRetryingAuthRefusal(t, node, proto, "--output", "json", "admin", "peers")
 	if err != nil {
 		t.Fatalf("[%s] admin peers: %v\noutput: %s", proto.name, err, out)
 	}
@@ -800,6 +842,145 @@ func waitForAdminPeersReplica(t *testing.T, node *multiProtoNode, proto multiPro
 	t.Helper()
 	return pollUntil(timeout, 250*time.Millisecond, func() bool {
 		return adminPeersContainsReplica(t, node, proto, replicaID) == present
+	})
+}
+
+// authStageRefusals are the auth middleware's retryable refusals as the CLI
+// prints them. Each is answered before any handler runs, so the request took
+// no effect and re-running it re-issues nothing (docs/identity-rbac: a
+// role-store error is refused as temporarily unavailable, which a client may
+// retry). A membership change's own UNAVAILABLE is not among them: that one
+// may have committed (MaybeAppliedError).
+var authStageRefusals = []string{
+	"auth/middleware: cannot decide tenant ownership",
+	"auth/middleware: user store unavailable",
+	"qrdb/auth/rbac: failed to resolve permissions",
+}
+
+// refusedBeforeHandler reports whether out carries one of authStageRefusals.
+func refusedBeforeHandler(out string) bool {
+	for _, r := range authStageRefusals {
+		if strings.Contains(out, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// runCLIProtoRetryingAuthRefusal runs a CLI step over proto, re-running it
+// while the auth middleware refuses it before its handler runs. Every step of
+// TestAdminCluster_CLI_PerProtocol that is expected to succeed goes through
+// it -- admin or kv, read or write -- since each request passes the same role
+// lookup first. The retries stay inside cliStepTimeout, the bound every CLI
+// step already has: a node whose state machine is stalled behind a slow
+// synced commit cannot answer the middleware's role lookup until the commit
+// returns (run 70682: a member remove, 6.6 s; run 71065: the post-snapshot
+// kv get, 2.6 s), and the middleware refuses rather than wait. Any other
+// outcome, success or failure, is returned at once.
+func runCLIProtoRetryingAuthRefusal(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
+	t.Helper()
+	var out string
+	var err error
+	pollUntil(cliStepTimeout, 250*time.Millisecond, func() bool {
+		out, err = runCLIProto(t, node, proto, args...)
+		if err == nil || !refusedBeforeHandler(out) {
+			return true
+		}
+		t.Logf("[%s] %s refused before its handler ran, retrying: %s", proto.name, strings.Join(args, " "), strings.TrimSpace(out))
+		return false
+	})
+	return out, err
+}
+
+// TestRefusedBeforeHandler pins which CLI outputs the admin cluster steps retry:
+// only the auth middleware's pre-handler refusals, never a membership change's
+// own failure.
+func TestRefusedBeforeHandler(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			name: "run 70682 tenant ownership refusal",
+			out:  `transport: request RemoveMember failed (status 14): rpc error: code = Unavailable desc = auth/middleware: cannot decide tenant ownership in tenant "system": role: store get_by_name failed: index lookup: service: read failed: quicraft: timeout`,
+			want: true,
+		},
+		{name: "user store refusal", out: "Error: (status 503): auth/middleware: user store unavailable: quicraft: timeout", want: true},
+		{name: "rbac resolve refusal", out: "status 14: qrdb/auth/rbac: failed to resolve permissions: quicraft: timeout", want: true},
+		{name: "membership change maybe applied", out: "transport: request RemoveMember failed (status 14): rpc error: code = Unavailable desc = quicraft: timeout", want: false},
+		{name: "not leader", out: "transport: request AddObserver failed (status 14): not leader", want: false},
+		{name: "promote refusal", out: "replica 9 is not a committed observer", want: false},
+		{name: "bare 503", out: "Error: (status 503): service unavailable", want: false},
+		{name: "empty", out: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := refusedBeforeHandler(tc.out); got != tc.want {
+				t.Fatalf("refusedBeforeHandler(%q) = %v, want %v", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReplicaReadingsSeen pins the replica-states agreement rule: one hash
+// at one applied index from all three nodes, in one round or across rounds,
+// and never agreement from unequal hashes or from two nodes alone.
+func TestReplicaReadingsSeen(t *testing.T) {
+	round := func(states ...replicaReading) [3]adminReplicaStatesDisplay {
+		var readings [3]adminReplicaStatesDisplay
+		for i, st := range states {
+			readings[i].Replicas = make([]struct {
+				ShardID      uint64 `json:"shard_id"`
+				ReplicaID    uint64 `json:"replica_id"`
+				AppliedIndex uint64 `json:"applied_index"`
+				Hash         uint64 `json:"hash"`
+			}, 1)
+			readings[i].Replicas[0].ShardID = 1
+			readings[i].Replicas[0].AppliedIndex = st.AppliedIndex
+			readings[i].Replicas[0].Hash = st.Hash
+		}
+		return readings
+	}
+	a := replicaReading{AppliedIndex: 787, Hash: 0xa}
+	b := replicaReading{AppliedIndex: 799, Hash: 0xb}
+	c := replicaReading{AppliedIndex: 812, Hash: 0xc}
+	forked := replicaReading{AppliedIndex: 799, Hash: 0xf}
+
+	t.Run("one round", func(t *testing.T) {
+		got, ok := replicaReadingsSeen{}.add(round(a, a, a))
+		if !ok || got != a {
+			t.Fatalf("add(a, a, a) = %+v, %v; want %+v, true", got, ok, a)
+		}
+	})
+	t.Run("across rounds under a moving index", func(t *testing.T) {
+		seen := replicaReadingsSeen{}
+		if got, ok := seen.add(round(a, b, c)); ok {
+			t.Fatalf("round 1 agreed on %+v; three indexes must not agree", got)
+		}
+		if got, ok := seen.add(round(b, c, c)); ok {
+			t.Fatalf("round 2 agreed on %+v; %+v has nodes 0 and 1, %+v nodes 1 and 2", got, b, c)
+		}
+		later := replicaReading{AppliedIndex: 820, Hash: 0xd}
+		got, ok := seen.add(round(c, later, later))
+		if !ok || got != c {
+			t.Fatalf("round 3 = %+v, %v; want %+v, true", got, ok, c)
+		}
+	})
+	t.Run("one index, unequal hashes", func(t *testing.T) {
+		seen := replicaReadingsSeen{}
+		for range 3 {
+			if got, ok := seen.add(round(b, b, forked)); ok {
+				t.Fatalf("agreed on %+v; node 2 reported index %d with another hash", got, b.AppliedIndex)
+			}
+		}
+	})
+	t.Run("two nodes are not three", func(t *testing.T) {
+		seen := replicaReadingsSeen{}
+		seen.add(round(a, a, b))
+		if got, ok := seen.add(round(a, a, c)); ok {
+			t.Fatalf("agreed on %+v; node 2 never reported it", got)
+		}
 	})
 }
 

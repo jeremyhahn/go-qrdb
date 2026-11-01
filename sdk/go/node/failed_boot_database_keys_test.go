@@ -61,7 +61,7 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 		}, seal.MustCredentials(context.Background(), []byte("db-pass-123456"))); err != nil {
 			t.Errorf("create the database mid-boot: %v", err)
 		}
-		if st, err := bm.BarrierStatus("secure"); err != nil || st.Sealed {
+		if st, err := bm.BarrierStatus("secure", "acme"); err != nil || st.Sealed {
 			t.Errorf("precondition: the database barrier is not unsealed mid-boot (%+v, %v)", st, err)
 		}
 		cancel()
@@ -74,8 +74,8 @@ func TestClusteredNode_FailedBootLeavesNoDatabaseKey(t *testing.T) {
 	if bm == nil {
 		t.Fatal("the hook never ran")
 	}
-	enc := bm.GetBarrier("secure")
-	st, serr := bm.BarrierStatus("secure")
+	enc := bm.GetBarrier("secure", "acme")
+	st, serr := bm.BarrierStatus("secure", "acme")
 	if serr != nil || !st.Sealed || enc == nil || !enc.IsSealed() {
 		t.Fatalf("the database key outlived the failed boot (status %+v, %v)", st, serr)
 	}

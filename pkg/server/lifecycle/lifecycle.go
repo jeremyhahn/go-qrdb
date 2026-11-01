@@ -360,6 +360,15 @@ type Infra struct {
 	// gets production bounds, not unbounded staging.
 	ImportSession qrdbconfig.ImportSessionConfig
 
+	// Index caps the system shard's secondary indexes (config.Index,
+	// "index:" in YAML). The zero value leaves them unlimited.
+	Index qrdbconfig.IndexConfig
+
+	// TimeSeries caps the system shard's metric names
+	// (config.TimeSeries.MaxMetrics, "timeseries.max_metrics" in YAML). The
+	// zero value leaves them unlimited.
+	TimeSeries qrdbconfig.TimeSeriesConfig
+
 	// ReplicaID is this node's Raft replica identifier (config.Raft.ReplicaID).
 	// It seeds the coordination-free Snowflake generator that assigns uint64
 	// user IDs, keeping IDs globally unique across cluster members. Defaults
@@ -853,8 +862,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	))
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
 	n.Lease = service.NewLeaseService(infra.Host, shard.ShardKV)
-	n.Index = service.NewIndexService(infra.Host, shard.ShardKV)
-	n.TimeSeries = service.NewTimeSeriesService(infra.Host, shard.ShardKV)
+	n.Index = service.NewIndexService(infra.Host, shard.ShardKV, service.WithMaxIndexes(infra.Index.MaxIndexes))
+	n.TimeSeries = service.NewTimeSeriesService(infra.Host, shard.ShardKV, service.WithMaxMetrics(infra.TimeSeries.MaxMetrics))
 	n.Watch = service.NewWatchService(infra.WatchHub)
 
 	lockSvc, err := service.NewLockService(n.Transaction, n.Lease, n.Watch, n.MVCC, log)
@@ -961,10 +970,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	// Wire the per-database encryption barrier manager now that the seal
 	// subsystem's BarrierRegistry is available (BuildServices runs after the
-	// barrier is unsealed). dbManager may already have been open for a while
-	// -- callers construct it, and OpenAll it, before the registry exists --
-	// so SetBarrierManager also re-registers the barrier for every
-	// already-open database that has one enabled on a dedicated store. When
+	// barrier is unsealed), before the catalog is attached and its databases
+	// opened below. SetBarrierManager also re-registers the barrier for every
+	// already-open database that has one enabled on a dedicated store, for a
+	// caller that opened databases before handing the manager over. When
 	// infra.BarrierRegistry is nil (seal disabled) no manager is set, so
 	// per-database barrier operations correctly fail closed with
 	// BarrierManagerNotConfiguredError. Guarded on BarrierManager() == nil so
@@ -983,10 +992,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		dbManager.SetBarrierManager(bm)
 	}
 	// The node unseal brings back only the system-managed databases the node
-	// seal sealed, and never one whose own cluster seal record refuses it --
-	// or that this node cannot name an owner for.
+	// seal sealed, and never one whose own cluster seal record refuses it.
 	if bm := dbManager.BarrierManager(); bm != nil && infra.ClusterSealer != nil {
-		bm.SetUnsealGate(databaseUnsealGate(dbManager, infra.ClusterSealer))
+		bm.SetUnsealGate(databaseUnsealGate(infra.ClusterSealer))
 	}
 
 	// The verifiable-log service routes as the audit chain does, but also
@@ -1141,9 +1149,17 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	vectorLog := logger.NewAdapter(newMinimalLogger(log))
 	n.addCloser(func() error { return vectorStorage.Close() })
 
+	// The vector store is node-local, so the service has no raft node to ask
+	// whether a record value older binaries cannot read may be written yet;
+	// the cluster's feature gates come from the host instead.
+	var vectorOpts []service.VectorServiceOption
+	if gates, ok := infra.Host.(service.FeatureGatedHost); ok {
+		vectorOpts = append(vectorOpts, service.WithFeatureGates(gates))
+	}
 	vectorSvc, err := service.NewVectorService(
 		vectorStorage,
 		vectorLog,
+		vectorOpts...,
 	)
 	if err != nil {
 		return nil, &VectorServiceError{Err: err}
@@ -1268,6 +1284,20 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		}
 		n.Tenant = kvTenantSvc
 
+		// Barrier protection none is a valid barrier, not an unconfigured
+		// one: a node whose composer chose seal.enabled: false serves
+		// BarrierStatus (strategy none, unsealed) on every transport and
+		// refuses the verbs that would change it. A barrier that was
+		// requested but failed to construct also lands here, and is no
+		// protection none: it gets no barrier service.
+		if !infra.SealEnabled {
+			barrierSvc, berr := service.NewSealDisabledBarrierService(ctx)
+			if berr != nil {
+				return nil, &BarrierServiceError{Err: berr}
+			}
+			n.Barrier = barrierSvc
+		}
+
 		// Route IAM here TOO. Keyspace isolation is not a property of
 		// encryption: a node with the seal subsystem off still has tenants,
 		// and they are still entitled to separate keyspaces. Leaving n.User
@@ -1339,6 +1369,27 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if closer, ok := dekSvc.(*service.DEKService); ok {
 			n.addCloser(closer.Close)
 		}
+	}
+
+	// The database catalog: every database's record, replicated in the
+	// system store and, for a tenant isolated in a home, in that home --
+	// routed by the same resolver as the tenant's IAM records. Every
+	// database it records is opened here, on every node, so a database
+	// created through another node, or before a restart, is served.
+	// A database whose backend is not raft is held by the node that creates
+	// it, and only that node opens it (OD-2): the catalog records this
+	// node's identity on what it creates, and OpenAll below skips what other
+	// nodes hold. A standalone node is the only node, and records none.
+	if id := nodeIdentity(infra.Host); id != LocalNodeID {
+		dbManager.SetLocalNode(id)
+	}
+	homes, _ := n.StoreResolver.(database.CatalogHomes)
+	catalog, err := database.NewKVCatalog(newKVStoreAdapter(n.KV, n.Index), homes)
+	if err != nil {
+		return nil, &DatabaseCatalogError{Err: err}
+	}
+	if err := openDatabaseCatalog(ctx, infra.Host, dbManager, catalog); err != nil {
+		return nil, err
 	}
 
 	// ABAC policy documents ride the same StoreResolver.
@@ -1560,12 +1611,23 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	return opts
 }
 
+// credentialServiceOptions binds the barrier registry, when the node has one,
+// as the lookup through which a tenant caller reaches its own named-credential
+// store. A nil registry stays unbound rather than becoming a non-nil
+// interface holding a nil pointer.
+func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
+	if infra.BarrierRegistry == nil {
+		return nil
+	}
+	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
-		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)
 		if err != nil {
@@ -1979,7 +2041,7 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n := &Node{}
-	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 	ceremonyCoreSvc, err := ceremonyService(infra, log)
 	if err != nil {
@@ -2077,15 +2139,11 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 }
 
 // databaseUnsealGate is the node unseal's veto for a database barrier: the
-// database's cluster seal record refuses it, or this node cannot name its
-// owner.
-func databaseUnsealGate(dbs *database.Manager, sealer clusterseal.Sealer) func(name string) bool {
-	return func(name string) bool {
-		db, err := dbs.Get(name)
-		if err != nil {
-			return true
-		}
-		return sealer.Refuses(clusterseal.DatabaseBarrier(tenantid.Normalize(db.TenantID()), name))
+// cluster seal record of the database, named by its tenant and name as the
+// barrier is keyed, refuses it.
+func databaseUnsealGate(sealer clusterseal.Sealer) func(name, tenantID string) bool {
+	return func(name, tenantID string) bool {
+		return sealer.Refuses(clusterseal.DatabaseBarrier(tenantid.Normalize(tenantID), name))
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 )
 
@@ -144,7 +145,23 @@ func (l *Locator) Forward(ctx context.Context, refusal *placement.NotAReplicaErr
 		outcome = outcomeRefused
 	}
 	observe(proto, outcome, start)
+	if err != nil && refusal.LocalBinding() {
+		return t, ownerUnavailable(refusal, err)
+	}
 	return t, err
+}
+
+// ownerUnavailable is the failure of a forward of a local binding's request.
+// A binding's one replica is the node that holds it, so there is nowhere else
+// to try: whatever stopped the forward, the request fails naming the owner.
+func ownerUnavailable(refusal *placement.NotAReplicaError, err error) error {
+	owner := ""
+	if len(refusal.Replicas) > 0 {
+		owner = refusal.Replicas[0].NodeID
+	}
+	return &database.BindingOwnerUnavailableError{
+		TenantID: refusal.TenantID, Name: refusal.Database, Owner: owner, Err: err,
+	}
 }
 
 // forward is Forward without its accounting.
@@ -205,6 +222,11 @@ func (l *Locator) noTarget(refusal *placement.NotAReplicaError, proto cluster.AP
 
 // cached returns the shard's cached leader as a target for proto.
 func (l *Locator) cached(refusal *placement.NotAReplicaError, proto cluster.APIProtocol) (Target, bool) {
+	// A local binding has no shard to key a cache entry by, and only one
+	// node to try.
+	if refusal.LocalBinding() {
+		return Target{}, false
+	}
 	c, ok := l.cache.Get(refusal.ShardID)
 	if !ok || c.RaftAddr == l.self {
 		return Target{}, false
@@ -218,6 +240,9 @@ func (l *Locator) cached(refusal *placement.NotAReplicaError, proto cluster.APIP
 
 // remember caches t as the shard's leader, with its member endpoints.
 func (l *Locator) remember(refusal *placement.NotAReplicaError, t Target, proto cluster.APIProtocol, view *memberView) {
+	if refusal.LocalBinding() {
+		return
+	}
 	endpoints := map[cluster.APIProtocol]string{proto: t.Endpoint}
 	if view != nil {
 		if m, ok := view.byAddr[t.RaftAddr]; ok && len(m.APIEndpoints) > 0 {

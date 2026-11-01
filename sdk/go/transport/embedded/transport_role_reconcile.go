@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -54,7 +55,49 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 	if report == nil {
 		return &transport.ReconcileRolesResponse{TenantID: tenantID}, nil
 	}
+	return reconcileReportToTransport(report), nil
+}
 
+// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of every
+// tenant on this node onto this build's definitions (role.ReconcileAllTenants).
+// The caller must be a platform operator holding roles:reconcile_all, the gate
+// every network transport applies.
+func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*transport.ReconcileAllTenantsRolesResponse, error) {
+	ctx, err := t.admit(ctx, "ReconcileBuiltInRolesAllTenants")
+	if err != nil {
+		return nil, err
+	}
+	if t.roleSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "ReconcileBuiltInRolesAllTenants"}
+	}
+	if t.tenantSvc == nil {
+		return nil, &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := t.authorizeTenantSelf(ctx, permission.RolesReconcileAll); err != nil {
+		return nil, err
+	}
+
+	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &transport.ReconcileAllTenantsRolesResponse{}
+	for i := range report.Tenants {
+		out.Tenants = append(out.Tenants, *reconcileReportToTransport(&report.Tenants[i]))
+	}
+	for _, sk := range report.Skipped {
+		out.Skipped = append(out.Skipped, transport.RoleReconcileSkippedTenant{TenantID: sk.TenantID, Reason: sk.Reason, Detail: sk.Detail})
+	}
+	for _, f := range report.Failed {
+		out.Failed = append(out.Failed, transport.RoleReconcileFailedTenant{TenantID: f.TenantID, Error: f.Error})
+	}
+	return out, nil
+}
+
+// reconcileReportToTransport converts one tenant's role.ReconcileReport to its
+// transport representation.
+func reconcileReportToTransport(report *role.ReconcileReport) *transport.ReconcileRolesResponse {
 	out := &transport.ReconcileRolesResponse{TenantID: report.TenantID}
 	for _, r := range report.Roles {
 		out.Roles = append(out.Roles, transport.RoleReconcileResult{
@@ -65,5 +108,5 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 			Removed: permissionsToStrings(r.Removed),
 		})
 	}
-	return out, nil
+	return out
 }

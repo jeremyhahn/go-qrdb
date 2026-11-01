@@ -17,8 +17,11 @@ package unix
 import (
 	"context"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/roleconv"
 )
 
 // ReconcileBuiltInRoles converges the tenant's stored built-in roles onto the
@@ -38,24 +41,21 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 		return nil, mapGRPCError("ReconcileBuiltInRoles", err)
 	}
 
-	return protoToReconcileReport(resp), nil
+	return roleconv.ReconcileFromProto(resp), nil
 }
 
-// protoToReconcileReport converts a proto reconciliation report to its
-// transport representation.
-func protoToReconcileReport(resp *pb.ReconcileBuiltInRolesResponse) *transport.ReconcileRolesResponse {
-	if resp == nil {
-		return nil
+// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of every
+// tenant on the server onto the server build's definitions. The caller must be
+// a platform operator holding roles:reconcile_all.
+func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*transport.ReconcileAllTenantsRolesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
-	out := &transport.ReconcileRolesResponse{TenantID: resp.GetTenantId()}
-	for _, r := range resp.GetRoles() {
-		out.Roles = append(out.Roles, transport.RoleReconcileResult{
-			RoleID:  r.GetRoleId(),
-			Name:    r.GetName(),
-			Created: r.GetCreated(),
-			Added:   r.GetAdded(),
-			Removed: r.GetRemoved(),
-		})
+
+	resp, err := t.client.ReconcileBuiltInRolesAllTenants(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, mapGRPCError("ReconcileBuiltInRolesAllTenants", err)
 	}
-	return out
+
+	return roleconv.AllTenantsFromProto(resp), nil
 }
