@@ -395,6 +395,78 @@ func (e *MVCCEngine) UpdateEntries(batch storage.Batch, entries []sm.Entry, resu
 	return notifications, vectorEffects, nil
 }
 
+// exclusiveApplyOps are the opcodes whose handlers change, in place and while
+// the batch is still being built, state that LookupAt reads beside the
+// published snapshot: the index catalog (handleIndexCreate, handleIndexDrop
+// replace e.indexes), the lessor's lease table (Grant, Revoke, KeepAlive,
+// ApplyCheckpoints) and the compaction floors (CompactPrefixInBatch and
+// CompactNodeKeyspaceInBatch publish theirs before the batch commits) and the
+// audit chain's head (audit.Chain.Append and Prune advance it in memory, and
+// audit.Chain.Verify reads the head from there, not from the snapshot it is
+// handed, so a verify beside a stalled append would match the old events
+// against the new head and report a healthy chain broken).
+var exclusiveApplyOps = map[byte]struct{}{
+	protocol.OpAuditAppend:       {},
+	protocol.OpIndexCreate:       {},
+	protocol.OpIndexDrop:         {},
+	protocol.OpLeaseGrant:        {},
+	protocol.OpLeaseRevoke:       {},
+	protocol.OpLeaseKeepAlive:    {},
+	protocol.OpLeaseCheckpoint:   {},
+	protocol.OpMVCCCompactPrefix: {},
+	protocol.OpMVCCCompactNode:   {},
+}
+
+// RequiresExclusiveApply reports whether entries must be applied with no
+// reader running beside the build. It is decided from the entries and the
+// committed state before UpdateEntries runs, so it must be called before it.
+//
+// An entry is exclusive when its opcode is in exclusiveApplyOps, or it is an
+// OpGuarded whose inner command's is (commandRequiresExclusiveApply), or when the
+// lessor holds any lease: every key write then may bind a key to a lease or
+// release a binding (Lessor.Bind), and the lessor's bindings change in place
+// too. A lease exists only once a grant has applied, which is itself
+// exclusive, so with no lease no write can touch the lessor. An entry this
+// build cannot decode is exclusive; UpdateEntries refuses it.
+func (e *MVCCEngine) RequiresExclusiveApply(entries []sm.Entry) bool {
+	if e.lessor != nil && e.lessor.Count() > 0 {
+		return true
+	}
+	for _, entry := range entries {
+		cmd, err := protocol.DecodeCommand(entry.Cmd)
+		if err != nil {
+			return true
+		}
+		if commandRequiresExclusiveApply(cmd.Op, cmd.Payload) {
+			return true
+		}
+	}
+	return false
+}
+
+// commandRequiresExclusiveApply classifies one command by the opcode its
+// handler dispatches. OpGuarded is the one opcode whose handler dispatches a
+// nested command through updateHandlers (handleGuarded), so its inner command
+// is decoded the way handleGuarded decodes it and classified in its place; a
+// guarded payload that does not decode is exclusive, failing safe.
+// DecodeGuarded refuses a nested guard, so this recurses at most once.
+// OpBatch and OpTransaction nest only DecodedOp puts and deletes
+// (validateDecodedOps), which reach the lessor only through Lessor.Bind and
+// so are covered by RequiresExclusiveApply's any-live-lease rule.
+func commandRequiresExclusiveApply(op byte, payload []byte) bool {
+	if _, ok := exclusiveApplyOps[op]; ok {
+		return true
+	}
+	if op != protocol.OpGuarded {
+		return false
+	}
+	_, inner, err := protocol.DecodeGuarded(payload)
+	if err != nil {
+		return true
+	}
+	return commandRequiresExclusiveApply(inner[0], inner[1:])
+}
+
 // ApplyVectorIndexEffects applies effects to the engine's vector index
 // manager, after the batch that produced them has committed. Safe to call
 // with no index manager configured or an empty slice.
@@ -461,7 +533,24 @@ func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
 //   - kv.ListQuery: returns sorted []string of user keys
 //   - []byte: returns value bytes (convenience for simple key lookup)
 //   - string: returns value bytes (convenience for simple key lookup)
-func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, error) {
+//
+// Lookup reads live storage at the committed revision. A caller that must
+// not see a commit before it is published -- a state machine whose readers
+// run beside a synced commit -- reads through LookupAt instead.
+func (e *MVCCEngine) Lookup(ctx context.Context, query interface{}) (interface{}, error) {
+	return e.LookupAt(ctx, e.stg, e.store.CommittedRevision(), query)
+}
+
+// LookupAt answers query as Lookup does, reading every storage-backed answer
+// through r, whose newest visible revision is rev: a storage snapshot paired
+// with the revision committed when it was taken, so a read never combines one
+// commit's data with another's revision. Secondary indexes and time series
+// are stored beside the keys they describe and read through r too, so an
+// index or time-series answer never shows a commit a KV read through r
+// cannot see. Leases and the vector index answer from their own in-memory
+// subsystems; the vector index takes a commit's effects only after that
+// commit is published.
+func (e *MVCCEngine) LookupAt(_ context.Context, r storage.Reader, rev int64, query interface{}) (interface{}, error) {
 	switch q := query.(type) {
 	case service.MVCCGetQuery:
 		// See KVEngine.lookupKey for why vector keys are refused here rather
@@ -471,13 +560,13 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if vector.IsForgedKey(q.Key) {
 			return nil, &vector.ForgedKeyError{Key: q.Key}
 		}
-		return e.store.Get(q.Key)
+		return e.store.GetFrom(r, q.Key)
 
 	case service.MVCCGetAtRevisionQuery:
 		if vector.IsForgedKey(q.Key) {
 			return nil, &vector.ForgedKeyError{Key: q.Key}
 		}
-		return e.store.GetAtRevision(q.Key, q.Revision)
+		return e.store.GetAtRevisionFrom(r, q.Key, q.Revision)
 
 	case service.MVCCRangeQuery:
 		var opts []service.RangeOption
@@ -496,34 +585,35 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if q.SortOrder != service.SortNone || q.SortTarget != service.SortByKey {
 			opts = append(opts, service.WithSort(q.SortOrder, q.SortTarget))
 		}
-		kvs, count, rev, err := e.store.Range(q.Start, q.End, opts...)
+		kvs, count, readRev, err := e.store.RangeFrom(r, rev, q.Start, q.End, opts...)
 		if err != nil {
 			return nil, err
 		}
-		return &service.MVCCRangeResult{KeyValues: kvs, Count: count, Revision: rev}, nil
+		return &service.MVCCRangeResult{KeyValues: kvs, Count: count, Revision: readRev}, nil
 
 	case service.MVCCRevisionQuery:
-		// The latest committed revision: an open apply batch's revisions are
-		// not readable yet, so reporting them lets a watch cursor skip them.
-		return e.store.CommittedRevision(), nil
+		// The latest committed revision r shows: an open apply batch's
+		// revisions are not readable yet, so reporting them lets a watch
+		// cursor skip them.
+		return rev, nil
 
 	case service.MVCCScanChangesQuery:
-		return e.scanChanges(q)
+		return e.scanChanges(r, rev, q)
 
 	case service.CompactionStateQuery:
-		return readCompactionState(e.stg, compaction.RecordKey(q.Scope))
+		return readCompactionState(r, compaction.RecordKey(q.Scope))
 
 	case service.CompactionStatesQuery:
-		return compactionStates(e.stg)
+		return compactionStates(r)
 
 	case service.ImportStageMetaQuery:
-		return e.stg.Get(importstage.MetaKey(q.SessionID))
+		return r.Get(importstage.MetaKey(q.SessionID))
 
 	case service.ImportStageChunkQuery:
-		return e.stg.Get(importstage.ChunkKey(q.SessionID, q.Seq))
+		return r.Get(importstage.ChunkKey(q.SessionID, q.Seq))
 
 	case service.ImportStageOpenSessionsQuery:
-		return countOpenImportSessions(e.stg, q.TenantID)
+		return countOpenImportSessions(r, q.TenantID)
 
 	case service.LeaseTimeToLiveQuery:
 		if e.lessor == nil {
@@ -584,37 +674,38 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if e.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return e.auditChain.Query(e.stg, q.TenantID, q.Filter)
+		return e.auditChain.Query(r, q.TenantID, q.Filter)
 
 	case audit.VerifyRequest:
 		if e.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return e.auditChain.Verify(e.stg, q.TenantID)
+		return e.auditChain.Verify(r, q.TenantID)
 
 	case vlog.Request:
 		if e.logs == nil {
 			return nil, &InvalidQueryError{Reason: "log registry not configured"}
 		}
-		return vlog.ReadSnapshot(e.stg, q)
+		// Live storage takes a snapshot so the request's several reads see
+		// one commit; a reader that is already a snapshot is read directly.
+		if live, ok := r.(vlog.Snapshotter); ok {
+			return vlog.ReadSnapshot(live, q)
+		}
+		return vlog.Read(r, q)
 
 	case service.IndexQueryRequest:
-		e.indexMu.RLock()
-		idx, ok := e.indexes[q.IndexName]
-		e.indexMu.RUnlock()
-		if !ok {
-			return nil, &index.NotFoundError{Name: q.IndexName}
+		idx, err := e.readerIndex(q.IndexName)
+		if err != nil {
+			return nil, err
 		}
-		return idx.Get(q.Value)
+		return idx.GetFrom(r, q.Value)
 
 	case service.IndexScanRequest:
-		e.indexMu.RLock()
-		idx, ok := e.indexes[q.IndexName]
-		e.indexMu.RUnlock()
-		if !ok {
-			return nil, &index.NotFoundError{Name: q.IndexName}
+		idx, err := e.readerIndex(q.IndexName)
+		if err != nil {
+			return nil, err
 		}
-		return idx.Scan(q.Start, q.End)
+		return idx.ScanFrom(r, q.Start, q.End)
 
 	case service.IndexListRequest:
 		e.indexMu.RLock()
@@ -629,37 +720,37 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.Query(q.Metric, q.Start, q.End, q.Opts...)
+		return e.ts.View(r).Query(q.Metric, q.Start, q.End, q.Opts...)
 
 	case service.TSAggregateRequest:
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.Aggregate(q.Metric, q.Start, q.End, q.Func, q.Interval)
+		return e.ts.View(r).Aggregate(q.Metric, q.Start, q.End, q.Func, q.Interval)
 
 	case service.TSRichQueryRequest:
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.QueryRich(q.Request)
+		return e.ts.View(r).QueryRich(q.Request)
 
 	case service.TSGetRetentionRequest:
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.GetRetentionPolicy(q.Metric)
+		return e.ts.View(r).GetRetentionPolicy(q.Metric)
 
 	case service.TSListMetricsRequest:
 		if e.ts == nil {
 			return nil, &InvalidQueryError{Reason: "time-series storage not configured"}
 		}
-		return e.ts.ListMetrics(q.Prefix, q.Limit)
+		return e.ts.View(r).ListMetrics(q.Prefix, q.Limit)
 
 	case *statemachine.PrefixQuery:
-		return e.lookupPrefix(q)
+		return e.lookupPrefix(r, q)
 
 	case kv.ListQuery:
-		return e.listKeys(q.Prefix)
+		return e.listKeys(r, q.Prefix)
 
 	case []byte:
 		if statemachine.IsReservedKey(q) {
@@ -668,7 +759,7 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if vector.IsForgedKey(q) {
 			return nil, &vector.ForgedKeyError{Key: q}
 		}
-		result, err := e.store.Get(q)
+		result, err := e.store.GetFrom(r, q)
 		if err != nil {
 			var knf *mvcc.KeyNotFoundError
 			if errors.As(err, &knf) {
@@ -685,7 +776,7 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if vector.IsForgedKey([]byte(q)) {
 			return nil, &vector.ForgedKeyError{Key: []byte(q)}
 		}
-		result, err := e.store.Get([]byte(q))
+		result, err := e.store.GetFrom(r, []byte(q))
 		if err != nil {
 			var knf *mvcc.KeyNotFoundError
 			if errors.As(err, &knf) {
@@ -714,11 +805,37 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 	}
 }
 
+// readerBoundIndex is a secondary index that answers through a caller's
+// storage.Reader. LookupAt reads an index through the published snapshot its
+// KV reads use, so an index answer never names a commit those reads cannot
+// see (#1287); an index that can only read live storage cannot be.
+type readerBoundIndex interface {
+	GetFrom(r storage.Reader, fieldValue []byte) ([][]byte, error)
+	ScanFrom(r storage.Reader, start, end []byte) (map[string][][]byte, error)
+}
+
+var _ readerBoundIndex = (*index.StoragePebbleIndex)(nil)
+
+// readerIndex returns the named index as a readerBoundIndex.
+func (e *MVCCEngine) readerIndex(name string) (readerBoundIndex, error) {
+	e.indexMu.RLock()
+	idx, ok := e.indexes[name]
+	e.indexMu.RUnlock()
+	if !ok {
+		return nil, &index.NotFoundError{Name: name}
+	}
+	rb, ok := idx.(readerBoundIndex)
+	if !ok {
+		return nil, &InvalidQueryError{Reason: "index " + name + " cannot read the published snapshot"}
+	}
+	return rb, nil
+}
+
 // listKeys returns a sorted slice of user keys matching the given prefix.
 // It iterates the MVCC metadata namespace using canonical keyspace encoding
 // to extract user keys.
-func (e *MVCCEngine) listKeys(prefix string) ([]string, error) {
-	iter := e.stg.NewIterator(&storage.IteratorOptions{
+func (e *MVCCEngine) listKeys(r storage.Reader, prefix string) ([]string, error) {
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: mvcc.MetaLowerBound(),
 		UpperBound: mvcc.MetaUpperBound(),
 	})
@@ -753,8 +870,8 @@ func (e *MVCCEngine) listKeys(prefix string) ([]string, error) {
 // lookupPrefix returns a map[string][]byte of all keys matching the prefix.
 // It iterates the MVCC metadata namespace and reads the latest value for
 // each matching key from the MVCC store.
-func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byte, error) {
-	iter := e.stg.NewIterator(&storage.IteratorOptions{
+func (e *MVCCEngine) lookupPrefix(r storage.Reader, q *statemachine.PrefixQuery) (map[string][]byte, error) {
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: mvcc.MetaLowerBound(),
 		UpperBound: mvcc.MetaUpperBound(),
 	})
@@ -769,7 +886,7 @@ func (e *MVCCEngine) lookupPrefix(q *statemachine.PrefixQuery) (map[string][]byt
 		if !skipFilter && isInternalKey(string(userKey)) {
 			return true
 		}
-		kvResult, getErr := e.store.Get(userKey)
+		kvResult, getErr := e.store.GetFrom(r, userKey)
 		if getErr != nil || kvResult == nil {
 			return true
 		}
@@ -2551,11 +2668,11 @@ func skipInternalKeyFilter(prefix string) bool {
 // a change's data entry has been compacted out from under the scan; that error
 // is propagated unchanged so the caller cannot mistake a truncated history for
 // a complete one.
-func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCScanChangesResult, error) {
-	// The scan reads committed storage, so it reports the committed revision:
-	// a caller resuming after the apply counter would skip an open batch's
-	// changes, which this scan cannot see yet.
-	result := &service.MVCCScanChangesResult{Revision: e.store.CommittedRevision()}
+func (e *MVCCEngine) scanChanges(r storage.Reader, rev int64, q service.MVCCScanChangesQuery) (*service.MVCCScanChangesResult, error) {
+	// The scan reads committed storage through r, so it reports rev, the
+	// newest revision r shows: a caller resuming after the apply counter
+	// would skip an open batch's changes, which this scan cannot see yet.
+	result := &service.MVCCScanChangesResult{Revision: rev}
 
 	// The change log of a compacted keyspace is gone at and below its floor,
 	// so a window starting there would report an incomplete set of changed
@@ -2567,7 +2684,7 @@ func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCS
 	seen := make(map[string]struct{})
 	inPrefix := func(key []byte) bool { return bytes.HasPrefix(key, q.Prefix) }
 
-	err := e.store.ScanChanges(q.StartRevision, q.EndRevision, inPrefix, func(ch mvcc.Change) bool {
+	err := e.store.ScanChangesFrom(r, q.StartRevision, q.EndRevision, inPrefix, func(ch mvcc.Change) bool {
 		key := string(ch.Key)
 		if _, dup := seen[key]; dup {
 			return true

@@ -223,7 +223,7 @@ func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error)
 // Get retrieves the latest value for a key from committed storage. Returns
 // KeyNotFoundError if the key does not exist.
 func (s *Store) Get(key []byte) (*service.KeyValue, error) {
-	return s.getFrom(s.storage, key)
+	return s.GetFrom(s.storage, key)
 }
 
 // GetInBatch retrieves the latest value for a key as seen through batch: the
@@ -232,10 +232,11 @@ func (s *Store) Get(key []byte) (*service.KeyValue, error) {
 // a previous-value read observes the entries already applied into the same
 // batch.
 func (s *Store) GetInBatch(batch storage.Batch, key []byte) (*service.KeyValue, error) {
-	return s.getFrom(batch, key)
+	return s.GetFrom(batch, key)
 }
 
-// getFrom retrieves the latest value for a key through r.
+// GetFrom retrieves the latest value for a key through r: live storage, an
+// apply batch, or a storage snapshot a caller reads one consistent state from.
 //
 // It PROPAGATES the metadata read's error rather than reporting every failure
 // as KeyNotFoundError. getMetadataFrom already distinguishes the two — absence
@@ -248,7 +249,7 @@ func (s *Store) GetInBatch(batch storage.Batch, key []byte) (*service.KeyValue, 
 //
 // Callers testing for *KeyNotFoundError to mean "absent" are unaffected. A
 // caller that only tests err != nil behaves exactly as before.
-func (s *Store) getFrom(r storage.Reader, key []byte) (*service.KeyValue, error) {
+func (s *Store) GetFrom(r storage.Reader, key []byte) (*service.KeyValue, error) {
 	meta, err := s.getMetadataFrom(r, key)
 	if err != nil {
 		return nil, err
@@ -274,6 +275,11 @@ func (s *Store) getFrom(r storage.Reader, key []byte) (*service.KeyValue, error)
 // compaction floor covering key, or RevisionNotFoundError if no version
 // exists at or before the requested revision.
 func (s *Store) GetAtRevision(key []byte, revision int64) (*service.KeyValue, error) {
+	return s.GetAtRevisionFrom(s.storage, key, revision)
+}
+
+// GetAtRevisionFrom is GetAtRevision read through r.
+func (s *Store) GetAtRevisionFrom(r storage.Reader, key []byte, revision int64) (*service.KeyValue, error) {
 	compacted := s.CompactedRevisionForKey(key)
 	if revision > 0 && revision <= compacted {
 		return nil, &RevisionCompactedError{
@@ -283,7 +289,7 @@ func (s *Store) GetAtRevision(key []byte, revision int64) (*service.KeyValue, er
 	}
 
 	// Find the data entry at or before the requested revision.
-	kv, err := s.findAtRevision(key, revision)
+	kv, err := s.findAtRevisionFrom(r, key, revision)
 	// A compaction that committed between the floor check above and the read
 	// may have removed the entry the read was looking for, so an answer --
 	// absent above all -- is only good if the floor still admits revision.
@@ -390,7 +396,7 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 // sorted result set rather than to whatever order the underlying storage
 // iterator happens to produce.
 func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
-	return s.rangeFrom(s.storage, s.CommittedRevision(), start, end, opts...)
+	return s.RangeFrom(s.storage, s.CommittedRevision(), start, end, opts...)
 }
 
 // RangeInBatch is Range as seen through batch: it includes the keys written by
@@ -400,7 +406,7 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 // It answers at the apply counter, CurrentRevision, which covers the batch's
 // own writes.
 func (s *Store) RangeInBatch(batch storage.Batch, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
-	return s.rangeFrom(batch, s.CurrentRevision(), start, end, opts...)
+	return s.RangeFrom(batch, s.CurrentRevision(), start, end, opts...)
 }
 
 // RangeInBatchAt is RangeInBatch read at rev rather than the store's current
@@ -408,13 +414,15 @@ func (s *Store) RangeInBatch(batch storage.Batch, start, end []byte, opts ...ser
 // SetRevision publishes it, so a read in the same transaction passes that
 // revision to see the writes staged before it.
 func (s *Store) RangeInBatchAt(batch storage.Batch, rev int64, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
-	return s.rangeFrom(batch, rev, start, end, opts...)
+	return s.RangeFrom(batch, rev, start, end, opts...)
 }
 
-// rangeFrom implements Range against an arbitrary reader. currentRev is the
+// RangeFrom implements Range against an arbitrary reader. currentRev is the
 // newest revision r can see: the read's default target and the revision it
-// reports.
-func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+// reports. A caller reading a storage snapshot passes the revision committed
+// when the snapshot was taken, so the metadata it enumerates and the revision
+// it treats as current describe the same state.
+func (s *Store) RangeFrom(r storage.Reader, currentRev int64, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	ro := service.ApplyRangeOptions(opts)
 
 	targetRev := currentRev
@@ -654,7 +662,7 @@ func (s *Store) DeleteInBatch(batch storage.Batch, key []byte, rev int64) (*serv
 	// A storage fault reading the previous value is returned, not taken as
 	// "no previous value": the caller retracts the previous value's index
 	// entries, and a replica that skipped that on a LOCAL fault would diverge
-	// from peers applying the same entry (see getFrom). Absence is still
+	// from peers applying the same entry (see GetFrom). Absence is still
 	// "no previous value".
 	var prevKV *service.KeyValue
 	var storeErr *StoreError
@@ -766,12 +774,6 @@ func (s *Store) getDataAtRevisionFrom(r storage.Reader, key []byte, revision int
 	return cp, nil
 }
 
-// findAtRevision finds the data entry at or before the requested revision in
-// committed storage.
-func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, error) {
-	return s.findAtRevisionFrom(s.storage, key, revision)
-}
-
 // findAtRevisionFrom finds the data entry at or before the requested revision
 // through r. Uses storage.Iterator's Seek with complement encoding to find the
 // correct entry.
@@ -816,7 +818,12 @@ func (s *Store) findAtRevisionFrom(r storage.Reader, key []byte, revision int64)
 
 	// Read metadata for full KeyValue construction. If metadata doesn't
 	// exist (key was deleted after this revision), construct partial metadata.
+	// Any other failure is a failed read, not a deletion.
 	meta, metaErr := s.getMetadataFrom(r, key)
+	var notFound *KeyNotFoundError
+	if metaErr != nil && !errors.As(metaErr, &notFound) {
+		return nil, metaErr
+	}
 	var kv service.KeyValue
 	if metaErr == nil {
 		kv = service.KeyValue{
