@@ -545,8 +545,15 @@ Invariants:
 - **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
   applies its default: a request carrying an `Origin` header must match the
   request's host. The REST authentication chain is the access control.
-- **Invalid options fail Start.** A nil handler, or a path not starting with
-  `/`, makes `Start` return `*rest.InvalidWebTransportHandlerError`.
+- **Invalid options fail Start.** A nil handler, a path not starting with
+  `/`, or a path the authentication middleware exempts as public for every
+  method (`middleware.IsPublicPath`: `/health`, `/v1/ca/bootstrap`, and the
+  rest of its allowlist), makes `Start` return
+  `*rest.InvalidWebTransportHandlerError`. A CONNECT on a public path would
+  reach the handler with no caller, so every session would be refused.
+- **Closed with the server.** `Stop` closes every WebTransport connection
+  first, so each open session and its streams end and the peer sees the
+  close before the HTTP/3 server goes down.
 
 **One path per request on every HTTP surface.** The REST handler chain opens
 with `canonicalPathMiddleware`, which clears `r.URL.RawPath` so chi routes on
