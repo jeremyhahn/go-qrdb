@@ -39,12 +39,12 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 	}{
 		{
 			name:   "current write fails after staging",
-			inject: func(b *faultBackend) { arm(&b.failPut, current) },
+			inject: func(b *faultBackend) { arm(&b.failCAS, current) },
 		},
 		{
 			name: "version write contended after the current write",
 			inject: func(b *faultBackend) {
-				b.onPut = func(key string) {
+				b.onCAS = func(_ context.Context, key string) {
 					if key == current {
 						b.casLosses.Store(rotationMetaRetries)
 						arm(&b.loseCAS, metaKey("k"))
@@ -55,7 +55,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 		{
 			name: "version write fails and the claim lapses",
 			inject: func(b *faultBackend) {
-				b.onPut = func(key string) {
+				b.onCAS = func(_ context.Context, key string) {
 					if key == current {
 						arm(&b.failCAS, metaKey("k"))
 					}
@@ -80,8 +80,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 			if n, err := svc.RotateDue(t.Context(), due); n != 0 || err == nil {
 				t.Fatalf("RotateDue under the fault = %d, %v; want 0 and an error", n, err)
 			}
-			backend.onPut = nil
-			backend.failPut.Store(nil)
+			backend.onCAS = nil
 			backend.failCAS.Store(nil)
 			backend.loseCAS.Store(nil)
 			if tc.lapse {
@@ -133,11 +132,11 @@ func TestRotateCredential_ClearsAStaleStagedValue(t *testing.T) {
 	}
 	_, next := rotationVersions(before.CurrentVersion, true)
 
-	arm(&backend.failPut, credentialPrefix+"k")
+	arm(&backend.failCAS, credentialPrefix+"k")
 	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); err == nil {
 		t.Fatal("RotateDue under the fault succeeded, want an error")
 	}
-	backend.failPut.Store(nil)
+	backend.failCAS.Store(nil)
 	if _, err := svc.RotateCredential(t.Context(), "k", RotateOptions{NewValue: []byte("k-manual")}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
@@ -235,11 +234,11 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 		t.Fatalf("loadBarrierMeta: %v", err)
 	}
 	_, next := rotationVersions(before.CurrentVersion, true)
-	arm(&backend.failPut, credentialPrefix+"k")
+	arm(&backend.failCAS, credentialPrefix+"k")
 	if _, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); err == nil {
 		t.Fatal("RotateDue under the fault succeeded, want an error")
 	}
-	backend.failPut.Store(nil)
+	backend.failCAS.Store(nil)
 
 	arm(&backend.failDelete, stagedKey("k", next))
 	requireOperationError(t, svc.DeleteCredential(t.Context(), "k"), "delete staged rotation")
@@ -266,11 +265,11 @@ func TestRotateDue_StagedReadFailurePropagates(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 	due := rotationEpoch.Add(time.Hour)
 
-	arm(&backend.failPut, credentialPrefix+"k")
+	arm(&backend.failCAS, credentialPrefix+"k")
 	if _, err := svc.RotateDue(t.Context(), due); err == nil {
 		t.Fatal("RotateDue under the fault succeeded, want an error")
 	}
-	backend.failPut.Store(nil)
+	backend.failCAS.Store(nil)
 
 	arm(&backend.failGet, stagedKey("k", next))
 	_, err = svc.RotateDue(t.Context(), due)

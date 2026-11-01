@@ -71,6 +71,13 @@ var (
 	// the retry bound allows.
 	ErrRotationMetaContended = errors.New("credentials: rotation metadata update contended")
 
+	// ErrRotationClaimLost is returned when a scheduled rotation's commit
+	// finds that its claim no longer holds: the credential was deleted,
+	// rotated by another writer, or claimed again while the value source
+	// ran. The rotation writes nothing further, so it never recreates a
+	// deleted credential or overwrites a newer value.
+	ErrRotationClaimLost = errors.New("credentials: scheduled rotation claim lost")
+
 	// ErrInvalidRotationCheckPeriod is returned by Config.Validate for a
 	// negative rotation check period.
 	ErrInvalidRotationCheckPeriod = errors.New("credentials: rotation check period must be positive")

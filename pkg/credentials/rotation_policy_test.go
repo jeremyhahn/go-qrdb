@@ -445,6 +445,124 @@ func TestRotateDue_PolicyChangedDuringRotationKeepsItsSchedule(t *testing.T) {
 	}
 }
 
+// TestRotateDue_DeleteDuringSourceStaysDeleted: the credential is deleted
+// while the value source runs. The scheduled commit is fenced on its
+// claim, so it recreates neither the value nor the record, leaves no
+// staged or retained key behind, and reports ErrRotationClaimLost.
+func TestRotateDue_DeleteDuringSourceStaysDeleted(t *testing.T) {
+	var svc *CredentialService
+	svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+		if err := svc.DeleteCredential(ctx, name); err != nil {
+			return nil, err
+		}
+		return secure.NewBufferFromBytes([]byte(name + "-rotated"))
+	}))
+	ctx := t.Context()
+	storeRotationCredential(t, svc, "k")
+	if err := svc.SetRotationPolicy(ctx, "k", RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 5}); err != nil {
+		t.Fatalf("SetRotationPolicy: %v", err)
+	}
+
+	n, err := svc.RotateDue(ctx, rotationEpoch.Add(time.Hour))
+	if n != 0 || !errors.Is(err, ErrRotationClaimLost) {
+		t.Fatalf("RotateDue = %d, %v; want 0 and ErrRotationClaimLost", n, err)
+	}
+	if _, err := svc.RetrieveCredentialBuffer(ctx, "k"); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("RetrieveCredentialBuffer error = %v, want ErrCredentialNotFound", err)
+	}
+	for _, key := range []string{metaKey("k"), credentialPrefix + "k", stagedKey("k", 2), versionKey("k", 1)} {
+		if _, err := svc.store.Get(ctx, key); !errors.Is(err, seal.ErrSecretNotFound) {
+			t.Errorf("key %q read error = %v, want it absent", key, err)
+		}
+	}
+}
+
+// TestRotateDue_ManualRotationBeforeCommitKept: a manual rotation lands
+// between the scheduled rotation's read of the current value and its
+// write. That write is conditional on the value read, so the manual value
+// stays current and the scheduled rotation reports ErrRotationClaimLost.
+func TestRotateDue_ManualRotationBeforeCommitKept(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	ctx := t.Context()
+	setFaultPolicy(t, svc, "k", 5)
+	var calls atomic.Int32
+	countSource(svc, &calls)
+	var fired atomic.Bool
+	backend.onCAS = func(ctx context.Context, key string) {
+		if key != credentialPrefix+"k" || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		if _, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("manual")}); err != nil {
+			t.Errorf("RotateCredential: %v", err)
+		}
+	}
+
+	if _, err := svc.RotateDue(ctx, rotationEpoch.Add(time.Hour)); !errors.Is(err, ErrRotationClaimLost) {
+		t.Fatalf("RotateDue error = %v, want ErrRotationClaimLost", err)
+	}
+	current, _, err := svc.loadBarrierCurrent(ctx, "k")
+	if err != nil {
+		t.Fatalf("loadBarrierCurrent: %v", err)
+	}
+	if string(current) != "manual" {
+		t.Fatalf("current = %q, want the manual rotation's value", current)
+	}
+	requireStillDue(t, svc, "k", rotationEpoch.Add(time.Hour))
+}
+
+// TestRotateBarrier_ClaimReplacedTakesValueBack: the claim is replaced
+// between the scheduled rotation's current-value write and its record
+// write. The record is not written, the previous value is restored, and
+// ErrRotationClaimLost is returned.
+func TestRotateBarrier_ClaimReplacedTakesValueBack(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	ctx := t.Context()
+	setFaultPolicy(t, svc, "k", 3)
+	claim, _, _, err := svc.claimRotation(ctx, "k", rotationEpoch.Add(time.Hour))
+	if err != nil || claim == nil {
+		t.Fatalf("claimRotation = %v, %v; want a claim", claim, err)
+	}
+	var fired atomic.Bool
+	backend.onCAS = func(ctx context.Context, key string) {
+		if !strings.HasSuffix(key, metaKey("k")) || !fired.CompareAndSwap(false, true) {
+			return
+		}
+		if err := svc.updateBarrierMeta(ctx, "k", "replace claim", func(m *credentialMeta) bool {
+			m.Claim = &rotationClaim{ID: "other", Until: m.Claim.Until}
+			return true
+		}); err != nil {
+			t.Errorf("replace claim: %v", err)
+		}
+	}
+	before, _, err := svc.loadBarrierCurrent(ctx, "k")
+	if err != nil {
+		t.Fatalf("loadBarrierCurrent: %v", err)
+	}
+
+	_, err = svc.RotateCredential(ctx, "k", RotateOptions{
+		NewValue:       []byte("scheduled"),
+		retainPrevious: true,
+		schedule:       &scheduledRotation{claim: claim, now: rotationEpoch},
+	})
+	if !errors.Is(err, ErrRotationClaimLost) {
+		t.Fatalf("RotateCredential error = %v, want ErrRotationClaimLost", err)
+	}
+	after, _, err := svc.loadBarrierCurrent(ctx, "k")
+	if err != nil {
+		t.Fatalf("loadBarrierCurrent: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("current = %q, want the previous %q restored", after, before)
+	}
+	meta, err := svc.loadBarrierMeta(ctx, "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	if meta.CurrentVersion == 2 || meta.Claim == nil || meta.Claim.ID != "other" {
+		t.Fatalf("meta = %+v, want the replacing claim kept and no version advance", meta)
+	}
+}
+
 // requireStillDue asserts name holds no claim and is still scheduled at due.
 func requireStillDue(t *testing.T, svc *CredentialService, name string, due time.Time) {
 	t.Helper()
@@ -465,7 +583,7 @@ func TestRotateDue_FailedRotationRetriedAtOnce(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 5)
 	due := rotationEpoch.Add(time.Hour)
-	arm(&backend.failPut, credentialPrefix+"k")
+	arm(&backend.failCAS, credentialPrefix+"k")
 
 	n, err := svc.RotateDue(t.Context(), due)
 	requireRotationOpError(t, err, "k", "write current")
@@ -474,7 +592,7 @@ func TestRotateDue_FailedRotationRetriedAtOnce(t *testing.T) {
 	}
 	requireStillDue(t, svc, "k", due)
 
-	backend.failPut.Store(nil)
+	backend.failCAS.Store(nil)
 	var calls atomic.Int32
 	restarted, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, svc.store, testLogger(),
 		WithRotationValueSource(countingSource(&calls)))
@@ -539,14 +657,12 @@ func TestRotateDue_UnreleasedClaimLapses(t *testing.T) {
 	due := rotationEpoch.Add(time.Hour)
 	source := svc.rotationSource
 	svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
-		arm(&backend.failPut, credentialPrefix+"k")
 		arm(&backend.failCAS, metaSuffix)
 		return source(ctx, name)
 	}
 
 	_, err := svc.RotateDue(t.Context(), due)
-	requireRotationOpError(t, err, "k", "write current")
-	backend.failPut.Store(nil)
+	requireRotationOpError(t, err, "k", "write meta")
 	backend.failCAS.Store(nil)
 	svc.rotationSource = source
 
@@ -956,7 +1072,7 @@ func TestRotateDue_ClaimFailureReported(t *testing.T) {
 func TestRotateDue_RotateFailureReported(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 2)
-	arm(&backend.failPut, credentialPrefix+"k")
+	arm(&backend.failCAS, credentialPrefix+"k")
 
 	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
 	requireRotationOpError(t, err, "k", "write current")
