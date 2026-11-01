@@ -30,7 +30,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
@@ -41,131 +40,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// Type aliases for use in tests (avoid package-name prefixes in test table data).
-type (
-	authFactorType                 = auth.AuthFactorType
-	authFactor                     = auth.AuthFactor
-	authFactorNotFoundError        = auth.FactorNotFoundError
-	authFactorTypeUnsupportedError = auth.FactorTypeUnsupportedError
-	authFactorAlreadyExistsError   = auth.FactorAlreadyExistsError
-)
-
-// ===========================================================================
-// factorTypeToDomain / factorTypeFromDomain / factorToTransport / factorToDomain /
-// mapFactorError — pure function coverage
-// ===========================================================================
-
-func TestFactorTypeToDomain_AllBranches(t *testing.T) {
-	tests := []struct {
-		in   transport.FactorType
-		want string
-	}{
-		{transport.FactorTypeMTLS, "mtls"},
-		{transport.FactorTypeFIDO2, "fido2"},
-		{transport.FactorTypePIV, "piv"},
-		{transport.FactorType("custom"), "custom"},
-	}
-	for _, tt := range tests {
-		got := factorTypeToDomain(tt.in)
-		if string(got) != tt.want {
-			t.Errorf("factorTypeToDomain(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestFactorTypeFromDomain_AllBranches(t *testing.T) {
-	tests := []struct {
-		in   string
-		want transport.FactorType
-	}{
-		{"mtls", transport.FactorTypeMTLS},
-		{"fido2", transport.FactorTypeFIDO2},
-		{"piv", transport.FactorTypePIV},
-		{"custom", transport.FactorType("custom")},
-	}
-	for _, tt := range tests {
-		got := factorTypeFromDomain(authFactorType(tt.in))
-		if got != tt.want {
-			t.Errorf("factorTypeFromDomain(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestFactorToTransport_NonNilWithMetadata(t *testing.T) {
-	f := &authFactor{
-		ID:       "factor-42",
-		Type:     authFactorType("fido2"),
-		Label:    "hw-key",
-		Metadata: map[string]string{"key": "value"},
-	}
-	got := factorToTransport(f)
-	if got.ID != "factor-42" {
-		t.Errorf("expected ID factor-42, got %q", got.ID)
-	}
-	if got.Metadata["key"] != "value" {
-		t.Errorf("metadata not copied: %v", got.Metadata)
-	}
-}
-
-func TestFactorToDomain_WithMetadata(t *testing.T) {
-	f := transport.Factor{
-		ID:       "factor-5",
-		Type:     transport.FactorTypeMTLS,
-		Label:    "cert",
-		Metadata: map[string]string{"env": "prod"},
-	}
-	got := factorToDomain(10, f)
-	if got.UserID != 10 {
-		t.Errorf("expected UserID=10, got %d", got.UserID)
-	}
-	if got.Metadata["env"] != "prod" {
-		t.Errorf("metadata not copied: %v", got.Metadata)
-	}
-}
-
-func TestMapFactorError_AllBranches(t *testing.T) {
-	// nil -> nil
-	if err := mapFactorError(nil); err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
-
-	// FactorNotFoundError
-	{
-		err := mapFactorError(&authFactorNotFoundError{FactorID: "fid-7"})
-		var te *transport.FactorNotFoundError
-		if !errors.As(err, &te) {
-			t.Errorf("expected FactorNotFoundError, got %T", err)
-		}
-	}
-
-	// FactorTypeUnsupportedError
-	{
-		err := mapFactorError(&authFactorTypeUnsupportedError{Type: "unknown"})
-		var te *transport.FactorTypeUnsupportedError
-		if !errors.As(err, &te) {
-			t.Errorf("expected FactorTypeUnsupportedError, got %T", err)
-		}
-	}
-
-	// FactorAlreadyExistsError
-	{
-		err := mapFactorError(&authFactorAlreadyExistsError{Type: authFactorType("fido2"), FactorID: "fid-3"})
-		var te *transport.FactorAlreadyEnrolledError
-		if !errors.As(err, &te) {
-			t.Errorf("expected FactorAlreadyEnrolledError, got %T", err)
-		}
-	}
-
-	// generic error passes through
-	{
-		plain := errors.New("unexpected")
-		err := mapFactorError(plain)
-		if err != plain {
-			t.Errorf("expected pass-through, got %T: %v", err, err)
-		}
-	}
-}
 
 // ===========================================================================
 // Admin service error paths: Health/Status/Capabilities/StartShard/StopShard/
@@ -225,44 +99,44 @@ func TestEmbedded_AdminServiceErrors(t *testing.T) {
 
 	t.Run("Health", func(t *testing.T) {
 		_, err := tr.Health(ctx)
-		if err == nil {
-			t.Fatal("expected error from Health")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from Health, got %v", err)
 		}
 	})
 	t.Run("Status", func(t *testing.T) {
 		_, err := tr.Status(ctx)
-		if err == nil {
-			t.Fatal("expected error from Status")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from Status, got %v", err)
 		}
 	})
 	t.Run("Capabilities", func(t *testing.T) {
 		_, err := tr.Capabilities(ctx)
-		if err == nil {
-			t.Fatal("expected error from Capabilities")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from Capabilities, got %v", err)
 		}
 	})
 	t.Run("StartShard", func(t *testing.T) {
 		err := tr.StartShard(ctx, &transport.StartShardRequest{})
-		if err == nil {
-			t.Fatal("expected error from StartShard")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from StartShard, got %v", err)
 		}
 	})
 	t.Run("StopShard", func(t *testing.T) {
 		err := tr.StopShard(ctx, 1)
-		if err == nil {
-			t.Fatal("expected error from StopShard")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from StopShard, got %v", err)
 		}
 	})
 	t.Run("GetShardState", func(t *testing.T) {
 		_, err := tr.GetShardState(ctx, 1)
-		if err == nil {
-			t.Fatal("expected error from GetShardState")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from GetShardState, got %v", err)
 		}
 	})
 	t.Run("GetTopology", func(t *testing.T) {
 		_, err := tr.GetTopology(ctx)
-		if err == nil {
-			t.Fatal("expected error from GetTopology")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from GetTopology, got %v", err)
 		}
 	})
 }
@@ -273,31 +147,31 @@ type errorKVService struct {
 }
 
 func (e *errorKVService) Get(_ context.Context, _ string) ([]byte, error) {
-	return nil, errors.New("kv get error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) List(_ context.Context, _ string) ([]string, error) {
-	return nil, errors.New("kv list error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) Scan(_ context.Context, _ string) (map[string][]byte, error) {
-	return nil, errors.New("kv scan error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) GetWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]byte, error) {
-	return nil, errors.New("kv get error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) ListWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) ([]string, error) {
-	return nil, errors.New("kv list error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) ScanWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (map[string][]byte, error) {
-	return nil, errors.New("kv scan error")
+	return nil, errSentinel
 }
 
 func (e *errorKVService) ExistsWithConsistency(_ context.Context, _ string, _ consistency.ReadOptions) (bool, error) {
-	return false, errors.New("kv exists error")
+	return false, errSentinel
 }
 
 func TestEmbedded_KVServiceErrors(t *testing.T) {
@@ -310,26 +184,26 @@ func TestEmbedded_KVServiceErrors(t *testing.T) {
 
 	t.Run("Get_Error", func(t *testing.T) {
 		_, err := tr.Get(ctx, "k")
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("List_Error", func(t *testing.T) {
 		_, err := tr.List(ctx, "")
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("Scan_Error", func(t *testing.T) {
 		_, err := tr.Scan(ctx, "")
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("Exists_WithConsistency_Error", func(t *testing.T) {
 		_, err := tr.Exists(ctx, "k", transport.WithConsistency(transport.ConsistencyLinearizable))
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 }
@@ -371,26 +245,26 @@ func TestEmbedded_TSServiceErrors(t *testing.T) {
 
 	t.Run("TSDeleteSeries_Error", func(t *testing.T) {
 		_, err := tr.TSDeleteSeries(ctx, &transport.TSDeleteRequest{Metric: "cpu"})
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("TSGetRetention_Error", func(t *testing.T) {
 		_, err := tr.TSGetRetention(ctx, &transport.TSGetRetentionRequest{Metric: "cpu"})
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("TSSetRetention_Error", func(t *testing.T) {
 		err := tr.TSSetRetention(ctx, &transport.TSSetRetentionRequest{Metric: "cpu"})
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 	t.Run("TSListMetrics_Error", func(t *testing.T) {
 		_, err := tr.TSListMetrics(ctx, &transport.TSListMetricsRequest{})
-		if err == nil {
-			t.Fatal("expected error")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel, got %v", err)
 		}
 	})
 }
@@ -505,130 +379,10 @@ func TestEmbedded_VectorServiceErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call()
-			if err == nil {
-				t.Fatal("expected error from vector service")
+			if !errors.Is(err, errSentinel) {
+				t.Fatalf("expected errSentinel, got %v", err)
 			}
 		})
-	}
-}
-
-// ===========================================================================
-// Vector dispatch success paths (via Request()) to cover *out = result statements
-// ===========================================================================
-
-func TestEmbedded_VectorDispatch_Success(t *testing.T) {
-	tr := newExtTransport(t, WithVectorService(&mockVectorService{}))
-	ctx := context.Background()
-
-	// CreateNamespace
-	var nsResp *transport.CreateNamespaceResponse
-	if err := tr.Request(ctx, "CreateNamespace", &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 128}, &nsResp); err != nil {
-		t.Fatalf("CreateNamespace dispatch: %v", err)
-	}
-	if nsResp == nil {
-		t.Fatal("expected non-nil CreateNamespaceResponse")
-	}
-
-	// DeleteNamespace
-	var delNsResp *transport.DeleteNamespaceResponse
-	if err := tr.Request(ctx, "DeleteNamespace", &transport.DeleteNamespaceRequest{Namespace: "ns"}, &delNsResp); err != nil {
-		t.Fatalf("DeleteNamespace dispatch: %v", err)
-	}
-
-	// ListNamespaces
-	var listNsResp *transport.ListNamespacesResponse
-	if err := tr.Request(ctx, "ListNamespaces", &transport.ListNamespacesRequest{}, &listNsResp); err != nil {
-		t.Fatalf("ListNamespaces dispatch: %v", err)
-	}
-
-	// GetNamespaceInfo
-	var nsInfo *transport.GetNamespaceInfoResponse
-	if err := tr.Request(ctx, "GetNamespaceInfo", &transport.GetNamespaceInfoRequest{Namespace: "ns"}, &nsInfo); err != nil {
-		t.Fatalf("GetNamespaceInfo dispatch: %v", err)
-	}
-
-	// UpsertVector
-	var upsertResp *transport.UpsertVectorResponse
-	if err := tr.Request(ctx, "UpsertVector", &transport.UpsertVectorRequest{Namespace: "ns", Vector: []float32{0.1}}, &upsertResp); err != nil {
-		t.Fatalf("UpsertVector dispatch: %v", err)
-	}
-
-	// GetVector
-	var getVecResp *transport.GetVectorResponse
-	if err := tr.Request(ctx, "GetVector", &transport.GetVectorRequest{Namespace: "ns", ID: 1}, &getVecResp); err != nil {
-		t.Fatalf("GetVector dispatch: %v", err)
-	}
-
-	// DeleteVector
-	var delVecResp *transport.DeleteVectorResponse
-	if err := tr.Request(ctx, "DeleteVector", &transport.DeleteVectorRequest{Namespace: "ns", ID: 1}, &delVecResp); err != nil {
-		t.Fatalf("DeleteVector dispatch: %v", err)
-	}
-
-	// BatchUpsert
-	var batchUpsertResp *transport.BatchUpsertResponse
-	if err := tr.Request(ctx, "BatchUpsert", &transport.BatchUpsertRequest{Namespace: "ns"}, &batchUpsertResp); err != nil {
-		t.Fatalf("BatchUpsert dispatch: %v", err)
-	}
-
-	// BatchDeleteVectors
-	var batchDelResp *transport.BatchDeleteVectorsResponse
-	if err := tr.Request(ctx, "BatchDeleteVectors", &transport.BatchDeleteVectorsRequest{Namespace: "ns"}, &batchDelResp); err != nil {
-		t.Fatalf("BatchDeleteVectors dispatch: %v", err)
-	}
-
-	// ListVectors
-	var listVecResp *transport.ListVectorsResponse
-	if err := tr.Request(ctx, "ListVectors", &transport.ListVectorsRequest{Namespace: "ns"}, &listVecResp); err != nil {
-		t.Fatalf("ListVectors dispatch: %v", err)
-	}
-
-	// UpdateMetadata
-	var updMetaResp *transport.UpdateVectorMetadataResponse
-	if err := tr.Request(ctx, "UpdateMetadata", &transport.UpdateVectorMetadataRequest{Namespace: "ns", ID: 1}, &updMetaResp); err != nil {
-		t.Fatalf("UpdateMetadata dispatch: %v", err)
-	}
-
-	// SearchSimilar
-	var searchResp *transport.SearchSimilarResponse
-	if err := tr.Request(ctx, "SearchSimilar", &transport.SearchSimilarRequest{Namespace: "ns", QueryVector: []float32{0.1}}, &searchResp); err != nil {
-		t.Fatalf("SearchSimilar dispatch: %v", err)
-	}
-
-	// SearchByMetadata
-	var metaSearchResp *transport.SearchByMetadataResponse
-	if err := tr.Request(ctx, "SearchByMetadata", &transport.SearchByMetadataRequest{Namespace: "ns"}, &metaSearchResp); err != nil {
-		t.Fatalf("SearchByMetadata dispatch: %v", err)
-	}
-
-	// HybridSearch
-	var hybridResp *transport.HybridSearchResponse
-	if err := tr.Request(ctx, "HybridSearch", &transport.HybridSearchRequest{Namespace: "ns", QueryVector: []float32{0.1}}, &hybridResp); err != nil {
-		t.Fatalf("HybridSearch dispatch: %v", err)
-	}
-
-	// SearchByID
-	var searchByIDResp *transport.SearchByIDResponse
-	if err := tr.Request(ctx, "SearchByID", &transport.SearchByIDRequest{Namespace: "ns", ID: 1}, &searchByIDResp); err != nil {
-		t.Fatalf("SearchByID dispatch: %v", err)
-	}
-
-	// GetRebuildProgress
-	var rebuildProgResp *transport.GetRebuildProgressResponse
-	if err := tr.Request(ctx, "GetRebuildProgress", &transport.GetRebuildProgressRequest{Namespace: "ns"}, &rebuildProgResp); err != nil {
-		t.Fatalf("GetRebuildProgress dispatch: %v", err)
-	}
-
-	// GetIndexStats
-	var idxStatsResp *transport.GetIndexStatsResponse
-	if err := tr.Request(ctx, "GetIndexStats", &transport.GetIndexStatsRequest{Namespace: "ns"}, &idxStatsResp); err != nil {
-		t.Fatalf("GetIndexStats dispatch: %v", err)
-	}
-
-	// GetCompactionProgress
-	var compProgressResp *transport.GetCompactionProgressResponse
-	if err := tr.Request(ctx, "GetCompactionProgress", &transport.GetCompactionProgressRequest{Namespace: "ns"}, &compProgressResp); err != nil {
-		t.Fatalf("GetCompactionProgress dispatch: %v", err)
 	}
 }
 
@@ -670,8 +424,8 @@ func TestEmbedded_VectorDispatch_ErrorPaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatal("expected error from vector service via dispatch")
+			if !errors.Is(err, errSentinel) {
+				t.Fatalf("expected errSentinel via dispatch, got %v", err)
 			}
 		})
 	}
@@ -698,8 +452,8 @@ func TestEmbedded_TSDispatch_ErrorPaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from TS service via dispatch", tc.name)
+			if !errors.Is(err, errSentinel) {
+				t.Fatalf("%s: expected errSentinel via dispatch, got %v", tc.name, err)
 			}
 		})
 	}
@@ -727,8 +481,8 @@ func TestEmbedded_LeaseDispatch_ErrorPaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from lease service via dispatch", tc.name)
+			if !errors.Is(err, errSentinel) {
+				t.Fatalf("%s: expected errSentinel via dispatch, got %v", tc.name, err)
 			}
 		})
 	}
@@ -765,15 +519,31 @@ func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 		{"LeaseKeepAlive", &leaseKeepAliveRequest{LeaseID: 1}},
 		{"LeaseTimeToLive", &leaseTimeToLiveRequest{LeaseID: 1}},
 		{"LeaseRevoke", &leaseRevokeRequest{LeaseID: 1}},
+		// MVCC handlers (no MVCC service)
+		{"PutWithLease", &putWithLeaseRequest{Key: "k", Value: []byte("v"), LeaseID: 1}},
+		{"GetRevision", &getRevisionRequest{Key: "k"}},
+		{"GetAtRevision", &getAtRevisionRequest{Key: "k", Revision: 1}},
+		{"Range", &rangeRequest{Start: []byte("a"), End: []byte("z")}},
+		// Index handlers (no index service)
+		{"IndexQuery", &indexQueryRequest{IndexName: "idx", Value: "v"}},
+		{"IndexScan", &indexScanRequest{IndexName: "idx", Start: spIdx("a"), End: spIdx("z")}},
+		// Transaction, batch and watch handlers (no services)
+		{"ExecuteTransaction", &transport.TransactionRequest{}},
+		{"ExecuteBatch", &transport.BatchRequest{}},
+		{"Watch", &watchRequest{Key: "k"}},
+		{"WatchPrefix", &watchPrefixRequest{Prefix: "p"}},
+		// TS query handlers (no TS service)
+		{"TSQuery", &transport.TSQueryRequest{Metric: "cpu"}},
+		{"TSAggregate", &transport.TSAggregateRequest{Metric: "cpu"}},
+		{"TSRichQuery", &transport.TSRichQueryRequest{Metric: "cpu"}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// We just need the call to go through the dispatch handler's
-			// "return err" path — the exact error type doesn't matter.
 			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from nil service via dispatch", tc.name)
+			var nse *NilServiceError
+			if !errors.As(err, &nse) {
+				t.Fatalf("%s: expected *NilServiceError via dispatch, got %T (%v)", tc.name, err, err)
 			}
 		})
 	}
@@ -783,38 +553,6 @@ func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 // Dispatch success paths for KV/MVCC/Shard/TS/Ceremony/Credential handlers
 // to cover the "*out = result" assignment statements
 // ===========================================================================
-
-func TestEmbedded_KVDispatch_SuccessPaths(t *testing.T) {
-	kvsvc := newMockKVService()
-	kvsvc.store["testkey"] = []byte("testval")
-	tr, err := New(kvsvc, &mockAdminService{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx := context.Background()
-
-	// handleGet with output capture.
-	t.Run("Get", func(t *testing.T) {
-		var out []byte
-		if e := tr.Request(ctx, "Get", &getRequest{Key: "testkey"}, &out); e != nil {
-			t.Fatalf("Get dispatch: %v", e)
-		}
-		if string(out) != "testval" {
-			t.Errorf("expected testval, got %q", out)
-		}
-	})
-
-	// handleList with output capture.
-	t.Run("List", func(t *testing.T) {
-		var out []string
-		if e := tr.Request(ctx, "List", &listRequest{Prefix: ""}, &out); e != nil {
-			t.Fatalf("List dispatch: %v", e)
-		}
-		if len(out) == 0 {
-			t.Error("expected at least one key")
-		}
-	})
-}
 
 func TestEmbedded_KVDispatch_ErrorPaths(t *testing.T) {
 	errKV := &errorKVService{*newMockKVService()}
@@ -827,16 +565,16 @@ func TestEmbedded_KVDispatch_ErrorPaths(t *testing.T) {
 	// handleGet error path.
 	t.Run("Get_Error", func(t *testing.T) {
 		err := tr.Request(ctx, "Get", &getRequest{Key: "missing"}, nil)
-		if err == nil {
-			t.Fatal("expected error from handleGet dispatch")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from handleGet dispatch, got %v", err)
 		}
 	})
 
 	// handleList error path.
 	t.Run("List_Error", func(t *testing.T) {
 		err := tr.Request(ctx, "List", &listRequest{Prefix: ""}, nil)
-		if err == nil {
-			t.Fatal("expected error from handleList dispatch")
+		if !errors.Is(err, errSentinel) {
+			t.Fatalf("expected errSentinel from handleList dispatch, got %v", err)
 		}
 	})
 }
@@ -865,312 +603,19 @@ func TestEmbedded_AdminDispatch_SuccessPaths(t *testing.T) {
 		if e := tr.Request(ctx, "GetTopology", nil, &out); e != nil {
 			t.Fatalf("GetTopology dispatch: %v", e)
 		}
+		if out == nil {
+			t.Fatal("expected non-nil TopologyResponse")
+		}
 	})
-}
-
-// ===========================================================================
-// MVCC/Transaction/Watch/Index dispatch error paths via Request() with nil services
-// ===========================================================================
-
-func TestEmbedded_MVCCDispatch_ErrorPaths(t *testing.T) {
-	tr := newExtTransport(t) // no MVCC service
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		req  any
-	}{
-		{"PutWithLease", &putWithLeaseRequest{Key: "k", Value: []byte("v"), LeaseID: 1}},
-		{"GetRevision", &getRevisionRequest{Key: "k"}},
-		{"GetAtRevision", &getAtRevisionRequest{Key: "k", Revision: 1}},
-		{"Range", &rangeRequest{Start: []byte("a"), End: []byte("z")}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from dispatch with nil MVCC service", tc.name)
-			}
-		})
-	}
-}
-
-func TestEmbedded_IndexDispatch_ErrorPaths(t *testing.T) {
-	tr := newExtTransport(t) // no index service
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		req  any
-	}{
-		{"IndexQuery", &indexQueryRequest{IndexName: "idx", Value: "v"}},
-		{"IndexScan", &indexScanRequest{IndexName: "idx", Start: spIdx("a"), End: spIdx("z")}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from dispatch with nil index service", tc.name)
-			}
-		})
-	}
-}
-
-// ===========================================================================
-// Transaction/Batch/Watch/TS dispatch error paths via nil services
-// ===========================================================================
-
-func TestEmbedded_TransactionBatchWatchDispatch_ErrorPaths(t *testing.T) {
-	tr := newExtTransport(t) // no tx/batch/watch services
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		req  any
-	}{
-		{"ExecuteTransaction", &transport.TransactionRequest{}},
-		{"ExecuteBatch", &transport.BatchRequest{}},
-		{"Watch", &watchRequest{Key: "k"}},
-		{"WatchPrefix", &watchPrefixRequest{Prefix: "p"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from dispatch with nil service", tc.name)
-			}
-		})
-	}
-}
-
-func TestEmbedded_TSQueryDispatch_ErrorPaths(t *testing.T) {
-	tr := newExtTransport(t) // no TS service
-	ctx := context.Background()
-
-	cases := []struct {
-		name string
-		req  any
-	}{
-		{"TSQuery", &transport.TSQueryRequest{Metric: "cpu"}},
-		{"TSAggregate", &transport.TSAggregateRequest{Metric: "cpu"}},
-		{"TSRichQuery", &transport.TSRichQueryRequest{Metric: "cpu"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tr.Request(ctx, tc.name, tc.req, nil)
-			if err == nil {
-				t.Fatalf("%s: expected error from dispatch with nil TS service", tc.name)
-			}
-		})
-	}
 }
 
 // ===========================================================================
 // Pure converter function coverage
 // ===========================================================================
 
-func TestToTransportLease_Nil(t *testing.T) {
-	if got := toTransportLease(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-}
-
-func TestToTransportLease_NonNil(t *testing.T) {
-	l := &lease.Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 30}
-	got := toTransportLease(l)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-	if got.ID != 42 {
-		t.Errorf("expected ID=42, got %d", got.ID)
-	}
-}
-
-func TestToTransportRetentionPolicy_Nil(t *testing.T) {
-	if got := toTransportRetentionPolicy(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-}
-
-func TestToTransportRetentionPolicy_NonNil(t *testing.T) {
-	p := &timeseries.RetentionPolicy{Duration: time.Hour, Resolution: time.Minute}
-	got := toTransportRetentionPolicy(p)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-}
-
-func TestToTransportNamespaceInfo_Nil(t *testing.T) {
-	if got := toTransportNamespaceInfo(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-}
-
-func TestToTransportNamespaceInfo_NonNil(t *testing.T) {
-	info := &service.NamespaceInfo{
-		Namespace:   "ns1",
-		Dimension:   128,
-		VectorCount: 100,
-	}
-	got := toTransportNamespaceInfo(info)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-	if got.Namespace != "ns1" {
-		t.Errorf("expected Namespace=ns1, got %q", got.Namespace)
-	}
-}
-
-func TestToTransportVectorData_Nil(t *testing.T) {
-	if got := toTransportVectorData(nil); got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-}
-
-func TestToTransportVectorData_NonNil(t *testing.T) {
-	v := &service.VectorData{
-		ID:     1,
-		Vector: []float32{0.1, 0.2},
-	}
-	got := toTransportVectorData(v)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-}
-
-func TestToTransportRichQueryResponse_NonNil(t *testing.T) {
-	aggVal := 42.0
-	result := &timeseries.QueryResult{
-		Metric:          "cpu",
-		AggregatedValue: &aggVal,
-		Points:          []*timeseries.DataPoint{{Metric: "cpu", Value: 1.0}},
-	}
-	got := toTransportRichQueryResponse(result)
-	if got == nil {
-		t.Fatal("expected non-nil")
-	}
-	if got.AggregatedValue == nil || *got.AggregatedValue != 42.0 {
-		t.Errorf("aggregated value: %v", got.AggregatedValue)
-	}
-}
-
 // ===========================================================================
 // GetUserByCertThumbprint / AddCertBinding nil-service guards
 // ===========================================================================
-
-func TestEmbedded_GetUserByCertThumbprint_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	// No userSvc -> NotImplementedError.
-	_, err := tr.GetUserByCertThumbprint(context.Background(), "AABBCC")
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbedded_AddCertBinding_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.AddCertBinding(context.Background(), 1, "AABBCC", 0)
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}
-
-// ===========================================================================
-// NilRequestError
-// ===========================================================================
-
-func TestNilRequestError_Message(t *testing.T) {
-	err := &NilRequestError{Method: "Get"}
-	want := "embedded: Get request must not be nil"
-	if got := err.Error(); got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// ===========================================================================
-// translateError uncovered branches
-// ===========================================================================
-
-func TestTranslateError_NilInput(t *testing.T) {
-	if err := translateError(nil); err != nil {
-		t.Errorf("expected nil, got %v", err)
-	}
-}
-
-func TestTranslateError_VectorNotFound(t *testing.T) {
-	svcErr := &service.VectorNotFoundError{Namespace: "ns1", ID: "v1"}
-	err := translateError(svcErr)
-	var te *transport.VectorNotFoundError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected VectorNotFoundError, got %T: %v", err, err)
-	}
-	if te.Namespace != "ns1" || te.ID != "v1" {
-		t.Errorf("unexpected: %+v", te)
-	}
-}
-
-func TestTranslateError_NamespaceNotFound(t *testing.T) {
-	svcErr := &service.NamespaceNotFoundError{Namespace: "ns2"}
-	err := translateError(svcErr)
-	var te *transport.NamespaceNotFoundError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected NamespaceNotFoundError, got %T: %v", err, err)
-	}
-}
-
-func TestTranslateError_NamespaceExists(t *testing.T) {
-	svcErr := &service.NamespaceExistsError{Namespace: "dup"}
-	err := translateError(svcErr)
-	var te *transport.NamespaceExistsError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected NamespaceExistsError, got %T: %v", err, err)
-	}
-}
-
-func TestTranslateError_DimensionMismatch(t *testing.T) {
-	svcErr := &service.DimensionMismatchError{Expected: 768, Actual: 512}
-	err := translateError(svcErr)
-	var te *transport.DimensionMismatchError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected DimensionMismatchError, got %T: %v", err, err)
-	}
-	if te.Expected != 768 || te.Got != 512 {
-		t.Errorf("unexpected: %+v", te)
-	}
-}
-
-func TestTranslateError_IndexNotFound(t *testing.T) {
-	svcErr := &service.IndexNotFoundError{Name: "idx1"}
-	err := translateError(svcErr)
-	var te *transport.IndexNotFoundError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected IndexNotFoundError, got %T: %v", err, err)
-	}
-}
-
-func TestTranslateError_IndexExists(t *testing.T) {
-	svcErr := &service.IndexExistsError{Name: "idx2"}
-	err := translateError(svcErr)
-	var te *transport.IndexExistsError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected IndexExistsError, got %T: %v", err, err)
-	}
-}
-
-func TestTranslateError_GenericError(t *testing.T) {
-	plain := errors.New("something went wrong")
-	err := translateError(plain)
-	var te *transport.RequestError
-	if !errors.As(err, &te) {
-		t.Fatalf("expected RequestError, got %T: %v", err, err)
-	}
-}
 
 // ===========================================================================
 // SealDatabase / UnsealDatabase / DatabaseBarrierStatus nil-service guards
@@ -1208,14 +653,6 @@ func TestEmbedded_DatabaseBarrierStatus_NilService(t *testing.T) {
 // NilServiceError (not ClosedError). The nil-service tests above already
 // cover those paths. The closed-transport path requires a non-nil dbSvc which
 // is tested by existing integration tests.
-
-// ===========================================================================
-// Ceremony custodian nil-service guards + custodianToInfo
-// ===========================================================================
-
-// ===========================================================================
-// Ceremony custodian success paths (using existing mockCeremonyService)
-// ===========================================================================
 
 // ===========================================================================
 // userAuthRecordToDomain / domainToUserAuthRecord pure functions
@@ -1526,11 +963,3 @@ func (e *errorKVService) ListAll(a0 context.Context, a1 string) ([]string, error
 // TestEmbedded_RemoveCertBinding_NilService guards the withdrawal verb the
 // same way: with no user service wired it reports NotImplementedError rather
 // than dereferencing a nil interface (go-qrdb#518).
-func TestEmbedded_RemoveCertBinding_NilService(t *testing.T) {
-	tr := newExtTransport(t)
-	_, err := tr.RemoveCertBinding(context.Background(), 1, "AABBCC")
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}

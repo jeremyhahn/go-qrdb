@@ -715,3 +715,115 @@ func TestFactorClient_Verify_PKCS11_Rejected(t *testing.T) {
 		t.Errorf("expected *transport.FactorVerificationError, got %T", err)
 	}
 }
+
+func TestFactorTypeToDomain_AllBranches(t *testing.T) {
+	tests := []struct {
+		in   transport.FactorType
+		want string
+	}{
+		{transport.FactorTypeMTLS, "mtls"},
+		{transport.FactorTypeFIDO2, "fido2"},
+		{transport.FactorTypePIV, "piv"},
+		{transport.FactorType("custom"), "custom"},
+	}
+	for _, tt := range tests {
+		got := factorTypeToDomain(tt.in)
+		if string(got) != tt.want {
+			t.Errorf("factorTypeToDomain(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestFactorTypeFromDomain_AllBranches(t *testing.T) {
+	tests := []struct {
+		in   string
+		want transport.FactorType
+	}{
+		{"mtls", transport.FactorTypeMTLS},
+		{"fido2", transport.FactorTypeFIDO2},
+		{"piv", transport.FactorTypePIV},
+		{"custom", transport.FactorType("custom")},
+	}
+	for _, tt := range tests {
+		got := factorTypeFromDomain(auth.AuthFactorType(tt.in))
+		if got != tt.want {
+			t.Errorf("factorTypeFromDomain(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestFactorToTransport_NonNilWithMetadata(t *testing.T) {
+	f := &auth.AuthFactor{
+		ID:       "factor-42",
+		Type:     auth.AuthFactorType("fido2"),
+		Label:    "hw-key",
+		Metadata: map[string]string{"key": "value"},
+	}
+	got := factorToTransport(f)
+	if got.ID != "factor-42" {
+		t.Errorf("expected ID factor-42, got %q", got.ID)
+	}
+	if got.Type != transport.FactorTypeFIDO2 {
+		t.Errorf("expected type fido2, got %q", got.Type)
+	}
+	if got.Label != "hw-key" {
+		t.Errorf("expected label hw-key, got %q", got.Label)
+	}
+	if got.Metadata["key"] != "value" {
+		t.Errorf("metadata not copied: %v", got.Metadata)
+	}
+}
+
+func TestFactorToDomain_WithMetadata(t *testing.T) {
+	f := transport.Factor{
+		ID:       "factor-5",
+		Type:     transport.FactorTypeMTLS,
+		Label:    "cert",
+		Metadata: map[string]string{"env": "prod"},
+	}
+	got := factorToDomain(10, f)
+	if got.UserID != 10 {
+		t.Errorf("expected UserID=10, got %d", got.UserID)
+	}
+	if got.Type != auth.AuthFactorMTLS {
+		t.Errorf("expected type mtls, got %q", got.Type)
+	}
+	if got.Metadata["env"] != "prod" {
+		t.Errorf("metadata not copied: %v", got.Metadata)
+	}
+}
+
+func TestMapFactorError_AllBranches(t *testing.T) {
+	if err := mapFactorError(nil); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+
+	{
+		err := mapFactorError(&auth.FactorNotFoundError{FactorID: "fid-7"})
+		var te *transport.FactorNotFoundError
+		if !errors.As(err, &te) {
+			t.Errorf("expected FactorNotFoundError, got %T", err)
+		}
+	}
+
+	{
+		err := mapFactorError(&auth.FactorTypeUnsupportedError{Type: "unknown"})
+		var te *transport.FactorTypeUnsupportedError
+		if !errors.As(err, &te) {
+			t.Errorf("expected FactorTypeUnsupportedError, got %T", err)
+		}
+	}
+
+	{
+		err := mapFactorError(&auth.FactorAlreadyExistsError{Type: auth.AuthFactorType("fido2"), FactorID: "fid-3"})
+		var te *transport.FactorAlreadyEnrolledError
+		if !errors.As(err, &te) {
+			t.Errorf("expected FactorAlreadyEnrolledError, got %T", err)
+		}
+	}
+
+	plain := errors.New("unexpected")
+	if err := mapFactorError(plain); err != plain {
+		t.Errorf("expected pass-through, got %T: %v", err, err)
+	}
+}

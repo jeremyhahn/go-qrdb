@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -1437,4 +1438,119 @@ func TestAddMember_CarriesIdentity(t *testing.T) {
 	if adminSvc.addIdentity != identity {
 		t.Fatalf("service received identity %q, want %q", adminSvc.addIdentity, identity)
 	}
+}
+
+func TestToTransportConverters_NilInput(t *testing.T) {
+	if got := toTransportLease(nil); got != nil {
+		t.Errorf("toTransportLease(nil) = %v, want nil", got)
+	}
+	if got := toTransportRetentionPolicy(nil); got != nil {
+		t.Errorf("toTransportRetentionPolicy(nil) = %v, want nil", got)
+	}
+	if got := toTransportNamespaceInfo(nil); got != nil {
+		t.Errorf("toTransportNamespaceInfo(nil) = %v, want nil", got)
+	}
+	if got := toTransportVectorData(nil); got != nil {
+		t.Errorf("toTransportVectorData(nil) = %v, want nil", got)
+	}
+}
+
+func TestToTransportNamespaceInfo_NonNil(t *testing.T) {
+	got := toTransportNamespaceInfo(&service.NamespaceInfo{Namespace: "ns1", Dimension: 128, VectorCount: 100})
+	if got == nil {
+		t.Fatal("expected non-nil")
+	}
+	if got.Namespace != "ns1" || got.Dimension != 128 || got.VectorCount != 100 {
+		t.Errorf("toTransportNamespaceInfo = %+v, want ns1/128/100", got)
+	}
+}
+
+func TestToTransportVectorData_NonNil(t *testing.T) {
+	got := toTransportVectorData(&service.VectorData{ID: 1, Vector: []float32{0.1, 0.2}})
+	if got == nil {
+		t.Fatal("expected non-nil")
+	}
+	if got.ID != 1 || len(got.Vector) != 2 || got.Vector[1] != 0.2 {
+		t.Errorf("toTransportVectorData = %+v, want ID 1 and vector [0.1 0.2]", got)
+	}
+}
+
+func TestToTransportRichQueryResponse_NonNil(t *testing.T) {
+	aggVal := 42.0
+	got := toTransportRichQueryResponse(&timeseries.QueryResult{
+		Metric:          "cpu",
+		AggregatedValue: &aggVal,
+		Points:          []*timeseries.DataPoint{{Metric: "cpu", Value: 1.0}},
+	})
+	if got == nil {
+		t.Fatal("expected non-nil")
+	}
+	if got.Metric != "cpu" {
+		t.Errorf("Metric = %q, want cpu", got.Metric)
+	}
+	if got.AggregatedValue == nil || *got.AggregatedValue != 42.0 {
+		t.Errorf("aggregated value: %v", got.AggregatedValue)
+	}
+	if len(got.Points) != 1 {
+		t.Errorf("Points = %d, want 1", len(got.Points))
+	}
+}
+
+func TestNilRequestError_Message(t *testing.T) {
+	err := &NilRequestError{Method: "Get"}
+	want := "embedded: Get request must not be nil"
+	if got := err.Error(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestTranslateError_VectorAndIndexErrors(t *testing.T) {
+	t.Run("VectorNotFound", func(t *testing.T) {
+		var te *transport.VectorNotFoundError
+		if err := translateError(&service.VectorNotFoundError{Namespace: "ns1", ID: "v1"}); !errors.As(err, &te) {
+			t.Fatalf("expected VectorNotFoundError, got %T: %v", err, err)
+		}
+		if te.Namespace != "ns1" || te.ID != "v1" {
+			t.Errorf("unexpected: %+v", te)
+		}
+	})
+	t.Run("NamespaceNotFound", func(t *testing.T) {
+		var te *transport.NamespaceNotFoundError
+		if err := translateError(&service.NamespaceNotFoundError{Namespace: "ns2"}); !errors.As(err, &te) {
+			t.Fatalf("expected NamespaceNotFoundError, got %T: %v", err, err)
+		}
+		if te.Namespace != "ns2" {
+			t.Errorf("Namespace = %q, want ns2", te.Namespace)
+		}
+	})
+	t.Run("NamespaceExists", func(t *testing.T) {
+		var te *transport.NamespaceExistsError
+		if err := translateError(&service.NamespaceExistsError{Namespace: "dup"}); !errors.As(err, &te) {
+			t.Fatalf("expected NamespaceExistsError, got %T: %v", err, err)
+		}
+		if te.Namespace != "dup" {
+			t.Errorf("Namespace = %q, want dup", te.Namespace)
+		}
+	})
+	t.Run("DimensionMismatch", func(t *testing.T) {
+		var te *transport.DimensionMismatchError
+		if err := translateError(&service.DimensionMismatchError{Expected: 768, Actual: 512}); !errors.As(err, &te) {
+			t.Fatalf("expected DimensionMismatchError, got %T: %v", err, err)
+		}
+		if te.Expected != 768 || te.Got != 512 {
+			t.Errorf("unexpected: %+v", te)
+		}
+	})
+	t.Run("IndexNotFound", func(t *testing.T) {
+		var te *transport.IndexNotFoundError
+		if err := translateError(&service.IndexNotFoundError{Name: "idx1"}); !errors.As(err, &te) {
+			t.Fatalf("expected IndexNotFoundError, got %T: %v", err, err)
+		}
+	})
+	t.Run("IndexExists", func(t *testing.T) {
+		var te *transport.IndexExistsError
+		if err := translateError(&service.IndexExistsError{Name: "idx2"}); !errors.As(err, &te) {
+			t.Fatalf("expected IndexExistsError, got %T: %v", err, err)
+		}
+	})
 }

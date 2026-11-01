@@ -263,6 +263,9 @@ func TestEmbeddedVector_Dispatch(t *testing.T) {
 		if err := tr.Request(ctx, "CreateNamespace", &transport.CreateNamespaceRequest{Namespace: "ns"}, &resp); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
+		if resp == nil {
+			t.Fatal("expected non-nil CreateNamespaceResponse")
+		}
 	})
 	t.Run("DeleteNamespace", func(t *testing.T) {
 		var resp *transport.DeleteNamespaceResponse
