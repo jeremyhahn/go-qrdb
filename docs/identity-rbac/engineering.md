@@ -116,6 +116,17 @@ func (m *AuthMiddleware) AuthenticateDelegation(ctx context.Context, chain []*x5
 
 // sdk/go/transport: CertClient.IssueDelegation(ctx, *IssueDelegationRequest)
 //                   (*IssuedDelegation, error)
+
+// Standing delegation policy (architecture.md#standing-delegation-policy).
+// pkg/auth/delegation/policy.go — the record; Bound narrows a request to it.
+func (p Policy) Bound(scope []string, ttl time.Duration) (Grant, time.Duration, error)
+// pkg/service/cert_delegation_policy.go — put/list/delete under certs:delegate,
+// stored under __sys:cert_delegation_policy/; MintDelegation for the first
+// certificate; DelegationPolicyNotFoundError (NotFound) when none stands.
+// sdk/go/node: Node.MintDelegation — the first mint, in process, as the
+// service principal.
+// sdk/go/transport: CertClient.PutDelegationPolicy, ListDelegationPolicies,
+//                   DeleteDelegationPolicy(principal)
 ```
 
 ### User entity — `pkg/user/types.go`
@@ -647,7 +658,12 @@ Unix socket, MCP and the embedded transport — carries the full surface.
 - **Issuance is the tenant's act alone.** `IssueDelegation` is confined with
   `tenant.Confine`, refuses the system tenant and a delegated caller, validates
   every scope entry against the permission registry, and writes `cert.delegate`
-  to the tenant's trail before the CA signs.
+  to the tenant's trail before the CA signs. The one exception is a renewal
+  within a standing policy: a delegated caller may renew its own principal
+  while a policy stands for it, bounded by `Policy.Bound`, which narrows and
+  never widens. A policy put, list or delete refuses the system tenant and a
+  delegated caller alike, and a delete stops every further mint and renewal
+  (`DelegationPolicyNotFoundError`).
 - **`ReconcileBuiltInRoles` is the ONLY writer to a built-in role's
   permissions.** `UpdateRole` returns `SystemRoleImmutableError{Op:
   "re-permissioned"}` and `DeleteRole` returns `SystemRoleImmutableError{Op:
@@ -1611,6 +1627,23 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   data, after revocation, after expiry and past 24h of validity even when the
   tenant's own CA signed it; and that issuance refuses an unknown permission,
   a lifetime over 24h and a built-in role's name.
+  `TestCADelegatePolicy_CLI_PerProtocol`
+  (`test/integration/ca_delegate_policy_cli_test.go`,
+  `make integration-test-identity-rbac`) drives `qrdb ca delegate policy put`,
+  `list` and `delete` on every transport.
+  The standing policy is unit-tested at each layer: `pkg/auth/delegation`
+  (`policy_test.go`, `Policy.Bound` narrowing and refusing to widen),
+  `pkg/cert` (`delegation_policy_test.go`), `pkg/service`
+  (`cert_delegation_policy_test.go`, and `cert_delegation_policy_delegated_test.go`
+  for the mint, the renewal, and both refused after the delete),
+  `sdk/go/node` (`mint_delegation_test.go`), `pkg/server`
+  (`embedded_mint_delegation_test.go`), each transport's handler
+  (`*_delegation_policy_test.go` under `pkg/api/{rest,grpc,quic,mcp}`) and SDK
+  client (`transport_delegation_policy_test.go` under `sdk/go/transport/*`),
+  and `cmd/qrdb` (`ca_delegate_policy_test.go`). A delegated tenant-barrier
+  seal and officer list are tested on every transport
+  (`*tenant_barrier_delegated_test.go`). `pkg/api/errclass` and each
+  transport's mapping test assert `DelegationPolicyNotFoundError` is NotFound.
   `TestABACPolicy_CLI_PerProtocol` (`make integration-test-identity-rbac`)
   drives the stored-policy lifecycle with `qrdb abac policy` on every
   transport of one node: create, get, update (the creation time survives,

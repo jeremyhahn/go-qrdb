@@ -100,6 +100,7 @@ func TestHandleIssueDelegation_MapsServiceErrors(t *testing.T) {
 		{"bad request", &service.DelegationRequestError{Field: "scope", Reason: "unknown permission"}, http.StatusBadRequest},
 		{"denied", &service.DelegationDeniedError{Reason: "a delegated caller cannot delegate"}, http.StatusForbidden},
 		{"cross tenant", &tenant.CrossTenantDeniedError{IdentityTenantID: "acme", RequestedTenantID: "globex"}, http.StatusForbidden},
+		{"no policy", &service.DelegationPolicyNotFoundError{TenantID: "acme", Principal: "billing"}, http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
