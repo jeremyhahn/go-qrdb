@@ -1665,9 +1665,12 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 		wrote = true
 	}
 	// Only a write advances the revision: a branch of reads alone leaves
-	// the store where it was.
+	// the store where it was and reports the revision it observed, as an
+	// etcd response header does.
 	if wrote {
 		s.SetRevision(rev)
+	} else {
+		rev = s.CurrentRevision()
 	}
 
 	data, err := protocol.EncodeTransactionResult(succeeded, reads)
