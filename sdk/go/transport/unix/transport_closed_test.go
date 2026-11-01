@@ -420,4 +420,76 @@ func TestUnixVector_AfterClose(t *testing.T) {
 	}
 }
 
+func TestUnixTenant_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+	ctx := context.Background()
+
+	if _, err := tr.CreateTenant(ctx, &transport.CreateTenantRequest{}); !errors.As(err, &ce) {
+		t.Errorf("CreateTenant: %v", err)
+	}
+	if _, err := tr.GetTenant(ctx, "t"); !errors.As(err, &ce) {
+		t.Errorf("GetTenant: %v", err)
+	}
+	if _, err := tr.ListTenants(ctx); !errors.As(err, &ce) {
+		t.Errorf("ListTenants: %v", err)
+	}
+	if err := tr.DeleteTenant(ctx, "t"); !errors.As(err, &ce) {
+		t.Errorf("DeleteTenant: %v", err)
+	}
+	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); !errors.As(err, &ce) {
+		t.Errorf("UpdateTenant: %v", err)
+	}
+	if _, err := tr.UpdateTenantQuotas(ctx, &transport.UpdateTenantQuotasRequest{}); !errors.As(err, &ce) {
+		t.Errorf("UpdateTenantQuotas: %v", err)
+	}
+}
+
+func TestUnixCollection_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+	ctx := context.Background()
+
+	if _, err := tr.CreateCollection(ctx, transport.CreateCollectionRequest{}); !errors.As(err, &ce) {
+		t.Errorf("CreateCollection: %v", err)
+	}
+	if _, err := tr.GetCollectionInfo(ctx, "db", "c"); !errors.As(err, &ce) {
+		t.Errorf("GetCollectionInfo: %v", err)
+	}
+	if _, err := tr.ListCollections(ctx, "db"); !errors.As(err, &ce) {
+		t.Errorf("ListCollections: %v", err)
+	}
+	if err := tr.DropCollection(ctx, "db", "c"); !errors.As(err, &ce) {
+		t.Errorf("DropCollection: %v", err)
+	}
+	if _, err := tr.InsertDocument(ctx, transport.InsertDocumentRequest{}); !errors.As(err, &ce) {
+		t.Errorf("InsertDocument: %v", err)
+	}
+	if _, err := tr.GetDocument(ctx, "db", "c", 1); !errors.As(err, &ce) {
+		t.Errorf("GetDocument: %v", err)
+	}
+	if err := tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}); !errors.As(err, &ce) {
+		t.Errorf("UpdateDocument: %v", err)
+	}
+	if err := tr.DeleteDocument(ctx, "db", "c", 1); !errors.As(err, &ce) {
+		t.Errorf("DeleteDocument: %v", err)
+	}
+	if _, err := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); !errors.As(err, &ce) {
+		t.Errorf("ListDocuments: %v", err)
+	}
+}
+
+func TestUnixWatch_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+	ctx := context.Background()
+
+	if _, err := tr.Watch(ctx, "k", transport.WatchOptions{}); !errors.As(err, &ce) {
+		t.Errorf("Watch: %v", err)
+	}
+	if _, err := tr.WatchPrefix(ctx, "p", transport.WatchOptions{}); !errors.As(err, &ce) {
+		t.Errorf("WatchPrefix: %v", err)
+	}
+}
+
 func spIdx(s string) *string { return &s }
