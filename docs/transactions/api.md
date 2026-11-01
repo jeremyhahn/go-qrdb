@@ -140,6 +140,7 @@ Response is empty on success (`204`).
 | A session's byte, chunk-count, or per-tenant concurrency quota is exceeded | 429 | `RESOURCE_EXHAUSTED` |
 | A `--transactional` import commit fails (`ImportTransactionAbortedError`) | 409 | `ABORTED` |
 | An import proposal or an expanded archive exceeds its bound (`ImportProposalTooLargeError`, `ImportArchiveExpandedTooLargeError`) | 413 | `RESOURCE_EXHAUSTED` |
+| A transaction branch's reads answer more than 4 MiB (`TxnReadResultTooLargeError`) | 413 | `RESOURCE_EXHAUSTED` |
 | An import session's stored state is corrupt (`ImportSessionCorruptError`) | 500 | `INTERNAL` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
@@ -164,11 +165,25 @@ chunk count are bounded by `import_session.max_session_bytes` /
 `max_chunks_per_session` (see [engineering.md](engineering.md)), and a
 tenant's concurrent sessions by `import_session.max_sessions_per_tenant`.
 
+A transaction's reads are bounded too. The key and value bytes every get
+and range of the chosen branch answers, summed over the branch, may not
+exceed 4 MiB, so the whole response fits one reply. The bound is fixed, not
+configurable: every replica applies the transaction and must decide it the
+same way. It is checked before any write of the branch is applied, and each
+read is charged its bytes plus every earlier put of the branch that falls in
+its range -- an upper bound, so a branch that overwrites a key it reads can
+be refused slightly short of 4 MiB. A range stops scanning at the key that
+crosses the bound. A branch over it is refused whole with
+`TxnReadResultTooLargeError`, which names the limit and the bytes read: none
+of its writes is applied, the revision does not move, and the group keeps
+applying the entries after it. Read fewer or smaller keys per transaction,
+or page a large range outside one.
+
 ## Pagination
 
 No capability on this page returns an unbounded result set: a
-transaction's responses are bounded by the ops submitted, and an import's
-errors are bounded by its rows. No pagination applies.
+transaction's reads are bounded at 4 MiB (see "Payload limits"), and an
+import's errors are bounded by its rows. No pagination applies.
 
 ## Versioning
 
