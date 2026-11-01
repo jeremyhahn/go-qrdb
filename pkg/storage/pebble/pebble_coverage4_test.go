@@ -23,6 +23,15 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
+// newStubRegistry returns a PerTenantRegistry with the default opener,
+// shut down in t.Cleanup.
+func newStubRegistry(t *testing.T) PerTenantRegistry {
+	t.Helper()
+	reg := NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+	return reg
+}
+
 // leakIterator opens an iterator on s and never closes it, so that the
 // underlying pebble.DB.Close reports "leaked iterators" and fails.
 func leakIterator(t *testing.T, s *PebbleStorage) {

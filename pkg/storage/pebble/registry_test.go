@@ -15,10 +15,13 @@
 package pebble_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -130,6 +133,85 @@ func TestPerTenantRegistry_CloseUnknownTenantNoOp(t *testing.T) {
 
 	if err := reg.Close(context.Background(), "ghost"); err != nil {
 		t.Errorf("Close(ghost) = %v, want nil (no-op)", err)
+	}
+}
+
+func TestPerTenantRegistry_CloseEmptyTenantID(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+
+	err := reg.Close(context.Background(), "")
+	var empty *pebblestore.EmptyTenantIDError
+	if !errors.As(err, &empty) {
+		t.Errorf("Close(\"\") = %v, want EmptyTenantIDError", err)
+	}
+}
+
+// TestPerTenantRegistry_OpenCancelledContext verifies Open returns the
+// context error before opening anything, so no tenant is registered.
+func TestPerTenantRegistry_OpenCancelledContext(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := reg.Open(ctx, "alpha", t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Open with cancelled ctx = %v, want context.Canceled", err)
+	}
+	if got := reg.List(); len(got) != 0 {
+		t.Errorf("List after cancelled Open = %v, want empty", got)
+	}
+}
+
+// TestPerTenantRegistry_CloseCancelledContext verifies Close returns the
+// context error and leaves the tenant registered and open.
+func TestPerTenantRegistry_CloseCancelledContext(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+	opened, _ := openRealTenant(t, reg, "alpha")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := reg.Close(ctx, "alpha"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close with cancelled ctx = %v, want context.Canceled", err)
+	}
+	got, err := reg.Get("alpha")
+	if err != nil {
+		t.Fatalf("Get after cancelled Close: %v", err)
+	}
+	if got != opened {
+		t.Errorf("Get after cancelled Close returned %p, want %p", got, opened)
+	}
+}
+
+// TestWithRegistryLogger_ReceivesLifecycleLogs verifies the injected
+// logger, not slog.Default, receives the open and close records.
+func TestWithRegistryLogger_ReceivesLifecycleLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	reg := pebblestore.NewPerTenantRegistry(pebblestore.WithRegistryLogger(logger))
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+
+	openRealTenant(t, reg, "alpha")
+	if err := reg.Close(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Close(alpha): %v", err)
+	}
+	for _, want := range []string{`msg="per-tenant pebble opened" tenant=alpha`, `msg="per-tenant pebble closed" tenant=alpha`} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("injected logger output %q lacks %q", buf.String(), want)
+		}
+	}
+}
+
+// TestWithRegistryLogger_NilKeepsDefault verifies a nil logger is ignored:
+// the registry keeps its default logger and Open, which logs, succeeds.
+func TestWithRegistryLogger_NilKeepsDefault(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry(pebblestore.WithRegistryLogger(nil))
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+
+	openRealTenant(t, reg, "alpha")
+	if err := reg.Close(context.Background(), "alpha"); err != nil {
+		t.Errorf("Close(alpha) = %v, want nil", err)
 	}
 }
 

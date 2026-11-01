@@ -1513,6 +1513,17 @@ func TestIterator_Error_NoError(t *testing.T) {
 	}
 }
 
+// TestIterator_Error_NilInnerWithStoredErr verifies the error stored by a
+// failed open is reported ahead of the nil-inner guard.
+func TestIterator_Error_NilInnerWithStoredErr(t *testing.T) {
+	sentinel := errors.New("stored-iterator-error")
+	it := &pebbleIterator{err: sentinel}
+
+	if err := it.Error(); !errors.Is(err, sentinel) {
+		t.Fatalf("Error() = %v, want it to wrap %v", err, sentinel)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Config ToPebbleOptions with WALDir
 // ---------------------------------------------------------------------------
