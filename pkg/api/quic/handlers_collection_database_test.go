@@ -570,6 +570,27 @@ func TestHandleCollectionListDocuments_ServiceError(t *testing.T) {
 	}
 }
 
+func TestHandleCollectionHandlers_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCollectionService(&mockCollectionService{}))
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"GetInfo":        srv.handleCollectionGetInfo,
+		"List":           srv.handleCollectionList,
+		"Drop":           srv.handleCollectionDrop,
+		"GetDocument":    srv.handleCollectionGetDocument,
+		"DeleteDocument": srv.handleCollectionDeleteDocument,
+		"ListDocuments":  srv.handleCollectionListDocuments,
+	}
+	for name, handle := range handlers {
+		t.Run(name, func(t *testing.T) {
+			_, err := handle(context.Background(), []byte{0xff, 0xfe})
+			var ue *UnmarshalError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // collectionInfoToProto
 // ---------------------------------------------------------------------------
@@ -1121,6 +1142,61 @@ func TestHandleDatabaseUpdateConnection_EmptyName(t *testing.T) {
 	_, err := srv.handleDatabaseUpdateConnection(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error for empty name")
+	}
+}
+
+func TestHandleDatabaseUpdateConfig_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"Etcd":       srv.handleDatabaseUpdateEtcd,
+		"Raft":       srv.handleDatabaseUpdateRaft,
+		"Barrier":    srv.handleDatabaseUpdateBarrier,
+		"Connection": srv.handleDatabaseUpdateConnection,
+	}
+	for name, handle := range handlers {
+		t.Run(name, func(t *testing.T) {
+			_, err := handle(context.Background(), []byte{0xff, 0xfe, 0x00})
+			var ue *UnmarshalError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestHandleDatabaseUpdateConfig_ServiceError(t *testing.T) {
+	svcErr := &testError{msg: "update failed"}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{
+		updateEtcdFn:    func(string, *database.EtcdConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
+		updateRaftFn:    func(string, *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
+		updateBarrierFn: func(string, *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) { return nil, svcErr },
+		updateConnectionFn: func(string, *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+			return nil, svcErr
+		},
+	}))
+	tests := map[string]struct {
+		handle  func(context.Context, []byte) ([]byte, error)
+		request map[string]interface{}
+	}{
+		"Etcd": {srv.handleDatabaseUpdateEtcd, map[string]interface{}{"name": "db", "enabled": true, "listenAddr": ":2379"}},
+		"Raft": {srv.handleDatabaseUpdateRaft, map[string]interface{}{"name": "db", "raft": database.DatabaseRaftConfig{ShardID: 1}}},
+		"Barrier": {srv.handleDatabaseUpdateBarrier, map[string]interface{}{
+			"name": "db", "barrier": database.DatabaseBarrierConfig{Mode: "shamir"},
+		}},
+		"Connection": {srv.handleDatabaseUpdateConnection, map[string]interface{}{
+			"name": "db", "connection": database.DatabaseConnectionConfig{Transport: "grpc", Address: "h:9000"},
+		}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			payload, err := json.Marshal(tc.request)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if _, err := tc.handle(context.Background(), payload); !errors.Is(err, svcErr) {
+				t.Fatalf("expected the service error, got %v", err)
+			}
+		})
 	}
 }
 
