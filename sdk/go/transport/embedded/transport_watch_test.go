@@ -599,3 +599,27 @@ func TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation(t *testing.T) {
 		})
 	}
 }
+
+// Both openers answer a transport built without a watch service with the
+// typed wiring-defect error, never a nil dereference.
+func TestEmbeddedWatch_NilServiceIsTyped(t *testing.T) {
+	tr := newExtTransport(t)
+	for name, open := range watchOpeners {
+		var ne *NilServiceError
+		if _, err := open(tr, context.Background(), "k", transport.WatchOptions{}); !errors.As(err, &ne) {
+			t.Errorf("%s: err = %T (%v), want *NilServiceError", name, err, err)
+		}
+	}
+}
+
+// Both openers on a closed transport are refused with *transport.ClosedError
+// before a watcher is opened.
+func TestEmbeddedWatch_ClosedIsRefused(t *testing.T) {
+	tr := closedExtTransport(t, WithWatchService(&mockWatchService{}))
+	for name, open := range watchOpeners {
+		var ce *transport.ClosedError
+		if _, err := open(tr, context.Background(), "k", transport.WatchOptions{}); !errors.As(err, &ce) {
+			t.Errorf("%s: err = %T (%v), want *transport.ClosedError", name, err, err)
+		}
+	}
+}
