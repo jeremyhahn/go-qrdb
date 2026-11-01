@@ -17,6 +17,7 @@ package lock
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -229,6 +230,9 @@ type RangeOptions struct {
 	KeysOnly   bool
 	SortOrder  SortOrder
 	SortTarget SortTarget
+	// MaxResultBytes, when positive, bounds the key and value bytes a range
+	// may collect; see WithMaxResultBytes.
+	MaxResultBytes int64
 }
 
 // RangeOption configures a range query.
@@ -260,6 +264,29 @@ func WithKeysOnly() RangeOption {
 	return func(o *RangeOptions) {
 		o.KeysOnly = true
 	}
+}
+
+// WithMaxResultBytes bounds the key and value bytes a range may collect. The
+// scan stops at the first result that takes the total past n, so no answer
+// larger than n is ever held, and the range fails with a
+// *ResultTooLargeError carrying n and the bytes read.
+func WithMaxResultBytes(n int64) RangeOption {
+	return func(o *RangeOptions) {
+		o.MaxResultBytes = n
+	}
+}
+
+// ResultTooLargeError reports a range that crossed its WithMaxResultBytes
+// bound: Read is the byte count at the result that crossed Limit.
+type ResultTooLargeError struct {
+	Limit int64
+	Read  int64
+}
+
+// Error returns a human-readable description.
+func (e *ResultTooLargeError) Error() string {
+	return "lock: range result of at least " + strconv.FormatInt(e.Read, 10) +
+		" bytes exceeds the limit of " + strconv.FormatInt(e.Limit, 10) + " bytes"
 }
 
 // SortOrder specifies the sort direction for range results.
