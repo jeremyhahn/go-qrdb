@@ -16,10 +16,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -267,6 +269,31 @@ func TestRESTServiceRegistry_SystemTenant_SkipsBarrierCheck(t *testing.T) {
 	}
 	if svc == nil {
 		t.Fatal("expected non-nil KVServicer")
+	}
+}
+
+// TestCheckTenantBarrier_TenantNotFound verifies that a tenant with no barrier
+// in the registry is refused with a typed *rest.TenantNotFoundError.
+func TestCheckTenantBarrier_TenantNotFound(t *testing.T) {
+	t.Parallel()
+	strategy, err := seal.NewSoftwareStrategy(context.Background(), []byte("check-barrier-pass"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	sysBarrier, err := seal.NewStorageBarrier(nil, seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "sys/root"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	reg, err := seal.NewBarrierRegistry(nil, sysBarrier)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	r := &restServiceRegistry{barrierReg: reg, systemTenant: "system"}
+
+	var tnf *rest.TenantNotFoundError
+	if err := r.checkTenantBarrier("ghost-tenant"); !errors.As(err, &tnf) || tnf.TenantID != "ghost-tenant" {
+		t.Fatalf("checkTenantBarrier(unregistered) = %v, want *rest.TenantNotFoundError for ghost-tenant", err)
 	}
 }
 
