@@ -1206,6 +1206,24 @@ func TestStorage_SetRetentionPolicy_AfterClose(t *testing.T) {
 	}
 }
 
+func TestStorage_SetRetentionPolicy_NilPolicy(t *testing.T) {
+	s := newStorage(t)
+
+	err := setRetentionPolicy(t, s, "cpu.usage", nil)
+	var nrp *NilRetentionPolicyError
+	if !errors.As(err, &nrp) {
+		t.Fatalf("SetRetentionPolicy(nil): expected NilRetentionPolicyError, got %T: %v", err, err)
+	}
+	// Nothing was stored: the metric still reports the default policy.
+	policy, err := s.GetRetentionPolicy("cpu.usage")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if policy.Duration != 0 {
+		t.Errorf("GetRetentionPolicy: duration got %v, want 0 (default)", policy.Duration)
+	}
+}
+
 func TestStorage_ApplyRetention_DeletesPointsOlderThanCutoff(t *testing.T) {
 	s := newStorage(t)
 	base := ts(2026, 3, 1, 10, 0, 0)
