@@ -2311,6 +2311,49 @@ func TestGRPC_IndexScan_NilService(t *testing.T) {
 	}
 }
 
+func TestGRPC_IndexList_Success(t *testing.T) {
+	indexSvc := &mockIndexService{listResult: []string{"idx1", "idx2"}}
+	client, cleanup := startTestServerFull(t, WithIndex(indexSvc))
+	defer cleanup()
+
+	resp, err := client.IndexList(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("IndexList failed: %v", err)
+	}
+	if len(resp.GetNames()) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(resp.GetNames()))
+	}
+}
+
+func TestGRPC_IndexList_Error(t *testing.T) {
+	indexSvc := &mockIndexService{listErr: &service.ReadError{Err: errors.New("list failed")}}
+	client, cleanup := startTestServerFull(t, WithIndex(indexSvc))
+	defer cleanup()
+
+	_, err := client.IndexList(context.Background(), &emptypb.Empty{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestGRPC_IndexList_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.IndexList(context.Background(), &emptypb.Empty{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests
 // ---------------------------------------------------------------------------
