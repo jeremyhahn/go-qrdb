@@ -94,7 +94,8 @@ const InviteTokenBytes = invite.TokenBytes
 // Invitation errors.
 //
 // A handler serving unauthenticated callers MUST collapse ErrInviteNotFound,
-// ErrInviteExpired and ErrInviteAlreadyRedeemed into one opaque response.
+// ErrInviteExpired, ErrInviteAlreadyRedeemed and ErrInviteSuperseded into one
+// opaque response.
 // Telling a stranger that a token exists but is spent confirms a valid user was
 // invited, which is the enumeration an opaque token exists to prevent.
 var (
@@ -104,6 +105,17 @@ var (
 	ErrInviteExpired = invite.ErrExpired
 	// ErrInviteAlreadyRedeemed indicates the invitation was already consumed.
 	ErrInviteAlreadyRedeemed = invite.ErrAlreadyRedeemed
+	// ErrInviteSuperseded indicates a later Reissue replaced the invitation.
+	ErrInviteSuperseded = invite.ErrSuperseded
+	// ErrInviteUserNotFound indicates Reissue was asked for a user that holds
+	// no invitation in the tenant.
+	ErrInviteUserNotFound = invite.ErrUserNotFound
+	// ErrInviteUserActive indicates Reissue was asked for a user recorded
+	// active by Activate.
+	ErrInviteUserActive = invite.ErrUserActive
+	// ErrInviteReissueConflict indicates another reissue, or a redemption,
+	// for the same user landed first; the winner's state is the live one.
+	ErrInviteReissueConflict = invite.ErrReissueConflict
 	// ErrInviteEmptyToken indicates an empty token was presented.
 	ErrInviteEmptyToken = invite.ErrEmptyToken
 	// ErrInviteMissingUserID indicates an invitation was created with no subject.

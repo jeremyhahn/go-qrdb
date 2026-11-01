@@ -103,6 +103,22 @@ func TestWithAuthFactorService_Applied(t *testing.T) {
 	}
 }
 
+func TestWithKVService_SetsField(t *testing.T) {
+	kv := &mockKVService{}
+	srv := NewServer(nil, nil, ":0", WithKVService(kv))
+	if srv.kvSvc != kv {
+		t.Error("kvSvc not set")
+	}
+}
+
+func TestWithAdminService_SetsField(t *testing.T) {
+	admin := newDefaultAdminSvc()
+	srv := NewServer(nil, nil, ":0", WithAdminService(admin))
+	if srv.adminSvc != admin {
+		t.Error("adminSvc not set")
+	}
+}
+
 func TestWithSOAuthenticator_Applied(t *testing.T) {
 	srv := NewServer(nil, nil, ":0", WithSOAuthenticator(nil))
 	if srv.soPINVerifier != nil {

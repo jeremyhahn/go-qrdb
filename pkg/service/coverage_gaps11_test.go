@@ -350,31 +350,6 @@ func TestVectorService_BatchDeleteVectors_RaftPath(t *testing.T) {
 // GetRebuildProgress – non-nil job lookup path (22.9% → higher)
 // ---------------------------------------------------------------------------
 
-func TestVectorService_GetRebuildProgress_WithJobID(t *testing.T) {
-	svc, _ := newRaftVecSvc(t, "rb-job-ns", 3)
-	ctx := context.Background()
-
-	// Request with a JobID that doesn't exist — exercises the lookup branch.
-	resp, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{
-		JobID: "nonexistent-job-id",
-	})
-	// Job not found → either nil resp with error or an empty progress.
-	_ = resp
-	_ = err
-}
-
-func TestVectorService_GetRebuildProgress_WithNamespaceAndJobID(t *testing.T) {
-	svc, _ := newRaftVecSvc(t, "rb-both-ns", 3)
-	ctx := context.Background()
-
-	resp, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{
-		JobID:     "any-id",
-		Namespace: "rb-both-ns",
-	})
-	_ = resp
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // GetIndexStats – storage path covering uncovered branches (61.9% → higher)
 // ---------------------------------------------------------------------------

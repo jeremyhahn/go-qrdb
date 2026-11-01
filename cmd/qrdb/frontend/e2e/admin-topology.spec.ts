@@ -118,7 +118,11 @@ test.describe("Admin - Topology view", () => {
     await loadApp(page);
     await navigateToTopology(page);
 
-    await page.waitForTimeout(300);
+    // The node summary renders once the topology fetch has resolved, so any
+    // error from it has surfaced.
+    await expect(
+      page.locator("main").getByTestId("topology-node-summary"),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
     expect(errors).toHaveLength(0);
   });
 

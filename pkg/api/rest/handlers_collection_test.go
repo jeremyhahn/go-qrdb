@@ -1194,6 +1194,39 @@ func TestHandleDropCollection_ServiceError(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
+// TestMapHTTPError_CollectionErrors pins the HTTP status of every typed
+// collection error the handlers above return.
+func TestMapHTTPError_CollectionErrors(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{&service.CollectionAlreadyExistsError{Database: "db", Collection: "c"}, http.StatusConflict},
+		{&service.CollectionNotFoundError{Database: "db", Collection: "c"}, http.StatusNotFound},
+		{&service.CollectionEmptyNameError{}, http.StatusBadRequest},
+		{&service.CollectionInvalidNameError{Name: "a#b", Reason: "x"}, http.StatusBadRequest},
+		{&service.CollectionReservedFieldError{Field: "id", Reason: "x"}, http.StatusBadRequest},
+		{&service.CollectionEmptyDatabaseError{}, http.StatusBadRequest},
+		{&service.CollectionInvalidIDStrategyError{}, http.StatusBadRequest},
+		{&service.CollectionMissingFieldHashError{}, http.StatusBadRequest},
+		{&service.CollectionDocumentNotFoundError{}, http.StatusNotFound},
+		// The insert-refused-an-overwrite case (go-qrdb#447) is a conflict,
+		// not a bad request: the body is well-formed and the caller may
+		// retry it under a different id.
+		{&service.CollectionDocumentExistsError{Database: "db", Collection: "c", ID: 7, Explicit: true}, http.StatusConflict},
+		{&service.CollectionDocumentExistsError{Database: "db", Collection: "c", ID: 7}, http.StatusConflict},
+		{&service.CollectionEmptyDocumentError{}, http.StatusBadRequest},
+		{&service.CollectionInvalidDocumentIDError{}, http.StatusBadRequest},
+		{&service.CollectionMetadataError{}, http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		got := mapHTTPError(tc.err)
+		if got != tc.want {
+			t.Errorf("mapHTTPError(%T) = %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleCreateCollection service validation errors
 // ---------------------------------------------------------------------------

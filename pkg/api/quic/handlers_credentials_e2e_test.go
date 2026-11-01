@@ -114,6 +114,17 @@ func startCredentialE2EServer(t *testing.T, svc *mockCredentialService) (string,
 	return srv.Addr(), clientCfg
 }
 
+// credentialE2ERoundTripBound caps one credentialE2ERoundTrip: dial, write
+// and read, and the client's QUIC idle timeout, so the connection cannot idle
+// out while the server is still answering. It is generous on purpose. An SO
+// request is verified twice, by the SO gate and then by the barrier's own SO
+// PIN check, each PBKDF2-SHA256 at the production 600,000 iterations; under
+// GODEBUG=fips140=only on a loaded CI runner the served case outlived a 5 s
+// bound (main run 75275) after taking 8-13 s per subtest in a green run.
+// The bound still fails a handler that never answers well inside the package
+// timeout.
+const credentialE2ERoundTripBound = 30 * time.Second
+
 // credentialE2ERoundTrip opens a QUIC stream, writes the request, and
 // returns the (status, payload) from the server. It returns errors via
 // t.Fatalf so the test reads top-down.
@@ -126,11 +137,11 @@ func credentialE2ERoundTrip(
 ) (uint16, []byte) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), credentialE2ERoundTripBound)
 	defer cancel()
 
 	conn, err := quicgo.DialAddr(ctx, addr, clientCfg, &quicgo.Config{
-		MaxIdleTimeout: 5 * time.Second,
+		MaxIdleTimeout: credentialE2ERoundTripBound,
 	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -142,6 +153,16 @@ func credentialE2ERoundTrip(
 		t.Fatalf("open stream: %v", err)
 	}
 	defer func() { _ = stream.Close() }()
+	// The context bounds dial and open only; the stream's reads and writes
+	// take its deadline too. The server's keep-alive PINGs (every half the
+	// negotiated idle timeout) keep the connection from idling out, so
+	// without this a handler that never answers holds ReadResponse until the
+	// package timeout instead of failing this call.
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := stream.SetDeadline(deadline); err != nil {
+			t.Fatalf("stream deadline: %v", err)
+		}
+	}
 
 	if err := wire.WriteRequest(stream, method, "", 1, payload); err != nil {
 		t.Fatalf("write request: %v", err)

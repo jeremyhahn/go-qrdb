@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/importstage"
 	"github.com/jeremyhahn/go-qrdb/pkg/statedigest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // digestSM is the surface of the pebble and mvcc state machines these tests
@@ -48,17 +49,26 @@ type digestSM interface {
 type digestTarget struct {
 	open func(t *testing.T) digestSM
 	db   func(s digestSM) *pebble.DB
+	// publish makes a write made straight to db visible to GetHash and the
+	// state digest, which on the MVCC machine read the view Update publishes.
+	publish func(t *testing.T, s digestSM)
 }
 
 func digestTargets() map[string]digestTarget {
 	return map[string]digestTarget{
 		"pebble": {
-			open: func(t *testing.T) digestSM { return newTestPebbleSM(t) },
-			db:   func(s digestSM) *pebble.DB { return s.(*PebbleStateMachine).db },
+			open:    func(t *testing.T) digestSM { return newTestPebbleSM(t) },
+			db:      func(s digestSM) *pebble.DB { return s.(*PebbleStateMachine).db },
+			publish: func(*testing.T, digestSM) {},
 		},
 		"mvcc": {
 			open: func(t *testing.T) digestSM { return newTestMVCCStateMachine(t) },
 			db:   func(s digestSM) *pebble.DB { return s.(*MVCCStateMachine).db },
+			publish: func(t *testing.T, s digestSM) {
+				if err := s.(*MVCCStateMachine).publishView(); err != nil {
+					t.Fatalf("publishView: %v", err)
+				}
+			},
 		},
 	}
 }
@@ -162,6 +172,7 @@ func TestStateDigest_DivergenceInjection(t *testing.T) {
 			if err := tgt.db(damaged).Set([]byte("k/rogue"), []byte("x"), pebble.Sync); err != nil {
 				t.Fatalf("inject: %v", err)
 			}
+			tgt.publish(t, damaged)
 			h, d := lookupStateDigest(t, healthy), lookupStateDigest(t, damaged)
 			if h.AppliedIndex != d.AppliedIndex {
 				t.Fatalf("applied index moved: %d vs %d", h.AppliedIndex, d.AppliedIndex)
@@ -241,6 +252,7 @@ func TestStateDigest_AppliedIndexMarkerIsNotHashed(t *testing.T) {
 			if err := tgt.db(s).Set([]byte(metaKeyLastApplied), idx[:], pebble.Sync); err != nil {
 				t.Fatalf("set marker: %v", err)
 			}
+			tgt.publish(t, s)
 			after := lookupStateDigest(t, s)
 			if after.AppliedIndex != before.AppliedIndex+100 {
 				t.Fatalf("AppliedIndex = %d, want %d", after.AppliedIndex, before.AppliedIndex+100)
@@ -260,6 +272,7 @@ func TestStateDigest_ImportStagingIsHashed(t *testing.T) {
 			if err := tgt.db(s).Set(importstage.ChunkKey("sess", 1), []byte("chunk"), pebble.Sync); err != nil {
 				t.Fatalf("stage: %v", err)
 			}
+			tgt.publish(t, s)
 			after := lookupStateDigest(t, s)
 			if after.Sum == before.Sum || after.Records != 1 {
 				t.Fatalf("a staged chunk was left out of the digest (%d records)", after.Records)
@@ -278,6 +291,116 @@ func TestStateDigest_NotOpen(t *testing.T) {
 			var notOpen *NotOpenError
 			if !errors.As(err, &notOpen) {
 				t.Fatalf("err = %v, want *NotOpenError", err)
+			}
+		})
+	}
+}
+
+// errValueFetch is the fault valueFaultIterator injects at a value read.
+var errValueFetch = errors.New("value fetch failed")
+
+// valueFaultReader is a storage.Reader over sorted keys whose iterator fails
+// the value read at failAt the way the Pebble iterator does: Value returns
+// nil, the failure is recorded, Valid turns false and Error reports it.
+type valueFaultReader struct {
+	keys   []string
+	failAt string
+}
+
+var _ storage.Reader = valueFaultReader{}
+
+func (r valueFaultReader) Get([]byte) ([]byte, error) { return nil, nil }
+
+func (r valueFaultReader) NewIterator(*storage.IteratorOptions) storage.Iterator {
+	return &valueFaultIterator{keys: r.keys, failAt: r.failAt, pos: -1}
+}
+
+type valueFaultIterator struct {
+	keys   []string
+	failAt string
+	pos    int
+	err    error
+}
+
+var _ storage.Iterator = (*valueFaultIterator)(nil)
+
+func (it *valueFaultIterator) move(pos int) bool {
+	if it.err != nil {
+		return false
+	}
+	it.pos = pos
+	return it.Valid()
+}
+
+func (it *valueFaultIterator) SeekToFirst() bool { return it.move(0) }
+func (it *valueFaultIterator) SeekToLast() bool  { return it.move(len(it.keys) - 1) }
+func (it *valueFaultIterator) Next() bool        { return it.move(it.pos + 1) }
+func (it *valueFaultIterator) Prev() bool        { return it.move(it.pos - 1) }
+
+func (it *valueFaultIterator) Seek(target []byte) bool {
+	for i, k := range it.keys {
+		if k >= string(target) {
+			return it.move(i)
+		}
+	}
+	return it.move(len(it.keys))
+}
+
+func (it *valueFaultIterator) Valid() bool {
+	return it.err == nil && it.pos >= 0 && it.pos < len(it.keys)
+}
+
+func (it *valueFaultIterator) Key() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	return []byte(it.keys[it.pos])
+}
+
+func (it *valueFaultIterator) Value() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	if it.keys[it.pos] == it.failAt {
+		it.err = errValueFetch
+		return nil
+	}
+	return []byte("v")
+}
+
+func (it *valueFaultIterator) Error() error { return it.err }
+func (it *valueFaultIterator) Close() error { return nil }
+
+// TestStateDigest_ValueReadErrorIsReadError proves a failed value read ends
+// the digest with a ReadError naming the read that failed, and no digest:
+// the nil value of a failed read is never hashed or decoded as a record.
+func TestStateDigest_ValueReadErrorIsReadError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reader  valueFaultReader
+		wantKey string
+	}{
+		"applied index marker": {
+			reader:  valueFaultReader{keys: []string{metaKeyLastApplied}, failAt: metaKeyLastApplied},
+			wantKey: metaKeyLastApplied,
+		},
+		"user record": {
+			reader: valueFaultReader{keys: []string{"a", "b"}, failAt: "a"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, err := readerStateDigest(tc.reader)
+			var readErr *ReadError
+			if !errors.As(err, &readErr) {
+				t.Fatalf("err = %v, want *ReadError", err)
+			}
+			if readErr.Key != tc.wantKey {
+				t.Fatalf("ReadError.Key = %q, want %q", readErr.Key, tc.wantKey)
+			}
+			if !errors.Is(err, errValueFetch) {
+				t.Fatalf("err = %v, want it to wrap the value-fetch fault", err)
+			}
+			if d != (statedigest.Digest{}) {
+				t.Fatalf("digest = %+v, want none", d)
 			}
 		})
 	}
@@ -327,6 +450,7 @@ func TestGetHash_CoversImportStaging(t *testing.T) {
 			if err := tgt.db(s).Set(importstage.MetaKey("sess"), []byte("meta"), pebble.Sync); err != nil {
 				t.Fatalf("stage: %v", err)
 			}
+			tgt.publish(t, s)
 			after, err := s.GetHash()
 			if err != nil {
 				t.Fatalf("GetHash: %v", err)

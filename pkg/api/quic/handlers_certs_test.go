@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
@@ -473,6 +474,27 @@ func TestHandleListCerts_EmptyResult(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatalf("expected 0 records, got %d", len(out))
+	}
+}
+
+func TestHandleListCerts_EmptyTenantIsCallers(t *testing.T) {
+	var listed string
+	mock := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			listed = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
+
+	srv := newCertServer(mock)
+	payload, _ := json.Marshal(listCertsWireRequest{})
+
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	if _, err := srv.handleListCerts(ctx, payload); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listed != "acme" {
+		t.Fatalf("listed tenant = %q, want the caller's own %q", listed, "acme")
 	}
 }
 

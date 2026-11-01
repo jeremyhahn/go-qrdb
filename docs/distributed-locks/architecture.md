@@ -23,8 +23,9 @@ Lock = lease (TTL)  +  CAS transaction (acquisition)  +  watch (blocking)  +  MV
 
 No new consensus opcodes. Acquisition is a compare-and-swap; the TTL is a
 [lease](../leases/); blocking acquisition waits on a [watch](../watch/); and the
-fencing token is the MVCC `ModRevision` at acquisition, which is globally
-ordered and monotonically increasing.
+fencing token is the lock key's MVCC create revision — the revision of the put
+that acquired it, as in etcd's `concurrency.Mutex` — which is globally ordered
+and monotonically increasing.
 
 The token is the whole point. A downstream service that records the highest
 token it has seen and refuses anything lower will reject the resumed zombie
@@ -61,19 +62,31 @@ holder's write, even though the zombie is convinced it holds the lock.
 
 **Acquire (`TryLock`, non-blocking):** grant a lease, then run a CAS that
 creates the lock key bound to it only if the key does not exist; on commit, the
-resulting `ModRevision` becomes the `FencingToken`, written back into the lock
-record. If the CAS fails, read the record: held by another holder, revoke the
+key's create revision is the `FencingToken`. Acquisition is that one write: the
+token is not copied into the record, so no later write can leave a lock without
+one. During a rolling upgrade, until the `lock-create-revision-token` cluster
+feature is active, a second compare-and-swap on the acquire's own revision also
+stores the token in the record's `fencing_token` field for older nodes, which
+read it there ([engineering.md](engineering.md#rolling-upgrade-lock-create-revision-token)).
+If the CAS fails, read the record: held by another holder, revoke the
 new lease and return `LockHeldError` immediately. A reentrant re-acquisition by the
-same holder revokes the new lease, increments `AcquireCount` on the existing
-one and returns the stored token unchanged.
+same holder revokes the new lease and increments `AcquireCount` on the existing
+one, as a CAS on the `ModRevision` it read; the update moves the key's
+`ModRevision` but not its create revision, so the token is unchanged.
 
 **Acquire (`Lock`, blocking):** the same CAS; on contention, watch the lock key
 and retry the CAS when a release event arrives, until the caller's context is
 done.
 
-**Release:** validate the caller's fencing token against the token stored at
-acquisition. A stale token is refused with `NotLockHolderError`. For a
-reentrant lock with `AcquireCount > 1`, decrement rather than release.
+**Release:** validate the caller's fencing token against the lock key's create
+revision. A stale token is refused with `NotLockHolderError`: once a lock is
+released or expires, the next acquisition creates the key afresh at a higher
+create revision. For a
+reentrant lock with `AcquireCount > 1`, decrement rather than release. The
+decrement or delete is a CAS on the `ModRevision` read; when a concurrent write
+— a re-entry, say — wins it, the release re-reads, re-checks the token and the
+count, and tries again, a bounded number of times before it refuses with
+`ErrUnlockContended` and leaves the lock held.
 
 **Expiry:** the lock's lease expires like any other; the lock key goes with it.
 That is what releases a crashed holder's lock without anyone intervening.

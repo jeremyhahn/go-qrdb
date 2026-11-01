@@ -85,10 +85,10 @@ func (s *embeddableBarrierService) BarrierClusterUnseal(context.Context) (*clust
 	return nil, clusterseal.ErrInactive
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (s *embeddableBarrierService) BarrierInitialized(_ context.Context) (bool, error) {
-	return false, nil
+func (s *embeddableBarrierService) BarrierInitializePrecondition(_ context.Context) error {
+	return nil
 }
 
 func (s *embeddableBarrierService) BarrierHasRecoveryKeys(_ context.Context) (bool, error) {

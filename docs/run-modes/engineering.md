@@ -30,7 +30,7 @@ func Get() Capabilities              // pre-seal, falls back to compile-time
 `pkg/server/lifecycle` (the one raft-free composition every root shares):
 
 ```go
-func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error)
 func NewLocalEngine(backend database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub, lr *lease.Lessor) (backend.SMAdapter, error)
 func StartLocalLeaseExpiry(ctx context.Context, lr *lease.Lessor, leaseSvc service.LeaseServicer, logger *slog.Logger) (stop func())
 ```

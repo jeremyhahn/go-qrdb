@@ -263,12 +263,43 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 	// shape that produced this whole class of defect.
 	// written records the keys this call actually put, in the order the
 	// rollback must undo them: secondary indexes first, the primary last.
-	var written []string
+	// claimed records the name claim, which is released by a guarded delete
+	// rather than with them: see releaseClaims.
+	var written, claimed []string
+	idBytes := []byte(r.ID)
 	defer func() {
 		if retErr != nil {
+			// The name claim is released FIRST, as pkg/user's CreateUser
+			// releases its handle claims: secondary indexes go before the
+			// primary record.
+			failures := s.releaseClaims(ctx, claimed, idBytes)
 			s.rollbackFailedCreate(ctx, written, r.ID, tenantID, claimToken)
+			// A claim we could not give back outlives this call and refuses
+			// the name; reporting it as an ordinary create failure would
+			// invite a retry that comes back "already exists" forever.
+			if len(failures) > 0 {
+				retErr = &IndexCompensationError{
+					Op:       "create",
+					ID:       r.ID,
+					TenantID: tenantID,
+					Cause:    retErr,
+					Failures: failures,
+				}
+			}
 		}
 	}()
+
+	// CLAIM the name before anything is written. The lookup above is only a
+	// fast refusal: two creates can both pass it, and a plain Put of the name
+	// index would let the later one take the name from the earlier role. The
+	// claim is also the name index itself, so it is not written again below.
+	taken, cerr := s.claimName(ctx, nameKey, idBytes, &claimed)
+	if cerr != nil {
+		return nil, &StoreError{Op: "create", Detail: "claim name index", Err: cerr}
+	}
+	if taken {
+		return nil, &RoleNameExistsError{Name: req.Name, TenantID: tenantID}
+	}
 
 	data, err := marshalRole(r)
 	if err != nil {
@@ -291,12 +322,6 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 	}
 	written = append([]string{tk}, written...)
 
-	// Write name index.
-	if err := s.store.Put(ctx, nameKey, []byte(r.ID)); err != nil {
-		return nil, &StoreError{Op: "create", Detail: "put name index", Err: err}
-	}
-	written = append([]string{nameKey}, written...)
-
 	s.emitAudit(ctx, "create", "role:"+r.ID, map[string]any{
 		"name":        r.Name,
 		"tenantID":    tenantID,
@@ -304,6 +329,63 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 	})
 
 	return r, nil
+}
+
+// claimName claims nameKey for idBytes with PutIfAbsent, reporting
+// taken=true when another role already holds the name. It mirrors pkg/user's
+// claimHandle and claimNewHandle, and records the key in claimed on the same
+// terms: when the claim succeeded, and ALSO when its answer was lost ("it may
+// still commit"). An entry that commits after its create was rolled back
+// otherwise names a role with no record and refuses the name forever. The
+// rollback's guarded release (releaseClaims) removes the claim if it landed
+// and nothing if it did not, or if another create now holds the name. A
+// refused claim (the name is taken) and a store that cannot claim at all are
+// the failures that are not recorded: neither wrote anything of ours.
+func (s *kvRoleStore) claimName(ctx context.Context, nameKey string, idBytes []byte, claimed *[]string) (taken bool, err error) {
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, ErrStoreNotAtomic
+	}
+	stored, err := atomicStore.PutIfAbsent(ctx, nameKey, idBytes)
+	if err == nil && !stored {
+		return true, nil
+	}
+	*claimed = append(*claimed, nameKey)
+	return false, err
+}
+
+// releaseClaims gives back the name claims a failed create made, newest
+// first, each with CompareAndDelete against this create's id, and returns
+// every release that failed. It mirrors pkg/user's releaseClaims.
+//
+// The guard is the point. A plain delete would remove the entry of another
+// create that legitimately took the name after this one's claim was
+// abandoned; comparing against our own id makes the release a correct no-op
+// in precisely that case, so a release that removed nothing is not a
+// failure. Only a store error means the claim may still be ours.
+func (s *kvRoleStore) releaseClaims(ctx context.Context, keys []string, idBytes []byte) []error {
+	if len(keys) == 0 {
+		return nil
+	}
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		// Unreachable in practice: claimName needs the same interface, so a
+		// non-atomic store fails there with ErrStoreNotAtomic and never
+		// reaches here with keys to release. Reported rather than dropped
+		// because "we could not release" is what this function exists to say.
+		return []error{ErrStoreNotAtomic}
+	}
+	// Detached from the caller's cancellation, as rollbackFailedCreate is:
+	// the failure being compensated is often a timeout or a cancellation.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	var failures []error
+	for i := len(keys) - 1; i >= 0; i-- {
+		if _, err := atomicStore.CompareAndDelete(cctx, keys[i], idBytes); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return failures
 }
 
 // createRoleAtomic commits the identity claim, the name-index claim, and all

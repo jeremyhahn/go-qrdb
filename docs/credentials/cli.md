@@ -1,6 +1,6 @@
 # Credentials — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb credential` — named-credential operations. All verbs
@@ -8,7 +8,12 @@ accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
 
 These are the **engine's own operational secrets**, not an application secret
-store. Application and tenant secrets belong to quicbaas's KMS, one layer up.
+store; application secrets belong to quicbaas's KMS, one layer up. Every verb
+acts on the caller's own store: the platform's for a system principal, the
+tenant's for a principal of a tenant with a dedicated barrier (`barrier`,
+`volume` or `raft` isolation). A tenant on `prefix` isolation is refused, and
+a tenant's store always reports the `barrier` strategy. See
+[user.md](user.md#credentials-in-a-tenant).
 
 ## `qrdb credential strategy`
 

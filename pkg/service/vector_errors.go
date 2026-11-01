@@ -14,7 +14,11 @@
 
 package service
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+)
 
 // VectorNotFoundError is returned when a vector ID does not exist in
 // the specified namespace.
@@ -73,6 +77,86 @@ type InvalidVectorError struct {
 // Error returns a human-readable description of the invalid vector.
 func (e *InvalidVectorError) Error() string {
 	return "service: invalid vector: " + e.Reason
+}
+
+// UnknownDistanceMetricError is returned when a namespace is created with a
+// distance metric the vector index layer does not implement. Refusing the
+// name is the point: reading it as L2 would build a namespace that answers
+// every search under a metric its caller never asked for.
+type UnknownDistanceMetricError struct {
+	Metric string
+}
+
+// Error returns a human-readable description naming the metrics accepted.
+func (e *UnknownDistanceMetricError) Error() string {
+	return "service: unknown distance metric " + strconv.Quote(e.Metric) +
+		" (want L2, EUCLIDEAN, COSINE, DOT_PRODUCT or MANHATTAN)"
+}
+
+// UnknownIndexTypeError is returned when a namespace is created with an index
+// type the service does not build. Reading it as HNSW would hide that the
+// namespace answers from a different index than the one it records.
+type UnknownIndexTypeError struct {
+	IndexType string
+}
+
+// Error returns a human-readable description naming the index types accepted.
+func (e *UnknownIndexTypeError) Error() string {
+	return "service: unknown vector index type " + strconv.Quote(e.IndexType) +
+		" (want HNSW, FLAT, IVF or IVF_FLAT)"
+}
+
+// VectorMetricNotActiveError is returned when a FLAT or IVF namespace is
+// created with a distance metric whose record value needs a cluster feature
+// not yet active for the group: a replica running a binary from before the
+// value would refuse the record its peers accept. Nothing is created. It is a
+// failed precondition, not a transient fault: the create succeeds only after
+// every replica of the group is upgraded.
+type VectorMetricNotActiveError struct {
+	IndexType string
+	Feature   feature.Feature
+	ShardID   uint64
+}
+
+// Error names the index type, the feature and the group.
+func (e *VectorMetricNotActiveError) Error() string {
+	return "service: the distance metric of a " + e.IndexType + " namespace needs cluster feature " +
+		strconv.Quote(string(e.Feature)) + ", not yet active for shard " + strconv.FormatUint(e.ShardID, 10)
+}
+
+// VectorIndexUntrainedError is returned by a similarity search on an IVF
+// namespace that holds fewer vectors than its num_centroids, the floor below
+// which its index cannot train. Unlike VectorIndexWarmingError it does not
+// clear by waiting: the namespace answers once it holds enough vectors.
+type VectorIndexUntrainedError struct {
+	Namespace string
+}
+
+// Error returns a human-readable description.
+func (e *VectorIndexUntrainedError) Error() string {
+	return "service: vector namespace " + strconv.Quote(e.Namespace) +
+		" holds fewer vectors than its IVF index needs to train (num_centroids)"
+}
+
+// UnsupportedNamespaceGeometryError is returned by every operation that
+// touches a stored namespace whose distance metric or index type this server
+// does not implement: a record an earlier release accepted without checking.
+// The server never reads such a namespace with a default geometry, and never
+// answers a search on it with an empty result; the namespace serves nothing
+// until it is dropped and recreated with a supported geometry.
+type UnsupportedNamespaceGeometryError struct {
+	// Namespace is the logical (unscoped) namespace name.
+	Namespace string
+	// Field is "distance metric" or "index type".
+	Field string
+	// Value is the stored value this server refuses.
+	Value string
+}
+
+// Error names the namespace, the field and the stored value.
+func (e *UnsupportedNamespaceGeometryError) Error() string {
+	return "service: vector namespace " + strconv.Quote(e.Namespace) + " stores unsupported " +
+		e.Field + " " + strconv.Quote(e.Value) + "; drop and recreate it with a supported geometry"
 }
 
 // VectorServiceClosedError is returned when an operation is attempted on a

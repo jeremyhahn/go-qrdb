@@ -36,7 +36,8 @@ daemon:
 | `token` | registration with a shared-token HTTP discovery service | etcd-style bootstrapping |
 
 **Multicast needs a secret you choose.** Announcements are HMAC-authenticated
-and there is no default PSK — without one the method does not run. That is
+and `discovery.multicast_secret` has no default — without one the method does
+not run. That is
 deliberate: a shipped default secret is not authentication.
 
 Kubernetes needs no special method — point `dns` at a headless Service.
@@ -168,9 +169,8 @@ it has caught up.
 
 A node started with no `--bootstrap-join-token-file`/`-env` (join
 transport flags still set) submits its CSR into a replicated approval
-queue instead of presenting a token, and then **waits** — logging
-periodically — until an operator decides, rather than crash-looping the
-daemon start every few seconds:
+queue instead of presenting a token, and then **waits**, logging
+periodically, until an operator decides:
 
 ```bash
 # Joining node: no token flags at all
@@ -328,8 +328,9 @@ compare it, pause writes to it or compare at the next quiet moment.
 Isolated tenants' shards are listed under their tenant and hashed inside the
 tenant's own barrier. Only tenants whose host is running on that node appear.
 The command needs `admin:state_hash`, which only the system tenant can hold.
-**Do the replicas hold the same data?** Ask each node for its replicas'
-applied index and state-machine hash, on a shard that is not taking writes:
+
+`admin replica-states` answers the same question with a 64-bit hash per
+replica. Ask each node, on a shard that is not taking writes:
 
 ```bash
 for host in node1.example.com node2.example.com node3.example.com; do
@@ -536,13 +537,13 @@ Membership changes, scale-ups and rebalances that would place a replica on a
 node that does not are refused with an error naming the node, the feature, and
 the missing advertisement (`featuregate.UnsupportedReplicaError`; REST 409,
 gRPC and QUIC `FAILED_PRECONDITION`). A `qrdbd` node advertises only once it is
-running and a member; a node enrolling through `qrdb enroll` / member-side CSR
-join cannot do that before it is added, so the signing member publishes a
+running and a member; a node joining through member-side CSR join cannot do
+that before it is added, so the signing member publishes a
 short-lived (15-minute) advertisement on its behalf as part of the join,
 naming the features the joiner's own binary claims. `qrdb admin member add`
 then sees a live advertisement and admits it, the same as any other node. If
 `member add` does not happen within that window the advertisement lapses;
-re-enroll to get a fresh one. From the Go SDK, a node can instead be
+run the join again to get a fresh one. From the Go SDK, a node can instead be
 registered through dynamic membership over a client of the running cluster,
 with its features in the registration published before the add.
 
@@ -558,11 +559,8 @@ carries a `version || suite` header, so one listener can serve the Noise NK and
 the P-256 suites.
 
 Every admitted, unsealed member runs the bootstrap **server**, serving both
-the Noise NK and the P-256 suites
-(`pkg/clusterenroll`'s `Advertiser`: on the CA-generating node from the boot
-that generates the cluster CA, on every other member once it has joined or
-restarted from its data directory) that a joining node's enrollment dials as a **client**.
-Both halves are this codebase's own call into `go-truststrap`, so a bump to
+the Noise NK and the P-256 suites, that a joining node's enrollment dials as a
+**client**. Both halves are qrdb's own call into `go-truststrap`, so a bump to
 `go-truststrap` that changes the wire format is a qrdb-to-qrdb compatibility
 question, not a question about an external service. Two peers on different
 `go-truststrap` bootstrap wires cannot complete a handshake, in either
@@ -626,8 +624,8 @@ cluster already committed a different key for that replica or host — usually a
 copy-paste from another node, or a node reissued on a new key. Check the
 certificate; a node on a new key must be removed and re-added.
 
-**Multicast finds nothing.** Every node needs the *same* operator-chosen PSK,
-and there is no default. A mismatch looks exactly like "no peers on the
+**Multicast finds nothing.** Every node needs the *same* operator-chosen
+`discovery.multicast_secret`, and there is no default. A mismatch looks exactly like "no peers on the
 network".
 
 **A node refuses to start, or refuses a join: `refusing to write through a

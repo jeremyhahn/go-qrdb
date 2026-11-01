@@ -364,7 +364,7 @@ func TestWatcher_DeliverFloor_DropsBelowStartRevision(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := newWatcher(1, []byte("k"), nil, WatchOptions{StartRevision: 100}, ctx)
+	w := newWatcher(1, []byte("k"), nil, WatchOptions{StartRevision: 100}, defaultEventBufferSize, ctx)
 	w.beginReplay() // deliver floor = 99, unsynced
 
 	// Live events arrive while unsynced (staged). Replay delivers nothing (a

@@ -1585,6 +1585,93 @@ func TestStoragePebbleIndex_GetInBatch_NonExistent(t *testing.T) {
 	}
 }
 
+// snapshotAfterPut puts entity-1 under value-1, takes a snapshot, then puts
+// entity-2 under the same value, so the snapshot sees only entity-1.
+func snapshotAfterPut(t *testing.T, idx *StoragePebbleIndex) storage.Snapshot {
+	t.Helper()
+	if err := idx.Put([]byte("entity-1"), []byte("value-1")); err != nil {
+		t.Fatalf("Put entity-1: %v", err)
+	}
+	snap, err := idx.storage.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	t.Cleanup(func() { _ = snap.Close() })
+	if err := idx.Put([]byte("entity-2"), []byte("value-1")); err != nil {
+		t.Fatalf("Put entity-2: %v", err)
+	}
+	return snap
+}
+
+func TestStoragePebbleIndex_GetFrom_ReadsThroughSnapshot(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+	snap := snapshotAfterPut(t, idx)
+
+	got, err := idx.GetFrom(snap, []byte("value-1"))
+	if err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	}
+	if len(got) != 1 || !bytes.Equal(got[0], []byte("entity-1")) {
+		t.Fatalf("GetFrom(snapshot) = %q, want [entity-1]", got)
+	}
+	live, err := idx.Get([]byte("value-1"))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(live) != 2 {
+		t.Fatalf("Get(live) = %q, want two entities", live)
+	}
+}
+
+func TestStoragePebbleIndex_GetFrom_NonExistent(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+	snap := snapshotAfterPut(t, idx)
+
+	got, err := idx.GetFrom(snap, []byte("absent"))
+	if err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("GetFrom(absent) = %q, want none", got)
+	}
+}
+
+func TestStoragePebbleIndex_ScanFrom_ReadsThroughSnapshot(t *testing.T) {
+	idx := newTestStoragePebbleIndex(t, normalConfig("test"))
+	snap := snapshotAfterPut(t, idx)
+
+	got, err := idx.ScanFrom(snap, nil, nil)
+	if err != nil {
+		t.Fatalf("ScanFrom: %v", err)
+	}
+	if keys := got["value-1"]; len(keys) != 1 || !bytes.Equal(keys[0], []byte("entity-1")) {
+		t.Fatalf("ScanFrom(snapshot) = %q, want value-1: [entity-1]", got)
+	}
+	live, err := idx.Scan(nil, nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(live["value-1"]) != 2 {
+		t.Fatalf("Scan(live) = %q, want two entities", live)
+	}
+}
+
+func TestStoragePebbleIndex_ScanFrom_InvalidNumericBound(t *testing.T) {
+	cfg := normalConfig("num")
+	cfg.ValueType = IndexValueTypeNumeric
+	cfg.EncodingVersion = NumericEncodingVersion
+	idx := newTestStoragePebbleIndex(t, cfg)
+	snap, err := idx.storage.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+
+	if _, err := idx.ScanFrom(snap, []byte("not-a-number"), nil); err == nil {
+		t.Fatal("ScanFrom with an unparseable numeric bound returned no error")
+	}
+}
+
 func TestStoragePebbleIndex_IsUnique(t *testing.T) {
 	if newTestStoragePebbleIndex(t, normalConfig("plain")).IsUnique() {
 		t.Error("IsUnique: normal index reported unique")

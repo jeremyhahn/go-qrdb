@@ -80,7 +80,7 @@ func TestSystemRoleID_DifferentRoleNames(t *testing.T) {
 func TestCreateRole_NameIndexPutFails(t *testing.T) {
 	fkv := &faultKVStore{
 		inner:     newMemKVStore(),
-		putFailAt: 3, // primary(1), tenant index(2), name index(3) — fail 3rd
+		putFailAt: 1, // name claim(1), primary(2), tenant index(3) — fail the claim
 		putErr:    errors.New("disk full"),
 	}
 	svc, err := NewStore(fkv)

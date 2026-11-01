@@ -27,6 +27,11 @@ var (
 	// ErrEmptyKey is returned when a LockOptions key is empty.
 	ErrEmptyKey = errors.New("lock: key must not be empty")
 
+	// ErrUnlockContended is returned by Unlock when every one of its
+	// compare-and-swap attempts lost to a concurrent write to the lock key.
+	// The lock is still held; the call may be retried.
+	ErrUnlockContended = errors.New("lock: unlock lost every compare-and-swap to concurrent writes")
+
 	// ErrNilTxService is returned by NewLocker when txSvc is nil.
 	ErrNilTxService = errors.New("lock: nil transaction service")
 
@@ -64,7 +69,8 @@ type NotLockHolderError struct {
 	// ExpectedToken is the fencing token supplied by the caller.
 	ExpectedToken int64
 
-	// ActualToken is the fencing token currently stored for the lock.
+	// ActualToken is the lock's current fencing token, its key's create
+	// revision.
 	ActualToken int64
 }
 
@@ -85,4 +91,76 @@ type LockNotFoundError struct {
 // Error returns a human-readable description of the missing lock.
 func (e *LockNotFoundError) Error() string {
 	return "lock: not found for key " + e.Key
+}
+
+// The structured-refusal reasons a remote transport carries beside the
+// message of a typed lock outcome (google.rpc.ErrorInfo on gRPC, its
+// counterpart on every other transport), so a client rebuilds the typed
+// error -- key, holder and tokens included -- without parsing text.
+const (
+	// ReasonLockHeld is the reason of a *LockHeldError.
+	ReasonLockHeld = "LOCK_HELD"
+	// ReasonNotLockHolder is the reason of a *NotLockHolderError.
+	ReasonNotLockHolder = "NOT_LOCK_HOLDER"
+	// ReasonLockNotFound is the reason of a *LockNotFoundError.
+	ReasonLockNotFound = "LOCK_NOT_FOUND"
+)
+
+// The refusal metadata keys of the lock errors' fields.
+const (
+	metadataKey           = "key"
+	metadataHolderID      = "holder_id"
+	metadataExpectedToken = "expected_token"
+	metadataActualToken   = "actual_token"
+)
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *LockHeldError) Metadata() map[string]string {
+	return map[string]string{metadataKey: e.Key, metadataHolderID: e.HolderID}
+}
+
+// LockHeldFromMetadata rebuilds the error Metadata encoded. The reason, not
+// the metadata, says the lock is held, so a missing field is left empty
+// rather than losing the classification.
+func LockHeldFromMetadata(md map[string]string) *LockHeldError {
+	return &LockHeldError{Key: md[metadataKey], HolderID: md[metadataHolderID]}
+}
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *NotLockHolderError) Metadata() map[string]string {
+	return map[string]string{
+		metadataKey:           e.Key,
+		metadataExpectedToken: strconv.FormatInt(e.ExpectedToken, 10),
+		metadataActualToken:   strconv.FormatInt(e.ActualToken, 10),
+	}
+}
+
+// NotLockHolderFromMetadata rebuilds the error Metadata encoded. A missing or
+// malformed token is left zero rather than losing the classification.
+func NotLockHolderFromMetadata(md map[string]string) *NotLockHolderError {
+	return &NotLockHolderError{
+		Key:           md[metadataKey],
+		ExpectedToken: tokenFromMetadata(md, metadataExpectedToken),
+		ActualToken:   tokenFromMetadata(md, metadataActualToken),
+	}
+}
+
+// Metadata encodes e as structured-refusal metadata.
+func (e *LockNotFoundError) Metadata() map[string]string {
+	return map[string]string{metadataKey: e.Key}
+}
+
+// LockNotFoundFromMetadata rebuilds the error Metadata encoded.
+func LockNotFoundFromMetadata(md map[string]string) *LockNotFoundError {
+	return &LockNotFoundError{Key: md[metadataKey]}
+}
+
+// tokenFromMetadata decodes the fencing token under name, or zero when it is
+// missing or malformed.
+func tokenFromMetadata(md map[string]string, name string) int64 {
+	token, err := strconv.ParseInt(md[name], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return token
 }

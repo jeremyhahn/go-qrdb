@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -659,7 +660,11 @@ func TestRESTLock_Status_Success(t *testing.T) {
 func TestRESTLock_Status_NotFound(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(pathPrefix(http.MethodGet, "/lock/status"), func(w http.ResponseWriter, _ *http.Request) {
+		notFound := &lock.LockNotFoundError{Key: "k1"}
 		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(transport.ErrorResponse{
+			Error: notFound.Error(), Code: lock.ReasonLockNotFound, Metadata: notFound.Metadata(),
+		})
 	})
 	info, err := rt.LockStatus(context.Background(), "k1")
 	if err != nil {
@@ -667,6 +672,23 @@ func TestRESTLock_Status_NotFound(t *testing.T) {
 	}
 	if info != nil {
 		t.Fatalf("expected nil info, got %+v", info)
+	}
+}
+
+// TestRESTLock_Status_NotFoundWithoutLockReasonIsAnError pins that a 404
+// which is not the server's LOCK_NOT_FOUND refusal -- a route or database
+// the server does not have -- is a failed read, not "not locked".
+func TestRESTLock_Status_NotFoundWithoutLockReasonIsAnError(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(pathPrefix(http.MethodGet, "/lock/status"), func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	})
+	info, err := rt.LockStatus(context.Background(), "k1")
+	if err == nil {
+		t.Fatalf("LockStatus = %+v, nil; want an error", info)
+	}
+	if reqErr, ok := errors.AsType[*transport.RequestError](err); !ok || reqErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("err = %T, want a RequestError carrying 404", err)
 	}
 }
 

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/fips140"
 	"errors"
@@ -1444,8 +1445,11 @@ func TestCertsIssueCmd_WithCSR_Success(t *testing.T) {
 	if !strings.Contains(out, "SERIAL-001") {
 		t.Fatalf("expected serial number in output, got: %q", out)
 	}
-	if !strings.Contains(out, "CERTIFICATE") {
-		t.Fatalf("expected certificate PEM in output, got: %q", out)
+	if !strings.Contains(out, "Serial: SERIAL-001") {
+		t.Fatalf("expected the Serial line in output, got: %q", out)
+	}
+	if !strings.Contains(out, "--- Certificate ---\n") || !strings.Contains(out, "CERTIFICATE") {
+		t.Fatalf("expected the certificate section and PEM in output, got: %q", out)
 	}
 	if strings.Contains(out, "PRIVATE KEY") {
 		t.Fatalf("expected no private key in output when --csr supplies the key, got: %q", out)
@@ -1468,8 +1472,8 @@ func TestCertsIssueCmd_WithCSR_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(out, `"serial"`) {
-		t.Fatalf("expected JSON serial field, got: %q", out)
+	if !strings.Contains(out, `"serial"`) || !strings.Contains(out, `"SERIAL-001"`) {
+		t.Fatalf("expected JSON serial field SERIAL-001, got: %q", out)
 	}
 	if !strings.Contains(out, `"certPEM"`) {
 		t.Fatalf("expected JSON certPEM field, got: %q", out)
@@ -1752,6 +1756,31 @@ func TestCertsListCmd_Success(t *testing.T) {
 	}
 }
 
+// TestCertRecordRow requires one column per table header, in header order,
+// with the revoked flag rendered as a boolean.
+func TestCertRecordRow(t *testing.T) {
+	for _, tc := range []struct {
+		rec  transport.CertRecord
+		want []string
+	}{
+		{
+			rec:  transport.CertRecord{Serial: "ABC123", Username: "alice", TenantID: "system", IssuedAt: "2026-01-01T00:00:00Z", ExpiresAt: "2027-01-01T00:00:00Z"},
+			want: []string{"ABC123", "alice", "system", "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z", "false"},
+		},
+		{
+			rec:  transport.CertRecord{Serial: "DEF456", Username: "bob", TenantID: "tenant-2", IssuedAt: "2025-06-01T00:00:00Z", ExpiresAt: "2026-06-01T00:00:00Z", Revoked: true},
+			want: []string{"DEF456", "bob", "tenant-2", "2025-06-01T00:00:00Z", "2026-06-01T00:00:00Z", "true"},
+		},
+	} {
+		t.Run(tc.rec.Serial, func(t *testing.T) {
+			got := certRecordRow(&tc.rec)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Fatalf("certRecordRow = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCertsListCmd_SuccessJSON(t *testing.T) {
 	root := newTestRootCmdAuth()
 
@@ -1851,5 +1880,29 @@ func TestUsersUpdate_ForwardsIdentityFlags(t *testing.T) {
 	}
 	if !strings.Contains(out, "Updated") {
 		t.Fatalf("--name did not reach the request/response path: %s", out)
+	}
+}
+
+// TestBuildLoginLookupKey_ValidHex requires buildLoginLookupKey to accept a
+// hex credential for each hardware login method and return its decoded bytes.
+func TestBuildLoginLookupKey_ValidHex(t *testing.T) {
+	tests := []struct {
+		method  string
+		credHex string
+		want    []byte
+	}{
+		{method: "piv", credHex: "deadbeef", want: []byte{0xde, 0xad, 0xbe, 0xef}},
+		{method: "fido2", credHex: "0102a0ff", want: []byte{0x01, 0x02, 0xa0, 0xff}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			got, err := buildLoginLookupKey(tt.method, "", tt.credHex)
+			if err != nil {
+				t.Fatalf("buildLoginLookupKey(%q): %v", tt.method, err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("buildLoginLookupKey(%q) = %x, want %x", tt.method, got, tt.want)
+			}
+		})
 	}
 }

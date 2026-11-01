@@ -72,7 +72,7 @@ func requirePebbleUnderBarrier(t *testing.T, s storage.Storage, dir string) {
 func TestCreateNodeStorage_PebbleFactoryUnderBarrier(t *testing.T) {
 	enc := atrest.New(sealtest.UnsealedBarrier(t))
 	dir := t.TempDir()
-	s, pdb, err := createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.ObjstoreConfig{})
+	s, pdb, err := createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.StorageConfig{})
 	require.NoError(t, err, "a Pebble-backed factory must take its database lock through the barrier's file system")
 	require.Nil(t, pdb)
 	requirePebbleUnderBarrier(t, s, dir)
@@ -81,11 +81,11 @@ func TestCreateNodeStorage_PebbleFactoryUnderBarrier(t *testing.T) {
 func TestCreateNodeStorage_PebbleFactoryHoldsTheLock(t *testing.T) {
 	enc := atrest.New(sealtest.UnsealedBarrier(t))
 	dir := t.TempDir()
-	s, _, err := createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.ObjstoreConfig{})
+	s, _, err := createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.StorageConfig{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
-	_, _, err = createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.ObjstoreConfig{})
+	_, _, err = createNodeStorage(openPebbleOver, database.BackendPebble, dir, enc, qrdbconfig.StorageConfig{})
 	require.Error(t, err, "a second open of a held data directory must fail on its lock")
 }
 

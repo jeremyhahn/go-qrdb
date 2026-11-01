@@ -35,12 +35,25 @@
 package integration_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/pkg/volume"
+	qrdbnode "github.com/jeremyhahn/go-qrdb/sdk/go/node"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // credentialVersionCLIJSON mirrors transport.CredentialVersionInfo.
@@ -79,6 +92,316 @@ func TestCredential_CLI_Lifecycle_PerProtocol(t *testing.T) {
 			testCredentialLifecycleOverProtocol(t, node, proto)
 		})
 	}
+}
+
+// credentialGrants are the ten credentials:* verbs a tenant's credential role
+// holds.
+var credentialGrants = []string{
+	"credentials:submit", "credentials:strategy", "credentials:list",
+	"credentials:delete", "credentials:rotate", "credentials:gc_expired",
+	"credentials:retrieve_version", "credentials:list_versions",
+	"credentials:store", "credentials:retrieve",
+}
+
+// credentialTenants is a node's tenant fixture for the tenant-scoped
+// named-credential store: two barrier tenants whose principals hold every
+// credentials:* verb, a barrier tenant whose principal holds none, and a
+// prefix tenant, on the shared system barrier, whose principal holds them all.
+type credentialTenants struct {
+	acme, globex, ungranted, shared string
+	conns                           map[string][2]string // tenant -> cert, key
+}
+
+func newCredentialTenants(t *testing.T, node *multiProtoNode) *credentialTenants {
+	t.Helper()
+	ct := &credentialTenants{
+		acme: "cred-acme", globex: "cred-globex", ungranted: "cred-initech", shared: "cred-shared",
+		conns: make(map[string][2]string),
+	}
+	creator := multiProtocols[0]
+	for _, id := range []string{ct.acme, ct.globex, ct.ungranted} {
+		createTenant(t, node, creator, id, "Credential Tenant "+id, "barrier", true)
+	}
+	createTenant(t, node, creator, ct.shared, "Credential Tenant "+ct.shared, "prefix", false)
+	for _, id := range []string{ct.acme, ct.globex, ct.shared} {
+		cert, key := provisionTenantIdentity(t, node, id, "credential-keeper", credentialGrants)
+		ct.conns[id] = [2]string{cert, key}
+	}
+	cert, key := provisionTenantIdentity(t, node, ct.ungranted, "credential-outsider", []string{"admin:health"})
+	ct.conns[ct.ungranted] = [2]string{cert, key}
+	return ct
+}
+
+func (ct *credentialTenants) conn(node *multiProtoNode, proto multiProtocol, tenantID string) []string {
+	c := ct.conns[tenantID]
+	return tenantCLIArgsForProto(node, proto, c[0], c[1])
+}
+
+// TestCredential_CLI_TenantStores_PerProtocol drives the tenant-scoped
+// named-credential store end to end over every network transport: a tenant
+// principal holding credentials:* reads and writes its own tenant's store,
+// which no other tenant (and not the system tenant) can see; a principal
+// without the grants is refused; and a tenant on the shared system barrier,
+// which has no barrier of its own to keep a store under, is refused rather
+// than handed the node-wide store.
+func TestCredential_CLI_TenantStores_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startTenantEntitlementNode(t)
+	tenants := newCredentialTenants(t, node)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialTenantStoresOverProtocol(t, node, tenants, proto)
+		})
+	}
+}
+
+func testCredentialTenantStoresOverProtocol(t *testing.T, node *multiProtoNode, ct *credentialTenants, proto multiProtocol) {
+	t.Helper()
+	acme, globex := ct.conn(node, proto, ct.acme), ct.conn(node, proto, ct.globex)
+	run := func(conn []string, args ...string) string {
+		t.Helper()
+		out, err := runQRDB(t, node.cli, conn, args...)
+		if err != nil {
+			t.Fatalf("[%s] %v: %v\noutput: %s", proto.name, args, err, out)
+		}
+		return strings.TrimSpace(out)
+	}
+	list := func(conn []string) []string {
+		t.Helper()
+		out := run(conn, "--output", "json", "credential", "list")
+		var names []string
+		if err := json.Unmarshal([]byte(out), &names); err != nil {
+			t.Fatalf("[%s] decode credential list JSON: %v\noutput: %s", proto.name, err, out)
+		}
+		return names
+	}
+	// The same name in two tenants is two credentials.
+	shared := "tenant-api-key-" + proto.name
+	acmeOnly := "acme-only-" + proto.name
+	run(acme, "credential", "store", shared, "--value", "acme-value")
+	run(globex, "credential", "store", shared, "--value", "globex-value")
+	run(acme, "credential", "store", acmeOnly, "--value", "acme-private")
+
+	if got := run(acme, "credential", "retrieve", shared); got != "acme-value" {
+		t.Fatalf("[%s] acme retrieve %s = %q, want %q", proto.name, shared, got, "acme-value")
+	}
+	if got := run(globex, "credential", "retrieve", shared); got != "globex-value" {
+		t.Fatalf("[%s] globex retrieve %s = %q, want %q", proto.name, shared, got, "globex-value")
+	}
+	if got := run(acme, "credential", "strategy"); !strings.Contains(got, "barrier") {
+		t.Fatalf("[%s] a tenant's store must be barrier-strategy, got %q", proto.name, got)
+	}
+
+	// globex can neither list nor read acme's credential, and the system
+	// tenant's node-wide store holds neither tenant's.
+	if names := list(globex); stringSliceContains(names, acmeOnly) || !stringSliceContains(names, shared) {
+		t.Fatalf("[%s] globex's list = %v, want %q and not %q", proto.name, names, shared, acmeOnly)
+	}
+	if out, err := runQRDB(t, node.cli, globex, "credential", "retrieve", acmeOnly); err == nil || strings.Contains(out, "acme-private") {
+		t.Fatalf("[%s] globex must not read acme's %s: err=%v output: %s", proto.name, acmeOnly, err, out)
+	}
+	if !stringSliceContains(list(acme), acmeOnly) {
+		t.Fatalf("[%s] acme's list must name its own %s", proto.name, acmeOnly)
+	}
+	sysOut, err := runCLIProto(t, node, proto, "--output", "json", "credential", "list")
+	if err != nil {
+		t.Fatalf("[%s] system credential list: %v\noutput: %s", proto.name, err, sysOut)
+	}
+	if strings.Contains(sysOut, shared) || strings.Contains(sysOut, acmeOnly) {
+		t.Fatalf("[%s] the system store must hold no tenant credential, got: %s", proto.name, sysOut)
+	}
+
+	// A rotation in acme versions acme's credential only.
+	run(acme, "credential", "rotate", shared, "--value", "acme-value-2")
+	if got := run(acme, "credential", "retrieve", shared); got != "acme-value-2" {
+		t.Fatalf("[%s] acme retrieve after rotate = %q, want %q", proto.name, got, "acme-value-2")
+	}
+	if got := run(globex, "credential", "retrieve", shared); got != "globex-value" {
+		t.Fatalf("[%s] globex's %s changed with acme's rotation: %q", proto.name, shared, got)
+	}
+
+	// globex deleting the shared name leaves acme's in place.
+	run(globex, "credential", "delete", shared)
+	if got := run(acme, "credential", "retrieve", shared); got != "acme-value-2" {
+		t.Fatalf("[%s] acme's %s went with globex's delete: %q", proto.name, shared, got)
+	}
+
+	// A principal without the grants is refused by authorization.
+	assertCrossTenantIAMForbidden(t, node, proto, ct.conn(node, proto, ct.ungranted), "",
+		"credential", "list")
+
+	// A tenant on the shared system barrier is refused, not served the
+	// node-wide store.
+	out, err := runQRDB(t, node.cli, ct.conn(node, proto, ct.shared), "credential", "store", shared, "--value", "leak")
+	if err == nil {
+		t.Fatalf("[%s] a shared-barrier tenant must be refused a credential store, got success: %s", proto.name, out)
+	}
+	if !strings.Contains(strings.ToLower(out), "dedicated barrier") {
+		t.Fatalf("[%s] a shared-barrier tenant's refusal must name the missing dedicated barrier, got: %s", proto.name, out)
+	}
+	if strings.Contains(run(acme, "credential", "retrieve", shared), "leak") {
+		t.Fatalf("[%s] the shared-barrier tenant's write reached acme's store", proto.name)
+	}
+}
+
+// TestCredential_Embedded_TenantStores is TestCredential_CLI_TenantStores_PerProtocol
+// over the embedded transport, which has no CLI: the SDK client of an
+// in-process node with authorization enabled, called as each tenant's own
+// principal.
+func TestCredential_Embedded_TenantStores(t *testing.T) {
+	cfg := homeNodeConfig(t)
+	// Unlike the home suite, every call here is authorized.
+	cfg.Auth.Enabled = qrdbconfig.BoolPtr(true)
+	n, err := qrdbnode.NewStandaloneNode(context.Background(), cfg, nil, homeNodeOptions()...)
+	if err != nil {
+		t.Fatalf("NewStandaloneNode: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	if n.IsSealed() {
+		t.Fatal("node is sealed")
+	}
+	pools, ok := n.BarrierRegistry().VolumeService()
+	if !ok {
+		t.Fatal("the node attached no volume catalog")
+	}
+	if _, err := pools.CreatePool(context.Background(), volume.CreatePoolRequest{Name: "default"}); err != nil {
+		t.Fatalf("CreatePool: %v", err)
+	}
+
+	const acme, globex, initech, shared = "ecred-acme", "ecred-globex", "ecred-initech", "ecred-shared"
+	onboardCredentialTenant(t, n, acme, tenant.IsolationBarrier)
+	onboardCredentialTenant(t, n, globex, tenant.IsolationBarrier)
+	onboardCredentialTenant(t, n, initech, tenant.IsolationBarrier)
+	onboardCredentialTenant(t, n, shared, tenant.IsolationPrefix)
+	grants := make([]permission.Permission, 0, len(credentialGrants))
+	for _, g := range credentialGrants {
+		grants = append(grants, permission.Permission(g))
+	}
+	acmeCtx := embeddedCredentialPrincipal(t, n, acme, grants)
+	globexCtx := embeddedCredentialPrincipal(t, n, globex, grants)
+	initechCtx := embeddedCredentialPrincipal(t, n, initech, []permission.Permission{permission.AdminHealth})
+	sharedCtx := embeddedCredentialPrincipal(t, n, shared, grants)
+	creds := n.Client().Credentials()
+
+	retrieve := func(ctx context.Context, name string) (string, error) {
+		t.Helper()
+		buf, err := creds.CredentialRetrieveBuffer(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		value, err := service.CredentialWireValue(buf)
+		return string(value), err
+	}
+	mustRetrieve := func(ctx context.Context, name, want string) {
+		t.Helper()
+		got, err := retrieve(ctx, name)
+		if err != nil || got != want {
+			t.Fatalf("retrieve %s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	names := func(ctx context.Context) []string {
+		t.Helper()
+		resp, err := creds.CredentialList(ctx, &transport.CredentialListRequest{})
+		if err != nil {
+			t.Fatalf("CredentialList: %v", err)
+		}
+		return resp.Names
+	}
+
+	const sharedName, acmeOnly = "tenant-api-key", "acme-only"
+	for _, step := range []struct {
+		ctx         context.Context
+		name, value string
+	}{{acmeCtx, sharedName, "acme-value"}, {globexCtx, sharedName, "globex-value"}, {acmeCtx, acmeOnly, "acme-private"}} {
+		if err := creds.CredentialStore(step.ctx, step.name, []byte(step.value)); err != nil {
+			t.Fatalf("CredentialStore(%s): %v", step.name, err)
+		}
+	}
+	mustRetrieve(acmeCtx, sharedName, "acme-value")
+	mustRetrieve(globexCtx, sharedName, "globex-value")
+	if strategy, err := creds.CredentialStrategy(acmeCtx); err != nil || strategy.Strategy != "barrier" {
+		t.Fatalf("a tenant's store must be barrier-strategy, got %+v, %v", strategy, err)
+	}
+
+	if got := names(globexCtx); stringSliceContains(got, acmeOnly) || !stringSliceContains(got, sharedName) {
+		t.Fatalf("globex's list = %v, want %q and not %q", got, sharedName, acmeOnly)
+	}
+	if got, err := retrieve(globexCtx, acmeOnly); err == nil || got == "acme-private" {
+		t.Fatalf("globex must not read acme's %s: %q, %v", acmeOnly, got, err)
+	}
+
+	if _, err := creds.CredentialRotate(acmeCtx, &transport.CredentialRotateRequest{Name: sharedName, NewValue: []byte("acme-value-2")}); err != nil {
+		t.Fatalf("CredentialRotate: %v", err)
+	}
+	mustRetrieve(acmeCtx, sharedName, "acme-value-2")
+	mustRetrieve(globexCtx, sharedName, "globex-value")
+	if err := creds.CredentialDelete(globexCtx, sharedName); err != nil {
+		t.Fatalf("CredentialDelete: %v", err)
+	}
+	mustRetrieve(acmeCtx, sharedName, "acme-value-2")
+
+	// A principal without the grants is refused by authorization.
+	if _, err := creds.CredentialList(initechCtx, &transport.CredentialListRequest{}); err == nil ||
+		!strings.Contains(strings.ToLower(err.Error()), "permission") {
+		t.Fatalf("a principal without credentials:list must be refused a permission, got %v", err)
+	}
+
+	// A tenant on the shared system barrier is refused, not served the
+	// node-wide store.
+	err = creds.CredentialStore(sharedCtx, sharedName, []byte("leak"))
+	if err == nil || !strings.Contains(err.Error(), "dedicated barrier") {
+		t.Fatalf("a shared-barrier tenant must be refused for want of a dedicated barrier, got %v", err)
+	}
+	mustRetrieve(acmeCtx, sharedName, "acme-value-2")
+}
+
+// onboardCredentialTenant onboards tenantID with the given isolation; a
+// dedicated barrier is auto-unsealed so its store is reachable at once.
+func onboardCredentialTenant(t *testing.T, n *qrdbnode.Node, tenantID string, isolation tenant.IsolationType) {
+	t.Helper()
+	_, csrPEM, err := certtest.NewCSR(tenantID + "-admin")
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+	if _, err := n.Services().TenantOnboarding.OnboardTenant(context.Background(), &service.OnboardTenantRequest{
+		ID:                tenantID,
+		Name:              tenantID,
+		IsolationType:     isolation,
+		BarrierAutoUnseal: isolation != tenant.IsolationPrefix,
+		AdminUsername:     "admin",
+		AdminCSRPEM:       csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant(%s, %s): %v", tenantID, isolation, err)
+	}
+}
+
+// embeddedCredentialPrincipal creates a role holding grants and a user
+// holding it in tenantID, and returns a context authenticated as that user
+// in its own tenant.
+func embeddedCredentialPrincipal(t *testing.T, n *qrdbnode.Node, tenantID string, grants []permission.Permission) context.Context {
+	t.Helper()
+	ctx := tenant.WithTenantID(context.Background(), tenantID)
+	svc := n.Services()
+	r, err := svc.Role.CreateRole(ctx, &role.CreateRoleRequest{
+		Name: "credential-principal", TenantID: tenantID, Permissions: grants,
+	})
+	if err != nil {
+		t.Fatalf("CreateRole(%s): %v", tenantID, err)
+	}
+	u, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             "credential-principal",
+		TenantID:             tenantID,
+		RoleIDs:              []string{r.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(%s): %v", tenantID, err)
+	}
+	identity := &auth.Identity{Subject: u.Username, TenantID: tenantID, Roles: []string{r.ID}}
+	identity.BindUser(u.ID, u.Username)
+	return auth.WithIdentity(ctx, identity)
 }
 
 func testCredentialLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {

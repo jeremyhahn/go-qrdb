@@ -90,6 +90,7 @@ type invitationFixture struct {
 	audit   *audit.RingBuffer
 	svc     *InvitationService
 	ids     map[string]map[string]string // tenant -> role name -> id
+	kv      *invitationResolver
 }
 
 func newInvitationFixture(t *testing.T) *invitationFixture {
@@ -107,7 +108,7 @@ func newInvitationFixture(t *testing.T) *invitationFixture {
 	if err != nil {
 		t.Fatalf("role routing: %v", err)
 	}
-	f := &invitationFixture{users: users, roles: roles, ids: map[string]map[string]string{}}
+	f := &invitationFixture{users: users, roles: roles, ids: map[string]map[string]string{}, kv: resolver}
 	for _, tid := range []string{"acme", "beta"} {
 		ctx := tenant.WithTenantID(context.Background(), tid)
 		f.ids[tid] = map[string]string{}
@@ -470,15 +471,183 @@ func TestRedeemInvitation_RefusesAnExpiredToken(t *testing.T) {
 func TestRedeemInvitation_RefusesAnotherTokenForAnAccountAlreadyActivated(t *testing.T) {
 	f := newInvitationFixture(t)
 	first := f.invite(t, "alice")
-	second, err := f.svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A re-invitation would supersede the first token, so the second live
+	// token is minted beside it in the store directly.
+	second := f.issueDirectly(t, "acme", first.UserID)
 	if _, err := f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: first.Token, CSRPEM: newOwnCSR(t)}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: second.Token, CSRPEM: newOwnCSR(t)})
+	_, err := f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: second, CSRPEM: newOwnCSR(t)})
 	assertInvalidInvitation(t, err, "second token for an activated account")
+}
+
+func TestInviteUser_AReinviteSupersedesTheEarlierToken(t *testing.T) {
+	f := newInvitationFixture(t)
+	first := f.invite(t, "alice")
+	again, err := f.svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+	if err != nil {
+		t.Fatalf("re-invite: %v", err)
+	}
+	_, err = f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: first.Token, CSRPEM: newOwnCSR(t)})
+	assertInvalidInvitation(t, err, "a token a re-invitation superseded")
+	if _, err := f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: again.Token, CSRPEM: newOwnCSR(t)}); err != nil {
+		t.Fatalf("redeem the re-invitation: %v", err)
+	}
+	// The enrolment recorded the account active in the store too, so the
+	// store refuses to reissue it even to a caller that skips the service.
+	userID := strconv.FormatUint(first.UserID, 10)
+	if _, _, err := f.invites.Reissue(context.Background(), userID, "acme", time.Hour); !errors.Is(err, invite.ErrUserActive) {
+		t.Fatalf("store Reissue after enrolment = %v, want invite.ErrUserActive", err)
+	}
+}
+
+// TestInviteUser_AReinviteSupersedesAnInvitationFromBeforeSubjects is the
+// upgraded database: a pending account's invitation was persisted before the
+// invite store kept a subject record, so it carries generation 0 and the store
+// has no subject for the account. The re-invitation must still be the only
+// token that redeems.
+func TestInviteUser_AReinviteSupersedesAnInvitationFromBeforeSubjects(t *testing.T) {
+	f := newInvitationFixture(t)
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	alice, err := f.users.CreateUser(ctx, &user.CreateUserRequest{
+		Username:             "alice",
+		TenantID:             "acme",
+		RoleIDs:              []string{f.ids["acme"][role.RoleNameUser]},
+		WithoutEmailLoginKey: true,
+		Pending:              true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// The invitation as an earlier release wrote it: the "invites" entity
+	// alone, keyed by its token digest, with no generation.
+	kv, err := f.kv.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	legacyInvites, err := dao.New(kv, "invites", func() *invite.Entity { return &invite.Entity{} },
+		dao.WithIDGenerator(dao.NewFieldHashGenerator("TokenHash")))
+	if err != nil {
+		t.Fatalf("legacy invite dao: %v", err)
+	}
+	legacy, err := invite.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := legacyInvites.Save(ctx, &invite.Entity{
+		TokenHash: invite.TokenDigest(legacy),
+		UserID:    strconv.FormatUint(alice.ID, 10),
+		TenantID:  "acme",
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("save legacy invitation: %v", err)
+	}
+	again, err := f.svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+	if err != nil {
+		t.Fatalf("re-invite: %v", err)
+	}
+	_, err = f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: legacy, CSRPEM: newOwnCSR(t)})
+	assertInvalidInvitation(t, err, "a pre-subject token a re-invitation superseded")
+	if _, err := f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: again.Token, CSRPEM: newOwnCSR(t)}); err != nil {
+		t.Fatalf("redeem the re-invitation: %v", err)
+	}
+}
+
+func TestInviteUser_ReinvitesAnAccountWhoseActivationFailed(t *testing.T) {
+	f := newInvitationFixture(t)
+	inv := f.invite(t, "alice")
+	svc := NewInvitationService(InvitationDeps{Invitations: f.invites, Users: &failingActivateUsers{InvitationUsers: f.users, err: errors.New("activation lost")}, Certs: f.certs, TTL: time.Hour, Tenants: fixtureTenants})
+	if _, err := svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)}); err == nil {
+		t.Fatal("redeem with a failing activation succeeded")
+	}
+	// The token is spent but the account is still pending: re-inviting it
+	// is how it recovers.
+	again, err := f.svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+	if err != nil {
+		t.Fatalf("re-invite after a failed activation: %v", err)
+	}
+	if _, err := f.svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: again.Token, CSRPEM: newOwnCSR(t)}); err != nil {
+		t.Fatalf("redeem the re-invitation: %v", err)
+	}
+}
+
+// reissueInvitations answers Reissue with err and counts the Creates it
+// is asked for, so each answer's handling can be checked in isolation.
+type reissueInvitations struct {
+	InvitationStore
+	err     error
+	creates int
+}
+
+func (r *reissueInvitations) Reissue(context.Context, string, string, time.Duration, ...invite.CreateOption) (string, *invite.Entity, error) {
+	return "", nil, r.err
+}
+
+func (r *reissueInvitations) Create(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...invite.CreateOption) (string, *invite.Entity, error) {
+	r.creates++
+	return r.InvitationStore.Create(ctx, userID, tenantID, ttl, opts...)
+}
+
+var _ InvitationStore = (*reissueInvitations)(nil)
+
+func TestInviteUser_HandlesEachReissueAnswer(t *testing.T) {
+	f := newInvitationFixture(t)
+	f.invite(t, "alice")
+	reinvite := func(err error) (*reissueInvitations, error) {
+		store := &reissueInvitations{InvitationStore: f.invites, err: err}
+		_, ierr := f.withInvitations(store).InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"})
+		return store, ierr
+	}
+
+	// A lost race is reported as the conflict it is, and nothing is minted.
+	store, err := reinvite(invite.ErrReissueConflict)
+	if !errors.Is(err, invite.ErrReissueConflict) || store.creates != 0 {
+		t.Fatalf("lost race: err = %v, creates = %d; want ErrReissueConflict and no Create", err, store.creates)
+	}
+	// A store that has the user active refuses as the service would.
+	var active *InvitationAccountActiveError
+	if _, err := reinvite(invite.ErrUserActive); !errors.As(err, &active) || active.Username != "alice" {
+		t.Fatalf("active user: err = %v, want *InvitationAccountActiveError for alice", err)
+	}
+	// A pending account the store has no record of gets its first invitation.
+	store, err = reinvite(invite.ErrUserNotFound)
+	if err != nil || store.creates != 1 {
+		t.Fatalf("untracked account: err = %v, creates = %d; want a first invitation", err, store.creates)
+	}
+	// A storage fault is reported as itself.
+	var storeErr *invite.StoreError
+	if _, err := reinvite(&invite.StoreError{Op: "advance invite subject", Cause: errors.New("down")}); !errors.As(err, &storeErr) {
+		t.Fatalf("storage fault: err = %v, want *invite.StoreError", err)
+	}
+}
+
+// failingActivateInvitations fails the store's activation record.
+type failingActivateInvitations struct {
+	InvitationStore
+}
+
+func (failingActivateInvitations) Activate(context.Context, string, string, time.Time) error {
+	return errors.New("subject write lost")
+}
+
+var _ InvitationStore = failingActivateInvitations{}
+
+func TestRedeemInvitation_AFailedActivationRecordDoesNotUndoTheEnrolment(t *testing.T) {
+	f := newInvitationFixture(t)
+	inv := f.invite(t, "alice")
+	svc := f.withInvitations(failingActivateInvitations{InvitationStore: f.invites})
+	enrolled, err := svc.RedeemInvitation(context.Background(), &RedeemInvitationRequest{TenantID: "acme", Token: inv.Token, CSRPEM: newOwnCSR(t)})
+	if err != nil || enrolled.UserID != inv.UserID {
+		t.Fatalf("redeem = %+v, %v; want the enrolment to stand", enrolled, err)
+	}
+	// The service still refuses the now-active account by its own record.
+	var active *InvitationAccountActiveError
+	if _, err := f.svc.InviteUser(f.admin("acme"), &InviteUserRequest{TenantID: "acme", Username: "alice"}); !errors.As(err, &active) {
+		t.Fatalf("re-invite an active account: err = %v, want *InvitationAccountActiveError", err)
+	}
 }
 
 func TestRedeemInvitation_RefusesAnUnknownToken(t *testing.T) {

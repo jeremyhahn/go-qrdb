@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -40,6 +41,9 @@ type sessionBuilder struct {
 	// sessions registers every built session's connection with the seal
 	// guard, which closes it when a seal reaches it. Nil guards nothing.
 	sessions *sealedSessions
+	// clientLimit charges each new session to its client address's bucket
+	// before any other work. Nil limits nothing.
+	clientLimit *clientlimit.Limiter
 }
 
 // newSessionBuilder creates a session builder with auth middleware and
@@ -54,6 +58,11 @@ func newSessionBuilder(authMW *authmw.AuthMiddleware, probe sealedWindowProbe) *
 // tenant. When no auth middleware is configured, a default session with
 // nil identity is returned.
 func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
+	// A client over its rate is refused before anything else is spent on
+	// it, authentication included.
+	if err := admitClient(b.clientLimit, conn); err != nil {
+		return nil, err
+	}
 	// Fail closed while the storage barrier is sealed: no SQL session may
 	// be established until the operator drives the unseal API. Mirrors
 	// the 503 / Unavailable envelope on the other protocol transports.

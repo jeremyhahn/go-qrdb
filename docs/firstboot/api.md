@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Firstboot is a **composition-plane capability**: it runs inside the daemon's
@@ -63,16 +63,17 @@ BYO-TLS node with no configured `CeremonyCA` — use BYOC instead).
 }
 ```
 
-With `threshold >= 2`, enrolled officers must have been named or the request
-fails closed with `ErrNoOfficers`. In M-of-N the User PIN **is** the Shamir
-secret. Both PINs go straight to the configured `pin.PINBackend` and never
-reach disk in raw form. `secret` is the system barrier's own passphrase,
-required exactly when the configured barrier strategy needs one (e.g.
-`passphrase`); `qrdb init` brings the system barrier up in this same call.
+With `threshold >= 2`, `officers` must name at least one share holder or the
+request fails closed with `ErrNoOfficers`. Both PINs go straight to the
+configured `pin.PINBackend` and never reach disk in raw form. `secret` is the
+system barrier's own passphrase, base64-encoded in JSON, required exactly
+when the configured barrier strategy needs one (e.g. `passphrase`) and empty
+for `none`; `qrdb init` brings the system barrier up in this same call.
 
-The response carries `admin_cert_pem` always, and `admin_key_pem` +
-`admin_credential_source: "generated"` only on the generate path -- the key
-is returned exactly once and never persisted.
+The response carries `admin_cert_pem` and `admin_credential_source`, which
+names the path taken: `csr`, `byoc` or `generated`. `admin_key_pem` is set
+only on the generate path -- the key is returned exactly once and never
+persisted.
 
 ## Status and error mapping
 
@@ -85,7 +86,7 @@ is returned exactly once and never persisted.
 | No admin-credential path selected | 400 | `INVALID_ARGUMENT` |
 | Admin credential rejected | 400 | `INVALID_ARGUMENT` |
 | CSR-sign/generate on a BYO-TLS node (no CA) | 409 | `FAILED_PRECONDITION` |
-| Follower attempted creation | — | retried after replication (`NotLeader` only) |
+| Leader election or move during creation | — | waited out and retried; a record another node created first is re-read after replication |
 | Any other first-boot failure | the underlying cause | returned, not retried — it is this node's own failure |
 | No bootstrap source configured | 404 (`/v1/ca/bootstrap` unregistered) | — |
 

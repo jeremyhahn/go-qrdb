@@ -413,27 +413,6 @@ func TestUserAuthFactorService_CountActive_WithMixedFactors(t *testing.T) {
 // vector.go – ensureHNSWIndex (41.9% → higher) via UpsertVector
 // ---------------------------------------------------------------------------
 
-func TestVectorService_UpsertVector_EnsureIndexCreated(t *testing.T) {
-	// When the namespace has no pre-built index, ensureHNSWIndex is called.
-	// Without qrdb_vector tag the HNSW factory is a no-op, so this exercises
-	// the storage path.
-	svc, store := newVecSvcPreloaded(t, "ensure-ns", 3)
-	ctx := context.Background()
-
-	// Override getNamespaceInfo to return the namespace info.
-	store.getNamespaceInfoFn = func(_ context.Context, ns string) (*vector.NamespaceInfo, error) {
-		return &vector.NamespaceInfo{Name: ns, Dimension: 3}, nil
-	}
-
-	_, err := svc.UpsertVector(ctx, &UpsertVectorRequest{
-		Namespace: "ensure-ns",
-		ID:        1,
-		Vector:    []float32{0.1, 0.2, 0.3},
-	})
-	// May succeed or fail on HNSW index creation; either is fine.
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // vector.go – validateCreateNamespaceRequest missing dimension (66.7% → higher)
 // ---------------------------------------------------------------------------

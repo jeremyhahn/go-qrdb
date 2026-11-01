@@ -366,6 +366,31 @@ type ReconcileRolesResponse struct {
 	Roles    []RoleReconcileResult `json:"roles,omitempty"`
 }
 
+// RoleReconcileSkippedTenant names a tenant the all-tenant reconcile did not
+// open. Reason is "sealed" (its barrier is sealed on the serving node) or
+// "refused" (the node does not serve it); Detail is the human-readable cause.
+type RoleReconcileSkippedTenant struct {
+	TenantID string `json:"tenant_id"`
+	Reason   string `json:"reason"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// RoleReconcileFailedTenant names a tenant whose reconcile failed, and why.
+type RoleReconcileFailedTenant struct {
+	TenantID string `json:"tenant_id"`
+	Error    string `json:"error"`
+}
+
+// ReconcileAllTenantsRolesResponse is the all-tenant reconcile's report: one
+// per-tenant report for every tenant converged (the system tenant first, then
+// by id; an empty Roles list is a tenant already in agreement), and the
+// tenants skipped or failed. A non-empty Failed is a partial pass.
+type ReconcileAllTenantsRolesResponse struct {
+	Tenants []ReconcileRolesResponse     `json:"tenants,omitempty"`
+	Skipped []RoleReconcileSkippedTenant `json:"skipped,omitempty"`
+	Failed  []RoleReconcileFailedTenant  `json:"failed,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Certificate management types
 // ---------------------------------------------------------------------------

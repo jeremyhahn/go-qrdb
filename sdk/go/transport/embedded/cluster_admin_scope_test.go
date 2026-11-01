@@ -49,6 +49,8 @@ func TestClusterAdminScope(t *testing.T) {
 		// Replica state hashes read every replica the node runs, isolated
 		// tenants' included: the same grant and the same confinement.
 		permission.AdminStateHash,
+		// Starting a shard places a replica group on the cluster (#1281).
+		permission.AdminStartShard,
 	} {
 		for _, c := range authtest.ClusterAdminCallers(t) {
 			t.Run(string(perm)+"/"+c.Name, func(t *testing.T) {

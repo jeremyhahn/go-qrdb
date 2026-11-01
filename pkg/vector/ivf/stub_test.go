@@ -64,6 +64,7 @@ func TestStubDistanceMetricString(t *testing.T) {
 		{L2Distance, "L2"},
 		{CosineDistance, "Cosine"},
 		{DotProductDistance, "DotProduct"},
+		{ManhattanDistance, "Manhattan"},
 		{DistanceMetric(99), "Unknown"},
 	}
 	for _, tt := range tests {

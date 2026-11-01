@@ -445,6 +445,54 @@ func TestConnect_HealthCheckFailure(t *testing.T) {
 	}
 }
 
+// TestConnect_RateLimitedIsTheTypedRefusal pins that a 429 from /health --
+// the client-address limiter's refusal (go-qrdb#1197) -- is Connect's typed
+// result with the Retry-After the server sent, not "health check failed".
+func TestConnect_RateLimitedIsTheTypedRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"client address 127.0.0.1 is rate limited"}`))
+	}))
+	defer srv.Close()
+
+	rt, err := New(transport.WithAddress(srv.URL))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = rt.Connect(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("Connect error = %T %v, want a RequestError carrying 429", err, err)
+	}
+	if reqErr.RetryAfter != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", reqErr.RetryAfter)
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("Connect error = %v, want the server's refusal message", err)
+	}
+	var connErr *transport.ConnectionError
+	if errors.As(err, &connErr) {
+		t.Errorf("Connect error = %v, want the server's refusal, not a connection failure", err)
+	}
+}
+
+// TestConnect_ProbeOnClosedTransportIsAConnectionError covers the probe's
+// closed guard.
+func TestConnect_ProbeOnClosedTransportIsAConnectionError(t *testing.T) {
+	rt, err := New(transport.WithAddress("https://127.0.0.1:1"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = rt.Close()
+	var connErr *transport.ConnectionError
+	if err := rt.probe(context.Background()); !errors.As(err, &connErr) {
+		t.Fatalf("probe on closed transport = %T %v, want ConnectionError", err, err)
+	}
+}
+
 // TestConnect_SealedServerIsReachable verifies that a server returning 503
 // from /health (a sealed barrier / not-ready node) is still connectable, so
 // the CLI can run allowlisted barrier/seal commands (status, unseal,

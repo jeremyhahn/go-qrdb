@@ -29,6 +29,24 @@ var (
 	// ErrAlreadyRedeemed indicates the invitation was already consumed.
 	ErrAlreadyRedeemed = errors.New("invite: already redeemed")
 
+	// ErrSuperseded indicates a later Reissue replaced the invitation. It is
+	// as unusable as a redeemed one, and the same rule applies: never tell it
+	// apart from ErrNotFound to an unauthenticated caller.
+	ErrSuperseded = errors.New("invite: superseded")
+
+	// ErrUserNotFound indicates Reissue was asked for a user that holds no
+	// invitation in the tenant, so there is nothing to supersede.
+	ErrUserNotFound = errors.New("invite: user has no invitation")
+
+	// ErrUserActive indicates Reissue was asked for a user recorded active by
+	// Activate: the account is active and needs no invitation.
+	ErrUserActive = errors.New("invite: user already active")
+
+	// ErrReissueConflict indicates another reissue, or a redemption, for the
+	// same user landed first. The winner's state is the live one; the caller
+	// may retry.
+	ErrReissueConflict = errors.New("invite: concurrent reissue")
+
 	// ErrEmptyToken indicates an empty token was presented.
 	ErrEmptyToken = errors.New("invite: empty token")
 

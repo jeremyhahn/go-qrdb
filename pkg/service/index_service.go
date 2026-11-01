@@ -33,19 +33,42 @@ type IndexServicer = index.IndexServicer
 type IndexService struct {
 	host    Host
 	shardID uint64
+
+	// maxIndexes caps the indexes the shard holds (index.max_indexes); zero
+	// is unlimited. It travels in every create command and the apply path
+	// enforces it, so it holds across every node serving the shard.
+	maxIndexes int
+}
+
+// IndexServiceOption configures an IndexService.
+type IndexServiceOption func(*IndexService)
+
+// WithMaxIndexes caps the secondary indexes the shard holds at n
+// (index.max_indexes). A create past the cap fails with *IndexLimitError;
+// zero or less leaves the shard unlimited.
+func WithMaxIndexes(n int) IndexServiceOption {
+	return func(s *IndexService) { s.maxIndexes = n }
 }
 
 // NewIndexService creates a new IndexServicer that operates on the
 // specified shard. The shard must be running an MVCCStateMachine
 // for index operations to succeed.
-func NewIndexService(host Host, shardID uint64) IndexServicer {
-	return &IndexService{
+func NewIndexService(host Host, shardID uint64, opts ...IndexServiceOption) IndexServicer {
+	s := &IndexService{
 		host:    host,
 		shardID: shardID,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
-// CreateIndex creates a new secondary index through Raft consensus.
+// CreateIndex creates a new secondary index through Raft consensus. Under
+// index.max_indexes the command carries the cap, and the apply path refuses a
+// create for a name not among the shard's indexes once the cap is reached;
+// the refusal reaches the caller as *IndexLimitError. A create naming an
+// existing index is decided as it would be uncapped.
 func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error {
 	// CaseInsensitive is the inverse of the config's CaseSensitive: the wire
 	// flag marks the positive claim so an absent bit means case-sensitive,
@@ -65,6 +88,10 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		// path so a colliding create is refused rather than adopted and an
 		// owner's teardown removes only its own indexes (go-qrdb#426).
 		Owner: config.Owner,
+		// The shard's index cap, decided by the apply path against the index
+		// set the create applies over, so two creates proposed through
+		// different nodes cannot both take the last slot (go-qrdb#1088).
+		MaxIndexes: gatedCommandCap(s.host, s.shardID, s.maxIndexes),
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}

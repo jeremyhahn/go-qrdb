@@ -23,7 +23,7 @@ text
   → Tokenizer      Unicode word splitting, stop-word removal, CJK per-character
   → Analyzer       tokenize + lowercase + optional stemming
   → InvertedIndex  term → entity keys, in storage.Storage
-  → FTSIndex       high-level API for DAO integration
+  → FTSIndex       the package's high-level API
 ```
 
 Two search semantics: `Search` (AND — every term must appear) and `SearchOr`

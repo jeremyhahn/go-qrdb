@@ -52,6 +52,7 @@ const VectorShardID uint64 = 2
 type vectorService struct {
 	storage        vector.Storage
 	raftNode       interfaces.RaftNode
+	featureGates   FeatureGatedHost // cluster feature gates; nil reads the raft node's
 	shardID        uint64
 	nodeID         string
 	hnswIndexes    map[string]interfaces.HNSWIndex // Map scoped-namespace -> HNSW index
@@ -209,6 +210,17 @@ func WithRaftNode(raftNode interfaces.RaftNode) VectorServiceOption {
 	}
 }
 
+// WithFeatureGates sets the cluster feature gates the service consults before
+// it writes a record value older binaries cannot read (checkGeometryFeature).
+// A node whose vector store is not replicated through a raft node passes its
+// host here; without it the service asks its raft node, and with neither it
+// refuses nothing.
+func WithFeatureGates(gates FeatureGatedHost) VectorServiceOption {
+	return func(v *vectorService) {
+		v.featureGates = gates
+	}
+}
+
 // WithVectorShardID sets the shard ID for vector operations.
 func WithVectorShardID(shardID uint64) VectorServiceOption {
 	return func(v *vectorService) {
@@ -314,21 +326,79 @@ func namespaceMetricLabels(physical string) prometheus.Labels {
 	}
 }
 
-// distanceMetricFromString maps a namespace's stored or requested distance
-// metric string to the hnsw.DistanceMetric it selects. It is the single
-// place every HNSW index in this file -- created, reloaded at construction,
-// or lazily rebuilt -- derives its metric from, so a namespace's configured
-// metric cannot drift between those three paths. An unrecognized or empty
-// value defaults to L2, matching a namespace created before this field
-// existed.
-func distanceMetricFromString(metric string) hnsw.DistanceMetric {
-	switch metric {
-	case "COSINE", "cosine":
-		return hnsw.CosineDistance
-	case "DOT_PRODUCT", "dot_product":
-		return hnsw.DotProductDistance
-	default:
-		return hnsw.L2Distance
+// parseDistanceMetric resolves a namespace's stored or requested distance
+// metric through hnsw.ParseDistanceMetric, the one name table. It is the
+// single place every index in this file -- created, reloaded at
+// construction, lazily rebuilt or rebuilt on request -- derives its metric
+// from, so a namespace's configured metric cannot drift between those paths.
+// An empty name is L2, matching a namespace created before this field
+// existed; a name the index layer does not implement is an
+// *UnknownDistanceMetricError.
+func parseDistanceMetric(metric string) (hnsw.DistanceMetric, error) {
+	m, err := hnsw.ParseDistanceMetric(metric)
+	if err != nil {
+		return 0, &UnknownDistanceMetricError{Metric: metric}
+	}
+	return m, nil
+}
+
+// newNamespaceIndex builds the empty in-memory index a namespace's stored
+// configuration names: HNSW directly, FLAT and IVF through the live-index
+// path. It is the one constructor behind every index this service holds, so a
+// namespace is searched by the index type, metric and parameters it was
+// created with however its index came to be built. indexConfig, when
+// non-nil, replaces info.IndexConfig (a rebuild may retune the index).
+func (v *vectorService) newNamespaceIndex(info *vector.NamespaceInfo, indexConfig map[string]string) (interfaces.HNSWIndex, error) {
+	metric, indexType, err := parseNamespaceGeometry(info.DistanceMetric, info.IndexType)
+	if err != nil {
+		return nil, err
+	}
+	if indexConfig == nil {
+		indexConfig = info.IndexConfig
+	}
+	if liveType, ok := liveIndexTypes[indexType]; ok {
+		return newLiveNamespaceIndex(info, liveType, metric, indexConfig)
+	}
+	config := &hnsw.Config{
+		M:              16,
+		MMax:           32,
+		EfConstruction: 200,
+		EfSearch:       50,
+		DistanceMetric: metric,
+	}
+	v.applyHNSWParams(config, indexConfig)
+	index, err := hnsw.NewHNSWIndex(config)
+	if err != nil {
+		return nil, err
+	}
+	return hnsw.NewIndexAdapter(index), nil
+}
+
+// applyHNSWParams overlays the HNSW parameters named in params onto config.
+// A parameter that does not parse is logged and left at its default; a
+// parsed m also sets MMax to twice it.
+func (v *vectorService) applyHNSWParams(config *hnsw.Config, params map[string]string) {
+	fields := map[string]*int{
+		"m":               &config.M,
+		"ef_construction": &config.EfConstruction,
+		"ef_search":       &config.EfSearch,
+	}
+	for name, field := range fields {
+		raw, ok := params[name]
+		if !ok {
+			continue
+		}
+		if _, err := fmt.Sscanf(raw, "%d", field); err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"parameter": name,
+				"value":     raw,
+				"error":     err,
+			}).Warn("failed to parse index parameter")
+			continue
+		}
+		if name == "m" {
+			config.MMax = config.M * 2
+		}
 	}
 }
 
@@ -529,6 +599,18 @@ func (v *vectorService) loadNamespaces() error {
 		// wrong metric and nothing would ever rebuild it (go-qrdb vector
 		// restart blocker).
 		if _, err := v.ensureHNSWIndex(ctx, ns.Name); err != nil {
+			// A namespace this server cannot serve stays unindexed: every
+			// operation on it re-reads the record and returns the typed
+			// refusal, so the failure reaches callers rather than this log
+			// alone, and its data never reads as absent.
+			if unsupported, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+				v.logger.WithFields(map[string]interface{}{
+					"namespace": ns.Name,
+					"field":     unsupported.Field,
+					"value":     unsupported.Value,
+				}).Error("namespace stores an unsupported geometry; operations on it are refused")
+				continue
+			}
 			v.logger.WithFields(map[string]interface{}{
 				"namespace": ns.Name,
 				"error":     err,
@@ -563,21 +645,13 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 		return nil, err
 	}
 
-	// Parse distance metric from storage.
-	distanceMetric := distanceMetricFromString(info.DistanceMetric)
-
-	// Create HNSW index
-	config := &hnsw.Config{
-		M:              16,
-		MMax:           32,
-		EfConstruction: 200,
-		EfSearch:       50,
-		DistanceMetric: distanceMetric,
+	if err := checkStoredGeometry(namespace, info); err != nil {
+		return nil, err
 	}
 
-	newIndex, err := hnsw.NewHNSWIndex(config)
+	newIndex, err := v.newNamespaceIndex(info, nil)
 	if err != nil {
-		return nil, &api.OperationFailedError{Operation: "create HNSW index", Cause: err}
+		return nil, &api.OperationFailedError{Operation: "create namespace index", Cause: err}
 	}
 
 	// Load all vectors from storage into the index
@@ -605,15 +679,15 @@ func (v *vectorService) ensureHNSWIndex(ctx context.Context, namespace string) (
 		v.indexMu.Unlock()
 		return existingIndex, nil
 	}
-	v.hnswIndexes[namespace] = hnsw.NewIndexAdapter(newIndex)
+	v.hnswIndexes[namespace] = newIndex
 	v.indexMu.Unlock()
 
 	v.logger.WithFields(map[string]interface{}{
 		"namespace": namespace,
 		"vectors":   len(vectors),
-	}).Info("lazily created HNSW index for namespace")
+	}).Info("lazily created index for namespace")
 
-	return hnsw.NewIndexAdapter(newIndex), nil
+	return newIndex, nil
 }
 
 // =============================================================================
@@ -922,58 +996,18 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 		return nil, vectorStorageError("create namespace", req.Namespace, 0, err)
 	}
 
-	// Initialize HNSW index for namespace keyed by the scoped name, under
-	// the metric this namespace was actually created with -- not a
-	// hardcoded one, which would make every non-L2 namespace searchable
+	// Initialize the namespace's index keyed by the scoped name, under the
+	// metric and parameters this namespace was actually created with -- not
+	// hardcoded ones, which would make every non-L2 namespace searchable
 	// only under the wrong metric from the moment it was created.
-	config := &hnsw.Config{
-		M:              16,
-		MMax:           32,
-		EfConstruction: 200,
-		EfSearch:       50,
-		DistanceMetric: distanceMetricFromString(distanceMetric),
-	}
-
-	if req.IndexConfig != nil {
-		if m, ok := req.IndexConfig["m"]; ok {
-			if _, err := fmt.Sscanf(m, "%d", &config.M); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "m",
-					"value":     m,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			} else {
-				config.MMax = config.M * 2
-			}
-		}
-		if ef, ok := req.IndexConfig["ef_construction"]; ok {
-			if _, err := fmt.Sscanf(ef, "%d", &config.EfConstruction); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "ef_construction",
-					"value":     ef,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			}
-		}
-		if ef, ok := req.IndexConfig["ef_search"]; ok {
-			if _, err := fmt.Sscanf(ef, "%d", &config.EfSearch); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "ef_search",
-					"value":     ef,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			}
-		}
-	}
-
-	index, err := hnsw.NewHNSWIndex(config)
+	index, err := v.newNamespaceIndex(info, nil)
 	if err != nil {
 		_ = v.storage.DeleteNamespace(ctx, scoped)
-		return nil, &VectorOperationError{Op: "create HNSW index", Err: err}
+		return nil, &VectorOperationError{Op: "create namespace index", Err: err}
 	}
 
 	v.indexMu.Lock()
-	v.hnswIndexes[scoped] = hnsw.NewIndexAdapter(index)
+	v.hnswIndexes[scoped] = index
 	v.indexMu.Unlock()
 
 	if v.metrics != nil {
@@ -1201,7 +1235,7 @@ func (v *vectorService) ListNamespaces(ctx context.Context, req *ListNamespacesR
 			Dimension:      ns.Dimension,
 			VectorCount:    ns.VectorCount,
 			DistanceMetric: ns.DistanceMetric,
-			IndexType:      ns.IndexType,
+			IndexType:      reportedIndexType(ns.IndexType),
 			IndexConfig:    ns.IndexConfig,
 			Metadata:       ns.Metadata,
 			CreatedAt:      ns.CreatedAt,
@@ -1268,6 +1302,9 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		}
 		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
 	}
+	if err := checkStoredGeometry(scoped, info); err != nil {
+		return nil, err
+	}
 
 	metadata := make(map[string]interface{})
 	if info.Metadata != nil {
@@ -1281,15 +1318,9 @@ func (v *vectorService) GetNamespaceInfo(ctx context.Context, req *GetNamespaceI
 		indexConfig = make(map[string]string)
 	}
 
-	distanceMetric := info.DistanceMetric
-	if distanceMetric == "" {
-		distanceMetric = "L2"
-	}
+	distanceMetric := reportedDistanceMetric(info.DistanceMetric)
 
-	indexType := info.IndexType
-	if indexType == "" {
-		indexType = "HNSW"
-	}
+	indexType := reportedIndexType(info.IndexType)
 
 	return &GetNamespaceInfoResponse{
 		Namespace:      req.Namespace, // logical name, not scoped storage key
@@ -1339,6 +1370,9 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			v.metrics.operationErrors.With("upsert_vector", "namespace_not_found").Inc()
 		}
 		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
+	}
+	if err := checkStoredGeometry(scoped, nsInfo); err != nil {
+		return nil, err
 	}
 
 	// #nosec G115 -- vector dimension bounded by practical limits
@@ -1619,6 +1653,32 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		return nil, &VectorServiceClosedError{}
 	}
 
+	// The namespace's dimension is the bound every vector in the batch is
+	// checked against, so a batch is never written without it: an
+	// unreadable namespace would otherwise validate any internally
+	// consistent batch of the wrong length.
+	info, err := v.storage.GetNamespaceInfo(ctx, scoped)
+	if err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("batch_upsert", "namespace_not_found").Inc()
+		}
+		return nil, vectorStorageError("find namespace", req.Namespace, 0, err)
+	}
+	if err := checkStoredGeometry(scoped, info); err != nil {
+		return nil, err
+	}
+	dimension := info.Dimension
+
+	// The whole batch is validated before any of it is written: a vector
+	// of the wrong length, once stored, poisons every index over the
+	// namespace (an IVF index cannot train past it).
+	if err := validateBatchDimensions(req.Vectors, dimension); err != nil {
+		if v.metrics != nil {
+			v.metrics.operationErrors.With("batch_upsert", "invalid_dimension").Inc()
+		}
+		return nil, err
+	}
+
 	now := time.Now().UnixNano()
 	ids := make([]uint64, len(req.Vectors))
 	versions := make([]uint64, len(req.Vectors))
@@ -1767,6 +1827,12 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 
 	index, err := v.ensureHNSWIndex(ctx, scoped)
 	if err != nil {
+		if unsupported, ok := errors.AsType[*UnsupportedNamespaceGeometryError](err); ok {
+			if v.metrics != nil {
+				v.metrics.operationErrors.With("search_similar", "unsupported_geometry").Inc()
+			}
+			return nil, unsupported
+		}
 		v.logger.WithFields(map[string]interface{}{
 			"namespace": req.Namespace,
 			"error":     err,
@@ -1787,6 +1853,9 @@ func (v *vectorService) SearchSimilar(ctx context.Context, req *SearchSimilarReq
 				QueryDuration: time.Since(searchStart).Nanoseconds(),
 				Timestamp:     time.Now().UnixNano(),
 			}, nil
+		}
+		if untrained, ok := errors.AsType[*VectorIndexUntrainedError](err); ok {
+			return nil, untrained
 		}
 		if v.metrics != nil {
 			v.metrics.operationErrors.With("search_similar", "search_failed").Inc()
@@ -2013,7 +2082,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 		// background context rather than ctx, which ends when the request
 		// returns: Close cancels it and waits.
 		err := v.startBackground(func(bgCtx context.Context) {
-			if err := v.performIndexRebuild(bgCtx, jobID, scoped, req.IndexConfig); err != nil {
+			if err := v.performIndexRebuild(bgCtx, jobID, scoped, info, req.IndexConfig); err != nil {
 				v.logger.WithFields(map[string]interface{}{
 					"job_id":    jobID,
 					"namespace": req.Namespace,
@@ -2040,7 +2109,7 @@ func (v *vectorService) RebuildIndex(ctx context.Context, req *RebuildIndexReque
 		}, nil
 	}
 
-	if err := v.performIndexRebuild(ctx, jobID, scoped, req.IndexConfig); err != nil {
+	if err := v.performIndexRebuild(ctx, jobID, scoped, info, req.IndexConfig); err != nil {
 		return nil, err
 	}
 
@@ -2159,7 +2228,7 @@ func (v *vectorService) GetRebuildProgress(ctx context.Context, req *GetRebuildP
 }
 
 // performIndexRebuild performs the actual index rebuild operation.
-func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespace string, indexConfig map[string]string) error {
+func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespace string, info *vector.NamespaceInfo, indexConfig map[string]string) error {
 	v.jobMu.RLock()
 	job, exists := v.rebuildJobs[jobID]
 	v.jobMu.RUnlock()
@@ -2176,47 +2245,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 		job.mu.Unlock()
 	}()
 
-	config := &hnsw.Config{
-		M:              16,
-		MMax:           32,
-		EfConstruction: 200,
-		EfSearch:       50,
-		DistanceMetric: hnsw.L2Distance,
-	}
-
-	if indexConfig != nil {
-		if m, ok := indexConfig["m"]; ok {
-			if _, err := fmt.Sscanf(m, "%d", &config.M); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "m",
-					"value":     m,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			} else {
-				config.MMax = config.M * 2
-			}
-		}
-		if ef, ok := indexConfig["ef_construction"]; ok {
-			if _, err := fmt.Sscanf(ef, "%d", &config.EfConstruction); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "ef_construction",
-					"value":     ef,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			}
-		}
-		if ef, ok := indexConfig["ef_search"]; ok {
-			if _, err := fmt.Sscanf(ef, "%d", &config.EfSearch); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"parameter": "ef_search",
-					"value":     ef,
-					"error":     err,
-				}).Warn("failed to parse index parameter")
-			}
-		}
-	}
-
-	newIndex, err := hnsw.NewHNSWIndex(config)
+	newIndex, err := v.newNamespaceIndex(info, indexConfig)
 	if err != nil {
 		job.mu.Lock()
 		job.Error = err
@@ -2273,7 +2302,7 @@ func (v *vectorService) performIndexRebuild(ctx context.Context, jobID, namespac
 	}
 
 	v.indexMu.Lock()
-	v.hnswIndexes[namespace] = hnsw.NewIndexAdapter(newIndex)
+	v.hnswIndexes[namespace] = newIndex
 	v.indexMu.Unlock()
 
 	v.logger.WithFields(map[string]interface{}{
@@ -2359,7 +2388,8 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 
 	return &GetIndexStatsResponse{
 		Namespace:        req.Namespace,
-		IndexType:        "HNSW",
+		IndexType:        reportedIndexType(info.IndexType),
+		DistanceMetric:   reportedDistanceMetric(info.DistanceMetric),
 		VectorCount:      vectorCount,
 		Dimension:        info.Dimension,
 		IndexSizeBytes:   indexSizeBytes,
@@ -2433,7 +2463,11 @@ func (v *vectorService) validateCreateNamespaceRequest(req *CreateNamespaceReque
 	if req.Dimension == 0 {
 		return &InvalidVectorError{Reason: "dimension must be greater than 0"}
 	}
-	return nil
+	metric, indexType, err := parseNamespaceGeometry(req.DistanceMetric, req.IndexType)
+	if err != nil {
+		return err
+	}
+	return v.checkGeometryFeature(metric, indexType)
 }
 
 func (v *vectorService) validateUpdateNamespaceRequest(req *UpdateNamespaceRequest) error {
@@ -2517,6 +2551,25 @@ func (v *vectorService) validateBatchUpsertRequest(req *BatchUpsertRequest) erro
 	}
 	if len(req.Vectors) == 0 {
 		return &InvalidVectorError{Reason: "vectors is required"}
+	}
+	return nil
+}
+
+// validateBatchDimensions checks that every vector of a batch is present
+// and has the namespace's dimension. When the namespace records none
+// (dimension 0), the batch must still agree with itself: every vector
+// takes the length of the first.
+func validateBatchDimensions(vectors []*VectorData, dimension uint32) error {
+	for i, vec := range vectors {
+		if vec == nil {
+			return &InvalidVectorError{Reason: "vectors must not contain nil entries"}
+		}
+		if i == 0 && dimension == 0 {
+			dimension = uint32(len(vec.Vector))
+		}
+		if uint32(len(vec.Vector)) != dimension {
+			return &DimensionMismatchError{Expected: int(dimension), Actual: len(vec.Vector)}
+		}
 	}
 	return nil
 }

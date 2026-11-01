@@ -20,9 +20,10 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Delete document | `DELETE /v1/collections/{database}/{name}/documents/{id}` | `DeleteDocument` | `collection.DeleteDocument` | `qrdb_collection_delete` | `DeleteDocument` | `collections:delete` |
 | List documents | `GET /v1/collections/{database}/{name}/documents` | `ListDocuments` | `collection.ListDocuments` | `qrdb_collection_list_documents` | `ListDocuments` | `collections:list` |
 
-REST additionally registers wildcard routes (`GET`, `POST`, `PUT`, `DELETE` on
-`/v1/collections/*`) carrying the same permissions, for paths the explicit
-patterns do not cover.
+REST additionally registers wildcard routes on `/v1/collections/*` for paths the
+explicit patterns do not cover: `GET` requires `collections:read`, `POST`
+`collections:insert`, `PUT` `collections:update` and `DELETE`
+`collections:delete`.
 
 The MCP tools `qrdb_collection_get`, `qrdb_collection_update` and
 `qrdb_collection_delete` take the document `id` as a **decimal string**
@@ -72,7 +73,8 @@ otherwise. The strategy is immutable after creation.
 
 `indexes` declares the collection's secondary indexes. Each is named
 `{database}.{collection}.{field_name}`, created and owned by the collection, and
-dropped with it. A definition with no `field_name` is refused with 400. The
+dropped with it. A definition with no `field_name`, or any definition where
+the server has no secondary-index service, is refused with 400. The
 create returns only once every index exists; a create whose index cannot be
 built fails and leaves nothing behind. A name already held by another index is
 refused with 409 rather than shared, and two definitions of one field are
@@ -167,7 +169,7 @@ bounded by an operator action.
 | Unknown collection | 404 | `NOT_FOUND` — never auto-created |
 | Unknown document ID | 404 | `NOT_FOUND` |
 | Document verb on a `creating` or `dropping` collection | 409 | `FAILED_PRECONDITION` — `service.CollectionNotActiveError` |
-| Index definition with no `field_name` | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
+| Index definition with no `field_name`, or with no secondary-index service | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
 | A declared index's name is held by another index | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; the create leaves nothing behind |
 | Two index definitions naming the same field | 400 | `INVALID_ARGUMENT` — `service.CollectionInvalidIndexError` |
 | A write decided against a collection since dropped and created again | 409 | `ABORTED` — retry writes into the new collection |
@@ -185,7 +187,7 @@ bounded by an operator action.
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
 
 The tenant, database, sealed-barrier and isolation-backend rows are the
-resolution outcomes every other data-plane surface already reports; the
+resolution outcomes every other data-plane surface reports; the
 collection surface reports them because it resolves through the same
 `service.Registry` accessors. A refused resolution is never downgraded to a
 servicer the caller was refused.

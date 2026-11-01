@@ -24,6 +24,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 var _ service.TenantReplicaHosts = (*TenantHostRegistry)(nil)
@@ -50,6 +51,20 @@ type TenantHostRegistry struct {
 	// YAML). The zero value resolves to the package defaults
 	// WithImportSessionLimits documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
+
+	// indexCfg caps the secondary indexes of every tenant Host this registry
+	// builds (config.Index, "index:" in YAML). The zero value leaves them
+	// unlimited. See WithTenantHostIndexConfig.
+	indexCfg qrdbconfig.IndexConfig
+
+	// tsCfg caps the metric names of every tenant Host this registry
+	// builds (config.TimeSeries.MaxMetrics); the zero value leaves them
+	// unlimited. See WithTenantHostTimeSeriesConfig.
+	tsCfg qrdbconfig.TimeSeriesConfig
+
+	// watchHubOpts configures every tenant Host's watch hub. See
+	// WithTenantHostWatchHubOptions.
+	watchHubOpts []watch.HubOption
 
 	mu    sync.Mutex
 	hosts map[string]*tenantHost
@@ -104,6 +119,28 @@ type TenantHostRegistryOption func(*TenantHostRegistry)
 // staging.
 func WithTenantHostImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) TenantHostRegistryOption {
 	return func(r *TenantHostRegistry) { r.importSessionCfg = cfg }
+}
+
+// WithTenantHostIndexConfig caps the secondary indexes of every tenant Host
+// this registry builds at cfg.MaxIndexes, each Host on its own. Omitting it
+// leaves them unlimited.
+func WithTenantHostIndexConfig(cfg qrdbconfig.IndexConfig) TenantHostRegistryOption {
+	return func(r *TenantHostRegistry) { r.indexCfg = cfg }
+}
+
+// WithTenantHostTimeSeriesConfig caps the metric names of every tenant Host
+// this registry builds at cfg.MaxMetrics, each Host on its own. Omitting it
+// leaves them unlimited.
+func WithTenantHostTimeSeriesConfig(cfg qrdbconfig.TimeSeriesConfig) TenantHostRegistryOption {
+	return func(r *TenantHostRegistry) { r.tsCfg = cfg }
+}
+
+// WithTenantHostWatchHubOptions configures the watch hub of every tenant
+// Host this registry builds: the node's watch.buffer_size and the
+// watch.max_watchers limit its other hubs share. Omitting it leaves each hub
+// at the package defaults, unlimited.
+func WithTenantHostWatchHubOptions(opts ...watch.HubOption) TenantHostRegistryOption {
+	return func(r *TenantHostRegistry) { r.watchHubOpts = opts }
 }
 
 // NewTenantHostRegistry creates a registry that builds per-tenant volume Hosts
@@ -217,7 +254,7 @@ func (r *TenantHostRegistry) Services(ctx context.Context, tenantID string) (*Da
 		return nil, &TenantHostError{TenantID: tenantID, Op: "resolve", Err: err}
 	}
 	defer done()
-	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.importSessionCfg, r.logger)
+	th, err := newTenantHost(ctx, tenantID, dataRoot, tb, r.importSessionCfg, r.indexCfg, r.tsCfg, r.watchHubOpts, r.logger)
 	if err != nil {
 		return nil, err
 	}

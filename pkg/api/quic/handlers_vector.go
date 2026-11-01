@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -36,14 +37,38 @@ var protoDistanceMetricToString = map[pb.DistanceMetric]string{
 	pb.DistanceMetric_DISTANCE_COSINE:      "COSINE",
 	pb.DistanceMetric_DISTANCE_EUCLIDEAN:   "L2",
 	pb.DistanceMetric_DISTANCE_DOT_PRODUCT: "DOT_PRODUCT",
+	pb.DistanceMetric_DISTANCE_MANHATTAN:   "MANHATTAN",
 }
 
 // stringToProtoDistanceMetric converts service string-based distance metric
 // identifiers to proto DistanceMetric values.
+// The keys are upper case; protoDistanceMetric folds the name it looks up.
 var stringToProtoDistanceMetric = map[string]pb.DistanceMetric{
 	"COSINE":      pb.DistanceMetric_DISTANCE_COSINE,
 	"L2":          pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+	"EUCLIDEAN":   pb.DistanceMetric_DISTANCE_EUCLIDEAN,
 	"DOT_PRODUCT": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+	"MANHATTAN":   pb.DistanceMetric_DISTANCE_MANHATTAN,
+}
+
+// serviceDistanceMetric converts a wire DistanceMetric to the service's name.
+// A value outside the enum is refused, never read as DISTANCE_COSINE.
+func serviceDistanceMetric(metric pb.DistanceMetric) (string, error) {
+	if name, ok := protoDistanceMetricToString[metric]; ok {
+		return name, nil
+	}
+	return "", &service.UnknownDistanceMetricError{Metric: metric.String()}
+}
+
+// protoDistanceMetric converts the distance metric stored for namespace to
+// its proto value. The service reports the name a namespace was created with,
+// which the REST and embedded transports send in lower case. A name with no
+// wire value is refused, never answered as DISTANCE_COSINE.
+func protoDistanceMetric(namespace, name string) (pb.DistanceMetric, error) {
+	if metric, ok := stringToProtoDistanceMetric[strings.ToUpper(name)]; ok {
+		return metric, nil
+	}
+	return 0, &service.UnsupportedNamespaceGeometryError{Namespace: namespace, Field: "distance metric", Value: name}
 }
 
 // protoIndexTypeToString converts proto VectorIndexType values to service
@@ -317,11 +342,15 @@ func (s *Server) handleVectorCreateNamespace(ctx context.Context, payload []byte
 		}
 		indexConfig = indexParamsToStringMap(params)
 	}
+	metric, err := serviceDistanceMetric(req.GetDistanceMetric())
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := vectorSvc.CreateNamespace(ctx, &service.CreateNamespaceRequest{
 		Namespace:      req.GetNamespace(),
 		Dimension:      uint32(req.GetDimension()),
-		DistanceMetric: protoDistanceMetricToString[req.GetDistanceMetric()],
+		DistanceMetric: metric,
 		IndexType:      protoIndexTypeToString[req.GetIndexType()],
 		IndexConfig:    indexConfig,
 		ShardID:        req.GetShardId(),
@@ -467,6 +496,10 @@ func (s *Server) handleVectorGetNamespaceInfo(ctx context.Context, payload []byt
 	if err != nil {
 		return nil, err
 	}
+	metric, err := protoDistanceMetric(req.GetNamespace(), info.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 	metadataJSON, err := marshalMetadata(info.Metadata)
 	if err != nil {
 		return nil, err
@@ -475,7 +508,7 @@ func (s *Server) handleVectorGetNamespaceInfo(ctx context.Context, payload []byt
 	out, err := proto.Marshal(&pb.VectorNamespaceInfo{
 		Namespace:      info.Namespace,
 		Dimension:      int32(info.Dimension),
-		DistanceMetric: stringToProtoDistanceMetric[info.DistanceMetric],
+		DistanceMetric: metric,
 		IndexType:      stringToProtoIndexType[info.IndexType],
 		VectorCount:    int64(info.VectorCount),
 		CreatedAt:      info.CreatedAt,
@@ -1044,11 +1077,15 @@ func (s *Server) handleVectorGetIndexStats(ctx context.Context, payload []byte) 
 	if err != nil {
 		return nil, err
 	}
+	metric, err := protoDistanceMetric(req.GetNamespace(), stats.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 
 	out, err := proto.Marshal(&pb.VectorIndexStats{
 		VectorCount:    int64(stats.VectorCount),
 		Dimension:      int32(stats.Dimension),
-		DistanceMetric: stringToProtoDistanceMetric[stats.IndexType],
+		DistanceMetric: metric,
 		IndexType:      stringToProtoIndexType[stats.IndexType],
 		MemoryUsage:    int64(stats.MemoryUsageBytes),
 		DiskUsage:      int64(stats.IndexSizeBytes),

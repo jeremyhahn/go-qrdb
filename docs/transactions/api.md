@@ -1,6 +1,6 @@
 # Transactions and Batch — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -18,12 +18,23 @@ gRPC wire over a UDS, so its methods match the gRPC column exactly.
 | Abort a session | `POST /batch/import/{session}/abort` | `ImportAbort` | `batch.ImportAbort` | `qrdb_batch_import_abort` | `Client.Batch().ImportAbort` | `batch:execute` |
 | Import a whole file (SDK/CLI convenience) | — | — | — | — | `Client.Batch().ImportFile` | `batch:execute` |
 | List import formats | derived — static list | derived | derived | derived | client-side | `batch:execute` |
+| Guarded multi-key commit (SDK convenience) | — | — | — | — | `Client.KVStore().(sdk.MultiGuardedBatchKVStore).PutAllIfAllUnchanged` | `transaction:execute` |
 
 `batch import-formats` is answered from a compiled-in list, not a wire call.
 `ImportFile` is not its own RPC on any transport: it is the Go SDK driving
 `ImportBegin`/`ImportAppend`*/`ImportCommit` for a caller that would rather
 hand over an `io.Reader` than manage sequence numbers itself. `qrdb batch
 import` is built on it.
+
+`PutAllIfAllUnchanged` is not its own RPC either: the store `Client.KVStore()`
+returns turns its guards (`sdk.KVGuard`: a nil value means absent, any other
+value means present and equal) into `Compare`s and its writes (`sdk.KVWrite`)
+into the success branch of ONE `ExecuteTransaction`. Every write commits, or,
+when any guard does not hold, none does and it returns `applied=false` with a
+nil error; a non-nil error means the outcome is unknown. It is served on every
+run mode, a standalone node's included, so an embedder writes an entry and its
+index entries together, fenced against a concurrent writer, from `sdk/go`
+alone.
 
 There is no single-message import RPC on any transport: a whole file in one
 message would exceed the pre-auth cap every other RPC is held to. See

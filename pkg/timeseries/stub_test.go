@@ -108,6 +108,20 @@ func TestStubStorageZeroState(t *testing.T) {
 	}
 }
 
+func TestStubStorageViewIsReceiver(t *testing.T) {
+	s := &Storage{}
+	if got := s.View(nil); got != s {
+		t.Fatalf("View(nil) = %p, want the receiver %p", got, s)
+	}
+}
+
+func TestStubStorageViewQueryRefuses(t *testing.T) {
+	s := &Storage{}
+	if _, err := s.View(nil).Query("m", time.Now(), time.Now()); !errors.Is(err, ErrNotCompiled) {
+		t.Fatalf("View(nil).Query error = %v, want ErrNotCompiled", err)
+	}
+}
+
 // TestStubDataTypeValidation verifies the stub retains real validation
 // behavior on the pure data types shared with untagged wire handlers.
 func TestStubDataTypeValidation(t *testing.T) {

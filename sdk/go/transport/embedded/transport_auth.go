@@ -764,7 +764,8 @@ func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.
 	if t.certProv == nil {
 		return nil, &transport.NotImplementedError{Method: "ListCerts"}
 	}
-	if _, err := tenant.Confine(ctx, tenantID, "list certificates"); err != nil {
+	tenantID, err = tenant.Confine(ctx, tenantID, "list certificates")
+	if err != nil {
 		return nil, err
 	}
 	if err := t.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -36,6 +37,7 @@ var refusals = []refusalEncoder{
 	replicaforward.Refusal,
 	factorConditionRefusal,
 	userConcurrentUpdateRefusal,
+	lockRefusal,
 	barrierRefusal,
 	adminCredentialRequiresCARefusal,
 	vlogRefusal,
@@ -106,6 +108,25 @@ func userConcurrentUpdateRefusal(err error) (string, map[string]string, bool) {
 	}
 	if e, ok := errors.AsType[*user.ConcurrentUpdateError](err); ok {
 		return transport.ReasonUserConcurrentUpdate, e.Metadata(), true
+	}
+	return "", nil, false
+}
+
+// lockRefusal encodes a typed lock outcome -- a held lock, a wrong holder, a
+// missing lock -- so a remote client rebuilds it with its key, holder and
+// tokens rather than a bare status. As with userConcurrentUpdateRefusal, only
+// an error that classifies as its outcome is one: a lock error wrapped by an
+// error of another class must not reach the client as the lock error.
+func lockRefusal(err error) (string, map[string]string, bool) {
+	class := Classify(err)
+	if e, ok := errors.AsType[*lock.LockHeldError](err); ok && class == Aborted {
+		return lock.ReasonLockHeld, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*lock.NotLockHolderError](err); ok && class == PermissionDenied {
+		return lock.ReasonNotLockHolder, e.Metadata(), true
+	}
+	if e, ok := errors.AsType[*lock.LockNotFoundError](err); ok && class == NotFound {
+		return lock.ReasonLockNotFound, e.Metadata(), true
 	}
 	return "", nil, false
 }

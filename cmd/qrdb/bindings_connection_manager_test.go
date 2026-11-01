@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,30 @@ func TestConnectionManager_SaveProfile_External(t *testing.T) {
 	profiles := m.ListProfiles()
 	if len(profiles) != 1 {
 		t.Fatalf("expected 1 profile, got %d", len(profiles))
+	}
+}
+
+// TestConnectionManager_SaveProfile_WriteError requires SaveProfile to return
+// the profiles file's write failure as a ConfigSaveError.
+func TestConnectionManager_SaveProfile_WriteError(t *testing.T) {
+	m := newTestConnectionManager(t)
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
+	// A directory where the profiles file belongs makes the write fail.
+	if err := os.MkdirAll(configDir+"/qrdb/"+connectionsConfigFile, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	err = m.SaveProfile(ConnectionProfile{
+		ID:       "test-w",
+		Name:     "Remote Server",
+		Type:     "external",
+		External: &ConnectionConfig{Transport: "grpc", Address: "localhost:63003"},
+	})
+	var cse *ConfigSaveError
+	if !errors.As(err, &cse) {
+		t.Fatalf("expected ConfigSaveError, got %T: %v", err, err)
 	}
 }
 
@@ -278,6 +303,37 @@ func TestConnectionManager_Persistence(t *testing.T) {
 	}
 }
 
+// TestConnectionManager_Startup_LoadsProfiles checks that startup on a fresh
+// manager restores the profiles a previous manager persisted.
+func TestConnectionManager_Startup_LoadsProfiles(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	m1 := NewConnectionManagerBinding(testLogger(t))
+	p := ConnectionProfile{
+		ID: "s-1", Name: "StartupTest", Type: "external",
+		External:  &ConnectionConfig{Transport: "grpc", Address: "localhost:1"},
+		CreatedAt: "2026-06-01T00:00:00Z",
+	}
+	if err := m1.SaveProfile(p); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+
+	// The context is already cancelled, so the auto-connect fails at once;
+	// the profile must still be restored.
+	m2 := NewConnectionManagerBinding(testLogger(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m2.startup(ctx)
+
+	profiles := m2.ListProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("expected 1 profile after startup, got %d", len(profiles))
+	}
+	if profiles[0].ID != p.ID || profiles[0].Name != p.Name {
+		t.Fatalf("restored profile = %q/%q, want %q/%q", profiles[0].ID, profiles[0].Name, p.ID, p.Name)
+	}
+}
+
 func TestConnectionManager_Persistence_Upsert(t *testing.T) {
 	m := newTestConnectionManager(t)
 	p := ConnectionProfile{
@@ -299,6 +355,50 @@ func TestConnectionManager_Persistence_Upsert(t *testing.T) {
 	}
 	if profiles[0].Name != "Updated" {
 		t.Fatalf("expected name %q, got %q", "Updated", profiles[0].Name)
+	}
+}
+
+// TestConnectionManager_TouchProfile_UpdatesLastUsed requires touchProfile to
+// stamp the profile's LastUsed with an RFC 3339 time and persist it.
+func TestConnectionManager_TouchProfile_UpdatesLastUsed(t *testing.T) {
+	m := newTestConnectionManager(t)
+	p := ConnectionProfile{
+		ID: "touch-1", Name: "Touched", Type: "embedded",
+		Embedded: &EmbeddedConfig{StorageBackend: "memory"},
+	}
+	if err := m.SaveProfile(p); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+	// Touching an unknown ID must leave every stored profile unchanged.
+	m.touchProfile("does-not-exist")
+	if got := m.ListProfiles(); len(got) != 1 || got[0].ID != p.ID {
+		t.Fatalf("profiles after touching an unknown ID: %+v", got)
+	}
+	if got := m.ListProfiles()[0].LastUsed; got != "" {
+		t.Fatalf("LastUsed before touchProfile: got %q, want empty", got)
+	}
+
+	before := time.Now().UTC().Truncate(time.Second)
+	m.touchProfile(p.ID)
+
+	lastUsed := m.ListProfiles()[0].LastUsed
+	if lastUsed == "" {
+		t.Fatal("touchProfile did not set LastUsed")
+	}
+	stamp, err := time.Parse(time.RFC3339, lastUsed)
+	if err != nil {
+		t.Fatalf("LastUsed %q is not RFC 3339: %v", lastUsed, err)
+	}
+	if stamp.Before(before) {
+		t.Fatalf("LastUsed %s is earlier than the touch at %s", stamp, before)
+	}
+
+	reloaded := NewConnectionManagerBinding(testLogger(t))
+	if err := reloaded.loadProfiles(); err != nil {
+		t.Fatalf("loadProfiles: %v", err)
+	}
+	if got := reloaded.ListProfiles()[0].LastUsed; got != lastUsed {
+		t.Fatalf("persisted LastUsed: got %q, want %q", got, lastUsed)
 	}
 }
 
@@ -686,6 +786,10 @@ func TestConnectionManager_Migration_WithLegacyFile(t *testing.T) {
 	m := NewConnectionManagerBinding(testLogger(t))
 	if err := m.migrate(context.TODO()); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	// The migrated profiles are written to <config>/qrdb/connections.json.
+	if _, err := os.Stat(qrdbDir + "/connections.json"); err != nil {
+		t.Fatalf("connections.json after migrate: %v", err)
 	}
 	if err := m.loadProfiles(); err != nil {
 		t.Fatalf("loadProfiles: %v", err)

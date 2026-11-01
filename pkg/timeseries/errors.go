@@ -159,6 +159,17 @@ func (e *ReadError) Unwrap() error {
 	return e.Err
 }
 
+// MetricLimitError is returned by AdmitMetrics when a write would take the
+// shard past its metric cap.
+type MetricLimitError struct {
+	Max uint32
+}
+
+// Error implements the error interface.
+func (e *MetricLimitError) Error() string {
+	return "timeseries: shard holds its limit of " + strconv.FormatUint(uint64(e.Max), 10) + " metric names"
+}
+
 // ValidationError is returned when a request fails general validation.
 type ValidationError struct {
 	Op      string

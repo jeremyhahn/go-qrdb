@@ -30,20 +30,28 @@ func TestStartNodeWatchers_NothingToStart(t *testing.T) {
 	}
 }
 
-// Each watcher is started with the caller's context, and a failure to start
-// one is reported, not swallowed.
+// Each watcher is started under the caller's context and is the node's own
+// work, and a failure to start one is reported, not swallowed.
 func TestStartNodeWatchers_StartsAndReportsEachWatcher(t *testing.T) {
 	ctx := context.Background()
-	watcher := &certProviderWithWatch{}
-	if err := StartNodeWatchers(ctx, &Node{CertProv: watcher}); err != nil {
+	watcher := newCertProviderWithWatch(nil)
+	n := &Node{CertProv: watcher}
+	if err := StartNodeWatchers(ctx, n); err != nil {
 		t.Fatalf("StartNodeWatchers: %v", err)
 	}
-	if watcher.watchCalls != 1 || watcher.gotCtx != ctx {
-		t.Fatalf("Key B eviction watch started %d times (ctx kept: %v), want once with ctx",
-			watcher.watchCalls, watcher.gotCtx == ctx)
+	if watcher.watchCalls != 1 {
+		t.Fatalf("Key B eviction watch started %d times, want once", watcher.watchCalls)
+	}
+	if err := n.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-watcher.exited:
+	default:
+		t.Fatal("the Key B eviction watch was still running when Stop returned")
 	}
 
-	failing := &certProviderWithWatch{watchErr: errors.New("hub unavailable")}
+	failing := newCertProviderWithWatch(errors.New("hub unavailable"))
 	if err := StartNodeWatchers(ctx, &Node{CertProv: failing}); !errors.Is(err, failing.watchErr) {
 		t.Fatalf("StartNodeWatchers = %v, want %v", err, failing.watchErr)
 	}

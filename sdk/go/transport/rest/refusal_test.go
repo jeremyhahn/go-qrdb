@@ -20,10 +20,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -94,5 +96,66 @@ func TestDecodeErrorResponse_conflictWithoutCodeIsNotARetryableConflict(t *testi
 	}
 	if dberrors.IsRetryable(got) {
 		t.Fatalf("err = %v is retryable without the refusal", got)
+	}
+}
+
+// TestDecodeErrorResponse_lockRefusalsAreTyped pins that each typed lock
+// outcome survives REST with its key, holder and tokens, and that a missing
+// lock -- a 404 -- is not read as a missing key.
+func TestDecodeErrorResponse_lockRefusalsAreTyped(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		reason string
+		err    interface {
+			error
+			Metadata() map[string]string
+		}
+		match func(error) (error, bool)
+	}{
+		{
+			name: "held", status: http.StatusConflict, reason: lock.ReasonLockHeld,
+			err: &lock.LockHeldError{Key: "k", HolderID: "h"},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.LockHeldError](err)
+				return e, ok
+			},
+		},
+		{
+			name: "not holder", status: http.StatusForbidden, reason: lock.ReasonNotLockHolder,
+			err: &lock.NotLockHolderError{Key: "k", ExpectedToken: 3, ActualToken: 4},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.NotLockHolderError](err)
+				return e, ok
+			},
+		},
+		{
+			name: "not found", status: http.StatusNotFound, reason: lock.ReasonLockNotFound,
+			err: &lock.LockNotFoundError{Key: "k"},
+			match: func(err error) (error, bool) {
+				e, ok := errors.AsType[*lock.LockNotFoundError](err)
+				return e, ok
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := conflictResponse(t, transport.ErrorResponse{
+				Error: tt.err.Error(), Code: tt.reason, Metadata: tt.err.Metadata(),
+			})
+			resp.StatusCode = tt.status
+			defer func() { _ = resp.Body.Close() }()
+			got := (&Transport{}).decodeErrorResponse("LockRelease", resp)
+
+			if typed, ok := tt.match(got); !ok || !reflect.DeepEqual(typed, tt.err) {
+				t.Fatalf("decodeErrorResponse() = %#v, want %#v", got, tt.err)
+			}
+			if _, ok := errors.AsType[*transport.KeyNotFoundError](got); ok {
+				t.Fatalf("decodeErrorResponse() = %v, a lock outcome read as a missing key", got)
+			}
+			if reqErr, ok := errors.AsType[*transport.RequestError](got); !ok || reqErr.StatusCode != tt.status {
+				t.Fatalf("err = %T, want a RequestError carrying %d", got, tt.status)
+			}
+		})
 	}
 }

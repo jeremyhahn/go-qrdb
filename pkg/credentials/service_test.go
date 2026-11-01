@@ -357,7 +357,11 @@ func TestSubmitCredential_Manual_UnblocksWaiter(t *testing.T) {
 	svc, err := NewCredentialService(nil, nil, testLogger())
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	registered := make(chan struct{})
+	svc.testHooks.afterWaiterRegistered = func() { close(registered) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	results := make(chan []byte, 1)
 	errs := make(chan error, 1)
 
@@ -367,13 +371,56 @@ func TestSubmitCredential_Manual_UnblocksWaiter(t *testing.T) {
 		results <- val
 	}()
 
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(20 * time.Millisecond)
-
+	<-registered
 	require.NoError(t, svc.SubmitCredential(ctx, "pending", []byte("submitted")))
 
 	assert.NoError(t, <-errs)
 	assert.Equal(t, []byte("submitted"), <-results)
+}
+
+// TestRetrieveManual_SubmitBeforeWaiterRegisters is the regression test for
+// main run 74528: a submit landing between retrieveManual's existence check
+// and its waiter registration notified no one, and the late waiter blocked
+// forever. The hook runs the submit in exactly that gap.
+func TestRetrieveManual_SubmitBeforeWaiterRegisters(t *testing.T) {
+	svc, err := NewCredentialService(nil, nil, testLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc.testHooks.afterManualMiss = func() {
+		require.NoError(t, svc.SubmitCredential(ctx, "gap", []byte("submitted")))
+	}
+
+	val, err := svc.retrieveBytes(ctx, "gap")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("submitted"), val)
+
+	svc.waitersMu.Lock()
+	defer svc.waitersMu.Unlock()
+	assert.Empty(t, svc.waiters, "the waiter must be deregistered")
+}
+
+// TestRetrieveManual_SubmitAfterWaiterRegisters covers a submit that both
+// stores and delivers between the waiter registration and the re-check: the
+// re-check returns the stored value and the delivered copy is dropped.
+func TestRetrieveManual_SubmitAfterWaiterRegisters(t *testing.T) {
+	svc, err := NewCredentialService(nil, nil, testLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc.testHooks.afterWaiterRegistered = func() {
+		require.NoError(t, svc.SubmitCredential(ctx, "late", []byte("submitted")))
+	}
+
+	val, err := svc.retrieveBytes(ctx, "late")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("submitted"), val)
+
+	svc.waitersMu.Lock()
+	defer svc.waitersMu.Unlock()
+	assert.Empty(t, svc.waiters, "the waiter must be deregistered")
 }
 
 func TestSubmitCredential_Manual_AlreadySubmitted(t *testing.T) {

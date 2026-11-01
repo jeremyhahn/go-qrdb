@@ -110,6 +110,7 @@ var distanceMetricMap = map[string]transport.DistanceMetric{
 	"cosine":      transport.DistanceCosine,
 	"euclidean":   transport.DistanceEuclidean,
 	"dot-product": transport.DistanceDotProduct,
+	"manhattan":   transport.DistanceManhattan,
 }
 
 // indexTypeMap maps CLI index type strings to transport constants.
@@ -132,6 +133,7 @@ var distanceMetricNames = map[transport.DistanceMetric]string{
 	transport.DistanceCosine:     "cosine",
 	transport.DistanceEuclidean:  "euclidean",
 	transport.DistanceDotProduct: "dot-product",
+	transport.DistanceManhattan:  "manhattan",
 }
 
 // indexTypeNames maps transport constants back to display strings.
@@ -333,7 +335,7 @@ func newVectorNamespaceCreateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().Uint32Var(&dimension, "dimension", 0, "Vector dimensionality")
-	cmd.Flags().StringVar(&distanceMetric, "distance-metric", "cosine", "Distance metric: cosine, euclidean, dot-product")
+	cmd.Flags().StringVar(&distanceMetric, "distance-metric", "cosine", "Distance metric: cosine, euclidean, dot-product, manhattan")
 	cmd.Flags().StringVar(&indexType, "index-type", "hnsw", "Index type: hnsw, flat, ivf-flat")
 	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")

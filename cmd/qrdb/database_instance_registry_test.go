@@ -234,6 +234,9 @@ func TestEmbeddedDatabaseInstance_Close_WithWatchHub(t *testing.T) {
 	if err := inst.Close(); err != nil {
 		t.Fatalf("Close with watchHub: %v", err)
 	}
+	if err := inst.Close(); err != nil {
+		t.Fatalf("second Close with watchHub: %v", err)
+	}
 }
 
 // TestEmbeddedDatabaseInstance_Close_WithWatchHubAndNilRest verifies the

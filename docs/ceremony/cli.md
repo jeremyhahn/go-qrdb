@@ -1,6 +1,6 @@
 # Initialization Ceremony — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb ceremony`. All verbs accept the root persistent flags
@@ -35,20 +35,16 @@ The command prints each holder's certificate. Each holder then claims its
 envelope with `qrdb barrier officer claim` — see
 [../shamir-custody/cli.md](../shamir-custody/cli.md). `--officers`/
 `--custodians` enrol only the certificate factor (`mtls`), with the
-certificate key receiving the share envelope; a holder that needs a
-separate envelope key, an additional factor, or a designated factor uses
-`--officers-file` instead (below), rather than enrolling bare here and
-rekeying those in afterward with `barrier officer register`.
+certificate key receiving the share envelope.
 
 ### `--officers-file`: the rich holder shape
 
-`qrdb init` is the ONLY system bootstrap, so it is also the only place
-Shamir custody over the system barrier is ever established. A holder who
-needs a separate share-envelope key, an additional authentication factor
-(FIDO2, PIV, ...), or a designated factor has no OTHER registration path to
-get one through — `--officers`/`--custodians` can only name a username and a
-CSR file. `--officers-file` carries everything `barrier officer register`
-takes instead, one JSON document naming every initial holder:
+`qrdb init` is the only place Shamir custody over the system barrier is
+established. A holder who needs a separate share-envelope key, an
+additional authentication factor (FIDO2, PIV, ...), or a designated factor
+is named in `--officers-file`, which carries everything
+`barrier officer register` takes, one JSON document naming every initial
+holder:
 
 ```json
 {
@@ -92,8 +88,10 @@ qrdb init --barrier-strategy shamir --shares 5 --threshold 3 \
 
 ## `qrdb ceremony status`
 
-Display the current state of the ceremony: `awaiting_init`, `enrolling` or
-`operational`. No flags.
+Display the current state of the ceremony: `awaiting_init`, `enrolling`,
+`operational` or `restore_failed`, and the CA certificate's SPKI pin (empty until a CA is
+wired). No flags. Text output prints `State:` and `SPKIPin:` lines;
+`--output json|yaml` prints `state` and `spki_pin`.
 
 ```bash
 qrdb ceremony status --output json
@@ -111,12 +109,16 @@ BYOC path ([../certificate-authority/cli.md](../certificate-authority/cli.md)),
 which requires an authenticated, authorized caller — not merely the SO PIN
 this command accepts before unseal.
 
+Every flag is required.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--csr-file` | string | path to the CSR PEM |
 | `--username` | string | holder username |
 | `--role` | string | `so` or `custodian` |
 | `--so-pin` | string | Security Officer PIN |
+
+Text output prints the issued certificate after `CertPEM:`.
 
 ```bash
 qrdb ceremony sign-csr --csr-file dave.csr --username dave \
@@ -126,7 +128,7 @@ qrdb ceremony sign-csr --csr-file dave.csr --username dave \
 ## Related groups
 
 - **Root `qrdb init`** — the one-call bootstrap. [../firstboot/cli.md](../firstboot/cli.md)
-- **`qrdb barrier officer …`, `quorum …`, `rekey`** — share holders.
+- **`qrdb barrier officer …`, `qrdb barrier quorum …`, `qrdb barrier rekey`** — share holders.
   [../shamir-custody/cli.md](../shamir-custody/cli.md)
 - **`qrdb ca …`** — post-init CA operations.
   [../certificate-authority/cli.md](../certificate-authority/cli.md)
@@ -134,4 +136,5 @@ qrdb ceremony sign-csr --csr-file dave.csr --username dave \
 ## Integration tests
 
 `make integration-test-ceremony` drives these verbs end to end
-(`test/integration/officer_ceremony_cli_test.go`).
+(`test/integration/officer_ceremony_cli_test.go`,
+`ceremony_forwarding_test.go`, `ceremony_follower_forward_test.go`).

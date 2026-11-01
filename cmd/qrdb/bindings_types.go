@@ -27,6 +27,19 @@ type EmbeddedConfig struct {
 	// Audit is the embedded server's compliance audit trail. Off unless
 	// enabled.
 	Audit *EmbeddedAuditConfig `json:"audit,omitempty"`
+	// Watch sizes the server's watch buffers and caps the watches the
+	// desktop holds open. Nil keeps the defaults: no cap.
+	Watch *EmbeddedWatchConfig `json:"watch,omitempty"`
+}
+
+// EmbeddedWatchConfig is the embedded server's watch section, qrdbd's
+// watch.buffer_size and watch.max_watchers.
+type EmbeddedWatchConfig struct {
+	// BufferSize is every watcher's event buffer, in responses; zero keeps
+	// the package default.
+	BufferSize int `json:"bufferSize,omitempty"`
+	// MaxWatchers caps the watches open at once; zero is unlimited.
+	MaxWatchers int `json:"maxWatchers,omitempty"`
 }
 
 // EmbeddedAuditConfig configures the embedded server's compliance audit

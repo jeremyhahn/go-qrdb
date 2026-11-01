@@ -15,7 +15,9 @@
 package qrdbdharness
 
 import (
+	"errors"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -153,8 +155,10 @@ func (e *DaemonSignalError) Error() string {
 func (e *DaemonSignalError) Unwrap() error { return e.Err }
 
 // DaemonWaitError is returned when a daemon has not exited by the time a
-// bounded wait for it ends. Tail is the last of the daemon's own output,
-// which is usually what says why it is still running.
+// bounded wait for it ends, and by a Daemon readiness wait when the daemon
+// exits before it is ready; Err is then a *DaemonExitError. Tail is the last
+// of the daemon's own output, which is usually what says why it is still
+// running, or why it stopped.
 type DaemonWaitError struct {
 	PID  int
 	Err  error
@@ -163,12 +167,81 @@ type DaemonWaitError struct {
 
 // Error returns a human-readable description that ends with the output tail.
 func (e *DaemonWaitError) Error() string {
-	return errPrefix + "daemon pid " + strconv.Itoa(e.PID) + " has not exited: " + e.Err.Error() +
+	state := " has not exited: "
+	var exit *DaemonExitError
+	if errors.As(e.Err, &exit) {
+		state = " exited: "
+	}
+	return errPrefix + "daemon pid " + strconv.Itoa(e.PID) + state + e.Err.Error() +
 		"\n--- daemon output tail ---\n" + e.Tail
 }
 
 // Unwrap returns the underlying error.
 func (e *DaemonWaitError) Unwrap() error { return e.Err }
+
+// DaemonExitError is why a Daemon readiness wait ended early: the daemon
+// exited before Op on Target succeeded. Status is the process's exit status,
+// nil for a clean exit.
+type DaemonExitError struct {
+	Op     string
+	Target string
+	Status error
+}
+
+// Error returns a human-readable description.
+func (e *DaemonExitError) Error() string {
+	status := "exit status 0"
+	if e.Status != nil {
+		status = e.Status.Error()
+	}
+	return "daemon exited before " + e.Op + " " + e.Target + " succeeded: " + status
+}
+
+// Unwrap returns the exit status.
+func (e *DaemonExitError) Unwrap() error { return e.Status }
+
+// PortCollisionError is returned by a Daemon readiness wait when the daemon
+// exited because a listener port was already in use. Reserved reports that
+// Port is one ReserveListenerPorts drew, so another process bound it between
+// the reservation and the daemon's bind and StartReady may draw again; Port
+// is empty when the failing port is not one of those -- a port the caller's
+// args fixed.
+type PortCollisionError struct {
+	Port     string
+	Reserved bool
+	Err      *DaemonWaitError
+}
+
+// Error returns a human-readable description that ends with the output tail.
+func (e *PortCollisionError) Error() string {
+	port := "a port the caller fixed"
+	if e.Reserved {
+		port = "reserved port " + e.Port
+	}
+	return errPrefix + "listener bind failed on " + port + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying *DaemonWaitError.
+func (e *PortCollisionError) Unwrap() error { return e.Err }
+
+// StartReadyError is returned by StartReady once it has retried a start and
+// still failed. Attempts holds every attempt's error, in order.
+type StartReadyError struct {
+	Attempts []error
+}
+
+// Error returns a human-readable description listing every attempt.
+func (e *StartReadyError) Error() string {
+	var b strings.Builder
+	b.WriteString(errPrefix + "daemon not ready after " + strconv.Itoa(len(e.Attempts)) + " starts")
+	for i, err := range e.Attempts {
+		b.WriteString("\n--- attempt " + strconv.Itoa(i+1) + " ---\n" + err.Error())
+	}
+	return b.String()
+}
+
+// Unwrap returns every attempt's error.
+func (e *StartReadyError) Unwrap() []error { return e.Attempts }
 
 // TimeoutError is returned by the readiness waiters when the daemon does not
 // reach the expected state before the deadline. LastErr, when non-nil, carries

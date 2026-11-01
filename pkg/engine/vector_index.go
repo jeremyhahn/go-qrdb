@@ -182,8 +182,11 @@ func (m *VectorIndexManager) applyOne(e vector.IndexEffect) {
 
 // Search returns the k nearest neighbours of query in namespace's live
 // index. It answers *vector.NamespaceNotFoundError when this manager holds
-// no entry for namespace, and *service.VectorIndexWarmingError when the
-// entry exists but is not yet ready.
+// no entry for namespace, *service.VectorIndexWarmingError when the entry
+// exists but is not yet ready, and *service.VectorIndexUntrainedError when
+// the index is ready but is an IVF index short of its training floor: that
+// waits on more vectors being written, not on time, so it is a failed
+// precondition rather than a retry.
 func (m *VectorIndexManager) Search(namespace string, query []float32, k int) ([]vector.IndexHit, error) {
 	ns := m.get(namespace)
 	if ns == nil {
@@ -197,7 +200,7 @@ func (m *VectorIndexManager) Search(namespace string, query []float32, k int) ([
 	hits, err := ns.live.Search(query, k)
 	if err != nil {
 		if errors.Is(err, vector.ErrIndexNotReady) {
-			return nil, &service.VectorIndexWarmingError{Namespace: namespace}
+			return nil, &service.VectorIndexUntrainedError{Namespace: namespace}
 		}
 		return nil, err
 	}

@@ -78,6 +78,11 @@ type Entity struct {
 	// what makes a stolen token useless: the thief would also need the
 	// invited user's private key. Empty pins nothing.
 	KeyPin string `json:"key_pin,omitempty"`
+
+	// Generation is the user's invitation generation this invitation was
+	// minted at. It is redeemable only while that is still the user's live
+	// generation; a Reissue advances it and so supersedes this one.
+	Generation uint64 `json:"generation"`
 }
 
 // CreateOption configures an invitation being created.

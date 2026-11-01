@@ -36,7 +36,7 @@ func TestWatcher_ImplementsWatcherInterface(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatcher_Events_ReturnsChannel(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	ch := w.Events()
 	if ch == nil {
 		t.Fatal("expected non-nil events channel")
@@ -44,7 +44,7 @@ func TestWatcher_Events_ReturnsChannel(t *testing.T) {
 }
 
 func TestWatcher_Events_ChannelReceivesEvents(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	resp := WatchResponse{
 		WatchID: 1,
 		Events: []*Event{
@@ -71,15 +71,15 @@ func TestWatcher_Events_ChannelReceivesEvents(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatcher_WatchID_ReturnsID(t *testing.T) {
-	w := newWatcher(42, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(42, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	if got := w.WatchID(); got != 42 {
 		t.Fatalf("WatchID() = %d, want 42", got)
 	}
 }
 
 func TestWatcher_WatchID_DifferentWatchers(t *testing.T) {
-	w1 := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
-	w2 := newWatcher(2, []byte("key"), nil, WatchOptions{}, context.Background())
+	w1 := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
+	w2 := newWatcher(2, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	if w1.WatchID() == w2.WatchID() {
 		t.Fatal("expected different WatchIDs")
 	}
@@ -90,7 +90,7 @@ func TestWatcher_WatchID_DifferentWatchers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatcher_Close_CancelsContext(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("unexpected error from Close: %v", err)
@@ -105,7 +105,7 @@ func TestWatcher_Close_CancelsContext(t *testing.T) {
 }
 
 func TestWatcher_Close_Idempotent(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("first Close returned error: %v", err)
@@ -123,7 +123,7 @@ func TestWatcher_Close_Idempotent(t *testing.T) {
 }
 
 func TestWatcher_Close_ReturnsNil(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	if err := w.Close(); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -134,14 +134,14 @@ func TestWatcher_Close_ReturnsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatcher_Err_NilWhenNoError(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	if err := w.Err(); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }
 
 func TestWatcher_Err_ReturnsStoredError(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	want := &HubClosedError{}
 	w.setErr(want)
 
@@ -155,7 +155,7 @@ func TestWatcher_Err_ReturnsStoredError(t *testing.T) {
 }
 
 func TestWatcher_SetErr_OnlyFirstErrorStored(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	first := &HubClosedError{}
 	w.setErr(first)
 
@@ -173,7 +173,7 @@ func TestWatcher_SetErr_OnlyFirstErrorStored(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWatcher_Send_DeliversEvents(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 	resp := WatchResponse{
 		WatchID: 1,
 		Events: []*Event{
@@ -196,7 +196,7 @@ func TestWatcher_Send_CancelledContextDoesNotBlock(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately.
 
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, ctx)
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, ctx)
 
 	done := make(chan struct{})
 	go func() {
@@ -219,7 +219,7 @@ func TestWatcher_Send_CancelledContextDoesNotBlock(t *testing.T) {
 }
 
 func TestWatcher_Send_MultipleEventBatches(t *testing.T) {
-	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("key"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 
 	batch1 := WatchResponse{
 		WatchID: 1,
@@ -258,7 +258,7 @@ func TestWatcher_Send_MultipleEventBatches(t *testing.T) {
 
 func TestWatcher_HasFilter_ReturnsTrue(t *testing.T) {
 	opts := WatchOptions{Filters: []WatchFilter{WatchFilterNoPut}}
-	w := newWatcher(1, []byte("key"), nil, opts, context.Background())
+	w := newWatcher(1, []byte("key"), nil, opts, defaultEventBufferSize, context.Background())
 	if !w.hasFilter(WatchFilterNoPut) {
 		t.Fatal("expected hasFilter(WatchFilterNoPut) to return true")
 	}
@@ -266,7 +266,7 @@ func TestWatcher_HasFilter_ReturnsTrue(t *testing.T) {
 
 func TestWatcher_HasFilter_ReturnsFalse(t *testing.T) {
 	opts := WatchOptions{Filters: []WatchFilter{WatchFilterNoPut}}
-	w := newWatcher(1, []byte("key"), nil, opts, context.Background())
+	w := newWatcher(1, []byte("key"), nil, opts, defaultEventBufferSize, context.Background())
 	if w.hasFilter(WatchFilterNoDelete) {
 		t.Fatal("expected hasFilter(WatchFilterNoDelete) to return false")
 	}
@@ -283,7 +283,7 @@ func TestNewWatcher_SetsFields(t *testing.T) {
 		ProgressNotify: true,
 		Filters:        []WatchFilter{WatchFilterNoPut},
 	}
-	w := newWatcher(7, []byte("mykey"), []byte("myend"), opts, context.Background())
+	w := newWatcher(7, []byte("mykey"), []byte("myend"), opts, defaultEventBufferSize, context.Background())
 
 	if w.id != 7 {
 		t.Fatalf("id = %d, want 7", w.id)
@@ -306,7 +306,7 @@ func TestNewWatcher_SetsFields(t *testing.T) {
 }
 
 func TestNewWatcher_DefaultOptions(t *testing.T) {
-	w := newWatcher(1, []byte("k"), nil, WatchOptions{}, context.Background())
+	w := newWatcher(1, []byte("k"), nil, WatchOptions{}, defaultEventBufferSize, context.Background())
 
 	if w.prevKV {
 		t.Fatal("expected prevKV to be false by default")

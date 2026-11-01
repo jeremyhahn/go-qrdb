@@ -25,7 +25,7 @@ type LockClient interface {
 
 type LockInfo struct {
 	Key          string `json:"key"`           // user key, without the internal prefix
-	FencingToken int64  `json:"fencing_token"` // MVCC ModRevision at acquisition
+	FencingToken int64  `json:"fencing_token"` // the lock key's MVCC create revision
 	LeaseID      int64  `json:"lease_id"`
 	HolderID     string `json:"holder_id"`
 	Reentrant    bool   `json:"reentrant"`
@@ -66,14 +66,22 @@ configured, which is the registry-less composition.
 
 ## Invariants
 
-- **`FencingToken` is the MVCC `ModRevision` at acquisition.** Revisions are
-  globally ordered and monotonically increasing, so **each successful
-  acquisition of a given lock has a strictly higher token than the previous
-  one.** This is the only ordering guarantee a downstream resource needs. A
-  reentrant re-acquisition returns the token of the first acquisition.
-- **Release and extend both validate the token** against the token stored in
-  the lock record at acquisition. A stale token is refused with
-  `NotLockHolderError` — this is
+- **`FencingToken` is the lock key's MVCC create revision** — the revision of
+  the put that acquired the lock, the etcd `CreateRevision` model. Revisions are
+  globally ordered and monotonically increasing, and a released or expired lock
+  is deleted, so **each successful acquisition of a given lock has a strictly
+  higher token than the previous one.** This is the only ordering guarantee a
+  downstream resource needs. A reentrant re-acquisition updates the key, which
+  moves its `ModRevision` but not its create revision, so it returns the token
+  of the first acquisition.
+- **Acquisition is one write once `lock-create-revision-token` is active.**
+  The token is then not copied into the lock record, so there is no second
+  write that a concurrent release could interleave with. Before it is active
+  the record still carries the token (see "Rolling upgrade" below), written by
+  a second compare-and-swap on the acquire's own revision, so it can never
+  write a released lock back.
+- **Release and extend both validate the token** against the lock key's create
+  revision. A stale token is refused with `NotLockHolderError` — this is
   what stops a resumed zombie holder from releasing a lock somebody else now
   holds.
 - **Reentrancy is per holder and counted.** With `Reentrant: true`, the same
@@ -115,6 +123,8 @@ configured, which is the registry-less composition.
 | Release or extend with a stale/incorrect token | `NotLockHolderError` | **yes** |
 | Release of a lock that is not held | `LockNotFoundError` | yes |
 | Reentrant release with `AcquireCount > 1` | decrements; lock stays held | n/a |
+| Release whose decrement or delete loses its CAS to a concurrent write | re-reads, re-checks the token and count, retries | n/a |
+| Release that loses all 16 of those rounds | `ErrUnlockContended`; lock stays held | **yes** |
 | `ttl <= 0` | `ErrInvalidTTL` | yes |
 | Empty key | `ErrEmptyKey` | yes |
 | Missing `locks:*` permission | permission denied | **yes** |
@@ -133,9 +143,48 @@ underlying lease behaviour is described in
 
 Lock state is a JSON record under `__sys:lock/<key>` (`lockValue` in
 `pkg/lock/types.go`) holding the holder, reentrancy flag, acquire count,
-acquisition time, lease ID, TTL and fencing token. The stored token is the
-`ModRevision` of the acquiring write; a reentrant update rewrites the record
-and keeps it.
+acquisition time, lease ID and TTL. The fencing token is the key's create
+revision, which the MVCC store keeps for every key, and this binary never reads
+it from the record. A reentrant update rewrites the record and leaves the
+create revision unchanged.
+
+### Rolling upgrade: `lock-create-revision-token`
+
+A binary from before the create-revision token reads a lock's token from the
+record's `fencing_token` field. The field is retired behind the
+`lock-create-revision-token` cluster feature
+(`featuregate.LockCreateRevisionToken`), which `service.NewLockService` wires
+into the locker through `lock.WithTokenFieldRetired`. The gate is the lock
+shard's own: a tenant's or a database's lock is served through decorated
+transaction services (quota, key namespace), and `NewLockService` follows
+their `service.TransactionUnwrapper` chain to the `TransactionService` whose
+host and shard it asks.
+
+- **Until every replica of the group advertises it and it is activated**, an
+  acquisition stores `fencing_token` with a compare-and-swap on the acquire's
+  own revision (on the ambiguous-commit path too), and a re-entry or a
+  reentrant decrement rewrites it. The value is always the key's create
+  revision, so an old node and this one report the same token.
+- **Once it is active** the field is omitted from every write. A host that
+  gates nothing (a standalone node, or a locker built without the option)
+  omits it at once.
+
+The store-back is retried before the acquire returns: a write that fails with a
+not-leader refusal or an unknown outcome (`lock.WithRetryable`, wired by the
+service layer) is sent again, the same compare-and-swap, 50 ms later, at most
+four attempts in all and never past the caller's context. A compare that lost
+is not retried, since the record is no longer the one this acquire wrote; that
+is also how a retry of a write that did commit ends, writing nothing. Any
+other failure is final at once.
+
+The store-back is still a second write: between the acquisition and the
+store-back, or for good if every attempt fails (the lock stays held and the
+failure is logged), an old node reads the record without the field: its Status and List
+report token 0, and its Extend and Unlock fall back to the record's mod
+revision, which equals the create revision until the record is next written.
+Activating the feature ends the window.
+`pkg/lock/mixed_version_test.go` runs an old-node double against this binary in
+both directions.
 
 ## Test strategy
 

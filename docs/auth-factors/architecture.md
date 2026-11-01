@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 The `Factor` framework, the user-side N-factor model, and PIN custody with
@@ -62,9 +62,10 @@ key is looked up in.
 The user-side auth-factor records are therefore routed through
 `tenant.StoreResolver`, the same resolver the user and role stores route
 through, and for the same reason: they are the same class of data — per-tenant
-IAM. A prefix tenant gets the shared store confined to its identity namespace;
-a dedicated-isolation tenant gets a store backed by its own barrier, so the
-record holding the credential material is encrypted with that tenant's DEK.
+IAM. A `prefix` tenant resolves to the shared store. A tenant in an isolated
+mode (`barrier`, `volume` or `raft`) resolves to its own home store, and a
+lookup that cannot reach that store fails closed rather than falling back to
+the shared one.
 
 Enrolment routes on the tenant that owns the USER, not on the enrolling
 context, so a record lands where the login that follows will look for it. A
@@ -154,9 +155,7 @@ the batch.
   exactly one mechanism for per-tenant IAM data, and a tenant segment in this
   one key would inaugurate a second, divergent one for the same class of data.
   Every later reader would have to know which surface uses which, and that
-  divergence is where the next isolation defect gets written. Routing also has
-  the better migration: records MOVE rather than being rewritten in place,
-  which is the safer operation to interrupt.
+  divergence is where the next isolation defect gets written.
 - **Checking the tenant after resolving the factor** — resolve the credential
   in one flat keyspace, then compare the factor's owner's tenant against the
   session's. Rejected. It leaves one record per credential, so the second
@@ -203,24 +202,28 @@ the batch.
 |---|---|
 | `DefaultHashConfig()` | Argon2id — 3 passes, 64 MiB, 4 threads, 32-byte key, 16-byte salt |
 | `FIPSHashConfig()` | PBKDF2-SHA256, **600 000 iterations**, NIST SP 800-132 |
-| `AutoDetectHashConfig()` | calls `seal.FIPSEnabled()` and picks between them |
+| `AutoDetectHashConfig()` | calls go-quicraft's `seal.FIPSEnabled()` and picks between them |
 
 Supported PBKDF2 hashes: `sha256`, `sha384`, `sha512`, `sha512_256`.
 
 ## CTAP2 interop
 
 `SoftwareBackend` caches the CTAP2 `SHA-256(PIN)[:16]` hash in an atomic
-pointer, so a virtual authenticator can answer CTAP2 PIN verifications without a
-separate set call after a process restart. It is wiped on `Close`. Backends that
-can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
+pointer, so a virtual authenticator can answer CTAP2 PIN verifications. The cache
+is in memory: after a process restart the first successful user PIN
+verification repopulates it, with no separate PIN change. It is zeroed on
+`Close`. Backends that can verify a CTAP2 hash implement the optional
+`FIDO2HashVerifier` interface.
 
 ## Component boundaries
 
 | Piece | Package | Owner |
 |---|---|---|
-| `Factor` framework, `FactorRegistry`, software mTLS factor | `pkg/authfactors` | go-qrdb |
-| PIN contract, `Service`, `SoftwareBackend`, hashing | `pkg/pin` | go-qrdb |
-| User-side N-factor enrolment records | `pkg/user` — see [../identity-rbac/](../identity-rbac/) | go-qrdb |
+| `Factor` framework, `FactorRegistry` | `pkg/authfactors` | go-qrdb |
+| Software mTLS factor | `pkg/authfactors/mtls` | go-qrdb |
+| PIN contract, `Service`, `SoftwareBackend`, hashing, lockout decorator | `pkg/pin` | go-qrdb |
+| User-side N-factor records (`auth.AuthFactor`) | `pkg/auth` | go-qrdb |
+| User-side factor service (`UserAuthFactorServicer`), factor set, tenant routing | `pkg/service` — users themselves are in [../identity-rbac/](../identity-rbac/) | go-qrdb |
 | FIDO2, PIV, PKCS#11 factors; TPM2 and PKCS#11 PIN backends | — | **go-xkms**, injected |
 | Hardware verification and UX | — | **go-xkms** / `xkeyctl` / `platformctl` |
 
@@ -274,8 +277,9 @@ they return are part of the seam and every one of them has an `sdk/go` surface:
 | Caller named a factor other than the enrollment's | `AuthFactorMismatchError` |
 | Device unreachable | `AuthFactorHardwareUnavailableError`, or the sentinel `ErrAuthFactorHardwareUnavailable` |
 
-Both transports map a hardware-unavailable condition to 503; the SDK alias is
-what lets an out-of-repo factor construct the error that arm waits for.
+The shared error table classes a hardware-unavailable condition `Unavailable`:
+503 on REST and `UNAVAILABLE` on gRPC, QUIC and MCP. The SDK alias is what lets
+an out-of-repo factor construct the error that class waits for.
 
 An error on this seam that has no SDK alias is a handler arm that can never
 fire. When a condition is added to the contract, export it here in the same

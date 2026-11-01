@@ -37,6 +37,10 @@ func (r *RegularStateMachine) handleTSWrite(payload []byte, revision uint64) (sm
 		return sm.Result{}, &IncompleteDataError{Reason: "ts write: " + err.Error()}
 	}
 
+	if refusal, refused, capErr := tsMetricCapRefusal(r.tsStore, []string{p.Metric}, p.MaxMetrics); capErr != nil || refused {
+		return refusal, capErr
+	}
+
 	if err := r.tsStore.WriteDataPoint(p.Metric, p.Timestamp, p.Value, p.Tags); err != nil {
 		return sm.Result{}, &StorageError{Op: "ts-write", Inner: err}
 	}
@@ -51,9 +55,12 @@ func (r *RegularStateMachine) handleTSWriteBatch(payload []byte, revision uint64
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "timeseries"}
 	}
 
-	params, err := protocol.DecodeTSWriteBatch(payload)
+	params, maxMetrics, err := protocol.DecodeTSWriteBatch(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "ts write batch: " + err.Error()}
+	}
+	if refusal, refused, capErr := tsMetricCapRefusal(r.tsStore, tsBatchMetrics(params), maxMetrics); capErr != nil || refused {
+		return refusal, capErr
 	}
 
 	points := make([]TSDataPoint, len(params))
@@ -83,6 +90,10 @@ func (r *RegularStateMachine) handleTSWritePoint(payload []byte, revision uint64
 	p, err := protocol.DecodeTSWrite(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "ts write point: " + err.Error()}
+	}
+
+	if refusal, refused, capErr := tsMetricCapRefusal(r.tsStore, []string{p.Metric}, p.MaxMetrics); capErr != nil || refused {
+		return refusal, capErr
 	}
 
 	if err := r.tsStore.WriteDataPoint(p.Metric, p.Timestamp, p.Value, p.Tags); err != nil {

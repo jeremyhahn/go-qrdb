@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
@@ -27,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -49,9 +51,9 @@ import (
 // Raft-specific concerns: opening/closing the PebbleDB database, persisting
 // the last applied log index, snapshot save/restore, and synchronization.
 //
-// Thread safety: Lookup may be called concurrently with Update. The engine
-// and PebbleDB handle their own internal synchronization for concurrent
-// reads during writes.
+// Thread safety: Lookup may be called concurrently with Update. Lookup and
+// GetHash read the published readView, never live storage, so a concurrent
+// commit is invisible to them until Update publishes it.
 type MVCCStateMachine struct {
 	mu      sync.RWMutex
 	db      *pebble.DB
@@ -71,13 +73,64 @@ type MVCCStateMachine struct {
 	// does not wait for the OS to flush data to disk. This trades durability
 	// for performance and is appropriate only for testing environments.
 	noSync bool
+
+	// syncClock, when set before Open, is the clock the sync observer times
+	// the apply batch's synced commits with; nil is the real clock. Tests set
+	// it to hold a commit inside its sync.
+	syncClock clock.Clock
+
+	// waitMu guards waitCh, the channel the one lock notifier closes once
+	// s.mu has become readable; nil while no notifier runs. Every contended
+	// reader waits on the same channel, so however many readers queue and
+	// give up, at most one goroutine is parked on s.mu for them. See rlock.
+	waitMu sync.Mutex
+	waitCh chan struct{}
+
+	// rlockWaiters counts the lock notifiers running: goroutines rlock has
+	// parked on s.mu. It is at most one.
+	rlockWaiters atomic.Int64
+
+	// rlockQueued, when set, is called by rlock once a contended reader has
+	// the notifier's channel and is about to wait on it and its ctx; nil
+	// does nothing. rlockWaiterDone, when set, is called as the notifier
+	// ends, after it has released its read hold. Tests set them to cancel a
+	// reader known to be queued and to see the notifier end.
+	rlockQueued     func()
+	rlockWaiterDone func()
+
+	// scanHeld, when set, is called by a full-state scan once it holds its
+	// view and its scans hold and has released s.mu, before it reads; nil
+	// does nothing. closeWaiting, when set, is called by Close just before
+	// it waits for the scans. Tests set them to hold a scan open across an
+	// Update or a Close.
+	scanHeld     func(*readView)
+	closeWaiting func()
+
+	// scans counts the full-state scans (the state digest and GetHash)
+	// running outside s.mu, each holding a view. A scan joins under s.mu
+	// read-held while the database is open; Close, holding s.mu for writing
+	// so no scan can join, waits for it to reach zero before it closes the
+	// database, so no scan's snapshot outlives the database.
+	scans sync.WaitGroup
+
+	// applySeq numbers the Updates that reach the commit, in apply order;
+	// publishedSeq is the last of them published, under the write lock. See
+	// Update.
+	applySeq     atomic.Uint64
+	publishedSeq uint64
+
+	// view is the published state Lookup and GetHash read; see readView.
+	// Open, Update, RecoverFromSnapshot and Close replace it under the write
+	// lock.
+	view atomic.Pointer[readView]
 }
 
 // pebbleSyncs times the synced commits of a storage wrapper over the state
 // machine database in dir, whose path names the shard in a slow-sync
 // warning.
-func pebbleSyncs(dir string) pebbleStorage.Option {
-	return pebbleStorage.WithSyncObserver(syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", dir))))
+func pebbleSyncs(dir string, opts ...syncwatch.Option) pebbleStorage.Option {
+	opts = append([]syncwatch.Option{syncwatch.WithAttrs(slog.String("dir", dir))}, opts...)
+	return pebbleStorage.WithSyncObserver(syncwatch.ForStorage(syncwatch.BackendPebble, opts...))
 }
 
 // NewMVCCStateMachine creates a new MVCCStateMachine with the given PebbleDB
@@ -198,7 +251,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	// syncWrites=true for durability by default; noSync=true disables fsync
 	// (suitable for testing where fsync latency causes proposal timeouts).
 	syncWrites := !s.noSync
-	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir))
+	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir, syncwatch.WithClock(s.syncClock)))
 
 	// Build engine options from pre-Open configuration.
 	var engineOpts []engine.MVCCOption
@@ -244,6 +297,15 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 		return 0, &ReadError{Key: metaKeyLastApplied, Err: err}
 	}
 
+	if err := s.publishView(); err != nil {
+		_ = e.Close(context.Background())
+		_ = db.Close()
+		s.db = nil
+		s.storage = nil
+		s.engine = nil
+		return 0, &OpenError{Dir: initialDir, Err: err}
+	}
+
 	return lastApplied, nil
 }
 
@@ -261,18 +323,70 @@ func (s *MVCCStateMachine) readLastApplied() (uint64, error) {
 // handler. The revision counter and last applied index are persisted in the
 // same batch for crash recovery. Watch notifications are delivered after the
 // batch is committed.
+//
+// The batch is built and committed, fsync included, under the read lock, so
+// Lookup, GetHash and Sync are not held behind a slow sync. Pebble's commit
+// pipeline makes a batch visible in live storage before its WAL sync
+// completes, so readers never read live storage: they read the readView
+// Update last published. Update then takes the write lock to publish the
+// batch -- only once Commit has returned nil -- with a new view, a snapshot
+// paired with the batch's revision, then MarkCommitted, the watch deliveries
+// and the vector index effects. A failed commit publishes nothing.
+//
+// Update is not called concurrently: the go-quicraft sm.DiskStateMachine
+// contract has one apply loop per shard call Update for each batch of
+// committed entries in log order, and only Lookup may run beside it. applySeq
+// numbers the calls in that order, and publish refuses one that is not the
+// next after publishedSeq, so publications follow apply order and a broken
+// contract fails loudly instead of reordering revisions.
 func (s *MVCCStateMachine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
+	// A batch that mutates in-memory state readers consult beside the
+	// published view -- the index catalog, the lessor's tables, the
+	// compaction floors -- is built under the exclusive lock, as every batch
+	// was before #1287: those components change in place while the batch is
+	// built, so a reader running beside the build would see the change
+	// before the batch is published. See RequiresExclusiveApply.
+	s.mu.RLock()
+	if s.db == nil {
+		s.mu.RUnlock()
+		return &NotOpenError{}
+	}
+	if s.engine.RequiresExclusiveApply(entries) {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.db == nil {
+			return &NotOpenError{}
+		}
+		seq := s.applySeq.Add(1)
+		staged, applyErr := s.commit(entries, results)
+		return s.finishUpdate(seq, staged, applyErr)
+	}
+	seq := s.applySeq.Add(1)
+	staged, applyErr := s.commit(entries, results)
+	s.mu.RUnlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.finishUpdate(seq, staged, applyErr)
+}
 
+// finishUpdate publishes the batch numbered seq, which commit returned as
+// staged and applyErr. The caller holds s.mu exclusively.
+func (s *MVCCStateMachine) finishUpdate(seq uint64, staged committedBatch, applyErr error) error {
+	if seq != s.publishedSeq+1 {
+		return &ApplyOrderError{Seq: seq, Published: s.publishedSeq}
+	}
+	s.publishedSeq = seq
+	// Close may have taken the write lock between a shared-lock commit and
+	// here. The commit, if it succeeded, is durable and Open reads it back.
 	if s.db == nil {
 		return &NotOpenError{}
 	}
-
-	if err := s.update(entries, results); err != nil {
-		return s.resyncLogs(err)
+	if applyErr != nil {
+		return s.resyncLogs(applyErr)
 	}
-	return nil
+	return s.publish(staged)
 }
 
 // resyncLogs rebuilds the log registry from committed storage after an
@@ -287,21 +401,118 @@ func (s *MVCCStateMachine) resyncLogs(applyErr error) error {
 	return applyErr
 }
 
-// update applies entries in one batch; Update holds s.mu.
-func (s *MVCCStateMachine) update(entries []sm.Entry, results []sm.Result) error {
+// committedBatch is what a committed apply batch leaves Update to publish.
+type committedBatch struct {
+	rev           int64
+	notifications []engine.Notification
+	// applyVectors applies the batch's vector index effects. It is a closure
+	// over the engine's effects so that this package, which a lean standalone
+	// embedder compiles, never names the vector package's types.
+	applyVectors func()
+}
+
+// readView is one published state: a storage snapshot and the revision
+// committed when it was taken. Readers answer from the view they acquire, so
+// the data they read and the revision they treat as current always describe
+// the same commit, and a batch whose Commit has not returned -- visible in
+// live storage before its WAL sync completes -- is in no view.
+//
+// refs counts the readers holding the view plus one while it is current. The
+// snapshot closes when refs reaches zero: when the last reader of a superseded
+// view releases it, or when the view is superseded or Close drops it with no
+// reader left.
+type readView struct {
+	snap storage.Snapshot
+	rev  int64
+	refs atomic.Int64
+}
+
+// newReadView takes a snapshot of st paired with rev, held by its publisher.
+func newReadView(st storage.Storage, rev int64) (*readView, error) {
+	snap, err := st.Snapshot()
+	if err != nil {
+		return nil, &PublishError{Rev: rev, Err: err}
+	}
+	v := &readView{snap: snap, rev: rev}
+	v.refs.Store(1)
+	return v, nil
+}
+
+// release drops one reference, closing the snapshot with the last.
+func (v *readView) release() {
+	if v.refs.Add(-1) == 0 {
+		_ = v.snap.Close()
+	}
+}
+
+// acquireView returns the current view with a reference the caller releases,
+// or nil when the state machine is not open. A view whose count has already
+// reached zero has been superseded and closed; the loop reloads its successor.
+func (s *MVCCStateMachine) acquireView() *readView {
+	for {
+		v := s.view.Load()
+		if v == nil {
+			return nil
+		}
+		if n := v.refs.Load(); n > 0 && v.refs.CompareAndSwap(n, n+1) {
+			return v
+		}
+	}
+}
+
+// setView makes v the current view and drops the publisher's reference to
+// the one it supersedes. v is nil when Close drops the current view.
+func (s *MVCCStateMachine) setView(v *readView) {
+	if old := s.view.Swap(v); old != nil {
+		old.release()
+	}
+}
+
+// publishView takes a view of the state committed through the store's
+// committed revision and makes it current. The caller holds s.mu for writing.
+func (s *MVCCStateMachine) publishView() error {
+	v, err := newReadView(s.storage, s.engine.Store().CommittedRevision())
+	if err != nil {
+		return err
+	}
+	s.setView(v)
+	return nil
+}
+
+// publish makes a committed batch visible: a view of it to readers, its
+// revision to revision-scoped reads, then its watch events and vector index
+// effects. Update holds s.mu for writing. The view is taken first, so a
+// failure to take it publishes nothing and readers keep the previous state.
+func (s *MVCCStateMachine) publish(b committedBatch) error {
+	v, err := newReadView(s.storage, max(b.rev, s.engine.Store().CommittedRevision()))
+	if err != nil {
+		return err
+	}
+	s.setView(v)
+	s.engine.Store().MarkCommitted(b.rev)
+	s.engine.DeliverNotifications(b.notifications)
+	if b.applyVectors != nil {
+		b.applyVectors()
+	}
+	return nil
+}
+
+// commit applies entries in one batch and commits it; Update holds s.mu for
+// reading.
+func (s *MVCCStateMachine) commit(entries []sm.Entry, results []sm.Result) (committedBatch, error) {
 	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
 	notifications, vectorEffects, err := s.engine.UpdateEntries(batch, entries, results)
 	if err != nil {
-		return err
+		return committedBatch{}, err
 	}
 
 	// Persist the revision counter in the same batch.
 	rev := s.engine.Store().CurrentRevision()
 	if rev > 0 {
 		if err := batch.Set(mvcc.RevisionKey(), mvcc.EncodeRevision(rev)); err != nil {
-			return &WriteError{Err: err}
+			return committedBatch{}, &WriteError{Err: err}
 		}
 	}
 
@@ -316,45 +527,147 @@ func (s *MVCCStateMachine) update(entries []sm.Entry, results []sm.Result) error
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], lastIndex)
 		if err := batch.Set([]byte(metaKeyLastApplied), buf[:]); err != nil {
-			return &WriteError{Err: err}
+			return committedBatch{}, &WriteError{Err: err}
 		}
 	}
 
 	if err := batch.Commit(); err != nil {
-		return &WriteError{Err: err}
+		return committedBatch{}, &WriteError{Err: err}
 	}
-	s.engine.Store().MarkCommitted(rev)
-
-	// Deliver watch notifications and apply vector index effects after the
-	// batch is committed.
-	s.engine.DeliverNotifications(notifications)
-	s.engine.ApplyVectorIndexEffects(vectorEffects)
-
-	return nil
+	return committedBatch{
+		rev:           rev,
+		notifications: notifications,
+		applyVectors:  func() { s.engine.ApplyVectorIndexEffects(vectorEffects) },
+	}, nil
 }
 
-// Lookup reads state from the MVCC store by delegating to the engine.
-// See engine.MVCCEngine.Lookup for supported query types. A
-// statedigest.Query is answered here, from a snapshot; see stateDigest.
+// Lookup reads state from the MVCC store by delegating to the engine, through
+// the published readView. See engine.MVCCEngine.Lookup for supported query
+// types. A statedigest.Query is answered from the same view; see
+// readerStateDigest.
 func (s *MVCCStateMachine) Lookup(ctx context.Context, query interface{}) (interface{}, error) {
-	if _, ok := query.(statedigest.Query); ok {
-		return s.stateDigest()
+	if err := s.rlock(ctx); err != nil {
+		return nil, &ReadError{Key: "", Err: err}
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	if _, ok := query.(statedigest.Query); ok {
+		// A full scan must not hold s.mu: Update's publish waits for it.
+		v, err := s.beginScan()
+		s.mu.RUnlock()
+		if err != nil {
+			return nil, err
+		}
+		defer s.endScan(v)
+		s.scanning(v)
+		return readerStateDigest(v.snap)
+	}
 
+	defer s.mu.RUnlock()
 	if s.db == nil {
 		return nil, &NotOpenError{}
 	}
-
-	return s.engine.Lookup(ctx, query)
+	v := s.acquireView()
+	if v == nil {
+		return nil, &NotOpenError{}
+	}
+	defer v.release()
+	return s.engine.LookupAt(ctx, v.snap, v.rev, query)
 }
 
-// Sync flushes all pending writes to durable storage.
+// beginScan acquires the current view for a full-state scan and joins scans,
+// so Close waits for the scan before it closes the database. The caller holds
+// s.mu for reading and may release it once beginScan returns; it ends the scan
+// with endScan.
+func (s *MVCCStateMachine) beginScan() (*readView, error) {
+	if s.db == nil {
+		return nil, &NotOpenError{}
+	}
+	v := s.acquireView()
+	if v == nil {
+		return nil, &NotOpenError{}
+	}
+	s.scans.Add(1)
+	return v, nil
+}
+
+// endScan releases a scan's view, closing its snapshot if it was the last
+// holder, then leaves scans.
+func (s *MVCCStateMachine) endScan(v *readView) {
+	v.release()
+	s.scans.Done()
+}
+
+// scanning is called by a full-state scan once it has released s.mu, before
+// it reads its view.
+func (s *MVCCStateMachine) scanning(v *readView) {
+	if s.scanHeld != nil {
+		s.scanHeld(v)
+	}
+}
+
+// rlock takes s.mu for reading, or returns ctx's error once ctx ends first.
+// A contended reader does not queue on s.mu itself, since a goroutine
+// blocked in RLock cannot be cancelled: it waits on the channel of the one
+// lock notifier (see notifyReadable) and tries again once s.mu has been
+// readable. A caller that gives up leaves nothing behind.
+func (s *MVCCStateMachine) rlock(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for {
+		if s.mu.TryRLock() {
+			return nil
+		}
+		readable := s.lockNotifier()
+		if s.rlockQueued != nil {
+			s.rlockQueued()
+		}
+		select {
+		case <-readable:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// lockNotifier returns the channel the running lock notifier closes once
+// s.mu is readable, starting the notifier if none runs.
+func (s *MVCCStateMachine) lockNotifier() <-chan struct{} {
+	s.waitMu.Lock()
+	defer s.waitMu.Unlock()
+	if s.waitCh == nil {
+		s.waitCh = make(chan struct{})
+		s.rlockWaiters.Add(1)
+		go s.notifyReadable(s.waitCh)
+	}
+	return s.waitCh
+}
+
+// notifyReadable is the lock notifier: it waits until s.mu can be read,
+// detaches readable while it holds s.mu, releases s.mu, and wakes every
+// reader waiting on readable. Detaching first means a reader that then still
+// finds s.mu taken starts the next notifier rather than waiting on a closed
+// channel. Taking waitMu inside the read section is safe: lockNotifier, the
+// only other holder of waitMu, never takes s.mu.
+func (s *MVCCStateMachine) notifyReadable(readable chan struct{}) {
+	s.mu.RLock()
+	s.waitMu.Lock()
+	s.waitCh = nil
+	s.waitMu.Unlock()
+	s.mu.RUnlock()
+	close(readable)
+	s.rlockWaiters.Add(-1)
+	if s.rlockWaiterDone != nil {
+		s.rlockWaiterDone()
+	}
+}
+
+// Sync flushes all pending writes to durable storage. It takes s.mu only for
+// reading: the flush is safe beside a commit, and Close is what it must
+// exclude.
 func (s *MVCCStateMachine) Sync() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	if s.db == nil {
 		return &NotOpenError{}
@@ -531,6 +844,9 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 	}
 	s.engine = e
 
+	if err := s.publishView(); err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
 	return nil
 }
 
@@ -572,6 +888,16 @@ func (s *MVCCStateMachine) Close(ctx context.Context) error {
 		return nil
 	}
 
+	// Point readers hold s.mu for reading, so none holds a view here.
+	// Full-state scans hold a view outside s.mu; none can join while Close
+	// holds s.mu, and Close waits for the running ones to end, so every
+	// view's snapshot is closed before the database closes.
+	s.setView(nil)
+	if s.closeWaiting != nil {
+		s.closeWaiting()
+	}
+	s.scans.Wait()
+
 	if s.engine != nil {
 		_ = s.engine.Close(ctx)
 		s.engine = nil
@@ -584,18 +910,22 @@ func (s *MVCCStateMachine) Close(ctx context.Context) error {
 }
 
 // GetHash computes a deterministic xxhash64 hash of all user key-value pairs
-// in sorted order. Internal metadata keys are excluded.
+// in sorted order, read from the published readView. Internal metadata keys
+// are excluded.
 func (s *MVCCStateMachine) GetHash() (uint64, error) {
+	// A full scan must not hold s.mu: Update's publish waits for it.
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.db == nil {
-		return 0, &NotOpenError{}
+	v, err := s.beginScan()
+	s.mu.RUnlock()
+	if err != nil {
+		return 0, err
 	}
+	defer s.endScan(v)
+	s.scanning(v)
 
 	h := xxhash.New()
 
-	iter := s.storage.NewIterator(nil)
+	iter := v.snap.NewIterator(nil)
 	defer func() { _ = iter.Close() }()
 
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {

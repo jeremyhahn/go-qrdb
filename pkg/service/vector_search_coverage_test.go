@@ -330,17 +330,40 @@ func TestEnsureHNSWIndex_LazyCreationDefaultL2(t *testing.T) {
 
 	vs := svc.(*vectorService)
 
-	// Use an unknown metric string to exercise the default (L2) branch
+	// A namespace stored without a metric is an L2 namespace.
 	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
-		Name:           "default-ns",
-		Dimension:      4,
-		DistanceMetric: "UNKNOWN_METRIC",
+		Name:      "default-ns",
+		Dimension: 4,
 	}))
 
 	idx, err := vs.ensureHNSWIndex(context.Background(), "default-ns")
 
 	require.NoError(t, err)
 	assert.NotNil(t, idx)
+}
+
+// TestEnsureHNSWIndex_UnknownMetricRefused pins that a stored metric the index
+// layer does not implement fails the index build instead of being read as L2.
+func TestEnsureHNSWIndex_UnknownMetricRefused(t *testing.T) {
+	storage := newMockVectorStorage()
+	svc, err := NewVectorService(storage, newMockLogger())
+	require.NoError(t, err)
+	vs := svc.(*vectorService)
+
+	require.NoError(t, storage.CreateNamespace(context.Background(), &vector.NamespaceInfo{
+		Name:           "unknown-ns",
+		Dimension:      4,
+		DistanceMetric: "UNKNOWN_METRIC",
+	}))
+
+	idx, err := vs.ensureHNSWIndex(context.Background(), "unknown-ns")
+
+	require.Error(t, err)
+	assert.Nil(t, idx)
+	var geometryErr *UnsupportedNamespaceGeometryError
+	require.ErrorAs(t, err, &geometryErr)
+	assert.Equal(t, UnsupportedNamespaceGeometryError{Namespace: "unknown-ns", Field: "distance metric", Value: "UNKNOWN_METRIC"}, *geometryErr)
+	assert.NotContains(t, vs.hnswIndexes, "unknown-ns")
 }
 
 func TestEnsureHNSWIndex_LoadsVectorsFromStorage(t *testing.T) {

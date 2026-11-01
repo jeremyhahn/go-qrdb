@@ -44,6 +44,11 @@ type Index struct {
 	count      atomic.Int64
 	dimensions atomic.Int32
 	distMetric hnsw.DistanceMetric
+
+	// afterPublish, when set, runs in Insert between publishing the entry
+	// and settling its count. Only tests set it, to drive the interleaving
+	// with a concurrent Delete deterministically.
+	afterPublish func()
 }
 
 // NewIndex creates a new flat brute-force index with the given distance metric.
@@ -85,10 +90,18 @@ func (idx *Index) Insert(id uint64, vector []float32) error {
 	copied := make([]float32, len(vector))
 	copy(copied, vector)
 
-	// Upsert: if key already exists, overwrite without changing count.
+	// Reserve the count before the entry becomes visible, and give the
+	// reservation back only when Swap reports an overwrite. A Delete can
+	// remove the entry the instant Swap publishes it, and it decrements only
+	// after its own removal, so count never falls below the number of
+	// entries in the map under any interleaving.
+	idx.count.Add(1)
 	_, loaded := idx.vectors.Swap(id, copied)
-	if !loaded {
-		idx.count.Add(1)
+	if idx.afterPublish != nil {
+		idx.afterPublish()
+	}
+	if loaded {
+		idx.count.Add(-1)
 	}
 
 	return nil
@@ -125,7 +138,10 @@ func (idx *Index) Search(query []float32, k int) ([]SearchResult, error) {
 		}
 	}
 
-	currentCount := idx.count.Load()
+	// count is at least the number of entries, so it is only a capacity hint
+	// for the collection below; the clamp keeps a slice from ever being sized
+	// from a negative value.
+	currentCount := max(idx.count.Load(), 0)
 	if currentCount == 0 {
 		return nil, ErrEmptyIndex
 	}
@@ -212,7 +228,9 @@ func (idx *Index) sortAllResults(ids []uint64, distances []float32) []SearchResu
 	return results
 }
 
-// Count returns the number of vectors currently in the index.
+// Count returns the number of vectors currently in the index. While an Insert
+// or Delete is in flight it may count that one entry before the map shows it
+// or after the map has dropped it; it is never negative.
 func (idx *Index) Count() int64 {
 	return idx.count.Load()
 }
@@ -271,12 +289,7 @@ func (idx *Index) Unmarshal(data []byte) error {
 	}
 	// Reset in place rather than through Close, which documents itself as
 	// terminal: Unmarshal re-populates the same index immediately after.
-	idx.vectors.Range(func(key, _ any) bool {
-		idx.vectors.Delete(key)
-		return true
-	})
-	idx.count.Store(0)
-	idx.dimensions.Store(0)
+	idx.clear()
 	idx.distMetric = persisted.DistMetric
 	for id, vec := range persisted.Vectors {
 		if err := idx.Insert(id, vec); err != nil {
@@ -288,14 +301,21 @@ func (idx *Index) Unmarshal(data []byte) error {
 
 // Close releases index resources. After Close, the index should not be used.
 func (idx *Index) Close() error {
-	// Clear all vectors from the sync.Map.
-	idx.vectors.Range(func(key, value any) bool {
-		idx.vectors.Delete(key)
+	idx.clear()
+	return nil
+}
+
+// clear removes every vector and resets the dimensions. It decrements count
+// once per entry it actually removed, the same rule Delete follows, rather
+// than storing zero over the reservations of writers still in flight.
+func (idx *Index) clear() {
+	idx.vectors.Range(func(key, _ any) bool {
+		if _, loaded := idx.vectors.LoadAndDelete(key); loaded {
+			idx.count.Add(-1)
+		}
 		return true
 	})
-	idx.count.Store(0)
 	idx.dimensions.Store(0)
-	return nil
 }
 
 // heapItem is an element in the max-heap used for top-k selection.

@@ -65,12 +65,16 @@ type BarrierServicer interface {
 	// BarrierStatus returns the current barrier status.
 	BarrierStatus(ctx context.Context) (*BarrierStatusInfo, error)
 
-	// BarrierInitialized reports whether the barrier has been initialized.
-	// Unlike BarrierStatus, a failure to read the initialization record is
-	// returned rather than reported as "not initialized", so the initialize
-	// paths can refuse an initialized barrier before comparing any PIN and
-	// fail closed (ProvisionInitializePINs).
-	BarrierInitialized(ctx context.Context) (bool, error)
+	// BarrierInitializePrecondition reports whether an initialize -- either
+	// BarrierInitialize or BarrierInitializeShamir -- would be attempted,
+	// without writing anything. It returns the refusal the initialize itself
+	// would return: *SystemBarrierInitRefusedError on a service built with a
+	// ceremony, seal.ErrAlreadyInitialized on an initialized barrier. A
+	// failure to read the initialization record is returned rather than
+	// treated as "not initialized", so the initialize paths refuse before
+	// any PIN is written or compared and fail closed
+	// (ProvisionInitializePINs).
+	BarrierInitializePrecondition(ctx context.Context) error
 
 	// BarrierInitializeShamir initializes the barrier under Shamir custody:
 	// the barrier unseal key is split threshold-of-totalShares to the
@@ -427,12 +431,25 @@ func (s *BarrierService) BarrierSeal(ctx context.Context) error {
 	return s.seal(ctx)
 }
 
-// BarrierInitialized reports whether the barrier has been initialized,
-// reading the persisted record on a barrier this process did not initialize.
-// A read failure is returned, never reported as "not initialized", so a caller
-// gating on the answer (ProvisionInitializePINs) fails closed.
-func (s *BarrierService) BarrierInitialized(ctx context.Context) (bool, error) {
-	return s.barrier.Initialized(ctx)
+// BarrierInitializePrecondition refuses an initialize the way
+// BarrierInitialize and BarrierInitializeShamir would, writing nothing: a
+// service built with a ceremony refuses unconditionally, and an initialized
+// barrier -- read from the persisted record on a barrier this process did not
+// initialize -- refuses with seal.ErrAlreadyInitialized. A read failure is
+// returned, never reported as "not initialized", so a caller gating on the
+// answer (ProvisionInitializePINs) fails closed.
+func (s *BarrierService) BarrierInitializePrecondition(ctx context.Context) error {
+	if s.ceremony != nil {
+		return &SystemBarrierInitRefusedError{}
+	}
+	initialized, err := s.barrier.Initialized(ctx)
+	if err != nil {
+		return err
+	}
+	if initialized {
+		return seal.ErrAlreadyInitialized
+	}
+	return nil
 }
 
 // BarrierStatus returns the current barrier status, mapping the seal

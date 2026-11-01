@@ -74,7 +74,7 @@ func newSnapshotIterator(snap *pebble.Snapshot, opts *storage.IteratorOptions) s
 
 // SeekToFirst positions the iterator at the first key.
 func (it *pebbleIterator) SeekToFirst() bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.First()
@@ -82,7 +82,7 @@ func (it *pebbleIterator) SeekToFirst() bool {
 
 // SeekToLast positions the iterator at the last key.
 func (it *pebbleIterator) SeekToLast() bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.Last()
@@ -90,7 +90,7 @@ func (it *pebbleIterator) SeekToLast() bool {
 
 // Seek positions the iterator at the first key >= target.
 func (it *pebbleIterator) Seek(target []byte) bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.SeekGE(target)
@@ -98,7 +98,7 @@ func (it *pebbleIterator) Seek(target []byte) bool {
 
 // Next advances the iterator to the next key.
 func (it *pebbleIterator) Next() bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.Next()
@@ -106,15 +106,17 @@ func (it *pebbleIterator) Next() bool {
 
 // Prev moves the iterator to the previous key.
 func (it *pebbleIterator) Prev() bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.Prev()
 }
 
-// Valid reports whether the iterator is positioned at a valid entry.
+// Valid reports whether the iterator is positioned at a valid entry. It
+// reports false once an error has been recorded, so a loop over the
+// iterator ends and the caller's Error check reports the failure.
 func (it *pebbleIterator) Valid() bool {
-	if it.iter == nil || it.closed.Load() {
+	if it.iter == nil || it.closed.Load() || it.err != nil {
 		return false
 	}
 	return it.iter.Valid()
@@ -123,7 +125,7 @@ func (it *pebbleIterator) Valid() bool {
 // Key returns a copy of the current key. Returns nil when the iterator
 // is not positioned at a valid entry.
 func (it *pebbleIterator) Key() []byte {
-	if it.iter == nil || it.closed.Load() || !it.iter.Valid() {
+	if !it.Valid() {
 		return nil
 	}
 	k := it.iter.Key()
@@ -133,12 +135,20 @@ func (it *pebbleIterator) Key() []byte {
 }
 
 // Value returns a copy of the current value. Returns nil when the iterator
-// is not positioned at a valid entry.
+// is not positioned at a valid entry, or when fetching the value fails: a
+// value stored out of line is read lazily, and pebble.Iterator.Value panics
+// when that read fails (an I/O error or a corrupt value block). Value reads
+// with ValueAndErr instead and records the first such failure, after which
+// Valid reports false and Error returns it.
 func (it *pebbleIterator) Value() []byte {
-	if it.iter == nil || it.closed.Load() || !it.iter.Valid() {
+	if !it.Valid() {
 		return nil
 	}
-	v := it.iter.Value()
+	v, err := it.iter.ValueAndErr()
+	if err != nil {
+		it.err = err
+		return nil
+	}
 	out := make([]byte, len(v))
 	copy(out, v)
 	return out

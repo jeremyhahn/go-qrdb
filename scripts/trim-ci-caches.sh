@@ -47,6 +47,39 @@ case $uid in
   "" | 0 | *[!0-9]*) echo "IN_IMAGE_UID must be a non-root numeric uid: $uid" >&2; exit 2 ;;
 esac
 
+# CUSTOMIZE (go-qrdb, #1275) begin: one trim at a time per host. Every job
+# trims after its stages, and each measure below walks the daemon's volumes and
+# their snapshots; N jobs walking them at once stalled a loaded daemon long
+# enough that a stage's multicast configurator could not start (#1275). The
+# lock file is on the runner's tool cache, the one directory every job on a
+# runner host shares (CI_CACHE_LOCK overrides it). A job that cannot take it
+# within CI_CACHE_LOCK_WAIT seconds skips its trim: the holder is trimming the
+# same volumes, so the skipped trim is redundant, never a failure.
+lock=${CI_CACHE_LOCK:-${RUNNER_TOOL_CACHE:-${TMPDIR:-/tmp}}/ci-cache-trim.lock}
+lock_wait=${CI_CACHE_LOCK_WAIT:-120}
+case $lock_wait in
+  '' | *[!0-9]*) echo "CI_CACHE_LOCK_WAIT must be a number: $lock_wait" >&2; exit 2 ;;
+esac
+# lock_fd9 takes the lock on fd 9 within $lock_wait seconds. It polls
+# `flock -n` once a second rather than calling `flock -w`: the toolchain
+# image's BusyBox flock takes only -s, -x, -u and -n, and rejects -w.
+lock_fd9() {
+  lock_deadline=$((SECONDS + lock_wait))
+  until flock -n 9; do
+    [ "$SECONDS" -lt "$lock_deadline" ] || return 1
+    sleep 1
+  done
+}
+if ! command -v flock >/dev/null 2>&1; then
+  echo "warn  flock not found: trimming without the host lock"
+elif ! { exec 9>>"$lock"; } 2>/dev/null; then
+  echo "warn  $lock: cannot open, trimming without the host lock"
+elif ! lock_fd9; then
+  echo "trim: skipped, another job held $lock for ${lock_wait}s"
+  exit 0
+fi
+# CUSTOMIZE (go-qrdb, #1275) end.
+
 # size <volume>: the volume's size in KiB, or nothing when it cannot be read.
 size() {
   docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \

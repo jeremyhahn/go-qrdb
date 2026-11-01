@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 Named credentials with versioned rotation, plus the SPI that resolves
@@ -96,6 +96,43 @@ the SPI.
 - Each verb carries its own permission; **`credentials:submit`,
   `credentials:rotate` and `credentials:delete` are sensitive and distinct from
   reads**.
+
+## Tenant stores
+
+**Every tenant has its own named-credential store; the platform's store is the
+system tenant's.** `service.CredentialService` resolves the store from the
+caller's tenant on every call. The system tenant, and a caller with no tenant,
+gets the node-wide store. A tenant with a dedicated barrier gets a
+`barrier`-strategy store over that barrier, built by
+`credentials.CredentialService.ForBarrier`, which shares the node-wide store's
+audit logger. So a tenant's credential operations land in the same audit trail.
+The `credentials:*` permissions are tenant self-scope
+(`pkg/permission/self_scope.go`): a tenant administrator can grant them inside
+the tenant, and a grant never reaches another tenant's store or the platform's.
+A list returns the caller's tenant's names only, and a name may exist in many
+tenants with different values.
+
+A tenant's store is refused, never substituted, in three cases:
+
+| Tenant | Result |
+|---|---|
+| On the shared system barrier (`prefix` isolation) | `CapabilityUnsupportedError`: the tenant has no dedicated barrier to keep a credential store under |
+| With a dedicated barrier that is sealed | `BarrierSealedError` |
+| On a node with no barrier registry bound | `CapabilityUnsupportedError`: tenant credential stores are not bound |
+
+**A tenant on the shared barrier is refused rather than given a key prefix
+inside the system store.** The system barrier has no per-tenant key namespace
+for credentials, and serving the node-wide store to a tenant would hand it the
+platform's secrets. `pkg/secret` refuses the same tenants for the same reason
+([secret-resolution.md](secret-resolution.md)). A tenant that needs
+credentials is onboarded with `barrier`, `volume` or `raft` isolation.
+
+**Rotations of one name are not serialized against each other.** Two
+concurrent `Rotate` calls on the same name in the same store each read the
+current version and write the next one, and the later write wins. This is a
+known property of the store, the same in every tenant and in the system store.
+Serializing those writes is the job of the row-lock work at the same point,
+not of this feature.
 
 ## Protected-memory boundary
 

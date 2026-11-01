@@ -23,8 +23,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 )
@@ -156,16 +154,6 @@ func TestAuthFactorService_EnrollFactor_PersistEnrollmentError(t *testing.T) {
 	_ = mockFactor
 }
 
-func TestAuthFactorService_ListFactors_WithNoEnrollments(t *testing.T) {
-	svc, _ := newPIVAuthFactorService(t)
-	ctx := context.Background()
-
-	factors, err := svc.ListFactors(ctx, "some-user-with-no-factors")
-	// Either empty list or error — both are valid for this case.
-	_ = factors
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // batch_service.go – range operation error in Execute (95.8% → higher)
 // The uncovered line at 169 is the range execute error return.
@@ -216,28 +204,6 @@ func TestBatchService_Import_CSV_HeaderOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 // batch_service.go – Import NDJSON error path (92.9% → higher)
 // ---------------------------------------------------------------------------
-
-func TestBatchService_Import_NDJSON_MalformedLine(t *testing.T) {
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Value: 1}, nil
-		},
-	}
-	svc := NewBatchService(host, 1)
-
-	// NDJSON with one malformed line.
-	ndjsonData := `{"key":"k1","value":"v1"}
-not-valid-json
-{"key":"k3","value":"v3"}`
-	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(ndjsonData), ImportOptions{
-		Format:     "ndjson",
-		KeyField:   "key",
-		ValueMode:  "field",
-		ValueField: "value",
-	})
-	// May succeed with partial results or return parse error.
-	_ = err
-}
 
 // ---------------------------------------------------------------------------
 // batch_service.go – parseJSON empty path (91.7% → higher)

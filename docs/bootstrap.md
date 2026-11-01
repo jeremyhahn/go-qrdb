@@ -19,23 +19,23 @@ A barrier is protected by exactly one of three core strategies:
 | Protection | Credential | Notes |
 |------------|-----------|-------|
 | `none` | none | Identity passthrough; data stored in cleartext. Dev/test or OS-level FDE. |
-| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 in FIPS 140 mode — see `seal.FIPSEnabled`). Supplied at `Initialize` and every `Unseal`; **never stored in config and never derived from a deployment ID**. Backed by `seal.SoftwareStrategy`, built by `seal.NewDeferredSoftwareStrategy`. |
+| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 in FIPS 140 mode — see `seal.FIPSEnabled`). Supplied at `Initialize` and every `Unseal`; **never stored in config**. A `seal.SoftwareStrategy` built by `seal.NewDeferredSoftwareStrategy`. |
 | `shamir` | M-of-N shares | Shares enrolled via the M-of-N ceremony. |
 
-Hardware strategies (`tpm2` / `pkcs11` / cloud KMS / Vault) are xkms-provided extensions of `passphrase`, registered into qrdb's `StrategyRegistry` at composition time — not core options. See [seal/README.md](seal/README.md).
+Hardware and KMS strategies are not core strategies: go-xkms provides them and registers them into qrdb's `StrategyRegistry` at composition time (`server.WithStrategyRegistry`). See [seal/README.md](seal/README.md).
 
 ### System vs per-tenant barriers
 
-- **System barrier** holds the **system tenant** (control plane: tenant records and tenant-admin identities). Created at admin bootstrap per config.
-- **Per-tenant barriers** are registered via `seal.BarrierRegistry.RegisterTenant(...)` as a sealed, uninitialized shell when the system admin provisions a tenant. The **tenant admin** later initializes their own barrier (their choice of `none` / `passphrase` / `shamir`, their passphrase/shares). The system admin holds no tenant barrier key.
+- **System barrier** holds the **system tenant** (control plane: tenant records, and the identities of every tenant that does not keep them behind its own barrier, `tenant.IAMBehindTenantBarrier`). `bootstrap.BootstrapSystem` initializes it per `SystemConfig.Strategy`; for `passphrase` and `shamir` it is initialized and unsealed beforehand, through the admin barrier API or the ceremony.
+- **Per-tenant barriers** are registered when a tenant is created with `barrier`, `volume` or `raft` isolation (`tenant.TenantService`, `seal.BarrierRegistry.RegisterBarrierTenant`). A system-managed (auto-unseal) tenant's DEK is wrapped under the system barrier and its barrier is initialized at once. A self-managed tenant's barrier is registered sealed and uninitialized: the tenant admin initializes it with `none` or `passphrase` (`bootstrap.InitializeTenantBarrier`), or with `shamir` over the tenant's enrolled share holders. The system admin holds no key for a self-managed tenant's barrier.
 
 ## Bootstrap entry points (`pkg/bootstrap`)
 
-Admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
+System admin enrollment is certificate-only: the ceremony (`ceremony.CeremonyService.Initialize`) signs the admin's CSR, adopts the admin's own certificate or generates one, and first boot binds its SPKI thumbprint to the admin (`SystemConfig.AdminCertPEM`; a composer that drives the CA itself sets `SystemConfig.AdminCSRPEM`). Tenant admin enrollment follows `TenantProvisionConfig.AdminEnrollment`: `cert` (the default) signs the admin's CSR or verifies its own certificate against the tenant's trust anchors and binds its SPKI thumbprint; `deferred` creates the admin pending, for an invitation (`pkg/invite`) that the composing host layers on top. No key is generated for a tenant admin. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
 
 - **System bootstrap** (`bootstrap.BootstrapSystem`) — system barrier + system tenant + system admin + admin-mTLS.
-- **Provision tenant** (`bootstrap.ProvisionTenant`) — minimal control-plane tenant record + tenant-admin cert enrollment (no tenant barrier key held by the system admin).
-- **Initialize tenant barrier** (`bootstrap.InitializeTenantBarrier`) — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
+- **Provision tenant** (`bootstrap.ProvisionTenant`) — tenant record, tenant-scoped built-in roles, tenant admin and its credential. It initializes no tenant barrier.
+- **Initialize tenant barrier** (`bootstrap.InitializeTenantBarrier`) — tenant-admin self-service: register (if needed) and initialize THIS tenant's barrier. The caller's authorization is checked at the API layer, not here.
 
 See [identity-rbac/architecture.md](identity-rbac/architecture.md) for the user model and SPKI binding.
 
@@ -43,9 +43,10 @@ See [identity-rbac/architecture.md](identity-rbac/architecture.md) for the user 
 
 `qrdbd start` runs one sequence on first boot and on every restart; only the
 first run initializes. The steps, in order: configuration loading, TLS
-certificate generation, storage initialization, Raft initialization, barrier
-initialization (if needed), role and user bootstrap, multi-protocol servers
-start. Each step belongs to a feature folder, which is the contract for it:
+certificates, barrier initialization and unsealing (while the barrier is sealed
+an API-only listener serves the seal endpoints and the data plane waits),
+storage and Raft initialization, role and user bootstrap, multi-protocol
+servers start. Each step belongs to a feature folder, which is the contract for it:
 
 | Step | Owner |
 |------|-------|
@@ -53,14 +54,7 @@ start. Each step belongs to a feature folder, which is the contract for it:
 | Barrier initialization and unsealing | [barrier-seal/architecture.md](barrier-seal/architecture.md), [seal/README.md](seal/README.md) |
 | M-of-N share enrollment and claim | [ceremony/architecture.md](ceremony/architecture.md), [shamir-custody/architecture.md](shamir-custody/architecture.md) |
 | First admin, built-in roles, idempotency | [firstboot/architecture.md](firstboot/architecture.md) |
-| Joining an existing cluster | [clustering/architecture.md](clustering/architecture.md) |
+| Joining an existing cluster | [clustering/architecture.md](clustering/architecture.md), [clustering/cli.md](clustering/cli.md) |
 
 First-boot orchestration is idempotent: roles and the admin user are created
 once, and a restart skips every step that already completed.
-
-## See Also
-
-- [ceremony/architecture.md](ceremony/architecture.md) — Ceremony state machine and share holder enrollment
-- [seal/README.md](seal/README.md) — Barrier architecture and unsealing
-- [12-configuration.md](12-configuration.md) — Full YAML configuration reference
-- [clustering/cli.md](clustering/cli.md) — Monitoring, health checks, and deployment

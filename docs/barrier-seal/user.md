@@ -96,10 +96,11 @@ or an application-level re-seed — never a raw copy of the old data directory.
 up: it runs in the sealed window before anything is unsealed,
 initializes the system barrier with the strategy and secret you give it, and
 issues the bootstrap admin's certificate in the same call (see
-[../firstboot/user.md](../firstboot/user.md)). `qrdb barrier init` targeting
-the system barrier is refused with a typed error pointing back here — it
-remains the command for a tenant or database barrier, which a tenant admin
-initializes separately after the system is up.
+[../firstboot/user.md](../firstboot/user.md)). The server refuses
+`qrdb barrier init` and `qrdb barrier init-shamir` with a typed error naming
+`qrdb init`. A tenant barrier is initialized
+separately, after the system is up, by the tenant admin with
+`qrdb tenant barrier-init`.
 
 ```bash
 qrdb init --so-pin <so-pin> --user-pin <user-pin> \
@@ -201,12 +202,16 @@ An embedder calls `Node.ChangePassphrase(ctx, current, next)`, which returns
 `seal.ErrCredentialMismatch` for a wrong current passphrase and
 `node.ErrSealNotEnabled` on a node without a seal barrier.
 
-**Set up M-of-N custody.** Enrol the share holders first, then initialize;
-one envelope is sealed to each holder and each claims theirs once. The full
+**Set up M-of-N custody.** `qrdb init` enrols the share holders and
+initializes the system barrier under Shamir in one call; one envelope is
+sealed to each holder and each claims theirs once. The full
 custody workflow is [../shamir-custody/user.md](../shamir-custody/user.md).
 
 ```bash
-qrdb barrier init-shamir --threshold 3 --total 5
+qrdb init --barrier-strategy shamir --shares 5 --threshold 3 --admin-csr admin.csr \
+  --so-pin <so-pin> --user-pin <user-pin> \
+  --officers alice=alice.csr --officers bob=bob.csr --officers carol=carol.csr \
+  --custodians dave=dave.csr --custodians erin=erin.csr
 ```
 
 **Unseal, seal and rotate with the holders.** A Shamir barrier opens only when

@@ -322,7 +322,7 @@ func newCertsListCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&tenantID, "tenant-id", sdk.SystemTenantID, "Filter by tenant ID")
+	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant to list (must be the caller's own); defaults to the caller's own")
 
 	return cmd
 }

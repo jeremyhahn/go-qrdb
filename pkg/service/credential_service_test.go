@@ -125,7 +125,9 @@ func TestNewCredentialService_InterfaceCompliance(t *testing.T) {
 
 func TestCredentialService_CredentialStrategy_Manual(t *testing.T) {
 	svc := newTestCredentialServiceSvc(t)
-	assert.Equal(t, "manual", svc.CredentialStrategy())
+	strategy, err := svc.CredentialStrategy(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "manual", strategy)
 }
 
 func TestCredentialService_CredentialStore_Success(t *testing.T) {

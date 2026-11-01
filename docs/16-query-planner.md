@@ -5,13 +5,13 @@
 
 ## 1. Overview
 
-QRDB includes an internal query planner that automatically selects optimal execution strategies based on available indexes and query predicates. The planner is not exposed directly to callers; instead, applications use the Data Access Object (DAO) layer which provides a GORM-style fluent query API.
+The query planner (`pkg/planner/`) selects an execution strategy from the available indexes and the query's predicates. Applications do not call it: they use the Data Access Object (DAO) layer's GORM-style fluent query API (`pkg/dao/query.go`), which plans every query.
 
 The planner evaluates the cost of different execution strategies (full scan, index lookup, index range scan) and selects the cheapest one, while respecting the semantics and ordering guarantees required by the query.
 
 ## 2. Architecture
 
-The query planner lives in `pkg/planner/` and operates at the service layer, between DAO query builders and the underlying MVCC state machine.
+The DAO's `QueryBuilder` turns its filters into `planner.Predicate` values, builds an index catalog from the entity, calls `planner.New(catalog).Plan(predicates)`, and executes the plan against the DAO's `kvstore.KVStore`.
 
 ```
 Application
@@ -49,9 +49,9 @@ The planner assigns costs to different execution strategies to guide plan select
 
 | Strategy | Cost | Reason |
 |----------|------|--------|
-| Unique index lookup (=) | 1 | O(1) hash lookup |
+| Unique index lookup (=), single-field or compound | 1 | O(1) hash lookup |
 | Compound index exact match | 3 | One lookup over several fields |
-| Normal index lookup (key match) | 10 | O(k) where k is cardinality |
+| Normal index lookup (key match), or `IN` on any index | 10 | O(k) where k is cardinality |
 | Index intersection | 15 added | Overhead of intersecting two index results |
 | Compound index prefix match | 20 | Bounded scan over a compound prefix |
 | Index range scan (>, >=, <, <=, BETWEEN) | 50 | O(log n + k) with range iteration |
@@ -76,8 +76,8 @@ based on struct tags on your entity.
 
 ### Defining an indexed entity
 
-Indexes are declared with `index` struct tags on the entity. At DAO
-construction time they are parsed into the planner's catalog.
+Indexes are declared with `index` struct tags on the entity. Each query
+builds the planner's catalog from them.
 
 ```go
 type User struct {
@@ -137,7 +137,7 @@ users, err := userDAO.Find(ctx).
     Where("Age > ?", 30).
     OrderBy("Name").
     Execute()
-// Planner selects: IndexScan on Age index (cost 50) + post-filter + sort
+// Planner selects: IndexScan on Age index (cost 50); Name is sorted in memory
 ```
 
 **Compound query (picks best index, post-filters rest):**
@@ -215,36 +215,38 @@ The query planner supports nine comparison operators:
 | Greater or equal | `>=` | `CreatedAt >= 2024-01-01` | IndexScan (cost 50) |
 | Less than | `<` | `Stock < 10` | IndexScan (cost 50) |
 | Less or equal | `<=` | `Score <= 100` | IndexScan (cost 50) |
-| IN (multi-value) | `IN` | `Role IN (admin, user)` | IndexLookup (cost 10) |
-| BETWEEN (range) | `BETWEEN` | `Age BETWEEN 18 AND 65` | IndexScan (cost 50) |
-| Prefix matching | `PREFIX` | `Name PREFIX alice` | IndexScan (cost 50) + post-filter; none on a numeric index |
+| IN (multi-value) | `IN` | `Role IN ?` with a slice argument | IndexLookup (cost 10) |
+| BETWEEN (range) | `BETWEEN` | `Age BETWEEN ? AND ?` | IndexScan (cost 50) |
+| Prefix matching | `PREFIX` | `Name PREFIX ?` | IndexScan (cost 50), not on a numeric field |
 
-Only these nine operators are accepted (`parseOperator`, `pkg/dao/filter.go`).
-`Where` records an `UnsupportedOperatorError` for any other, and the terminal
-method returns it.
+Only these nine operators are accepted. `Where` records an unrecognized operator as `*dao.UnsupportedOperatorError`, which the terminal method returns.
 
 ## 6. Security Model
 
+`Where` validates each expression before anything executes (`parseExpression`, `pkg/dao/filter.go`). It records the first error on the builder, and the terminal method returns it without running the query.
+
 ### Field Validation
 
-`Where` parses its expression with `parseExpression` (`pkg/dao/filter.go`),
-which checks the field against `validFieldMap()`: the entity's exported struct
-field names and their JSON names. Any other field returns
-`FieldNotFoundError`, so only fields defined in the entity struct can be
-queried.
+The field name must be an exported field of the entity struct, or that field's `json` tag name (`validFieldMap`, `pkg/dao/query.go`). Any other name is `*dao.FieldNotFoundError`, so unexported fields cannot be queried.
 
 ### Operator Whitelist
 
-`parseOperator` accepts the nine operators of §5 and returns
-`UnsupportedOperatorError` for anything else.
+The operator must be one of the nine in §5 (`parseOperator`, `pkg/dao/filter.go`). Any other is `*dao.UnsupportedOperatorError`.
 
 ### Parameterized Values
 
-Values are passed as `?` arguments and never interpolated into the expression:
+Values come only from the `?` arguments. The parser reads the field and the operator and ignores the rest of the expression, so a value concatenated into the string is never read:
 
 ```go
+// Values bound separately:
 .Where("Email = ?", userInput)
+
+// The quoted literal is ignored; with no argument this fails
+// with *dao.ExpressionParseError ("insufficient arguments"):
+.Where("Email = '" + userInput + "'")
 ```
+
+`BETWEEN` takes two arguments; every other operator takes one. `IN` takes one slice argument, flattened into the membership set.
 
 ### Predicate
 
@@ -259,8 +261,6 @@ type Predicate struct {
     Values   []interface{} // membership set; used with OpIn
 }
 ```
-
-Parse errors are recorded when `Where` is called, before execution begins.
 
 ## 7. Execution Flow
 
@@ -279,25 +279,32 @@ The execution flow from application code through to results is:
    Result: QueryBuilder with predicates, ordering, limit
 
 4. Application calls: .Execute()
-   Action: build planner predicates and the index catalog, then
-   planner.New(catalog).Plan(predicates)
+   Action: Return the recorded parse error, if any; otherwise build
+   the index catalog and call planner.New(catalog).Plan(predicates)
 
-5. Planner selects the cheapest plan:
-   - Primary strategy: IndexLookup on Status (cost 10, non-unique index)
-   - Post-filters: none
+5. Planner costs each candidate:
+   - Compound indexes covering several predicates
+   - Each single-field index (Status: IndexLookup, cost 10)
+   - Intersection of two or more single-field indexes
+   - Full scan (cost 1000)
 
-6. Execution engine executes the plan:
-   a. IndexLookup("Status", "active") → candidate set
+6. Planner selects the plan with the lowest cost plus post-filter penalty:
+   - Strategy: IndexLookup on Status (cost 10, non-unique index)
+   - Post-filters: none (Status was the only predicate)
+
+7. QueryBuilder executes the plan:
+   a. QueryByIndex(ctx, "Status", "active") → matching entities
    b. Apply post-filters
    c. Sort by Name in memory
    d. Apply limit (100 items)
 
-7. Application receives: []User with up to 100 active users, sorted by name
+8. Application receives: []User with up to 100 active users, sorted by name
 ```
 
-If the store reports `kvstore.ErrIndexUnsupported` for the chosen plan, the
-query falls back to a full scan with every predicate as a filter. A direct
-`QueryByIndex` or `ScanByIndex` call does not fall back; it returns the error.
+The planner does not consider ordering: `OrderBy` always sorts the full
+result in memory after filtering. If an index plan's store reports
+`kvstore.ErrIndexUnsupported`, the query falls back to a full scan with
+every predicate as a post-filter.
 
 The planner **always** ensures:
 
@@ -308,25 +315,27 @@ The planner **always** ensures:
 
 ## 8. Query Plan Caching
 
-The planner does not cache plans. Every query is planned when it runs; planning
-is a pass over the entity's declared indexes and costs a handful of constant
-comparisons.
+The planner does not cache plans. Every terminal call builds the index catalog
+from the entity's struct tags and compound index definitions, then plans the
+query.
 
 ## 9. Power-User Escape Hatches
 
 `Find().Where()` is the recommended path for virtually all application
 code. For callers who need explicit index control, the DAO also exposes
-low-level methods that bypass the planner and target a specific index by
-name:
+low-level methods that bypass the planner. The single-field methods take the
+indexed field's name; the compound methods take the compound index name,
+`<Entity>.<Field1>_<Field2>`, prefixed with `<database>.` on a
+database-scoped DAO:
 
 ```go
-// Exact-value lookup on a named index:
+// Exact-value lookup on an indexed field:
 results, err := userDAO.QueryByIndex(ctx, "Email", "alice@example.com")
 
-// Half-open range scan on a named index:
+// Half-open range scan on an indexed field:
 results, err := userDAO.ScanByIndex(ctx, "Age", 18, 65)
 
-// Paginated lookup on a named index:
+// Paginated lookup on an indexed field:
 page, err := userDAO.PageByIndex(ctx, "Status", "active",
     dao.PageQuery{Page: 1, PageSize: 25})
 
@@ -342,6 +351,9 @@ These are useful when:
 - Pinning to a specific index for reproducibility in benchmarks
 - Driving reports where you already know the access pattern
 - Bypassing the planner while debugging plan selection
+
+An explicit method names its access path, so it never falls back to a full
+scan: a store that cannot serve the index returns `kvstore.ErrIndexUnsupported`.
 
 Prefer `Find().Where()` in application code. The explicit methods are
 fully supported but require you to know index names and selectivity —
@@ -401,4 +413,3 @@ bucketing — see [time-series/engineering.md](time-series/engineering.md).
 - [Secondary Indexes](08-secondary-indexes.md) -- Index types, creation, and management
 - [MVCC Engine](key-value/engineering.md) -- Underlying key-value versioning
 - [Configuration](12-configuration.md) -- `index.max_indexes` setting
-- [API Reference](api-server/api.md) -- DAO query endpoints

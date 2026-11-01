@@ -87,9 +87,9 @@ test("standalone admin views render against a real empty backend without a JS pa
     await clickAdminNavItem(page, item);
     await expect(page.locator(".breadcrumbs").getByText(item)).toBeVisible({ timeout: LOAD_TIMEOUT });
 
-    // Let any async list-fetch (databases/backups/tenants/etc.) settle before
-    // checking for accumulated errors and moving to the next view.
-    await page.waitForTimeout(250);
+    // Let the view's async list-fetches (databases/backups/tenants/etc.)
+    // settle before checking for accumulated errors and moving on.
+    await page.waitForLoadState("networkidle", { timeout: LOAD_TIMEOUT });
 
     if (pageErrors.length > 0) {
       const messages = pageErrors.map((e) => e.message).join("\n  ");
@@ -139,7 +139,7 @@ test("Tenants view lists zero tenants against a real empty backend without crash
 
   await clickAdminNavItem(page, "Tenants");
   await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.waitForTimeout(250);
+  await page.waitForLoadState("networkidle", { timeout: LOAD_TIMEOUT });
 
   expect(pageErrors).toEqual([]);
 });

@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -20,7 +20,7 @@ type CredentialServicer interface {
     CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error)
     CredentialSubmit(ctx context.Context, name string, value []byte) error
     CredentialDelete(ctx context.Context, name string) error
-    CredentialStrategy() string
+    CredentialStrategy(ctx context.Context) (string, error)
 
     // Versioned rotation
     CredentialList(ctx context.Context) ([]string, error)
@@ -32,7 +32,16 @@ type CredentialServicer interface {
 ```
 
 `CredentialService` (`pkg/service/credential_service.go`) is the canonical
-implementation and a thin pass-through to `credentials.CredentialService`.
+implementation. It resolves the caller's tenant's store on every call and then
+passes through to that `credentials.CredentialService`. The system tenant's
+store is the node-wide service. A tenant's store is built over its dedicated
+barrier with `credentials.CredentialService.ForBarrier`, which refuses a nil
+barrier with `ErrNilBarrier` and shares the parent's audit logger.
+`service.WithCredentialTenantBarriers(registry)` binds the
+`seal.BarrierRegistry` the tenant barriers come from. The node's lifecycle
+passes it whenever the node has a registry; without it, every tenant call is
+refused. The embedded transport is handed the same `CredentialServicer` as
+the network transports (`embedded.WithCredentialService`).
 
 `transport.CredentialClient` (the SDK surface) carries the same pair:
 `CredentialRetrieveBuffer(ctx, name)` and
@@ -90,7 +99,8 @@ is the contract for where bytes may leave it. The rules a contributor works to:
 | `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; a read opens the enclave straight into a fresh `*secure.Buffer` |
 | `barrier` | encrypt-then-store through `seal.StorageBarrier` | the default; unreadable while sealed |
 
-`CredentialStrategy()` reports which is active. A strategy that cannot
+`CredentialStrategy(ctx)` reports the strategy of the caller's store: the
+configured one for the system tenant, always `barrier` for a tenant. A strategy that cannot
 enumerate returns `ErrEnumerationNotSupported` from `ListCredentials` rather
 than change the interface.
 
@@ -100,6 +110,15 @@ than change the interface.
   KEK/DEK custody in the barrier and from the Raft data plane.
 - **`pkg/credentials` is the only secret-bearing store in qrdb.** There is no
   `secrets` or `kms` package.
+- **A tenant's credentials live under the tenant's own barrier, never in the
+  system store.** The store is resolved from the caller's tenant, never from a
+  request field. A tenant on the shared system barrier is refused, not given
+  the node-wide store or a prefix inside it. Names and values in one tenant are
+  invisible to every other tenant and to the platform.
+- **Concurrent rotations of one name are not serialized.** Each reads the
+  current version and writes the next; the later write wins. This is a known
+  property, not a defect of tenancy; serializing them belongs to the row-lock
+  work.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
   a read opens the enclave into a fresh `*secure.Buffer`; the enclave is
   destroyed on delete and on a rotation with no grace period.
@@ -187,6 +206,9 @@ than change the interface.
 | Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
 | `ListCredentials` on a backend that cannot enumerate | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
+| Tenant on the shared system barrier | `*service.CapabilityUnsupportedError` (no dedicated barrier) | **yes**, never the node-wide store |
+| Tenant whose dedicated barrier is sealed | `*service.BarrierSealedError` | **yes** |
+| Tenant caller on a node with no barrier registry bound | `*service.CapabilityUnsupportedError` (not bound) | **yes** |
 
 The "blocks rather than returns empty" property is the load-bearing one for the
 ceremony case: a non-resident secret that read as empty would let a boot
@@ -196,7 +218,11 @@ continue with no credential at all.
 
 One permission per verb, listed in the [API capability matrix](api.md#capability-matrix)
 (`pkg/permission/constants.go`). **Write, rotate and delete custody secret
-material and are gated separately from reads.**
+material and are gated separately from reads.** Every `credentials:*`
+permission is tenant self-scope, declared in `pkg/permission/self_scope.go`,
+so a tenant administrator can grant it inside the tenant. The grant reaches
+only that tenant's store because the store is resolved from the caller's
+tenant.
 
 ## Configuration
 
@@ -219,7 +245,7 @@ expiry implied by the rotation's grace period.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol, the tenant-store CLI suite per protocol, and the embedded tenant-store suite. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: store/retrieve/submit/delete for both strategies, rotation with and
   without a grace period, versioned retrieval including `0` meaning current, GC
@@ -239,6 +265,14 @@ expiry implied by the rotation's grace period.
   destroyed; a nil Buffer without an error fails closed), `BufferFromWire`
   (moves, wipes, refuses empty), and each of the six SDK transports (success,
   server error, nil request, closed transport).
+- **Tenant stores are tested end to end on every transport**: two tenants
+  holding the same name with different values, each reading only its own; one
+  tenant's list, retrieve, rotate and delete never reaching the other's or the
+  platform's; a principal without the grants refused; and a shared-barrier
+  tenant refused for want of a dedicated barrier. The CLI covers REST, gRPC,
+  QUIC, MCP and Unix, and the SDK client covers embedded. Unit tests cover
+  the service's store resolution, `ForBarrier`, and the lifecycle option that
+  binds the registry.
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
 - **Error tests** per function.

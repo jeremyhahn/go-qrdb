@@ -1221,9 +1221,9 @@ func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatu
 }
 func (s *stubBarrierSvc) BarrierDeleteRecoveryKeys(_ context.Context) error { return nil }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (s *stubBarrierSvc) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (s *stubBarrierSvc) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 func (s *stubBarrierSvc) BarrierHasRecoveryKeys(_ context.Context) (bool, error) { return false, nil }
 
@@ -1262,7 +1262,9 @@ func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []by
 	return nil
 }
 func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
-func (s *stubCredentialSvc) CredentialStrategy() string                         { return "stub" }
+func (s *stubCredentialSvc) CredentialStrategy(context.Context) (string, error) {
+	return "stub", nil
+}
 func (s *stubCredentialSvc) CredentialList(_ context.Context) ([]string, error) {
 	return nil, nil
 }

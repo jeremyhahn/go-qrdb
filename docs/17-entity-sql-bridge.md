@@ -87,9 +87,10 @@ INSERT INTO users (_id, name, email, age) VALUES (456, 'Bob', 'bob@example.com',
 | `bool` | `BOOLEAN` |
 | `[]byte` | `BLOB` |
 | `time.Time` | `DATETIME` |
-| other slices, `map`, `struct` | `JSON` |
+| `map`, `struct`, slices other than `[]byte` | `JSON` |
+| any other kind | `VARCHAR(65535)` |
 
-The `_id` column is always `BIGINT UNSIGNED PRIMARY KEY NOT NULL`, mapped to `EntityID()`. The primary-key field itself is not a separate column; the remaining fields follow `_id` as nullable columns named by their JSON names, in alphabetical order (`buildEntitySchema`). A field that holds a `dao.SecretBytes` is never a column, and the DAO refuses an index on one.
+Pointer types map as the type they point to (`entity.GoTypeToSQLType`, `pkg/entity/type_mapping.go`). The `_id` column is always `BIGINT UNSIGNED PRIMARY KEY NOT NULL`, mapped to `EntityID()`; the Go field that holds the ID is not repeated as a column. The remaining fields follow `_id` as nullable columns named by their JSON names, in alphabetical order (`buildEntitySchema`). A field that holds a `dao.SecretBytes` is never a column, and the DAO refuses an index on one.
 
 ## Index Sharing
 
@@ -113,12 +114,12 @@ SELECT * FROM products WHERE sku = 'ABC-123';
 
 ## Codec Handling
 
-Two codec layers apply:
+Two codecs are in play:
 
-- **DAO layer** (`dao.Codec[E]`): entity-level serialization selected per DAO via `dao.WithCodec()`.
-- **Service layer** (`codec.Manager`): storage and wire transcoding, configured per service.
+- **DAO layer** (`dao.Codec[E]`): entity serialization, selected per DAO via `dao.WithCodec()`.
+- **Service layer** (`codec.Manager`, `pkg/codec`): storage and wire transcoding, configured per service.
 
-The registration carries `MarshalFunc` and `UnmarshalFunc` closures over the DAO's codec, so `EntityTable` encodes and decodes entities with the codec the DAO uses without importing a codec package:
+`dao.New()` stores `MarshalFunc` and `UnmarshalFunc` closures over its codec in the registration, so the `EntityTable` encodes and decodes with the DAO's codec without importing a codec library:
 
 ```go
 // JSON (default)
@@ -131,23 +132,23 @@ userDAO, _ := dao.New[*User](kvStore, "users", newUser, dao.WithCodec(dao.CodecM
 userDAO, _ := dao.New[*User](kvStore, "users", newUser, dao.WithCodec(dao.CodecCBOR))
 ```
 
-In each case `SELECT * FROM users` decodes rows with the marshal and unmarshal functions the DAO captured at registration.
+In all cases `SELECT * FROM users` returns the same rows: the `EntityTable` calls the marshal and unmarshal closures the DAO stored at registration.
 
 ### Supported Codecs
 
-`dao.NewCodec` accepts a codec only when `go-codec` reports it compiled in, and each `go-codec` codec is behind its own build tag. `make print-build-tags` prints the default set.
+Every `go-codec` codec is compiled in only under its build tag; `make -s print-build-tags` prints the default set.
 
-| Codec | Build Tag | In default `BUILD_TAGS` | Format |
-|-------|-----------|-------------------------|--------|
-| JSON | `codec_json` | yes | Human-readable |
-| YAML | `codec_yaml` | yes | Human-readable |
-| TOML | `codec_toml` | no | Human-readable |
-| MsgPack | `codec_msgpack` | yes | Binary |
-| BSON | `codec_bson` | yes | Binary, MongoDB-compatible |
-| CBOR | `codec_cbor` | no | Binary |
-| ProtoBuf | `codec_protobuf` | yes | Binary, schema-based |
+| Codec | `dao` constant | Build tag | In the default build | Format |
+|-------|----------------|-----------|----------------------|--------|
+| JSON | `CodecJSON` | `codec_json` | yes | Human-readable |
+| YAML | `CodecYAML` | `codec_yaml` | yes | Human-readable |
+| TOML | `CodecTOML` | `codec_toml` | no | Human-readable |
+| MsgPack | `CodecMsgPack` | `codec_msgpack` | yes | Binary, compact |
+| BSON | `CodecBSON` | `codec_bson` | yes | Binary, MongoDB-compatible |
+| CBOR | `CodecCBOR` | `codec_cbor` | no | Binary, IoT-friendly |
+| ProtoBuf | `CodecProtoBuf` | `codec_protobuf` | yes | Binary, schema-based |
 
-`dao.New` refuses `dao.CodecProtoBuf` with a `CodecCreationError`: a ProtoBuf codec comes from `dao.NewProtoBufCodec[E]()`, which `dao.New` does not take, so a ProtoBuf entity has no SQL table.
+`dao.New()` returns a `CodecCreationError` for a codec not compiled in, and for `CodecProtoBuf`, which needs a `proto.Message` entity built with `dao.NewProtoBufCodec[E]()` and so has no SQL bridge.
 
 ### Secret fields
 
@@ -200,7 +201,7 @@ dbEntities := registry.ListForDatabase("myapp")
 ### Registration Fields
 
 Each `entity.Registration` contains:
-- `EntityType` — table name (e.g., `"users"`)
+- `EntityType` — table name (e.g., `"users"`); the registry key
 - `StructType` — `reflect.Type` for schema derivation
 - `Fields` — ordered `FieldMeta` with type info, index flags, PK designation
 - `IDFieldJSON` / `IDFieldGo` — JSON and Go names of the primary-key field
@@ -208,6 +209,8 @@ Each `entity.Registration` contains:
 - `NewFunc` — factory for creating zero-value entities
 - `Database` — optional database scope
 - `CodecType` — codec identifier string
+
+`Register` is idempotent for the same `EntityType` and struct type and returns `AlreadyRegisteredError` for the same `EntityType` with a different struct type; `dao.New()` ignores that error, so the first registration of a name wins.
 
 ## Database Scoping
 

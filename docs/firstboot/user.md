@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Getting a brand-new server from nothing to something you can log into.
@@ -102,10 +102,8 @@ a file on one node's disk.
 
 ## Bringing your own admin credential
 
-Exactly one of three paths produces the bootstrap admin's certificate, chosen
-by which flag you pass to `qrdb init` (none of these are an `admin-user` CLI
-flag — all three are initialize-time, because the credential is chosen once,
-at the same moment as the barrier and the CA):
+Exactly one of three `qrdb init` flags produces the bootstrap admin's
+certificate. The credential is chosen once, with the barrier and the CA:
 
 - **`--admin-csr <path>`** — a CSR you generated with your own key (ideally on
   a PIV card or a security key). The ceremony's CA signs it as
@@ -124,9 +122,8 @@ at the same moment as the barrier and the CA):
   `--admin-cert` for any deployment that must meet those controls.
 
 One of the three flags is **required**: there is no credential-less
-default. Omitting all three is refused before anything is initialized
-(`*NoAdminCredentialSelectedError`), the same way supplying more than one is
-(`*ConflictingAdminCredentialInputsError`).
+default. Omitting all three, or passing more than one, is refused before
+anything is initialized.
 
 The certificate (and, for the generate path, the key) are printed by `qrdb
 init` itself — capture them immediately; the key cannot be retrieved again.
@@ -137,8 +134,9 @@ when that binding has not arrived by the time it finishes starting.
 
 ## Troubleshooting
 
-**"M-of-N requires at least one officer".** `--threshold >= 2` requires `--officers` entries. Without
-them you would end up with a quorum arrangement nobody holds a share in, so it
+**"M-of-N requires at least one officer".** `--barrier-strategy shamir`
+needs its share holders named: `--officers`, `--custodians` or
+`--officers-file`. Without them you would end up with a quorum arrangement nobody holds a share in, so it
 fails closed.
 
 **"no admin certificate binding and no pending admin credential record".**
@@ -221,9 +219,9 @@ credential" if the expired binding was never replaced — at which point the
 retry goes back to being reachable with the SO PIN alone, no SO identity
 required.
 
-**"AdminCSRPEM and AdminCertPEM are mutually exclusive".** You gave both `--admin-csr` and `--admin-cert`. Signing the
-CSR would leave your certificate unbound; adopting the certificate would
-discard your CSR. Pick one.
+**"mutually exclusive: supply exactly one admin credential path".** You gave
+more than one of `--admin-csr`, `--admin-cert` and `--admin-generate`. Only
+one credential can be bound to the admin. Pick one.
 
 **"bootstrap admin credential rejected".** The presented certificate (or the
 pool you supplied) does not parse, the certificate has expired, or it does not
@@ -269,7 +267,7 @@ on whether the admin account's EXISTING binding is still live (unexpired),
 not merely on whether you still hold the private key:
 
 - **The existing binding is still live.** The reissue refuses with
-  `AdminAlreadyBoundError` — this is not a bug to work around; a working
+  "the bootstrap admin already holds a certificate binding" — this is not a bug to work around; a working
   binding is deliberately never silently replaced, precisely because
   "the operator lost the key file" and "the account's credential was
   compromised and someone else has it" look identical from the server's

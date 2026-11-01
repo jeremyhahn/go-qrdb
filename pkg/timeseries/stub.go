@@ -466,3 +466,8 @@ func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, int
 func (s *Storage) Close() error {
 	return nil
 }
+
+// View is a no-op without qrdb_ts; the stub reads nothing.
+func (s *Storage) View(_ storage.Reader) *Storage {
+	return s
+}

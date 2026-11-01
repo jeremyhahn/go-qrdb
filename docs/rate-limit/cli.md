@@ -1,9 +1,14 @@
 # Rate Limiting — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
-**There is no CLI surface for this feature.**
+**There is no CLI command for this feature.** The one operator setting is
+the per-client-address limit, `transport.client_rate_limit`, in the file
+`qrdbd start --config` reads; it has no flag
+([user.md](user.md#for-an-operator-limiting-each-client-address)). A `qrdb`
+command refused by it fails with the node's rate-limit refusal, naming the
+client address and the wait, on every transport.
 
 `qrdbd` has no flag, and `pkg/config`'s YAML schema has no field, to declare
 or adjust a per-permission rate-limit `Policy`. Declaring one is a Go-code

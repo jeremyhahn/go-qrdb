@@ -52,9 +52,11 @@ func (s *qrdbServiceServer) CredentialStrategy(ctx context.Context, _ *emptypb.E
 	if s.credentialSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "credential"})
 	}
-	return &pb.CredentialStrategyResponse{
-		Strategy: s.credentialSvc.CredentialStrategy(),
-	}, nil
+	strategy, err := s.credentialSvc.CredentialStrategy(ctx)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.CredentialStrategyResponse{Strategy: strategy}, nil
 }
 
 // CredentialDelete removes a named credential and all of its non-current

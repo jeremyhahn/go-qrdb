@@ -71,6 +71,32 @@ func TestApplyConfigToFlags_JoinAndAdvertiseFields(t *testing.T) {
 	}
 }
 
+// TestApplyConfigToFlags_WatchSection pins that the YAML watch section reaches
+// the start flags, from which runStart builds every watch hub's options.
+func TestApplyConfigToFlags_WatchSection(t *testing.T) {
+	cfg := &qrdbconfig.Config{}
+	cfg.Watch.BufferSize = 64
+	cfg.Watch.MaxWatchers = 3
+
+	f := &startFlags{}
+	applyConfigToFlags(newStartCmd(), f, cfg)
+
+	if f.watchConfig.BufferSize != 64 || f.watchConfig.MaxWatchers != 3 {
+		t.Fatalf("watchConfig = %+v, want BufferSize 64, MaxWatchers 3", f.watchConfig)
+	}
+}
+
+// TestApplyConfigToFlags_NoWatchSectionIsUncapped pins the zero value: with no
+// watch section the hubs keep the package default buffer and no cap.
+func TestApplyConfigToFlags_NoWatchSectionIsUncapped(t *testing.T) {
+	f := &startFlags{}
+	applyConfigToFlags(newStartCmd(), f, &qrdbconfig.Config{})
+
+	if f.watchConfig != (qrdbconfig.WatchConfig{}) {
+		t.Fatalf("watchConfig = %+v, want the zero value", f.watchConfig)
+	}
+}
+
 // TestApplyConfigToFlags_ExplicitFlagsWin proves a flag the operator set
 // is not overwritten by the same setting in the config file.
 func TestApplyConfigToFlags_ExplicitFlagsWin(t *testing.T) {

@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 A user can hold several authentication factors — a client certificate, a FIDO2
@@ -117,10 +117,11 @@ qrdb barrier seal --so-pin SO123 -y
 qrdb barrier rekey --so-pin SO123
 ```
 
-**Both PINs or neither** at initialization: supplying `--so-pin` requires
-`--user-pin` and vice versa. That pair is what satisfies FIPS 140-3 and
-PCI-DSS v4 dual control. Any PIN is refused entirely with
-`--barrier-strategy=none`, because there is nothing to protect.
+`qrdb init` requires both `--so-pin` and `--user-pin`. `qrdb barrier init`
+takes **both PINs or neither**: supplying `--so-pin` requires `--user-pin` and
+vice versa. That pair is what satisfies FIPS 140-3 and PCI-DSS v4 dual
+control. `qrdb barrier init` refuses any PIN with `--barrier-strategy=none`,
+because there is nothing to protect.
 
 Minimum length is **6 characters**, enforced server side.
 
@@ -154,7 +155,7 @@ the algorithm is stored with each record and resolved at verification time.
 ## Factor records without a tenant
 
 A factor record stored in the keyspace with no tenant in it is moved, the
-first time the server serves an authentication, into the tenant that owns its
+first time the server serves a factor request, into the tenant that owns its
 user, and the server logs what it did.
 
 You do not have to run anything. Two log lines matter:
@@ -204,18 +205,18 @@ user's factors landed while yours was committing. Nothing was enrolled; retry.
 The node's store has no guarded writes, so it cannot decide a condition
 safely and refuses rather than guessing. Unconditional adds still work.
 
-**"PIN too short".** Six characters, minimum, enforced before any backend sees
-it.
+**"PIN must be at least 6 characters".** Enforced before any backend sees it.
 
-**"PIN already set".** Use the change operation rather than the set operation.
+**"PIN already set, use Change instead".** Use the change operation rather
+than the set operation.
 
 **A hardware backend says it is locked out.** The error carries a
 `LockoutStatus` with the recovery time. On a TPM, `ErrHierarchyAuthMismatch`
 is worse — it means the hierarchy auth came from a session whose local state was
 lost, and a factory reset is required.
 
-**One PIN was rejected on its own.** Dual control: they come in pairs at
-initialization.
+**One PIN was rejected on its own.** Dual control: `qrdb barrier init` takes
+them in pairs.
 
 **Your factor enrolment data looks wrong in the store.** qrdb stores it as an
 opaque blob and never parses it — the shape is entirely the factor

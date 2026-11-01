@@ -16,9 +16,14 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // CredentialServicer provides credential management operations including
@@ -45,8 +50,8 @@ type CredentialServicer interface {
 	// all of its non-current historical versions.
 	CredentialDelete(ctx context.Context, name string) error
 
-	// CredentialStrategy returns the active credential strategy name.
-	CredentialStrategy() string
+	// CredentialStrategy returns the strategy of the caller's store.
+	CredentialStrategy(ctx context.Context) (string, error)
 
 	// CredentialList returns the names of every stored credential.
 	// Values are never returned by enumeration. Returns
@@ -76,19 +81,86 @@ type CredentialServicer interface {
 	CredentialGCExpired(ctx context.Context, name string) (int, error)
 }
 
-// CredentialService implements CredentialServicer by delegating to a
-// credentials.CredentialService instance.
+// CredentialTenantBarriers looks up a tenant's barrier. It is the seam through
+// which the credential verbs reach a tenant's own named-credential store;
+// *seal.BarrierRegistry satisfies it.
+type CredentialTenantBarriers interface {
+	GetTenant(tenantID string) (*seal.TenantBarrier, error)
+}
+
+// CredentialServiceOption configures a CredentialService.
+type CredentialServiceOption func(*CredentialService)
+
+// WithCredentialTenantBarriers binds the tenant barrier lookup the credential
+// verbs resolve a tenant caller's store through. Without it a tenant caller is
+// refused with a CapabilityUnsupportedError: it is never served from the
+// node-wide store.
+func WithCredentialTenantBarriers(tenants CredentialTenantBarriers) CredentialServiceOption {
+	return func(s *CredentialService) {
+		s.tenants = tenants
+	}
+}
+
+// CredentialService implements CredentialServicer over one named-credential
+// store per tenant. The system tenant's store is the node-wide
+// credentials.CredentialService it was built with; every other tenant's store
+// is derived from that tenant's barrier (credentials.CredentialService.ForBarrier),
+// so it lives in the tenant's own data plane, encrypted under its barrier key.
+// Every verb resolves the store from the caller's tenant (tenant.FromContext),
+// which the authorization middleware binds to the authenticated identity.
 type CredentialService struct {
-	creds *credentials.CredentialService
+	creds   *credentials.CredentialService
+	tenants CredentialTenantBarriers
 }
 
 // Compile-time interface check.
 var _ CredentialServicer = (*CredentialService)(nil)
 
-// NewCredentialService creates a new CredentialServicer backed by the
-// given credentials.CredentialService.
-func NewCredentialService(c *credentials.CredentialService) CredentialServicer {
-	return &CredentialService{creds: c}
+// NewCredentialService creates a new CredentialServicer whose system-tenant
+// store is c. Pass WithCredentialTenantBarriers to serve tenant callers from
+// their own stores.
+func NewCredentialService(c *credentials.CredentialService, opts ...CredentialServiceOption) CredentialServicer {
+	s := &CredentialService{creds: c}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// store resolves the caller's named-credential store. The system tenant (and
+// a call that carries no tenant) gets the node-wide store; any other tenant
+// gets a store over its own barrier, built per call because an
+// enable-encryption rekey can swap the tenant's barrier
+// (StorageBarrier.ReopenKeyed) and a cached store would serve the stale one.
+// A tenant with no dedicated barrier is refused with
+// *CapabilityUnsupportedError and a sealed one with *BarrierSealedError;
+// there is no fallback to the node-wide store.
+func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialService, error) {
+	tenantID := tenant.FromContext(ctx)
+	if tenantid.IsSystem(tenantID) {
+		return s.creds, nil
+	}
+	if s.tenants == nil {
+		return nil, &CapabilityUnsupportedError{
+			Message: "credentials: tenant credential stores are not bound on this node",
+		}
+	}
+	tb, err := s.tenants.GetTenant(tenantID)
+	if errors.Is(err, seal.ErrTenantNotFound) {
+		// A tenant on the shared system barrier has no barrier of its own
+		// to keep a store under, and the node-wide store is the system
+		// tenant's: refuse rather than share it.
+		return nil, &CapabilityUnsupportedError{
+			Message: "credentials: tenant " + strconv.Quote(tenantID) + " has no dedicated barrier to keep a credential store under",
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if tb.IsSealed() {
+		return nil, &BarrierSealedError{TenantID: tenantID}
+	}
+	return s.creds.ForBarrier(tb.Barrier())
 }
 
 // CredentialWireValue copies a retrieved credential out of protected memory
@@ -109,63 +181,103 @@ func CredentialWireValue(buf *secure.Buffer) ([]byte, error) {
 	return secure.CopyOut(buf)
 }
 
-// CredentialStore persists a credential under the given name by delegating
-// to the underlying CredentialService's StoreCredential method.
+// CredentialStore persists a credential under the given name in the caller's
+// store.
 func (s *CredentialService) CredentialStore(ctx context.Context, name string, value []byte) error {
-	return s.creds.StoreCredential(ctx, name, value)
+	c, err := s.store(ctx)
+	if err != nil {
+		return err
+	}
+	return c.StoreCredential(ctx, name, value)
 }
 
-// CredentialRetrieveBuffer returns the credential value for the given name in
-// protected memory by delegating to the underlying CredentialService's
-// RetrieveCredentialBuffer method.
+// CredentialRetrieveBuffer returns the credential value for the given name
+// from the caller's store, in protected memory.
 func (s *CredentialService) CredentialRetrieveBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
-	return s.creds.RetrieveCredentialBuffer(ctx, name)
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.RetrieveCredentialBuffer(ctx, name)
 }
 
-// CredentialSubmit submits a credential by delegating to the underlying
-// CredentialService's SubmitCredential method.
+// CredentialSubmit submits a credential to the caller's store.
 func (s *CredentialService) CredentialSubmit(ctx context.Context, name string, value []byte) error {
-	return s.creds.SubmitCredential(ctx, name, value)
+	c, err := s.store(ctx)
+	if err != nil {
+		return err
+	}
+	return c.SubmitCredential(ctx, name, value)
 }
 
-// CredentialDelete removes a credential by delegating to the underlying
-// CredentialService's DeleteCredential method.
+// CredentialDelete removes a credential, and its historical versions, from
+// the caller's store.
 func (s *CredentialService) CredentialDelete(ctx context.Context, name string) error {
-	return s.creds.DeleteCredential(ctx, name)
+	c, err := s.store(ctx)
+	if err != nil {
+		return err
+	}
+	return c.DeleteCredential(ctx, name)
 }
 
-// CredentialStrategy returns the active credential strategy name by
-// delegating to the underlying CredentialService's Strategy method.
-func (s *CredentialService) CredentialStrategy() string {
-	return s.creds.Strategy()
+// CredentialStrategy returns the strategy of the caller's store: the node's
+// configured strategy for the system tenant, the barrier strategy for any
+// other tenant.
+func (s *CredentialService) CredentialStrategy(ctx context.Context) (string, error) {
+	c, err := s.store(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.Strategy(), nil
 }
 
-// CredentialList returns the names of every stored credential.
+// CredentialList returns the names of every credential in the caller's store.
 func (s *CredentialService) CredentialList(ctx context.Context) ([]string, error) {
-	return s.creds.ListCredentials(ctx)
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListCredentials(ctx)
 }
 
-// CredentialRotate atomically replaces the current value of name with
-// opts.NewValue, returning version metadata + grace expiry.
+// CredentialRotate atomically replaces the current value of name in the
+// caller's store with opts.NewValue, returning version metadata + grace
+// expiry.
 func (s *CredentialService) CredentialRotate(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error) {
-	return s.creds.RotateCredential(ctx, name, opts)
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.RotateCredential(ctx, name, opts)
 }
 
 // CredentialRetrieveVersionBuffer returns the stored credential value for a
-// specific version (or the current version when version == 0) in protected
-// memory.
+// specific version (or the current version when version == 0) from the
+// caller's store, in protected memory.
 func (s *CredentialService) CredentialRetrieveVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
-	return s.creds.RetrieveCredentialVersionBuffer(ctx, name, version)
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.RetrieveCredentialVersionBuffer(ctx, name, version)
 }
 
-// CredentialListVersions returns the version history (current + grace)
-// for name. Each entry's Value field is nil.
+// CredentialListVersions returns the version history (current + grace) for
+// name in the caller's store. Each entry's Value field is nil.
 func (s *CredentialService) CredentialListVersions(ctx context.Context, name string) ([]credentials.CredentialVersion, error) {
-	return s.creds.ListCredentialVersions(ctx, name)
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListCredentialVersions(ctx, name)
 }
 
-// CredentialGCExpired reaps historical versions whose grace period has
-// elapsed. Returns the count reaped.
+// CredentialGCExpired reaps historical versions of name in the caller's store
+// whose grace period has elapsed. Returns the count reaped.
 func (s *CredentialService) CredentialGCExpired(ctx context.Context, name string) (int, error) {
-	return s.creds.GCExpiredVersions(ctx, name)
+	c, err := s.store(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return c.GCExpiredVersions(ctx, name)
 }

@@ -47,7 +47,7 @@ func TestLocalEngine_PublishesIntoServedWatchHub(t *testing.T) {
 	defer cancel()
 
 	hub := watch.NewHub()
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stg.Close() })
 

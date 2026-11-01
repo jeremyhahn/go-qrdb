@@ -1,6 +1,6 @@
 # Backup and Restore — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -69,7 +69,7 @@ Selective at both ends: back up specific shards, restore specific shards.
 | Piece | Package | Owner |
 |---|---|---|
 | Backup service, manifest, checksums | `pkg/service` (backup) | go-qrdb |
-| Shard snapshot capture | driven through `pkg/cluster` over **go-quicraft** | go-qrdb / go-quicraft |
+| Shard snapshot capture | `pkg/service` (`ShardSnapshotProvider`, `NewHostShardSnapshotProvider`) over the **go-quicraft** host | go-qrdb / go-quicraft |
 | Backup repository (`service.BackupSink`) | `pkg/service/backupsink` over any `storage.Storage`, including the go-objstore backend | go-qrdb / **go-objstore** |
 | Encryption (AES-256-GCM, wrapped DEK) | `pkg/service` (backup), `pkg/keywrap` | go-qrdb |
 | SDK surface | `sdk/go` (`transport.BackupClient`) | go-qrdb |
@@ -151,10 +151,7 @@ key is more protected than the rest of the system shard.
   step: an unencrypted backup of a barrier-encrypted store is plaintext
   outside the barrier, and the CA keys it also carries have no barrier of
   their own to have been outside of in the first place (see [CA key
-  material](#ca-key-material)). That is why encryption is the default
-  rather than an opt-in: a caller gets plaintext only by choosing it
-  explicitly (`Encryption: none`), never by omission, and that choice is
-  visible -- logged at WARN and, where configured, audited.
+  material](#ca-key-material)).
 - **Restore is the most destructive operation in the system** — it overwrites
   shard state. `backup:restore` is a distinct permission from
   `backup:create`/`backup:read` for exactly that reason, and `backup:delete` is

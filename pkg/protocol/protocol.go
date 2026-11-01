@@ -719,6 +719,14 @@ type IndexCreateOptions struct {
 	// owner-checked drop (IndexDropOptions.CheckOwner) removes the index only
 	// when the owner matches. See index.OwnershipError.
 	Owner string
+
+	// MaxIndexes is the shard's index cap (index.max_indexes) the proposer
+	// is configured with; zero is unlimited. The apply path refuses a create
+	// of a NEW index once the shard holds MaxIndexes, answering
+	// EncodeLimitRefusal(LimitIndexes, ...). Checked there rather than by
+	// the proposer, because two nodes proposing creates for the same shard
+	// each see the count before the other's create applies (go-qrdb#1088).
+	MaxIndexes uint32
 }
 
 // IndexDropOptions carries the properties an OpIndexDrop command encodes.
@@ -828,6 +836,12 @@ func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]b
 	}
 	off += 2
 	copy(buf[off:], ownerBytes)
+
+	// The index cap trails the owner when there is one; an uncapped create
+	// ends at the owner, as it did before the cap existed.
+	if opts.MaxIndexes > 0 {
+		buf = binary.LittleEndian.AppendUint32(buf, opts.MaxIndexes)
+	}
 
 	return buf, nil
 }
@@ -1048,35 +1062,66 @@ func EncodeTSWriteBatch(points []TSWriteParams) ([]byte, error) {
 }
 
 // DecodeTSWriteBatch decodes a Time-Series WriteBatch payload into individual
-// TSWriteParams.
-func DecodeTSWriteBatch(payload []byte) ([]TSWriteParams, error) {
+// TSWriteParams and the metric cap the command carries (AppendTSMetricCap).
+func DecodeTSWriteBatch(payload []byte) (points []TSWriteParams, maxMetrics uint32, err error) {
 	if len(payload) < 2 {
-		return nil, &InvalidCommandError{Reason: "ts write batch: payload too short"}
+		return nil, 0, &InvalidCommandError{Reason: "ts write batch: payload too short"}
 	}
 
 	off := 0
 	pointCount := int(binary.LittleEndian.Uint16(payload[off:]))
 	off += 2
 
-	points := make([]TSWriteParams, 0, pointCount)
+	points = make([]TSWriteParams, 0, pointCount)
 	for i := 0; i < pointCount; i++ {
 		if off+2 > len(payload) {
-			return nil, &InvalidCommandError{Reason: "ts write batch: truncated point length"}
+			return nil, 0, &InvalidCommandError{Reason: "ts write batch: truncated point length"}
 		}
 		pLen := int(binary.LittleEndian.Uint16(payload[off:]))
 		off += 2
 		if off+pLen > len(payload) {
-			return nil, &InvalidCommandError{Reason: "ts write batch: point exceeds payload"}
+			return nil, 0, &InvalidCommandError{Reason: "ts write batch: point exceeds payload"}
 		}
 		p, err := DecodeTSWrite(payload[off : off+pLen])
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		points = append(points, p)
 		off += pLen
 	}
 
-	return points, nil
+	maxMetrics, err = decodeTSMetricCap(payload[off:], "ts write batch")
+	if err != nil {
+		return nil, 0, err
+	}
+	return points, maxMetrics, nil
+}
+
+// AppendTSMetricCap appends the shard's metric cap (timeseries.max_metrics)
+// to an encoded OpTSWrite, OpTSWritePoint or OpTSWriteBatch command, as its
+// trailing extension; a zero cap, unlimited, leaves cmd as it is. The apply
+// path refuses a write that would take the shard past the cap with
+// EncodeLimitRefusal(LimitMetrics, ...): checked there rather than by the
+// proposer, because two nodes proposing writes for the same shard each see
+// the metric count before the other's write applies (go-qrdb#1088).
+func AppendTSMetricCap(cmd []byte, maxMetrics uint32) []byte {
+	if maxMetrics == 0 {
+		return cmd
+	}
+	return binary.LittleEndian.AppendUint32(cmd, maxMetrics)
+}
+
+// decodeTSMetricCap reads the metric cap trailing a time-series write: none,
+// unlimited, or exactly four bytes.
+func decodeTSMetricCap(rest []byte, op string) (uint32, error) {
+	switch len(rest) {
+	case 0:
+		return 0, nil
+	case 4:
+		return binary.LittleEndian.Uint32(rest), nil
+	default:
+		return 0, &InvalidCommandError{Reason: op + ": malformed metric cap"}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1556,6 +1601,17 @@ func DecodeIndexCreateOpts(payload []byte) (name, fieldName string, opts IndexCr
 		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: owner length exceeds payload"}
 	}
 	opts.Owner = string(payload[off : off+ownerLen])
+	off += ownerLen
+
+	// The shard's index cap is a third trailing extension (go-qrdb#1088). A
+	// payload that ends at the owner carries no cap.
+	if off == len(payload) {
+		return name, fieldName, opts, nil
+	}
+	if len(payload)-off != 4 {
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: malformed index cap"}
+	}
+	opts.MaxIndexes = binary.LittleEndian.Uint32(payload[off:])
 	return name, fieldName, opts, nil
 }
 
@@ -1607,6 +1663,12 @@ type TSWriteParams struct {
 	Timestamp int64
 	Value     float64
 	Tags      map[string]string
+
+	// MaxMetrics is the metric cap a decoded OpTSWrite or OpTSWritePoint
+	// carries (see AppendTSMetricCap); zero is unlimited. A batch's cap is
+	// the command's, returned by DecodeTSWriteBatch, and EncodeTSWriteBatch
+	// does not read this field off its points.
+	MaxMetrics uint32
 }
 
 // DecodeTSWrite extracts time-series write parameters from a payload.
@@ -1661,11 +1723,17 @@ func DecodeTSWrite(payload []byte) (TSWriteParams, error) {
 		tags[k] = v
 	}
 
+	maxMetrics, err := decodeTSMetricCap(payload[off:], "ts write")
+	if err != nil {
+		return TSWriteParams{}, err
+	}
+
 	return TSWriteParams{
-		Metric:    metric,
-		Timestamp: timestamp,
-		Value:     value,
-		Tags:      tags,
+		Metric:     metric,
+		Timestamp:  timestamp,
+		Value:      value,
+		Tags:       tags,
+		MaxMetrics: maxMetrics,
 	}, nil
 }
 

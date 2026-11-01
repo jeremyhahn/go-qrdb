@@ -1050,10 +1050,11 @@ func TestGRPC_VectorGetNamespaceInfo_Success(t *testing.T) {
 func TestGRPC_VectorGetNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
 	vecSvc := &mockVectorService{
 		getNSInfoResult: &service.GetNamespaceInfoResponse{
-			Namespace:   "ns1",
-			Dimension:   4,
-			IndexConfig: map[string]string{"ef_construction": "321"},
-			Metadata:    map[string]interface{}{"owner": "team-a"},
+			Namespace:      "ns1",
+			Dimension:      4,
+			DistanceMetric: "COSINE",
+			IndexConfig:    map[string]string{"ef_construction": "321"},
+			Metadata:       map[string]interface{}{"owner": "team-a"},
 		},
 	}
 	client, cleanup := startTestServerFull(t, WithVector(vecSvc))
@@ -1076,8 +1077,9 @@ func TestGRPC_VectorGetNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
 func TestGRPC_VectorGetNamespaceInfo_MetadataMarshalError(t *testing.T) {
 	vecSvc := &mockVectorService{
 		getNSInfoResult: &service.GetNamespaceInfoResponse{
-			Namespace: "ns1",
-			Metadata:  map[string]interface{}{"bad": make(chan int)},
+			Namespace:      "ns1",
+			DistanceMetric: "COSINE",
+			Metadata:       map[string]interface{}{"bad": make(chan int)},
 		},
 	}
 	client, cleanup := startTestServerFull(t, WithVector(vecSvc))
@@ -1924,6 +1926,7 @@ func TestGRPC_VectorGetIndexStats_Success(t *testing.T) {
 			VectorCount:      1000,
 			Dimension:        128,
 			IndexType:        "HNSW",
+			DistanceMetric:   "L2",
 			IndexSizeBytes:   50000,
 			MemoryUsageBytes: 100000,
 		},
@@ -2130,30 +2133,95 @@ func TestWithVector_Nil(t *testing.T) {
 // Enum map coverage
 // ---------------------------------------------------------------------------
 
-func TestProtoDistanceMetricToString_AllValues(t *testing.T) {
-	expected := map[pb.DistanceMetric]string{
-		pb.DistanceMetric_DISTANCE_COSINE:      "COSINE",
-		pb.DistanceMetric_DISTANCE_EUCLIDEAN:   "L2",
-		pb.DistanceMetric_DISTANCE_DOT_PRODUCT: "DOT_PRODUCT",
-	}
-	for k, v := range expected {
-		got := protoDistanceMetricToString[k]
-		if got != v {
-			t.Fatalf("expected %q for %v, got %q", v, k, got)
+// TestDistanceMetric_EveryWireValueRoundTrips walks the generated enum, so a
+// value added to the proto without a server mapping fails here.
+func TestDistanceMetric_EveryWireValueRoundTrips(t *testing.T) {
+	for v := range pb.DistanceMetric_name {
+		metric := pb.DistanceMetric(v)
+		name, err := serviceDistanceMetric(metric)
+		if err != nil {
+			t.Fatalf("serviceDistanceMetric(%v): %v", metric, err)
+		}
+		got, err := protoDistanceMetric("ns", name)
+		if err != nil {
+			t.Fatalf("protoDistanceMetric(%q): %v", name, err)
+		}
+		if got != metric {
+			t.Fatalf("%v -> %q -> %v, want %v", metric, name, got, metric)
 		}
 	}
 }
 
-func TestStringToProtoDistanceMetric_AllValues(t *testing.T) {
-	expected := map[string]pb.DistanceMetric{
-		"COSINE":      pb.DistanceMetric_DISTANCE_COSINE,
-		"L2":          pb.DistanceMetric_DISTANCE_EUCLIDEAN,
-		"DOT_PRODUCT": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+func TestServiceDistanceMetric_ManhattanIsNotCosine(t *testing.T) {
+	name, err := serviceDistanceMetric(pb.DistanceMetric_DISTANCE_MANHATTAN)
+	if err != nil || name != "MANHATTAN" {
+		t.Fatalf("serviceDistanceMetric(MANHATTAN) = %q, %v; want MANHATTAN", name, err)
 	}
-	for k, v := range expected {
-		got := stringToProtoDistanceMetric[k]
-		if got != v {
-			t.Fatalf("expected %v for %q, got %v", v, k, got)
+}
+
+func TestServiceDistanceMetric_RefusesValueOutsideTheEnum(t *testing.T) {
+	_, err := serviceDistanceMetric(pb.DistanceMetric(99))
+	var unknown *service.UnknownDistanceMetricError
+	if !errors.As(err, &unknown) || unknown.Metric != "99" {
+		t.Fatalf("err = %v, want *service.UnknownDistanceMetricError for 99", err)
+	}
+	if code := status.Code(mapServiceError(err)); code != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", code)
+	}
+}
+
+func TestProtoDistanceMetric_FoldsCaseAndAliases(t *testing.T) {
+	tests := map[string]pb.DistanceMetric{
+		"cosine":      pb.DistanceMetric_DISTANCE_COSINE,
+		"L2":          pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+		"euclidean":   pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+		"EUCLIDEAN":   pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+		"dot_product": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+		"manhattan":   pb.DistanceMetric_DISTANCE_MANHATTAN,
+		"MANHATTAN":   pb.DistanceMetric_DISTANCE_MANHATTAN,
+	}
+	for name, want := range tests {
+		got, err := protoDistanceMetric("ns", name)
+		if err != nil || got != want {
+			t.Errorf("protoDistanceMetric(%q) = %v, %v; want %v", name, got, err, want)
+		}
+	}
+}
+
+func TestProtoDistanceMetric_RefusesNameWithNoWireValue(t *testing.T) {
+	_, err := protoDistanceMetric("docs", "HAMMING")
+	var unsupported *service.UnsupportedNamespaceGeometryError
+	if !errors.As(err, &unsupported) || unsupported.Namespace != "docs" || unsupported.Value != "HAMMING" {
+		t.Fatalf("err = %v, want *service.UnsupportedNamespaceGeometryError for docs HAMMING", err)
+	}
+	if code := status.Code(mapServiceError(err)); code != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", code)
+	}
+}
+
+func TestGRPC_VectorGetIndexStats_ReportsTheMetricNotTheIndexType(t *testing.T) {
+	for metric, want := range map[string]pb.DistanceMetric{
+		"dot_product": pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+		"L2":          pb.DistanceMetric_DISTANCE_EUCLIDEAN,
+	} {
+		vecSvc := &mockVectorService{
+			getIndexStatsResult: &service.GetIndexStatsResponse{
+				Dimension:      4,
+				IndexType:      "FLAT",
+				DistanceMetric: metric,
+			},
+		}
+		client, cleanup := startTestServerFull(t, WithVector(vecSvc))
+		resp, err := client.VectorGetIndexStats(context.Background(), &pb.VectorGetIndexStatsRequest{Namespace: "ns"})
+		cleanup()
+		if err != nil {
+			t.Fatalf("VectorGetIndexStats failed: %v", err)
+		}
+		if resp.GetDistanceMetric() != want {
+			t.Errorf("metric %q: DistanceMetric = %v, want %v", metric, resp.GetDistanceMetric(), want)
+		}
+		if resp.GetIndexType() != pb.VectorIndexType_INDEX_FLAT {
+			t.Errorf("metric %q: IndexType = %v, want INDEX_FLAT", metric, resp.GetIndexType())
 		}
 	}
 }

@@ -159,6 +159,12 @@ it as a number. REST and MCP take names and gRPC has its own enum
   produce the downsampled value. **`duration_ns` is enforced;
   `resolution_ns`/`aggregation` are not**; see
   [architecture.md](architecture.md#retention-enforcement).
+- **A metric's retention is its policy's `duration_ns`, or the default.** A
+  metric with no policy, or with a policy whose `duration_ns` is zero, is
+  swept at `timeseries.default_retention` (seconds), which `cmd/qrdbd` and
+  `sdk/go/node` pass to the scheduler through `server.WithDefaultRetention`.
+  Zero, the default, keeps such a metric's points; a policy's non-zero
+  duration always wins (`retentionScheduler.retentionFor`).
 - **`TSDeleteSeries` is bounded by its request**: metric, optionally tags,
   optionally a time range. With no range it deletes the whole series.
 - **Time-series keys live under reserved prefixes** (`ts:`, `idx:metric:`,
@@ -166,8 +172,33 @@ it as a number. REST and MCP take names and gRPC has its own enum
   subsystem reads through `pkg/timeseries`, never through KV enumeration.
   They are therefore invisible to `kv list`/`kv scan` and unreachable by
   `kv restore`.
+- **Metric names are capped at `timeseries.max_metrics` per shard.**
+  `TimeSeriesService` (`pkg/service`) carries the cap in every `TSWrite`,
+  `TSWritePoint` and `TSWriteBatch` command (a 4-byte trailer,
+  `protocol.AppendTSMetricCap`, absent when uncapped) and reads nothing before
+  proposing. The apply path (`timeseries.AdmitMetrics`, in `MVCCEngine` and
+  the Pebble store) decides it against the metric index the write applies
+  over: a write naming only held metrics costs one point read per metric and
+  is never refused; a write that would create a metric past the cap is
+  refused whole, nothing written, with a limit refusal result the service
+  returns as `*service.MetricLimitError`; only a creating write counts the
+  index, bounded at the cap. Because writes and `TSDeleteSeries` apply in log
+  order over replicated state, writes through any number of nodes take the
+  last slot exactly once and no delete can interleave with a write's check
+  (#1088). A `TSDeleteSeries` with no tags and no range drops the metric's
+  index entry and frees its slot; retention does not. Zero, the
+  default, is unlimited. **The cap is carried only once the group activates
+  `command-caps` (`featuregate.CommandCaps`):** a binary from before the cap
+  ignores the trailer and would admit a write its peers refuse, so until every
+  replica of the group advertises the feature the writes are proposed
+  uncapped, byte-identical to an older binary's, and the cap is not enforced.
+  A standalone node gates nothing and carries it from its first write.
+  `cmd/qrdbd`, `sdk/go/node` and the standalone server
+  pass the cap to every `TimeSeriesService` they build — the system shard,
+  each tenant host and each dedicated Raft shard (`service.WithMaxMetrics`).
 - **Tag cardinality is unbounded and unpoliced.** High-cardinality tags are the
-  standard way to make a time-series store unusable, and nothing here stops it.
+  standard way to make a time-series store unusable, and nothing here stops it;
+  `timeseries.max_metrics` bounds metric names, not tag combinations.
 
 ## Error semantics
 
@@ -181,10 +212,15 @@ it as a number. REST and MCP take names and gRPC has its own enum
 | Retention policy with `duration_ns <= 0` | invalid-argument | **yes** |
 | Missing `timeseries:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
+| Write that would create a metric past `timeseries.max_metrics` | `*service.MetricLimitError` (429 / `RESOURCE_EXHAUSTED`) | **yes** — refused at apply, nothing written |
 
 ## Configuration
 
-Retention is per metric through `TSSetRetention`, not a config file key.
+Retention is per metric through `TSSetRetention`. Two config keys apply to
+every shard's time-series store: `timeseries.default_retention` (seconds; the
+retention of a metric with no policy or a zero-duration one) and
+`timeseries.max_metrics` (the metric-name cap). Both default to zero, which
+keeps points for good and leaves metric names unlimited.
 Build flag: `WITH_QRDB_TS=1`.
 
 ## Persistence

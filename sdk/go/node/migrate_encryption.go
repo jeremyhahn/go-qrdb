@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -304,8 +305,16 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "data-plane boot params not retained (clustered or sealed node)"}
 	}
 	dataDir := n.retainedStandalone.dataDir
+	pebbleDir := filepath.Join(dataDir, "pebble")
+	// The swap and in-place mechanisms copy, verify and swap a store
+	// directory, so a Pebble store whose WAL lives elsewhere would lose its
+	// WAL-only records and leave that WAL under the old encryption. Refuse
+	// it before anything is minted or quiesced.
+	if externalPebbleWAL(n.retainedStandalone.cfg, dataDir) != "" && len(existingDirs(pebbleDir)) > 0 {
+		return service.MigrationStores{}, &MigrationNotSupportedError{Reason: "the pebble store keeps its write-ahead log outside its directory (storage.wal_dir); encryption migration moves the store directory alone"}
+	}
 	return service.MigrationStores{
-		Pebble: existingDirs(filepath.Join(dataDir, "pebble"), filepath.Join(dataDir, "vector")),
+		Pebble: existingDirs(pebbleDir, filepath.Join(dataDir, "vector")),
 		File:   existingDirs(filepath.Join(dataDir, "file")),
 	}, nil
 }
@@ -319,6 +328,19 @@ func existingDirs(candidates ...string) []string {
 		}
 	}
 	return dirs
+}
+
+// externalPebbleWAL returns the storage.wal_dir the system Pebble store under
+// dataDir was opened with (lifecycle.NewLocalStorage), or "" when its WAL
+// lives in the store directory: wal_dir unset, or naming that directory.
+func externalPebbleWAL(cfg *qrdbconfig.Config, dataDir string) string {
+	if cfg == nil || cfg.Storage.WALDir == "" {
+		return ""
+	}
+	if filepath.Clean(cfg.Storage.WALDir) == filepath.Clean(filepath.Join(dataDir, "pebble")) {
+		return ""
+	}
+	return cfg.Storage.WALDir
 }
 
 // MintKeyedTarget creates an initialized+unsealed keyed barrier over the seal

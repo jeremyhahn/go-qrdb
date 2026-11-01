@@ -89,7 +89,59 @@ func TestCA_CLI_Lifecycle_PerProtocol(t *testing.T) {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
 			testCALifecycleOverProtocol(t, node, proto)
+			testCAListDefaultsToCallerTenant(t, node, proto)
 		})
+	}
+}
+
+// testCAListDefaultsToCallerTenant drives `qrdb ca list` with no --tenant-id
+// as a tenant's own Admin. certs:list is ScopeSelfStrict, so the only tenant
+// any caller may list is its own, and the flag's default is that tenant: the
+// list succeeds, holds the certificate the Admin just issued, and names no
+// other tenant. Naming the system tenant is refused.
+func testCAListDefaultsToCallerTenant(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	suffix := fmt.Sprintf("%s-%d", proto.name, time.Now().UnixNano())
+	tenantID := "cal-" + suffix
+	conn := tenantAdminConn(t, node, proto, tenantID)
+
+	username := "cal-user-" + suffix
+	if out, err := runQRDB(t, node.cli, conn, "users", "create", "--without-email-login-key", "--username", username); err != nil {
+		t.Fatalf("[%s] tenant users create (%s): %v\noutput: %s", proto.name, username, err, out)
+	}
+	csrDir := t.TempDir()
+	if out, err := runQRDB(t, node.cli, conn, "ca", "csr", "--username", username, "--out", csrDir); err != nil {
+		t.Fatalf("[%s] tenant ca csr: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err := runQRDB(t, node.cli, conn, "--output", "json", "ca", "issue",
+		"--username", username, "--csr", filepath.Join(csrDir, "csr.pem"), "--ttl", "24h")
+	if err != nil {
+		t.Fatalf("[%s] tenant ca issue: %v\noutput: %s", proto.name, err, out)
+	}
+	var enrolled caEnrolledCertCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &enrolled); jerr != nil || enrolled.Serial == "" {
+		t.Fatalf("[%s] decode tenant ca issue JSON (err %v): %s", proto.name, jerr, out)
+	}
+
+	out, err = runQRDB(t, node.cli, conn, "--output", "json", "ca", "list")
+	if err != nil {
+		t.Fatalf("[%s] tenant ca list with no --tenant-id: %v\noutput: %s", proto.name, err, out)
+	}
+	var listed caListCertsCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &listed); jerr != nil {
+		t.Fatalf("[%s] decode tenant ca list JSON: %v\noutput: %s", proto.name, jerr, out)
+	}
+	if rec, found := findCertRecord(listed.Certs, enrolled.Serial); !found || rec.Username != username {
+		t.Fatalf("[%s] tenant ca list lacks the certificate issued for %s (serial %s, found=%v): %+v", proto.name, username, enrolled.Serial, found, listed.Certs)
+	}
+	for _, rec := range listed.Certs {
+		if rec.TenantID != tenantID {
+			t.Fatalf("[%s] tenant ca list returned a record of tenant %q, want only %q: %+v", proto.name, rec.TenantID, tenantID, rec)
+		}
+	}
+
+	if out, err := runQRDB(t, node.cli, conn, "--output", "json", "ca", "list", "--tenant-id", "system"); err == nil {
+		t.Fatalf("[%s] tenant admin listed the system tenant's certificates: %s", proto.name, out)
 	}
 }
 

@@ -229,7 +229,7 @@ needs every job, fails on that result; a run whose `docker-build`,
 
 The stages are separate jobs, not the ci-template's one image job, because
 together they outlast one job's 90-minute limit on a loaded runner: `lint`
-with `make lint-sweeps` takes most of an hour, and `make coverage` with the
+took most of an hour while it carried `make lint-sweeps`, and `make coverage` with the
 other four unit suites about 36 minutes, which ran in series in `image` until
 ruling 211 made each suite its own job. As separate jobs they run
 concurrently, each under a limit sized to its own stage, and the run waits on
@@ -286,14 +286,16 @@ parallel with the `lint` job's `make lint` rather than a step after it, so
 the PR tier's lint wall time is the longer of the two and not their sum. It
 runs on every run and holds `make vet` over the default tag set and the
 secure analyzer's self-test (`test-secure-analyzer`). Within the `lint` job,
-one step depends on the trigger. `make lint-sweeps`,
-`make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
-combination, is the longest stage (about 45 minutes), so it runs only on a
-push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
-included), never on a pull request, whose pipeline is held to one hour. The
-sweeps run in the `lint` job beside the unit-suite jobs, so no job's limit
-exceeds 90 minutes. `release.yml`
-runs both sweeps again before a tag. The integration legs run without
+one step depends on the trigger: `make gosec` runs on the PR tier alone,
+since the full tier's `make security` in `image` runs it already
+(ci-template v1.30). `make lint-sweeps`, `make vet-tags` and
+`make secure-analyzer` over every `SUPPORTED_TAG_SETS` combination, is the
+longest stage (about 45 minutes), so the `lint` job runs it on `ci.yml`'s
+nightly `schedule:` event alone, cron `0 4 * * *`, never on a pull request, a
+push or a dispatch (ci-template v1.30; the template's `nightly.yml` home for it
+would need a second schedule trigger, which ruling 216(1) forbids).
+Every job carries a `timeout-minutes` of ceil(1.5 x its measured p95), and 5
+for the small ones. `release.yml` runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`

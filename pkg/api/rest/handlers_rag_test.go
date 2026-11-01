@@ -275,10 +275,26 @@ func TestHandleRAGListDocuments_ServiceError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestMapHTTPError_RAGServiceClosed(t *testing.T) {
+	if code := mapHTTPError(&service.RAGServiceClosedError{}); code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", code)
+	}
+}
+
 func TestHandleRAGListDocuments_NilService(t *testing.T) {
 	s := &Server{}
 	r := httptest.NewRequest(http.MethodGet, "/v1/rag/documents", nil)
 	w := httptest.NewRecorder()
 	s.handleRAGListDocuments(w, r)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// TestServerOption_WithRAG is the only check that WithRAG wires the
+// service: the handler tests above build a Server literal.
+func TestServerOption_WithRAG(t *testing.T) {
+	ragSvc := &mockRAGService{}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithRAG(ragSvc))
+	if s.ragSvc != ragSvc {
+		t.Error("ragSvc not set")
+	}
 }

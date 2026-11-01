@@ -47,6 +47,14 @@ const (
 	// so it is a platform-operator act reserved for the system tenant.
 	TenantsReconcileDeleted Permission = "tenants:reconcile_deleted"
 
+	// RolesReconcileAll grants access to converge the stored built-in roles
+	// of EVERY tenant onto this build's definitions in one pass
+	// (role.ReconcileAllTenants). The per-tenant reconcile (roles:create)
+	// reaches only the caller's own tenant; this one writes every tenant's
+	// IAM data, so it is a platform-operator act reserved for the system
+	// tenant. Custom roles are never touched.
+	RolesReconcileAll Permission = "roles:reconcile_all"
+
 	// TenantsApprove grants access to approve a pending tenant
 	// registration. Reserved for the system tenant — tenant-local admins
 	// cannot approve other tenants' registrations.
@@ -169,6 +177,7 @@ func crossScopePermissions() []Permission {
 		TenantsCreateCross,
 		TenantsListDeleted,
 		TenantsReconcileDeleted,
+		RolesReconcileAll,
 		TenantsApprove,
 		TenantsReadCross,
 		TenantsDeleteCross,

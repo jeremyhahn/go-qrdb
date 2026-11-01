@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -240,6 +241,37 @@ type ServerConfig struct {
 	// Backend selects the storage backend. Defaults to BackendPebble if
 	// the zero value is provided.
 	Backend database.BackendType
+
+	// CacheSize is the pebble backend's block cache size in bytes
+	// (config storage.cache_size). Zero keeps the backend's default.
+	CacheSize int64
+
+	// WALDir puts the pebble backend's write-ahead log in its own
+	// directory (config storage.wal_dir). Empty keeps it under DataDir.
+	WALDir string
+
+	// MaxOpenFiles limits the pebble backend's open files (config
+	// storage.max_open_files). Zero keeps the backend's default.
+	MaxOpenFiles int
+
+	// Watch sizes every watcher's event buffer and caps the watches the
+	// server's client holds open at once (config watch.buffer_size and
+	// watch.max_watchers); a watch past the cap is refused with
+	// *transport.WatcherLimitError. The zero value keeps the package default
+	// buffer and no cap. Enabled is not read: the server always serves
+	// watches.
+	Watch qrdbconfig.WatchConfig
+
+	// Index caps the secondary indexes the server holds (config
+	// index.max_indexes); a create past the cap is refused with
+	// *service.IndexLimitError. The zero value leaves them unlimited.
+	Index qrdbconfig.IndexConfig
+
+	// TimeSeries caps the metric names the server holds (config
+	// timeseries.max_metrics); a write that would create a metric past the
+	// cap is refused with *service.MetricLimitError. The zero value leaves
+	// them unlimited.
+	TimeSeries qrdbconfig.TimeSeriesConfig
 
 	// Barrier configures the optional encryption barrier. When nil, no
 	// barrier is created and data is stored unencrypted.
@@ -478,7 +510,11 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 
 	// Create storage backend. enc is non-nil only for an on-disk backend
 	// with an unsealed barrier; in every other case the store is plaintext.
-	stg, pdb, err := createServerStorage(backendType, config.DataDir, enc)
+	stg, pdb, err := createServerStorage(backendType, config.DataDir, enc, qrdbconfig.StorageConfig{
+		CacheSize:    config.CacheSize,
+		WALDir:       config.WALDir,
+		MaxOpenFiles: config.MaxOpenFiles,
+	})
 	if err != nil {
 		srv.closeSeal()
 		return nil, err
@@ -489,7 +525,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	// Create store engine. MVCC for pebble/memory, KV for file. The engine
 	// publishes its changes to the watch hub and keeps its leases in the
 	// lessor, which the watch, lease and lock services below are built over.
-	srv.hub = watch.NewHub()
+	srv.hub = watch.NewHub(server.WatchHubOptions(config.Watch)...)
 	srv.lessor = lease.NewLessor()
 	sm, err := createServerEngine(backendType, stg, pdb, srv.hub, srv.lessor)
 	if err != nil {
@@ -527,8 +563,8 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	))
 	leaseSvc := service.NewLeaseService(host, serverDefaultShardID)
 	watchSvc := service.NewWatchService(srv.hub)
-	indexSvc := service.NewIndexService(host, serverDefaultShardID)
-	tsSvc := service.NewTimeSeriesService(host, serverDefaultShardID)
+	indexSvc := service.NewIndexService(host, serverDefaultShardID, service.WithMaxIndexes(config.Index.MaxIndexes))
+	tsSvc := service.NewTimeSeriesService(host, serverDefaultShardID, service.WithMaxMetrics(config.TimeSeries.MaxMetrics))
 	lockSvc, err := service.NewLockService(txSvc, leaseSvc, watchSvc, mvccSvc, logger)
 	if err != nil {
 		srv.closeAll()
@@ -549,6 +585,10 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		embedded.WithLockService(lockSvc),
 		embedded.WithIndexService(indexSvc),
 		embedded.WithTimeSeriesService(tsSvc),
+		// The client's watches are an application's: each holds a
+		// watch.max_watchers slot. The lock service's own watches, opened
+		// on watchSvc directly, do not.
+		embedded.WithCountedWatch(),
 	}
 
 	// Wire auth services (user, role) backed by KV storage. The embedded
@@ -718,9 +758,10 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 // createServerStorage creates the appropriate storage backend and returns
 // the storage interface along with an optional *pebble.DB handle (non-nil
 // for pebble backends). A non-nil enc encrypts the on-disk backends at rest
-// (see lifecycle.NewLocalStorage).
-func createServerStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor) (storage.Storage, *pebble.DB, error) {
-	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, enc, qrdbconfig.ObjstoreConfig{})
+// (see lifecycle.NewLocalStorage), and storageCfg carries the pebble
+// backend's tuning.
+func createServerStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
+	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, enc, storageCfg)
 	if err != nil {
 		var unsupported *lifecycle.UnsupportedLocalBackendError
 		if errors.As(err, &unsupported) {

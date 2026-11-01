@@ -106,15 +106,14 @@ func (m *mockVectorStorage) CreateNamespace(ctx context.Context, info *vector.Na
 		return vector.ErrNamespaceExists
 	}
 
-	m.namespaces[info.Name] = &mockNamespaceData{
-		info: &vector.NamespaceInfo{
-			Name:        info.Name,
-			VectorCount: 0,
-			Dimension:   info.Dimension,
-			CreatedAt:   time.Now().UnixNano(),
-			UpdatedAt:   time.Now().UnixNano(),
-		},
-	}
+	// Keep the record as the caller wrote it, as the real backends do: a
+	// double that dropped the metric or index type would let a test of
+	// either pass against the default.
+	stored := *info
+	stored.VectorCount = 0
+	stored.CreatedAt = time.Now().UnixNano()
+	stored.UpdatedAt = stored.CreatedAt
+	m.namespaces[info.Name] = &mockNamespaceData{info: &stored}
 	m.vectors[info.Name] = make(map[uint64]*vector.VectorValue)
 	m.idCounters[info.Name] = 0
 
@@ -2153,16 +2152,15 @@ func TestVectorService_CompactNamespace_Async(t *testing.T) {
 	assert.NotEmpty(t, resp.OperationID)
 	assert.Greater(t, resp.StartedAt, int64(0))
 
-	// Wait for background compaction to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Check progress
+	// Poll progress until the background compaction completes.
 	progressReq := &GetCompactionProgressRequest{
 		OperationID: resp.OperationID,
 	}
-	progressResp, err := svc.GetCompactionProgress(ctx, progressReq)
-	require.NoError(t, err)
-	assert.False(t, progressResp.InProgress)
+	var progressResp *GetCompactionProgressResponse
+	require.Eventually(t, func() bool {
+		progressResp, err = svc.GetCompactionProgress(ctx, progressReq)
+		return err == nil && !progressResp.InProgress
+	}, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, float64(100), progressResp.PercentComplete)
 }
 

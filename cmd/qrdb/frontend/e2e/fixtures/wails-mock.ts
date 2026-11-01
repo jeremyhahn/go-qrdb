@@ -1,7 +1,8 @@
 // Copyright 2026 Jeremy Hahn
 // SPDX-License-Identifier: Apache-2.0
 
-import { test as base, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test as base } from "./api-guard.ts";
 
 /** Minimal database info for mock responses. */
 export interface MockDatabaseInfo {

@@ -267,6 +267,17 @@ func TestIndexFactory_CreateIndex(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "unknown metric is refused",
+			config: &interfaces.HNSWConfig{
+				M:              16,
+				MMax:           32,
+				EfConstruction: 200,
+				EfSearch:       50,
+				DistanceMetric: "hamming",
+			},
+			wantErr: true,
+		},
+		{
 			name: "custom config with L2",
 			config: &interfaces.HNSWConfig{
 				M:              32,

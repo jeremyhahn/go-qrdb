@@ -65,9 +65,9 @@ func TestNewServiceIndexService_ReturnsAServiceIndexServicer(t *testing.T) {
 // of the other, and the constructor alias has the service constructor's
 // signature.
 var (
-	_ service.IndexServicer                            = sdk.ServiceIndexServicer(nil)
-	_ sdk.ServiceIndexServicer                         = service.IndexServicer(nil)
-	_ func(service.Host, uint64) service.IndexServicer = sdk.NewServiceIndexService
+	_ service.IndexServicer                                                           = sdk.ServiceIndexServicer(nil)
+	_ sdk.ServiceIndexServicer                                                        = service.IndexServicer(nil)
+	_ func(service.Host, uint64, ...service.IndexServiceOption) service.IndexServicer = sdk.NewServiceIndexService
 )
 
 func TestServiceIndexServicer_IsTheServiceLayerInterface(t *testing.T) {

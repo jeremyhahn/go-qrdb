@@ -95,6 +95,12 @@ type HNSWConfig struct {
 	// DistanceMetric specifies the distance function to use.
 	// Common values: "l2", "cosine", "dot_product"
 	DistanceMetric string
+
+	// Dimensions is the dimensionality of the vectors the index holds: the
+	// namespace's dimension. A CPU HNSW index takes it from its first insert
+	// and ignores zero; a GPU index is allocated for a fixed dimension and
+	// refuses a config without one.
+	Dimensions int
 }
 
 // DefaultHNSWConfig returns the default HNSW configuration.

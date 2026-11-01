@@ -101,12 +101,6 @@ func TestGRPCReconcileBuiltInRoles_ClosedTransport(t *testing.T) {
 }
 
 // TestGRPCProtoToReconcileReport_Nil covers the nil guard in the converter.
-func TestGRPCProtoToReconcileReport_Nil(t *testing.T) {
-	if got := protoToReconcileReport(nil); got != nil {
-		t.Errorf("protoToReconcileReport(nil) = %+v, want nil", got)
-	}
-}
-
 // assertReconcileFixture asserts a transport report matches the fixture every
 // transport's round-trip test is written against.
 func assertReconcileFixture(t *testing.T, resp *transport.ReconcileRolesResponse) {

@@ -109,7 +109,7 @@ func (h *initDBHandler) ComInitDB(_ *mysql.Conn, schemaName string) error {
 // as server.NewServer does.
 func composeSealedHandler(probe sealedWindowProbe, inner mysql.Handler) mysql.Handler {
 	h := inner
-	for _, opt := range handlerOptions(probe, nil, 0) {
+	for _, opt := range handlerOptions(nil, probe, nil, 0) {
 		_, _, h = opt(nil, nil, h)
 	}
 	return h

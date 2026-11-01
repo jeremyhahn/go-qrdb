@@ -147,7 +147,7 @@ func TestPerformIndexRebuild_PagesEveryVectorOnce(t *testing.T) {
 			svc.rebuildJobs[job.JobID] = job
 			svc.jobMu.Unlock()
 
-			require.NoError(t, svc.performIndexRebuild(context.Background(), job.JobID, ns, nil))
+			require.NoError(t, svc.performIndexRebuild(context.Background(), job.JobID, ns, &vector.NamespaceInfo{Name: ns, Dimension: 2}, nil))
 
 			job.mu.RLock()
 			defer job.mu.RUnlock()

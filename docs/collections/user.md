@@ -190,9 +190,7 @@ qrdb collection drop scratch --database app
 
 A drop also discards the collection's `increment` counter, so creating a
 collection with the same name afterwards starts its IDs at 1 again rather than
-continuing where the old one left off. If a drop reports an error, nothing is
-half-deleted in a way you have to clean up by hand — run the same command again
-and it finishes, or let the server finish it.
+continuing where the old one left off.
 
 **Know what state a collection is in.** `collection info` and `collection list`
 report `active`, `creating` (its indexes are being built) or `dropping` (it is
@@ -247,9 +245,11 @@ implicitly. Check the spelling and the `--database` — a typo would otherwise
 have quietly produced a second collection that then diverges from the first.
 
 **Your collections are not listed after an upgrade.** Collections whose keys
-carry no tenant namespace are still on disk but unreachable, for the reason
-above. Nothing deleted them. Export them with a binary that still reads them,
-then re-import them as the owning tenant.
+carry no tenant namespace are still on disk but are not listed, and nothing
+moves them for you
+([engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)).
+Export them with a binary that still reads them, then re-import them as the
+owning tenant.
 
 **"database not found" on a collection command.** A collection request
 resolves the database you name, and a database that was never created is

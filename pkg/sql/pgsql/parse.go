@@ -36,6 +36,7 @@ import (
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
@@ -139,6 +140,9 @@ type ParseHandler struct {
 	// queryTimeout bounds every statement's execution (WithQueryTimeout);
 	// zero is none.
 	queryTimeout time.Duration
+	// clientLimit charges every statement to its client address's bucket
+	// (WithClientLimiter); nil limits nothing.
+	clientLimit *clientlimit.Limiter
 }
 
 // NewParseHandler creates a new ParseHandler.
@@ -696,7 +700,11 @@ func (h *ParseHandler) executeDeferredCallbackUnbounded(
 	scope statementScope,
 ) error {
 	// Parse is gated, but this runs on every Bind/Execute of a statement
-	// that may have been parsed before the barrier was sealed.
+	// that may have been parsed before the barrier was sealed. Each such
+	// execution is a statement of its own to the client-address limiter.
+	if err := h.admitStatement(ctx); err != nil {
+		return err
+	}
 	if err := h.refuseWhileSealed(); err != nil {
 		return err
 	}

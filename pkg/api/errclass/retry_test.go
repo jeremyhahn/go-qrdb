@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -47,6 +48,7 @@ func TestRetryAfter_ReadsEveryDelayingRefusal(t *testing.T) {
 		"tenant SO PIN lockout": {&auth.SOPINLockedError{RetryAfter: 5 * time.Second}, 5 * time.Second},
 		"auth rate limit":       {&middleware.RateLimitedError{RetryAfter: 6 * time.Second}, 6 * time.Second},
 		"undone tenant id":      {&tenant.TenantUndoPendingError{TenantID: "t", RetryAfter: 7 * time.Second}, 7 * time.Second},
+		"client address limit":  {&clientlimit.RateLimitedError{Client: "192.0.2.1", RetryAfter: 8 * time.Second}, 8 * time.Second},
 	}
 	for name, tc := range cases {
 		got, ok := RetryAfter(tc.err)

@@ -16,6 +16,7 @@ package vector
 
 import (
 	"bytes"
+	"errors"
 	"sort"
 	"strconv"
 	"sync"
@@ -51,7 +52,8 @@ type LiveIndex interface {
 
 	// Search returns up to k nearest neighbours of query. It returns
 	// ErrIndexNotReady when the index exists but cannot yet answer a
-	// search (an IVF index that has not reached its training floor).
+	// search (an IVF index that has not reached its training floor), and
+	// hnsw.ErrEmptyIndex when an HNSW or FLAT index holds no vectors.
 	Search(query []float32, k int) ([]IndexHit, error)
 
 	// Count returns the number of vectors currently held.
@@ -70,57 +72,72 @@ type LiveIndex interface {
 // an IVF index that has not accumulated enough vectors to train. It is a
 // sentinel the engine's index manager checks for; it is never returned
 // across a service boundary (that boundary wraps it in
-// service.VectorIndexWarmingError).
+// service.VectorIndexUntrainedError).
 var ErrIndexNotReady = &indexNotReadyError{}
 
 type indexNotReadyError struct{}
 
 func (e *indexNotReadyError) Error() string { return "vector: index not ready" }
 
-// mapDistanceMetricHNSW translates the wire-level DistanceMetric into the
-// hnsw package's own enum.
-func mapDistanceMetricHNSW(m DistanceMetric) hnsw.DistanceMetric {
-	switch m {
-	case DistanceEuclidean:
-		return hnsw.L2Distance
-	case DistanceDotProduct:
-		return hnsw.DotProductDistance
-	default:
-		return hnsw.CosineDistance
-	}
+// hnswDistanceMetrics maps each record metric to the hnsw package's own enum,
+// which the HNSW and flat live indexes take.
+var hnswDistanceMetrics = map[DistanceMetric]hnsw.DistanceMetric{
+	DistanceCosine:     hnsw.CosineDistance,
+	DistanceEuclidean:  hnsw.L2Distance,
+	DistanceDotProduct: hnsw.DotProductDistance,
+	DistanceManhattan:  hnsw.ManhattanDistance,
 }
 
-// mapDistanceMetricIVF translates the wire-level DistanceMetric into the ivf
-// package's own enum.
-func mapDistanceMetricIVF(m DistanceMetric) ivf.DistanceMetric {
-	switch m {
-	case DistanceEuclidean:
-		return ivf.L2Distance
-	case DistanceDotProduct:
-		return ivf.DotProductDistance
-	default:
-		return ivf.CosineDistance
-	}
+// ivfDistanceMetrics maps each record metric to the ivf package's own enum.
+var ivfDistanceMetrics = map[DistanceMetric]ivf.DistanceMetric{
+	DistanceCosine:     ivf.CosineDistance,
+	DistanceEuclidean:  ivf.L2Distance,
+	DistanceDotProduct: ivf.DotProductDistance,
+	DistanceManhattan:  ivf.ManhattanDistance,
+}
+
+// liveIndexBuilders maps each record index type to the constructor of its
+// live index.
+var liveIndexBuilders = map[IndexType]func(namespace string, rec NamespaceRecord) (LiveIndex, error){
+	IndexHNSW: newHNSWLiveIndex,
+	IndexFlat: newFlatLiveIndex,
+	IndexIVFFlat: func(namespace string, rec NamespaceRecord) (LiveIndex, error) {
+		return newIVFLiveIndex(namespace, rec), nil
+	},
 }
 
 // NewLiveIndex constructs an empty LiveIndex for a namespace whose geometry
 // is rec, and whose deterministic draws (HNSW layer, IVF k-means seed) are
-// salted with namespace.
+// salted with namespace. A zero dimension, or a metric or index type this
+// build does not recognise, is refused with InvalidDimensionError,
+// InvalidDistanceMetricError or InvalidIndexTypeError: building some other
+// index would answer searches from a geometry the namespace never had.
 func NewLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
-	switch rec.IndexType {
-	case IndexFlat:
-		return &flatLiveIndex{idx: flat.NewIndex(mapDistanceMetricHNSW(rec.DistanceMetric))}, nil
-	case IndexIVFFlat:
-		return newIVFLiveIndex(namespace, rec), nil
-	default: // IndexHNSW and anything this build does not recognise falls back to HNSW.
-		cfg := hnsw.DefaultConfig()
-		cfg.DistanceMetric = mapDistanceMetricHNSW(rec.DistanceMetric)
-		idx, err := hnsw.NewHNSWIndex(cfg)
-		if err != nil {
-			return nil, err
-		}
-		return &hnswLiveIndex{namespace: namespace, idx: idx, ml: cfg.Ml}, nil
+	if rec.Dimension == 0 {
+		return nil, &InvalidDimensionError{Namespace: namespace}
 	}
+	if _, ok := hnswDistanceMetrics[rec.DistanceMetric]; !ok {
+		return nil, &InvalidDistanceMetricError{Namespace: namespace, Metric: rec.DistanceMetric}
+	}
+	build, ok := liveIndexBuilders[rec.IndexType]
+	if !ok {
+		return nil, &InvalidIndexTypeError{Namespace: namespace, IndexType: rec.IndexType}
+	}
+	return build(namespace, rec)
+}
+
+func newHNSWLiveIndex(namespace string, rec NamespaceRecord) (LiveIndex, error) {
+	cfg := hnsw.DefaultConfig()
+	cfg.DistanceMetric = hnswDistanceMetrics[rec.DistanceMetric]
+	idx, err := hnsw.NewHNSWIndex(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &hnswLiveIndex{namespace: namespace, idx: idx, ml: cfg.Ml}, nil
+}
+
+func newFlatLiveIndex(_ string, rec NamespaceRecord) (LiveIndex, error) {
+	return &flatLiveIndex{idx: flat.NewIndex(hnswDistanceMetrics[rec.DistanceMetric])}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -188,8 +205,14 @@ func (l *flatLiveIndex) Delete(id uint64) error {
 	return nil
 }
 
+// Search answers an empty index with hnsw.ErrEmptyIndex, as the HNSW live
+// index does, so a caller tells an empty index apart from a failed search
+// without knowing which index type it holds.
 func (l *flatLiveIndex) Search(query []float32, k int) ([]IndexHit, error) {
 	results, err := l.idx.Search(query, k)
+	if errors.Is(err, flat.ErrEmptyIndex) {
+		return nil, hnsw.ErrEmptyIndex
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +303,7 @@ func (l *ivfLiveIndex) train() error {
 		Convergence:    0.0001,
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  centroids,
-		DistanceMetric: mapDistanceMetricIVF(l.rec.DistanceMetric),
+		DistanceMetric: ivfDistanceMetrics[l.rec.DistanceMetric],
 		Seed:           DeterministicSeed(l.namespace, l.rec.TrainingGeneration),
 	}
 	index, err := ivf.NewIndex(cfg)
@@ -381,7 +404,7 @@ func (l *ivfLiveIndex) Unmarshal(data []byte) error {
 	// with (centroid count included) is what ends up in effect, not this
 	// one.
 	cfg := ivf.DefaultConfig(int(l.rec.Dimension))
-	cfg.DistanceMetric = mapDistanceMetricIVF(l.rec.DistanceMetric)
+	cfg.DistanceMetric = ivfDistanceMetrics[l.rec.DistanceMetric]
 	index, err := ivf.NewIndex(cfg)
 	if err != nil {
 		return err

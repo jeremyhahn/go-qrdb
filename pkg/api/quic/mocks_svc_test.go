@@ -130,9 +130,9 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 	return nil
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (m *mockBarrierService) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 // BarrierClusterUnseal answers as a node without cluster sealing does.
 func (m *mockBarrierService) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {

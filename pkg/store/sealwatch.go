@@ -36,18 +36,5 @@ func barrierSealed(err error) bool {
 // returns, and Pebble's retries log once rather than once per attempt. opts is
 // cloned, so a state machine reopened over the same options carries one watch.
 func openPebble(dir string, opts *pebble.Options) (*pebble.DB, *pebbleStorage.SealWatch, error) {
-	o := &pebble.Options{}
-	if opts != nil {
-		o = opts.Clone()
-	}
-	if o.Logger == nil {
-		o.Logger = pebbleStorage.NewLogger(nil)
-	}
-	seals := pebbleStorage.NewSealWatch(o.Logger, barrierSealed)
-	seals.Attach(o)
-	db, err := pebble.Open(dir, o)
-	if err != nil {
-		return nil, nil, err
-	}
-	return db, seals, nil
+	return pebbleStorage.Open(dir, opts, barrierSealed)
 }

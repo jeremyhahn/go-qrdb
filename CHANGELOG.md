@@ -11,67 +11,6 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Vector namespace scans page every vector exactly once**: `ScanNamespace` returns ascending vector IDs from `ScanOptions.FromID` on both Pebble and memory storage, and `ListVectors` pages behind an opaque keyset cursor that resumes after the last ID returned and refuses a malformed cursor with `InvalidVectorError` rather than restarting at the first page; the index rebuild pages the same way, so neither repeats nor skips a vector in a namespace larger than one page.
-- **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
-- **A tenant Security Officer's PIN is held sealed while it is being onboarded**: `bootstrap.TenantSOConfig.PIN` is a `*secure.Secret`. The onboarding service seals the request's PIN bytes into it and wipes them. The Secret is opened only for the `SetSOPIN` commit, and `ProvisionTenant` destroys it on every return, whether the PIN was committed, the commit failed or the request was refused. The secure analyzer no longer flags the two `[]byte` PIN fields.
-- **CI's devcontainer images build on `bigdisk` again and the forge publishes nothing**: a push to `main` on the forge no longer pushes them to a registry namespace the release runner's credential cannot write; every job there builds or reuses the content-hash image on its own runner, and github.com still publishes to GHCR.
-- **A certificate a node issues or enrolls is admitted on its next
-  handshake** (#1128). A tenant's first certificate brings its login CA into
-  use. Until now the TLS client trust learned of that CA only through an
-  asynchronous rebuild, so a login that dialed the moment the certificate came
-  back could be refused. `SignCertificate` and `EnrollCertificate` now bring
-  the node's client trust up to date before answering
-  (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
-
-- **The rolling enable-encryption coordinator-restart test no longer requires
-  the restarted coordinator to make the hand-on itself** (#1167).
-  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
-  restarted coordinator lost leadership of the system shard before the second
-  turn: the node elected then handed the turn on from the record, as
-  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
-  every node's log since the restart, and accepts another node's only when the
-  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
-  pin the condition: a stepped-down coordinator writes and logs nothing, and
-  the new leader, or the coordinator leading again, hands the turn on.
-
-- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
-  (#1042): the CSR reads were keyed by path, so the second flag left the
-  admin's CSR empty.
-
-- **Tenant creation with an SO PIN goes only over TLS** (#1042): the Go SDK
-  sent `CreateTenantRequest.SOPin` on every transport without the SO PIN's
-  guard, so plaintext gRPC, a Unix socket without TLS or an `http://` REST or MCP
-  address carried it in the clear, and a redirect could resend it.
-  `CreateTenantRequest` is now a `BarrierSecretCarrier` when `SOPin` is set:
-  REST, MCP, gRPC and Unix refuse it with `SOPINRequiresTLSError` before
-  anything is sent, and REST and MCP refuse a redirect to `http://` or to
-  another host. QUIC is always TLS 1.3 and the embedded transport sends
-  nothing over a wire. A request without a PIN is sent as before.
-
-- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
-  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
-  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
-  transit, so on a busy runner the read timed out on a replica that was ready
-  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
-  `NewClusteredNode` was not at fault: it returns only after
-  `server.WaitForShardServing` has served a ReadIndex on that same host. The
-  test now checks at the moment each founder returns: the replica must
-  already know a leader, and its first read must not be refused. A read
-  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
-  outcome retried, up to three times. A constructor that skips the wait still
-  fails on the first attempt.
-
-
-- **Every `make coverage-<pkg>` target now compares its figure with
-  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
-  does not have, so the comparison produced nothing and the target passed at
-  any coverage, 0% included. It now compares with `awk`, and a profile with no
-  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
-  drives the check through `make` over profiles above and below the floor.
-## [0.58.0-alpha] - 2026-10-27
-
 ### Added
 
 - **The separation-of-duties posture is readable and its changes are
@@ -83,7 +22,6 @@ are not reconstructed here — their history is in the git log.
   a change, the record is written first; the node whose conditional write
   wins then emits one `posture-change` audit event (`previous`, `posture`,
   `fips_forced`). A record that cannot be read or written refuses the start.
-
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
@@ -97,7 +35,6 @@ are not reconstructed here — their history is in the git log.
   a half match is refused. An isolated tenant records the SO as
   `__sys:pending-so` and creates its account right after the admin's. `sdk/go/node` now attaches the server's
   SO authenticator to tenant onboarding.
-
 - **A conformance test holds Get-after-Delete to typed not-found on every
   engine and transport** (#1163). `TestDeleteThenGetIsTypedNotFound` in
   `sdk/go/conformance` runs Put, Delete, then Get and Exists for 50 rounds on
@@ -105,9 +42,7 @@ are not reconstructed here — their history is in the git log.
   transport, with short keys, keys objstore stores under a hashed name, and one
   reused key. go-qrdb's read plane already answered not-found in every cell;
   the read failure #1163 reported is not raised by go-qrdb or go-objstore.
-### Added
 - **`qrdb kv put --revision`** prints the written key's version and revisions (the metadata of `kv get --revision`), through `MVCC().PutWithLease` with lease 0. The key-value user guide names the three calls that report a key's version — that put, `GetRevision` and a batch of get ops — which report one version, the one a transaction's `version` compare reads (#1211).
-### Added
 - **A vector namespace's index parameters and metadata can change in place**
   (#1290). `VectorClient.UpdateNamespace` (REST
   `POST /vector/namespace/update`, gRPC `VectorUpdateNamespace`, QUIC
@@ -133,57 +68,7 @@ are not reconstructed here — their history is in the git log.
   `database.UnmigratedDatabasesError`, naming every file, rather than starting
   with those databases unlisted. A create releases an entry this node holds
   for a database another node dropped before refusing the name as a duplicate.
-
-### Security
-- **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
-  `UpdateRole` are refused when the role would carry a permission the caller
-  does not hold in the role's tenant, and assigning a custom role is refused
-  unless the assigner holds all of it. A built-in role is assigned to another
-  account as before, so the tenant Admin still gives the built-in User role to
-  the accounts that sign, but no principal may bind to itself a role carrying a
-  permission it lacks. A tenant Admin could previously mint, widen or bind a
-  role with `keys:sign` and gain the key custody the Admin/User duty split
-  withholds from it. The refusal is `*role.GrantExceedsHolderError`, a
-  permission denial on every transport. Breaking: a tenant Admin no longer
-  creates roles carrying data-plane or key-custody permissions, and no longer
-  assigns itself its tenant's SO or User role. So that a role carrying the
-  database lifecycle can still be written in a tenant, the built-in Admin
-  gains, in its own tenant only, `databases:create`, `databases:read`,
-  `databases:list`, `databases:update`, `databases:delete`,
-  `databases:create_raft`, `databases:create_volume`, `databases:scale` and
-  `databases:barrier_status`, `databases:seal` and `databases:unseal`, and
-  beside the tenant barrier's init, seal, unseal and rekey it already held,
-  `tenant_barrier:enable_encryption`; a database's key custody
-  (`databases:rekey`, `databases:initialize_shamir`, `databases:officer_*`)
-  stays out of every built-in role. A role mixing Admin
-  and Operator permissions is written by a second account the Admin gives
-  both built-in roles. An Admin that gives User or Admin to a second account
-  it controls acts through it with that role's permissions.
-- **mcp-secret-argument-types** (#1129, #1130): an MCP secret, PIN or
-  credential argument sent as anything but a JSON string (an array, object,
-  number, boolean or `null`) is refused with `ToolArgumentError` naming it,
-  before either its text or its `<name>_b64` form is decoded. `mcp.ParseString`
-  had coerced such a value, reading an array or object as an absent secret, so
-  `so_pin_b64` and `user_pin_b64` sent as arrays let `qrdb_barrier_initialize`
-  go ahead with neither PIN provisioned. The same check covers the discovery
-  shared secrets and token, the credential values, the user auth-factor
-  credentials, the tenant-barrier unseal key and the invitation token
-  (`docs/barrier-seal/api.md`, "Secret arguments over MCP").
-
-### Changed
-- **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
-  `make deps-check` passes on `main` and every pull request.
-
-### Fixed
-- **Auth**: an authenticator that fails because its shard is electing a leader (`service.LeadershipTransient`) answers 503 / `UNAVAILABLE` on every transport, not 401; `sdk/go` re-exports `StoreUnavailableError` and `IsLeadershipTransient` so a consumer can classify it.
-
-- **Dependencies**: go.etcd.io/etcd `api/v3`, `client/v3` and `client/pkg/v3`
-  v3.7.3, in the root module, `sdk/go`, `sdk/go/gorm/conformance`,
-  `test/clusterproof` and `test/performance/etcd-benchmark`, so
-  `make deps-check` passes on `main` and every pull request.
-## [0.58.0-alpha] - 2026-10-27
-
-### Added
+- **`qrdb roles reconcile --all-tenants`** converges the built-in roles of every live tenant in one pass, so a renamed permission no longer needs each tenant's own Admin to repair. `role.ReconcileAllTenants` backs it on gRPC (`ReconcileBuiltInRolesAllTenants`), REST, QUIC, MCP, Unix and the embedded transport, and each `sdk/go` client exposes `ReconcileBuiltInRolesAllTenants`. It needs the new cross-scope permission `roles:reconcile_all`, granted only to the system tenant's built-in Admin, and refuses a caller bound to any other tenant with `tenant.PlatformOperatorRequiredError` (403). The report carries one per-tenant reconcile report for each tenant reached (the system tenant first), the skipped tenants with their reason (`sealed`, `refused`) and the failed ones; the CLI exits non-zero on a failed tenant and rejects `--all-tenants` with `--tenant`. A system Admin stored before this release gains the permission by running the system tenant's own `qrdb roles reconcile` first (#1219).
 - **Signed tenant barrier init** (#1212): a two-phase init for a first admin whose key signs away from the node. `POST /v1/tenants/{id}/barrier/signed-init/begin` (gRPC `TenantBarrierService.SignedInitBegin`, QUIC `tenant.BarrierSignedInitBegin`, MCP `qrdb_tenant_barrier_signed_init_begin`) takes the signer's SubjectPublicKeyInfo and returns the epoch-1 init statement to sign and a single-use reference valid for five minutes; `…/signed-init/complete` (`SignedInitComplete`, `tenant.BarrierSignedInitComplete`, `qrdb_tenant_barrier_signed_init_complete`) redeems it with the detached signature. Every complete attempt spends its reference. The Go SDK carries `Tenants().TenantBarrierSignedInitBegin` / `TenantBarrierSignedInitComplete` on every transport, and `sdk/go` re-exports the service types and refusals as `ServiceTenantBarrierInitBeginRequest`, `ServiceTenantSignedInitError` and the rest. The CLI adds `qrdb tenant barrier-init-begin` (`--public-key`, `--statement-out`) and `qrdb tenant barrier-init-complete` (`--reference-hex`, `--sig-file`).
 - `service.LeaseService.LogRenewals` counts the lease keep-alives sent
   through the raft log rather than answered by the lease primary from memory.
@@ -213,16 +98,7 @@ are not reconstructed here — their history is in the git log.
   `fips140=only` although only their caller-nonce AEAD is refused there; each
   now runs once per nonce convention, so the module-nonce case runs in both
   modes and only the unreachable caller-nonce case skips.
-- **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
-  WAL fsync stall keeps its leadership and term, so linearizable reads and
-  admin requests are not failed by an election the stall caused; writes wait
-  for a quorum's fsyncs as before. It is go-quicraft v0.24.2-alpha's
-  heartbeat-under-fsync, on in every build with no knob, and the stall shows in
-  `quicraft_logdb_fsync_latency_seconds`. `pkg/service`'s
-  `TestFsyncStall_LeaderKeepsLeadershipThroughFollowerWALStall` proves it on
-  three in-process hosts, waiting for each follower's own stalled-fsync
-  observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
-  `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **`sdk.MultiGuardedBatchKVStore`**, with `sdk.GuardedBatchKVStore`, `sdk.KVGuard` and `sdk.KVWrite`, re-exports the guarded multi-key commit (`kvstore.MultiGuardedBatchKVStore.PutAllIfAllUnchanged`) that `Client.KVStore()` already served, a standalone node's included, so an embedder commits an entry and its index entries as one batch conditional on expected values from `sdk/go` alone (#1196).
 - **Binary-key parity cells for every storage engine** (#1143):
   `pkg/storage/binary_key_parity_test.go` holds memory, pebble, file and both
   objstore providers to one answer for path-shaped keys (separators, `..`, a
@@ -250,42 +126,36 @@ are not reconstructed here — their history is in the git log.
 - **The objstore engine takes its provider credential by file reference.** `storage.objstore.credentials.{key_file,secret_file}` name owner-only files that `objstore.New` (`WithCredentialFiles`) reads into go-enclave handles and passes to go-objstore's `common.Credentials`; a credential inline in the YAML is refused at load, a reference the provider does not read (`key_file` on `azure`; either file on `gcs`, `local` or `memory`) is refused at open with `objstore.CredentialIgnoredError` before any file is read, and a credential file is opened without blocking so a FIFO is refused at once (#1143).
 - **`objstore.RegisterProvider` adds a provider that declares its credential reads, and is safe for concurrent use.** The provider is kept in the storage seam's own synchronized registry, which `New` consults before go-objstore's factory; nothing is written into the factory's unsynchronized map, so concurrent registrations and opens cannot fault the process. A name go-objstore ships, as a storage provider or an archiver, is refused whether or not its build tag compiled it in. `New` refuses a credential inline in the settings with `objstore.CredentialSettingError` before it calls any provider, so a registered creator never receives one. `New` resolves the provider once and validates and opens with that one registration, refusing an unknown name with `objstore.UnsupportedProviderError` before any credential file is read, so a registration racing an open cannot bypass the credential check (#1143).
 - **`sdk/go/storage` re-exports the objstore credential and provider-registration surface.** `WithObjStoreCredentialFiles`, `ObjStoreCredentialFiles`, `ObjStoreOption`, the `ObjStoreCredential*Error` types, `RejectObjStoreCredentialSettings` and `RegisterObjStoreProvider` alias their `pkg/storage/objstore` names, so an embedder opens `NewObjStoreStorage` with file credentials through the SDK boundary alone (#1215).
-- **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
-- **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+- **A pre-authentication request-rate limit per client address**, `transport.client_rate_limit` (`rate_per_second`, `burst`, `trusted_proxies`), off by default. REST, gRPC (gRPC-Web included), native QUIC, MCP and the Unix socket admit each request against one token bucket per address, shared by the node's listeners, before authentication runs; a refused request gets 429 with `Retry-After`, or `ResourceExhausted` with RetryInfo. The MySQL and PostgreSQL wire listeners charge the same bucket at connection and per statement: MySQL refuses with error 1226 (`ER_USER_LIMIT_REACHED`, SQLSTATE `42000`), PostgreSQL with SQLSTATE `08004` (FATAL) at connection and `53400` for a statement. The etcd v3 listener admits every RPC through the same bucket ahead of its authorizer, refusing with `ResourceExhausted`. An IPv6 client is keyed by its `/64`; each `trusted_proxies` entry names its `address` and the one `header` that proxy appends to (`forwarded` or `x-forwarded-for`), only that field is read on its behalf, so a client cannot override the chain its proxy wrote by sending the other one, and a field that is malformed -- a `Forwarded` field that does not match RFC 7239 §4 exactly, an unterminated quoted-string among others -- or exhausted fails closed to the last trusted hop's address. `sdk/go/server` names it `ClientRateLimitConfig` and `ClientRateLimitedError`. The Go SDK's and the CLI's `Connect` report the refusal as the server's typed answer rather than "health check failed", and QUIC no longer retries it until the connect bound (#1197).
+- **`invite.Store.Reissue`** supersedes every unredeemed invitation a user holds and issues a new one in one guarded write, and **`invite.Store.Activate`** records an account's activation apart from its redemption; `GC` keeps a reissued invitation written but not yet made live (the subject swap still in flight, or its outcome unknown) until it expires, collecting only records below the live generation; `ErrSuperseded`, `ErrUserNotFound`, `ErrUserActive` and `ErrReissueConflict` are re-exported through `sdk/go` (#1195).
 - **`sdk.TenantBarrierInitVerifier`** is the server half of signed tenant barrier initialization, re-exported from `pkg/auth/middleware` beside the client's `transport.ProveTenantBarrierInit` (#1246). `Begin(tenantID, tlsState)` issues a nonce bound to the tenant and the connection's TLS exporter; `Complete(tenantID, tlsState, proof, key)` checks the proof against that nonce, that exporter and the key `key` names, and spends the nonce, refusing with `*sdk.FirstAdminProofError`. A facade that terminates its callers' TLS runs the exchange with it rather than a copy of qrdb's. `AuthMiddleware` now runs the same type for every transport. The aliases `NewTenantBarrierInitVerifier`, `TenantBarrierInitKey`, `TenantBarrierInitProof`, `InitChallenge`, `InitChallengeBook`, `NewInitChallengeBook`, `InitChallengeTTL`, `InitChallengeMaxOutstanding`, `InitProofReason*` and `InitTooManyChallengesError` come with it.
-
-- **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
-  (#912): the ten `Vlog*` gRPC methods, `/vlog/*` REST routes, `vlog.*` QUIC
-  methods and `qrdb_vlog_*` MCP tools create and list logs, append, read
-  entries, prove inclusion and consistency (RFC 9162), read and sign the head
-  (a C2SP signed-note checkpoint), rotate the head-signing key and expire
-  entry bodies, under the `vlog:*`
-  permissions, in the caller's tenant and the request's database; no
-  request names a tenant, on any transport. Every call naming a barrier-isolated
-  tenant or a barrier-enabled database, sealed or not, is refused as
-  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
-  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
-  system barrier, not theirs, so `service.LogServiceConfig` requires the
-  node's database registry as `Databases`. They are
-  served while the node has a log service (`server.WithLogService`, wired by
-  `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
-  `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal
-  carries its `pkg/api/errclass` class on every transport. Key rotation is
-  gated on `vlog:sign_head`, so an Operator rotates and an Admin does not; a
-  checkpoint signed before a rotation still verifies under the key it names
-  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
-- **Verifiable logs from the SDK and the CLI** (#912): `Client.Vlog()` returns
-  a `transport.VlogClient` on every transport (embedded, gRPC, the Unix socket,
-  REST, QUIC and MCP), with embedded serving the log service
-  `embedded.WithLogService` supplies; appending to, signing or expiring a log
-  that does not exist is the typed `vlog.LogNotFoundError` on every one. The
-  `qrdb vlog` commands (`create`, `list`, `append`, `get`, `prove-inclusion`,
-  `prove-consistency`, `head`, `sign-head`, `rotate-key`, `expire`) drive it
-  over any protocol, in the database the root `--database` flag names
-  ([docs/databases/user.md](docs/databases/user.md), "Keep a verifiable log").
+- **`sdk/go` re-exports `WithRegisterCeremonyCA`** (#1129), beside the other
+  gRPC registration options: a composer registering qrdb's gRPC service on its
+  own server (gRPC or the Unix socket) attaches its `sdk.CeremonyCA`, so
+  `CeremonyInitialize`'s CSR-sign and generate paths issue the bootstrap
+  admin's certificate from that CA instead of failing with
+  `*ceremony.AdminCredentialRequiresCAError`. That error now reaches a remote
+  client typed: every transport carries it as the structured refusal
+  `ADMIN_CREDENTIAL_REQUIRES_CA` (metadata `path`), and the SDK rebuilds it, so
+  `errors.As` matches it, `Path` included, over gRPC, Unix, REST, QUIC and MCP.
+- **MCP barrier and ceremony secrets travel as base64, losslessly** (#1130).
+  Every secret argument of the barrier, tenant-barrier, holder, database and
+  ceremony tools (`secret`, `passphrase`, `barrier_secret`, `so_pin`,
+  `user_pin`, including `qrdb_database_unseal`, `qrdb_database_create`,
+  `qrdb_barrier_rekey_start` and `qrdb_barrier_officer_revoke`) has a
+  `<name>_b64` sibling in
+  standard padded base64 (RFC 4648 §4), so bytes that are not UTF-8, or that
+  begin with a byte-order mark, reach the barrier exactly. The text form stays;
+  a call carrying both forms is refused with `SecretArgumentConflictError`, and
+  invalid base64 with `ValueDecodeError`. The Go SDK's MCP client always sends
+  `<name>_b64`. `qrdb_barrier_unseal`'s `secret` and
+  `qrdb_ceremony_sign_csr`'s `so_pin` are no longer schema-`required`, since
+  either form satisfies them; the handler still refuses a call with neither.
 
 ### Changed
 
+- **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
+  `make deps-check` passes on `main` and every pull request.
 - **The cluster feature identity moved to the leaf package `pkg/feature`**
   (#627). `featuregate.Feature` is now `feature.Feature` and
   `featuregate.NotActiveError` is now `feature.NotActiveError`, unchanged in
@@ -330,17 +200,92 @@ are not reconstructed here — their history is in the git log.
   start and stop cost an 80-core host about 450 uevents each. The opt-in
   Ollama overlay pulls its model at run time, so it gives the holder one
   bridge attachment: one veth for the stack, not one per service.
-- **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
-  sign-head returns and records are the tlog-checkpoint text (origin, tree
-  size, base64 root) and one signed-note signature line carrying the key name
-  and the 4-byte key hash, not a JSON signed head. `vlog.RenderCheckpoint`,
-  `vlog.ParseCheckpoint`, `vlog.VerifyCheckpoint` and
-  `Descriptor.VerifyCheckpoint` replace `SignedHead.Encode` and
-  `DecodeSignedHead`, which are gone; a checkpoint signed before a rotation
-  verifies under the key version whose hash it carries
-  ([docs/databases/architecture.md](docs/databases/architecture.md)).
+- **Database names belong to a tenant** (#893): a database is identified by
+  its tenant and its name, so two tenants can each create a database of the
+  same name and each reaches only its own. Creating a name another tenant uses
+  succeeds and makes the caller's own database instead of returning
+  `database.AlreadyExistsError` (409, `ALREADY_EXISTS`), which disclosed that
+  the other tenant held the name; `AlreadyExistsError` now means the name is
+  taken in the caller's own tenant.
+- **Credentials are per tenant.** Every credential operation, on every transport and through `Client.Credentials()`, acts on the caller's own tenant's store: the platform's for a system principal, a store kept under the tenant's own barrier (always the `barrier` strategy) for a principal of a tenant onboarded with `barrier`, `volume` or `raft` isolation. A tenant on `prefix` isolation is refused with `CapabilityUnsupportedError` (501 / `UNIMPLEMENTED`), and a sealed tenant barrier with `BarrierSealedError` (503 / `UNAVAILABLE`); neither falls back to the system store. The ten `credentials:*` permissions move from `ScopeCross` to `ScopeSelf`, so a tenant administrator can grant them inside the tenant, and their SDK names move to `sdk/go/types_permission_credentials.go`. `credentials.CredentialService.ForBarrier` builds a store over a given barrier. The embedded transport now receives the node's credential service, so `Client.Credentials()` on an in-process node no longer fails with a nil service (#1185).
+- **A re-invitation supersedes every earlier token** (`users invite --username` on every transport). A token sent before the re-invite is now refused like a spent one, so at most one token per pending account is redeemable; a re-invite that loses a race to another re-invite or a redemption fails with `ABORTED` (REST 409) and is retried (#1195).
+- **CI adopts ci-template v1.29.3 (#1294):** a scheduled run's concurrency group is `schedule-<repository>`, so a repository has one at a time; a new `schedule-guard` job sets `verdict` to `run`, `busy` (a push run of ci.yml on `main` is in progress or waiting) or `unreadable`, and on a scheduled run `docker-build` runs only on `run`, every other bigdisk job skipping with it (`soak` carries the clause as well); on `busy` CI Gate skips, and on any other verdict but `run` it fails closed. `test/buildgates/ci_schedule_guard_test.go` holds every bigdisk job behind the guard and runs the guard's real script against a stub `curl`.
+- **CI adopts ci-template v1.29.2 (#1294):** the integration image's tag hashes `APK_INDEX_SUM`, the Alpine package index checksum `scripts/apk-index-sum.sh` reads (v1.29.0), and its build takes it as a build argument before `apk upgrade --no-cache`, so a new Alpine package release rebuilds the image; `lint-gates` runs `make lint-gates` without `-k` (v1.29.1); the code-tier jobs test docker-build's `it_image` output as well as `docs_only`, and test-typescript needs docker-build (v1.29.2). Every ci.yml job reads the sum through `make -s apk-index-sum`, which gives the script the `GO_IMAGE` pin from `scripts/tool-pins.sh` as `APK_BASE_IMAGES`: the Dockerfile's `FROM ${GO_IMAGE}` has no ARG default, so the bare script stopped every docker-build run.
+- **`cert.DefaultCertProvider.WatchForDeletions` returns a `done` channel**
+  beside its error, closed once both eviction watchers have returned, and nil
+  when the provider has no watch service. `lifecycle.WatchCertProviderEvictions`
+  waits on it as the node's own work, so `Node.Stop` cancels the Key B
+  eviction watchers and waits for them before it closes anything they read
+  through; before, they outlived the node. `sdk/go/node`'s `Close` likewise
+  waits for the cluster seal monitor rather than only canceling it.
+  `replicaforward.Start` also returns a `done` channel that closes once its
+  watches have returned, and `sdk/go/node`'s `Close` waits for it before it
+  closes the host the watches read through.
 
 ### Fixed
+
+- **A CI stage with no network waits for its multicast configurator's own readiness marker, and concurrent cache trims on a host run one at a time** (#1275): `scripts/in-toolchain-image.sh` starts the stage's `MULTICAST_WAIT` clock when the configurator writes `started.<n>` (its attempt n) on a marker volume and runs the stage once a `ready` marker and the route are there, retrying a failed configurator once with clocks of its own, so a daemon slow to start the configurator no longer exits the stage first, and the wait for `started` has its own bound, `MULTICAST_START_WAIT` (240 s: two configurator runs, each behind one 120 s cache trim), so a stage whose launcher died before the configurator ran exits 1 instead of waiting forever; the marker volume is labelled `qrdb.ci.multicast-marker=1`, and `scripts/reap-stale-ci-stacks.sh` removes one no container mounts; `scripts/trim-ci-caches.sh` takes a per-host lock in the runner's tool cache by polling `flock -n` (BusyBox `flock` has no `-w`) and skips its trim with one line when another job holds it past `CI_CACHE_LOCK_WAIT` seconds.
+- **A slow fsync no longer holds MVCC reads** (#1287): `MVCCStateMachine.Update` commits its batch under the read lock and takes the write lock only to publish it, in apply order; `Lookup` returns ctx's error, wrapped in `ReadError`, when ctx ends while it waits, and `Sync` takes the read lock. A batch that changes the index catalog, the lessor's tables, the compaction floors or an audit chain's head in place (an index create or drop, a lease grant, revoke, keep-alive or checkpoint, a compaction, an audit append or prune, any of those inside a guarded write, or any write while a lease exists) is still built and published under the write lock, so a reader never sees that state ahead of the published view (`MVCCEngine.RequiresExclusiveApply`, `docs/key-value/engineering.md`).
+- **The client-address rate limit refuses a malformed `Forwarded` field** (#1197): a `Forwarded` field from a trusted proxy that ends inside an unterminated quoted-string or quoted-pair is malformed as a whole (RFC 7239 §4), so the request is keyed by the trusted proxy's own address and `X-Forwarded-For` is not read in its place. A client could send `for=<any address>;x="` and the open quote hid the hop its proxy appended, so every address it chose drew a fresh bucket.
+- **A rate-limit bucket is kept until it has refilled** (#1197): `ratelimit.TokenBucketLimiter`'s reaper reclaimed any bucket idle for ten minutes, so under a policy slower than that, such as `rate_per_second: 0.000277` with `burst: 1`, a drained caller got a fresh token after about eleven minutes instead of an hour. A bucket is now reclaimed only once it is both idle past the TTL and full again; its memory is held for the longer of the two after its last request. This applies to the per-permission and the client-address limits alike.
+- **A REST client-address 429 carries the CORS headers** (#1197): the limiter runs before the CORS preflight answer so a preflight is charged, and its refusal was written before CORS set `Access-Control-Allow-Origin`, so a browser on an allowed origin reported a CORS failure instead of the rate limit. The refusal to an allowed origin now carries the same `Access-Control-Allow-Origin` and `Vary` a served request does, from the same CORS policy; a disallowed origin's carries none, and a preflight is still charged.
+- **A tenant administrator can grant the `credentials:*` permissions inside its tenant again**: the built-in Admin holds the ten `credentials:*` permissions in its own tenant, so under the rule that a grantor may grant only permissions it holds, a tenant Admin can write a role that gives its accounts use of the tenant's credential store (#1185).
+- **Vector namespace scans page every vector exactly once**: `ScanNamespace` returns ascending vector IDs from `ScanOptions.FromID` on both Pebble and memory storage, and `ListVectors` pages behind an opaque keyset cursor that resumes after the last ID returned and refuses a malformed cursor with `InvalidVectorError` rather than restarting at the first page; the index rebuild pages the same way, so neither repeats nor skips a vector in a namespace larger than one page.
+- **CI's devcontainer images publish under the release credential's own registry namespace, and a push to `main` on the forge publishes again**: `docker-build` runs on the release runner on a push to `main` and pushes `qrdb-ci-toolchain` and `qrdb-ci-it` under the namespace of the credential that pushes them, which it can write, and every consumer job there pulls them anonymously, because that namespace is public and the run's token cannot log in to the forge's registry; github.com still publishes to GHCR under the repository owner and pulls with the run's token.
+- **A tenant Security Officer's PIN is held sealed while it is being onboarded**: `bootstrap.TenantSOConfig.PIN` is a `*secure.Secret`. The onboarding service seals the request's PIN bytes into it and wipes them. The Secret is opened only for the `SetSOPIN` commit, and `ProvisionTenant` destroys it on every return, whether the PIN was committed, the commit failed or the request was refused. The secure analyzer no longer flags the two `[]byte` PIN fields.
+- **CI's devcontainer images build on `bigdisk` again and the forge publishes nothing**: a push to `main` on the forge no longer pushes them to a registry namespace the release runner's credential cannot write; every job there builds or reuses the content-hash image on its own runner, and github.com still publishes to GHCR.
+- **A certificate a node issues or enrolls is admitted on its next
+  handshake** (#1128). A tenant's first certificate brings its login CA into
+  use. Until now the TLS client trust learned of that CA only through an
+  asynchronous rebuild, so a login that dialed the moment the certificate came
+  back could be refused. `SignCertificate` and `EnrollCertificate` now bring
+  the node's client trust up to date before answering
+  (`clienttrust.Pool.Settle`); this reads no storage when no change is pending.
+- **The rolling enable-encryption coordinator-restart test no longer requires
+  the restarted coordinator to make the hand-on itself** (#1167).
+  `TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart` failed when the
+  restarted coordinator lost leadership of the system shard before the second
+  turn: the node elected then handed the turn on from the record, as
+  `Coordinator.Advance` is designed to. The test now looks for the hand-on in
+  every node's log since the restart, and accepts another node's only when the
+  restarted node's log shows it stepped down. Two `pkg/clustermig` unit tests
+  pin the condition: a stepped-down coordinator writes and logs nothing, and
+  the new leader, or the coordinator leading again, hands the turn on.
+- **`qrdb tenant create` accepts one file for `--admin-csr` and `--so-csr`**
+  (#1042): the CSR reads were keyed by path, so the second flag left the
+  admin's CSR empty.
+- **Tenant creation with an SO PIN goes only over TLS** (#1042): the Go SDK
+  sent `CreateTenantRequest.SOPin` on every transport without the SO PIN's
+  guard, so plaintext gRPC, a Unix socket without TLS or an `http://` REST or MCP
+  address carried it in the clear, and a redirect could resend it.
+  `CreateTenantRequest` is now a `BarrierSecretCarrier` when `SOPin` is set:
+  REST, MCP, gRPC and Unix refuse it with `SOPINRequiresTLSError` before
+  anything is sent, and REST and MCP refuse a redirect to `http://` or to
+  another host. QUIC is always TLS 1.3 and the embedded transport sends
+  nothing over a wire. A request without a PIN is sent as before.
+- **`TestNewClusteredNode_ServesALinearizableReadOnReturn` no longer fails
+  a ready cluster on a loaded host.** It gave its one ReadIndex a 1-second
+  deadline. go-quicraft answers nothing for a forwarded ReadIndex lost in
+  transit, so on a busy runner the read timed out on a replica that was ready
+  and serving: main's `make test-sdk` went red with `quicraft: timeout`.
+  `NewClusteredNode` was not at fault: it returns only after
+  `server.WaitForShardServing` has served a ReadIndex on that same host. The
+  test now checks at the moment each founder returns: the replica must
+  already know a leader, and its first read must not be refused. A read
+  attempt that runs out its own `server.StartupReadAttemptTimeout` is the one
+  outcome retried, up to three times. A constructor that skips the wait still
+  fails on the first attempt.
+- **Every `make coverage-<pkg>` target now compares its figure with
+  `COVER_MIN`.** The check compared with `bc`, which the CI toolchain image
+  does not have, so the comparison produced nothing and the target passed at
+  any coverage, 0% included. It now compares with `awk`, and a profile with no
+  total (missing or unreadable) fails. `test/buildgates/check_coverage_test.go`
+  drives the check through `make` over profiles above and below the floor.
+- **Auth**: an authenticator that fails because its shard is electing a leader (`service.LeadershipTransient`) answers 503 / `UNAVAILABLE` on every transport, not 401; `sdk/go` re-exports `StoreUnavailableError` and `IsLeadershipTransient` so a consumer can classify it.
+- **Dependencies**: go.etcd.io/etcd `api/v3`, `client/v3` and `client/pkg/v3`
+  v3.7.3, in the root module, `sdk/go`, `sdk/go/gorm/conformance`,
+  `test/clusterproof` and `test/performance/etcd-benchmark`, so
+  `make deps-check` passes on `main` and every pull request.
 - **A drop taken over by another no longer unfences its database on rollback**
   (#893): the drop-fence tombstone carries the drop's claim, and the store
   refuses a rollback, reclamation or clear whose claim a takeover replaced,
@@ -360,6 +305,383 @@ are not reconstructed here — their history is in the git log.
   same name** (#893): `Manager.UpdateReplicasForTenant` resolves the caller's
   tenant's database, so the replica count no longer goes stale and a later
   drop releases the right replica quota.
+- **A sealed at-rest barrier ends a `PebbleStorage` flush, durable write or
+  compaction with a typed error** (#1155): with encryption at rest, a barrier
+  sealed under an open store had Pebble retry a refused flush forever and
+  panic when it could not create its next WAL file. `encfs.FS.BarrierSealed`
+  reports whether the barrier keying it is sealed; `PebbleStorage` checks it
+  before every flush, durable write and compaction and returns a
+  `*pebble.SealedError` wrapping `ErrBarrierSealed`, and `pebble.Open` is the
+  one place a database opens under the seal watch, for the storage layer and
+  the state machines alike. `Node.Close` now closes the data-plane store before
+  it seals the node's barriers. A seal that lands between the check and Pebble
+  creating its next WAL file is not covered; that is the seal-quiesce row in
+  [docs/SPEC.md](docs/SPEC.md).
+- **A cancelled clustered boot stops at the step it is in**: `sdk/go/node`'s
+  `NewClusteredNode` checked its ctx before opening the Raft WAL and in the
+  readiness wait, but not between the WAL open, the host open and the shard
+  start, so a cancel landing in the first still paid for the fsyncs of all
+  three -- seconds on a contended disk (CI run 69313). ctx is now checked as
+  each step ends: a boot cancelled while the WAL opens builds no host, and one
+  cancelled while the host opens starts no shard; both return
+  `*HostCreateError` wrapping `context.Canceled`.
+- **An embedding request with no model hits the cache** (#658). The service
+  looked the cache up under the requested model but stored under the model the
+  provider used, so a request that left the model unset never hit. It now
+  resolves the effective model, the request's or else the provider's
+  configured default (the new `EmbeddingProvider.DefaultModel`), once and uses
+  it for both the lookup and the store, so a no-model request and a request
+  naming the default model share one entry
+  ([docs/embeddings/api.md](docs/embeddings/api.md)).
+- **`qrdb database create --backend` help names `objstore`** (#658). The help
+  text was a hand-written list that had left out a valid backend. It is now
+  built from `database.Backends()` (re-exported as `sdk.Backends`), the set
+  `BackendType.Valid` checks a create against, so a valid backend cannot be
+  missing from it.
+- **A node no longer fails its boot on a system shard that is still
+  settling when it opens the database catalog.** Listing the catalog is a
+  linearizable read, and it ran before the boot waited for a leader, so an
+  election in progress, or a new leader's ReadIndex warm-up, failed the boot.
+  The open now waits out the settling within the same bounded budget as the
+  other boot reads (`server.SystemShardSettleBudget`). Any other failure still
+  fails the boot at once.
+- **A create whose catalog record cannot be removed during its rollback
+  keeps its data directories.** If a create fails after its catalog record
+  committed, and the rollback then cannot delete that record, the create now
+  returns `database.CatalogOrphanError`, carrying both failures, and leaves
+  the directories in place for the record that still names them. Before this
+  change the directories were removed and the failure was only logged.
+- **A create that fails clearing its predecessor's seal record rolls back
+  its own tenant's database.** The rollback dropped the database by name
+  alone. When another tenant held a database of the same name, the drop was
+  refused as ambiguous and the failed create stayed open and recorded. It
+  now drops by tenant and name.
+- **`index.max_indexes` and `timeseries.max_metrics` are enforced** (#658,
+  #1088): both were validated and never read. A create of a new index name at
+  a shard's cap is refused with `*service.IndexLimitError`, and a write that
+  would create a metric past it with `*service.MetricLimitError`, both
+  classified ResourceExhausted (429 / `RESOURCE_EXHAUSTED`). The cap travels
+  in the command (a 4-byte trailer, absent when uncapped, so an uncapped
+  command is unchanged) and the apply path decides it against the state the
+  command applies over, in log order, so every replica reaches the same
+  verdict and two creates proposed through different nodes cannot both take
+  a shard's last slot. A write that recreates a metric deleted since it was
+  proposed counts as a creating write. A create naming a held index, or a
+  write to a held metric, is never refused.
+- **A capped command waits for every replica to enforce its cap** (#1088): a
+  binary from before the caps ignores the `TSWrite`, `TSWritePoint` and
+  `TSWriteBatch` trailer and the `IndexCreate` cap field, so during a rolling
+  upgrade it would admit a write or create its upgraded peers refuse. The cap
+  is now carried only once the group activates the `command-caps` cluster
+  feature (`featuregate.CommandCaps`); until then the commands are proposed
+  uncapped, byte-identical to an older binary's, and neither cap is enforced.
+  A standalone node gates nothing and enforces the caps from its first write.
+- **`timeseries.default_retention` applies to metrics with no policy**
+  (#658): it was loaded and validated but never reached the retention
+  scheduler. `server.WithDefaultRetention` carries it from `qrdbd` and
+  `sdk/go/node`, and the scheduler sweeps a metric with no policy, or with a
+  zero-duration policy, at the default.
+- **`watch.buffer_size` and `watch.max_watchers` take effect** (#658): the
+  buffer size sizes every hub's per-watcher event buffer, and `max_watchers`
+  caps the client watches open on a node, one limit shared by the node hub and
+  every tenant hub, in `qrdbd`, an `sdk/go/node` Node, the `sdk/go/standalone`
+  server and the desktop's embedded server.
+- **`storage.cache_size`, `storage.wal_dir` and `storage.max_open_files`
+  reach Pebble** (#658): every standalone data plane (`qrdbd --mode
+  standalone`, the SDK node and the embedded server) opened Pebble with the
+  defaults. **Breaking (API):** `lifecycle.NewLocalStorage` takes the whole
+  `StorageConfig` instead of its objstore section.
+- **An encryption migration refuses a Pebble store with an external WAL**
+  (#1088): the system migration copies, verifies and swaps the store
+  directory alone, so a store whose WAL lives elsewhere (`storage.wal_dir`)
+  would fail partway through, after the node was quiesced, and could not have
+  carried WAL-only records or re-encrypted that WAL. The migration is now
+  refused before anything is minted or quiesced, with
+  `MigrationNotSupportedError` naming `storage.wal_dir`; the store and its
+  data are untouched.
+- **Distributed locks report what happened** (#658). `Unlock`, `Extend` and
+  `Status` turned every failed read (a timeout, a lost leader, a sealed
+  barrier) into "lock not found" or "not locked"; only a missing key means
+  that now, and every other error reaches the caller. An empty key or a
+  non-positive TTL is InvalidArgument (400) rather than 500. Held-lock,
+  wrong-holder and missing-lock refusals keep their typed errors
+  (`LockHeldError`, `NotLockHolderError`, `LockNotFoundError`) over every
+  transport, and the gRPC and Unix clients no longer report a missing lock as
+  a missing key.
+- **Distributed locks hold under concurrent release and re-entry** (#658).
+  The fencing token is the lock key's MVCC create revision: the acquire is
+  one write, a re-entry leaves the token unchanged, and a release or expiry
+  followed by a new acquire always raises it. The lock record no longer
+  stores a token, and the second, post-acquire write that stored one, which a
+  release could interleave with to resurrect the key, is gone. A reentrant
+  re-acquire and a reentrant `Unlock` decrement are compare-and-swaps on the
+  revision read, so neither writes a released key back onto its lease nor
+  loses a concurrent re-entry; `TryLock` retries when the lock is released
+  between its failed CAS and its read of the holder; and `Unlock` retries a
+  delete that lost to the holder's own re-entry instead of reporting
+  `NotLockHolderError`, returning `ErrUnlockContended` only after bounded
+  retries.
+- **The lock record keeps its `fencing_token` field until every node reads the
+  create revision** (#1088): a binary from before reads the token from the
+  field, so during a rolling upgrade an acquisition still stores it (a
+  compare-and-swap on the acquire's own revision, which cannot write a
+  released lock back), and a re-entry or a reentrant release's decrement
+  rewrites it, always with the create revision. The field is dropped once the
+  group activates the `lock-create-revision-token` cluster feature
+  (`featuregate.LockCreateRevisionToken`, `lock.WithTokenFieldRetired`).
+  A store-back that fails with a not-leader refusal or an unknown outcome is
+  retried, the same compare-and-swap, up to four attempts 50 ms apart and
+  within the caller's context (`lock.WithRetryable`); one that still fails
+  leaves the lock held and is logged.
+- **A vector namespace builds the index type and metric it was created
+  with** (#658). Every namespace was built as HNSW, and `MANHATTAN` and every
+  unknown metric name were searched as L2. HNSW, FLAT and IVF are built from
+  the namespace record; an unknown index type is refused with
+  `UnknownIndexTypeError` and an unknown metric with
+  `service.UnknownDistanceMetricError` (both invalid argument), and the live
+  index refuses a zero dimension. An index built lazily on an upsert, or
+  rebuilt after a snapshot install, keeps the namespace's metric, and a
+  snapshot install now reloads each namespace's vectors from storage instead
+  of leaving an empty index. The GPU index is sized to the namespace's
+  dimension rather than 128.
+- **A `manhattan` vector namespace works on every transport** (#658, #1088).
+  The protobuf `DistanceMetric` enum gains `DISTANCE_MANHATTAN` (3), so gRPC,
+  Unix and QUIC no longer report or send a Manhattan namespace as cosine;
+  servers and SDKs refuse an enum value or metric name they do not know
+  (`service.UnknownDistanceMetricError`,
+  `transport.UnknownDistanceMetricError`); the REST, MCP and embedded SDK
+  transports report the metric as the `transport.DistanceMetric` constant
+  whatever case the server stored it in; and `qrdb vector namespace create`
+  accepts `--distance-metric manhattan`. A FLAT or IVF namespace using
+  Manhattan is refused with `service.VectorMetricNotActiveError` (failed
+  precondition) until the cluster's `vector-manhattan` feature is active,
+  and the vector service now reads the host's feature gates, so the gate
+  holds in production wiring.
+- **Vector index stats report the namespace's metric** (#658): the gRPC and
+  QUIC `VectorGetIndexStats` looked the metric up by index type and answered
+  cosine for every namespace.
+- **An untrained IVF index is a failed precondition** (#658): a search of an
+  IVF index short of its training floor answered the retryable
+  `VectorIndexWarmingError`, though only more writes can clear it; it now
+  answers `VectorIndexUntrainedError`.
+- **A stored vector namespace with an unsupported metric or index type is
+  refused, never searched as empty** (#1088): an earlier release stored any
+  metric or index name a caller sent, and a search of such a record answered
+  an empty result. Search, hybrid search, upsert, batch upsert and inspect
+  return `service.UnsupportedNamespaceGeometryError` (failed precondition),
+  naming the namespace and the stored value; delete still drops the
+  namespace.
+- **A vector batch upsert is checked whole for dimension before it is
+  written** (#1088): a batch carrying one vector of the wrong length was
+  stored and reported successful, and in an `ivf_flat` namespace that vector
+  stayed in the index's untrained set, so every later training attempt
+  failed and later vectors were never searchable. Every vector of the batch
+  is checked against the namespace's dimension (or, with none recorded,
+  against the batch's first vector) before anything is written, and a
+  mismatch refuses the whole batch with `service.DimensionMismatchError`.
+  A batch whose namespace metadata cannot be read is refused with that read's
+  error (`service.NamespaceNotFoundError` for a namespace that does not
+  exist).
+- **RAG ingest and delete keep the vector index in step with the document**
+  (#658): re-ingesting a document ID left every chunk past the new count
+  stored and searchable, and deleting a document left its chunks' vectors in
+  the vector store, taking top-k slots. Re-ingest replaces the document's
+  chunk set and delete removes its vectors.
+- **The `rag` config keys set the chunking and top-k defaults** (#658):
+  `default_chunk_strategy`, `default_chunk_size`, `default_overlap` and
+  `default_top_k` were parsed and never read. MCP's `qrdb_rag_ingest` takes
+  `chunk_min_size`, so `--chunk-min-size` is no longer dropped over MCP. An
+  oversize document answers 413 / `RESOURCE_EXHAUSTED`
+  (`rag.DocumentTooLargeError`) and a chunking input error 400
+  (`rag.ChunkingError`) rather than 500.
+- **A refused barrier initialize writes no PIN** (#658). On a node built with
+  the first-boot ceremony every transport provisioned the supplied SO and User
+  PINs and only then had the initialize refused
+  (`*SystemBarrierInitRefusedError`), so the PINs outlived the refusal.
+  `service.ProvisionInitializePINs` now asks for the refusal first.
+  **Breaking (API):** `service.BarrierServicer.BarrierInitialized(ctx)
+  (bool, error)` is replaced by `BarrierInitializePrecondition(ctx) error`,
+  which returns the refusal the initialize would return
+  (`*SystemBarrierInitRefusedError` or `seal.ErrAlreadyInitialized`).
+- **`qrdb ca list` lists the caller's own tenant by default** (#658). The
+  `--tenant-id` default was `system`, and `certs:list` admits only the
+  caller's own tenant, so every tenant caller that left the flag off was
+  refused. The flag now defaults to empty. Every transport (REST, gRPC, QUIC,
+  MCP, embedded) resolves an empty tenant to the caller's own: REST no longer
+  answers 400 for a missing `tenantID`, MCP's `qrdb_cert_list` no longer
+  defaults to `system`, and the embedded transport lists the tenant it
+  confined rather than the raw argument.
+- **`transport.BuildTLSConfig` no longer shares the caller's `NextProtos`**
+  (#949): `tls.Config.Clone` copies the slice header but not its array, so
+  the ALPN merge, or `net/http` adding `h2`, could write into the caller's
+  slice. The returned config owns its own `NextProtos`.
+- `qrdbd` carries every field of its config file's `transport:` section to the server: `max_message_bytes`, `max_conns_per_peer` and `max_streams_per_conn` set in YAML used to be dropped, leaving their defaults in force (#1197).
+- `MVCC().PutWithLease` on a state machine that keeps no revision history (the default pebble state machine) reports version 1 for the key it wrote, not 0. Presence is the only version such a state machine's transaction compares read, so a compare-and-set on the reported version now holds there too (#1211).
+- **A passphrase change checks the current passphrase and cannot lose a
+  race** (#631). `StorageBarrier.ChangePassword` refuses a current passphrase
+  that does not open the persisted root key (`seal.ErrCredentialMismatch`),
+  keeps the load generation, so the next unseal no longer logs a generation
+  going backwards, and replaces the blob only through a guarded swap
+  (`seal.ErrPassphraseChangeConflict`, `seal.ErrGuardedSwapUnsupported`).
+  A change that overlaps another rewrite of the root key, such as a second
+  passphrase change, is refused before it writes anything with
+  `seal.ErrRootKeyWriteInProgress`, a retryable conflict (`409` / `Aborted`)
+  rather than an internal error. A migration's adoption of its target's root key retires the source
+  barrier's state persister under the same lock, and the persister reads that
+  retirement only once it holds the lock, so a rotation entered before the
+  adoption and resumed after it is refused (`seal.ErrRootKeyAdopted`) rather
+  than writing the pre-migration key back over the migrated one.
+- **Unsealing a barrier that was never initialized is
+  `seal.ErrNotInitialized`**, not a corrupt root-key error, and keeps its
+  identity across every transport (`BARRIER_NOT_INITIALIZED`), as do
+  `BARRIER_CREDENTIAL_MISMATCH`, `BARRIER_PASSPHRASE_CHANGE_CONFLICT` and
+  `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` (#631).
+- **The Security Officer separation checks hold only under strict separation
+  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
+  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
+  now gates the SO-exclusive grant and revoke of the `so` role
+  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
+  the first admin, as it already gated the Owner role's voiding. In the
+  standard posture the tenant Admin grants and revokes `so` like any other
+  role, and may be named the tenant's SO.
+- **CI builds its images once per run and every job pulls them by digest**
+  (DS-3516): `docker-build` pushes the toolchain and integration images to the
+  forge's registry (the Gitea registry, derived from `github.server_url`, or
+  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
+  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
+  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
+  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
+  rather than rebuild when they cannot. `make integration-test` given a digest
+  `IT_IMAGE` requires the pulled image instead of building it, and the
+  reaper removes stale pulled images, never a name of an image any container
+  uses. `test/buildgates/ci_image_digest_test.go`
+  holds every consumer to the pull.
+- **A push to `main` publishes the CI images from the release runner**
+  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
+  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
+  on every other event; github.com keeps `ubuntu-latest`. The push reads the
+  release runner's credential contract alone (ruling 173, claude-agents#329):
+  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
+  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
+  secret, and no `env:` in ci.yml sets any of the three so none can mask
+  them. `scripts/ci-registry.sh` names the credential a refused or empty
+  login used, never its value. `test/buildgates/ci_image_digest_test.go`
+  fails when `docker-build` runs anywhere but `release` on a push to `main`,
+  on `release` on any other event, or when any other job can run there.
+- **An async vector compaction or index rebuild no longer outlives the node**
+  (#1171): the jobs ran on no context the node controlled, so one in flight at
+  shutdown reached the vector Pebble DB after it closed. The vector service now
+  runs them on its own background context, and the node closes the service
+  before the vector storage. `Close` cancels every job and returns only once
+  each has stopped, on every call, a concurrent second one included, and the
+  service refuses every later request (a rebuild, a compaction, or any read or
+  write, `BatchDeleteVectors`, `ListVectors`, `UpdateMetadata` and
+  `SearchByID` among them) with `VectorServiceClosedError` before it touches
+  storage.
+
+### Security
+
+- **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
+  `UpdateRole` are refused when the role would carry a permission the caller
+  does not hold in the role's tenant, and assigning a custom role is refused
+  unless the assigner holds all of it. A built-in role is assigned to another
+  account as before, so the tenant Admin still gives the built-in User role to
+  the accounts that sign, but no principal may bind to itself a role carrying a
+  permission it lacks. A tenant Admin could previously mint, widen or bind a
+  role with `keys:sign` and gain the key custody the Admin/User duty split
+  withholds from it. The refusal is `*role.GrantExceedsHolderError`, a
+  permission denial on every transport. Breaking: a tenant Admin no longer
+  creates roles carrying data-plane or key-custody permissions, and no longer
+  assigns itself its tenant's SO or User role. So that a role carrying the
+  database lifecycle can still be written in a tenant, the built-in Admin
+  gains, in its own tenant only, `databases:create`, `databases:read`,
+  `databases:list`, `databases:update`, `databases:delete`,
+  `databases:create_raft`, `databases:create_volume`, `databases:scale` and
+  `databases:barrier_status`, `databases:seal` and `databases:unseal`, and
+  beside the tenant barrier's init, seal, unseal and rekey it already held,
+  `tenant_barrier:enable_encryption`; a database's key custody
+  (`databases:rekey`, `databases:initialize_shamir`, `databases:officer_*`)
+  stays out of every built-in role. A role mixing Admin
+  and Operator permissions is written by a second account the Admin gives
+  both built-in roles. An Admin that gives User or Admin to a second account
+  it controls acts through it with that role's permissions.
+- **mcp-secret-argument-types** (#1129, #1130): an MCP secret, PIN or
+  credential argument sent as anything but a JSON string (an array, object,
+  number, boolean or `null`) is refused with `ToolArgumentError` naming it,
+  before either its text or its `<name>_b64` form is decoded. `mcp.ParseString`
+  had coerced such a value, reading an array or object as an absent secret, so
+  `so_pin_b64` and `user_pin_b64` sent as arrays let `qrdb_barrier_initialize`
+  go ahead with neither PIN provisioned. The same check covers the discovery
+  shared secrets and token, the credential values, the user auth-factor
+  credentials, the tenant-barrier unseal key and the invitation token
+  (`docs/barrier-seal/api.md`, "Secret arguments over MCP").
+- **The TypeScript SDK sends a secret only over https and never follows a
+  redirect with one** (#631). Every call whose body carries a passphrase, PIN,
+  share, token or barrier secret is refused with `ConfigError` on an `http://`
+  base URL before any network I/O, and is sent with `redirect: "error"`
+  (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
+  only `so_pin` from a passphrase-change payload, so the current and next
+  passphrases are never decoded a second time.
+
+## [0.58.0-alpha] - 2026-10-27
+
+### Added
+- **fsync-stall-leadership** (#906): a shard leader whose followers sit in a
+  WAL fsync stall keeps its leadership and term, so linearizable reads and
+  admin requests are not failed by an election the stall caused; writes wait
+  for a quorum's fsyncs as before. It is go-quicraft v0.24.2-alpha's
+  heartbeat-under-fsync, on in every build with no knob, and the stall shows in
+  `quicraft_logdb_fsync_latency_seconds`. `pkg/service`'s
+  `TestFsyncStall_LeaderKeepsLeadershipThroughFollowerWALStall` proves it on
+  three in-process hosts, waiting for each follower's own stalled-fsync
+  observation before it reads the histogram; `sdk/go/testutil/raftharness` gains
+  `WithHostOptions` and `StallFS`, the stalling WAL filesystem it uses.
+- **`sdk/go/server.SealedWindowRESTEntryMatches`** re-exports `sealedwindow.RESTEntryMatches`, the matcher the REST sealed-window gate applies to an allowlist entry, beside the `SealedWindowRESTAllowlist` it serves (#1223).
+- **`sdk/go/server.NewMCPServer`** re-exports the combined MCP server constructor qrdbd's orchestrator calls (`pkg/api/mcp.NewServer`), with the `MCPServer` handle, `MCPServerOption`, `MCPTLSNotConfiguredError` and the TLS, listener, connection-bound, auth-middleware and sealed-window probe and dispatch options as `WithMCPServer*`, so an embedder builds, starts and stops the real MCP server from `sdk/go` alone (#1225).
+
+- **The verifiable-log API over gRPC, the Unix socket, REST, QUIC and MCP**
+  (#912): the ten `Vlog*` gRPC methods, `/vlog/*` REST routes, `vlog.*` QUIC
+  methods and `qrdb_vlog_*` MCP tools create and list logs, append, read
+  entries, prove inclusion and consistency (RFC 9162), read and sign the head
+  (a C2SP signed-note checkpoint), rotate the head-signing key and expire
+  entry bodies, under the `vlog:*`
+  permissions, in the caller's tenant and the request's database; no
+  request names a tenant, on any transport. Every call naming a barrier-isolated
+  tenant or a barrier-enabled database, sealed or not, is refused as
+  `Unimplemented` (`BarrierTenantLogNotSupportedError`,
+  `BarrierDatabaseLogNotSupportedError`): the log registry sits under the
+  system barrier, not theirs, so `service.LogServiceConfig` requires the
+  node's database registry as `Databases`. They are
+  served while the node has a log service (`server.WithLogService`, wired by
+  `qrdbd` and `sdk/go/node`). REST, QUIC and MCP answer in one JSON shape,
+  `sdk/go/transport/vlogwire`'s, with byte fields in standard base64. Every `pkg/vlog` refusal
+  carries its `pkg/api/errclass` class on every transport. Key rotation is
+  gated on `vlog:sign_head`, so an Operator rotates and an Admin does not; a
+  checkpoint signed before a rotation still verifies under the key it names
+  ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
+- **Verifiable logs from the SDK and the CLI** (#912): `Client.Vlog()` returns
+  a `transport.VlogClient` on every transport (embedded, gRPC, the Unix socket,
+  REST, QUIC and MCP), with embedded serving the log service
+  `embedded.WithLogService` supplies; appending to, signing or expiring a log
+  that does not exist is the typed `vlog.LogNotFoundError` on every one. The
+  `qrdb vlog` commands (`create`, `list`, `append`, `get`, `prove-inclusion`,
+  `prove-consistency`, `head`, `sign-head`, `rotate-key`, `expire`) drive it
+  over any protocol, in the database the root `--database` flag names
+  ([docs/databases/user.md](docs/databases/user.md), "Keep a verifiable log").
+
+### Changed
+
+- **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
+  sign-head returns and records are the tlog-checkpoint text (origin, tree
+  size, base64 root) and one signed-note signature line carrying the key name
+  and the 4-byte key hash, not a JSON signed head. `vlog.RenderCheckpoint`,
+  `vlog.ParseCheckpoint`, `vlog.VerifyCheckpoint` and
+  `Descriptor.VerifyCheckpoint` replace `SignedHead.Encode` and
+  `DecodeSignedHead`, which are gone; a checkpoint signed before a rotation
+  verifies under the key version whose hash it carries
+  ([docs/databases/architecture.md](docs/databases/architecture.md)).
+
+### Fixed
 
 - **Every node logs a feature activation, whichever path learns of it**: a
   node that adopted an activation from its replica's applied record, or from
@@ -381,15 +703,6 @@ are not reconstructed here — their history is in the git log.
   the freshly generated id, so it removes a claim that landed and nothing
   else.
 
-- **A cancelled clustered boot stops at the step it is in**: `sdk/go/node`'s
-  `NewClusteredNode` checked its ctx before opening the Raft WAL and in the
-  readiness wait, but not between the WAL open, the host open and the shard
-  start, so a cancel landing in the first still paid for the fsyncs of all
-  three -- seconds on a contended disk (CI run 69313). ctx is now checked as
-  each step ends: a boot cancelled while the WAL opens builds no host, and one
-  cancelled while the host opens starts no shard; both return
-  `*HostCreateError` wrapping `context.Canceled`.
-
 - **The verifiable log's three remaining refusals are typed on every
   transport** (#912): a second create of a log, a second sign-head at a tree
   size that already has a checkpoint, and expiry on a log created without
@@ -401,29 +714,9 @@ are not reconstructed here — their history is in the git log.
   `*vlog.ExpireNotAllowedError`, so `errors.As` matches them
   ([docs/databases/api.md](docs/databases/api.md), "Verifiable logs").
 - **A database create whose mark-live propose times out no longer leaves an orphaned drop-fence incarnation.** A claim of the marker that timed out at the caller could still commit after the create rolled back, so the marker named an incarnation no catalog entry held and every retry of the create was refused as existing elsewhere. `UnfenceDatabaseKeyspace` now releases an unknown-outcome claim back to the tombstone under a detached context, so the create returns the documented retryable 503 and the fence and catalog agree; a release that fails too is `*service.MarkerReleaseError`, which unwraps to the timeout.
-- **An embedding request with no model hits the cache** (#658). The service
-  looked the cache up under the requested model but stored under the model the
-  provider used, so a request that left the model unset never hit. It now
-  resolves the effective model, the request's or else the provider's
-  configured default (the new `EmbeddingProvider.DefaultModel`), once and uses
-  it for both the lookup and the store, so a no-model request and a request
-  naming the default model share one entry
-  ([docs/embeddings/api.md](docs/embeddings/api.md)).
-- **`qrdb database create --backend` help names `objstore`** (#658). The help
-  text was a hand-written list that had left out a valid backend. It is now
-  built from `database.Backends()` (re-exported as `sdk.Backends`), the set
-  `BackendType.Valid` checks a create against, so a valid backend cannot be
-  missing from it.
 
 ### Changed
 
-- **Database names belong to a tenant** (#893): a database is identified by
-  its tenant and its name, so two tenants can each create a database of the
-  same name and each reaches only its own. Creating a name another tenant uses
-  succeeds and makes the caller's own database instead of returning
-  `database.AlreadyExistsError` (409, `ALREADY_EXISTS`), which disclosed that
-  the other tenant held the name; `AlreadyExistsError` now means the name is
-  taken in the caller's own tenant.
 - **`qrdb users cert-binding add|list|remove`** (#671). The CLI had no verb
   for enrolling a certificate binding, though the default
   `auth.mtls_binding_policy: required` refuses a certificate until one is
@@ -449,8 +742,6 @@ are not reconstructed here — their history is in the git log.
 - CI: a draft pull request runs no CI. Every job skips on `pull_request.draft` and CI Gate fails on a draft; a PR leaving draft starts its run with an empty commit or a merge of main (ci-standard §10 (f), ruling 214).
 - CI: ci.yml carries ci-template v1.27.0's nightly `schedule:` trigger again (cron `0 4 * * *`), so the full and nightly tiers, soak included, run on main each night; `test/buildgates/ci_tiers_test.go` allows a schedule in ci.yml and automerge.yml alone. This reverses the 2026-10-11 owner ruling and Company Agent m433 on Software's order DS-3913 (m1378 (2)).
 
-- **CI adopts ci-template v1.29.3 (#1294):** a scheduled run's concurrency group is `schedule-<repository>`, so a repository has one at a time; a new `schedule-guard` job sets `verdict` to `run`, `busy` (a push run of ci.yml on `main` is in progress or waiting) or `unreadable`, and on a scheduled run `docker-build` runs only on `run`, every other bigdisk job skipping with it (`soak` carries the clause as well); on `busy` CI Gate skips, and on any other verdict but `run` it fails closed. `test/buildgates/ci_schedule_guard_test.go` holds every bigdisk job behind the guard and runs the guard's real script against a stub `curl`.
-- **CI adopts ci-template v1.29.2 (#1294):** the integration image's tag hashes `APK_INDEX_SUM`, the Alpine package index checksum `scripts/apk-index-sum.sh` reads (v1.29.0), and its build takes it as a build argument before `apk upgrade --no-cache`, so a new Alpine package release rebuilds the image; `lint-gates` runs `make lint-gates` without `-k` (v1.29.1); the code-tier jobs test docker-build's `it_image` output as well as `docs_only`, and test-typescript needs docker-build (v1.29.2). Every ci.yml job reads the sum through `make -s apk-index-sum`, which gives the script the `GO_IMAGE` pin from `scripts/tool-pins.sh` as `APK_BASE_IMAGES`: the Dockerfile's `FROM ${GO_IMAGE}` has no ARG default, so the bare script stopped every docker-build run.
 - **CI adopts ci-template v1.28.0 (ruling 220(3)):** `make deps-check` is a lint-class gate on the PR tier (ruling 219(3)). It moves from the full-tier `image` steps to the `lint` job, after `make lint`, and runs on every event, a docs-only pull request included, so a module behind its dependency floor fails the pull request rather than `main` after the merge.
 - **CI adopts ci-template v1.27.0 (ruling 211):** `make coverage` and the `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` suites are five parallel code-tier jobs instead of serial `image` steps, and the linux/arm64 release cross-build (plain and FIPS) runs on the full tier only, like `fips`.
 - docs: apply the spec-review findings for api-server to collections (#658)
@@ -466,24 +757,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
-- **A node no longer fails its boot on a system shard that is still
-  settling when it opens the database catalog.** Listing the catalog is a
-  linearizable read, and it ran before the boot waited for a leader, so an
-  election in progress, or a new leader's ReadIndex warm-up, failed the boot.
-  The open now waits out the settling within the same bounded budget as the
-  other boot reads (`server.SystemShardSettleBudget`). Any other failure still
-  fails the boot at once.
-- **A create whose catalog record cannot be removed during its rollback
-  keeps its data directories.** If a create fails after its catalog record
-  committed, and the rollback then cannot delete that record, the create now
-  returns `database.CatalogOrphanError`, carrying both failures, and leaves
-  the directories in place for the record that still names them. Before this
-  change the directories were removed and the failure was only logged.
-- **A create that fails clearing its predecessor's seal record rolls back
-  its own tenant's database.** The rollback dropped the database by name
-  alone. When another tenant held a database of the same name, the drop was
-  refused as ambiguous and the failed create stayed open and recorded. It
-  now drops by tenant and name.
 - **`qrdb users cert-binding add|remove` document `--` before a thumbprint**
   (#671). A thumbprint is base64url (RFC 8705 `x5t#S256`), so about one in 64
   begins with `-` and the CLI read it as a flag (`unknown shorthand flag`).
@@ -554,36 +827,6 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
-- `MVCC().PutWithLease` on a state machine that keeps no revision history (the default pebble state machine) reports version 1 for the key it wrote, not 0. Presence is the only version such a state machine's transaction compares read, so a compare-and-set on the reported version now holds there too (#1211).
-- **A passphrase change checks the current passphrase and cannot lose a
-  race** (#631). `StorageBarrier.ChangePassword` refuses a current passphrase
-  that does not open the persisted root key (`seal.ErrCredentialMismatch`),
-  keeps the load generation, so the next unseal no longer logs a generation
-  going backwards, and replaces the blob only through a guarded swap
-  (`seal.ErrPassphraseChangeConflict`, `seal.ErrGuardedSwapUnsupported`).
-  A change that overlaps another rewrite of the root key, such as a second
-  passphrase change, is refused before it writes anything with
-  `seal.ErrRootKeyWriteInProgress`, a retryable conflict (`409` / `Aborted`)
-  rather than an internal error. A migration's adoption of its target's root key retires the source
-  barrier's state persister under the same lock, and the persister reads that
-  retirement only once it holds the lock, so a rotation entered before the
-  adoption and resumed after it is refused (`seal.ErrRootKeyAdopted`) rather
-  than writing the pre-migration key back over the migrated one.
-- **Unsealing a barrier that was never initialized is
-  `seal.ErrNotInitialized`**, not a corrupt root-key error, and keeps its
-  identity across every transport (`BARRIER_NOT_INITIALIZED`), as do
-  `BARRIER_CREDENTIAL_MISMATCH`, `BARRIER_PASSPHRASE_CHANGE_CONFLICT` and
-  `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` (#631).
-
-### Security
-
-- **The TypeScript SDK sends a secret only over https and never follows a
-  redirect with one** (#631). Every call whose body carries a passphrase, PIN,
-  share, token or barrier secret is refused with `ConfigError` on an `http://`
-  base URL before any network I/O, and is sent with `redirect: "error"`
-  (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
-  only `so_pin` from a passphrase-change payload, so the current and next
-  passphrases are never decoded a second time.
 - `make security` passes on main again: gosec's G204 at
   `test/buildgates/lean_standalone_test.go`'s `go list` call (#1207) carries the
   repo's `#nosec G204` justification, as the other build gates' `go list` calls do.
@@ -613,30 +856,6 @@ are not reconstructed here — their history is in the git log.
   `TimeToLive` a follower refuses on a host that implements `service.Host`
   alone still names the leader's replica ID, with an empty leader address,
   since such a host cannot report the shard's membership.
-- **At-rest encryption is written against `pkg/filesys`, not Pebble's
-  `vfs.FS`** (#627). `pkg/filesys` is a standard-library-only file-system
-  interface; `pkg/seal/encfs.New`, `atrest.Encryptor.FS` and `Wrap`,
-  `file.Encryptor`, `server.StorageFactory` and `node.ReplicaStorageFactory`
-  now take and return `filesys.FS`, so the file backend and every non-Pebble
-  embedder no longer compile Pebble's `vfs`. `pkg/storage/pebble` owns the one
-  adapter: `VFS`, `FromVFS` and `WrapVFS`; a Pebble store is encrypted with
-  `opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)`. `atrest.Encryptor.Apply`
-  is deleted. The encrypting FS drops the Pebble-only `ReuseForWrite`,
-  `SyncData`, `SyncTo`, `Fd` and path helpers, which the adapter supplies;
-  `Lock` and `DiskUsage` forward to the base FS or return
-  `*filesys.UnsupportedError` (`errors.ErrUnsupported`). `filesys.Default`
-  and an encrypting FS over it implement `filesys.HostFS` (their names are
-  host paths), and the adapter takes such an FS's lock, and reads its disk
-  usage, through Pebble's `vfs.Default`: a host file's lock belongs to the
-  process, so it has one owner, and a store opened through
-  `pebblestore.VFS(dataPlaneFS)`, one through `WrapVFS(nil, enc.Wrap)` and a
-  plain Pebble store exclude each other in one process, with the platform's
-  own lock (`LockFileEx` on Windows). A composer's Pebble-backed
-  `StorageFactory` or `ReplicaStorageFactory` opening through
-  `pebblestore.VFS(dataPlaneFS)` with the barrier enabled therefore holds its
-  database lock. `filesys.Default.OpenDir`'s handle syncs the directory on
-  every platform but Windows, where its `Sync` is a no-op, as in Pebble's own
-  directory handle: `FlushFileBuffers` fails on a directory there.
 - **go-quicraft v0.24.2-alpha, go-enclave v0.10.0-alpha, go-truststrap
   v0.7.0-alpha and go-objstore v0.7.0-alpha in the root, SDK, GORM
   conformance and cluster-proof modules** (#944); go-quicraft/test/performance
@@ -710,40 +929,6 @@ are not reconstructed here — their history is in the git log.
   again to grow. `docs/clustering/user.md` gives the procedure for growing a
   one-node cluster.
 
-- **The Security Officer separation checks hold only under strict separation
-  of duties** (#1042): `auth.separation_of_duties`, forced on in FIPS 140-3
-  mode and decided by `wiring.ResolveStrictSeparation` for every node path,
-  now gates the SO-exclusive grant and revoke of the `so` role
-  (`middleware.WithStrictSeparation`) and the tenant SO being distinct from
-  the first admin, as it already gated the Owner role's voiding. In the
-  standard posture the tenant Admin grants and revokes `so` like any other
-  role, and may be named the tenant's SO.
-
-- **CI builds its images once per run and every job pulls them by digest**
-  (DS-3516): `docker-build` pushes the toolchain and integration images to the
-  forge's registry (the Gitea registry, derived from `github.server_url`, or
-  `ghcr.io` on GitHub), as `qrdb-ci-toolchain` and
-  `qrdb-ci-it` tagged `<content-hash>-<trust>`, and outputs their `@sha256:`
-  references; `lint`, `image`, `fips`, the integration legs and `soak` pull
-  exactly those through `scripts/ci-registry.sh`, on any runner, and fail
-  rather than rebuild when they cannot. `make integration-test` given a digest
-  `IT_IMAGE` requires the pulled image instead of building it, and the
-  reaper removes stale pulled images, never a name of an image any container
-  uses. `test/buildgates/ci_image_digest_test.go`
-  holds every consumer to the pull.
-- **A push to `main` publishes the CI images from the release runner**
-  (DS-3516, ruling 169): on the forge, `docker-build` runs on the runner
-  labelled `release` on a push to `main`, and on `bigdisk`, pushing nothing,
-  on every other event; github.com keeps `ubuntu-latest`. The push reads the
-  release runner's credential contract alone (ruling 173, claude-agents#329):
-  it goes to `RELEASE_REGISTRY` and logs in with `RELEASE_REGISTRY_USER` and
-  `RELEASE_REGISTRY_TOKEN` from the runner's env file, not a repository
-  secret, and no `env:` in ci.yml sets any of the three so none can mask
-  them. `scripts/ci-registry.sh` names the credential a refused or empty
-  login used, never its value. `test/buildgates/ci_image_digest_test.go`
-  fails when `docker-build` runs anywhere but `release` on a push to `main`,
-  on `release` on any other event, or when any other job can run there.
-
 ## [0.56.0-alpha] - 2026-10-26
 
 ### Removed
@@ -781,41 +966,9 @@ are not reconstructed here — their history is in the git log.
   waits for in-flight operations, marks the store closed and closes the DB
   exactly once, and a later or concurrent Close returns nil. Calls after Close
   return `ErrStorageClosed`.
-- **An async vector compaction or index rebuild no longer outlives the node**
-  (#1171): the jobs ran on no context the node controlled, so one in flight at
-  shutdown reached the vector Pebble DB after it closed. The vector service now
-  runs them on its own background context, and the node closes the service
-  before the vector storage. `Close` cancels every job and returns only once
-  each has stopped, on every call, a concurrent second one included, and the
-  service refuses every later request (a rebuild, a compaction, or any read or
-  write, `BatchDeleteVectors`, `ListVectors`, `UpdateMetadata` and
-  `SearchByID` among them) with `VectorServiceClosedError` before it touches
-  storage.
 
 ### Added
 
-- **`sdk/go` re-exports `WithRegisterCeremonyCA`** (#1129), beside the other
-  gRPC registration options: a composer registering qrdb's gRPC service on its
-  own server (gRPC or the Unix socket) attaches its `sdk.CeremonyCA`, so
-  `CeremonyInitialize`'s CSR-sign and generate paths issue the bootstrap
-  admin's certificate from that CA instead of failing with
-  `*ceremony.AdminCredentialRequiresCAError`. That error now reaches a remote
-  client typed: every transport carries it as the structured refusal
-  `ADMIN_CREDENTIAL_REQUIRES_CA` (metadata `path`), and the SDK rebuilds it, so
-  `errors.As` matches it, `Path` included, over gRPC, Unix, REST, QUIC and MCP.
-- **MCP barrier and ceremony secrets travel as base64, losslessly** (#1130).
-  Every secret argument of the barrier, tenant-barrier, holder, database and
-  ceremony tools (`secret`, `passphrase`, `barrier_secret`, `so_pin`,
-  `user_pin`, including `qrdb_database_unseal`, `qrdb_database_create`,
-  `qrdb_barrier_rekey_start` and `qrdb_barrier_officer_revoke`) has a
-  `<name>_b64` sibling in
-  standard padded base64 (RFC 4648 §4), so bytes that are not UTF-8, or that
-  begin with a byte-order mark, reach the barrier exactly. The text form stays;
-  a call carrying both forms is refused with `SecretArgumentConflictError`, and
-  invalid base64 with `ValueDecodeError`. The Go SDK's MCP client always sends
-  `<name>_b64`. `qrdb_barrier_unseal`'s `secret` and
-  `qrdb_ceremony_sign_csr`'s `so_pin` are no longer schema-`required`, since
-  either form satisfies them; the handler still refuses a call with neither.
 - **`RegisterGRPCService` registers `qrdb.v1.TenantBarrierService`** (#1156)
   through the new `WithRegisterTenantBarrierService` option, gated by the
   middleware from `WithRegisterAuthMiddleware` (nil: the no-auth posture);

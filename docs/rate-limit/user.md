@@ -1,13 +1,65 @@
 # Rate Limiting — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
-This feature has two audiences: the **embedder** who wires qrdb into a
+This feature has three audiences: the **operator** who bounds how fast any
+one client address may call a node, the **embedder** who wires qrdb into a
 process and decides which operations need a capacity bound, and the **API
-caller** who occasionally gets told to slow down. There is no CLI or
-runtime configuration surface — see [cli.md](cli.md) and
+caller** who occasionally gets told to slow down. The per-address limit is
+one section of the node's configuration file; per-permission policies have
+no CLI or runtime configuration surface — see [cli.md](cli.md) and
 [api.md](api.md).
+
+## For an operator: limiting each client address
+
+Every listener a node runs -- REST (gRPC-Web included), gRPC, native QUIC,
+MCP, the Unix socket, a database's etcd v3 listener, and the MySQL and
+PostgreSQL wire listeners -- admits
+a request against its client address's
+token bucket before authenticating it, so a flood of handshake, login or
+enrollment attempts is bounded before any principal exists. Set it in the
+node's configuration file:
+
+```yaml
+transport:
+  client_rate_limit:
+    rate_per_second: 50   # sustained requests per second, per client address
+    burst: 100            # requests one address may make at once
+    trusted_proxies:      # optional: proxies whose forwarding header is believed
+      - address: 192.0.2.0/24
+        header: x-forwarded-for   # the one field this proxy appends to
+      - address: 198.51.100.7
+        header: forwarded         # RFC 7239
+```
+
+- Absent, or with `rate_per_second` and `burst` both zero, no limit applies.
+  Setting either one requires both to be positive; `trusted_proxies` without
+  them is refused at startup.
+- An IPv4 client is keyed by its address, an IPv6 client by its `/64`
+  prefix. Every local Unix-socket caller shares one bucket of its own: a
+  Unix socket carries no client address to tell its callers apart.
+- The bucket belongs to the node, not the listener: a client that spends it
+  over REST is refused over gRPC, QUIC, MCP, MySQL and PostgreSQL too.
+- A MySQL or PostgreSQL client is charged once when it connects and once for
+  every statement it sends.
+- Behind a reverse proxy or load balancer, list it in `trusted_proxies`;
+  otherwise every client it forwards shares the proxy's bucket. A client's
+  own `Forwarded` or `X-Forwarded-For` header is never read from a peer
+  that is not listed.
+- Each listed proxy names the one header it appends to, `forwarded` or
+  `x-forwarded-for`, and only that field is read on its behalf: a client
+  behind an `x-forwarded-for` proxy that sends its own `Forwarded` header
+  is not believed, and the other way round. A malformed or exhausted field
+  ends the walk at the last trusted hop, which is then charged. Two
+  overlapping entries that name different headers are refused at startup.
+- A replica forwarding a request to the leader is such
+  a peer too, and by design the leader charges the forwarding node: the
+  replica already charged the client when the request arrived. List the
+  cluster's nodes if the leader should charge the original client as well.
+
+An embedder sets the same thing as `Transport.ClientRateLimit` on the
+node's `config.Config` (`sdk/go/server.ClientRateLimitConfig`).
 
 ## For an embedder: declaring a limit
 
@@ -75,6 +127,14 @@ all:
   with the refusal text.
 - **Embedded (Go)**: a `*middleware.RateLimitedError` carrying the
   permission, subject, tenant and `RetryAfter`.
+
+The node's client-address limit refuses the same way on each transport,
+with a message naming the address rather than a permission
+(`*server.ClientRateLimitedError` in Go). The Go SDK and the CLI report it
+at `Connect`, as the refusal it is, rather than as a failed connection. A
+MySQL client gets error 1226 (`ER_USER_LIMIT_REACHED`, SQLSTATE `42000`); a
+PostgreSQL client gets SQLSTATE `08004` when it connects and `53400` for a
+statement, after which its session stays open.
 
 **What to do**: back off for at least the duration the refusal names (REST's
 `Retry-After` header, `RetryAfter` on the embedded error, or the wait

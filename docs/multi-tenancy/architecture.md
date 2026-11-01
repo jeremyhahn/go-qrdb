@@ -932,6 +932,7 @@ is in
 | Invitations and redemptions | home store | home store |
 | Permission-scope overrides | home store | home store |
 | DEK keyring | home store | home store |
+| Named credentials (`credentials:*`) | the tenant's own barrier; a `prefix` tenant has none and is refused ([../credentials/architecture.md](../credentials/architecture.md#tenant-stores)) | the tenant's own barrier |
 | Identity index (user and role id → tenant) | `system/__sys:identity_idx/…` | **removed**; see [Identity routing without a global index](#identity-routing-without-a-global-index) |
 | Tenant CA private key and CA certificate | home store; the public CA certificate is also published at `__sys:cert_ca_pub/{t}/` | home store, with the public certificate published |
 | Issued-certificate records | home store | home store |

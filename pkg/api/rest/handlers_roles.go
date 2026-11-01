@@ -611,6 +611,72 @@ func reconcileReportToResponse(report *role.ReconcileReport) reconcileRolesRespo
 	return out
 }
 
+// roleReconcileSkippedTenantResponse names a tenant the all-tenant reconcile
+// did not open, and why.
+type roleReconcileSkippedTenantResponse struct {
+	TenantID string `json:"tenant_id"`
+	Reason   string `json:"reason"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// roleReconcileFailedTenantResponse names a tenant whose reconcile failed.
+type roleReconcileFailedTenantResponse struct {
+	TenantID string `json:"tenant_id"`
+	Error    string `json:"error"`
+}
+
+// reconcileAllTenantsRolesResponse is the JSON body of
+// POST /roles/reconcile/all-tenants.
+type reconcileAllTenantsRolesResponse struct {
+	Tenants []reconcileRolesResponse             `json:"tenants,omitempty"`
+	Skipped []roleReconcileSkippedTenantResponse `json:"skipped,omitempty"`
+	Failed  []roleReconcileFailedTenantResponse  `json:"failed,omitempty"`
+}
+
+// handleReconcileRolesAllTenants converges every tenant's stored built-in
+// roles onto this build's definitions (role.ReconcileAllTenants). The route
+// has already required roles:reconcile_all; the request body is ignored.
+func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.Request) {
+	if s.roleSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "role"})
+		return
+	}
+	if s.tenantSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, allTenantsReconcileReportToResponse(report))
+}
+
+// allTenantsReconcileReportToResponse converts a role.AllTenantsReconcileReport
+// to its JSON response.
+func allTenantsReconcileReportToResponse(report *role.AllTenantsReconcileReport) reconcileAllTenantsRolesResponse {
+	var out reconcileAllTenantsRolesResponse
+	if report == nil {
+		return out
+	}
+	for i := range report.Tenants {
+		out.Tenants = append(out.Tenants, reconcileReportToResponse(&report.Tenants[i]))
+	}
+	for _, sk := range report.Skipped {
+		out.Skipped = append(out.Skipped, roleReconcileSkippedTenantResponse{TenantID: sk.TenantID, Reason: sk.Reason, Detail: sk.Detail})
+	}
+	for _, f := range report.Failed {
+		out.Failed = append(out.Failed, roleReconcileFailedTenantResponse{TenantID: f.TenantID, Error: f.Error})
+	}
+	return out
+}
+
 // permissionsToStrings renders a permission slice for a JSON response.
 func permissionsToStrings(perms []permission.Permission) []string {
 	if len(perms) == 0 {

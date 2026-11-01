@@ -1836,6 +1836,24 @@ func TestListCerts_Empty(t *testing.T) {
 	}
 }
 
+func TestListCerts_EmptyTenantIsCallers(t *testing.T) {
+	var listed string
+	mock := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			listed = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
+	tr := newAuthTransport(t, WithCertProvider(mock))
+
+	if _, err := tr.ListCerts(tenant.WithTenantID(context.Background(), "tenant-a"), ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listed != "tenant-a" {
+		t.Fatalf("listed tenant = %q, want the caller's own %q", listed, "tenant-a")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Conversion helper tests
 // ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ watch was canceled by compaction.
 A terminal response sets `"canceled": true` and carries `cancel_reason`. SDK
 callers should not parse that string: `WatchResponse.Err()` classifies it into
 `WatchCompactedError`, `WatchStartRevisionUnsupportedError`,
-`CapabilityUnsupportedError` (the serving node has no watch service), or
+`WatcherLimitError`, `CapabilityUnsupportedError` (the serving node has no watch service), or
 `WatchCanceledError`.
 
 ## Entity watch (service layer)
@@ -92,6 +92,7 @@ consumer should not compare it against a literal.
 | Stream opened | 200 | `OK` | events follow |
 | Missing permission | 403 | `PERMISSION_DENIED` | refused at open |
 | Barrier sealed | 503 | `UNAVAILABLE` | refused at open |
+| Every `watch.max_watchers` slot held | 429 | `RESOURCE_EXHAUSTED` | refused at open; the SDK error classifies to `WatcherLimitError` |
 | Start revision above current | 200 | `OK` | accepted at open; a live watch that delivers once a change reaches that revision, matching etcd's semantics for a future start revision |
 | Start revision compacted away | 416 | `OUT_OF_RANGE` | refused at open; the SDK error classifies to `WatchCompactedError` |
 | Store cannot replay (`raft.sm_type` is not `mvcc`) | 501 | `UNIMPLEMENTED` | refused at open; the SDK error classifies to `WatchStartRevisionUnsupportedError` |

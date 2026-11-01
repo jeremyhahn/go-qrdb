@@ -154,7 +154,7 @@ func TestCluster_OneNodeManagedTLSFounderGrows(t *testing.T) {
 
 	// Admission comes first: the joiner exits if it sees no leader within its
 	// fixed internal budget.
-	out, err = runCLIProto(t, founder, rest, "admin", "member", "add", joinerAddr,
+	out, err = runMemberAddWhenAdvertised(t, founder, rest, joinerAddr,
 		"--shard-id", "1", "--replica-id", "2", "--identity", joinerIdentity)
 	if err != nil {
 		t.Fatalf("admin member add %s: %v\noutput: %s", joinerAddr, err, out)

@@ -331,6 +331,13 @@ type startFlags struct {
 	// When no config file is provided, defaults from DefaultConfig are used.
 	sealConfig qrdbconfig.SealConfig
 
+	// transport is the transport: section loaded from YAML, carried whole
+	// into the server config: the per-message and per-peer bounds and the
+	// pre-authentication client-address rate limit every listener shares
+	// (go-qrdb#1197). Its zero value resolves each bound to its default
+	// and applies no rate limit.
+	transport qrdbconfig.TransportConfig
+
 	// storageConfig holds the storage subsystem configuration loaded
 	// from YAML — including volume pools that barrier-mode tenants
 	// draw from when allocating a per-tenant Pebble. When no config
@@ -358,6 +365,23 @@ type startFlags struct {
 	// ("import_session:"). When no config file is provided, the zero value
 	// resolves to the package defaults WithImportSessionLimits documents.
 	importSessionConfig qrdbconfig.ImportSessionConfig
+
+	// indexConfig caps every shard's secondary indexes, loaded from YAML
+	// ("index:"). When no config file is provided, the zero value leaves
+	// them unlimited.
+	indexConfig qrdbconfig.IndexConfig
+
+	// timeSeriesConfig is the timeseries section of the YAML config
+	// ("timeseries:"): default_retention reaches the retention scheduler
+	// and max_metrics caps every shard's metric names. With no config file
+	// the zero value keeps every point and leaves metric names unlimited.
+	timeSeriesConfig qrdbconfig.TimeSeriesConfig
+
+	// watchConfig is the watch section of the YAML config ("watch:"):
+	// buffer_size and max_watchers reach every watch hub the node builds
+	// through server.WatchHubOptions. With no config file the zero value
+	// keeps the package default buffer and no watcher cap.
+	watchConfig qrdbconfig.WatchConfig
 
 	// leaseConfig sets the lease checkpoint interval and failover grace,
 	// loaded from YAML ("lease:"). The zero value resolves to the lease
@@ -1007,6 +1031,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// Seal config is always inherited from YAML (no CLI flag equivalent).
 	f.sealConfig = cfg.Seal
 
+	// The transport section is likewise YAML-only.
+	f.transport = cfg.Transport
+
 	// Storage config (including volume_pools) is always inherited from
 	// YAML — there is no CLI flag equivalent for the multi-path pool
 	// definitions that barrier-mode tenants depend on. The one exception
@@ -1026,6 +1053,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// Import session config is always inherited from YAML — there is no
 	// CLI flag equivalent for a chunked import session's quotas.
 	f.importSessionConfig = cfg.ImportSession
+	f.indexConfig = cfg.Index
+	f.timeSeriesConfig = cfg.TimeSeries
+	f.watchConfig = cfg.Watch
 	f.leaseConfig = cfg.Lease
 }
 
@@ -1474,7 +1504,10 @@ func runStart(f *startFlags) (err error) {
 	// opcode is ever proposed is the featuregate.AuditAppend gate's
 	// decision, not this attachment's.
 	lr := lease.NewLessor()
-	watchHub := watch.NewHub()
+	// One set of options for the node's hub and every tenant hub: the
+	// watcher limit in it is the node's single watch.max_watchers cap.
+	watchHubOpts := server.WatchHubOptions(f.watchConfig)
+	watchHub := watch.NewHub(watchHubOpts...)
 
 	// Initialize the database manager. A raft database's shard ID is claimed
 	// from the replicated store, and its record is kept in the replicated
@@ -1762,7 +1795,7 @@ func runStart(f *startFlags) (err error) {
 				if localBackend == database.BackendRaft {
 					return &StandaloneRaftBackendError{}
 				}
-				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig.Objstore)
+				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, enc, f.storageConfig)
 				if lerr != nil {
 					return lerr
 				}
@@ -2009,6 +2042,8 @@ func runStart(f *startFlags) (err error) {
 				EmbeddingConfig:           f.embeddingConfig,
 				RAGConfig:                 f.ragConfig,
 				ImportSession:             f.importSessionConfig,
+				Index:                     f.indexConfig,
+				TimeSeries:                f.timeSeriesConfig,
 				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 				Encryptor:                 enc,
@@ -2463,6 +2498,9 @@ func runStart(f *startFlags) (err error) {
 				FeatureGate:          featureGate,
 				ClusterSealer:        tenantSealer,
 				ImportSession:        f.importSessionConfig,
+				Index:                f.indexConfig,
+				TimeSeries:           f.timeSeriesConfig,
+				WatchHub:             watchHubOpts,
 				SnapshotEntries:      f.snapshotEntries,
 				CompactionOverhead:   f.compactionOverhead,
 				Lease:                f.leaseConfig,
@@ -2705,6 +2743,7 @@ func runStart(f *startFlags) (err error) {
 				server.WithLeaderForwarding(registry),
 				server.WithBatch(batchSvc),
 				server.WithTimeSeries(tsSvc),
+				server.WithDefaultRetention(f.timeSeriesConfig.DefaultRetentionDuration()),
 				server.WithIndex(indexSvc),
 				server.WithVector(vectorSvc),
 				server.WithCollectionService(collectionSvc),
@@ -3361,7 +3400,8 @@ func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
 			Host:    f.host,
 			GRPCWeb: f.grpcWeb,
 		},
-		CORS: f.cors,
+		CORS:      f.cors,
+		Transport: f.transport,
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
 			GRPC:       f.enableGRPC,

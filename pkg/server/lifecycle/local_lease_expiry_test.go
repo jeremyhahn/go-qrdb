@@ -34,7 +34,7 @@ func TestStartLocalLeaseExpiry_DeletesAnExpiredLeasesKeys(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestStartLocalLeaseExpiry_NilIsANoOp(t *testing.T) {
 // it -- which is what lets a composer close the backend right after it.
 func TestStartLocalLeaseExpiry_StopWaitsAndStaysStopped(t *testing.T) {
 	ctx := context.Background()
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

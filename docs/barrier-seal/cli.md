@@ -45,7 +45,22 @@ qrdb --output json barrier status
 
 ## `qrdb barrier init`
 
-Initialize the cryptographic barrier.
+Refused by a `qrdbd` server: its system barrier is brought up by `qrdb init`
+(see [../firstboot/cli.md](../firstboot/cli.md)), and the server answers this
+command with `SystemBarrierInitRefusedError`, whose message names `qrdb init`.
+Only a barrier served without the first-boot ceremony, such as an embedded
+standalone node's, is initialized by it. The command carries no tenant or
+database scope: a tenant admin initializes a tenant barrier with
+`qrdb tenant barrier-init`.
+
+The CLI validates its flags before it calls the server, so a malformed
+invocation fails locally first:
+
+A `qrdbd` node built with the first-boot ceremony refuses it, whatever the
+flags, with a typed error naming `qrdb init`, which brings that node's system
+barrier up ([../firstboot/cli.md](../firstboot/cli.md)). A refused initialize
+writes nothing, PINs included. A node with no first-boot ceremony, such as a
+standalone embedded node, accepts it.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
@@ -54,28 +69,21 @@ Initialize the cryptographic barrier.
 | `--so-pin` | string | — | Security Officer PIN; **requires `--user-pin`** |
 | `--user-pin` | string | — | User PIN; **requires `--so-pin`** |
 
-Strategies:
-
-- `none` — identity passthrough; data stored in cleartext. Development only.
-- `passphrase` — single passphrase-derived master key. The default.
-- `shamir` is not an `init` strategy: the CLI refuses it with an
-  `InvalidArgError`. A Shamir barrier is initialized over its enrolled share
-  holders with `init-shamir`.
-
-PINs are optional but follow the **dual-control rule**: supplying one requires
-the other, so the pair satisfies FIPS 140-3 and PCI-DSS v4. Any PIN with
-`--barrier-strategy=none` is refused with a typed `PINsNotAllowedError`.
+Local validation: `--barrier-strategy shamir` is refused with an
+`InvalidArgError` (a Shamir barrier is initialized with `init-shamir`); a PIN
+without its pair is refused with an `InvalidArgError`; any PIN with
+`--barrier-strategy=none` is refused with a `PINsNotAllowedError`.
 
 ```bash
 qrdb barrier init --barrier-strategy passphrase --passphrase '<passphrase>'
-qrdb barrier init --barrier-strategy none
-qrdb barrier init --barrier-strategy passphrase --passphrase '<pp>' \
-                  --so-pin SO123 --user-pin USR123
+# against qrdbd: refused, the system barrier is brought up by "qrdb init"
 ```
 
 ## `qrdb barrier init-shamir`
 
-Initialize with M-of-N Shamir secret sharing. See
+Initialize with M-of-N Shamir secret sharing. A `qrdbd` server refuses it with
+`SystemBarrierInitRefusedError`, as it refuses `init`: its system barrier is
+put under Shamir custody by `qrdb init --barrier-strategy shamir`. See
 [../shamir-custody/cli.md](../shamir-custody/cli.md) for the custody model.
 
 | Flag | Type | Meaning |

@@ -16,10 +16,10 @@ default role set in a single transactional ceremony**.
 | `--so-pin` | string | — | **required** — Security Officer PIN (FIPS 140-3 / PCI-DSS v4 SO credential) |
 | `--user-pin` | string | — | **required** — User PIN (FIPS 140-3 / PCI-DSS v4 user credential) |
 | `--barrier-strategy` | string | `passphrase` | `none \| passphrase \| shamir \| pkcs11 \| tpm2 \| awskms \| gcpkms \| azurekv \| vault` |
-| `--passphrase` | string | — | the system barrier's secret — **required when `--barrier-strategy=passphrase`**, rejected otherwise. `qrdb init` is the only way a fresh node's system barrier is ever brought up — `qrdb barrier init` targeting it is refused. |
-| `--shares` | int | — | total Shamir shares — required when `--barrier-strategy=shamir` |
-| `--threshold` | int | — | Shamir M-of-N threshold — required when `--barrier-strategy=shamir` |
-| `--officers` | stringArray | — | `username=path/to/csr.pem`, repeatable — **required when `--barrier-strategy=shamir` with `--threshold >= 2`**; mutually exclusive with `--officers-file` |
+| `--passphrase` | string | — | the system barrier's secret — **required when `--barrier-strategy=passphrase`**, rejected otherwise |
+| `--shares` | int | — | total Shamir shares, at least 2 — required when `--barrier-strategy=shamir`, rejected otherwise |
+| `--threshold` | int | — | Shamir M-of-N threshold, `2 <= threshold <= shares` — required when `--barrier-strategy=shamir`, rejected otherwise |
+| `--officers` | stringArray | — | Security Officer share holder, `username=path/to/csr.pem`, repeatable; mutually exclusive with `--officers-file`. With `--barrier-strategy=shamir`, at least one holder is required through `--officers`, `--custodians` or `--officers-file` |
 | `--custodians` | stringArray | — | key custodian share holder, `username=path/to/csr.pem`, repeatable; mutually exclusive with `--officers-file` |
 | `--officers-file` | string | — | JSON file naming every initial share holder with the full holder shape `--officers`/`--custodians` cannot express ([../ceremony/cli.md](../ceremony/cli.md)); mutually exclusive with `--officers`/`--custodians` |
 | `--policy` | string | `designated` | factor policy of the initial share set: `designated` or `any-enrolled` |
@@ -33,7 +33,7 @@ default role set in a single transactional ceremony**.
 Exactly one of `--admin-csr`, `--admin-cert` or `--admin-generate` is
 **required** -- there is no credential-less default.
 `--admin-generate` makes the server mint the admin's key pair and return the
-private key in the response exactly once. `runInit` warns loudly on stderr
+private key in the response exactly once. `qrdb init` prints a warning on stderr
 when this path is taken; it does not meet FedRAMP, HIPAA or PCI DSS.
 
 The hardware strategy names (`pkcs11`, `tpm2`, `awskms`, `gcpkms`, `azurekv`,
@@ -88,9 +88,9 @@ QRDB_SO_PIN=... QRDB_USER_PIN=... QRDB_PASSPHRASE=... \
   qrdb init --barrier-strategy passphrase --admin-csr admin.csr
 ```
 
-**A `--threshold >= 2` request with no `--officers` fails closed** with the
-ceremony's typed `ErrNoOfficers`. Each `--officers` entry points at a
-PEM-encoded PKCS#10 CSR the officer generated themselves.
+**A Shamir request that names no share holder fails closed** with
+"M-of-N requires at least one officer". Each `--officers` or `--custodians`
+entry points at a PEM-encoded PKCS#10 CSR the holder generated themselves.
 
 ## M-of-N enrollment
 

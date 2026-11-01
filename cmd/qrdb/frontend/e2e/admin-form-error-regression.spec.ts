@@ -463,7 +463,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
             body: JSON.stringify({ error: "tenant: already exists" }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 
@@ -543,7 +543,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
             body: JSON.stringify({ error: "user: already exists" }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 
@@ -628,7 +628,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
             }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 
@@ -710,7 +710,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
             body: JSON.stringify({ error: "role: already exists" }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 
@@ -723,13 +723,13 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
       });
 
       // Mock the permissions endpoint used by PermissionTreePicker in the
-      // create-role form. Without this mock the form's mount triggers an
-      // unrelated error toast that would race with the 409 create toast.
+      // create-role form with the shape it reads ({ categories }). A wrong
+      // shape raises an unrelated error toast that races the 409 create toast.
       await page.route("**/permissions", (route) => {
         void route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ permissions: [] }),
+          body: JSON.stringify({ categories: [] }),
         });
       });
 
@@ -882,7 +882,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
             }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 

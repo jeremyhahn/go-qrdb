@@ -998,7 +998,13 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	// asking for a different value type rebuilds the index at that type
 	// instead (see IndexCreateValueType).
 	valueType := IndexCreateValueType(opts)
-	if existing, exists := e.indexes[name]; exists {
+	existing, exists := e.indexes[name]
+	// The shard's index cap is checked against the index set the create
+	// applies over, so every replica reaches the same verdict.
+	if index.CreateExceedsCap(exists, len(e.indexes), opts.MaxIndexes) {
+		return sm.Result{Data: protocol.EncodeLimitRefusal(protocol.LimitIndexes, opts.MaxIndexes)}, nil
+	}
+	if exists {
 		owner := e.indexOwners[name]
 		if index.CheckCreateOwner(name, owner, opts.Owner) != nil {
 			return sm.Result{Data: protocol.EncodeIndexOwnershipError(name, owner)}, nil

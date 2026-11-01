@@ -684,3 +684,21 @@ func TestClassifyWatchPollError_CapabilityRefusalIsTerminal(t *testing.T) {
 		t.Error("a transient failure was classified terminal")
 	}
 }
+
+// TestClassifyWatchPollError_WatcherLimitIsTerminal pins that a poll refused
+// at watch.max_watchers ends the watch, as the stream transports end theirs,
+// instead of polling silently until the caller's timeout.
+func TestClassifyWatchPollError_WatcherLimitIsTerminal(t *testing.T) {
+	refusal := &transport.RequestError{
+		Method: "qrdb_watch",
+		Err:    &toolResultError{Tool: "qrdb_watch", Message: "resource exhausted: " + (&watch.WatcherLimitError{Max: 1}).Error()},
+	}
+	reason, terminal := classifyWatchPollError(refusal)
+	if !terminal {
+		t.Fatal("watcher-limit refusal classified as transient; the poll loop would retry it until the timeout")
+	}
+	var wle *transport.WatcherLimitError
+	if err := (transport.WatchResponse{Canceled: true, CancelReason: reason}).Err(); !errors.As(err, &wle) {
+		t.Fatalf("terminal reason %q rebuilds as %T, want *transport.WatcherLimitError", reason, err)
+	}
+}

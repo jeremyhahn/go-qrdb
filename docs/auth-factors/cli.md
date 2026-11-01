@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Command group: `qrdb auth`, with a `factor` subgroup implementing the N-factor
@@ -140,7 +140,7 @@ atomic commit; the factor is no longer listed. Prints `OK`.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--force` | bool | allow deleting the **last** factor (admin); the user is deactivated |
+| `--force` | bool | allow deleting the **last** factor (admin) |
 
 ```bash
 qrdb auth factor add --user 42 --type mtls --label "laptop" --cert ./alice/cert.pem
@@ -168,8 +168,10 @@ qrdb barrier rekey --so-pin SO123
 qrdb barrier recovery generate --threshold 3 --so-pin SO123
 ```
 
-**Dual control**: `--so-pin` requires `--user-pin` and vice versa at
-initialization. Any PIN is refused with `--barrier-strategy=none`.
+`qrdb init` requires both `--so-pin` and `--user-pin`. **Dual control** on
+`qrdb barrier init` and `qrdb barrier init-shamir`: `--so-pin` requires
+`--user-pin` and vice versa. `qrdb barrier init` refuses any PIN with
+`--barrier-strategy=none`.
 
 Minimum PIN length is **6 characters**, enforced server side before any backend
 sees it.

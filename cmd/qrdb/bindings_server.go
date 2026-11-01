@@ -209,8 +209,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 
 	// Create the watch hub early so it can be shared between the state
 	// machine (to emit change notifications) and the watch service (to
-	// deliver them to subscribers).
-	hub := watch.NewHub()
+	// deliver them to subscribers). cfg's watch section sizes its buffers
+	// and caps the desktop's watches, as qrdbd's does.
+	hub := watch.NewHub(server.WatchHubOptions(embeddedWatchConfig(cfg.Watch))...)
 
 	var svcHost service.AdminHost
 
@@ -309,6 +310,9 @@ func (b *EmbeddedServerBinding) StartEmbedded(cfg *EmbeddedConfig) error {
 		embedded.WithLockService(svcNode.Lock),
 		embedded.WithIndexService(svcNode.Index),
 		embedded.WithTimeSeriesService(svcNode.TimeSeries),
+		// The desktop's watches are a client's: each holds a
+		// watch.max_watchers slot. The node's own watchers do not.
+		embedded.WithCountedWatch(),
 	}
 
 	if svcNode.User != nil {
@@ -830,6 +834,15 @@ func (b *EmbeddedServerBinding) buildClient(kvSvc service.KVServicer, adminSvc s
 // contains "lock held by current process" when the same process attempts to
 // open the same database directory twice, which happens when two embedded
 // server profiles share the same dataDir.
+// embeddedWatchConfig returns the embedded server's watch section as the YAML
+// config's, the zero value -- default buffer, no cap -- when w is nil.
+func embeddedWatchConfig(w *EmbeddedWatchConfig) qrdbconfig.WatchConfig {
+	if w == nil {
+		return qrdbconfig.WatchConfig{}
+	}
+	return qrdbconfig.WatchConfig{BufferSize: w.BufferSize, MaxWatchers: w.MaxWatchers}
+}
+
 func isPebbleLockError(err error) bool {
 	if err == nil {
 		return false

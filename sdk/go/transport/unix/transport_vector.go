@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -81,12 +82,14 @@ func (e *vectorIDParseError) Unwrap() error {
 // Enum conversion maps
 // ---------------------------------------------------------------------------
 
-// distanceMetricToProto converts transport DistanceMetric strings to proto
-// DistanceMetric values.
-var distanceMetricToProto = map[string]pb.DistanceMetric{
+// transportDistanceMetricToProto converts lower-case transport DistanceMetric
+// strings to proto DistanceMetric values.
+var transportDistanceMetricToProto = map[string]pb.DistanceMetric{
 	transport.DistanceCosine:     pb.DistanceMetric_DISTANCE_COSINE,
 	transport.DistanceEuclidean:  pb.DistanceMetric_DISTANCE_EUCLIDEAN,
 	transport.DistanceDotProduct: pb.DistanceMetric_DISTANCE_DOT_PRODUCT,
+	transport.DistanceManhattan:  pb.DistanceMetric_DISTANCE_MANHATTAN,
+	"l2":                         pb.DistanceMetric_DISTANCE_EUCLIDEAN,
 }
 
 // protoDistanceMetricToTransport converts proto DistanceMetric values to
@@ -95,6 +98,30 @@ var protoDistanceMetricToTransport = map[pb.DistanceMetric]string{
 	pb.DistanceMetric_DISTANCE_COSINE:      transport.DistanceCosine,
 	pb.DistanceMetric_DISTANCE_EUCLIDEAN:   transport.DistanceEuclidean,
 	pb.DistanceMetric_DISTANCE_DOT_PRODUCT: transport.DistanceDotProduct,
+	pb.DistanceMetric_DISTANCE_MANHATTAN:   transport.DistanceManhattan,
+}
+
+// distanceMetricToProto converts a caller's distance metric name, in any
+// case, to its wire value. An unset name is the wire default, cosine; any
+// other name with no wire value is refused rather than sent as cosine.
+func distanceMetricToProto(name string) (pb.DistanceMetric, error) {
+	if name == "" {
+		return pb.DistanceMetric_DISTANCE_COSINE, nil
+	}
+	if metric, ok := transportDistanceMetricToProto[strings.ToLower(name)]; ok {
+		return metric, nil
+	}
+	return 0, &transport.UnknownDistanceMetricError{Metric: name}
+}
+
+// distanceMetricFromProto converts a server's wire distance metric to its
+// transport name. A value this SDK does not know is refused, never read as
+// cosine.
+func distanceMetricFromProto(metric pb.DistanceMetric) (string, error) {
+	if name, ok := protoDistanceMetricToTransport[metric]; ok {
+		return name, nil
+	}
+	return "", &transport.UnknownDistanceMetricError{Metric: metric.String()}
 }
 
 // vectorIndexTypeToProto converts transport VectorIndexType strings to proto
@@ -128,11 +155,15 @@ func (t *Transport) CreateNamespace(ctx context.Context, req *transport.CreateNa
 	if err != nil {
 		return nil, err
 	}
+	metric, err := distanceMetricToProto(req.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := t.client.VectorCreateNamespace(ctx, &pb.VectorCreateNamespaceRequest{
 		Namespace:       req.Namespace,
 		Dimension:       int32(req.Dimension),
-		DistanceMetric:  distanceMetricToProto[req.DistanceMetric],
+		DistanceMetric:  metric,
 		IndexType:       vectorIndexTypeToProto[req.IndexType],
 		IndexParamsJson: indexParamsJSON,
 		ShardId:         req.ShardID,
@@ -246,6 +277,10 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 // protoToNamespaceInfo converts a namespace-info reply, decoding its
 // metadata JSON.
 func protoToNamespaceInfo(p *pb.VectorNamespaceInfo) (*transport.GetNamespaceInfoResponse, error) {
+	metric, err := distanceMetricFromProto(p.GetDistanceMetric())
+	if err != nil {
+		return nil, err
+	}
 	metadata, err := unmarshalInterfaceMetadataJSON(p.GetMetadataJson())
 	if err != nil {
 		return nil, err
@@ -254,7 +289,7 @@ func protoToNamespaceInfo(p *pb.VectorNamespaceInfo) (*transport.GetNamespaceInf
 		Namespace:      p.GetNamespace(),
 		Dimension:      uint32(p.GetDimension()),
 		VectorCount:    uint64(p.GetVectorCount()),
-		DistanceMetric: protoDistanceMetricToTransport[p.GetDistanceMetric()],
+		DistanceMetric: metric,
 		IndexType:      protoVectorIndexTypeToTransport[p.GetIndexType()],
 		IndexConfig:    p.GetIndexConfig(),
 		Metadata:       metadata,

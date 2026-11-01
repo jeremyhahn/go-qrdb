@@ -126,3 +126,155 @@ func TestHandleCeremonyInitialize_OversizedBody_Is413(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusRequestEntityTooLarge)
 }
+
+func TestHandleCeremonyInitialize_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCeremonyInitialize_BadBody(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()),
+		WithCeremonyCA(&coverageCeremonyCA{}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(`not-json`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// TestHandleCeremonyInitialize_ForwardsAllFields proves every request field
+// reaches the service's CeremonyInitializeOptions.
+func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
+	svc := newCoverageCeremonyService()
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc),
+		WithCeremonyCA(&coverageCeremonyCA{}))
+
+	body := `{
+		"so_pin": "pin",
+		"user_pin": "upin",
+		"credential_seal_strategy": "shamir",
+		"threshold": 2,
+		"officers": [
+			{"username": "officer-1", "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\ncsr1\n-----END CERTIFICATE REQUEST-----\n"},
+			{"username": "officer-2", "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\ncsr2\n-----END CERTIFICATE REQUEST-----\n"}
+		],
+		"hostname": "override.example",
+		"sans": ["alt1.example", "alt2.example"]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/initialize", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyInitialize(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	got := svc.capturedInitOpts
+	if got == nil {
+		t.Fatal("expected CeremonyInitialize to be called with non-nil opts")
+	}
+	if got.SOPin != "pin" || got.UserPin != "upin" {
+		t.Errorf("SOPin/UserPin not forwarded: %+v", got)
+	}
+	if got.CredentialSealStrategy != "shamir" {
+		t.Errorf("CredentialSealStrategy = %q, want %q", got.CredentialSealStrategy, "shamir")
+	}
+	if got.Threshold != 2 {
+		t.Errorf("Threshold = %d, want 2", got.Threshold)
+	}
+	if got.Hostname != "override.example" {
+		t.Errorf("Hostname = %q, want %q", got.Hostname, "override.example")
+	}
+	if len(got.SANs) != 2 || got.SANs[0] != "alt1.example" || got.SANs[1] != "alt2.example" {
+		t.Errorf("SANs = %v, want [alt1.example alt2.example]", got.SANs)
+	}
+	if len(got.Officers) != 2 {
+		t.Fatalf("Officers = %v, want 2 entries", got.Officers)
+	}
+	if got.Officers[0].Username != "officer-1" || got.Officers[0].CSRPEM == "" {
+		t.Errorf("Officers[0] = %+v", got.Officers[0])
+	}
+	if got.Officers[1].Username != "officer-2" || got.Officers[1].CSRPEM == "" {
+		t.Errorf("Officers[1] = %+v", got.Officers[1])
+	}
+}
+
+func TestHandleCeremonyStatus_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodGet, "/v1/ceremony/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyStatus(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCeremonyStatus_Success(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodGet, "/v1/ceremony/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyStatus(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	if resp["state"] != "initialized" || resp["spki_pin"] != "pin123" {
+		t.Errorf("status response = %v, want state=initialized spki_pin=pin123", resp)
+	}
+}
+
+func TestHandleCeremonyStatus_ServiceError(t *testing.T) {
+	svc := newCoverageCeremonyService()
+	svc.statusErr = &service.KeyNotFoundError{Key: "k"}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc))
+	req := httptest.NewRequest(http.MethodGet, "/v1/ceremony/status", nil)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyStatus(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleCeremonySignCSR_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/sign-csr", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonySignCSR(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCeremonySignCSR_BadBody(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/sign-csr", strings.NewReader(`bad`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonySignCSR(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCeremonySignCSR_Success(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	body := `{"username":"alice","so_pin":"pin","csr_pem":"csr","role":"officer"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/sign-csr", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCeremonySignCSR(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp map[string]any
+	decodeJSON(t, rec, &resp)
+	if resp["cert_pem"] != "signed-cert" {
+		t.Errorf("cert_pem = %v, want signed-cert", resp["cert_pem"])
+	}
+}
+
+func TestHandleCeremonySignCSR_ServiceError(t *testing.T) {
+	svc := newCoverageCeremonyService()
+	svc.signCSRErr = &service.KeyNotFoundError{Key: "k"}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(svc))
+	body := `{"username":"alice","so_pin":"pin","csr_pem":"csr","role":"officer"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/sign-csr", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCeremonySignCSR(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}

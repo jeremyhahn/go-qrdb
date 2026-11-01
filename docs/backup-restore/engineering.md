@@ -206,9 +206,14 @@ bytes — see [../key-wrapping/](../key-wrapping/architecture.md).
 
 ## Persistence
 
-A backup is a set of shard snapshots plus a manifest holding the ID, timestamp,
-size, shard count, checksum, destination, compression, encryption and metadata.
-The checksum covers the captured payload.
+A backup is its `BackupInfo` (ID, timestamp, size, shard count, status,
+checksum, destination, compression, encryption, metadata), the stored bytes of
+each captured shard, and, unless it is an `EncryptionNone` backup, a
+`BackupEnvelope`: the format version, provider ID, key reference, wrapped DEK,
+and a manifest sealed under the DEK that records the algorithm, backup ID,
+destination and the SHA-256 digest of each shard's stored bytes. `Checksum` is
+SHA-256 over the stored (for an encrypted backup, ciphertext) bytes of every
+shard in shard-ID order.
 
 **Compatibility**: the shard snapshot format is the compatibility surface.
 Restoring onto a materially different topology is not a supported migration
@@ -226,9 +231,8 @@ path.
   (`*BackupPlaintextRestoreNotAllowedError`), checksum computation and
   mismatch detection, selective shard capture and restore, per-shard error
   reporting, and `ListBackups` ordering.
-- **The encryption-required refusals are security tests.** They are what stop
-  a backup being written in plaintext by omission -- the default is
-  encrypted, and getting plaintext takes an explicit, visible choice.
+- **The encryption-required refusals are security tests.** They stop a
+  backup being written in plaintext by omission.
 - **Conformance**: per-transport coverage of the three encryption scenarios
   (default with no key refused, default with a key encrypts and restores,
   explicit `none` writes plaintext and warns/audits) lives in

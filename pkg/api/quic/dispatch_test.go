@@ -167,6 +167,7 @@ var expectedMethods = []string{
 	"role.ListOwnPermissions",
 	"role.Authorize",
 	"role.ReconcileBuiltIn",
+	"role.ReconcileBuiltInAllTenants",
 
 	// Certificate management (4)
 	"cert.Issue",
@@ -284,9 +285,11 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 205 = 202 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
+	// 206 = 203 + cert.DelegationPolicyPut, cert.DelegationPolicyList and
 	// cert.DelegationPolicyDelete, the tenant's standing delegation policy
 	// under which the node mints delegations (docs/identity-rbac).
+	// 203 = 202 + role.ReconcileBuiltInAllTenants, the platform operator's
+	// all-tenant built-in role reconcile (roles:reconcile_all).
 	// 202 = 201 + vector.UpdateNamespace, the in-place namespace update
 	// that keeps every vector (docs/vectors).
 	// 201 = 200 + barrier.ChangePassphrase, the supported passphrase change
@@ -364,7 +367,7 @@ func TestBuildHandlers_MethodCount(t *testing.T) {
 	// kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124), and the 161 was
 	// 160 plus user.GetByEmail, the canonical login-key lookup (go-qrdb#190).
 	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 205
+	const wantCount = 206
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -465,7 +468,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"ts":       10,
 		"vector":   21,
 		"user":     14,
-		"role":     13,
+		"role":     14,
 		"cert":     8,
 		"barrier":  22,
 		"ceremony": 3,

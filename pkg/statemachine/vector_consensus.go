@@ -71,6 +71,10 @@ type VectorConsensusFSM struct {
 type ConsensusNamespaceInfo struct {
 	Name      string `msgpack:"name"`
 	Dimension uint32 `msgpack:"dim"`
+	// DistanceMetric is the metric the namespace was created with, so an
+	// index built lazily or after a snapshot install keeps it. A snapshot
+	// written before it was tracked decodes it empty (namespaceMetricLocked).
+	DistanceMetric string `msgpack:"metric,omitempty"`
 }
 
 // VectorShardID is the default shard ID for vector operations.
@@ -126,65 +130,80 @@ func (v *VectorConsensusFSM) loadNamespaces() error {
 		// Track namespace metadata
 		v.mu.Lock()
 		v.namespaces[ns.Name] = &ConsensusNamespaceInfo{
-			Name:      ns.Name,
-			Dimension: ns.Dimension,
+			Name:           ns.Name,
+			Dimension:      ns.Dimension,
+			DistanceMetric: ns.DistanceMetric,
 		}
 		v.mu.Unlock()
 
-		// Initialize HNSW index for namespace
-		if err := v.createHNSWIndex(ns.Name, ns.DistanceMetric); err != nil {
-			v.logger.WithFields(map[string]interface{}{
-				"namespace": ns.Name,
-				"error":     err,
-			}).Warn("Failed to create HNSW index for namespace")
-			continue
-		}
-
-		// Load vectors into HNSW index
-		vectors, err := v.storage.ScanNamespace(ctx, ns.Name, nil)
-		if err != nil {
-			v.logger.WithFields(map[string]interface{}{
-				"namespace": ns.Name,
-				"error":     err,
-			}).Warn("Failed to scan vectors for namespace")
-			continue
-		}
-
-		v.indexMu.RLock()
-		index := v.hnswIndexes[ns.Name]
-		v.indexMu.RUnlock()
-
-		if index != nil {
-			for _, vec := range vectors {
-				if err := index.Insert(vec.ID, vec.Embedding); err != nil {
-					v.logger.WithFields(map[string]interface{}{
-						"namespace": ns.Name,
-						"vector_id": vec.ID,
-						"error":     err,
-					}).Warn("Failed to insert vector into HNSW index")
-				}
-			}
-		}
-
-		v.logger.WithFields(map[string]interface{}{
-			"namespace": ns.Name,
-			"vectors":   len(vectors),
-		}).Debug("Loaded namespace with vectors")
+		v.rebuildIndexFromStorage(ctx, ns.Name, ns.Dimension, ns.DistanceMetric)
 	}
 
 	return nil
 }
 
-// createHNSWIndex creates a new HNSW index for the given namespace.
+// rebuildIndexFromStorage replaces the namespace's HNSW index with one built
+// under its metric and fills it with every vector storage holds for it. A
+// vector whose length is not the namespace dimension is skipped, so a stray
+// record cannot fix the index at the wrong dimension. A failure is logged and
+// leaves the namespace without an index, which the next upsert builds lazily.
+func (v *VectorConsensusFSM) rebuildIndexFromStorage(ctx context.Context, namespace string, dimension uint32, distanceMetric string) {
+	vectors, err := v.storage.ScanNamespace(ctx, namespace, nil)
+	if err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"error":     err,
+		}).Warn("Failed to scan vectors for namespace")
+		return
+	}
+
+	if err := v.createHNSWIndex(namespace, distanceMetric); err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"namespace": namespace,
+			"error":     err,
+		}).Warn("Failed to create HNSW index for namespace")
+		return
+	}
+
+	v.indexMu.RLock()
+	index := v.hnswIndexes[namespace]
+	v.indexMu.RUnlock()
+
+	loaded := 0
+	for _, vec := range vectors {
+		if dimension != 0 && len(vec.Embedding) != int(dimension) {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": namespace,
+				"vector_id": vec.ID,
+				"dimension": len(vec.Embedding),
+				"want":      dimension,
+			}).Warn("Skipping stored vector of the wrong dimension")
+			continue
+		}
+		if err := index.Insert(vec.ID, vec.Embedding); err != nil {
+			v.logger.WithFields(map[string]interface{}{
+				"namespace": namespace,
+				"vector_id": vec.ID,
+				"error":     err,
+			}).Warn("Failed to insert vector into HNSW index")
+			continue
+		}
+		loaded++
+	}
+
+	v.logger.WithFields(map[string]interface{}{
+		"namespace": namespace,
+		"vectors":   loaded,
+	}).Debug("Loaded namespace with vectors")
+}
+
+// createHNSWIndex creates a new HNSW index for the given namespace. An empty
+// metric name is L2; an unknown one is an *hnsw.UnknownDistanceMetricError
+// and builds no index, rather than one under a metric nobody asked for.
 func (v *VectorConsensusFSM) createHNSWIndex(namespace, distanceMetric string) error {
-	var metric hnsw.DistanceMetric
-	switch distanceMetric {
-	case "COSINE", "cosine":
-		metric = hnsw.CosineDistance
-	case "DOT_PRODUCT", "dot_product":
-		metric = hnsw.DotProductDistance
-	default:
-		metric = hnsw.L2Distance
+	metric, err := hnsw.ParseDistanceMetric(distanceMetric)
+	if err != nil {
+		return err
 	}
 
 	config := &hnsw.Config{
@@ -207,75 +226,49 @@ func (v *VectorConsensusFSM) createHNSWIndex(namespace, distanceMetric string) e
 	return nil
 }
 
+// namespaceMetricLocked returns the distance metric namespace was created
+// with: the one its tracked metadata carries, else the one its storage record
+// carries, else "" (which createHNSWIndex reads as L2, the create default).
+// The caller holds v.mu.
+func (v *VectorConsensusFSM) namespaceMetricLocked(namespace string) string {
+	if info, ok := v.namespaces[namespace]; ok && info.DistanceMetric != "" {
+		return info.DistanceMetric
+	}
+	if v.storage != nil {
+		if info, err := v.storage.GetNamespaceInfo(context.Background(), namespace); err == nil && info != nil {
+			return info.DistanceMetric
+		}
+	}
+	return ""
+}
+
+// namespaceMetric is namespaceMetricLocked for a caller that does not hold
+// v.mu.
+func (v *VectorConsensusFSM) namespaceMetric(namespace string) string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.namespaceMetricLocked(namespace)
+}
+
 // Update applies vector commands from the Raft log.
 // This method is called on ALL nodes (including followers) when log entries are committed.
 // It applies the operations to local storage and HNSW index.
 func (v *VectorConsensusFSM) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
-	for i := range entries {
+	// The Update contract sizes results to entries. Reslicing states that
+	// length here, before any entry is applied, so every results[i] below is
+	// in range by construction rather than by the caller's say-so.
+	results = results[:len(entries)]
+	for i, entry := range entries {
 		v.opCount.Add(1)
-		v.lastIndex.Store(entries[i].Index)
+		v.lastIndex.Store(entry.Index)
 
-		data := entries[i].Cmd
-
-		// Empty commands are config changes (ADD/REMOVE node) - no-op
-		if len(data) == 0 {
-			results[i] = sm.Result{}
-			continue
-		}
-
-		// Decode the VectorCommand
-		// DEFENSIVE: If decode fails, log and return success to prevent cluster-wide panic.
-		// This can happen if an invalid command somehow reaches this shard, which should
-		// not occur in normal operation but we handle it gracefully to maintain stability.
-		cmd, err := DecodeVectorCommand(data)
-		if err != nil {
-			v.logger.WithFields(map[string]interface{}{
-				"error":       err,
-				"data_len":    len(data),
-				"first_bytes": fmt.Sprintf("%x", data[:min(16, len(data))]),
-			}).Warn("Failed to decode vector command - skipping entry to maintain cluster stability")
-			// Return success to prevent panicking
-			// All nodes will skip this entry, maintaining consistency
-			results[i] = sm.Result{Value: 0}
-			continue
-		}
-
-		// Apply the operation to storage and HNSW index
-		ctx := context.Background()
-		var result sm.Result
-		switch cmd.Op {
-		case OpCreateNamespace:
-			result, err = v.applyCreateNamespace(ctx, cmd)
-
-		case OpDeleteNamespace:
-			result, err = v.applyDeleteNamespace(ctx, cmd)
-
-		case OpUpsertVector:
-			result, err = v.applyUpsertVector(ctx, cmd)
-
-		case OpDeleteVector:
-			result, err = v.applyDeleteVector(ctx, cmd)
-
-		case OpBatchUpsert:
-			result, err = v.applyBatchUpsert(ctx, cmd)
-
-		case OpUpdateMetadata:
-			result, err = v.applyUpdateMetadata(ctx, cmd)
-
-		case OpUpdateNamespace:
-			result, err = v.applyUpdateNamespace(ctx, cmd)
-
-		default:
-			// For read-only operations, just return success
-			v.logger.WithField("op", cmd.Op.String()).Debug("Read-only operation, skipping apply")
-			result = sm.Result{Value: 1}
-		}
+		result, err := v.applyEntry(entry.Cmd)
 
 		// An operation this state machine does not implement is a refusal, not
 		// a fault: it is encoded into the result payload rather than halting
 		// the apply loop (go-qrdb#520). Anything else is returned, so a
 		// replica that has diverged stops.
-		resolved, stop, fatal := ResolveApplyError(nil, entries[i].Index, result, err)
+		resolved, stop, fatal := ResolveApplyError(nil, entry.Index, result, err)
 		if stop {
 			return fatal
 		}
@@ -283,6 +276,62 @@ func (v *VectorConsensusFSM) Update(_ context.Context, entries []sm.Entry, resul
 	}
 
 	return nil
+}
+
+// applyEntry decodes one committed command and applies it to storage and
+// the HNSW index, returning the handler's result and error for
+// ResolveApplyError to classify.
+func (v *VectorConsensusFSM) applyEntry(data []byte) (sm.Result, error) {
+	// Empty commands are config changes (ADD/REMOVE node) - no-op
+	if len(data) == 0 {
+		return sm.Result{}, nil
+	}
+
+	// Decode the VectorCommand
+	// DEFENSIVE: If decode fails, log and return success to prevent cluster-wide panic.
+	// This can happen if an invalid command somehow reaches this shard, which should
+	// not occur in normal operation but we handle it gracefully to maintain stability.
+	cmd, err := DecodeVectorCommand(data)
+	if err != nil {
+		v.logger.WithFields(map[string]interface{}{
+			"error":       err,
+			"data_len":    len(data),
+			"first_bytes": fmt.Sprintf("%x", data[:min(16, len(data))]),
+		}).Warn("Failed to decode vector command - skipping entry to maintain cluster stability")
+		// Return success to prevent panicking
+		// All nodes will skip this entry, maintaining consistency
+		return sm.Result{Value: 0}, nil
+	}
+
+	// Apply the operation to storage and HNSW index
+	ctx := context.Background()
+	switch cmd.Op {
+	case OpCreateNamespace:
+		return v.applyCreateNamespace(ctx, cmd)
+
+	case OpDeleteNamespace:
+		return v.applyDeleteNamespace(ctx, cmd)
+
+	case OpUpsertVector:
+		return v.applyUpsertVector(ctx, cmd)
+
+	case OpDeleteVector:
+		return v.applyDeleteVector(ctx, cmd)
+
+	case OpBatchUpsert:
+		return v.applyBatchUpsert(ctx, cmd)
+
+	case OpUpdateMetadata:
+		return v.applyUpdateMetadata(ctx, cmd)
+
+	case OpUpdateNamespace:
+		return v.applyUpdateNamespace(ctx, cmd)
+
+	default:
+		// For read-only operations, just return success
+		v.logger.WithField("op", cmd.Op.String()).Debug("Read-only operation, skipping apply")
+		return sm.Result{Value: 1}, nil
+	}
 }
 
 // applyCreateNamespace creates a namespace in storage and initializes HNSW index.
@@ -309,8 +358,9 @@ func (v *VectorConsensusFSM) applyCreateNamespace(ctx context.Context, cmd *Vect
 	// Track namespace metadata
 	v.mu.Lock()
 	v.namespaces[cmd.Namespace] = &ConsensusNamespaceInfo{
-		Name:      cmd.Namespace,
-		Dimension: cmd.Dimension,
+		Name:           cmd.Namespace,
+		Dimension:      cmd.Dimension,
+		DistanceMetric: distanceMetric,
 	}
 	v.mu.Unlock()
 
@@ -430,7 +480,7 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		}
 	} else {
 		// Create HNSW index if it doesn't exist (lazy initialization)
-		if err := v.createHNSWIndex(cmd.Namespace, "L2"); err == nil {
+		if err := v.createHNSWIndex(cmd.Namespace, v.namespaceMetric(cmd.Namespace)); err == nil {
 			v.indexMu.RLock()
 			index = v.hnswIndexes[cmd.Namespace]
 			v.indexMu.RUnlock()
@@ -578,7 +628,7 @@ func (v *VectorConsensusFSM) applyBatchUpsert(ctx context.Context, cmd *VectorCo
 		}
 	} else {
 		// Create HNSW index if it doesn't exist (lazy initialization)
-		if err := v.createHNSWIndex(cmd.Namespace, "L2"); err == nil {
+		if err := v.createHNSWIndex(cmd.Namespace, v.namespaceMetric(cmd.Namespace)); err == nil {
 			v.indexMu.RLock()
 			index = v.hnswIndexes[cmd.Namespace]
 			v.indexMu.RUnlock()
@@ -760,7 +810,7 @@ func (v *VectorConsensusFSM) SaveSnapshot(_ context.Context, w io.Writer, _ <-ch
 }
 
 // RecoverFromSnapshot restores state from a snapshot.
-func (v *VectorConsensusFSM) RecoverFromSnapshot(_ context.Context, r io.Reader, _ <-chan struct{}) error {
+func (v *VectorConsensusFSM) RecoverFromSnapshot(ctx context.Context, r io.Reader, _ <-chan struct{}) error {
 	// Read length prefix
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(r, lenBuf); err != nil {
@@ -774,23 +824,25 @@ func (v *VectorConsensusFSM) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		return err
 	}
 
-	// Decode namespace metadata
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if err := msgpack.Unmarshal(data, &v.namespaces); err != nil {
+	// Decode namespace metadata into a fresh map: the snapshot is the whole
+	// state, so a namespace it does not name must not survive the install.
+	namespaces := make(map[string]*ConsensusNamespaceInfo)
+	if err := msgpack.Unmarshal(data, &namespaces); err != nil {
 		return api.NewSnapshotOperationError("VectorConsensusFSM.RecoverFromSnapshot", "unmarshal namespaces", err)
 	}
 
-	// Reinitialize HNSW indexes from storage
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.namespaces = namespaces
+
+	v.indexMu.Lock()
+	v.hnswIndexes = make(map[string]*hnsw.HNSWIndex)
+	v.indexMu.Unlock()
+
+	// Rebuild every namespace's index from the vectors storage holds.
 	if v.storage != nil {
-		for name := range v.namespaces {
-			if err := v.createHNSWIndex(name, "L2"); err != nil {
-				v.logger.WithFields(map[string]interface{}{
-					"namespace": name,
-					"error":     err,
-				}).Warn("Failed to recreate HNSW index after snapshot recovery")
-			}
+		for name, info := range v.namespaces {
+			v.rebuildIndexFromStorage(ctx, name, info.Dimension, v.namespaceMetricLocked(name))
 		}
 	}
 

@@ -87,9 +87,9 @@ func (m *barrierSvcMini) BarrierDeleteRecoveryKeys(_ context.Context) error {
 	return m.recoveryDeleteErr
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (m *barrierSvcMini) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (m *barrierSvcMini) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 // BarrierClusterUnseal answers as a node without cluster sealing does.
 func (m *barrierSvcMini) BarrierClusterUnseal(context.Context) (*clusterseal.Report, error) {

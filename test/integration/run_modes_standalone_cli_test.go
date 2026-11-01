@@ -37,10 +37,11 @@ import (
 // writeStandaloneModeConfig writes a daemon YAML enabling the passphrase
 // seal barrier (the security core must run in standalone too) and a single
 // default database on the given local storage backend, which is what the
-// standalone composition branch selects its engine from.
-func writeStandaloneModeConfig(t *testing.T, backend string) string {
+// standalone composition branch selects its engine from, followed by
+// extraYAML.
+func writeStandaloneModeConfig(t *testing.T, backend, extraYAML string) string {
 	t.Helper()
-	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\ndatabases:\n  - name: \"default\"\n    backend: %q\n", backend)
+	yaml := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\ndatabases:\n  - name: \"default\"\n    backend: %q\n", backend) + extraYAML
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
@@ -56,12 +57,20 @@ func writeStandaloneModeConfig(t *testing.T, backend string) string {
 // requires none.
 func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 	t.Helper()
+	return startStandaloneModeNodeWithConfig(t, backend, "")
+}
+
+// startStandaloneModeNodeWithConfig is startStandaloneModeNode with
+// extraYAML appended to the node's configuration file, for a test whose
+// subject is a top-level configuration section.
+func startStandaloneModeNodeWithConfig(t *testing.T, backend, extraYAML string) *multiProtoNode {
+	t.Helper()
 
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
 	ca := generateTestCA(t)
 	dataDir := t.TempDir()
-	cfgPath := writeStandaloneModeConfig(t, backend)
+	cfgPath := writeStandaloneModeConfig(t, backend, extraYAML)
 
 	sockDir, err := os.MkdirTemp("", "qrdb-sa-")
 	if err != nil {

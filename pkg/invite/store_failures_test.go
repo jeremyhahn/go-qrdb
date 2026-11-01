@@ -75,7 +75,10 @@ func (e *errKV) CompareAndDelete(ctx context.Context, key string, expected []byt
 }
 
 func (e *errKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	if e.failWrites {
+		return false, e.err
+	}
+	return e.memKV.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (e *errKV) Delete(ctx context.Context, key string) error {

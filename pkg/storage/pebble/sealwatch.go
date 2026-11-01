@@ -15,16 +15,23 @@
 package pebble
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/vfs"
 )
 
-// SealedError is returned by SealWatch.Flush when the at-rest barrier under
-// the database's filesystem is sealed: no new sstable can be written until it
-// is unsealed, so a flush cannot complete. Err is the barrier's own error,
-// which Unwrap exposes to errors.Is.
+// ErrBarrierSealed is the cause a *SealedError carries when the database's
+// filesystem reported its barrier sealed before any file was refused.
+var ErrBarrierSealed = errors.New("qrdb/storage/pebble: the at-rest barrier is sealed")
+
+// SealedError is returned by SealWatch.Flush and SealWatch.Check when the
+// at-rest barrier under the database's filesystem is sealed: no new file can
+// be created until it is unsealed, so neither a flush nor the WAL rotation a
+// full memtable needs can complete. Err is the barrier's own error, or
+// ErrBarrierSealed, which Unwrap exposes to errors.Is.
 type SealedError struct {
 	Err error
 }
@@ -43,9 +50,17 @@ func (e *SealedError) Unwrap() error { return e.Err }
 // rest, ends the episode at the next flush or compaction that succeeds, and
 // gives the database's writers Flush, which returns a *SealedError instead of
 // waiting. The writer then stops: closing the database ends Pebble's retries.
+//
+// A sealed barrier also refuses the WAL file every flush and every memtable
+// rotation creates, and Pebble panics when it cannot create one, which ends
+// the process. When the filesystem can report its barrier's state (see
+// pkg/seal/encfs), Check and Flush ask it first and refuse instead.
 type SealWatch struct {
 	logger   pebble.Logger
 	isSealed func(error) bool
+	// barrierSealed reports the filesystem's barrier state; nil when the
+	// filesystem cannot report it.
+	barrierSealed func() bool
 
 	mu         sync.Mutex
 	episode    *sealEpisode // the current episode, or the next one to begin
@@ -63,15 +78,34 @@ type sealEpisode struct {
 func newSealEpisode() *sealEpisode { return &sealEpisode{c: make(chan struct{})} }
 
 // NewSealWatch returns a watch that classifies a background error as sealed
-// with isSealed and logs to logger.
+// with isSealed and logs to logger. A nil isSealed leaves the classification
+// to the filesystem's barrier state alone (see Attach).
+// barrierSealedProbe returns the BarrierSealed method of fs, or of the
+// filesys.FS that VFS presents as fs (an encfs.FS reaches Pebble that way,
+// through WrapVFS), or nil when neither reports its barrier's state.
+func barrierSealedProbe(fs vfs.FS) func() bool {
+	if p, ok := fs.(interface{ BarrierSealed() bool }); ok {
+		return p.BarrierSealed
+	}
+	if a, ok := fs.(*vfsFS); ok {
+		if p, ok := a.fs.(interface{ BarrierSealed() bool }); ok {
+			return p.BarrierSealed
+		}
+	}
+	return nil
+}
+
 func NewSealWatch(logger pebble.Logger, isSealed func(error) bool) *SealWatch {
 	return &SealWatch{logger: logger, isSealed: isSealed, episode: newSealEpisode()}
 }
 
 // Attach installs the watch on opts. Every listener already in opts still
 // runs, except that a sealed background error reaches the watch alone, which
-// is what bounds its logging.
+// is what bounds its logging. When opts.FS reports its barrier's state, the
+// watch asks it before every flush (Flush, Check) and classifies a background
+// error raised while the barrier is sealed as sealed.
 func (w *SealWatch) Attach(opts *pebble.Options) {
+	w.barrierSealed = barrierSealedProbe(opts.FS)
 	var prev pebble.EventListener
 	if opts.EventListener != nil {
 		prev = *opts.EventListener
@@ -105,24 +139,35 @@ func (w *SealWatch) Err() error {
 	return w.episode.err()
 }
 
-// Flush flushes db's memtable and waits for it, like DB.Flush, but returns a
-// *SealedError rather than waiting while the barrier is sealed. It returns nil
-// only when its flush completed: a flush whose wait an episode ended reports
-// that episode's error even if the episode is over by the time it returns.
-func (w *SealWatch) Flush(db *pebble.DB) error {
-	w.mu.Lock()
-	ep := w.episode
-	err := ep.err()
-	w.mu.Unlock()
-	if err != nil {
+// Check returns a *SealedError while a sealed episode lasts or while the
+// filesystem reports its barrier sealed, and nil otherwise. A writer calls it
+// before any write that may rotate the WAL: Pebble panics when a sealed
+// barrier refuses the new WAL file, so the refusal has to come first.
+func (w *SealWatch) Check() error {
+	if err := w.Err(); err != nil {
 		return err
 	}
+	if w.barrierSealed != nil && w.barrierSealed() {
+		return &SealedError{Err: ErrBarrierSealed}
+	}
+	return nil
+}
+
+// Flush flushes db's memtable and waits for it, like DB.Flush, but returns a
+// *SealedError rather than waiting while the barrier is sealed. Every flush
+// rotates the WAL, so Flush refuses before calling into Pebble when Check
+// does. It returns nil only when its flush completed: a flush whose wait an
+// episode ended reports that episode's error even if the episode is over by
+// the time it returns.
+func (w *SealWatch) Flush(db *pebble.DB) error {
+	if err := w.Check(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	ep := w.episode
+	w.mu.Unlock()
 	done, err := db.AsyncFlush()
 	if err != nil {
-		// Rotating the WAL creates a file, which a sealed barrier refuses too.
-		if w.isSealed(err) {
-			return &SealedError{Err: err}
-		}
 		return err
 	}
 	return ep.await(done)
@@ -146,10 +191,19 @@ func (ep *sealEpisode) await(done <-chan struct{}) error {
 	}
 }
 
+// sealed reports whether err comes of a sealed barrier: the classifier says
+// so, or the filesystem reports its barrier sealed while the error is raised.
+func (w *SealWatch) sealed(err error) bool {
+	if w.isSealed != nil && w.isSealed(err) {
+		return true
+	}
+	return w.barrierSealed != nil && w.barrierSealed()
+}
+
 // observe records err and reports whether it was a sealed error, logging only
 // the first of an episode.
 func (w *SealWatch) observe(err error) bool {
-	if !w.isSealed(err) {
+	if !w.sealed(err) {
 		return false
 	}
 	w.mu.Lock()
@@ -182,4 +236,27 @@ func (ep *sealEpisode) err() error {
 		return nil
 	}
 	return &SealedError{Err: ep.cause}
+}
+
+// Open opens the Pebble database in dir with a SealWatch attached, so a
+// sealed at-rest barrier under opts.FS is a typed, terminal error with bounded
+// logging rather than a flush that never returns. isSealed classifies a
+// background error as the barrier's; it may be nil (see NewSealWatch). opts is
+// cloned, not modified; a nil opts opens with Pebble's defaults, and a nil
+// Logger is the package's slog logger.
+func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.DB, *SealWatch, error) {
+	o := &pebble.Options{}
+	if opts != nil {
+		o = opts.Clone()
+	}
+	if o.Logger == nil {
+		o.Logger = NewLogger(nil)
+	}
+	seals := NewSealWatch(o.Logger, isSealed)
+	seals.Attach(o)
+	db, err := pebble.Open(dir, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, seals, nil
 }

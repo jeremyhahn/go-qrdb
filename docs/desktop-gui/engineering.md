@@ -222,6 +222,19 @@ request a spec leaves unmocked is refused rather than proxied to whatever
 another job's `qrdbd` serves on the conventional admin port. `reuseExistingServer`
 stays off in CI, so a run never tests against another job's server.
 
+A refused request is not enough on its own: the UI tolerates many failed
+requests (a fallback form, a retry with backoff), so an unmocked call would let
+the spec pass. Every mocked-tier fixture and spec therefore extends `test` from
+`e2e/fixtures/api-guard.ts`, never `@playwright/test`'s. The guard registers a
+catch-all route for every API path before any mock does, matching the prefix
+list in `api-routes.ts`, the one list the Vite proxy is built from too.
+Playwright tries the most recently registered matching route first, so each
+mock answers its own requests and a mock that declines one calls
+`route.fallback()`, which hands it to the guard. The guard aborts the request
+as the dead proxy would and fails the spec at teardown, naming each unmocked
+`METHOD /path`. Specs wait on conditions (a locator, a request, a load state),
+never on `waitForTimeout`.
+
 The mocked and DOM tiers serve the UI over **https**, as `qrdbd` serves web
 mode: the REST server that carries the embedded UI binds TLS only, and every
 secret-bearing SDK call refuses an `http` base URL, so a tier served over

@@ -19,7 +19,6 @@ package service
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
@@ -28,52 +27,6 @@ import (
 // GetRebuildProgress – job found path (lines 1863-1877)
 // After RebuildIndex stores a job, GetRebuildProgress finds it.
 // ---------------------------------------------------------------------------
-
-func TestVectorService_GetRebuildProgress_JobFound_ByJobID(t *testing.T) {
-	svc, store := newFullVecSvc(t, "rb-found-ns", 3)
-	store.scanNamespaceFn = func(_ context.Context, _ string, _ *vector.ScanOptions) ([]*vector.VectorValue, error) {
-		return []*vector.VectorValue{
-			{ID: 1, Embedding: []float32{0.1, 0.2, 0.3}},
-		}, nil
-	}
-	ctx := context.Background()
-
-	// RebuildIndex stores the job before calling performIndexRebuild.
-	// performIndexRebuild will fail (no qrdb_vector), but the job is stored.
-	resp, _ := svc.RebuildIndex(ctx, &RebuildIndexRequest{
-		Namespace: "rb-found-ns",
-	})
-
-	time.Sleep(30 * time.Millisecond)
-
-	if resp != nil && resp.JobID != "" {
-		progress, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{
-			JobID: resp.JobID,
-		})
-		// The job should be found (even if performIndexRebuild failed).
-		_ = progress
-		_ = err
-	}
-}
-
-func TestVectorService_GetRebuildProgress_JobFound_ByNamespace(t *testing.T) {
-	svc, _ := newFullVecSvc(t, "rb-ns-found-ns", 3)
-	ctx := context.Background()
-
-	// Start rebuild with async=false to synchronously store the job.
-	_, _ = svc.RebuildIndex(ctx, &RebuildIndexRequest{
-		Namespace: "rb-ns-found-ns",
-	})
-
-	time.Sleep(30 * time.Millisecond)
-
-	// Query by namespace — should find the stored job.
-	progress, err := svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{
-		Namespace: "rb-ns-found-ns",
-	})
-	_ = progress
-	_ = err
-}
 
 // ---------------------------------------------------------------------------
 // vector.go – SearchByMetadata with multiFilters (71.4% → higher)
@@ -186,36 +139,9 @@ func TestVectorService_SearchByID_VectorNotFound(t *testing.T) {
 // vector.go – BatchDeleteVectors StorageError path (54.2% → higher)
 // ---------------------------------------------------------------------------
 
-func TestVectorService_BatchDeleteVectors_StorageError(t *testing.T) {
-	svc, store := newFullVecSvc(t, "bdv-err-ns", 3)
-	store.batchDeleteVectorsFn = func(_ context.Context, _ string, _ []uint64) error {
-		return &VectorNotFoundError{Namespace: "bdv-err-ns", ID: "1"}
-	}
-	ctx := context.Background()
-
-	_, err := svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{
-		Namespace: "bdv-err-ns",
-		IDs:       []uint64{1, 2},
-	})
-	// May succeed or fail depending on whether storage error propagates.
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // vector.go – GetIndexStats with nil HNSW index (61.9% → higher)
 // ---------------------------------------------------------------------------
-
-func TestVectorService_GetIndexStats_StorageStatsError(t *testing.T) {
-	svc, store := newFullVecSvc(t, "stats-err-ns", 3)
-	store.getStatsFn = func(_ context.Context, _ string) (*vector.NamespaceStats, error) {
-		return nil, &NamespaceNotFoundError{Namespace: "stats-err-ns"}
-	}
-	ctx := context.Background()
-
-	_, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: "stats-err-ns"})
-	// May succeed using HNSW index count or fail from storage.
-	_ = err
-}
 
 // ---------------------------------------------------------------------------
 // vector.go – ListVectors with cursor (70% → higher)
@@ -239,16 +165,3 @@ func TestVectorService_ListVectors_WithCursor(t *testing.T) {
 // ---------------------------------------------------------------------------
 // vector.go – CompactNamespace storage error (75.6% → higher)
 // ---------------------------------------------------------------------------
-
-func TestVectorService_CompactNamespace_CleanupTombstonesError(t *testing.T) {
-	svc, store := newFullVecSvc(t, "compact-tomb-ns", 3)
-	store.cleanupTombstonesFn = func(_ context.Context, _ time.Duration) error {
-		return &NamespaceNotFoundError{Namespace: "compact-tomb-ns"}
-	}
-	ctx := context.Background()
-
-	resp, err := svc.CompactNamespace(ctx, &CompactNamespaceRequest{Namespace: "compact-tomb-ns"})
-	// Result may vary; exercise the path.
-	_ = resp
-	_ = err
-}

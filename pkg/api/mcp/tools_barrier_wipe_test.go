@@ -55,9 +55,9 @@ type capturingMCPBarrierSvc struct {
 
 var _ service.BarrierServicer = (*capturingMCPBarrierSvc)(nil)
 
-// BarrierInitialized reports the double as never initialized, so the
-// initialize handler reaches BarrierInitialize and hands it the credential.
-func (c *capturingMCPBarrierSvc) BarrierInitialized(context.Context) (bool, error) { return false, nil }
+// BarrierInitializePrecondition admits every initialize, so the initialize
+// handler reaches BarrierInitialize and hands it the credential.
+func (c *capturingMCPBarrierSvc) BarrierInitializePrecondition(context.Context) error { return nil }
 
 func (c *capturingMCPBarrierSvc) BarrierInitialize(_ context.Context, secret []byte) error {
 	c.seen = secret

@@ -60,13 +60,9 @@ deny-by-serial is a CA-operator capability.
 when omitted; that default is gated exactly like an explicit cross-tenant
 request, so a tenant caller names its own tenant.
 
-**Note the path prefix.** These are `/certs/...`, unversioned, even though the
-CLI group is `qrdb ca`.
-
 **`ca info` and `ca bundle` have no distinct endpoint.** Both are CLI aliases
 for `list`: CA-only metadata (DN, fingerprint, validity) and a standalone
-CA+chain bundle export are **not exposed through the SDK**. Recorded here so
-the missing capability is visible rather than inferred from a verb name.
+CA+chain bundle export are **not exposed through the SDK**.
 
 ## Schemas
 
@@ -203,7 +199,8 @@ is then refused with `service.DelegationPolicyNotFoundError` (404,
 `NOT_FOUND`). A certificate already minted lives until it expires or is
 revoked by serial.
 
-`GET /certs/list` — `tenantID` query parameter, required. The response is
+`GET /certs/list` — `tenantID` query parameter, optional; empty means the
+caller's own tenant, the only one `certs:list` admits. The response is
 `{ "certs": [...] }`, each element a `CertRecord`:
 
 ```json
@@ -340,7 +337,8 @@ the full rationale.
 
 Revocation is an internal blocklist keyed by serial. **No CRL is published and
 no OCSP responder is served.** Within this system the certificate stops
-authenticating immediately; outside it, nothing observes the revocation. A
+authenticating within `auth.revocation_cache_ttl`; outside it, nothing observes
+the revocation. A
 deployment with external relying parties should inject the go-xkms provider,
 which adds CRL and OCSP — see [architecture.md](architecture.md).
 

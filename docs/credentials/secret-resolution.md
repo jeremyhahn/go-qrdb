@@ -258,7 +258,11 @@ owning layer and registering it at startup, with no change to this package.
 `NewTenantScopedCredentialRetrieve` to route a lookup to the per-tenant store
 when the request carries a tenant ID, and to the system store otherwise; a
 system-scope request with no system store configured fails closed with
-`ErrNilSystemCredentialService`.
+`ErrNilSystemCredentialService`. A tenant with no dedicated barrier, one on
+the shared system barrier, fails with `seal.ErrTenantNotFound` and never
+falls back to the system store, which is the same refusal the
+`CredentialServicer` makes ([architecture.md](architecture.md), "Tenant
+stores").
 
 The resolver's retriever (`CredentialRetriever` / `CredentialRetrieveFunc`)
 returns a protected-memory `*secure.Buffer`, not a `[]byte`. `Resolve` hands the

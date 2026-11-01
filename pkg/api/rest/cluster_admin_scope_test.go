@@ -46,6 +46,8 @@ func TestClusterAdminScope(t *testing.T) {
 		{http.MethodPut, "/admin/node-compaction", `{"compaction":{"mode":"revision","retainRevisions":10}}`},
 		// Replica state hashes cover every tenant's replicas on the node.
 		{http.MethodGet, "/admin/state-hashes", ``},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{http.MethodPost, "/admin/shards", `{"shard_id":7,"replica_id":1}`},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

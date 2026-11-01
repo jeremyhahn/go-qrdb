@@ -121,7 +121,11 @@ func (m *mockCredentialSvc) CredentialDelete(_ context.Context, name string) err
 	return m.deleteErr
 }
 
-func (m *mockCredentialSvc) CredentialStrategy() string {
+func (m *mockCredentialSvc) CredentialStrategy(context.Context) (string, error) {
+	return m.credentialStrategy(), nil
+}
+
+func (m *mockCredentialSvc) credentialStrategy() string {
 	return m.strategy
 }
 

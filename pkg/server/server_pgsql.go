@@ -48,7 +48,7 @@ func startPgSQL(s *Server) error {
 	if err != nil {
 		return err
 	}
-	pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithQueryTimeout(queryTimeout))
+	pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithQueryTimeout(queryTimeout), pgsqlapi.WithClientLimiter(s.clientLimit))
 	// A cluster seal or cut-off closes every session it reaches: a session
 	// outlives its statements, and some of what it holds is served without
 	// another statement through the gate.

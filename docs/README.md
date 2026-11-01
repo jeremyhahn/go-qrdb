@@ -77,7 +77,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [sqlite-vfs](sqlite-vfs/) | *(future, not implemented)* qrdb as a drop-in SQLite storage backend through a custom VFS; design only, in `architecture.md` |
 | [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
 | [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
-| [cluster-verification](cluster-verification/) | *(build in progress)* what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
+| [cluster-verification](cluster-verification/) | what "Raft clustering and storage proven" means: the gate and exit criteria, workload, ledger, history, nemesis faults, the soak and its evidence bundle, `make cluster-proof` |
 | [run-modes](run-modes/) | standalone vs raft, the three capability gates |
 | [capabilities](capabilities/) | the effective runtime feature profile: build tags, run mode and configuration |
 | [configuration](configuration/) | load order, validation, the flag/YAML mapping |

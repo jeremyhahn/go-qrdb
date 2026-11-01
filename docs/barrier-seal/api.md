@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -29,6 +29,13 @@ and `POST /v1/barrier/rekey/start`, in
 [../shamir-custody/api.md](../shamir-custody/api.md). `BarrierUnseal` refuses a
 Shamir barrier (`ErrShamirUnsealRequiresQuorum`) and `BarrierSeal` refuses one
 (`ErrShamirBarrierRequiresQuorum`).
+
+`qrdbd` refuses Initialize and Initialize Shamir: its system barrier is
+brought up by `qrdb init` ([../firstboot/api.md](../firstboot/api.md)). An
+initialized barrier is refused with `seal.ErrAlreadyInitialized`; otherwise
+the refusal is `service.SystemBarrierInitRefusedError` (`FailedPrecondition`).
+Only a barrier served without the first-boot ceremony, such as an embedded
+standalone node's, is initialized through them.
 
 **Seal carries the SO PIN.** Once an SO PIN is provisioned (`qrdb init`
 provisions one), `BarrierSeal` is refused (`pin.ErrPINInvalid`, 401 /

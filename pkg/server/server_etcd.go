@@ -89,6 +89,7 @@ func startEtcd(s *Server, tenantID, dbName string, cfg *database.EtcdConfig) (Et
 	}
 	opts = append(opts,
 		etcd.WithTLS(s.opts.tlsConfig),
+		etcd.WithClientLimiter(s.clientLimit),
 		etcd.WithRequestAuthorizer(&etcdRequestAuthorizer{mw: s.opts.authMW, reg: reg, mgr: s.opts.dbManager, owner: owner, db: dbName, logger: s.logger, streams: s.clusterSealStreams(), nodeRefusal: s.nodeRefusal, streamRefusal: etcdStreamRefusal(reg, owner, dbName)}),
 	)
 	if s.adminSvc != nil {

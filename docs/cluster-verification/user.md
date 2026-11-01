@@ -95,6 +95,16 @@ had not caught up, the run exits `2` rather than passing.
   `PROOF_SEAL` and declare the read mode in the targets file; the bundle
   records both. Leave lease reads on: a run with them off proves nothing
   about them.
+- **Start from the checked examples.** [examples/](examples/) holds an
+  `inventory.json`, a `targets.json` and a `workload.json` for that gate run:
+  three nodes `node-1`..`node-3` at `db1.example.com`..`db3.example.com`, the
+  QUIC API on 63004 (`protocol: quic`), every fault with an `unseal` template
+  for `passphrase`, and lease reads declared on. Replace each `<...>`
+  placeholder and the documentation addresses with your own. The unit tests
+  in `test/clusterproof/soak/examples_test.go` load each file through the
+  harness's own loaders on every `make test-clusterproof`, and prove a
+  targets file missing one fault's template is refused, so the examples
+  cannot drift from what the harness accepts.
 
 ## Pinned port set
 

@@ -526,6 +526,18 @@ At least three nodes are required.
 
 The example shows one node; a real inventory lists every founder.
 
+[examples/](examples/) holds a complete set for the three-node lease_read
+gate run: `inventory.json`, `targets.json` (every fault in
+[The nemesis](#the-nemesis), with `unseal` and `declared.read_mode`) and
+`workload.json` (`protocol: quic`). `test/clusterproof/soak/examples_test.go`
+checks them: `TestExampleInventoryParses` and `TestExampleWorkloadParses` load
+the first and last through `container.ParseInventory` and
+`workload.ParseConfig`, `TestExampleTargetsBuildEveryFault` loads all three
+through `soak.LoadOptions` under `PROOF_SEAL=passphrase` with no
+`PROOF_NEMESIS`, so every fault is built, and
+`TestExampleTargetsMissingTemplateRefused` proves a targets file missing one
+fault's template is refused.
+
 ## The soak and its evidence bundle
 
 `make cluster-proof` loads the configuration, then:

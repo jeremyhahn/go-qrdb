@@ -420,18 +420,45 @@ func (e *RBACClientUnavailableError) Error() string {
 	return "qrdb: roles: no RBAC client available on the active connection"
 }
 
+// RoleReconcileFailuresError is returned by `qrdb roles reconcile
+// --all-tenants` when one or more tenants failed to reconcile. Every other
+// tenant was still reconciled; re-running retries the failed ones.
+type RoleReconcileFailuresError struct {
+	Failed []transport.RoleReconcileFailedTenant
+}
+
+// Error names every failed tenant.
+func (e *RoleReconcileFailuresError) Error() string {
+	ids := make([]string, len(e.Failed))
+	for i, f := range e.Failed {
+		ids[i] = f.TenantID
+	}
+	return "qrdb: roles: built-in role reconcile failed for tenant(s) " + strings.Join(ids, ", ")
+}
+
 // newRolesReconcileCmd creates the "roles reconcile" subcommand, which
 // converges a tenant's stored built-in roles onto the server build's
 // definitions. It is the only way to repair a tenant seeded before a
 // permission was renamed or added: built-in roles are otherwise immutable.
 func newRolesReconcileCmd() *cobra.Command {
-	var tenantID string
+	var (
+		tenantID   string
+		allTenants bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "reconcile",
 		Short: "Converge a tenant's built-in roles onto the server build's definitions",
-		Args:  cobra.NoArgs,
+		Long: "Converge a tenant's built-in roles onto the server build's definitions.\n\n" +
+			"With --all-tenants, converge every tenant's built-in roles in one pass: a\n" +
+			"platform operator verb (roles:reconcile_all). Sealed and refused tenants\n" +
+			"are reported as skipped; a tenant that fails is reported and the command\n" +
+			"exits non-zero after the rest have been reconciled.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if allTenants {
+				return runRolesReconcileAllTenants(cmd)
+			}
 			resp, err := client.Roles().ReconcileBuiltInRoles(cmd.Context(), &transport.ReconcileRolesRequest{
 				TenantID: tenantID,
 			})
@@ -445,32 +472,78 @@ func newRolesReconcileCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				if len(resp.Roles) == 0 {
-					_, _ = fmt.Fprintf(outputWriter, "Tenant %s: built-in roles already current\n", resp.TenantID)
-					return nil
-				}
-				_, _ = fmt.Fprintf(outputWriter, "Tenant %s:\n", resp.TenantID)
-				for _, r := range resp.Roles {
-					verb := "updated"
-					if r.Created {
-						verb = "created"
-					}
-					_, _ = fmt.Fprintf(outputWriter, "  %s (%s) %s\n", r.Name, r.RoleID, verb)
-					for _, p := range r.Added {
-						_, _ = fmt.Fprintf(outputWriter, "    + %s\n", p)
-					}
-					for _, p := range r.Removed {
-						_, _ = fmt.Fprintf(outputWriter, "    - %s\n", p)
-					}
-				}
+				printRoleReconcileReport(resp)
 				return nil
 			}
 		},
 	}
 
 	cmd.Flags().StringVar(&tenantID, "tenant", "", "Tenant ID (defaults to the caller's own tenant)")
+	cmd.Flags().BoolVar(&allTenants, "all-tenants", false, "Reconcile every tenant's built-in roles (platform operator, roles:reconcile_all)")
+	cmd.MarkFlagsMutuallyExclusive("tenant", "all-tenants")
 
 	return cmd
+}
+
+// runRolesReconcileAllTenants runs `qrdb roles reconcile --all-tenants`. It
+// prints the whole report, then fails with *RoleReconcileFailuresError when
+// any tenant failed, so a script sees a non-zero exit only after every other
+// tenant has been reconciled.
+func runRolesReconcileAllTenants(cmd *cobra.Command) error {
+	resp, err := client.Roles().ReconcileBuiltInRolesAllTenants(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	switch outputFormat {
+	case "json":
+		err = printJSON(resp)
+	case "yaml":
+		err = printYAML(resp)
+	default:
+		for i := range resp.Tenants {
+			printRoleReconcileReport(&resp.Tenants[i])
+		}
+		for _, s := range resp.Skipped {
+			_, _ = fmt.Fprintf(outputWriter, "Tenant %s: skipped (%s)", s.TenantID, s.Reason)
+			if s.Detail != "" {
+				_, _ = fmt.Fprintf(outputWriter, ": %s", s.Detail)
+			}
+			_, _ = fmt.Fprintln(outputWriter)
+		}
+		for _, f := range resp.Failed {
+			_, _ = fmt.Fprintf(outputWriter, "Tenant %s: FAILED: %s\n", f.TenantID, f.Error)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if len(resp.Failed) > 0 {
+		return &RoleReconcileFailuresError{Failed: resp.Failed}
+	}
+	return nil
+}
+
+// printRoleReconcileReport writes one tenant's reconcile report as text.
+func printRoleReconcileReport(resp *transport.ReconcileRolesResponse) {
+	if len(resp.Roles) == 0 {
+		_, _ = fmt.Fprintf(outputWriter, "Tenant %s: built-in roles already current\n", resp.TenantID)
+		return
+	}
+	_, _ = fmt.Fprintf(outputWriter, "Tenant %s:\n", resp.TenantID)
+	for _, r := range resp.Roles {
+		verb := "updated"
+		if r.Created {
+			verb = "created"
+		}
+		_, _ = fmt.Fprintf(outputWriter, "  %s (%s) %s\n", r.Name, r.RoleID, verb)
+		for _, p := range r.Added {
+			_, _ = fmt.Fprintf(outputWriter, "    + %s\n", p)
+		}
+		for _, p := range r.Removed {
+			_, _ = fmt.Fprintf(outputWriter, "    - %s\n", p)
+		}
+	}
 }
 
 // printRole prints a single Role in the current output format.

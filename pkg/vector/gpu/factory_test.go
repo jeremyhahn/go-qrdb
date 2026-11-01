@@ -337,10 +337,40 @@ func TestGPUIndexFactory_CreateIndex_GPUEnabled_GPUAvailable_CreatesGPUIndex(t *
 		fallback:     fallback,
 	}
 
+	hnswCfg := interfaces.DefaultHNSWConfig()
+	hnswCfg.Dimensions = 384
+	idx, err := factory.CreateIndex(hnswCfg)
+	if errors.Is(err, ErrInvalidDimension) {
+		t.Fatalf("CreateIndex(Dimensions=384) = %v, want the dimension accepted", err)
+	}
+	if err == nil && idx.GetStats().Dimensions != 384 {
+		t.Errorf("GPU index dimension = %d, want 384", idx.GetStats().Dimensions)
+	}
+}
+
+func TestGPUIndexFactory_CreateIndex_GPUPath_RefusesZeroDimension(t *testing.T) {
+	cfg := DefaultGPUConfig()
+	cfg.Enabled = true
+	fallback := &mockHNSWFactory{index: &mockHNSWIndex{}}
+	factory := &GPUIndexFactory{config: cfg, gpuAvailable: true, fallback: fallback}
+
 	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
-	// In !gpu builds this returns ErrGPUNotCompiled from the CAGRA stub.
-	// In +gpu builds this succeeds. Both are expected outcomes.
-	_ = err
+	var fe *FactoryError
+	if !errors.As(err, &fe) || !errors.Is(err, ErrInvalidDimension) {
+		t.Fatalf("CreateIndex(Dimensions=0) error = %v, want *FactoryError wrapping ErrInvalidDimension", err)
+	}
+}
+
+func TestGPUIndexFactory_CreateIndex_GPUPath_RefusesNegativeDimension(t *testing.T) {
+	cfg := DefaultGPUConfig()
+	cfg.Enabled = true
+	factory := &GPUIndexFactory{config: cfg, gpuAvailable: true, fallback: &mockHNSWFactory{}}
+
+	hnswCfg := interfaces.DefaultHNSWConfig()
+	hnswCfg.Dimensions = -1
+	if _, err := factory.CreateIndex(hnswCfg); !errors.Is(err, ErrInvalidDimension) {
+		t.Fatalf("CreateIndex(Dimensions=-1) error = %v, want ErrInvalidDimension", err)
+	}
 }
 
 // closeRemoteIndex closes a remote index returned by a factory, failing the

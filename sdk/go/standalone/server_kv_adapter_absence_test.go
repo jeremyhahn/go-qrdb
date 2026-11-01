@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -41,7 +42,7 @@ import (
 func newRealKVService(t *testing.T) service.KVServicer {
 	t.Helper()
 
-	stg, pdb, err := createServerStorage(database.BackendMemory, t.TempDir(), nil)
+	stg, pdb, err := createServerStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatalf("createServerStorage(memory): %v", err)
 	}

@@ -50,7 +50,7 @@ func startMySQL(s *Server) error {
 	if err != nil {
 		return err
 	}
-	mysqlOpts = append(mysqlOpts, mysqlapi.WithQueryTimeout(queryTimeout))
+	mysqlOpts = append(mysqlOpts, mysqlapi.WithQueryTimeout(queryTimeout), mysqlapi.WithClientLimiter(s.clientLimit))
 	// sql.wait_timeout/sql.write_timeout bound idle time on the socket
 	// itself: a connection sitting idle, including one holding an open
 	// server-side cursor the client stopped fetching from, is closed and its

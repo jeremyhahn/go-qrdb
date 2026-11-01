@@ -452,8 +452,9 @@ copies and so proves the measurement can fail).
 
 | Condition | Behavior | Fails closed? |
 |---|---|---|
-| `IndexCreate` for a name that exists, same owner | succeeds; the existing definition wins, except that a different value type rebuilds the index | n/a — idempotent |
-| `IndexCreate` for a name that exists, different owner | `index.OwnershipError` | **yes** |
+| `IndexCreate` for a name that exists under the same owner | idempotent success, decided on apply; a create asking for a different value type (`numeric`) rebuilds the index, and one diverging only in field or uniqueness is a no-op (the original wins) | n/a |
+| `IndexCreate` or `IndexDrop` for a name another owner holds | `*index.OwnershipError` (409 / `FAILED_PRECONDITION`) | **yes** — refused on apply, never adopted |
+| `IndexCreate` for a new name when the shard already holds `index.max_indexes` indexes | `*service.IndexLimitError` (429 / `RESOURCE_EXHAUSTED`) | **yes** — refused at apply, nothing written |
 | Query or scan against an unknown index | not-found | **yes** — never silently falls back to a full scan |
 | Unique constraint violated on entity write | write refused | **yes** |
 | Unknown field in `Where` | parse error | **yes** |
@@ -505,6 +506,27 @@ settings are API-only. The index itself is storage-backed
 (`index.StoragePebbleIndex`) over whatever `storage.Storage` the database's
 engine was built on — memory, file, pebble or objstore — so `storage.backend`
 selects the database's store but never a separate index implementation.
+
+`index.max_indexes` caps the secondary indexes one shard holds: the system
+shard, each tenant's shard and each dedicated Raft shard count separately, and
+every index in the shard counts, whichever database or collection created it.
+`0` (the default) is unlimited. `service.IndexService.CreateIndex` carries the
+cap in the `IndexCreate` command (a 4-byte trailer after the owner, absent when
+uncapped) and reads nothing before proposing. The apply path
+(`index.CreateExceedsCap`, in `KVEngine`, `MVCCEngine` and the Pebble store)
+counts the indexes the create applies over and refuses a create for a new name
+at the cap with a limit refusal result, which the service returns as
+`*service.IndexLimitError`; a create naming an index that already exists is not
+counted and gets its usual answer. A dropped index frees its slot. Because the
+decision is made in log order over replicated state, concurrent creates through
+any number of nodes take the last slot exactly once (#1088). The cap is
+node-local config, but the value applied is the one the proposing node wrote
+into the command, so replicas configured differently still apply the same
+verdict. A binary from before the cap ignores the field, so the command
+carries it only once the group activates `command-caps`
+(`featuregate.CommandCaps`); until every replica advertises the feature the
+create is proposed uncapped, byte-identical to an older binary's, and the cap
+is not enforced. A standalone node gates nothing and carries it at once.
 
 ## Persistence
 

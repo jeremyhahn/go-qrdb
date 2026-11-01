@@ -109,8 +109,8 @@ Over a wire transport only the timeout is rebuilt as its typed error; the
 other three arrive as the transport's error for their class. Naming the
 current leader succeeds at once.
 
-**List/approve/reject pending join requests are `service.
-JoinRequestReviewer`**, likewise a capability interface, implemented by
+**List/approve/reject pending join requests are
+`service.JoinRequestReviewer`**, likewise a capability interface, implemented by
 `AdminService` once member-side CSR join is configured
 (`SetClusterJoinTokenStore`) — the same bind `MintJoinToken` depends on,
 since the approval queue lives in the identical replicated store. See
@@ -453,8 +453,8 @@ itself is not configured on this node (no join-token store bound).
 | `ttl_seconds` outside `[MinJoinTokenTTL, MaxJoinTokenTTL]` | `400` — `*clusterenroll.JoinTokenTTLError` |
 | member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
 
-This verb is implemented on all six transports (`transport.
-ClusterJoinTokenMinter`, consumed by the `qrdb admin join-token mint` CLI —
+This verb is implemented on all six transports
+(`transport.ClusterJoinTokenMinter`, consumed by the `qrdb admin join-token mint` CLI —
 see [cli.md](cli.md)):
 
 | Transport | Binding |

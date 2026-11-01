@@ -92,3 +92,69 @@ func wireToReconcileReport(w *reconcileRolesWireResponse) *transport.ReconcileRo
 	}
 	return out
 }
+
+// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of every
+// tenant on the server onto the server build's definitions. The caller must be
+// a platform operator holding roles:reconcile_all. The server answers with the
+// protobuf report gRPC returns, decoded by the conversion the gRPC and Unix
+// transports share.
+func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*transport.ReconcileAllTenantsRolesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	data, err := t.call(ctx, "role.ReconcileBuiltInAllTenants", nil)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileBuiltInRolesAllTenants", Err: err}
+	}
+
+	var wire reconcileRolesAllTenantsWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "ReconcileBuiltInRolesAllTenants", Err: &UnmarshalError{Err: err}}
+	}
+	return wireToAllTenantsReport(&wire), nil
+}
+
+// reconcileRolesAllTenantsWireResponse mirrors the server's JSON response for
+// role.ReconcileBuiltInAllTenants.
+type reconcileRolesAllTenantsWireResponse struct {
+	Tenants []reconcileRolesWireResponse `json:"tenants,omitempty"`
+	Skipped []skippedTenantWire          `json:"skipped,omitempty"`
+	Failed  []failedTenantWire           `json:"failed,omitempty"`
+}
+
+// skippedTenantWire mirrors role.SkippedTenant on the wire.
+type skippedTenantWire struct {
+	TenantID string `json:"tenantID"`
+	Reason   string `json:"reason"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// failedTenantWire mirrors role.FailedTenant on the wire.
+type failedTenantWire struct {
+	TenantID string `json:"tenantID"`
+	Error    string `json:"error"`
+}
+
+// wireToAllTenantsReport converts the all-tenant wire response to the
+// transport report.
+func wireToAllTenantsReport(w *reconcileRolesAllTenantsWireResponse) *transport.ReconcileAllTenantsRolesResponse {
+	out := &transport.ReconcileAllTenantsRolesResponse{}
+	for i := range w.Tenants {
+		out.Tenants = append(out.Tenants, *wireToReconcileReport(&w.Tenants[i]))
+	}
+	for _, s := range w.Skipped {
+		out.Skipped = append(out.Skipped, transport.RoleReconcileSkippedTenant{
+			TenantID: s.TenantID,
+			Reason:   s.Reason,
+			Detail:   s.Detail,
+		})
+	}
+	for _, f := range w.Failed {
+		out.Failed = append(out.Failed, transport.RoleReconcileFailedTenant{
+			TenantID: f.TenantID,
+			Error:    f.Error,
+		})
+	}
+	return out
+}

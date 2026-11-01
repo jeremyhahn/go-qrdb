@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -37,16 +38,37 @@ type TimeSeriesServicer = timeseries.TimeSeriesServicer
 type TimeSeriesService struct {
 	host    Host
 	shardID uint64
+
+	// maxMetrics caps the metric names the shard holds
+	// (timeseries.max_metrics); zero is unlimited. It travels in every write
+	// command and the apply path enforces it, so it holds across every node
+	// serving the shard and orders against deletes in the log.
+	maxMetrics int
+}
+
+// TimeSeriesServiceOption configures a TimeSeriesService.
+type TimeSeriesServiceOption func(*TimeSeriesService)
+
+// WithMaxMetrics caps the metric names the shard holds at n
+// (timeseries.max_metrics): a write that would create a metric past the cap
+// is refused with *MetricLimitError, and a write to a metric that exists is
+// never refused. Zero or less leaves the shard unlimited.
+func WithMaxMetrics(n int) TimeSeriesServiceOption {
+	return func(s *TimeSeriesService) { s.maxMetrics = n }
 }
 
 // NewTimeSeriesService creates a new TimeSeriesServicer that operates on
 // the specified shard. The shard must be running an MVCCStateMachine
 // with attached time-series storage for operations to succeed.
-func NewTimeSeriesService(host Host, shardID uint64) TimeSeriesServicer {
-	return &TimeSeriesService{
+func NewTimeSeriesService(host Host, shardID uint64, opts ...TimeSeriesServiceOption) TimeSeriesServicer {
+	s := &TimeSeriesService{
 		host:    host,
 		shardID: shardID,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Write stores a single time-series data point through Raft consensus.
@@ -55,6 +77,9 @@ func (s *TimeSeriesService) Write(ctx context.Context, metric string, value floa
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
+	// The shard's metric cap travels in the command and the apply path
+	// decides it against the replicated metric set (go-qrdb#1088).
+	cmd = protocol.AppendTSMetricCap(cmd, gatedCommandCap(s.host, s.shardID, s.maxMetrics))
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
@@ -84,6 +109,9 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
+	// The shard's metric cap travels in the command and the apply path
+	// decides it against the replicated metric set (go-qrdb#1088).
+	cmd = protocol.AppendTSMetricCap(cmd, gatedCommandCap(s.host, s.shardID, s.maxMetrics))
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
@@ -95,6 +123,32 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 		return resultErr
 	}
 	return nil
+}
+
+// commandCap is a configured shard cap as the command carries it: zero, no
+// cap, for a non-positive n, and n clamped to the wire's uint32 range.
+func commandCap(n int) uint32 {
+	if n <= 0 {
+		return 0
+	}
+	return uint32(min(uint64(n), math.MaxUint32))
+}
+
+// gatedCommandCap is the cap a command proposed to shardID carries: n as
+// commandCap encodes it once featuregate.CommandCaps is active for the
+// group, and zero, the encoding a binary from before the cap proposes,
+// until then. Every replica enforces the cap its command carries, so a cap
+// proposed while a replica that ignores it is still in the group would
+// admit there what its peers refuse. A host that gates nothing (standalone,
+// embedded) runs one binary and carries the cap at once.
+func gatedCommandCap(host Host, shardID uint64, n int) uint32 {
+	if n <= 0 {
+		return 0
+	}
+	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.CommandCaps) {
+		return 0
+	}
+	return commandCap(n)
 }
 
 // Query retrieves data points for a metric within the given time range.
@@ -184,6 +238,9 @@ func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) er
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
+	// The shard's metric cap travels in the command and the apply path
+	// decides it against the replicated metric set (go-qrdb#1088).
+	cmd = protocol.AppendTSMetricCap(cmd, gatedCommandCap(s.host, s.shardID, s.maxMetrics))
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)

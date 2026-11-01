@@ -74,6 +74,8 @@ const (
 	CosineDistance
 	// DotProductDistance represents dot product distance.
 	DotProductDistance
+	// ManhattanDistance represents Manhattan (L1/taxicab) distance.
+	ManhattanDistance
 )
 
 // DefaultConfig returns a default IVF configuration.
@@ -111,6 +113,8 @@ func (m DistanceMetric) String() string {
 		return "Cosine"
 	case DotProductDistance:
 		return "DotProduct"
+	case ManhattanDistance:
+		return "Manhattan"
 	default:
 		return "Unknown"
 	}

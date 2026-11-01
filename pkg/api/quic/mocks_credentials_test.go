@@ -74,7 +74,11 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 }
 
 // CredentialStrategy delegates to strategyFn or returns "manual".
-func (m *mockCredentialService) CredentialStrategy() string {
+func (m *mockCredentialService) CredentialStrategy(context.Context) (string, error) {
+	return m.credentialStrategy(), nil
+}
+
+func (m *mockCredentialService) credentialStrategy() string {
 	if m.strategyFn != nil {
 		return m.strategyFn()
 	}

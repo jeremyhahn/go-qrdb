@@ -219,9 +219,13 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 			t.Fatalf("%s: node %d: user record does not name %s: %s", run, i+1, username, body)
 		}
 	}
-	assertAuthenticatesEverywhere := func(run string, client *http.Client) {
+	// wait bounds each node: on the first run the server is still completing
+	// the admin's account after the create answered, so the caller passes
+	// tenantAdminCompletionWindow; after a restart the account exists and
+	// the wait is only for the node to trust the admin again.
+	assertAuthenticatesEverywhere := func(run string, client *http.Client, wait time.Duration) {
 		for i := range adminPorts {
-			awaitUser(run, client, i, adminUsername, 60*time.Second)
+			awaitUser(run, client, i, adminUsername, wait)
 			t.Logf("%s: node %d authenticated the strict tenant's admin", run, i+1)
 		}
 	}
@@ -241,7 +245,7 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 	}
 	assertHomeOnEveryNode("R1")
 	adminClient := raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody)
-	assertAuthenticatesEverywhere("R1", adminClient)
+	assertAuthenticatesEverywhere("R1", adminClient, tenantAdminCompletionWindow)
 
 	// Lagging replica. Node 3 stops; the two remaining nodes keep a quorum of
 	// the home group and the tenant admin creates users on node 1. Each
@@ -336,7 +340,7 @@ func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
 	startCluster("R2", false)
 	waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
 	assertHomeOnEveryNode("R2")
-	assertAuthenticatesEverywhere("R2", raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody))
+	assertAuthenticatesEverywhere("R2", raftTenantAdminClient(t, ca, adminKeyPEM, tenantBody), 60*time.Second)
 }
 
 // assertCreatedUser reads username back through the node on adminPort and

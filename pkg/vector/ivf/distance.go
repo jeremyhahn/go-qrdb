@@ -31,6 +31,8 @@ func GetDistanceFunc(metric DistanceMetric) DistanceFunc {
 		return Cosine
 	case DotProductDistance:
 		return DotProduct
+	case ManhattanDistance:
+		return Manhattan
 	default:
 		return L2
 	}
@@ -103,6 +105,24 @@ func DotProduct(a, b []float32) float32 {
 		sum += a[i] * b[i]
 	}
 	return -sum // Negative because higher dot product means closer
+}
+
+// Manhattan computes the Manhattan (L1/taxicab) distance between two vectors.
+// Returns Sigma|a_i - b_i|.
+func Manhattan(a, b []float32) float32 {
+	if len(a) != len(b) {
+		return float32(math.MaxFloat32)
+	}
+
+	var sum float32
+	for i := range a {
+		diff := a[i] - b[i]
+		if diff < 0 {
+			diff = -diff
+		}
+		sum += diff
+	}
+	return sum
 }
 
 // L2SIMD is an optimized version of L2 using SIMD-friendly patterns.

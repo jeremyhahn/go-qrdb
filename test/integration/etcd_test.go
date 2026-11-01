@@ -61,8 +61,9 @@ func buildBinaryWithEtcd(t *testing.T) string {
 
 // startSingleNodeWithEtcd starts a single-node QRDB instance, creates a
 // database with the etcd wire protocol enabled, and returns the admin port,
-// the etcd gRPC port, and the test CA used for TLS.
-func startSingleNodeWithEtcd(t *testing.T) (adminPort, etcdPort int, ca *testCA) {
+// the etcd gRPC port, and the test CA used for TLS. extraArgs are appended to
+// the qrdbd start flags.
+func startSingleNodeWithEtcd(t *testing.T, extraArgs ...string) (adminPort, etcdPort int, ca *testCA) {
 	t.Helper()
 
 	bin := buildBinaryWithEtcd(t)
@@ -86,6 +87,7 @@ func startSingleNodeWithEtcd(t *testing.T) (adminPort, etcdPort int, ca *testCA)
 		"--admin-port", fmt.Sprintf("%d", adminPorts[0]),
 		"--grpc-port", fmt.Sprintf("%d", grpcPorts[0]),
 	}
+	args = append(args, extraArgs...)
 	args = append(args, ca.tlsFlags(t)...)
 
 	startNode(t, bin, args, "[etcd-node] ")

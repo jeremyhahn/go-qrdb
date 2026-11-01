@@ -1,6 +1,6 @@
 # Credentials — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -23,6 +23,13 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.
+
+**Every operation acts on the caller's own store**, chosen from the tenant of
+the authenticated principal: the platform's store for a system principal, the
+tenant's own store, over its dedicated barrier, for a tenant principal. No
+request field names a tenant, so no caller can reach another tenant's store. A
+tenant's store reports the `barrier` strategy. See
+[architecture.md](architecture.md).
 
 ## Schemas
 
@@ -62,7 +69,8 @@ Strategy returns `manual` or `barrier`.
 | Submit of a name already submitted under `manual` | 409 | `ALREADY_EXISTS` — `ErrCredentialAlreadySubmitted` |
 | Empty name, empty value or negative grace period | 400 | `INVALID_ARGUMENT` |
 | Retrieve under `manual` with nothing submitted | **blocks** until submitted or the context ends | same |
-| Barrier sealed under the `barrier` strategy | 503 | `UNAVAILABLE` |
+| Barrier sealed under the `barrier` strategy, or the caller's tenant barrier sealed | 503 | `UNAVAILABLE` |
+| Caller's tenant has no dedicated barrier (`prefix` isolation) | 501 | `UNIMPLEMENTED` — `CapabilityUnsupportedError` |
 | Enumeration on a strategy that cannot | 501 | `UNIMPLEMENTED` — `ErrEnumerationNotSupported` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 

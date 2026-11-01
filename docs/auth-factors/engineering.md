@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 ## Exported surface
@@ -15,7 +15,7 @@ func (c *Client) Login()           transport.LoginClient           // nil if uns
 func (c *Client) Sessions()        transport.SessionClient         // nil if unsupported
 ```
 
-Composition-plane options (Tier 2):
+Composition-plane options (`pkg/server`, Tier 2):
 
 ```go
 func WithFactorRegistry(reg *authfactors.FactorRegistry) ServerOption
@@ -95,7 +95,7 @@ func NewSoftwareBackend(store Storage, hashConfig HashConfig) (*SoftwareBackend,
 
 func DefaultHashConfig()    HashConfig  // Argon2id: 3 passes, 64 MiB, 4 threads, 32-byte key, 16-byte salt
 func FIPSHashConfig()       HashConfig  // PBKDF2-SHA256, 600 000 iterations, NIST SP 800-132
-func AutoDetectHashConfig() HashConfig  // seal.FIPSEnabled() decides
+func AutoDetectHashConfig() HashConfig  // go-quicraft's seal.FIPSEnabled() decides
 
 const FIDO2PINHashSize = 16 // CTAP2 mandate: SHA-256(PIN)[:16]
 func ComputeFIDO2PINHash(pin string) []byte
@@ -174,9 +174,10 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   `RetryAfter`) and presenting the right PIN, which resets that counter.
 - **`SoftwareBackend` loads existing records at construction**, so
   `SOPINSet()` / `UserPINSet()` report prior state correctly after a restart.
-- **The CTAP2 hash is cached in an atomic pointer** and wiped on `Close`, so a
-  virtual authenticator answers CTAP2 verifications after a restart without a
-  separate set call.
+- **The CTAP2 hash is cached in memory in an atomic pointer** and zeroed on
+  `Close`. After a restart the first successful user PIN verification
+  repopulates it, so a virtual authenticator answers CTAP2 verifications
+  without a separate PIN change.
 - **Concurrent reads on `SoftwareBackend` use atomic pointers, no locks.**
 - **Passing `nil` for `Storage` gives in-memory-only operation** — for tests.
 - **`Client.UserAuthFactors()` returns nil** on a transport without the
@@ -294,6 +295,7 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
 | `mtls` | SHA-256 of the certificate DER |
 | `fido2` | WebAuthn `credentialID` bytes |
 | `piv` | SHA-256 of the slot certificate DER |
+| `pkcs11` | SHA-256 of the SubjectPublicKeyInfo DER |
 
 **A lookup key is not unique across the deployment, and is not meant to be.**
 Two organizations can hold the same certificate or enrol the same token, and
@@ -318,7 +320,7 @@ func MigrateFactorsToTenants(ctx, shared kvstore.KVStore, resolver, owners, logg
   missing key reads back as a typed error from one and as `(nil, nil)` from the
   other; every read treats "error or empty" as absent, so neither convention is
   privileged.
-- **The keys are unchanged** — `__sys:auth/factors/{id}`,
+- **The keys** — `__sys:auth/factors/{id}`,
   `__sys:auth/users/{userID}/factors/{id}`,
   `__sys:auth/lookup/{type}/{credKeyHex}` — and carry no tenant segment. The
   physical key is `{tenant}/` + that, supplied by the resolver's confinement,
@@ -517,11 +519,10 @@ instance.
   `ChallengeFactor`'s own `loadEnrollment` `Get` then `persistChallenge`
   `Put` sequence does) can observe the seal on whichever call happens to run
   after it. Both — passed through `AuthFactorListReadError` unchanged when
-  either surfaces during `ListFactors` — map to HTTP 503 (REST, matching
-  `pkg/api/rest/handlers.go`'s IAM mapping), `codes.Unavailable` (gRPC,
-  inherited by Unix, matching `pkg/api/grpc/errors.go`), and
-  `wire.StatusUnavailable` (QUIC, via the shared `mapServiceError` every
-  handler on that transport routes through). Embedded preserves the typed
+  either surfaces during `ListFactors` — are classed `Unavailable` by the
+  shared error table (`pkg/api/errclass`): HTTP 503 on REST,
+  `codes.Unavailable` on gRPC (inherited by Unix), and
+  `wire.StatusUnavailable` on QUIC. Embedded preserves the typed
   error unchanged: `tenant.ErrTenantSealed` is exported to the SDK as
   `sdk.ErrTenantStoreSealed` in `sdk/go/types_tenant.go`, distinct from
   `sdk.ErrTenantSealed`, which aliases `pkg/seal.ErrTenantSealed` raised by
@@ -653,24 +654,31 @@ accepted, and a corrupted record is an error rather than a re-initialization.
 
 ## Dual control
 
-Barrier initialization enforces the PIN pair: supplying `--so-pin` requires
-`--user-pin` and vice versa, satisfying FIPS 140-3 and PCI-DSS v4 dual control.
-Any PIN with `--barrier-strategy=none` is refused with `PINsNotAllowedError` —
-see [../barrier-seal/](../barrier-seal/engineering.md).
+The `qrdb` CLI enforces the PIN pair on `barrier init` and `barrier
+init-shamir`: supplying `--so-pin` requires `--user-pin` and vice versa
+(FIPS 140-3 and PCI-DSS v4 dual control), refused with `*InvalidArgError`.
+On `barrier init`, any PIN with `--barrier-strategy=none` is refused with
+`*PINsNotAllowedError` (`cmd/qrdb/errors.go`). Both checks run in the CLI
+before any request is sent — see
+[../barrier-seal/](../barrier-seal/engineering.md).
 
 ## Configuration
 
 The PIN backend and the factor registry are **composition-plane**, injected at
-server construction. Without `WithPINBackend` the daemon builds a default
-`pin.SoftwareBackend` with `AutoDetectHashConfig()` over barrier-protected
-storage.
+server construction (`server.WithPINBackend`, `server.WithFactorRegistry`).
+`qrdbd` and `sdk/go/node` build the node's PIN backend with
+`lifecycle.NewSealStorePINBackend` (`pkg/server/lifecycle/pin_store.go`): a
+`pin.SoftwareBackend` with `pin.AutoDetectHashConfig()`, persisted in the
+node-local seal store — the plaintext store beneath the barrier, readable while
+sealed, holding the PIN hashes and never the PINs — and decorated with the SO
+PIN lockout.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol, the conditional-add suite (`auth_factor_condition_cli_test.go`: the one-time claim, the expected version and N racing claims through the CLI per protocol, and the same over embedded through `sdk/go/node`'s in-process client). The factor service's lifecycle (last-factor protection, forced removal, revoked-factor lookup) and its gRPC handlers are unit tests in `pkg/service` and `pkg/api/grpc`. Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-auth-factors` (no Docker; selection in `test/integration/features.mk`). It runs the `qrdb auth` CLI suite per protocol (`auth_cli_test.go`: login and the factor add, list, relabel, rotate and remove lifecycle, and `auth factor delete` releasing the credential claim while a revoked factor refuses deletion), the conditional-add suite (`auth_factor_condition_cli_test.go`: the one-time claim, the expected version and N racing claims through the CLI per protocol, and the same over embedded through `sdk/go/node`'s in-process client). The factor service's lifecycle (last-factor protection, forced removal, revoked-factor lookup) and its gRPC handlers are unit tests in `pkg/service` and `pkg/api/grpc`. Per-transport accounting is the `auth-factors` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: each `PINBackend` method against `SoftwareBackend`, the 6-character
-  floor enforced in `Service`, constant-time comparison, algorithm resolution
+  floor enforced in both `Service` and `SoftwareBackend`, constant-time comparison, algorithm resolution
   from the record (FIPS record verified by a non-FIPS config and vice versa),
   CTAP2 hash caching and wipe on `Close`, and state reload at construction.
 - **The lockout no-ops are explicitly tested** so their absence stays visible.
@@ -694,10 +702,11 @@ storage.
   `TestAddConditional_concurrentClaimsExactlyOneWins` — N concurrent claims,
   exactly one success. `pkg/auth/factor_condition_test.go` pins validation and
   the refusal's metadata round trip; `pkg/api/errclass/refusal_test.go` the
-  classification; each server package's `user_auth_factor_condition_test.go`
-  the wire fields and the carried refusal; each SDK transport's
-  `refusal_test.go` the decode back into the typed error, and that an
-  unrelated conflict is not decoded as one.
+  classification; `user_auth_factor_condition_test.go` in `pkg/api/grpc`,
+  `pkg/api/rest`, `pkg/api/quic` and `pkg/api/mcp` the wire fields and the
+  carried refusal; `refusal_test.go` in `sdk/go/transport` and in its `grpc`,
+  `rest`, `quic`, `unix` and `mcp` packages the decode back into the typed
+  error, and that an unrelated conflict is not decoded as one.
 
 ## Observability
 

@@ -33,7 +33,9 @@ qrdb lease keep-alive 7
 Run this on an interval comfortably shorter than the TTL. Reading or writing a
 leased key does **not** renew the lease.
 
-The renewal is answered by the cluster leader without a log write. Every
+The leader renews a lease in memory, without a log write. A lease with a
+recorded checkpoint, or any lease while the cluster's `lease-checkpoint` feature
+gate is closed, is renewed through the Raft log instead. Every
 `lease.checkpoint_interval` (default `5m`) the leader records what each lease
 longer than that has left. If leadership changes, the new leader counts every
 lease from that recorded value — or its full TTL when it has none — plus

@@ -58,7 +58,13 @@ func TestEmbeddedServerBinding_Startup_Noop(t *testing.T) {
 	b := NewEmbeddedServerBinding(log, conn, nil)
 	// startup and shutdown are no-ops on the stub; must not panic.
 	b.startup(context.Background())
+	if b.IsEmbedded() {
+		t.Fatal("expected IsEmbedded=false after startup without StartEmbedded")
+	}
 	b.shutdown(context.Background())
+	if b.IsEmbedded() {
+		t.Fatal("expected IsEmbedded=false after an idle shutdown")
+	}
 }
 
 // ---------------------------------------------------------------------------

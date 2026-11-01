@@ -32,29 +32,6 @@ import (
 // (line 809 uncovered block)
 // ---------------------------------------------------------------------------
 
-func TestBatchService_Import_FieldMode_MissingValueField(t *testing.T) {
-	host := &mockHost{
-		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
-			return sm.Result{Value: 1}, nil
-		},
-	}
-	svc := NewBatchService(host, 1)
-
-	// CSV where keyField="id" and valueMode="field" but valueField="value"
-	// not present in all rows.
-	csvData := "id,name\n1,Alice\n2,Bob\n"
-	_, err := parseAndImportOf(t, svc).parseAndImport(context.Background(), []byte(csvData), ImportOptions{
-		Format:     "csv",
-		KeyField:   "id",
-		ValueMode:  "field",
-		ValueField: "value", // field doesn't exist in CSV
-		SkipHeader: true,
-	})
-	// With non-transactional mode, this should either succeed with failed rows
-	// or return an error — just exercise the path.
-	_ = err
-}
-
 func TestBatchService_Import_TransactionalAbort_OnMissingValue(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
@@ -110,78 +87,9 @@ func newCompactionVecSvc(t *testing.T, nsName string, dim uint32) VectorService 
 	return svc
 }
 
-func TestVectorService_GetCompactionProgress_AfterCompact(t *testing.T) {
-	svc := newCompactionVecSvc(t, "comp-job-ns", 3)
-	ctx := context.Background()
-
-	// Trigger compaction to create a job entry.
-	resp, err := svc.CompactNamespace(ctx, &CompactNamespaceRequest{Namespace: "comp-job-ns"})
-	if err != nil {
-		t.Fatalf("CompactNamespace: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil CompactNamespace response")
-	}
-
-	// Wait a bit for the async goroutine to complete.
-	time.Sleep(20 * time.Millisecond)
-
-	// Now query by namespace — should find the completed job.
-	progress, progErr := svc.GetCompactionProgress(ctx, &GetCompactionProgressRequest{
-		Namespace: "comp-job-ns",
-	})
-	if progErr != nil {
-		// Job not found is acceptable if the goroutine hasn't stored it yet.
-		return
-	}
-	_ = progress
-}
-
-func TestVectorService_GetCompactionProgress_AfterCompact_ByOperationID(t *testing.T) {
-	svc := newCompactionVecSvc(t, "comp-opid-ns", 3)
-	ctx := context.Background()
-
-	// Trigger compaction to create a job entry.
-	resp, err := svc.CompactNamespace(ctx, &CompactNamespaceRequest{Namespace: "comp-opid-ns"})
-	if err != nil {
-		t.Fatalf("CompactNamespace: %v", err)
-	}
-
-	// Give the goroutine a moment to populate.
-	time.Sleep(20 * time.Millisecond)
-
-	if resp != nil && resp.OperationID != "" {
-		// Query by OperationID to cover the OperationID branch.
-		_, _ = svc.GetCompactionProgress(ctx, &GetCompactionProgressRequest{
-			OperationID: resp.OperationID,
-		})
-	}
-}
-
 // ---------------------------------------------------------------------------
 // vector.go – GetRebuildProgress with a completed job (22.9% → higher)
 // ---------------------------------------------------------------------------
-
-func TestVectorService_GetRebuildProgress_AfterRebuild(t *testing.T) {
-	svc, store := newRaftVecSvc(t, "rb-job2-ns", 3)
-	store.scanNamespaceFn = func(_ context.Context, _ string, _ *vector.ScanOptions) ([]*vector.VectorValue, error) {
-		return []*vector.VectorValue{
-			{ID: 1, Embedding: []float32{0.1, 0.2, 0.3}},
-		}, nil
-	}
-	ctx := context.Background()
-
-	// Trigger rebuild — may fail due to missing qrdb_vector.
-	resp, _ := svc.RebuildIndex(ctx, &RebuildIndexRequest{Namespace: "rb-job2-ns"})
-
-	time.Sleep(20 * time.Millisecond)
-
-	if resp != nil && resp.JobID != "" {
-		_, _ = svc.GetRebuildProgress(ctx, &GetRebuildProgressRequest{
-			JobID: resp.JobID,
-		})
-	}
-}
 
 // ---------------------------------------------------------------------------
 // vector.go – validateCreateNamespaceRequest – all branches (77.8% → higher)

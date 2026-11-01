@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"os"
+	"slices"
 )
 
 // CAFileReadError is returned when a CA certificate file cannot be read.
@@ -115,13 +116,18 @@ type TLSBuildOptions struct {
 // GetClientCertificate, or more than one static certificate (an ambiguous
 // case this function cannot resolve on the caller's behalf), gets no hook.
 //
-// The result never aliases Custom: it is always a Clone. A transport
+// The result never aliases Custom: it is always a Clone, with its own
+// NextProtos backing array. A transport
 // mutates the config it is handed (net/http appends "h2" to NextProtos
 // when it attempts HTTP/2), and the caller's config may be shared with
 // clients that cannot speak what such a mutation offers.
 func BuildTLSConfig(opts TLSBuildOptions) (*tls.Config, error) {
 	if opts.Custom != nil {
 		cfg := opts.Custom.Clone()
+		// Clone copies the NextProtos slice header, not its array: an
+		// append to the clone's (below, or net/http's "h2") would write
+		// into the caller's spare capacity.
+		cfg.NextProtos = slices.Clone(cfg.NextProtos)
 		needsALPN := len(opts.NextProtos) != 0
 		needsClientCertFix := len(cfg.Certificates) == 1 && cfg.GetClientCertificate == nil
 		if needsALPN {

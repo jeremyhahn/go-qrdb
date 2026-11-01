@@ -30,6 +30,7 @@ import (
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -104,6 +105,9 @@ type Server struct {
 	// over this listener use secondary index acceleration for WHERE
 	// clause evaluation.
 	indexSvc service.IndexServicer
+	// clientLimit charges every connection and statement to its client
+	// address's bucket (WithClientLimiter); nil limits nothing.
+	clientLimit *clientlimit.Limiter
 }
 
 // ServerOption configures the Server.
@@ -385,6 +389,7 @@ func (s *Server) Start() error {
 	parseHandler := NewParseHandler(sqlEngine, translator, s.dbName)
 	parseHandler.sealedProbe = s.sealedProbe
 	parseHandler.queryTimeout = s.queryTimeout
+	parseHandler.clientLimit = s.clientLimit
 
 	// Build psql-wire server options. The sealed-window session gate is
 	// registered FIRST so it runs before the auth session middleware:
@@ -393,6 +398,13 @@ func (s *Server) Start() error {
 	wireOpts := []wire.OptionFn{
 		wire.Logger(s.logger),
 		wire.GlobalParameters(serverParameters()),
+	}
+	// The client-address limiter runs before even that, in the startup
+	// exchange's authentication step, the one point before the session
+	// middleware where the server can still send an ErrorResponse: a client
+	// over its rate costs the node nothing past the startup packet.
+	if s.clientLimit != nil {
+		wireOpts = append(wireOpts, wire.SessionAuthStrategy(clientLimitAuthStrategy(s.clientLimit)))
 	}
 	if s.sealedProbe != nil {
 		wireOpts = append(wireOpts, wire.SessionMiddleware(sealedSessionHandler(s.sealedProbe)))
@@ -463,7 +475,7 @@ func (s *Server) Start() error {
 	wireOpts = append(wireOpts, wire.Portals(newAdmittingPortals))
 
 	// Create the psql-wire server.
-	wireSrv, err := wire.NewServer(parseHandler.HandleParse, wireOpts...)
+	wireSrv, err := wire.NewServer(parseHandler.handleParseAdmitted, wireOpts...)
 	if err != nil {
 		return &ServerStartError{Err: err}
 	}

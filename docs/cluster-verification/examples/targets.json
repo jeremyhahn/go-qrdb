@@ -1,0 +1,33 @@
+{
+  "exec": ["ssh", "{{.Vars.host}}", "--", "docker", "run", "--rm", "--privileged",
+           "--net=container:{{.Vars.container}}",
+           "-v", "{{.Vars.data_dir}}:/data", "-v", "/sys/fs/cgroup:/sys/fs/cgroup",
+           "{{.Vars.fault_image}}", "{{shquote .Argv}}"],
+  "signal": ["ssh", "{{.Vars.host}}", "--", "docker", "kill", "--signal={{.Signal}}", "{{.Vars.container}}"],
+  "restart": ["ssh", "{{.Vars.host}}", "--", "docker", "start", "{{.Vars.container}}"],
+  "unseal": ["ssh", "{{.Vars.host}}", "--", "{{.Vars.unseal_command}}"],
+  "nodes": {
+    "node-1": {
+      "vars": {"host": "db1.example.com", "container": "clusterproof-node-1", "data_dir": "<install-dir>/data",
+               "fault_image": "<registry>/clusterproof-fault:<tag>", "unseal_command": "<install-dir>/bin/unseal-node"},
+      "addresses": ["192.0.2.1"]
+    },
+    "node-2": {
+      "vars": {"host": "db2.example.com", "container": "clusterproof-node-2", "data_dir": "<install-dir>/data",
+               "fault_image": "<registry>/clusterproof-fault:<tag>", "unseal_command": "<install-dir>/bin/unseal-node"},
+      "addresses": ["192.0.2.2"]
+    },
+    "node-3": {
+      "vars": {"host": "db3.example.com", "container": "clusterproof-node-3", "data_dir": "<install-dir>/data",
+               "fault_image": "<registry>/clusterproof-fault:<tag>", "unseal_command": "<install-dir>/bin/unseal-node"},
+      "addresses": ["192.0.2.3"]
+    }
+  },
+  "clock_rate": {"ppm": -5000},
+  "disk_full": {"path": "/data"},
+  "slow_disk": {"device": "8:0", "cgroup": "/sys/fs/cgroup/system.slice/qrdbd.scope", "bytes_per_second": 1048576},
+  "schedule": {"min_gap": "30s", "max_gap": "2m", "min_length": "10s", "max_length": "1m"},
+  "heal_timeout": "1m",
+  "recovery_timeout": "2m",
+  "declared": {"read_mode": "raft.lease_read=true (lease reads on)"}
+}

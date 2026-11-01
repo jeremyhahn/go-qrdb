@@ -360,6 +360,7 @@ var quicMethodExclusions = map[string]string{
 	"tenant.List":                        "target-resolved",
 	"tenant.ListDeleted":                 "target-resolved",
 	"tenant.ReconcileDeleted":            "target-resolved",
+	"role.ReconcileBuiltInAllTenants":    "target-resolved",
 	"tenant.TrustAnchorAdd":              "target-resolved",
 	"tenant.TrustAnchorList":             "target-resolved",
 	"tenant.TrustAnchorRemove":           "target-resolved",

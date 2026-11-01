@@ -1,6 +1,6 @@
 # Rate Limiting — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 A single request-throttling engine, enforced at the one place every
@@ -64,8 +64,13 @@ The reference `Limiter`, `TokenBucketLimiter`, holds one bucket per
 retry loop rather than a mutex: concurrent callers for different keys never
 contend, and concurrent callers for the same key retry their own attempt
 rather than blocking on one another. A background goroutine reclaims buckets
-idle past a configurable TTL, bounding memory for a caller population that
-comes and goes rather than staying fixed.
+idle past a configurable TTL (ten minutes by default), bounding memory for a
+caller population that comes and goes rather than staying fixed. A bucket is
+never reclaimed before it has refilled to its burst, since a fresh bucket
+would grant its key tokens early: at one request an hour with a burst of one,
+the drained bucket is kept for the hour. Each key's memory is held for the
+longer of the TTL and its policy's refill window (`Burst / RatePerSecond`)
+after its last request, plus one sweep interval.
 
 ### Alternatives rejected
 
@@ -94,6 +99,88 @@ comes and goes rather than staying fixed.
 - **A global (not per-caller) bucket.** Rejected — a single shared bucket
   lets one caller's traffic starve every other caller's quota for the same
   operation, which defeats the purpose of a per-caller capacity control.
+
+## The pre-authentication client-address limit
+
+The per-permission mechanism above throttles an authenticated principal, so
+it cannot see a flood that never gets that far: handshake, login and
+enrollment attempts reach a transport before any principal exists. A second,
+separate control closes that gap: `pkg/clientlimit`'s `Limiter`, a token
+bucket keyed by **client address**, configured once per node as
+`transport.client_rate_limit` and shared by every listener the node runs.
+
+- **Where it runs.** Each transport admits a request through it before
+  anything else runs on the request's behalf -- authentication, the
+  public-route allowlist, the sealed-window and awaiting-admin gates: the
+  REST and MCP HTTP handlers (HTTP/2 and HTTP/3), the gRPC unary and stream
+  interceptors, the native QUIC request dispatcher, the
+  Unix-socket gRPC listener, each database's etcd v3 gRPC listener (the same
+  interceptors, ahead of its request authorizer), and the MySQL and
+  PostgreSQL wire listeners,
+  which charge the accepted connection's peer address once when the
+  connection is established and again for every statement it sends. One
+  `Limiter` per node, so an address's budget is the same whichever protocol
+  carries its requests.
+- **gRPC-Web is charged at the HTTP boundary.** Every request under the
+  gRPC-Web prefix is admitted by the REST listener's limiter before the
+  gRPC-Web handler runs: a CORS preflight, another method or media type the
+  handler answers itself, and a call it translates alike. A call has to be
+  charged there, because the gRPC server refuses an unknown service or
+  method before its interceptors run; charged only by an interceptor, a call
+  to a method that does not exist would spend nothing and stay unlimited.
+  The limiter marks the translated request's context as charged
+  (`Limiter.HTTPOnce`), and the gRPC interceptors, which share that one
+  `Limiter`, skip a request it has marked (`Limiter.Admitted`), so a call
+  that does reach them is charged exactly once. A refused gRPC-Web request
+  gets the REST listener's 429 with Retry-After.
+- **The key.** An IPv4 address, or an IPv6 `/64` prefix, so one host cannot
+  mint fresh buckets from its own subnet. A Unix-socket peer has no IP
+  address and is keyed by the socket, so every local caller shares one
+  bucket, separate from every network address's. That is the design, not a
+  missing key: a Unix socket carries no client address to tell its callers
+  apart, and every one of them is already on the node's own host.
+- **Forwarded headers.** Read only from a peer inside
+  `trusted_proxies`, and only from the one field that proxy's entry names
+  (`header: forwarded` for RFC 7239 `Forwarded`, `header: x-forwarded-for`).
+  The chain is walked from the right to the first address that is not itself
+  a trusted proxy, and every hop is taken from the field the trusted hop that
+  reported it writes, so a chain may cross proxies that write different
+  fields. The field a reporting proxy does not write is never read: a client
+  behind an `X-Forwarded-For` proxy that sends its own `Forwarded` header
+  gains nothing, since the proxy passes that header through untouched.
+  Overlapping entries that name different headers are refused at startup,
+  so every trusted address has exactly one field. With no
+  trusted proxies -- the default -- no header is ever read, so a client
+  cannot pick its own bucket. `Forwarded` is parsed to the exact RFC 7239
+  §4 grammar, with RFC 7230 §3.2.6 quoted-strings and quoted-pairs: a field
+  line that does not match it -- an unterminated quoted-string that would
+  swallow the hop the proxy appended after it, an unquoted `host:port`, a
+  parameter repeated in one element, whitespace around `;` or `=` -- fails
+  closed. No hop in it is believed, the other field is not consulted in
+  its place, and the request is keyed by the last trusted hop's address. An
+  exhausted field, or a hop that is not an IP address, ends the walk the
+  same way.
+- **The refusal.** `RateLimitedError`, naming the address and the wait: 429
+  with `Retry-After` on REST and MCP (on REST, a request from an allowed
+  CORS origin gets the `Access-Control-Allow-Origin` and `Vary` headers a
+  served request would, so a browser reports the rate limit rather than a
+  CORS failure; the limiter still sits below the CORS preflight answer, so
+  a preflight is charged), `ResourceExhausted` with a RetryInfo
+  detail on gRPC and the Unix socket, `RESOURCE_EXHAUSTED` with RetryInfo on
+  native QUIC. The SQL listeners answer in their own wire protocol's terms:
+  MySQL with an ERR packet carrying error 1226, `ER_USER_LIMIT_REACHED`,
+  SQLSTATE `42000` ([MySQL server error reference](https://dev.mysql.com/doc/mysql-errors/8.4/en/server-error-reference.html#error_er_user_limit_reached)),
+  for the connection and for a statement alike; PostgreSQL with an
+  ErrorResponse of severity `FATAL` and SQLSTATE `08004`,
+  `sqlserver_rejected_establishment_of_sqlconnection`, for the connection,
+  and of severity `ERROR` and SQLSTATE `53400`, `configuration_limit_exceeded`,
+  for a statement (a simple query, a Parse, or an Execute), which leaves the
+  session open ([PostgreSQL error codes](https://www.postgresql.org/docs/current/errcodes-appendix.html)).
+  The Go SDK's `Connect` returns the refusal as it is, rather than as a
+  connection failure, so the CLI says the caller is rate limited.
+- **Off by default.** The zero value applies no limit: a request-rate bound
+  is a capacity decision for the operator, as a per-permission `Policy` is
+  for an operation's owner.
 
 ## Trust boundaries
 
@@ -135,6 +222,12 @@ comes and goes rather than staying fixed.
   transports) is limited per node, not against one shared budget across the
   cluster. A cluster-wide limiter would need a coordination mechanism this
   feature does not build.
+- **No second charge to the client for forwarded cluster traffic.** A
+  request a replica forwards to the leader is charged, on the leader, to
+  the forwarding node's address unless that node is listed in
+  `trusted_proxies`. This is the design: the entry node already charged the
+  client's own address when the request arrived, so the leader's bucket
+  bounds what one node may forward, not what one client may send.
 - **No default policies.** No permission ships throttled out of the box.
   Declaring a `Policy` — an actual requests-per-second number — is a
   capacity decision for the operation's owner to take deliberately, the same

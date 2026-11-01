@@ -16,6 +16,7 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
+import { API_PREFIXES } from "./api-routes.ts";
 import { TLS_CERT_ENV, TLS_KEY_ENV } from "./playwright.tls.ts";
 
 export default defineConfig({
@@ -81,20 +82,12 @@ function serverTLS(): { cert: string; key: string } | undefined {
 }
 
 /**
- * buildApiProxy maps every server-side API route prefix to the given backend
+ * buildApiProxy maps every server-side API route prefix (api-routes.ts) to the given backend
  * target. `secure: false` accepts the daemon's self-signed TLS certificate.
  */
 function buildApiProxy(target: string): Record<string, { target: string; secure: boolean }> {
-  const prefixes = [
-    "/health", "/status", "/peers", "/capabilities", "/kv", "/ts", "/tx",
-    "/batch", "/watch", "/lease", "/index", "/vector", "/certs", "/sql",
-    "/snapshot", "/drain", "/membership", "/v1", "/users", "/roles",
-    "/permissions", "/tenants", "/audit", "/barrier", "/ceremony",
-    "/authfactor", "/databases", "/seal", "/collection", "/cluster",
-    "/rebalance", "/backup", "/metrics", "/admin",
-  ];
   const proxy: Record<string, { target: string; secure: boolean }> = {};
-  for (const p of prefixes) {
+  for (const p of API_PREFIXES) {
     proxy[p] = { target, secure: false };
   }
   return proxy;

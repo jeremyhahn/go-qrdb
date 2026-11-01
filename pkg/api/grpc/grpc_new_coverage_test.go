@@ -102,7 +102,11 @@ type coverageGRPCCredentialService struct{}
 func (c *coverageGRPCCredentialService) CredentialSubmit(_ context.Context, _ string, _ []byte) error {
 	return nil
 }
-func (c *coverageGRPCCredentialService) CredentialStrategy() string { return "manual" }
+func (c *coverageGRPCCredentialService) CredentialStrategy(context.Context) (string, error) {
+	return c.credentialStrategy(), nil
+}
+
+func (c *coverageGRPCCredentialService) credentialStrategy() string { return "manual" }
 func (c *coverageGRPCCredentialService) CredentialDelete(_ context.Context, _ string) error {
 	return nil
 }
@@ -316,6 +320,8 @@ func TestMapServiceError_LeaseErrors(t *testing.T) {
 		{&service.BatchError{Err: errors.New("err")}, codes.Internal},
 		{&service.IndexNotFoundError{Name: "idx"}, codes.NotFound},
 		{&service.IndexExistsError{Name: "idx"}, codes.AlreadyExists},
+		{&service.IndexLimitError{Max: 2}, codes.ResourceExhausted},
+		{&service.MetricLimitError{Max: 2}, codes.ResourceExhausted},
 		{&service.TimeSeriesError{Op: "ts", Err: errors.New("err")}, codes.Internal},
 		{&service.ConsistencyError{}, codes.FailedPrecondition},
 		{&service.VectorNotFoundError{}, codes.NotFound},

@@ -16,9 +16,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 )
 
@@ -68,11 +70,64 @@ func NewLockService(
 	kvSvc MVCCKVServicer,
 	logger *slog.Logger,
 ) (LockServicer, error) {
-	locker, err := lock.NewLocker(txSvc, leaseSvc, watchSvc, kvSvc, logger)
+	opts := []lock.Option{lock.WithRetryable(lockWriteRetryable)}
+	if tx, ok := baseTransactionService(txSvc); ok {
+		opts = append(opts, lock.WithTokenFieldRetired(func() bool {
+			return lockTokenFieldRetired(tx.host, tx.shardID)
+		}))
+	}
+	locker, err := lock.NewLocker(txSvc, leaseSvc, watchSvc, kvSvc, logger, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &LockService{locker: locker}, nil
+}
+
+// TransactionUnwrapper is a TransactionServicer that decorates another one,
+// such as a tenant's quota or a database's key namespace. Unwrap returns the
+// decorated service.
+type TransactionUnwrapper interface {
+	Unwrap() TransactionServicer
+}
+
+// baseTransactionService follows txSvc's TransactionUnwrapper chain to the
+// TransactionService under it, whose host and shard decide the lock token
+// gate. A decorated service must reach it: a lock served through a tenant's
+// or a database's wrapper would otherwise drop the fencing_token field while
+// an older replica still reads it (go-qrdb#1088).
+func baseTransactionService(txSvc TransactionServicer) (*TransactionService, bool) {
+	for {
+		switch tx := txSvc.(type) {
+		case *TransactionService:
+			return tx, tx != nil
+		case TransactionUnwrapper:
+			txSvc = tx.Unwrap()
+		default:
+			return nil, false
+		}
+	}
+}
+
+// lockTokenFieldRetired reports whether every replica of shardID's group
+// reads a lock's fencing token from the key's create revision
+// (featuregate.LockCreateRevisionToken), so the lock record may stop storing
+// the field an older binary reads. A host that gates nothing runs one binary.
+// lockWriteRetryable reports whether a lock-record write that failed with err
+// may land if it is sent again: a NotLeaderError refused it while the shard's
+// leadership moved, and an ErrOutcomeUnknown failure may or may not have
+// committed. Any other error is proven final. The lock package's writes are
+// compare-and-swaps, so a retry of one that did commit loses its compare and
+// writes nothing.
+func lockWriteRetryable(err error) bool {
+	if _, ok := errors.AsType[*NotLeaderError](err); ok {
+		return true
+	}
+	return errors.Is(err, ErrOutcomeUnknown)
+}
+
+func lockTokenFieldRetired(host Host, shardID uint64) bool {
+	gated, ok := host.(FeatureGatedHost)
+	return !ok || gated.FeatureEnabled(shardID, featuregate.LockCreateRevisionToken)
 }
 
 // Lock acquires a distributed lock, blocking until acquired or cancelled.

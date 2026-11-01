@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -107,6 +108,61 @@ func TestRefusal_vlog(t *testing.T) {
 // it carries no refusal a client would rebuild as one.
 func TestRefusal_userConcurrentUpdateUnderDataLossCarriesNone(t *testing.T) {
 	err := &user.IndexCompensationError{Op: "update", Cause: &user.ConcurrentUpdateError{ID: 9}}
+	if got := Classify(err); got != DataLoss {
+		t.Fatalf("Classify() = %v, want DataLoss", got)
+	}
+	if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+		t.Fatalf("Refusal() = %q, %v, %v; want none", reason, md, ok)
+	}
+}
+
+// TestRefusal_lockOutcomes pins that each typed lock outcome carries its
+// reason and metadata, so a remote client rebuilds it with its key, holder
+// and tokens rather than a bare status.
+func TestRefusal_lockOutcomes(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		reason string
+		decode func(map[string]string) error
+	}{
+		{
+			name:   "held",
+			err:    &lock.LockHeldError{Key: "k", HolderID: "h"},
+			reason: lock.ReasonLockHeld,
+			decode: func(md map[string]string) error { return lock.LockHeldFromMetadata(md) },
+		},
+		{
+			name:   "not holder",
+			err:    &lock.NotLockHolderError{Key: "k", ExpectedToken: 3, ActualToken: 4},
+			reason: lock.ReasonNotLockHolder,
+			decode: func(md map[string]string) error { return lock.NotLockHolderFromMetadata(md) },
+		},
+		{
+			name:   "not found",
+			err:    &lock.LockNotFoundError{Key: "k"},
+			reason: lock.ReasonLockNotFound,
+			decode: func(md map[string]string) error { return lock.LockNotFoundFromMetadata(md) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, md, ok := Refusal(&wrappedError{tt.err})
+			if !ok || reason != tt.reason {
+				t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, tt.reason)
+			}
+			if got := tt.decode(md); !reflect.DeepEqual(got, tt.err) {
+				t.Fatalf("metadata decodes to %+v, want %+v", got, tt.err)
+			}
+		})
+	}
+}
+
+// TestRefusal_lockOutcomeUnderAnotherClassCarriesNone pins that a lock
+// outcome wrapped by an error of another class is not sent as the lock
+// outcome: the client would rebuild the lock error and lose the real class.
+func TestRefusal_lockOutcomeUnderAnotherClassCarriesNone(t *testing.T) {
+	err := &user.IndexCompensationError{Op: "update", Cause: &lock.LockNotFoundError{Key: "k"}}
 	if got := Classify(err); got != DataLoss {
 		t.Fatalf("Classify() = %v, want DataLoss", got)
 	}

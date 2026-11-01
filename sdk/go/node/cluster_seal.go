@@ -82,6 +82,10 @@ func (n *Node) startClusterSeal(ctx context.Context, host *quicraft.Host, svcNod
 		return err
 	}
 	n.clusterSeal.Set(monitor)
-	go monitor.Run(n.background())
+	// The monitor reads the seal records through svcNode.KV and seals
+	// through the barriers, so it is node work Close waits for (bgWG) before
+	// stopping either: canceling its ctx alone leaves a poll in flight.
+	bgCtx := n.background()
+	n.bgWG.Go(func() { monitor.Run(bgCtx) })
 	return nil
 }

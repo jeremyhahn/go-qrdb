@@ -7,8 +7,9 @@ Command group: `qrdb backup` — create, list, get, verify, delete and restore
 backups. All verbs accept the root persistent flags documented in
 [../key-value/cli.md](../key-value/cli.md#global-flags).
 
-**Requires raft mode.** Shard backup and restore operate on shard snapshots; in
-standalone mode they refuse with `requires mode: raft`.
+**Requires raft mode.** Shard backup and restore operate on shard snapshots; a
+standalone server runs without the backup service and refuses every verb (see
+[api.md](api.md) for the refusal on each transport).
 
 ## `qrdb backup create`
 
@@ -30,13 +31,8 @@ qrdb backup create --destination /backups/daily --encryption-key-file backup.key
 qrdb backup create --destination /backups/scratch --encryption none
 ```
 
-Creating with the default (or an explicit `aes256`) and no key reference is
-refused. Backing up specific shards is an API-level option (`shard_ids`) and
-has no CLI flag; the CLI captures all shards.
-
-The envelope mechanics — what the key reference names, how the DEK is
-wrapped, hardware/cloud-KMS providers — are [../key-wrapping/](../key-wrapping/architecture.md)'s
-own scope; this document covers only that a key reference is required.
+Backing up specific shards is an API-level option (`shard_ids`) and has no CLI
+flag; the CLI captures all shards.
 
 The response carries the backup `id` and its `checksum` — record both.
 
@@ -101,8 +97,7 @@ authenticated and decrypted first, and a failure anywhere imports nothing.
 The result reports how many shards were restored and lists **per-shard
 errors** only for an OPERATIONAL import failure after every shard has
 already passed verification (the underlying store refused a particular
-shard) — a narrower case than a cryptographic one, named precisely rather
-than collapsed into the top-level refusal above.
+shard). A restore with per-shard errors prints them and exits non-zero.
 
 ## `qrdb backup delete <id>`
 

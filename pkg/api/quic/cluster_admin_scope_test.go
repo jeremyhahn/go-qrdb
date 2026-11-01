@@ -62,35 +62,43 @@ func TestClusterAdminScope(t *testing.T) {
 		})},
 		// Replica state hashes cover every tenant's replicas on the node.
 		{"admin.GetStateHashes", marshal(&pb.GetStateHashesRequest{})},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{"admin.StartShard", marshal(&pb.StartShardRequest{ShardId: 7, ReplicaId: 1})},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
-	for _, op := range ops {
-		for _, c := range authtest.ClusterAdminCallers(t) {
-			t.Run(op.method+"/"+c.Name, func(t *testing.T) {
-				caller := authtest.NewFixedAuthenticator(c.Identity)
-				admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
-				serverCfg, clientCfg := generateCredentialE2ETLS(t)
-				serverCfg.ClientAuth = tls.RequireAnyClientCert
-				clientCfg.Certificates = serverCfg.Certificates
-				srv := NewServer(nil, admin, "127.0.0.1:0", WithTLS(serverCfg),
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
-				if err := srv.Start(); err != nil {
-					t.Fatalf("start server: %v", err)
-				}
-				t.Cleanup(srv.Stop)
+	// One server per caller serves every op: the property is the caller's
+	// scope, not the server's, and a TLS server per op made the test 27
+	// server starts and stops where 3 suffice.
+	for _, c := range authtest.ClusterAdminCallers(t) {
+		t.Run(c.Name, func(t *testing.T) {
+			caller := authtest.NewFixedAuthenticator(c.Identity)
+			admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
+			serverCfg, clientCfg := generateCredentialE2ETLS(t)
+			serverCfg.ClientAuth = tls.RequireAnyClientCert
+			clientCfg.Certificates = serverCfg.Certificates
+			srv := NewServer(nil, admin, "127.0.0.1:0", WithTLS(serverCfg),
+				WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
+			if err := srv.Start(); err != nil {
+				t.Fatalf("start server: %v", err)
+			}
+			t.Cleanup(srv.Stop)
 
-				status, _ := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, op.method, op.payload)
-				want, calls := uint16(wire.StatusPermissionDenied), int64(0)
-				if c.Admitted {
-					want, calls = wire.StatusOK, 1
-				}
-				if status != want {
-					t.Fatalf("status = %s, want %s", wire.StatusName(status), wire.StatusName(want))
-				}
-				if got := admin.ClusterChanges(); got != calls {
-					t.Fatalf("admin calls = %d, want %d", got, calls)
-				}
-			})
-		}
+			for _, op := range ops {
+				t.Run(op.method, func(t *testing.T) {
+					before := admin.ClusterChanges()
+					status, _ := credentialE2ERoundTrip(t, srv.Addr(), clientCfg, op.method, op.payload)
+					want, calls := uint16(wire.StatusPermissionDenied), int64(0)
+					if c.Admitted {
+						want, calls = wire.StatusOK, 1
+					}
+					if status != want {
+						t.Fatalf("status = %s, want %s", wire.StatusName(status), wire.StatusName(want))
+					}
+					if got := admin.ClusterChanges() - before; got != calls {
+						t.Fatalf("admin calls = %d, want %d", got, calls)
+					}
+				})
+			}
+		})
 	}
 }

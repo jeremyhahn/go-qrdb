@@ -314,8 +314,8 @@ func (s *Server) handleRevokeCert(ctx context.Context, payload []byte) ([]byte, 
 }
 
 // handleListCerts unmarshals a JSON list certs request, retrieves all
-// issued certificate records for the specified tenant, and returns a
-// serialized JSON response.
+// issued certificate records for the specified tenant (an empty tenant means
+// the caller's own), and returns a serialized JSON response.
 func (s *Server) handleListCerts(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.certProv == nil {
 		return nil, &ServiceNotConfiguredError{Service: "cert"}
@@ -326,11 +326,16 @@ func (s *Server) handleListCerts(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.authorizeCertTenant(ctx, req.TenantID, permission.CertsList); err != nil {
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = tenant.CallerTenant(ctx)
+	}
+
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {
 		return nil, err
 	}
 
-	records, err := s.certProv.ListCerts(ctx, req.TenantID)
+	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}

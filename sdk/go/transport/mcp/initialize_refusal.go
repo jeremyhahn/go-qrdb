@@ -39,6 +39,9 @@ const maxRefusalBodyBytes = 64 << 10
 var refusalCodeByStatus = map[int]wire.Code{
 	http.StatusUnauthorized: wire.CodeUnauthenticated,
 	http.StatusForbidden:    wire.CodePermissionDenied,
+	// The pre-authentication client-address limiter (go-qrdb#1197)
+	// refuses before the JSON-RPC layer runs, so its 429 is an HTTP status.
+	http.StatusTooManyRequests: wire.CodeResourceExhausted,
 }
 
 // initializeRefusalCapture keeps the auth chain's refusal of a request sent

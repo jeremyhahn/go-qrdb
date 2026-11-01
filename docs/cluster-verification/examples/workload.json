@@ -1,0 +1,15 @@
+{
+  "endpoints": ["db1.example.com:63004", "db2.example.com:63004", "db3.example.com:63004"],
+  "protocol": "quic",
+  "credentials": {
+    "ca_file": "<install-dir>/clusterproof/ca.pem",
+    "cert_file": "<install-dir>/clusterproof/admin.pem",
+    "key_file": "<install-dir>/clusterproof/admin-key.pem"
+  },
+  "clients": 12,
+  "keys": 64,
+  "mix": {"put": 40, "get": 40, "delete": 5, "cas": 15},
+  "op_timeout": "5s",
+  "redial_backoff": "100ms",
+  "max_backoff": "2s"
+}

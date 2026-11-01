@@ -18,6 +18,8 @@ import (
 	"encoding/binary"
 	"math"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -33,16 +35,38 @@ const (
 	DistanceCosine     DistanceMetric = 0
 	DistanceEuclidean  DistanceMetric = 1
 	DistanceDotProduct DistanceMetric = 2
+	DistanceManhattan  DistanceMetric = 3
 )
+
+// distanceMetrics is the set of DistanceMetric values this package recognises.
+var distanceMetrics = map[DistanceMetric]struct{}{
+	DistanceCosine:     {},
+	DistanceEuclidean:  {},
+	DistanceDotProduct: {},
+	DistanceManhattan:  {},
+}
 
 // ValidDistanceMetric reports whether m is one this package recognises.
 func ValidDistanceMetric(m DistanceMetric) bool {
-	switch m {
-	case DistanceCosine, DistanceEuclidean, DistanceDotProduct:
-		return true
-	default:
-		return false
-	}
+	_, ok := distanceMetrics[m]
+	return ok
+}
+
+// metricFeatures maps each DistanceMetric value added after the vector
+// engine's first release to the cluster feature that admits it. A binary from
+// before the value refuses it as unknown while its up-to-date peers accept
+// it, so a record carrying it is proposed only once every replica of the
+// group advertises the feature.
+var metricFeatures = map[DistanceMetric]feature.Feature{
+	DistanceManhattan: featuregate.VectorManhattan,
+}
+
+// MetricFeature returns the cluster feature every replica of a group must
+// support before a namespace record carrying m is proposed to it, and false
+// for a metric every vector-engine binary applies.
+func MetricFeature(m DistanceMetric) (feature.Feature, bool) {
+	f, ok := metricFeatures[m]
+	return f, ok
 }
 
 // IndexType names the ANN index structure a namespace maintains. It is
@@ -57,14 +81,17 @@ const (
 	IndexIVFFlat IndexType = 2
 )
 
+// indexTypes is the set of IndexType values this package recognises.
+var indexTypes = map[IndexType]struct{}{
+	IndexHNSW:    {},
+	IndexFlat:    {},
+	IndexIVFFlat: {},
+}
+
 // ValidIndexType reports whether t is one this package recognises.
 func ValidIndexType(t IndexType) bool {
-	switch t {
-	case IndexHNSW, IndexFlat, IndexIVFFlat:
-		return true
-	default:
-		return false
-	}
+	_, ok := indexTypes[t]
+	return ok
 }
 
 // recordFormatVersion is the first byte of every encoded NamespaceRecord and

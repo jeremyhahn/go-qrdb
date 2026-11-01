@@ -29,6 +29,10 @@ var (
 	// CPU fallback factory was provided.
 	ErrNoFallbackFactory = errors.New("no CPU fallback factory provided")
 
+	// ErrInvalidDimension is returned when a GPU index is requested without a
+	// positive vector dimension.
+	ErrInvalidDimension = errors.New("GPU index requires a positive vector dimension")
+
 	// ErrDeviceNotFound indicates the requested GPU device does not exist.
 	ErrDeviceNotFound = errors.New("GPU device not found")
 

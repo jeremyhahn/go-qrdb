@@ -198,7 +198,7 @@ func pollUntil(t *testing.T, check func() bool) {
 // documented no-op when WithWatchService was never called.
 func TestDefaultCertProvider_WatchForDeletions_NilWatchServiceIsNoOp(t *testing.T) {
 	p, _, _ := newTestProvider()
-	if err := p.WatchForDeletions(context.Background()); err != nil {
+	if _, err := p.WatchForDeletions(context.Background()); err != nil {
 		t.Fatalf("WatchForDeletions with no watch service = %v, want nil", err)
 	}
 }
@@ -213,7 +213,7 @@ func TestDefaultCertProvider_WatchForDeletions_EvictsOnMaterialDelete(t *testing
 	p, kvStore, _ := newTestProvider(WithWatchService(ws))
 	ctx := context.Background()
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	certCAWatcher := ws.watcherFor(t, prefixCertCA)
@@ -283,7 +283,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneEvictsAndInvalidates(t *
 		mu.Unlock()
 	})
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
@@ -318,7 +318,7 @@ func TestDefaultCertProvider_WatchForDeletions_UndoneTombstoneEvicts(t *testing.
 	ws := newFakeWatchService()
 	p, _, _ := newTestProvider(WithWatchService(ws))
 	ctx := context.Background()
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
@@ -356,7 +356,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneInvalidatesFactoryTenant
 	var invalidated atomicBool
 	p.OnInvalidate(func() { invalidated.set(true) })
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
@@ -396,7 +396,7 @@ func TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys(t *testing.T
 	if _, err := generateForTest(ctx, p, &testRequest{Username: "carol", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	certCAWatcher := ws.watcherFor(t, prefixCertCA)
@@ -413,6 +413,42 @@ func TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys(t *testing.T
 	p.mu.RUnlock()
 	if !stillCached {
 		t.Error("an unrelated record under the cert_ca prefix evicted acme's cache entry")
+	}
+}
+
+// TestDefaultCertProvider_WatchForDeletions_DoneClosesOnceBothWatchersReturn
+// proves done reports the watchers' lifetime: it stays open while they run
+// and closes once ctx's cancellation has ended both, so a caller can wait for
+// them before closing what they read through.
+func TestDefaultCertProvider_WatchForDeletions_DoneClosesOnceBothWatchersReturn(t *testing.T) {
+	ws := newFakeWatchService()
+	p, _, _ := newTestProvider(WithWatchService(ws))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done, err := p.WatchForDeletions(ctx)
+	if err != nil {
+		t.Fatalf("WatchForDeletions: %v", err)
+	}
+	if done == nil {
+		t.Fatal("WatchForDeletions with a watch service returned a nil done")
+	}
+	select {
+	case <-done:
+		t.Fatal("done closed while the watchers' ctx was live")
+	default:
+	}
+	cancel()
+	<-done
+}
+
+// TestDefaultCertProvider_WatchForDeletions_NoWatchServiceHasNilDone proves
+// a provider without a watch service starts nothing, so there is nothing for
+// a caller to wait on.
+func TestDefaultCertProvider_WatchForDeletions_NoWatchServiceHasNilDone(t *testing.T) {
+	p, _, _ := newTestProvider()
+	done, err := p.WatchForDeletions(context.Background())
+	if err != nil || done != nil {
+		t.Fatalf("WatchForDeletions without a watch service = (%v, %v), want (nil, nil)", done, err)
 	}
 }
 
@@ -434,7 +470,7 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishesClosedWatch(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "dave", TenantID: "acme"}); err != nil {
@@ -498,7 +534,7 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishBackoffGrowsAndCaps(t 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	firstWatcher := ws.watcherFor(t, prefixCertCA)
@@ -558,7 +594,7 @@ func TestDefaultCertProvider_WatchForDeletions_ReestablishmentInvalidatesEveryth
 	var invalidated int32
 	p.OnInvalidate(func() { atomic.AddInt32(&invalidated, 1) })
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "erin", TenantID: "initech"}); err != nil {
@@ -596,7 +632,7 @@ func TestDefaultCertProvider_WatchForDeletions_CertCAWatchFails(t *testing.T) {
 	ws.failNext = 1
 	p, _, _ := newTestProvider(WithWatchService(ws))
 
-	err := p.WatchForDeletions(context.Background())
+	_, err := p.WatchForDeletions(context.Background())
 	if err == nil {
 		t.Fatal("WatchForDeletions = nil, want an error when the cert_ca watcher fails to establish")
 	}
@@ -618,7 +654,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneWatchFails(t *testing.T)
 	ws.failPrefix = tenant.TombstonePrefix
 	p, _, _ := newTestProvider(WithWatchService(ws))
 
-	err := p.WatchForDeletions(context.Background())
+	_, err := p.WatchForDeletions(context.Background())
 	if err == nil {
 		t.Fatal("WatchForDeletions = nil, want an error when the tombstone watcher fails to establish")
 	}
@@ -764,7 +800,7 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeCertCADeletes_IgnoresNonMa
 	if _, err := generateForTest(ctx, p, &testRequest{Username: "frank", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	certCAWatcher := ws.watcherFor(t, prefixCertCA)
@@ -810,7 +846,7 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeTombstonePuts_IgnoresNonMa
 	if _, err := generateForTest(ctx, p, &testRequest{Username: "grace", TenantID: "acme"}); err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	tombstoneWatcher := ws.watcherFor(t, tenant.TombstonePrefix)
@@ -855,7 +891,7 @@ func TestDefaultCertProvider_WatchForDeletions_TombstoneWatchReestablishesClosed
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if err := p.WatchForDeletions(ctx); err != nil {
+	if _, err := p.WatchForDeletions(ctx); err != nil {
 		t.Fatalf("WatchForDeletions: %v", err)
 	}
 	if _, err := generateForTest(context.Background(), p, &testRequest{Username: "henry", TenantID: "acme"}); err != nil {

@@ -54,7 +54,10 @@ Creates a pending account in your own tenant -- or, given only `--username`,
 re-invites one still pending -- and returns a single-use enrolment token
 **exactly once**. Deliver it to the invited user out of band; they redeem it
 themselves with `qrdb enroll`. You never hold a credential for their
-account.
+account. A re-invite supersedes every token issued for the account before
+it: only the newest token redeems, and an earlier one is refused exactly as a
+spent token is. If two re-invites of one account race, one of them fails with
+an aborted error; run it again.
 
 ```bash
 qrdb users invite --username alice --email alice@acme.com --roles "$OPERATOR_ROLE_ID"
@@ -377,6 +380,7 @@ custom roles alone.
 | Flag | Meaning |
 |---|---|
 | `--tenant` | Tenant to reconcile. Defaults to the caller's own tenant. |
+| `--all-tenants` | Reconcile every live tenant in one pass, the system tenant first. Platform operator only; cannot be combined with `--tenant`. |
 
 ```bash
 qrdb roles reconcile --tenant acme
@@ -406,6 +410,41 @@ the tenant's own Admin reconciles the tenant without taking another role.
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
 how you know to run it.
+
+#### `--all-tenants`
+
+After an upgrade that renamed or added a permission, the platform operator
+converges every tenant at once instead of asking each tenant's Admin:
+
+```bash
+qrdb roles reconcile --all-tenants
+```
+
+```
+Tenant system: built-in roles already current
+Tenant acme:
+  admin (5aee453e-…) updated
+    + certs:issue
+    - certs:generate
+Tenant vault: skipped (sealed): tenant barrier is sealed
+Tenant broken: FAILED: role store unavailable
+```
+
+Each tenant is reconciled independently. A tenant whose barrier is sealed, or
+that refuses the call, is listed as skipped and left for a later run. A tenant
+that fails is listed with its error and does not stop the pass; the command
+then exits non-zero naming every failed tenant. `--output json` and
+`--output yaml` print the same report as `tenants`, `skipped` and `failed`
+lists.
+
+Requires `roles:reconcile_all`, a cross-tenant permission held only by the
+system tenant's built-in Admin. A tenant's own Admin, or any other tenant
+principal, is refused even if it holds `roles:create`.
+
+A node upgraded from a build that predates `roles:reconcile_all` has a stored
+system Admin role without it. Run `qrdb roles reconcile` as the system Admin
+first; that converges the system tenant and grants the permission. Then run
+`--all-tenants`.
 
 ## ABAC policies
 

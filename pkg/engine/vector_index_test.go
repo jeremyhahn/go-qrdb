@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/vector"
@@ -343,14 +344,14 @@ func TestMVCCEngine_VectorIndex_NilWhenUnconfiguredNonNilWhenConfigured(t *testi
 	}
 }
 
-// TestVectorIndexManager_Search_UntrainedIVFTranslatesToWarmingError proves
+// TestVectorIndexManager_Search_UntrainedIVFIsAFailedPrecondition proves
 // VectorIndexManager.Search's own ErrIndexNotReady branch: an IVF namespace
 // is marked vectorIndexReady as soon as its NamespaceCreate effect applies
 // (newIVFLiveIndex never errors), but its underlying ivfLiveIndex has not
-// reached its training floor yet, so Search must still translate that into
-// the retryable service.VectorIndexWarmingError rather than a bare,
-// untyped error.
-func TestVectorIndexManager_Search_UntrainedIVFTranslatesToWarmingError(t *testing.T) {
+// reached its training floor yet. Search answers the typed
+// service.VectorIndexUntrainedError, which only more writes clear, not the
+// retryable warming error, which time clears.
+func TestVectorIndexManager_Search_UntrainedIVFIsAFailedPrecondition(t *testing.T) {
 	m := NewVectorIndexManager("", nil)
 	m.ApplyEffects([]vector.IndexEffect{
 		{Op: vector.IndexEffectNamespaceCreate, Namespace: "ns", Record: vector.NamespaceRecord{
@@ -358,9 +359,41 @@ func TestVectorIndexManager_Search_UntrainedIVFTranslatesToWarmingError(t *testi
 			IndexParams: map[string]string{"num_centroids": "8"},
 		}},
 	})
-	if _, err := m.Search("ns", []float32{1}, 1); err == nil {
-		t.Fatal("Search on an untrained IVF namespace = nil error, want VectorIndexWarmingError")
-	} else if _, ok := err.(*service.VectorIndexWarmingError); !ok {
-		t.Fatalf("Search error = %T, want *service.VectorIndexWarmingError", err)
+	_, err := m.Search("ns", []float32{1}, 1)
+	untrained, ok := err.(*service.VectorIndexUntrainedError)
+	if !ok {
+		t.Fatalf("Search error = %T (%v), want *service.VectorIndexUntrainedError", err, err)
+	}
+	if untrained.Namespace != "ns" {
+		t.Errorf("VectorIndexUntrainedError.Namespace = %q, want %q", untrained.Namespace, "ns")
+	}
+	if got := errclass.Classify(err); got != errclass.FailedPrecondition {
+		t.Errorf("Classify(untrained) = %v, want FailedPrecondition", got)
+	}
+}
+
+// TestVectorIndexManager_Search_TrainedIVFAnswers proves the untrained
+// refusal lifts once the namespace reaches its training floor.
+func TestVectorIndexManager_Search_TrainedIVFAnswers(t *testing.T) {
+	m := NewVectorIndexManager("", nil)
+	effects := []vector.IndexEffect{
+		{Op: vector.IndexEffectNamespaceCreate, Namespace: "ns", Record: vector.NamespaceRecord{
+			Dimension: 2, DistanceMetric: vector.DistanceEuclidean, IndexType: vector.IndexIVFFlat,
+			IndexParams: map[string]string{"num_centroids": "2"},
+		}},
+		{Op: vector.IndexEffectUpsert, Namespace: "ns", ID: 1, Embedding: []float32{0, 0}},
+		{Op: vector.IndexEffectUpsert, Namespace: "ns", ID: 2, Embedding: []float32{10, 10}},
+	}
+	m.ApplyEffects(effects[:2])
+	if _, err := m.Search("ns", []float32{0, 0}, 1); err == nil {
+		t.Fatal("Search below the training floor = nil error, want *service.VectorIndexUntrainedError")
+	}
+	m.ApplyEffects(effects[2:])
+	hits, err := m.Search("ns", []float32{0, 0}, 1)
+	if err != nil {
+		t.Fatalf("Search after training = %v", err)
+	}
+	if len(hits) != 1 || hits[0].ID != 1 {
+		t.Errorf("Search after training = %+v, want ID 1", hits)
 	}
 }

@@ -1,6 +1,6 @@
 # Certificate Authority — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Every caller authenticates with a client certificate. This is where they come
@@ -73,8 +73,8 @@ issuer is EITHER the cluster's own CA or the specific tenant's CA named in
 the certificate's OU (or SPIFFE SAN) — never a different tenant's CA, even
 though every tenant's CA is trusted on the same connection. A certificate
 tenant A's CA signed, but whose Subject claims tenant B, is refused. This
-cannot happen through `qrdb ca issue` (which always signs with the named
-tenant's own CA); it can only happen by hand-crafting a certificate, or by a
+cannot happen through `qrdb ca issue` (which always signs with your own
+tenant's CA); it can only happen by hand-crafting a certificate, or by a
 tenant's CA itself being rotated in a way that no longer matches what was
 issued.
 
@@ -100,10 +100,11 @@ certificate on its account:
 qrdb ca enroll --username alice --cert alice.pem --chain issuing-ca.pem
 ```
 
-**See what has been issued.**
+**See what has been issued.** The list is your own tenant's certificates. It
+is the only tenant you can list, so there is no tenant to name:
 
 ```bash
-qrdb ca list --tenant-id acme --output json
+qrdb ca list --output json
 ```
 
 **Revoke one.** The certificate stops authenticating against this system within
@@ -196,8 +197,7 @@ Until then, short TTLs are the mitigation.
 
 **`qrdb ca info` and `qrdb ca bundle` returned a list of certificates.** They
 are aliases for `list`. CA-only metadata and a CA+chain bundle export are not
-exposed through the SDK — the verbs exist to keep the canonical tree
-complete. The help text says this too.
+exposed through the SDK.
 
 **`qrdb certs` is an unknown command.** The CA command group is `qrdb ca`.
 The REST paths are `/certs/...`.

@@ -15,6 +15,7 @@
 package ratelimit
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,10 +24,13 @@ import (
 )
 
 // defaultIdleTTL is how long a per-key bucket may sit unused before the
-// reaper reclaims it. Ten minutes comfortably outlasts any Policy's refill
-// window this package expects to enforce (sub-second to low-minutes rates),
-// so a caller that pauses and resumes never sees state it did not itself
-// build up, while a caller that stops entirely does not hold memory forever.
+// reaper reclaims it, provided it has also refilled to its burst: a bucket
+// is never reclaimed before its policy's refill window (Burst /
+// RatePerSecond) has passed, because a fresh bucket at full burst would
+// then grant its key tokens early. A bucket's memory is therefore held for
+// the longer of idleTTL and that window after its last use, plus one sweep
+// interval; a caller that stops entirely does not hold memory forever
+// unless its policy never refills.
 const defaultIdleTTL = 10 * time.Minute
 
 // defaultSweepInterval is how often the reaper scans for idle buckets.
@@ -45,6 +49,11 @@ type bucketState struct {
 	tokens     float64
 	lastRefill int64 // UnixNano
 	lastAccess int64 // UnixNano; read only by the reaper
+	// fullAt is when the bucket will have refilled to its burst (UnixNano,
+	// math.MaxInt64 when that lies beyond int64), read only by the reaper:
+	// reclaiming a bucket before then would hand its key a fresh full
+	// bucket early, so it is kept until then however long idleTTL is.
+	fullAt int64
 }
 
 // TokenBucketLimiter is a lock-free, per-key token-bucket Limiter. Each
@@ -75,7 +84,8 @@ type TokenBucketLimiter struct {
 type TokenBucketOption func(*TokenBucketLimiter)
 
 // WithIdleTTL overrides how long an unused bucket is kept before the
-// background reaper reclaims it. Non-positive values are ignored (the
+// background reaper reclaims it; a bucket still refilling is kept past it
+// until it is full (see defaultIdleTTL). Non-positive values are ignored (the
 // default applies) rather than disabling the reaper -- a Limiter that never
 // reclaims memory is not a configuration this package offers, because every
 // production embedder of it serves long-lived, ever-growing caller sets.
@@ -181,9 +191,23 @@ func take(cur *bucketState, nowNano int64, policy Policy) (next *bucketState, al
 	if tokens < 1 {
 		deficit := 1 - tokens
 		wait := time.Duration(deficit / policy.RatePerSecond * float64(time.Second))
-		return &bucketState{tokens: tokens, lastRefill: nowNano, lastAccess: nowNano}, false, wait
+		return &bucketState{tokens: tokens, lastRefill: nowNano, lastAccess: nowNano, fullAt: fullAt(tokens, nowNano, policy)}, false, wait
 	}
-	return &bucketState{tokens: tokens - 1, lastRefill: nowNano, lastAccess: nowNano}, true, 0
+	tokens--
+	return &bucketState{tokens: tokens, lastRefill: nowNano, lastAccess: nowNano, fullAt: fullAt(tokens, nowNano, policy)}, true, 0
+}
+
+// fullAt returns when a bucket holding tokens at nowNano will have refilled
+// to policy's burst, saturating at math.MaxInt64 for a refill too slow for
+// int64 nanoseconds to express (a rate as low as validation admits).
+func fullAt(tokens float64, nowNano int64, policy Policy) int64 {
+	refill := (float64(policy.Burst) - tokens) / policy.RatePerSecond * float64(time.Second)
+	// Below 2^62 the conversion is exact enough to compare in integers,
+	// where the bound is exact.
+	if refill >= 1<<62 || int64(refill) > math.MaxInt64-nowNano {
+		return math.MaxInt64
+	}
+	return nowNano + int64(refill)
 }
 
 // Close stops the background reaper. Safe to call more than once; only the
@@ -217,7 +241,9 @@ func (l *TokenBucketLimiter) reap() {
 	}
 }
 
-// sweep performs one reaper pass.
+// sweep performs one reaper pass. It reclaims a bucket untouched for
+// idleTTL that has also refilled to its burst, so reclaiming it is
+// indistinguishable from keeping it.
 //
 // A bucket concurrently touched by Allow at the exact instant sweep reads it
 // stale can be deleted just after that Allow call committed its own state --
@@ -228,7 +254,8 @@ func (l *TokenBucketLimiter) reap() {
 // package doc), so trading a vanishingly rare extra token for a sweep with
 // no locking against Allow is the right side of that trade to fail open on.
 func (l *TokenBucketLimiter) sweep() {
-	deadline := l.clock().Add(-l.idleTTL).UnixNano()
+	now := l.clock()
+	nowNano, deadline := now.UnixNano(), now.Add(-l.idleTTL).UnixNano()
 	l.buckets.Range(func(key, value any) bool {
 		slot, ok := value.(*atomic.Pointer[bucketState])
 		if !ok {
@@ -238,7 +265,7 @@ func (l *TokenBucketLimiter) sweep() {
 			panic("ratelimit: bucket slot has unexpected type")
 		}
 		cur := slot.Load()
-		if cur != nil && cur.lastAccess < deadline {
+		if cur != nil && cur.lastAccess < deadline && cur.fullAt <= nowNano {
 			l.buckets.Delete(key)
 		}
 		return true

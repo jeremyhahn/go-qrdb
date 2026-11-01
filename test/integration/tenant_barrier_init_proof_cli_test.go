@@ -31,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	resttransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
@@ -161,6 +162,15 @@ func TestTenantBarrierInit_SingleMemberRaft_Passphrase_CLI_PerProtocol(t *testin
 	}
 }
 
+// tenantBarrierInitRequestBound bounds one request of a non-Shamir tenant
+// barrier init. The server answers init/complete only once the tenant's first
+// admin is usable (tenant.AdminCompletionWithin), retrying the completion for
+// up to bootstrap.DefaultAdminCompletionBudget, which qrdbd does not
+// override; the handler has no bound of its own. The request is given that
+// budget plus the 15s it had for the init's own proposals; the whole call
+// adds another 15s for Connect and init/begin.
+const tenantBarrierInitRequestBound = bootstrap.DefaultAdminCompletionBudget + 15*time.Second
+
 // initTenantBarrierAsFirstAdmin initializes tenantID's barrier with the none
 // strategy over the REST listener at baseURL, as the first admin whose
 // onboarded certificate and key are certPEM/keyPEM. It goes through the SDK,
@@ -184,7 +194,7 @@ func initTenantBarrierAsFirstAdmin(t *testing.T, baseURL, caPath string, certPEM
 	tr, err := resttransport.New(
 		transport.WithAddress(baseURL),
 		transport.WithMTLS(certPath, keyPath, caPath),
-		transport.WithTimeout(15*time.Second),
+		transport.WithTimeout(tenantBarrierInitRequestBound),
 	)
 	if err != nil {
 		t.Fatalf("REST transport: %v", err)
@@ -195,7 +205,7 @@ func initTenantBarrierAsFirstAdmin(t *testing.T, baseURL, caPath string, certPEM
 	}
 	defer client.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), tenantBarrierInitRequestBound+15*time.Second)
 	defer cancel()
 	if err := client.Connect(ctx); err != nil {
 		t.Fatalf("connect as the first admin: %v", err)

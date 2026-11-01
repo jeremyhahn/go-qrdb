@@ -42,12 +42,20 @@ type quotaTransactionService struct {
 }
 
 // Compile-time interface check.
-var _ service.TransactionServicer = (*quotaTransactionService)(nil)
+var (
+	_ service.TransactionServicer  = (*quotaTransactionService)(nil)
+	_ service.TransactionUnwrapper = (*quotaTransactionService)(nil)
+)
 
 // newQuotaTransactionService wraps inner with storage-byte quota enforcement for
 // the given tenant and limit (MaxStorageBytes).
 func newQuotaTransactionService(inner service.TransactionServicer, acct *quota.Accountant, tenantID string, limit int64) *quotaTransactionService {
 	return &quotaTransactionService{inner: inner, acct: acct, tenantID: tenantID, limit: limit}
+}
+
+// Unwrap returns the transaction service the quota decorates.
+func (s *quotaTransactionService) Unwrap() service.TransactionServicer {
+	return s.inner
 }
 
 // reserve admits n bytes against the tenant's quota.

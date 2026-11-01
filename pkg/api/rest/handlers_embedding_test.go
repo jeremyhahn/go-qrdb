@@ -460,3 +460,13 @@ func TestMapEmbeddingHTTPError(t *testing.T) {
 		})
 	}
 }
+
+// TestServerOption_WithEmbedding is the only check that WithEmbedding wires
+// the service: the handler tests above build a Server literal.
+func TestServerOption_WithEmbedding(t *testing.T) {
+	embSvc := &mockEmbeddingService{}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithEmbedding(embSvc))
+	if s.embeddingSvc != embSvc {
+		t.Error("embeddingSvc not set")
+	}
+}

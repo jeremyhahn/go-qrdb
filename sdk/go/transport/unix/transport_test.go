@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
@@ -30,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -537,6 +539,34 @@ func TestConnect_UnauthenticatedIsTheTypedRefusal(t *testing.T) {
 	}
 	if tr.Healthy(context.Background()) {
 		t.Error("Healthy = true for a refused caller, want false")
+	}
+}
+
+// TestConnect_RateLimitedIsTheTypedRefusal pins that a ResourceExhausted
+// health answer -- the client-address limiter's refusal (go-qrdb#1197) -- is
+// Connect's typed result, not "health check failed".
+func TestConnect_RateLimitedIsTheTypedRefusal(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = &clientlimit.RateLimitedError{Client: "127.0.0.1", RetryAfter: 30 * time.Second}
+	socketPath, stopSrv := startUnixTestServer(t, newMockKVService(), adminSvc)
+	defer stopSrv()
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	err = tr.Connect(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(codes.ResourceExhausted) {
+		t.Fatalf("Connect error = %T %v, want a RequestError carrying ResourceExhausted", err, err)
+	}
+	if reqErr.RetryAfter != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", reqErr.RetryAfter)
+	}
+	var connErr *transport.ConnectionError
+	if errors.As(err, &connErr) {
+		t.Errorf("Connect error = %v, want the server's refusal, not a connection failure", err)
 	}
 }
 

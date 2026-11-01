@@ -398,3 +398,37 @@ func sameStrings(a, b []string) bool {
 	slices.Sort(b)
 	return slices.Equal(a, b)
 }
+
+// TestIndex_CLI_MaxIndexesRefusesPastTheCap starts qrdbd with
+// index.max_indexes 1, fills the one slot with `qrdb index create` over REST,
+// and proves every transport then refuses a further create with the
+// index-limit error. Dropping the held index frees its slot, so a create
+// after the drop succeeds.
+func TestIndex_CLI_MaxIndexesRefusesPastTheCap(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", "index:\n  max_indexes: 1\n")
+
+	holderProto := multiProtocol{name: "rest", scheme: "https"}
+	if out, err := runCLIProto(t, node, holderProto, "index", "create", "idxcap-held", "--field", "held"); err != nil {
+		t.Fatalf("[rest] index create idxcap-held under max_indexes 1: %v\noutput: %s", err, out)
+	}
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			name := "idxcap-refused-" + proto.name
+			out, err := runCLIProto(t, node, proto, "index", "create", name, "--field", "refused")
+			if err == nil || !strings.Contains(strings.ToLower(out), "index limit reached") {
+				t.Fatalf("[%s] index create %s past max_indexes 1: err = %v, output = %q, want a non-zero exit with the index-limit refusal",
+					proto.name, name, err, out)
+			}
+		})
+	}
+
+	if out, err := runCLIProto(t, node, holderProto, "index", "drop", "idxcap-held"); err != nil {
+		t.Fatalf("[rest] index drop idxcap-held: %v\noutput: %s", err, out)
+	}
+	if out, err := runCLIProto(t, node, holderProto, "index", "create", "idxcap-next", "--field", "next"); err != nil {
+		t.Fatalf("[rest] index create after the held index was dropped: %v\noutput: %s", err, out)
+	}
+}

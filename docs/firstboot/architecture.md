@@ -1,6 +1,6 @@
 # Firstboot and System Bootstrap — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 Firstboot is the **admin bootstrap**: system tenant, built-in roles, the
@@ -37,20 +37,16 @@ sanctioned invitation seam, and it applies to tenant admins only.
 
 ## Admin credential paths
 
-**This section describes `firstboot.Initialize`'s own general-purpose
-resolution — the seam a composer uses when it drives first boot directly**
-(`Node.FirstBoot`, or `sdk.FirstBootInitialize`/`sdk.CertProvider`/
-`sdk.CertSigner`, all re-exports of this package per `sdk/go/types_firstboot.go`),
-**supplying its own `CA`/`Signer` so first boot issues the admin's
-certificate itself.** This is LIVE and part of the exported SDK composition
-API precisely for that caller — go-xkms's own CA adapter is the documented
-implementation of both interfaces. It is NOT how go-qrdb's own compositions
-work: `qrdbd`, `sdk/go/node`'s `Node.FirstBootWithCeremony`, and the embedded
-composition never populate `CA` or `Signer` — they resolve the admin's
-certificate through the ceremony instead and always land on Path C below,
-fed the ceremony's own output rather than an externally-supplied CA. See
-"How go-qrdb's own compositions wire the three paths" further down for that
-path.
+**This section describes `firstboot.Initialize`'s own resolution: the seam a
+composer uses when it drives first boot directly** (`Node.FirstBoot`, or the
+re-exports `sdk.FirstBootInitialize`, `sdk.CertProvider` and `sdk.CertSigner`
+in `sdk/go/types_firstboot.go`) **and supplies its own `CA`/`Signer`, so first
+boot issues the admin's certificate itself.** go-xkms's CA adapter implements
+both interfaces. go-qrdb's own compositions (`qrdbd`, `sdk/go/node`'s
+`Node.FirstBootWithCeremony`, the embedded composition) never set `CA` or
+`Signer`: they resolve the admin's certificate through the ceremony and always
+land on Path C, fed the ceremony's output. See "How go-qrdb's own compositions
+wire the three paths" below.
 
 `firstboot.Initialize` binds the admin's SPKI thumbprint by one of three
 mutually-exclusive paths, selected by which `Dependencies` inputs it receives:
@@ -129,9 +125,7 @@ admin-credential reissue).
 - **Treating a missing `AdminCertPool` as "trust anything".** Rejected:
   `MissingAdminCertPoolError`.
 - **Choosing between a CSR and a presented certificate on the operator's
-  behalf.** Rejected: `ConflictingAdminCertInputsError`. Signing the CSR would
-  leave the presented certificate unbound; adopting the certificate would
-  silently discard the CSR. Neither is choosable for them.
+  behalf.** Rejected: `ConflictingAdminCertInputsError` (see Refusals).
 - **Non-deterministic role IDs.** Rejected: each built-in role gets a fixed
   UUIDv8 (SHA-256) derived from its name, so role identity is stable across
   clusters.
@@ -265,7 +259,8 @@ re-permission and delete refuse them), persisted at `__sys:roles/id/<id>`,
 each with a fixed ID from `role.SystemRoleID(tenantID, name)` (UUIDv8 over
 SHA-256): `so`, `admin`, `operator`, `user`, `auditor`, plus `owner` unless
 `SeparationOfDuties` is set. Each role's permissions are
-`permission.RolePermissions(<role>)`. An `admin` user for the system tenant
+`permission.RolePermissions(<role>)`, except `owner`, whose set
+`role.OwnerRole` builds. An `admin` user for the system tenant
 is created alongside, bound to the `admin` role, once and idempotently.
 
 The full permission matrix and the FIPS 140-3 AS10.03 separation-of-duties
@@ -419,7 +414,7 @@ constraints are in [../identity-rbac/](../identity-rbac/) and
   way: `pkg/bootstrap`'s `seedTenantRoles` (`ProvisionTenant`'s
   tenant-scoped seeding, which can race another `ProvisionTenant` call for
   the same new tenant) calls `firstboot.BuiltInRoleAlreadySeededWithin`
-  itself, and `role.ReconcileBuiltInRoles`'s `seedMissingRole` (the
+  itself, and `pkg/role`'s `ReconcileBuiltInRoles` (`seedMissingRole`, the
   tenant-scoped seeder `CreateTenant` triggers, which can race first boot
   for the same tenant's built-ins) waits for an exact match on either
   collision in the role store. The tenant seeder's role store

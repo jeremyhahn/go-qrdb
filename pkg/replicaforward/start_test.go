@@ -42,7 +42,7 @@ func TestStart_TheLocatorsCacheFollowsTheWatches(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	l := Start(ctx, f, f, "a:1", nil)
+	l, done := Start(ctx, f, f, "a:1", nil)
 
 	refusal := &placement.NotAReplicaError{TenantID: "acme", Database: "orders", ShardID: 9, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{{ReplicaID: 2, RaftAddr: "b:1"}}}
@@ -57,4 +57,21 @@ func TestStart_TheLocatorsCacheFollowsTheWatches(t *testing.T) {
 	}
 	f.placements <- placement.Event{Type: placement.EventPut, TenantID: "acme", Database: "orders"}
 	eventually(t, func() bool { _, ok := l.Cache().Get(9); return !ok }, "the placement watch did not reach the Locator's cache")
+	cancel()
+	<-done
+}
+
+// TestStart_DoneClosesOnceTheWatchesReturn: done stays open while ctx is live
+// and closes once ctx's end has returned both watches.
+func TestStart_DoneClosesOnceTheWatchesReturn(t *testing.T) {
+	f := &listedFeeds{feeds: &feeds{placements: make(chan placement.Event), members: make(chan cluster.MemberEvent)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	_, done := Start(ctx, f, f, "a:1", nil)
+	select {
+	case <-done:
+		t.Fatal("done closed while ctx was live")
+	default:
+	}
+	cancel()
+	<-done
 }

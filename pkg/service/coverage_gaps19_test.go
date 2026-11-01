@@ -21,8 +21,6 @@ import (
 	"errors"
 	"testing"
 
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 )
 
@@ -245,24 +243,3 @@ func TestUserAuthFactorService_Add_LookupKeyFails_Verified(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // rebalance_service.go – line 447 (GetImbalanceReport storage stat fail)
-func TestRebalanceService_GetImbalanceReport_ShardStatFail(t *testing.T) {
-	host := &mockHost{
-		getShardRaftStateFn: func(shardID uint64) (uint64, uint64, error) {
-			return 0, 0, errors.New("shard state unavailable")
-		},
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{
-				ShardInfoList: []quicraft.ShardInfo{
-					{ShardID: 1, IsLeader: true},
-				},
-			}
-		},
-		getLeaderIDFn: func(shardID uint64) (uint64, bool, error) {
-			return 1, true, nil
-		},
-	}
-	svc := NewRebalanceService(host)
-	_, err := svc.GetImbalanceReport(context.Background())
-	// The shard stat error should be handled gracefully (continue or error).
-	_ = err
-}

@@ -34,6 +34,21 @@ func TestClusterAdminPermissions_AreCrossScope(t *testing.T) {
 	}
 }
 
+// TestAdminRole_HoldsStartShardOnly pins the Admin role's shard lifecycle
+// grants (#1281): a cluster administrator starts shards as it adds members
+// and drains nodes, so the role carries admin:start_shard; it carries no
+// other shard lifecycle or topology permission.
+func TestAdminRole_HoldsStartShardOnly(t *testing.T) {
+	if !HasRoleGrant(RoleAdmin, AdminStartShard) {
+		t.Errorf("Admin role lacks %s", AdminStartShard)
+	}
+	for _, p := range []Permission{AdminStopShard, AdminShardState, AdminTopology} {
+		if HasRoleGrant(RoleAdmin, p) {
+			t.Errorf("Admin role holds %s, want it withheld", p)
+		}
+	}
+}
+
 // TestClusterAdminPermissions_TenantReadsStaySelf pins the admin reads a
 // tenant-facing feature needs: health, status and capabilities, and
 // admin:peers, which backs the etcd listener's Cluster.MemberList and is

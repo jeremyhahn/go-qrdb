@@ -53,6 +53,9 @@ func (n *Node) replicaForwardingOption(cfg *qrdbconfig.Config, standalone bool, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	locator := replicaforward.Start(n.background(), client.NewMembershipStore(), placements, cfg.Raft.RaftAddress, logger)
+	// The watches read through the host's membership and placement stores, so
+	// Close waits for them on bgWG before it closes the host.
+	locator, done := replicaforward.Start(n.background(), client.NewMembershipStore(), placements, cfg.Raft.RaftAddress, logger)
+	n.bgWG.Go(func() { <-done })
 	return server.WithReplicaForwarding(locator, timeout), nil
 }

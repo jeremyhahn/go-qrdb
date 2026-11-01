@@ -317,8 +317,9 @@ func TestEncFile_FlushFullBlockWrongLength(t *testing.T) {
 	enc.tail = make([]byte, BlockSize-1)
 	enc.logicalSize = int64(BlockSize - 1)
 	gotErr := enc.flushFullBlockLocked()
-	if gotErr == nil {
-		t.Error("expected error for mis-sized tail")
+	var sizeErr *FlushBlockSizeError
+	if !errors.As(gotErr, &sizeErr) || sizeErr.Expected != BlockSize || sizeErr.Got != BlockSize-1 {
+		t.Errorf("flushFullBlockLocked err = %v, want *FlushBlockSizeError{%d, %d}", gotErr, BlockSize, BlockSize-1)
 	}
 }
 
