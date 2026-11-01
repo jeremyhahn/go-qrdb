@@ -596,6 +596,23 @@ func TestNode_Unseal_NoSeal_IsNoop(t *testing.T) {
 	require.NoError(t, n.Close())
 }
 
+// TestNodeUnseal_InitializeRefusalIsTyped: a fresh barrier that refuses its
+// first key leaves the node sealed and reports why as an UnsealError.
+func TestNodeUnseal_InitializeRefusalIsTyped(t *testing.T) {
+	barrier, closeBarrier := newTestBarrier(t)
+	defer closeBarrier()
+	n := &Node{}
+	n.barrier.Store(barrier)
+
+	var unsealErr *UnsealError
+	if err := n.Unseal(context.Background(), seal.Credentials{}); !errors.As(err, &unsealErr) || unsealErr.Err == nil {
+		t.Fatalf("Unseal with empty credentials = %v; want an UnsealError carrying the refusal", err)
+	}
+	if !barrier.IsSealed() {
+		t.Fatal("a refused Unseal left the barrier unsealed")
+	}
+}
+
 // TestIsSealed_NilBarrier verifies IsSealed returns false when no barrier is set.
 func TestIsSealed_NilBarrier(t *testing.T) {
 	n := &Node{}

@@ -89,6 +89,24 @@ func TestNodeServiceRegistry_ResolvesThroughServer(t *testing.T) {
 	}
 }
 
+// plainRegistry is a database registry that cannot refuse streams: it does
+// not implement service.StreamRefuser.
+type plainRegistry struct{ service.Registry }
+
+// TestNodeServiceRegistry_StreamRefusalWithoutARefuser: a registry with no
+// stream-refusal capability refuses nothing.
+func TestNodeServiceRegistry_StreamRefusalWithoutARefuser(t *testing.T) {
+	srv := server.New(&config.Config{}, nil, nil)
+	n := &Node{}
+	n.srv.Store(srv)
+	r := &nodeServiceRegistry{node: n}
+	r.cached.Store(&registryForServer{srv: srv, reg: plainRegistry{}})
+
+	if err := r.StreamRefusal("t1", "db1"); err != nil {
+		t.Fatalf("StreamRefusal = %v; want nil from a registry that cannot refuse", err)
+	}
+}
+
 // The default database cannot be dropped through the embedded client, with
 // the same typed refusal every network transport returns.
 func TestNode_EmbeddedDropOfTheDefaultDatabaseIsRefused(t *testing.T) {

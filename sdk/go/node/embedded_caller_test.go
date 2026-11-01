@@ -15,6 +15,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,10 +24,14 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -123,5 +128,35 @@ func TestEmbeddedForwarding_NothingWithoutAServer(t *testing.T) {
 	f := &nodeReplicaForwarder{node: n}
 	if _, _, ok := f.Forward(context.Background(), nil, "kv.Put", "orders", nil, &placement.NotAReplicaError{}); ok {
 		t.Fatal("forwarded with no server")
+	}
+}
+
+// TestNodeReplicaForwarder_StoppedServerDoesNotForward: once the server has
+// stopped, its forwarder reports so, and an embedded call is answered locally
+// (ok=false) with the refusal logged rather than forwarded.
+func TestNodeReplicaForwarder_StoppedServerDoesNotForward(t *testing.T) {
+	locator := replicaforward.NewLocator(nil, replicaforward.NewLeaderCache(), "a:1", nil)
+	ca := replicaforwardtest.NewCA(t)
+	srv := server.New(&qrdbconfig.Config{}, nil, nil,
+		server.WithTLS(ca.TLS(t, "node-a")), server.WithCACertPool(ca.Pool), server.WithReplicaForwarding(locator, time.Second))
+	srv.Stop()
+
+	var logs bytes.Buffer
+	n := &Node{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	n.srv.Store(srv)
+	f := &nodeReplicaForwarder{node: n}
+	ctx := context.Background()
+
+	refusal := &placement.NotAReplicaError{TenantID: "t1", Database: "db1"}
+	if status, body, ok := f.Forward(ctx, &auth.Identity{}, "Get", "db1", nil, refusal); ok || status != 0 || body != nil {
+		t.Fatalf("Forward on a stopped server = %d, %q, %v; want not forwarded", status, body, ok)
+	}
+	if status, body, ok := f.ForwardToLeader(ctx, &auth.Identity{}, "Get", "db1", nil, "b:2"); ok || status != 0 || body != nil {
+		t.Fatalf("ForwardToLeader on a stopped server = %d, %q, %v; want not forwarded", status, body, ok)
+	}
+	for _, want := range []string{"embedded call not forwarded", "tenant=t1", "leader_raft_addr=b:2"} {
+		if !bytes.Contains(logs.Bytes(), []byte(want)) {
+			t.Errorf("log lacks %q:\n%s", want, logs.String())
+		}
 	}
 }

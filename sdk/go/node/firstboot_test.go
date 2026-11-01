@@ -267,3 +267,50 @@ func TestNodeFirstBoot_PinsTheWiredTrustDomain(t *testing.T) {
 	err = boot("example.com")
 	assert.False(t, errors.As(err, &tenantErr), "the pinned domain must pass the tenant rule: err = %v", err)
 }
+
+// lateRecordStore models a pending admin credential that lands after first
+// boot resolved there was none: the first read finds nothing, later reads
+// find the record, and the store refuses every write.
+type lateRecordStore struct {
+	reads, puts atomic.Int32
+}
+
+var _ firstboot.PendingAdminCertStore = (*lateRecordStore)(nil)
+
+func (s *lateRecordStore) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, errors.New("store is read-only")
+}
+
+func (s *lateRecordStore) Get(context.Context, string) ([]byte, error) {
+	if s.reads.Add(1) == 1 {
+		return nil, nil
+	}
+	return []byte("-----BEGIN CERTIFICATE-----"), nil
+}
+
+func (s *lateRecordStore) Put(context.Context, string, []byte) error {
+	s.puts.Add(1)
+	return errors.New("store is read-only")
+}
+
+func (s *lateRecordStore) Delete(context.Context, string) error {
+	return errors.New("store is read-only")
+}
+
+// TestNodeFirstBootWithCeremony_ClearFailureIsNotFatal: the binding already
+// stands, so failing to mark the pending record consumed is logged and the
+// first boot still succeeds.
+func TestNodeFirstBootWithCeremony_ClearFailureIsNotFatal(t *testing.T) {
+	users, roles := realStores(t)
+	store := &lateRecordStore{}
+	n := &Node{}
+	n.bindingPolicy.Store(int32(auth.MTLSBindingEnrolled))
+
+	result, err := n.FirstBootWithCeremony(context.Background(), store, nil, 0, fbDeps(users, roles))
+	if err != nil || result == nil {
+		t.Fatalf("FirstBootWithCeremony = %v, %v; want a result despite the clear failure", result, err)
+	}
+	if store.puts.Load() == 0 {
+		t.Fatal("the clear never tried to mark the late record consumed")
+	}
+}

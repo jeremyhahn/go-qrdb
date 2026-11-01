@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -145,4 +146,12 @@ func TestSealedWindowConfig(t *testing.T) {
 	defer func() { require.NoError(t, n2.Close()) }()
 	require.True(t, n2.IsSealed())
 	assert.Same(t, cfg, n2.sealedWindowConfig(), "sealed standalone node must expose its pending boot config")
+}
+
+func TestSealedWindowConfig_ClusteredBoot(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	n := &Node{pendingClustered: &pendingClusteredBoot{cfg: cfg}}
+	if got := n.sealedWindowConfig(); got != cfg {
+		t.Fatalf("sealedWindowConfig = %p; want the pending clustered boot's config %p", got, cfg)
+	}
 }
