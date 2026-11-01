@@ -518,6 +518,25 @@ func TestLoad_InvalidYAML(t *testing.T) {
 	}
 }
 
+// TestLoad_InvalidYAMLUnmarshal: well-formed YAML whose value does not fit
+// the field's type passes the strict-key check and fails in the decode
+// step, which must still return a *LoadError naming the file.
+func TestLoad_InvalidYAMLUnmarshal(t *testing.T) {
+	// admin_port expects int; providing a nested map triggers an unmarshal error.
+	path := writeTemp(t, "server:\n  admin_port:\n    key: value\n")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for type-mismatched YAML, got nil")
+	}
+	var le *LoadError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LoadError, got %T: %v", err, err)
+	}
+	if le.Path != path {
+		t.Errorf("LoadError.Path: got %q, want %q", le.Path, path)
+	}
+}
+
 func TestLoad_ValidationFailure(t *testing.T) {
 	// YAML is syntactically valid but shard_id=0 fails validation.
 	bad := `
