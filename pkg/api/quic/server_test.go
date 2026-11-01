@@ -441,6 +441,25 @@ func TestServer_Start_NoTLS_ErrorsAs(t *testing.T) {
 	}
 }
 
+// TestServer_Start_InvalidAddress verifies that Start returns a *StartError
+// when ListenAddr cannot bind the address. The port is out of range, so the
+// address fails to resolve without a DNS lookup.
+func TestServer_Start_InvalidAddress(t *testing.T) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:65536", WithTLS(tlsCfg))
+
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+		t.Fatal("expected error when binding invalid address")
+	}
+
+	var se *StartError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *StartError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Handler map categories test
 // ---------------------------------------------------------------------------
