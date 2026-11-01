@@ -26,13 +26,28 @@ import (
 // key.
 var errInjectedFault = errors.New("credentials test: injected storage fault")
 
-// faultBackend is an in-memory seal.StorageBackend whose Put and Delete fail
-// for the one key suffix they are armed with, so a test can fail a single
-// step of a multi-key barrier operation while every other step succeeds.
+// faultBackend is an in-memory seal.StorageBackend whose Put, Delete, List
+// and CompareAndSwap fail for the one key suffix they are armed with, so a
+// test can fail a single step of a multi-key barrier operation while every
+// other step succeeds. A CompareAndSwap on the loseCAS suffix also reports
+// a lost race, without writing, while casLosses is above zero.
 type faultBackend struct {
 	*seal.MemoryBackend
 	failPut    atomic.Pointer[string]
 	failDelete atomic.Pointer[string]
+	failList   atomic.Pointer[string]
+	failCAS    atomic.Pointer[string]
+	loseCAS    atomic.Pointer[string]
+	casLosses  atomic.Int32
+	// onDelete, when set before the operation under test, runs after each
+	// successful Delete with the deleted key.
+	onDelete func(key string)
+	// onPut, when set before the operation under test, runs after each
+	// successful Put with the written key.
+	onPut func(key string)
+	// onCAS, when set before the operation under test, runs before each
+	// CompareAndSwap that is not failed or lost, with its context and key.
+	onCAS func(ctx context.Context, key string)
 }
 
 var _ seal.StorageBackend = (*faultBackend)(nil)
@@ -42,7 +57,13 @@ func (f *faultBackend) Put(ctx context.Context, key string, data []byte) error {
 	if s := f.failPut.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return errInjectedFault
 	}
-	return f.MemoryBackend.Put(ctx, key, data)
+	if err := f.MemoryBackend.Put(ctx, key, data); err != nil {
+		return err
+	}
+	if f.onPut != nil {
+		f.onPut(key)
+	}
+	return nil
 }
 
 // Delete fails with errInjectedFault when key ends with the armed Delete
@@ -51,7 +72,46 @@ func (f *faultBackend) Delete(ctx context.Context, key string) error {
 	if s := f.failDelete.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return errInjectedFault
 	}
-	return f.MemoryBackend.Delete(ctx, key)
+	if err := f.MemoryBackend.Delete(ctx, key); err != nil {
+		return err
+	}
+	if f.onDelete != nil {
+		f.onDelete(key)
+	}
+	return nil
+}
+
+// List fails with errInjectedFault when prefix ends with the armed List
+// suffix.
+func (f *faultBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	if s := f.failList.Load(); s != nil && strings.HasSuffix(prefix, *s) {
+		return nil, errInjectedFault
+	}
+	return f.MemoryBackend.List(ctx, prefix)
+}
+
+// CompareAndSwap fails with errInjectedFault when key ends with the armed
+// CompareAndSwap suffix, and reports a lost race, without writing, when key
+// ends with the loseCAS suffix and a loss is still owed.
+func (f *faultBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if s := f.failCAS.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return false, errInjectedFault
+	}
+	if s := f.loseCAS.Load(); s != nil && strings.HasSuffix(key, *s) && f.casLosses.Add(-1) >= 0 {
+		return false, nil
+	}
+	if f.onCAS != nil {
+		f.onCAS(ctx, key)
+	}
+	return f.MemoryBackend.CompareAndSwap(ctx, key, expected, next)
+}
+
+// PutIfAbsent fails like CompareAndSwap: both are the conditional writes.
+func (f *faultBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if s := f.failCAS.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return false, errInjectedFault
+	}
+	return f.MemoryBackend.PutIfAbsent(ctx, key, data)
 }
 
 // newFaultBarrierService builds a barrier-strategy service over a
@@ -90,17 +150,18 @@ func arm(p *atomic.Pointer[string], suffix string) {
 func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
-		name   string
-		suffix string
-		op     string
+		name  string
+		fault func(*faultBackend)
+		op    string
 	}{
-		{name: "grace version", suffix: versionPrefix + "1", op: "write grace version"},
-		{name: "meta", suffix: metaSuffix, op: "write meta"},
+		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionPrefix+"1") }, op: "write grace version"},
+		// The metadata record is only ever written conditionally.
+		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaSuffix) }, op: "write meta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, backend := newFaultBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			arm(&backend.failPut, tc.suffix)
+			tc.fault(backend)
 
 			_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("v2"), GracePeriod: time.Hour})
 			requireOperationError(t, err, tc.op)

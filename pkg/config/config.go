@@ -1771,6 +1771,10 @@ type SealConfig struct {
 	// "manual" or "barrier". Default: "barrier".
 	CredentialStrategy string `yaml:"credential_strategy"`
 
+	// CredentialRotationCheckPeriod is how often each node runs the named
+	// credentials' due rotation policies. Go duration; default "1m".
+	CredentialRotationCheckPeriod string `yaml:"credential_rotation_check_period"`
+
 	// ClusterLease is how long a successful read of the cluster seal records
 	// lets this node serve; a node that cannot read them for longer stops
 	// serving, keeping its keys. Go duration; default "15s".
@@ -1803,6 +1807,17 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 		s = DefaultShareTTLString
 	}
 	return parseDuration(s)
+}
+
+// DefaultCredentialRotationCheckPeriodString is the default of
+// seal.credential_rotation_check_period.
+const DefaultCredentialRotationCheckPeriodString = "1m"
+
+// CredentialRotationCheckPeriodDuration parses
+// seal.credential_rotation_check_period, applying the default when unset.
+// A malformed or non-positive period is a *ValidationError.
+func (c SealConfig) CredentialRotationCheckPeriodDuration() (time.Duration, error) {
+	return positiveDuration("seal.credential_rotation_check_period", c.CredentialRotationCheckPeriod, DefaultCredentialRotationCheckPeriodString)
 }
 
 // validSealStrategies contains the accepted seal strategy strings.
@@ -1954,6 +1969,8 @@ func DefaultConfig() *Config {
 			RootKeyPath:        "__sys:seal/root_key",
 			ShareTTL:           DefaultShareTTLString,
 			CredentialStrategy: "barrier",
+
+			CredentialRotationCheckPeriod: DefaultCredentialRotationCheckPeriodString,
 		},
 		Bootstrap: BootstrapConfig{
 			NoisePort: 63006,
@@ -2591,6 +2608,9 @@ func (c *Config) Validate() error {
 			if _, ok := validCredentialStrategies[c.Seal.CredentialStrategy]; !ok {
 				return &ValidationError{Field: "seal.credential_strategy", Reason: "must be one of: manual, barrier"}
 			}
+		}
+		if _, err := c.Seal.CredentialRotationCheckPeriodDuration(); err != nil {
+			return err
 		}
 		if strings.TrimSpace(c.Seal.ShareTTL) != "" {
 			d, err := parseDuration(c.Seal.ShareTTL)

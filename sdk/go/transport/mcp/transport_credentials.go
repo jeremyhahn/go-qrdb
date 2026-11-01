@@ -139,6 +139,84 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 	return &resp, nil
 }
 
+// CredentialSetRotationPolicy sets a credential's scheduled rotation policy.
+func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transport.CredentialSetRotationPolicyRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: &nilRequestError{Method: "CredentialSetRotationPolicy"}}
+	}
+
+	if _, err := t.callTool(ctx, "qrdb_credential_set_rotation_policy", map[string]any{
+		"name":            req.Name,
+		"enabled":         req.Enabled,
+		"interval":        req.Interval,
+		"retain_versions": req.RetainVersions,
+	}); err != nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: err}
+	}
+	return nil
+}
+
+// CredentialRotationPolicy reads a credential's scheduled rotation policy.
+func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (*transport.CredentialRotationPolicyResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_credential_rotation_policy", map[string]any{
+		"name": name,
+	})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CredentialRotationPolicy", Err: err}
+	}
+
+	var resp transport.CredentialRotationPolicyResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CredentialRotationPolicy", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &resp, nil
+}
+
+// CredentialMigrationConflicts lists the credentials whose node-local copy
+// differs from the replicated record.
+func (t *Transport) CredentialMigrationConflicts(ctx context.Context) (*transport.CredentialMigrationConflictsResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_credential_migration_conflicts", map[string]any{})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CredentialMigrationConflicts", Err: err}
+	}
+
+	var resp transport.CredentialMigrationConflictsResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "CredentialMigrationConflicts", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return &resp, nil
+}
+
+// CredentialResolveMigrationConflict settles one migration conflict by
+// import or discard.
+func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req *transport.CredentialResolveMigrationConflictRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if req == nil {
+		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: &nilRequestError{Method: "CredentialResolveMigrationConflict"}}
+	}
+
+	if _, err := t.callTool(ctx, "qrdb_credential_resolve_migration_conflict", map[string]any{
+		"name":       req.Name,
+		"resolution": req.Resolution,
+	}); err != nil {
+		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: err}
+	}
+	return nil
+}
+
 // CredentialListVersions returns the version history (current + non-expired
 // grace) for a credential by calling the qrdb_credential_list_versions MCP
 // tool. Values are never returned by this call.

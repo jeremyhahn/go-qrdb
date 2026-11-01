@@ -2939,6 +2939,11 @@ func runStart(f *startFlags) (err error) {
 			}
 			if svcNode.Credential != nil {
 				serverOpts = append(serverOpts, server.WithCredentialService(svcNode.Credential))
+				period, perr := f.sealConfig.CredentialRotationCheckPeriodDuration()
+				if perr != nil {
+					return perr
+				}
+				serverOpts = append(serverOpts, server.WithCredentialRotationPeriod(period))
 			}
 			if svcNode.DEK != nil {
 				serverOpts = append(serverOpts, server.WithDEKService(svcNode.DEK))

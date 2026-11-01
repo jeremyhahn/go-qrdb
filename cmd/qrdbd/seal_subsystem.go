@@ -242,13 +242,17 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		return nil, &SealBarrierError{Err: sentinelErr}
 	}
 
-	// Build credential service for ceremony support.
+	// Build credential service for ceremony support. It has no store yet:
+	// lifecycle.BuildServices binds the system shard's replicated KV once it
+	// exists, so every node keeps the same records (docs/credentials/
+	// architecture.md, "Storage"), and until then it fails closed.
 	credStrategy := f.sealConfig.CredentialStrategy
 	if credStrategy == "" {
 		credStrategy = "barrier"
 	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, sealBarrier, slog.Default())
+		&credentials.Config{Strategy: credStrategy}, nil, slog.Default(),
+		credentials.WithLegacyStore(sealBarrier))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &CredentialServiceError{Err: credErr}

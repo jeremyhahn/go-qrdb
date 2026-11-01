@@ -696,3 +696,109 @@ func parseReapedCount(t *testing.T, proto multiProtocol, out string) int {
 	t.Fatalf("[%s] credential gc: output did not contain a 'reaped N' count: %s", proto.name, out)
 	return 0
 }
+
+// credentialRotationPolicyCLIJSON is `qrdb credential rotation-policy get
+// --output json`.
+type credentialRotationPolicyCLIJSON struct {
+	Enabled        bool   `json:"enabled"`
+	Interval       string `json:"interval"`
+	RetainVersions int    `json:"retain_versions"`
+}
+
+// TestCredential_CLI_Cluster_OneStore_PerProtocol is the property of
+// docs/credentials/architecture.md, "Storage": a cluster keeps one credential
+// store, on the system shard, so a credential, its rotation policy and its
+// version history written through one node are the same records read
+// through every other node.
+func TestCredential_CLI_Cluster_OneStore_PerProtocol(t *testing.T) {
+	t.Parallel()
+	nodes, _ := startMultiProtocolCluster(t, 0)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testCredentialOneStoreOverProtocol(t, nodes, proto)
+		})
+	}
+}
+
+func testCredentialOneStoreOverProtocol(t *testing.T, nodes [3]*multiProtoNode, proto multiProtocol) {
+	t.Helper()
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	name := fmt.Sprintf("ccl-%s-%d", proto.name, time.Now().UnixNano())
+
+	// --- a credential stored through A is read through B and C ------------
+	if out, err := runCLIProto(t, a, proto, "credential", "store", name, "--value", "cluster-value-1"); err != nil {
+		t.Fatalf("[%s] credential store on A: %v\noutput: %s", proto.name, err, out)
+	}
+	for label, node := range map[string]*multiProtoNode{"B": b, "C": c} {
+		out, err := runCLIProto(t, node, proto, "credential", "retrieve", name)
+		if err != nil {
+			t.Fatalf("[%s] credential retrieve on %s: %v\noutput: %s", proto.name, label, err, out)
+		}
+		if got := strings.TrimSpace(out); got != "cluster-value-1" {
+			t.Fatalf("[%s] credential retrieve on %s = %q, want %q", proto.name, label, got, "cluster-value-1")
+		}
+		out, err = runCLIProto(t, node, proto, "--output", "json", "credential", "list")
+		if err != nil {
+			t.Fatalf("[%s] credential list on %s: %v\noutput: %s", proto.name, label, err, out)
+		}
+		var names []string
+		if jerr := json.Unmarshal([]byte(out), &names); jerr != nil {
+			t.Fatalf("[%s] decode credential list JSON on %s: %v\noutput: %s", proto.name, label, jerr, out)
+		}
+		if !stringSliceContains(names, name) {
+			t.Fatalf("[%s] credential list on %s = %v, want to contain %q", proto.name, label, names, name)
+		}
+	}
+
+	// --- a rotation policy set through A is the policy B reads -------------
+	if out, err := runCLIProto(t, a, proto, "credential", "rotation-policy", "set", name,
+		"--enabled", "--interval", "720h", "--retain-versions", "3"); err != nil {
+		t.Fatalf("[%s] rotation-policy set on A: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err := runCLIProto(t, b, proto, "--output", "json", "credential", "rotation-policy", "get", name)
+	if err != nil {
+		t.Fatalf("[%s] rotation-policy get on B: %v\noutput: %s", proto.name, err, out)
+	}
+	var policy credentialRotationPolicyCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &policy); jerr != nil {
+		t.Fatalf("[%s] decode rotation-policy JSON on B: %v\noutput: %s", proto.name, jerr, out)
+	}
+	interval, perr := time.ParseDuration(policy.Interval)
+	if !policy.Enabled || perr != nil || interval != 720*time.Hour || policy.RetainVersions != 3 {
+		t.Fatalf("[%s] rotation-policy on B = %+v, want enabled interval=720h retain_versions=3", proto.name, policy)
+	}
+
+	// --- a rotation through B is the version history A and C read ----------
+	if out, err := runCLIProto(t, b, proto, "credential", "rotate", name,
+		"--value", "cluster-value-2", "--grace-period", "120"); err != nil {
+		t.Fatalf("[%s] credential rotate on B: %v\noutput: %s", proto.name, err, out)
+	}
+	out, err = runCLIProto(t, a, proto, "--output", "json", "credential", "versions", name)
+	if err != nil {
+		t.Fatalf("[%s] credential versions on A: %v\noutput: %s", proto.name, err, out)
+	}
+	var versions credentialVersionsCLIJSON
+	if jerr := json.Unmarshal([]byte(out), &versions); jerr != nil {
+		t.Fatalf("[%s] decode credential versions JSON on A: %v\noutput: %s", proto.name, jerr, out)
+	}
+	v2, ok := findCredentialVersion(versions.Versions, 2)
+	if len(versions.Versions) != 2 || !ok || !v2.IsCurrent {
+		t.Fatalf("[%s] credential versions on A = %+v, want v1 in grace and v2 current", proto.name, versions)
+	}
+	out, err = runCLIProto(t, c, proto, "credential", "retrieve", name)
+	if err != nil {
+		t.Fatalf("[%s] credential retrieve on C after rotate: %v\noutput: %s", proto.name, err, out)
+	}
+	if got := strings.TrimSpace(out); got != "cluster-value-2" {
+		t.Fatalf("[%s] credential retrieve on C after rotate = %q, want %q", proto.name, got, "cluster-value-2")
+	}
+
+	// --- a delete through C is gone on A -----------------------------------
+	if out, err := runCLIProto(t, c, proto, "credential", "delete", name); err != nil {
+		t.Fatalf("[%s] credential delete on C: %v\noutput: %s", proto.name, err, out)
+	}
+	if out, err := runCLIProto(t, a, proto, "credential", "retrieve", name); err == nil {
+		t.Fatalf("[%s] credential retrieve on A after delete on C should fail, got: %s", proto.name, out)
+	}
+}

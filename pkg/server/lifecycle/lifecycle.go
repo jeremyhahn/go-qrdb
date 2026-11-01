@@ -1627,6 +1627,15 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
+		// One credential store per cluster (docs/credentials/architecture.md,
+		// "Storage"): the barrier strategy's records live on the system
+		// shard's replicated KV, and its conditional writes are Raft
+		// transactions, so a policy, claim or version written on one node is
+		// the same record on every node.
+		credStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
+		if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+			return err
+		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)

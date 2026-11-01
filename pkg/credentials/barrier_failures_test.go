@@ -62,7 +62,7 @@ func TestBarrier_CorruptMetaFailsEveryVersionedOperation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := newBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			require.NoError(t, svc.barrier.Put(ctx, metaKey("k"), []byte("not json")))
+			require.NoError(t, svc.store.Put(ctx, metaKey("k"), []byte("not json")))
 
 			requireOperationError(t, op(svc), "decode meta")
 
@@ -113,7 +113,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			require.NoError(t, svc.barrier.Seal())
+			require.NoError(t, barrierOf(t, svc).Seal())
 
 			err := tc.run(svc)
 			requireOperationError(t, err, tc.op)
@@ -130,7 +130,7 @@ func TestBarrier_SealedStoreIsRefused(t *testing.T) {
 	svc := newBarrierService(t)
 	logger := &fakeAuditLogger{}
 	svc.SetAuditLogger(logger)
-	require.NoError(t, svc.barrier.Seal())
+	require.NoError(t, barrierOf(t, svc).Seal())
 
 	err := svc.StoreCredential(ctx, "k", []byte("v1"))
 	assert.ErrorIs(t, err, seal.ErrSealed)

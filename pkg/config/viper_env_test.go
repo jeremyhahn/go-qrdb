@@ -15,9 +15,11 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // writeMinimalConfig writes a minimal valid YAML config and returns its path.
@@ -127,6 +129,47 @@ func TestSealShareTTL_InvalidRejected(t *testing.T) {
 	_, err := Load(writeMinimalConfig(t, "seal:\n  enabled: true\n  strategy: passphrase\n  share_ttl: not-a-duration\n"))
 	if err == nil {
 		t.Fatal("expected validation error for invalid seal.share_ttl")
+	}
+}
+
+// TestSealCredentialRotationCheckPeriod_DefaultAndOverride verifies that
+// seal.credential_rotation_check_period defaults to one minute and that a
+// file value overrides it.
+func TestSealCredentialRotationCheckPeriod_DefaultAndOverride(t *testing.T) {
+	cfg, err := Load(writeMinimalConfig(t, "logging:\n  level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d, err := cfg.Seal.CredentialRotationCheckPeriodDuration()
+	if err != nil {
+		t.Fatalf("CredentialRotationCheckPeriodDuration: %v", err)
+	}
+	if d != time.Minute {
+		t.Errorf("default credential_rotation_check_period = %s, want 1m0s", d)
+	}
+
+	cfg, err = Load(writeMinimalConfig(t, "seal:\n  credential_rotation_check_period: 10s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	d, err = cfg.Seal.CredentialRotationCheckPeriodDuration()
+	if err != nil {
+		t.Fatalf("CredentialRotationCheckPeriodDuration: %v", err)
+	}
+	if d != 10*time.Second {
+		t.Errorf("file credential_rotation_check_period = %s, want 10s", d)
+	}
+}
+
+// TestSealCredentialRotationCheckPeriod_InvalidRejected verifies that a
+// malformed or non-positive period is a *ValidationError naming the field.
+func TestSealCredentialRotationCheckPeriod_InvalidRejected(t *testing.T) {
+	for _, period := range []string{"not-a-duration", "0s", "-1m"} {
+		_, err := Load(writeMinimalConfig(t, "seal:\n  enabled: true\n  strategy: passphrase\n  credential_rotation_check_period: "+period+"\n"))
+		var verr *ValidationError
+		if !errors.As(err, &verr) || verr.Field != "seal.credential_rotation_check_period" {
+			t.Fatalf("period %q: err = %v, want a ValidationError on seal.credential_rotation_check_period", period, err)
+		}
 	}
 }
 

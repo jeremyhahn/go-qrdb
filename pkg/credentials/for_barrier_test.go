@@ -15,6 +15,7 @@
 package credentials
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,7 +29,7 @@ func TestForBarrier_SharesAuditLogger(t *testing.T) {
 	barrier := newTestBarrier(t)
 	t.Cleanup(func() { _ = barrier.Close() })
 
-	derived, err := parent.ForBarrier(barrier)
+	derived, err := parent.ForBarrier(context.Background(), barrier)
 	require.NoError(t, err)
 	require.NotSame(t, parent, derived)
 	assert.Equal(t, StrategyBarrier, derived.Strategy())
@@ -47,7 +48,7 @@ func TestForBarrier_IsolatedFromParent(t *testing.T) {
 	barrier := newTestBarrier(t)
 	t.Cleanup(func() { _ = barrier.Close() })
 
-	derived, err := parent.ForBarrier(barrier)
+	derived, err := parent.ForBarrier(context.Background(), barrier)
 	require.NoError(t, err)
 	ctx := auditCtx()
 	require.NoError(t, derived.StoreCredential(ctx, "tenant-only", []byte("secret")))
@@ -69,7 +70,7 @@ func TestForBarrier_IsolatedFromParent(t *testing.T) {
 func TestForBarrier_NilBarrier(t *testing.T) {
 	parent, _ := newAuditManualService(t)
 
-	derived, err := parent.ForBarrier(nil)
+	derived, err := parent.ForBarrier(context.Background(), nil)
 	require.ErrorIs(t, err, ErrNilBarrier)
 	assert.Nil(t, derived)
 }

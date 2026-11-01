@@ -3582,8 +3582,13 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	if credStrategy == "" {
 		credStrategy = credentials.StrategyBarrier
 	}
+	// No store yet: lifecycle.BuildServices binds the system shard's
+	// replicated KV once it exists, so every node keeps the same records
+	// (docs/credentials/architecture.md, "Storage"); until then it fails
+	// closed.
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, barrier, log)
+		&credentials.Config{Strategy: credStrategy}, nil, log,
+		credentials.WithLegacyStore(barrier))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}

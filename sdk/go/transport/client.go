@@ -1097,6 +1097,24 @@ type CredentialClient interface {
 	// for a grace period.
 	CredentialRotate(ctx context.Context, req *CredentialRotateRequest) (*CredentialRotateResponse, error)
 
+	// CredentialSetRotationPolicy sets a credential's scheduled rotation
+	// policy. The server refuses an invalid policy as an invalid argument.
+	CredentialSetRotationPolicy(ctx context.Context, req *CredentialSetRotationPolicyRequest) error
+
+	// CredentialRotationPolicy returns a credential's scheduled rotation
+	// policy and the time of its next scheduled rotation.
+	CredentialRotationPolicy(ctx context.Context, name string) (*CredentialRotationPolicyResponse, error)
+
+	// CredentialMigrationConflicts lists the credentials whose node-local
+	// copy in the old credentials/ layout differs from the replicated
+	// record, sorted by name. No value is returned.
+	CredentialMigrationConflicts(ctx context.Context) (*CredentialMigrationConflictsResponse, error)
+
+	// CredentialResolveMigrationConflict settles one migration conflict by
+	// import or discard. A name with no conflict is a not-found error; any
+	// other resolution is an invalid argument.
+	CredentialResolveMigrationConflict(ctx context.Context, req *CredentialResolveMigrationConflictRequest) error
+
 	// CredentialRetrieveVersionBuffer returns the stored credential value
 	// for a specific version in protected memory. Use version == 0 for the
 	// current version. The caller owns the returned buffer and MUST Destroy

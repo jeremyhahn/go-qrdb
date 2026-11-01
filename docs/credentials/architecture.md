@@ -1,6 +1,6 @@
 # Credentials and Secret Resolution — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-01
 > Conflicts with this document are defects. Fix them here first.
 
 Named credentials with versioned rotation, plus the SPI that resolves
@@ -21,15 +21,117 @@ One interface, one service, **two strategies**
 | Strategy | Description |
 |----------|-------------|
 | `manual` | Credentials held in-memory inside **go-enclave sealed enclaves** (`secure.Secret`) — never as raw, garbage-collected heap bytes. Retrieval blocks until an operator submits the credential (used during ceremony for non-resident secrets). A read opens the enclave straight into a fresh `*secure.Buffer`; a delete, and a rotation with no grace period, destroy the backing enclave. |
-| `barrier` | Credentials encrypted and stored via `seal.StorageBarrier` (encrypt-then-store on the at-rest storage backend) — the default. |
+| `barrier` | Credentials stored as system records on the system shard's replicated KV, encrypted at rest by every node's system barrier — the default. |
 
 A strategy that cannot enumerate its credentials returns
 `ErrEnumerationNotSupported` from `ListCredentials` rather than break the
 interface.
 
+## Storage: one replicated store on the system shard
+
+**A cluster has one credential store, not one per node.** The `barrier`
+strategy keeps every record (a credential's current value, its version
+history and its metadata record, which carries the rotation policy and the
+rotation claim) under the reserved `__sys:credentials/` prefix of the system
+shard's replicated KV. This follows the layered-stack rule: one cluster, one
+datastore, and system-level records replicated on the system shard. A policy,
+a claim or a version written on one node is the same record on every node,
+once Raft has committed it.
+
+**The key that protects it is the system barrier's, on every node.** The
+system shard's storage (its Raft log, state machine and KV) is encrypted at
+rest under each node's system barrier ([../barrier-seal/](../barrier-seal/),
+"Transparent at-rest encryption"), and Raft carries it between nodes over the
+mutually authenticated QUIC transport. So every unsealed node reads the same
+records, and no node can read them while it is sealed. No second key is
+layered over the records, and none is carried between nodes. This is the
+protection the system shard's other secret-bearing records already have, such
+as the DEK keyring of a prefix tenant ([../tenant-dek/](../tenant-dek/)).
+
+**The prefix is reached only through the credential verbs.** Every record
+under `__sys:credentials/` is a secret or governs one, so the embedded
+transport's KV, MVCC, batch, transaction and watch services confine the whole
+prefix, the way they confine a CA's private key material: a point read, write,
+compare or watch on any record under it is refused with
+`HardConfinedKeyError`, and a broader scan or watch has the records filtered
+out. Reading a value takes `credentials:retrieve` and is audited; the raw KV
+path would bypass both. The credential service's own store reaches the prefix
+through the node's KV service, not through those decorators.
+
+**Conditional writes are Raft transactions.** The store's `PutIfAbsent` and
+`CompareAndSwap` are single transactions on the system shard (a version-zero
+or value compare guarding one put), evaluated inside the state machine. Two
+nodes racing for the same record cannot both win, on any replica.
+
+**The store exists once the system shard does.** The credential service is
+built over the replicated KV after the node's KV host starts. A node that is
+still sealed, or whose KV host has not started, serves no credential call, and
+a node seal pauses the system shard, so every credential call on that node
+fails closed until it unseals.
+
+Rejected: **a store per node**, over the node-local seal store. A policy set on
+one node would be invisible on the others, and a claim taken on one node would
+not exclude another, so a cluster would rotate a credential once per node and
+the version histories would diverge. The node-local seal store holds per-node
+seal keys and nothing else.
+
 **PIN management is deliberately separate** — PINs live in `pkg/pin` because
 they need backend-native lockout semantics that credentials do not. See
 [../auth-factors/](../auth-factors/).
+
+## Prefix migration
+
+Before the store was replicated, the `barrier` strategy kept each node's
+records under the `credentials/` prefix of that node's own seal store, so a
+cluster could hold one copy of a credential per node. Each node moves its own
+copies into `__sys:credentials/` once, under these rules.
+
+**What moves.** Every record under the old prefix: a credential's current
+value, its retained versions and its metadata record (rotation policy and
+claim). The key layout under the prefix is unchanged; only the prefix moves.
+A `manual`-strategy node keeps no records and has nothing to move.
+
+**When it runs.** Once per node, when the credential service is bound to the
+replicated store after the system shard starts. A migration that cannot
+finish then, such as one whose node-local store is still sealed, leaves the
+service serving the replicated store, is logged, and runs again on the next
+conflict list or resolve call.
+
+**Who wins.** Per credential name, the first node to migrate wins: it writes a
+migration claim beside the replicated record (the digests of its value,
+versions and policy, never the value) with a conditional write, then writes
+its records, then deletes its old ones. A replicated record that already
+existed before any node migrated the name counts as first. A later node whose
+copy is byte-identical in value, versions and policy deletes its old records.
+A later node whose copy differs in any of the three keeps its old records
+untouched and reports a **migration conflict**: a warning in the log, a
+`migrate` audit event with outcome failure naming the differing fields, and an
+entry in the conflict list.
+
+**Idempotent after a crash.** A node that crashes part-way and runs again
+reaches the same result. The claim is written before the records and marked
+complete after them, so a rerun finishes the writes of an incomplete claim
+that is its own and keeps any record already present. Before deleting its old
+records a node writes a settled note under the old prefix and deletes the
+note last, so a rerun interrupted mid-deletion finishes the deletion instead
+of reading the remainder as a different copy.
+
+**Resolving a conflict.** An operator lists a node's conflicts (permission
+`credentials:list`) and settles each one (permission `credentials:rotate`)
+with one of two resolutions:
+
+- `import` writes the node's kept current value as a new version of the
+  replicated record, retaining the version it replaces, exactly as a rotation
+  does;
+- `discard` keeps the replicated record as it is.
+
+Either way the node's old records for that name are then deleted, and the
+resolution is audited with the old records it did not carry over (the kept
+version history, and the current value unless it was imported). Resolving a
+name that has no conflict on the node is `NotFound`; a resolution other than
+the two is `InvalidArgument`. Conflicts are per node: each node lists and
+resolves only the copies it kept. The verbs are listed per transport in
+[api.md](api.md) and the operator steps are in [user.md](user.md).
 
 ## Boundary: qrdb credentials (L2) vs quicbaas secrets/KMS (L4)
 
@@ -39,8 +141,8 @@ These are deliberately **not** the same thing and do **not** overlap:
 |---|---|---|
 | **Purpose** | Minimal, self-contained custody of the handful of **operational/boot secrets** the engine itself needs — chiefly the **ceremony `manual` strategy** (security officers submit non-resident secrets that block retrieval until provided). | Full **product secrets-management & KMS** for application/tenant secrets: rich key lifecycle, per-key authz, key-use audit, operator-settable rotation policy. |
 | **Layer** | Runs in **standalone qrdb** with no quicbaas present (xkms/quicbaas embed qrdb). | Built **on top of** qrdb's engine; absent in standalone qrdb. |
-| **Backing** | `manual` = in-memory go-enclave sealed enclave; `barrier` = qrdb seal `StorageBarrier` (encrypted-at-rest). | qrdb engine (KV/barrier) via the SDK, plus xkms hardware seal injection. |
-| **Scope** | A small set of named engine secrets + versioned rotation. | Arbitrary tenant/app secret trees, large scale. |
+| **Backing** | `manual` = in-memory go-enclave sealed enclave; `barrier` = system records on the system shard's replicated KV (encrypted at rest by the system barrier). | qrdb engine (KV/barrier) via the SDK, plus xkms hardware seal injection. |
+| **Scope** | A small set of named engine secrets + versioned rotation, optionally on a schedule. | Arbitrary tenant/app secret trees, large scale. |
 
 ### Alternatives rejected
 
@@ -49,8 +151,10 @@ These are deliberately **not** the same thing and do **not** overlap:
   composes *above* it with per-key authorization, key-use audit and
   operator-settable rotation policy. Two things, two layers.
 - **Storing credentials in the user KV store.** Rejected: **credentials never
-  live in the user KV store.** They are distinct from the KEK/DEK key custody
-  (the seal barrier) and from the Raft data plane.
+  live in the user KV store.** They are system records under the reserved
+  `__sys:` prefix of the system shard, which no user KV call reads, writes or
+  lists, and they are distinct from the KEK/DEK key custody (the seal
+  barrier).
 - **A `secrets`/`kms` package in qrdb.** Rejected: **`pkg/credentials` is
   the only secret-bearing store in qrdb.**
 - **Resolving secret references into plain strings.** Rejected — see the
@@ -88,8 +192,9 @@ the SPI.
   garbage-collected heap bytes. A read opens the enclave straight into a
   fresh `*secure.Buffer`; the enclave is destroyed on delete, and on a
   rotation with no grace period.
-- **`barrier` credentials are encrypt-then-store** through the
-  `seal.StorageBarrier`, so a sealed barrier makes them unreadable.
+- **`barrier` credentials are system records on the system shard**, encrypted
+  at rest by each node's system barrier. A sealed node has paused the system
+  shard and wiped its keys, so it cannot read them.
 - **Retrieval under `manual` blocks until an operator submits the value.** That
   is the ceremony case: a non-resident secret exists nowhere until someone
   provides it.
@@ -188,10 +293,64 @@ methods; Go callers get only the `*secure.Buffer` forms. REST, gRPC, QUIC, MCP
 and Unix carry credential retrieve responses as secret-bearing wire DTOs at the
 process boundary.
 
+## Scheduled rotation
+
+A named credential under the `barrier` strategy can carry a rotation policy:
+`enabled`, an `interval`, and `retain_versions`, the number of versions kept
+after a rotation, the current one included. An owner ruling replaced the
+earlier "no automatic rotation policy" non-goal: the engine's own secrets
+need scheduled rotation even in a standalone qrdb with no KMS above it. The
+policy is set and read through `CredentialServicer` on every transport, under
+`credentials:rotate`. The `manual` strategy refuses every policy, because its
+values come from an officer, not the engine.
+
+**Every node runs the scheduler, and the cluster rotates a credential once per
+interval.** Each node checks every `seal.credential_rotation_check_period`
+(default `1m`). A due credential is claimed by a compare-and-swap on its
+metadata record that records an expiring claim, and only the node holding the
+claim calls the value source, so a source that changes a password or issues a
+key outside the store runs once per rotation, not once per node. The rest see
+the claim and do nothing. No leader election or extra coordination record is
+needed. The record is the lock: it lives in the replicated store on the system
+shard (above), and the compare-and-swap is one Raft transaction, so exactly
+one node takes each claim.
+
+**A rotation that does not complete is retried, not skipped.** The schedule
+moves one interval forward only when the claimed rotation lands. A rotation
+that fails releases its claim and leaves the credential due, so the next check
+retries it. A claim whose holder crashed lapses after a five-minute lease, and
+the credential is due again, on any node and after a restart. The lease is
+timed from the moment the claim is taken, not from the start of the check, and
+the holder runs the value source and the rotation under a deadline at the
+lease's own expiry, so it has stopped writing before another node may take the
+claim. Ending the claim, by completing or releasing it, gets its own 30-second
+bound that starts once the rotation has returned, so a rotation that used its
+whole lease can still settle its claim.
+
+**Retention is retried apart from the rotation.** A completed rotation marks
+the metadata record with a pending cleanup, and clears the mark only once the
+expired-version reaping and the trim to `retain_versions` have both succeeded.
+If either fails, every later check retries the cleanup, without calling the
+value source again, until it lands. A transient storage fault therefore leaves
+an old version readable for one check period, not for a whole interval. Every writer of the metadata record (the policy, the
+claim, a rotation, the history trim) updates it conditionally and re-reads on
+a conflict, so none overwrites another: a policy disabled during a rotation
+stays disabled.
+
+**The new value comes from a seam.** `credentials.WithRotationValueSource`
+injects a `RotationValueSource`, which returns the next value as a
+`*secure.Buffer`. Minting a credential means acting where the credential is
+used: changing a database password at the database, or issuing a key at its
+provider. That knowledge belongs to whoever embeds qrdb, not to the engine.
+`qrdbd` ships no source. Without one, a due rotation fails with
+`ErrNoRotationValueSource` and the credential stays due. A failing source
+releases the claim, so it never uses up an interval.
+
 ## What this feature deliberately does not do
 
 - **No product secrets management.** That is quicbaas's KMS, one layer up.
 - **No PIN storage.** `pkg/pin` owns PINs and their lockout semantics.
 - **No KEK/DEK custody.** That is the barrier.
-- **No automatic rotation policy.** Rotation is an explicit call with an
-  explicit grace period.
+- **No built-in source of new credential values.** Scheduled rotation calls a
+  `RotationValueSource` the embedding application supplies; qrdb does not know
+  how to mint a value for an arbitrary secret, and `qrdbd` ships no source.
