@@ -19,12 +19,15 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -1419,6 +1422,99 @@ func TestEntityTable_LookupPartitions_NonQRDBIndex(t *testing.T) {
 	}
 	if string(p.Key()) != "default" {
 		t.Errorf("partition Key() = %q, want default", p.Key())
+	}
+}
+
+func TestEntityTable_LookupPartitions_WithIndex(t *testing.T) {
+	idxSvc := &entityMockIndexServicer{
+		queryFn: func(_ context.Context, _ string, value []byte) ([][]byte, error) {
+			return [][]byte{value}, nil
+		},
+	}
+
+	reg := testRegistration()
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), reg, idxSvc)
+	ctx := newTestContext()
+
+	qIdx := newQRDBIndex("testdb", "users", "name", "string", false)
+	lookup := sqle.IndexLookup{
+		Index: qIdx,
+		Ranges: sqle.MySQLRangeCollection{
+			sqle.MySQLRange{sqle.ClosedRangeColumnExpr("alice", "alice", types.LongText)},
+		},
+	}
+
+	iter, err := tbl.LookupPartitions(ctx, lookup)
+	if err != nil {
+		t.Fatalf("LookupPartitions: %v", err)
+	}
+	requireIndexedPartition(t, ctx, iter, 1)
+}
+
+func TestEntityToRow_MissingMetaField(t *testing.T) {
+	reg := testRegistration()
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), reg, nil)
+
+	// Manually inject an extra field into fieldOrder that has no FieldMeta.
+	tbl.fieldOrder = append(tbl.fieldOrder, "nonexistent_json_field")
+
+	e := &testEntity{ID: 1, Name: "Alice", Email: "alice@example.com", Age: 30, Score: 9.5, Active: true}
+	row := tbl.entityToRow(e)
+
+	// The last column (for "nonexistent_json_field") should be nil.
+	if row == nil {
+		t.Fatal("entityToRow returned nil")
+	}
+	if got := row[len(row)-1]; got != nil {
+		t.Errorf("column without FieldMeta = %v, want nil", got)
+	}
+}
+
+func TestReflectFieldByGoName_InvalidField(t *testing.T) {
+	type MyStruct struct {
+		ID uint64
+	}
+	rv := reflect.ValueOf(MyStruct{ID: 42})
+	if got := reflectFieldByGoName(rv, "NonExistentField"); got != nil {
+		t.Errorf("reflectFieldByGoName(unknown) = %v, want nil", got)
+	}
+}
+
+func TestEntityWriter_Insert_MarshalError(t *testing.T) {
+	marshalErr := errors.New("marshal failed")
+	reg := &entity.Registration{
+		EntityType:  "failtable",
+		StructType:  reflect.TypeOf(testEntity{}),
+		Fields:      testRegistration().Fields,
+		IDFieldJSON: "id",
+		IDFieldGo:   "ID",
+		Database:    "testdb",
+		CodecType:   "json",
+		NewFunc: func() any {
+			return &testEntity{}
+		},
+		MarshalFunc: func(v any) ([]byte, error) {
+			return nil, marshalErr
+		},
+		UnmarshalFunc: func(data []byte) (any, error) {
+			e := &testEntity{}
+			return e, json.Unmarshal(data, e)
+		},
+	}
+
+	w := &entityWriter{
+		kvSvc:      &mockKVService{},
+		prefix:     tenant.ComposeNamespace("system", ""),
+		reg:        reg,
+		fieldOrder: []string{"name", "email", "age", "score", "active"},
+	}
+
+	ctx := sqle.NewEmptyContext()
+	row := sqle.Row{uint64(1), "alice", "alice@example.com", int64(25), float64(8.5), true}
+	err := w.Insert(ctx, row)
+	var invalid *InvalidValueError
+	if !errors.As(err, &invalid) || !strings.Contains(invalid.Reason, marshalErr.Error()) {
+		t.Fatalf("Insert error = %v, want an InvalidValueError carrying the codec's marshal error", err)
 	}
 }
 
