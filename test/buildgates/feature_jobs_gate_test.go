@@ -614,7 +614,15 @@ case "$1 $2" in
 	[ -f "$ctr/$4" ] || exit 1
 	{ read -r used; read -r created; } < "$ctr/$4"
 	echo "created 0001-01-01T00:00:00Z $created"; exit 0 ;;
-"network ls" | "volume ls") exit 0 ;;
+"network ls") exit 0 ;;
+"volume ls")
+	# A file under volumes/ is a marker volume; an empty one is mounted by
+	# no container (dangling).
+	case "$*" in *"label=qrdb.ci.multicast-marker=1 --filter dangling=true"*)
+		for v in "$STUB_DIR"/volumes/*; do [ -f "$v" ] && [ ! -s "$v" ] && echo "${v##*/}"; done ;;
+	esac
+	exit 0 ;;
+"volume rm") [ -f "$STUB_DIR/volumes/$3" ] || exit 1; rm -f "$STUB_DIR/volumes/$3"; exit 0 ;;
 esac
 echo "stub docker: unexpected $*" >&2
 exit 99
@@ -1105,5 +1113,43 @@ func TestReaper_RemovesOnlyOrphanHoldTags(t *testing.T) {
 	}
 	if !strings.Contains(reaped, "2 hold tag(s) removed") {
 		t.Errorf("the reaper's summary does not count the 2 orphan hold tags:\n%s", reaped)
+	}
+}
+
+// TestReaper_RemovesOrphanMarkerVolumes is #1275: scripts/in-toolchain-image.sh
+// creates a no-network stage's multicast marker volume labelled
+// qrdb.ci.multicast-marker=1 and removes it only in its EXIT trap, so a
+// launcher killed first leaves it behind. The reaper removes a marker volume
+// under its prefix that no container mounts, and keeps one a stage still
+// mounts and one under another repository's prefix.
+func TestReaper_RemovesOrphanMarkerVolumes(t *testing.T) {
+	root := repoRoot(t)
+	const toolchain = "qrdb-toolchain:0123456789abcdef"
+	stub := holdStub(t, toolchain, time.Now().UTC().Format(time.RFC3339), neverTagged)
+	volumes := filepath.Join(stub, "volumes")
+	if err := os.MkdirAll(volumes, 0o700); err != nil {
+		t.Fatalf("mkdir stub volumes: %v", err)
+	}
+	cases := []struct {
+		name, mountedBy string
+		kept            bool
+	}{
+		{name: "qrdb-ci-tc-1-1-mcast", kept: false},
+		{name: "qrdb-ci-tc-2-2-mcast", mountedBy: "qrdb-ci-tc-2-2\n", kept: true},
+		{name: "other-ci-tc-3-3-mcast", kept: true},
+	}
+	for _, tc := range cases {
+		if err := os.WriteFile(filepath.Join(volumes, tc.name), []byte(tc.mountedBy), 0o600); err != nil {
+			t.Fatalf("seed stub volume %s: %v", tc.name, err)
+		}
+	}
+	reaped := runHoldStubAged(t, root, stub, toolchain, "7200", "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+	for _, tc := range cases {
+		if _, err := os.Stat(filepath.Join(volumes, tc.name)); (err == nil) != tc.kept {
+			t.Errorf("after the reap %s exists: %v; want %v:\n%s", tc.name, err == nil, tc.kept, reaped)
+		}
+	}
+	if !strings.Contains(reaped, "1 marker volume(s)") {
+		t.Errorf("the reaper's summary does not count the 1 orphan marker volume:\n%s", reaped)
 	}
 }
