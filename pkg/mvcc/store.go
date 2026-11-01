@@ -436,8 +436,11 @@ func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 			return nil, 0, 0, refused
 		}
 		if err != nil {
-			// Key not found is not an error for range.
-			return nil, 0, currentRev, nil
+			// Key not found is not an error for range; a failed read is.
+			if absentAtRevision(err) {
+				return nil, 0, currentRev, nil
+			}
+			return nil, 0, 0, err
 		}
 		if ro.CountOnly {
 			return nil, 1, currentRev, nil
@@ -468,6 +471,9 @@ func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 
 	var results []*service.KeyValue
 	var count int64
+	// readErr is the first failed key read; it ends the scan, since leaving
+	// the key out would answer a range that omits an existing key.
+	var readErr error
 
 	scanErr := forEachKey(iter, start, end, func(userKey []byte) bool {
 		if ro.CountOnly && !historical {
@@ -477,7 +483,11 @@ func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 
 		kv, err := s.findAtRevisionFrom(r, userKey, targetRev)
 		if err != nil {
-			return true // Key might not exist at this revision.
+			if absentAtRevision(err) {
+				return true // The key does not exist at this revision.
+			}
+			readErr = err
+			return false
 		}
 		if ro.CountOnly {
 			count++
@@ -499,6 +509,9 @@ func (s *Store) rangeFrom(r storage.Reader, currentRev int64, start, end []byte,
 	}
 	if refused := s.refusedAfterRead(start, end, ro.Revision); refused != nil {
 		return nil, 0, 0, refused
+	}
+	if readErr != nil {
+		return nil, 0, 0, readErr
 	}
 
 	if ro.CountOnly {
@@ -839,4 +852,12 @@ func (s *Store) rangeGetSingle(r storage.Reader, key []byte, targetRev int64, ro
 		kv.Value = nil
 	}
 	return kv, nil
+}
+
+// absentAtRevision reports whether err, from findAtRevisionFrom, says the
+// key has no live value at the revision, as opposed to a read that failed.
+func absentAtRevision(err error) bool {
+	var notFound *KeyNotFoundError
+	var noRevision *RevisionNotFoundError
+	return errors.As(err, &notFound) || errors.As(err, &noRevision)
 }

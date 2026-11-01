@@ -2351,3 +2351,35 @@ func TestRange_SingleKey_CountOnly(t *testing.T) {
 		t.Errorf("Range of a missing key = (count %d, %v), want (count 0, nil)", count, err)
 	}
 }
+
+// TestRange_FailedKeyReadIsAnError checks a key whose data entry cannot be
+// read fails the range, single key and enumerated alike, rather than being
+// left out of it as if it were absent.
+func TestRange_FailedKeyReadIsAnError(t *testing.T) {
+	s := newTestStore(t)
+	for _, key := range []string{"a", "b"} {
+		if _, err := s.Put([]byte(key), []byte("v"), 0); err != nil {
+			t.Fatalf("Put(%s): %v", key, err)
+		}
+	}
+	batch := s.Storage().Batch()
+	if err := batch.Set(EncodeDataKey([]byte("b"), 2), []byte{0xff}); err != nil {
+		t.Fatalf("corrupt the data entry: %v", err)
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	_ = batch.Close()
+
+	for _, end := range [][]byte{nil, []byte("z")} {
+		kvs, count, _, err := s.Range([]byte("b"), end)
+		var encErr *EncodingError
+		if !errors.As(err, &encErr) {
+			t.Fatalf("Range(b, %q) = (%d kvs, count %d, %v), want the EncodingError",
+				end, len(kvs), count, err)
+		}
+	}
+	if kvs, _, _, err := s.Range([]byte("a"), nil); err != nil || len(kvs) != 1 {
+		t.Fatalf("Range(a) = (%d kvs, %v), want the one readable key", len(kvs), err)
+	}
+}
