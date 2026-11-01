@@ -248,6 +248,100 @@ func TestHandleUserAuthFactorLogin_ServiceError(t *testing.T) {
 	}
 }
 
+func TestHandleUserAuthFactorList_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorList(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleUserAuthFactorList_ServiceError(t *testing.T) {
+	svcErr := errors.New("list error")
+	svc := &listErrUserAuthFactorSvc{err: svcErr}
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(svc))
+	payload, _ := json.Marshal(quicUserFactorListRequest{UserID: 1})
+	_, err := srv.handleUserAuthFactorList(context.Background(), payload)
+	if !errors.Is(err, svcErr) {
+		t.Fatalf("expected svcErr, got %v", err)
+	}
+}
+
+type listErrUserAuthFactorSvc struct {
+	mockUserAuthFactorSvc
+	err error
+}
+
+func (s *listErrUserAuthFactorSvc) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
+	return nil, s.err
+}
+
+func TestHandleUserAuthFactorGet_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorGet(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleUserAuthFactorRemove_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorRemove(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleUserAuthFactorRotate_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorRotate(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleUserAuthFactorRelabel_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorRelabel(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleUserAuthFactorRelabel_ServiceError(t *testing.T) {
+	svcErr := errors.New("relabel error")
+	svc := &relabelErrUserAuthFactorSvc{err: svcErr}
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(svc))
+	payload, _ := json.Marshal(quicUserFactorRelabelRequest{FactorID: "f1", Label: "new"})
+	_, err := srv.handleUserAuthFactorRelabel(context.Background(), payload)
+	if !errors.Is(err, svcErr) {
+		t.Fatalf("expected svcErr, got %v", err)
+	}
+}
+
+type relabelErrUserAuthFactorSvc struct {
+	mockUserAuthFactorSvc
+	err error
+}
+
+func (s *relabelErrUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) error {
+	return s.err
+}
+
+func TestHandleUserAuthFactorLogin_UnmarshalError(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0", WithUserAuthFactorService(&mockUserAuthFactorSvc{}))
+	_, err := srv.handleUserAuthFactorLogin(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
 // loginErrUserAuthFactorSvc returns an error from LookupByCredentialKey.
 type loginErrUserAuthFactorSvc struct {
 	mockUserAuthFactorSvc

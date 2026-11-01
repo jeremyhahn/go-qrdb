@@ -951,8 +951,9 @@ func TestHandleDatabaseUpdateEtcd_EmptyName(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithDatabaseService(&mockDatabaseService{}))
 	payload, _ := json.Marshal(map[string]interface{}{"name": "", "enabled": true})
 	_, err := srv.handleDatabaseUpdateEtcd(context.Background(), payload)
-	if err == nil {
-		t.Fatal("expected error for empty name")
+	var ia *InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("expected InvalidArgumentError for empty name, got %T: %v", err, err)
 	}
 }
 
