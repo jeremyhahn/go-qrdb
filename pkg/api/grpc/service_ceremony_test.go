@@ -34,7 +34,7 @@ import (
 )
 
 // fixedErrCeremonyService is a service.CeremonyServicer double local to this
-// file (unconstrained by build tags, unlike grpc_coverage_test.go's
+// file (unconstrained by build tags, unlike mock_services_test.go's
 // mockCeremonyService) that fails every call with a fixed error.
 type fixedErrCeremonyService struct{ err error }
 
