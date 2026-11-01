@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -312,7 +313,7 @@ func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.Cli
 				BaseDelay: replicaforward.ReconnectBaseDelay, Multiplier: replicaforward.ReconnectMultiplier,
 				Jitter: replicaforward.ReconnectJitter, MaxDelay: replicaforward.ReconnectMaxDelay,
 			}}),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(DefaultMaxMessageBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(service.MaxReplyBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
 		)
 		if err != nil {
 			f.mu.Unlock()
