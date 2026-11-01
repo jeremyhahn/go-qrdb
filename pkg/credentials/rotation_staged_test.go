@@ -15,7 +15,9 @@
 package credentials
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,7 +112,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 			}
 			requireVersionValue(t, svc, next, "k-rotated-1")
 			requireVersionValue(t, svc, prev, "k-initial")
-			if _, err := svc.store.Get(t.Context(), versionKey("k", next)); err == nil {
+			if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
 				t.Fatalf("the staged value under v%d survived the settled rotation", next)
 			}
 		})
@@ -139,7 +141,7 @@ func TestRotateCredential_ClearsAStaleStagedValue(t *testing.T) {
 	if _, err := svc.RotateCredential(t.Context(), "k", RotateOptions{NewValue: []byte("k-manual")}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
 	}
-	if _, err := svc.store.Get(t.Context(), versionKey("k", next)); err == nil {
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
 		t.Fatalf("the stale staged value under v%d survived the manual rotation", next)
 	}
 	requireVersionValue(t, svc, next, "k-manual")
@@ -168,7 +170,7 @@ func TestRotateDue_StagingWriteFailureRotatesNothing(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 	due := rotationEpoch.Add(time.Hour)
 
-	arm(&backend.failPut, versionKey("k", next))
+	arm(&backend.failPut, stagedKey("k", next))
 	_, err = svc.RotateDue(t.Context(), due)
 	requireOperationError(t, err, "stage rotation")
 	backend.failPut.Store(nil)
@@ -201,7 +203,7 @@ func TestRotateDue_SpentStagedValueReapedByCleanup(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 	due := rotationEpoch.Add(time.Hour)
 
-	arm(&backend.failDelete, versionKey("k", next))
+	arm(&backend.failDelete, stagedKey("k", next))
 	_, err = svc.RotateDue(t.Context(), due)
 	requireOperationError(t, err, "delete staged rotation")
 	if meta, err := svc.loadBarrierMeta(t.Context(), "k"); err != nil || meta.CurrentVersion != next || meta.PendingCleanup == "" {
@@ -239,13 +241,13 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	}
 	backend.failPut.Store(nil)
 
-	arm(&backend.failDelete, versionKey("k", next))
+	arm(&backend.failDelete, stagedKey("k", next))
 	requireOperationError(t, svc.DeleteCredential(t.Context(), "k"), "delete staged rotation")
 	backend.failDelete.Store(nil)
 	if err := svc.DeleteCredential(t.Context(), "k"); err != nil {
 		t.Fatalf("DeleteCredential: %v", err)
 	}
-	if _, err := svc.store.Get(t.Context(), versionKey("k", next)); err == nil {
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
 		t.Fatalf("the staged value under v%d survived the delete", next)
 	}
 }
@@ -270,7 +272,7 @@ func TestRotateDue_StagedReadFailurePropagates(t *testing.T) {
 	}
 	backend.failPut.Store(nil)
 
-	arm(&backend.failGet, versionKey("k", next))
+	arm(&backend.failGet, stagedKey("k", next))
 	_, err = svc.RotateDue(t.Context(), due)
 	if !errors.Is(err, errInjectedFault) {
 		t.Fatalf("RotateDue with an unreadable staged value = %v, want the read failure", err)
@@ -288,6 +290,47 @@ func TestRotateDue_StagedReadFailurePropagates(t *testing.T) {
 		t.Fatalf("value source called %d times for one interval, want 1", got)
 	}
 	requireVersionValue(t, svc, next, "k-rotated-1")
+}
+
+// TestRotateDue_CleanupKeepsVersionRetainedSinceItsRead: a manual rotation
+// with a grace period runs between the scheduled cleanup's read of the
+// record and its delete of the spent staged value. The manual rotation
+// retains the scheduled value under the version number the cleanup read
+// as current; the cleanup's delete must not remove it.
+func TestRotateDue_CleanupKeepsVersionRetainedSinceItsRead(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 5)
+	var calls atomic.Int32
+	countSource(svc, &calls)
+	before, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	_, next := rotationVersions(before.CurrentVersion, true)
+
+	var spent, interleaved atomic.Bool
+	backend.onDelete = func(key string) {
+		if strings.HasSuffix(key, stagedKey("k", next)) {
+			spent.Store(true)
+		}
+	}
+	backend.onGet = func(ctx context.Context, key string) {
+		if !strings.HasSuffix(key, metaKey("k")) || !spent.Load() || !interleaved.CompareAndSwap(false, true) {
+			return
+		}
+		if _, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("k-manual"), GracePeriod: time.Hour}); err != nil {
+			t.Errorf("interleaved RotateCredential: %v", err)
+		}
+	}
+
+	if n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour)); n != 1 || err != nil {
+		t.Fatalf("RotateDue = %d, %v; want 1, nil", n, err)
+	}
+	if !interleaved.Load() {
+		t.Fatal("the manual rotation did not run between the cleanup's read and its delete")
+	}
+	requireVersionValue(t, svc, next, "k-rotated-1")
+	requireCurrentValue(t, svc, "k-manual")
 }
 
 func requireCurrentValue(t *testing.T, svc *CredentialService, want string) {
