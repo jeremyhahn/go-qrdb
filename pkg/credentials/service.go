@@ -154,31 +154,36 @@ func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ..
 	return s, nil
 }
 
-// ForBarrier returns a barrier-strategy CredentialService over barrier that
-// shares s's logger, audit logger, rotation value source and clock, so a
-// tenant's scheduled rotations draw from the same source. It is how a tenant's named-credential
-// store is derived from the node-wide one: the same versioned rotation API,
-// persisted in the tenant barrier's own storage and encrypted under that
-// barrier's key. It first migrates the barrier's records under the old
-// credentials/ layout in place (MigrateLegacy), once per barrier for s, and
-// returns that migration's error. It returns ErrNilBarrier when barrier is
-// nil.
-func (s *CredentialService) ForBarrier(ctx context.Context, barrier *seal.StorageBarrier) (*CredentialService, error) {
+// ForTenant returns a barrier-strategy CredentialService over a tenant's
+// home store that shares s's logger, audit logger, rotation value source and
+// clock, so a tenant's scheduled rotations draw from the same source. It is
+// how a tenant's named-credential store is derived from the node-wide one:
+// the same versioned rotation API, persisted in the tenant's home store — on a
+// cluster a Raft group of the tenant's own whose PutIfAbsent and
+// CompareAndSwap decide once for every node, encrypted under the tenant's
+// key — so a policy, claim or version written through one node is the same
+// record on every node. legacy is the tenant barrier on this node: its
+// records under the old credentials/ layout move into home first
+// (MigrateLegacy), once per barrier for s, and that migration's error is
+// returned. It returns ErrNilStore when home is nil and ErrNilBarrier when
+// legacy is nil.
+func (s *CredentialService) ForTenant(ctx context.Context, home Store, legacy *seal.StorageBarrier) (*CredentialService, error) {
+	if home == nil {
+		return nil, ErrNilStore
+	}
 	// A nil *StorageBarrier passed on as a Store would bind as a non-nil
 	// interface, so it is refused here rather than left unbound.
-	if barrier == nil {
+	if legacy == nil {
 		return nil, ErrNilBarrier
 	}
-	// The barrier is also the legacy store: a tenant's records under the
-	// old credentials/ layout move to the new one in place.
-	out, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, s.logger,
+	out, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, home, s.logger,
 		WithAuditLogger(s.auditLogger()), WithRotationValueSource(s.rotationSource),
-		WithLegacyStore(barrier))
+		WithLegacyStore(legacy))
 	if err != nil {
 		return nil, err
 	}
 	out.now = s.now
-	if _, done := s.migratedBarriers.Load(barrier); done {
+	if _, done := s.migratedBarriers.Load(legacy); done {
 		out.migrated = true
 		return out, nil
 	}
@@ -188,7 +193,7 @@ func (s *CredentialService) ForBarrier(ctx context.Context, barrier *seal.Storag
 	// A barrier with an unresolved conflict migrates again on each call,
 	// so every derived service lists and resolves it.
 	if len(out.conflicts) == 0 {
-		s.migratedBarriers.Store(barrier, struct{}{})
+		s.migratedBarriers.Store(legacy, struct{}{})
 	}
 	return out, nil
 }

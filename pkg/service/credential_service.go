@@ -19,6 +19,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -179,6 +180,7 @@ func WithCredentialTenantBarriers(tenants CredentialTenantBarriers) CredentialSe
 type CredentialService struct {
 	creds   *credentials.CredentialService
 	tenants CredentialTenantBarriers
+	homes   atomic.Pointer[homeSourceBox]
 }
 
 // Compile-time interface check.
@@ -228,7 +230,42 @@ func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialS
 	if tb.IsSealed() {
 		return nil, &BarrierSealedError{TenantID: tenantID}
 	}
-	return s.creds.ForBarrier(ctx, tb.Barrier())
+	box := s.homes.Load()
+	if box == nil {
+		// The barrier is node-local: a store kept under it would hold a
+		// different policy, value and claim on every node.
+		return nil, &CapabilityUnsupportedError{
+			Message: "credentials: tenant home stores are not attached on this node",
+		}
+	}
+	kv, err := box.source.HomeStore(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	home, err := credentials.NewKVStore(kv)
+	if err != nil {
+		return nil, err
+	}
+	return s.creds.ForTenant(ctx, home, tb.Barrier())
+}
+
+// homeSourceBox lets an interface value sit behind an atomic.Pointer.
+type homeSourceBox struct{ source tenant.HomeStoreSource }
+
+// SetTenantHomes attaches the source of isolated tenants' home stores, where
+// a tenant caller's named credentials live: on a cluster a Raft group of the
+// tenant's own, so a policy, value or claim written through one node is the
+// same record on every node. The source is attached after the service is
+// built, because the stores that host the homes start later; until then, or
+// after a nil src detaches it, a tenant caller is refused with a
+// CapabilityUnsupportedError. It is safe to call concurrently with the
+// credential verbs.
+func (s *CredentialService) SetTenantHomes(src tenant.HomeStoreSource) {
+	if src == nil {
+		s.homes.Store(nil)
+		return
+	}
+	s.homes.Store(&homeSourceBox{source: src})
 }
 
 // CredentialWireValue copies a retrieved credential out of protected memory
