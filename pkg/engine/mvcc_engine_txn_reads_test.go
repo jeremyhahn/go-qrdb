@@ -187,6 +187,33 @@ func TestMVCCEngine_TransactionRead_ReadsAloneLeaveTheRevision(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_TransactionRead_ReadsAloneReportTheObservedRevision verifies
+// that a read-only branch at revision R reports R -- the revision it
+// observed, as an etcd response header does -- and not R+1, a revision no
+// write ever commits at; the next write then commits at R+1.
+func TestMVCCEngine_TransactionRead_ReadsAloneReportTheObservedRevision(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(1, []byte("k"), []byte("v1"), 0)})
+	observed := mvccRevision(t, eng)
+	res, _, reads := applyTxn(t, eng, 2, nil, [][]byte{txnGetOp("k")}, nil)
+	if int64(res.Value) != observed {
+		t.Fatalf("read-only transaction reported revision %d, want the observed %d", res.Value, observed)
+	}
+	if len(reads) != 1 || len(reads[0].Kvs) != 1 || reads[0].Kvs[0].ModRevision != observed {
+		t.Fatalf("reads = %+v, want k at mod revision %d", reads, observed)
+	}
+
+	write, _, _ := applyTxn(t, eng, 3, nil, [][]byte{
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v2"), nil, 0)),
+	}, nil)
+	if int64(write.Value) != observed+1 {
+		t.Fatalf("next write committed at revision %d, want %d", write.Value, observed+1)
+	}
+}
+
 func TestMVCCEngine_TransactionRead_WriteOnlyBranchKeepsOneByteResult(t *testing.T) {
 	eng, stg := newMVCCEngine(t)
 	defer func() { _ = stg.Close() }()
