@@ -234,8 +234,11 @@ func TestSeparationPosture_CLI_StandardAdminHoldingSO_PerProtocol(t *testing.T) 
 // permission denial (refused) or succeeds.
 func (pt *postureTenant) soExclusiveOps(t *testing.T, caller string, conn []string, refused bool) {
 	t.Helper()
+	// The role carries audit:read, which the SO role holds: a grantor may
+	// grant only permissions it holds (#1278), so a permission outside the
+	// caller's holdings would be refused whatever the posture.
 	ops := map[string][]string{
-		"roles create":    {"roles", "create", "--name", pt.id + "-" + caller + "-auditor", "--permissions", "kv:get", "--tenant-id", pt.id},
+		"roles create":    {"roles", "create", "--name", pt.id + "-" + caller + "-auditor", "--permissions", "audit:read", "--tenant-id", pt.id},
 		"roles reconcile": {"roles", "reconcile", "--tenant", pt.id},
 	}
 	for name, args := range ops {
