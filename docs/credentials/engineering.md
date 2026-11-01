@@ -346,8 +346,11 @@ strategy's credentials and, for each one whose enabled policy is due:
    non-current versions, then clears the pending cleanup.
 
 The staged value is the persisted evidence of a value the source already
-produced: no other write puts a version above the current one. A claimant that
-finds one under the next version, left by an attempt that failed or crashed
+produced. It is kept under its own `#staged<n>` key, apart from the `#v<n>`
+version records, so the deletes that spend it (step 5 and the rotation's own
+post-commit delete) can never remove a version that a concurrent rotation
+retained under the same number. A claimant that finds one staged for the next
+version, left by an attempt that failed or crashed
 after step 2 and before step 4 landed, lands it from step 3 without calling the
 source again, so the source runs once per interval even across that failure.
 A manual rotation and a delete remove a staged value under the version they

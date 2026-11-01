@@ -287,9 +287,11 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if err != nil {
 		return err
 	}
-	// The current version's own version key holds only a spent staged value.
+	// A value staged for the current version is spent. It lives under its
+	// own key, so a rotation that retained a version since the read above
+	// keeps it.
 	if meta.CurrentVersion > 0 {
-		if err := s.store.Delete(ctx, versionKey(name, meta.CurrentVersion)); err != nil {
+		if err := s.store.Delete(ctx, stagedKey(name, meta.CurrentVersion)); err != nil {
 			return &OperationError{Op: "delete staged rotation", Cause: err}
 		}
 	}
@@ -411,7 +413,7 @@ func (s *CredentialService) stagedRotation(ctx context.Context, name string) ([]
 	}
 	secure.Wipe(current)
 	_, next := rotationVersions(meta.CurrentVersion, exists)
-	staged, err := s.store.Get(ctx, versionKey(name, next))
+	staged, err := s.store.Get(ctx, stagedKey(name, next))
 	if errors.Is(err, seal.ErrSecretNotFound) {
 		return nil, nil
 	}

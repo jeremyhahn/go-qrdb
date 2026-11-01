@@ -39,6 +39,11 @@ import (
 const (
 	metaSuffix    = "#meta"
 	versionPrefix = "#v"
+	// stagedPrefix keys a scheduled rotation's staged value apart from
+	// the version records, so removing a spent staged value can never
+	// remove a retained version that a concurrent rotation wrote under
+	// the same number.
+	stagedPrefix = "#staged"
 )
 
 // =============================================================================
@@ -559,9 +564,10 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	}
 	if sched != nil && !sched.resumed {
 		// The staged value is the persisted evidence a later attempt
-		// resumes from instead of invoking the value source again: no
-		// other write puts a version above the current one.
-		if err := s.store.Put(ctx, versionKey(name, newVersion), opts.NewValue); err != nil {
+		// resumes from instead of invoking the value source again. It is
+		// keyed apart from the version records, so the delete that spends
+		// it cannot remove a version a concurrent rotation retained.
+		if err := s.store.Put(ctx, stagedKey(name, newVersion), opts.NewValue); err != nil {
 			return nil, &OperationError{Op: "stage rotation", Cause: err}
 		}
 	}
@@ -592,10 +598,10 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 	}); err != nil {
 		return nil, err
 	}
-	// newVersion is current, so a record under its version key is a spent
-	// staged value. One left by a failed delete is reaped by the scheduled
-	// rotation's cleanup.
-	if err := s.store.Delete(ctx, versionKey(name, newVersion)); err != nil {
+	// newVersion is current, so a value staged for it is spent, whichever
+	// rotation staged it. One left by a failed delete is reaped by the
+	// scheduled rotation's cleanup.
+	if err := s.store.Delete(ctx, stagedKey(name, newVersion)); err != nil {
 		s.logger.Warn("staged rotation value left for cleanup",
 			slog.String("name", name),
 			slog.Uint64("version", newVersion),
@@ -798,7 +804,7 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 	// A value an unfinished scheduled rotation staged goes too, so a
 	// credential later stored under the name never lands it.
 	_, staged := rotationVersions(meta.CurrentVersion, true)
-	if err := s.store.Delete(ctx, versionKey(name, staged)); err != nil {
+	if err := s.store.Delete(ctx, stagedKey(name, staged)); err != nil {
 		return &OperationError{Op: "delete staged rotation", Cause: err}
 	}
 	if err := s.store.Delete(ctx, metaKey(name)); err != nil {
@@ -816,6 +822,10 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 
 func versionKey(name string, version uint64) string {
 	return credentialPrefix + name + versionPrefix + strconv.FormatUint(version, 10)
+}
+
+func stagedKey(name string, version uint64) string {
+	return credentialPrefix + name + stagedPrefix + strconv.FormatUint(version, 10)
 }
 
 func metaKey(name string) string {

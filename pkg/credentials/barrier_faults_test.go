@@ -49,6 +49,9 @@ type faultBackend struct {
 	// onCAS, when set before the operation under test, runs before each
 	// CompareAndSwap that is not failed or lost, with its context and key.
 	onCAS func(ctx context.Context, key string)
+	// onGet, when set before the operation under test, runs after each
+	// Get that is not failed, with its context and key.
+	onGet func(ctx context.Context, key string)
 }
 
 var _ seal.StorageBackend = (*faultBackend)(nil)
@@ -58,7 +61,11 @@ func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if s := f.failGet.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return nil, errInjectedFault
 	}
-	return f.MemoryBackend.Get(ctx, key)
+	value, err := f.MemoryBackend.Get(ctx, key)
+	if f.onGet != nil {
+		f.onGet(ctx, key)
+	}
+	return value, err
 }
 
 func (f *faultBackend) Put(ctx context.Context, key string, data []byte) error {
