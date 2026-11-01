@@ -138,3 +138,14 @@ func TestBuildNodeReport(t *testing.T) {
 		t.Errorf("explained health = %+v; a provider detail must not be overwritten", got)
 	}
 }
+
+func TestNewVolumeRegistry_RefusesANilProvider(t *testing.T) {
+	registry, err := newVolumeRegistry(volume.Provider(nil))
+	var invalid *volume.InvalidProviderError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v; want *volume.InvalidProviderError", err)
+	}
+	if registry != nil {
+		t.Fatal("a refused build must return no registry")
+	}
+}

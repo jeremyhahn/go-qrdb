@@ -55,6 +55,9 @@ func TestNodeServiceRegistry_NoServer(t *testing.T) {
 			t.Errorf("%s with no server = %v, want *service.DataPlaneRecyclingError", name, err)
 		}
 	}
+	if err := r.StreamRefusal("t", "d"); !errors.As(err, new(*service.DataPlaneRecyclingError)) {
+		t.Errorf("StreamRefusal with no server = %v, want *service.DataPlaneRecyclingError", err)
+	}
 }
 
 // With a server, resolution is the server's own registry, built once per

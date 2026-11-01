@@ -17,11 +17,13 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1016,6 +1018,73 @@ func TestBuildNodeSealSubsystem_Refusals(t *testing.T) {
 				t.Fatalf("buildNodeSealSubsystem = %v, %v; want *StorageCreateError for %s", sub, err, tc.backend)
 			}
 		})
+	}
+}
+
+// A node with no volume registry starts no reporter; a reporter that cannot
+// be constructed or started is logged and not recorded on the node.
+func TestStartVolumeReporter_Refusals(t *testing.T) {
+	ctx := context.Background()
+	svcNode := newBareStandaloneNode(t).svcNode.Load()
+	registry, err := newVolumeRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bare := &Node{}
+	bare.startVolumeReporter(ctx, svcNode, "node-1")
+	if bare.volumeReporter != nil {
+		t.Fatal("a node with no volume registry recorded a reporter")
+	}
+
+	for name, tc := range map[string]struct {
+		nodeID string
+		sealed bool
+		want   string
+	}{
+		"no node id":  {nodeID: "", want: "failed to construct volume-pool Reporter"},
+		"sealed node": {nodeID: "node-1", sealed: true, want: "failed to start volume-pool Reporter"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			n := &Node{volumeRegistry: registry, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			if tc.sealed {
+				barrier, cleanup := newTestBarrier(t)
+				t.Cleanup(cleanup)
+				n.barrier.Store(barrier)
+			}
+			n.startVolumeReporter(ctx, svcNode, tc.nodeID)
+			if n.volumeReporter != nil {
+				t.Fatal("a refused reporter was recorded on the node")
+			}
+			if !strings.Contains(logs.String(), tc.want) {
+				t.Fatalf("logs = %q; want %q", logs.String(), tc.want)
+			}
+		})
+	}
+}
+
+// With no host there is no catalog to attach, and that is not an error.
+func TestAttachVolumeCatalog_NothingToAttach(t *testing.T) {
+	if err := (&Node{}).attachVolumeCatalog(nil); err != nil {
+		t.Fatalf("attachVolumeCatalog = %v", err)
+	}
+}
+
+// TestBackgroundWork_NothingToRun: a node with nothing to complete, no lease
+// host and no reclaim sweeper starts no background work, so no background
+// context is created.
+func TestBackgroundWork_NothingToRun(t *testing.T) {
+	n := &Node{}
+	if err := n.completeBoot(context.Background()); err != nil {
+		t.Fatalf("completeBoot: %v", err)
+	}
+	if err := n.startLeaseExpiry(nil, nil, nil, nil, 0, qrdbconfig.LeaseConfig{}); err != nil {
+		t.Fatalf("startLeaseExpiry: %v", err)
+	}
+	n.startReclaimSweep(nil, nil, 0)
+	if n.bgCtx != nil {
+		t.Fatal("no background context may be created when there is nothing to run")
 	}
 }
 

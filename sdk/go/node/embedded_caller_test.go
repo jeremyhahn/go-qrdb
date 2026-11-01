@@ -177,3 +177,13 @@ func TestNodeReplicaForwarder_StandaloneServerDeclines(t *testing.T) {
 		t.Fatal("ForwardToLeader forwarded with no server")
 	}
 }
+
+// The embedded caller authenticates through the live server, which refuses
+// an empty chain with its own typed error.
+func TestEmbeddedCaller_AuthenticateThroughTheLiveServer(t *testing.T) {
+	c := &embeddedCaller{node: newBareStandaloneNode(t)}
+	id, err := c.Authenticate(context.Background())
+	if id != nil || !(errors.As(err, new(*server.CallerAuthUnavailableError)) || errors.As(err, new(*server.CallerCertificateError))) {
+		t.Fatalf("Authenticate with no chain = %v, %v (%T); want the server's typed refusal", id, err, err)
+	}
+}

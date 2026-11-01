@@ -227,6 +227,78 @@ func TestNodeFirstBoot_UsesTheWiredPolicy(t *testing.T) {
 	assert.Equal(t, firstboot.AdminBindingUnverifiable, refusal.Reason)
 }
 
+// A started node under the enrolled policy creates the admin on a fresh
+// store and starts no admin-binding watch.
+func TestNodeFirstBoot_StartedNodeReconciles(t *testing.T) {
+	n := newBareStandaloneNode(t)
+	n.bindingPolicy.Store(int32(auth.MTLSBindingEnrolled))
+	users, roles := realStores(t)
+	result, err := n.FirstBoot(context.Background(), fbDeps(users, roles))
+	if err != nil {
+		t.Fatalf("FirstBoot: %v", err)
+	}
+	if !result.AdminCreated {
+		t.Fatal("FirstBoot must create the admin on a fresh store")
+	}
+	if n.adminWatchStarted.Load() {
+		t.Fatal("an enrolled-policy node must not start the admin-binding watch")
+	}
+}
+
+// TestNodeFirstBoot_InitializeRefusalIsReturned: a refusal from
+// firstboot.Initialize reaches the caller of either entry point typed, with
+// no result.
+func TestNodeFirstBoot_InitializeRefusalIsReturned(t *testing.T) {
+	for name, boot := range map[string]func(*Node, firstboot.Dependencies) (*firstboot.Result, error){
+		"FirstBoot": func(n *Node, deps firstboot.Dependencies) (*firstboot.Result, error) {
+			return n.FirstBoot(context.Background(), deps)
+		},
+		"FirstBootWithCeremony": func(n *Node, deps firstboot.Dependencies) (*firstboot.Result, error) {
+			return n.FirstBootWithCeremony(context.Background(), nil, nil, 0, deps)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			users, roles := realStores(t)
+			deps := fbDeps(users, roles)
+			deps.Tenants = nil
+			result, err := boot(&Node{}, deps)
+			var missing *firstboot.MissingTenantsError
+			require.ErrorAs(t, err, &missing)
+			assert.Nil(t, result, "a refused first boot returns no result")
+		})
+	}
+}
+
+// TestReconcileAwaitingAdminCredential_WatchStartsOnce: an unbound admin
+// under "required" leaves the node awaiting with the admin watch armed, and a
+// second reconcile keeps that one watch rather than arming another.
+func TestReconcileAwaitingAdminCredential_WatchStartsOnce(t *testing.T) {
+	n := newBareStandaloneNode(t)
+	n.bindingPolicy.Store(int32(auth.MTLSBindingRequired))
+	ctx := context.Background()
+	svcs := n.Services()
+	_, err := n.FirstBoot(ctx, firstboot.Dependencies{
+		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	require.NoError(t, err)
+	require.True(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential() && n.adminWatchStarted.Load(),
+		"an unbound admin under \"required\" must leave the node awaiting, with the watch armed")
+	n.reconcileAwaitingAdminCredential(ctx, n.UserService(), n.svcNode.Load().Watch)
+	assert.True(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential() && n.adminWatchStarted.Load(),
+		"a second reconcile must keep the node awaiting with its one watch")
+}
+
+// TestReconcileAwaitingAdminCredential_NoProbeIsANoOp: under a required
+// binding policy, a node with no record watcher starts no admin-binding watch.
+func TestReconcileAwaitingAdminCredential_NoProbeIsANoOp(t *testing.T) {
+	n := &Node{}
+	n.bindingPolicy.Store(int32(auth.MTLSBindingRequired))
+	users, _ := realStores(t)
+	n.reconcileAwaitingAdminCredential(context.Background(), users, nil)
+	assert.False(t, n.adminWatchStarted.Load(), "a node with no probe must not start the admin-binding watch")
+}
+
 // go-qrdb#777: Node.FirstBoot holds a presented admin certificate to the
 // trust domain the node's mTLS authenticator pins, so it never binds a
 // certificate whose SPIFFE ID no login on this node would accept.

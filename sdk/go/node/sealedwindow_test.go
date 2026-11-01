@@ -37,6 +37,20 @@ func TestServeSealedWindow_NilNode(t *testing.T) {
 	require.ErrorAs(t, err, &cfgErr)
 }
 
+// TestServeSealedWindow_SealedNodeWithNoPendingBoot: a sealed node that
+// holds no pending boot has nothing to serve the window for, and refuses
+// with a ConfigError naming the node.
+func TestServeSealedWindow_SealedNodeWithNoPendingBoot(t *testing.T) {
+	barrier, closeBarrier := newTestBarrier(t)
+	defer closeBarrier()
+	n := &Node{}
+	n.barrier.Store(barrier)
+	require.True(t, n.IsSealed(), "precondition: the node must report sealed")
+	var cfgErr *ConfigError
+	require.ErrorAs(t, ServeSealedWindow(context.Background(), n), &cfgErr)
+	assert.Equal(t, "node", cfgErr.Field)
+}
+
 // TestServeSealedWindow_UnsealedNodeIsNoop verifies that a node without a
 // seal barrier (seal disabled) returns nil immediately — there is no
 // sealed window to serve.
