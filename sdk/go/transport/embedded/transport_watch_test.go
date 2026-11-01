@@ -32,7 +32,7 @@ import (
 // Watch lifecycle against the REAL hub
 //
 // These tests deliberately do NOT use mockWatchService/stubWatcher
-// (transport_coverage_test.go). That double hands back a watcher whose event
+// (mock_services_test.go). That double hands back a watcher whose event
 // channel is already closed and whose Err() is always nil, so it can neither
 // park a sender nor carry a terminal reason — it would report both go-qrdb#406
 // and go-qrdb#405 as absent. The subject here is what the forwarding goroutine
