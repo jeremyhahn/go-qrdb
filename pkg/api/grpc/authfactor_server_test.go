@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -626,5 +627,50 @@ func TestVerifyFactorHandler_PassesResponse(t *testing.T) {
 	}
 	if got.Metadata == nil {
 		t.Fatal("Metadata is nil for a request without metadata")
+	}
+}
+
+// TestRegisterAuthFactorService_RegistersOnlyWithService asserts the
+// AuthFactorService is registered for a non-nil service and skipped for nil.
+func TestRegisterAuthFactorService_RegistersOnlyWithService(t *testing.T) {
+	name := pb.AuthFactorService_ServiceDesc.ServiceName
+
+	without := grpc.NewServer()
+	RegisterAuthFactorService(without, nil)
+	if _, ok := without.GetServiceInfo()[name]; ok {
+		t.Fatalf("%s registered for a nil service", name)
+	}
+
+	with := grpc.NewServer()
+	RegisterAuthFactorService(with, newMockAuthFactorService())
+	if _, ok := with.GetServiceInfo()[name]; !ok {
+		t.Fatalf("%s not registered for a non-nil service", name)
+	}
+}
+
+// TestServer_WithAuthFactorService_ServesEnroll asserts a Server built with
+// WithAuthFactorService answers AuthFactorService RPCs from that service.
+func TestServer_WithAuthFactorService_ServesEnroll(t *testing.T) {
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
+		WithTLS(tlsCfg), WithAuthFactorService(newMockAuthFactorService()))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		FactorName: "pkcs11", Subject: "alice", TenantId: "t1",
+	})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+	if resp.GetEnrollmentId() != "enroll-1" || resp.GetUserId() != "alice" || resp.GetTenantId() != "t1" {
+		t.Fatalf("response = %+v", resp)
 	}
 }

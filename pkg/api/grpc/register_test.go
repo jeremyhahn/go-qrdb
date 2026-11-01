@@ -12,28 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !integration && !qrdb_ts
-
 package grpc
 
 import (
-	"context"
 	"testing"
 
 	"google.golang.org/grpc"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// stubCredentialService is a non-nil CredentialServicer whose identity the
-// option tests compare; none of its methods is called.
-type stubCredentialService struct {
-	service.CredentialServicer
-}
+// Non-nil dependencies whose identity the option tests compare; none of
+// their methods is called.
+type (
+	stubBarrierService     struct{ service.BarrierServicer }
+	stubCeremonyService    struct{ service.CeremonyServicer }
+	stubDatabaseService    struct{ service.DatabaseServicer }
+	stubCollectionService  struct{ service.CollectionServicer }
+	stubCredentialService  struct{ service.CredentialServicer }
+	stubEncryptionMigrator struct{ service.EncryptionMigrator }
+	stubDEKService         struct{ service.DEKServicer }
+	stubCertEnrollment     struct{ service.CertEnrollmentServicer }
+	stubInvitationService  struct{ service.InvitationServicer }
+	stubTenantOnboarding   struct{ service.TenantOnboardingServicer }
+	stubSQLService         struct{ service.SQLServicer }
+	stubServiceRegistry    struct{ service.Registry }
+)
 
-// TestRegisterOptions_AttachServices asserts each WithRegister* service
-// option stores exactly the dependency it was given on the server.
+// TestRegisterOptions_AttachServices asserts each WithRegister* option
+// stores exactly the dependency it was given on the server.
 func TestRegisterOptions_AttachServices(t *testing.T) {
 	mvcc := &mockMVCCService{}
 	tx := &mockTransactionService{}
@@ -42,12 +51,20 @@ func TestRegisterOptions_AttachServices(t *testing.T) {
 	lse := &mockLeaseService{}
 	idx := &mockIndexService{}
 	ts := &mockTimeSeriesService{}
-	barrier := newMockBarrierService()
-	cer := newMockCeremonyService()
-	db := newMockDatabaseService()
+	barrier := &stubBarrierService{}
+	cer := &stubCeremonyService{}
+	db := &stubDatabaseService{}
 	certProv := &mockCertProvider{}
-	coll := newMockCollectionService()
+	coll := &stubCollectionService{}
 	cred := &stubCredentialService{}
+	encMigrator := &stubEncryptionMigrator{}
+	dekSvc := &stubDEKService{}
+	certEnroll := &stubCertEnrollment{}
+	invitationSvc := &stubInvitationService{}
+	onboarding := &stubTenantOnboarding{}
+	mw := &authmw.AuthMiddleware{}
+	sqlSvc := &stubSQLService{}
+	registry := &stubServiceRegistry{}
 
 	tests := []struct {
 		name string
@@ -68,6 +85,14 @@ func TestRegisterOptions_AttachServices(t *testing.T) {
 		{"CertProvider", WithRegisterCertProvider(certProv), func(s *qrdbServiceServer) any { return s.certProv }, certProv},
 		{"Collection", WithRegisterCollectionService(coll), func(s *qrdbServiceServer) any { return s.collectionSvc }, coll},
 		{"Credential", WithRegisterCredentialService(cred), func(s *qrdbServiceServer) any { return s.credentialSvc }, cred},
+		{"EncryptionMigrator", WithRegisterEncryptionMigrator(encMigrator), func(s *qrdbServiceServer) any { return s.encMigrator }, encMigrator},
+		{"DEK", WithRegisterDEKService(dekSvc), func(s *qrdbServiceServer) any { return s.dekSvc }, dekSvc},
+		{"CertEnrollment", WithRegisterCertEnrollment(certEnroll), func(s *qrdbServiceServer) any { return s.certEnroll }, certEnroll},
+		{"Invitation", WithRegisterInvitationService(invitationSvc), func(s *qrdbServiceServer) any { return s.invitationSvc }, invitationSvc},
+		{"TenantOnboarding", WithRegisterTenantOnboarding(onboarding), func(s *qrdbServiceServer) any { return s.onboarding }, onboarding},
+		{"AuthMiddleware", WithRegisterAuthMiddleware(mw), func(s *qrdbServiceServer) any { return s.authMW }, mw},
+		{"SQL", WithRegisterSQLService(sqlSvc), func(s *qrdbServiceServer) any { return s.sqlSvc }, sqlSvc},
+		{"ServiceRegistry", WithRegisterServiceRegistry(registry), func(s *qrdbServiceServer) any { return s.registry }, registry},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,47 +105,22 @@ func TestRegisterOptions_AttachServices(t *testing.T) {
 	}
 }
 
-// TestRegisterAuthFactorService_RegistersOnlyWithService asserts the
-// AuthFactorService is registered for a non-nil service and skipped for nil.
-func TestRegisterAuthFactorService_RegistersOnlyWithService(t *testing.T) {
-	const name = "qrdb.v1.AuthFactorService"
-
-	without := grpc.NewServer()
-	RegisterAuthFactorService(without, nil)
-	if _, ok := without.GetServiceInfo()[name]; ok {
-		t.Fatalf("%s registered for a nil service", name)
-	}
-
-	with := grpc.NewServer()
-	RegisterAuthFactorService(with, newMockAuthFactorService())
-	if _, ok := with.GetServiceInfo()[name]; !ok {
-		t.Fatalf("%s not registered for a non-nil service", name)
-	}
-}
-
-// TestServer_WithAuthFactorService_ServesEnroll asserts a Server built with
-// WithAuthFactorService answers AuthFactorService RPCs from that service.
-func TestServer_WithAuthFactorService_ServesEnroll(t *testing.T) {
-	tlsCfg := testServerTLSConfig(t)
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithTLS(tlsCfg), WithAuthFactorService(newMockAuthFactorService()))
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(srv.Stop)
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-
-	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
-		FactorName: "pkcs11", Subject: "alice", TenantId: "t1",
-	})
-	if err != nil {
-		t.Fatalf("EnrollFactor: %v", err)
-	}
-	if resp.GetEnrollmentId() != "enroll-1" || resp.GetUserId() != "alice" || resp.GetTenantId() != "t1" {
-		t.Fatalf("response = %+v", resp)
+// TestRegisterService_RegistersQRDBService asserts RegisterService puts the
+// QRDBService on the gRPC server when optional services are attached.
+func TestRegisterService_RegistersQRDBService(t *testing.T) {
+	grpcSrv := grpc.NewServer()
+	defer grpcSrv.Stop()
+	RegisterService(grpcSrv, newMockKVService(), newMockAdminService(),
+		WithRegisterEncryptionMigrator(&stubEncryptionMigrator{}),
+		WithRegisterDEKService(&stubDEKService{}),
+		WithRegisterCertEnrollment(&stubCertEnrollment{}),
+		WithRegisterInvitationService(&stubInvitationService{}),
+		WithRegisterTenantOnboarding(&stubTenantOnboarding{}),
+		WithRegisterAuthMiddleware(&authmw.AuthMiddleware{}),
+		WithRegisterSQLService(&stubSQLService{}),
+		WithRegisterServiceRegistry(&stubServiceRegistry{}),
+	)
+	if _, ok := grpcSrv.GetServiceInfo()[pb.QRDBService_ServiceDesc.ServiceName]; !ok {
+		t.Fatalf("QRDBService not registered: %v", grpcSrv.GetServiceInfo())
 	}
 }

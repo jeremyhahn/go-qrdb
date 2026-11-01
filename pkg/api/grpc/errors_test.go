@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -212,5 +213,27 @@ func TestMapServiceError_DefaultDatabaseDropIsInvalidArgument(t *testing.T) {
 	err := mapServiceError(&database.DefaultDatabaseDropError{Name: "system"})
 	if got := status.Code(err); got != codes.InvalidArgument {
 		t.Fatalf("code = %v, want %v", got, codes.InvalidArgument)
+	}
+}
+
+// TestErrorClass_MarshalAndDecodeErrors asserts the marshal errors classify
+// as Internal and a bad signature encoding as InvalidArgument.
+func TestErrorClass_MarshalAndDecodeErrors(t *testing.T) {
+	inner := errors.New("boom")
+	tests := []struct {
+		name string
+		err  interface{ ErrorClass() errclass.Class }
+		want errclass.Class
+	}{
+		{name: "metadata marshal", err: &MetadataMarshalError{Err: inner}, want: errclass.Internal},
+		{name: "document marshal", err: &DocumentMarshalError{Err: inner}, want: errclass.Internal},
+		{name: "signature decode", err: &SignatureDecodeError{Err: inner}, want: errclass.InvalidArgument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.ErrorClass(); got != tt.want {
+				t.Errorf("ErrorClass() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
