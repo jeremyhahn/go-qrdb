@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -105,6 +108,68 @@ func TestWebTransport_AuthenticatedSessionReachesTheHandler(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the session never reached the handler")
+	}
+}
+
+// TestWebTransport_SessionAndStreamUnderReplicaForwarding runs the session in
+// the configuration a clustered node runs: replica forwarding is on, so the
+// router is reached through the forwarding middleware. The session must still
+// upgrade, and a bidirectional stream must carry bytes both ways.
+func TestWebTransport_SessionAndStreamUnderReplicaForwarding(t *testing.T) {
+	echoed := make(chan error, 1)
+	echo := func(sess *WebTransportSession, caller *auth.Identity, tenantID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		str, err := sess.AcceptStream(ctx)
+		if err != nil {
+			echoed <- err
+			return
+		}
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(str, buf); err != nil {
+			echoed <- err
+			return
+		}
+		_, err = str.Write(append([]byte(caller.Subject+":"), buf...))
+		_ = str.Close()
+		echoed <- err
+	}
+	fwd := replicaforward.Config{
+		Locator: replicaforward.NewLocator(replicaforwardtest.Members{}, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: x509.NewCertPool(),
+	}
+	srv, pool := startWTServer(t, WithReplicaForwarding(fwd), WithWebTransportHandler(wtTestPath, echo))
+	if srv.replicaForwarder == nil {
+		t.Fatal("replica forwarding is not installed; the test would not cover the clustered wrapper")
+	}
+	resp, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	str, err := sess.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("OpenStreamSync: %v", err)
+	}
+	if _, err := str.Write([]byte("ping")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := str.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	got, err := io.ReadAll(str)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(got) != "alice:ping" {
+		t.Fatalf("stream answered %q, want %q", got, "alice:ping")
+	}
+	if err := <-echoed; err != nil {
+		t.Fatalf("handler: %v", err)
 	}
 }
 
