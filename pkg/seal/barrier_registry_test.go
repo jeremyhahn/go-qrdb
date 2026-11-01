@@ -15,6 +15,29 @@ import (
 	"testing"
 )
 
+func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
+	backend := NewMemoryBackend()
+	sysBarrier, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewBarrierRegistry(testLogger(), sysBarrier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register without providing any strategy. NewTenantBarrier calls
+	// NewStorageBarrier which requires at least one strategy.
+	_, err = registry.RegisterTenant(context.Background(), "tenant-no-strategy", NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "t/root-key",
+	})
+	if !errors.Is(err, ErrNoAvailableStrategy) {
+		t.Errorf("RegisterTenant without strategy: got %v, want ErrNoAvailableStrategy", err)
+	}
+}
+
 // newSystemBarrier creates a system-level barrier for registry tests.
 func newSystemBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
