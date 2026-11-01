@@ -921,3 +921,58 @@ func TestHandleGetUserByCertThumbprint_ServiceError(t *testing.T) {
 		t.Fatalf("expected svcErr, got %v", err)
 	}
 }
+
+func TestHandleAddCertBinding_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := json.Marshal(addCertBindingWireRequest{UserID: 1, Thumbprint: "sha256:abc"})
+	_, err := srv.handleAddCertBinding(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) || snc.Service != "user" {
+		t.Fatalf("expected ServiceNotConfiguredError{user}, got %T(%v)", err, err)
+	}
+}
+
+func TestHandleAddCertBinding_InvalidJSON(t *testing.T) {
+	srv := newUserServer(&mockUserService{
+		addCertBindingFn: func(context.Context, uint64, string, int64) (*user.User, error) {
+			t.Fatal("service called with an undecodable payload")
+			return nil, nil
+		},
+	})
+	_, err := srv.handleAddCertBinding(context.Background(), []byte("{bad"))
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleAddCertBinding_Success(t *testing.T) {
+	var gotUserID uint64
+	var gotThumbprint string
+	var gotNotAfter int64
+	srv := newUserServer(&mockUserService{
+		addCertBindingFn: func(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+			gotUserID, gotThumbprint, gotNotAfter = userID, thumbprint, notAfterUnix
+			return testUser(101, "carol", "tenant-1"), nil
+		},
+	})
+	payload, _ := json.Marshal(addCertBindingWireRequest{
+		UserID:       101,
+		Thumbprint:   "sha256:deadbeef",
+		NotAfterUnix: 1800000000,
+	})
+	resp, err := srv.handleAddCertBinding(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotUserID != 101 || gotThumbprint != "sha256:deadbeef" || gotNotAfter != 1800000000 {
+		t.Fatalf("service got (%d, %q, %d), want (101, sha256:deadbeef, 1800000000)", gotUserID, gotThumbprint, gotNotAfter)
+	}
+	var out userWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ID != 101 || out.Username != "carol" {
+		t.Fatalf("response = %+v, want user 101 carol", out)
+	}
+}
