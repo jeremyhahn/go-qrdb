@@ -2372,7 +2372,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches test-in-toolchain-image check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches test-ci-registry test-in-toolchain-image check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2503,7 +2503,7 @@ vet-sdk:
 # job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
-	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
+	test-cluster-cpus test-trim-ci-caches test-ci-registry test-in-toolchain-image \
 	check-action-pins check-integration-feature-coverage \
 	check-no-deprecated-credential-retrieve check-no-alias-language \
 	check-lean-standalone \
@@ -2814,6 +2814,13 @@ test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
 .PHONY: test-trim-ci-caches
 test-trim-ci-caches: ## Test the CI cache trim's age-first eviction
 	@./scripts/trim-ci-caches_test.sh
+
+# The toolchain image push (scripts/ci-registry.sh push) retries a failed
+# docker push on the pull's bounded schedule: one registry 500 on a blob
+# upload failed a main run (#1344). Tested on a stub docker.
+.PHONY: test-ci-registry
+test-ci-registry: ## Test the CI registry push's bounded retry
+	@./scripts/ci-registry_test.sh
 
 # A stage's multicast namespace was a holder container sleeping until the
 # script's EXIT trap removed it, so every job killed first left one running

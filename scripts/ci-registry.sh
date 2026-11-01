@@ -80,8 +80,9 @@
 # an image another job holds stays. The reaper removes a hold tag whose
 # container is gone (a job that died before its teardown).
 #
-# CI_REGISTRY_BACKOFF is the seconds between pull attempts, times the attempt
-# number (default 10, so at most 10 s + 20 s of waiting across 3 attempts).
+# CI_REGISTRY_BACKOFF is the seconds between push or pull attempts, times the
+# attempt number (default 10, so at most 10 s + 20 s of waiting across 3
+# attempts): one registry 500 on a blob upload is not a failed push (#1344).
 set -euo pipefail
 
 readonly attempts=3
@@ -238,7 +239,13 @@ push() {
 	local target=$repo:$hash-$trust
 	login "$host" push "$owner"
 	docker tag "$image" "$target" || die "cannot tag $image as $target"
-	docker push "$target" >&2 || die "$(registry_name "$host") refused the push of $target"
+	local backoff=${CI_REGISTRY_BACKOFF:-10} n
+	for ((n = 1; ; n++)); do
+		docker push "$target" >&2 && break
+		[ "$n" -lt "$attempts" ] || die "$(registry_name "$host") refused the push of $target after $attempts attempts"
+		echo "==> push of $target failed (attempt $n of $attempts); retrying" >&2
+		sleep $((n * backoff))
+	done
 	local digest="" d
 	while IFS= read -r d; do
 		case $d in "$repo@"*) digest=$d ;; esac
