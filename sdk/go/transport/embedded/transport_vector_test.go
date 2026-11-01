@@ -23,10 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// ===========================================================================
-// Mock: VectorServicer (full impl)
-// ===========================================================================
-
 type mockVectorService struct{}
 
 var _ service.VectorServicer = (*mockVectorService)(nil)
@@ -133,258 +129,163 @@ func (m *mockVectorService) GetCompactionProgress(_ context.Context, _ *service.
 	return &service.GetCompactionProgressResponse{OperationID: "op1", InProgress: true, PercentComplete: 50}, nil
 }
 
-// ===========================================================================
-// Vector success tests
-// ===========================================================================
-
-func TestEmbeddedVector_AllMethods_Success(t *testing.T) {
-	tr := newExtTransport(t, WithVectorService(&mockVectorService{}))
-	ctx := context.Background()
-
-	t.Run("CreateNamespace", func(t *testing.T) {
-		if _, err := tr.CreateNamespace(ctx, &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 128}); err != nil {
-			t.Fatalf("CreateNamespace: %v", err)
-		}
-	})
-	t.Run("DeleteNamespace", func(t *testing.T) {
-		if _, err := tr.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("DeleteNamespace: %v", err)
-		}
-	})
-	t.Run("ListNamespaces", func(t *testing.T) {
-		if _, err := tr.ListNamespaces(ctx, &transport.ListNamespacesRequest{}); err != nil {
-			t.Fatalf("ListNamespaces: %v", err)
-		}
-	})
-	t.Run("GetNamespaceInfo", func(t *testing.T) {
-		if _, err := tr.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("GetNamespaceInfo: %v", err)
-		}
-	})
-	t.Run("UpsertVector", func(t *testing.T) {
-		if _, err := tr.UpsertVector(ctx, &transport.UpsertVectorRequest{Namespace: "ns", ID: 1, Vector: []float32{0.1}}); err != nil {
-			t.Fatalf("UpsertVector: %v", err)
-		}
-	})
-	t.Run("GetVector", func(t *testing.T) {
-		if _, err := tr.GetVector(ctx, &transport.GetVectorRequest{Namespace: "ns", ID: 1}); err != nil {
-			t.Fatalf("GetVector: %v", err)
-		}
-	})
-	t.Run("DeleteVector", func(t *testing.T) {
-		if _, err := tr.DeleteVector(ctx, &transport.DeleteVectorRequest{Namespace: "ns", ID: 1}); err != nil {
-			t.Fatalf("DeleteVector: %v", err)
-		}
-	})
-	t.Run("BatchUpsert", func(t *testing.T) {
-		if _, err := tr.BatchUpsert(ctx, &transport.BatchUpsertRequest{
-			Namespace: "ns",
-			Vectors:   []*transport.VectorData{{ID: 1, Vector: []float32{0.1}, Metadata: map[string]interface{}{"k": "v"}, Version: 1}},
-		}); err != nil {
-			t.Fatalf("BatchUpsert: %v", err)
-		}
-	})
-	t.Run("BatchDeleteVectors", func(t *testing.T) {
-		if _, err := tr.BatchDeleteVectors(ctx, &transport.BatchDeleteVectorsRequest{Namespace: "ns", IDs: []uint64{1}}); err != nil {
-			t.Fatalf("BatchDeleteVectors: %v", err)
-		}
-	})
-	t.Run("ListVectors", func(t *testing.T) {
-		if _, err := tr.ListVectors(ctx, &transport.ListVectorsRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("ListVectors: %v", err)
-		}
-	})
-	t.Run("UpdateMetadata", func(t *testing.T) {
-		if _, err := tr.UpdateMetadata(ctx, &transport.UpdateVectorMetadataRequest{Namespace: "ns", ID: 1}); err != nil {
-			t.Fatalf("UpdateMetadata: %v", err)
-		}
-	})
-	t.Run("SearchSimilar", func(t *testing.T) {
-		if _, err := tr.SearchSimilar(ctx, &transport.SearchSimilarRequest{Namespace: "ns", K: 5}); err != nil {
-			t.Fatalf("SearchSimilar: %v", err)
-		}
-	})
-	t.Run("SearchByMetadata", func(t *testing.T) {
-		if _, err := tr.SearchByMetadata(ctx, &transport.SearchByMetadataRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("SearchByMetadata: %v", err)
-		}
-	})
-	t.Run("HybridSearch", func(t *testing.T) {
-		if _, err := tr.HybridSearch(ctx, &transport.HybridSearchRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("HybridSearch: %v", err)
-		}
-	})
-	t.Run("SearchByID", func(t *testing.T) {
-		if _, err := tr.SearchByID(ctx, &transport.SearchByIDRequest{Namespace: "ns", ID: 1, K: 5}); err != nil {
-			t.Fatalf("SearchByID: %v", err)
-		}
-	})
-	t.Run("RebuildIndex", func(t *testing.T) {
-		if _, err := tr.RebuildIndex(ctx, &transport.RebuildIndexRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("RebuildIndex: %v", err)
-		}
-	})
-	t.Run("GetRebuildProgress", func(t *testing.T) {
-		if _, err := tr.GetRebuildProgress(ctx, &transport.GetRebuildProgressRequest{}); err != nil {
-			t.Fatalf("GetRebuildProgress: %v", err)
-		}
-	})
-	t.Run("GetIndexStats", func(t *testing.T) {
-		resp, err := tr.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns"})
-		if err != nil {
-			t.Fatalf("GetIndexStats: %v", err)
-		}
-		if resp.IndexType != transport.IndexHNSW {
-			t.Errorf("index type: %q, want %q", resp.IndexType, transport.IndexHNSW)
-		}
-	})
-	t.Run("CompactNamespace", func(t *testing.T) {
-		if _, err := tr.CompactNamespace(ctx, &transport.CompactNamespaceRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("CompactNamespace: %v", err)
-		}
-	})
-	t.Run("GetCompactionProgress", func(t *testing.T) {
-		if _, err := tr.GetCompactionProgress(ctx, &transport.GetCompactionProgressRequest{Namespace: "ns"}); err != nil {
-			t.Fatalf("GetCompactionProgress: %v", err)
-		}
-	})
-}
-
-// ===========================================================================
-// Vector dispatch handler success paths
-// ===========================================================================
-
 func TestEmbeddedVector_Dispatch(t *testing.T) {
 	tr := newExtTransport(t, WithVectorService(&mockVectorService{}), WithBatchService(&fullBatchExecSvc{}))
 	ctx := context.Background()
 
+	request := func(t *testing.T, verb string, req, out any) {
+		t.Helper()
+		if err := tr.Request(ctx, verb, req, out); err != nil {
+			t.Fatalf("%s dispatch: %v", verb, err)
+		}
+	}
+
 	t.Run("CreateNamespace", func(t *testing.T) {
 		var resp *transport.CreateNamespaceResponse
-		if err := tr.Request(ctx, "CreateNamespace", &transport.CreateNamespaceRequest{Namespace: "ns"}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
-		}
-		if resp == nil {
-			t.Fatal("expected non-nil CreateNamespaceResponse")
+		request(t, "CreateNamespace", &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 4}, &resp)
+		if resp.Namespace != "ns" || resp.Dimension != 4 || !resp.Success {
+			t.Errorf("CreateNamespace = %+v, want ns/4/success", resp)
 		}
 	})
 	t.Run("DeleteNamespace", func(t *testing.T) {
 		var resp *transport.DeleteNamespaceResponse
-		if err := tr.Request(ctx, "DeleteNamespace", &transport.DeleteNamespaceRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "DeleteNamespace", &transport.DeleteNamespaceRequest{}, &resp)
+		if resp.VectorsDeleted != 5 {
+			t.Errorf("VectorsDeleted = %d, want 5", resp.VectorsDeleted)
 		}
 	})
 	t.Run("ListNamespaces", func(t *testing.T) {
 		var resp *transport.ListNamespacesResponse
-		if err := tr.Request(ctx, "ListNamespaces", &transport.ListNamespacesRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "ListNamespaces", &transport.ListNamespacesRequest{}, &resp)
+		if len(resp.Namespaces) != 1 || resp.Namespaces[0].Namespace != "ns" || resp.Namespaces[0].Dimension != 128 {
+			t.Errorf("Namespaces = %+v, want one ns/128 entry", resp.Namespaces)
 		}
 	})
 	t.Run("GetNamespaceInfo", func(t *testing.T) {
 		var resp *transport.GetNamespaceInfoResponse
-		if err := tr.Request(ctx, "GetNamespaceInfo", &transport.GetNamespaceInfoRequest{Namespace: "ns"}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "GetNamespaceInfo", &transport.GetNamespaceInfoRequest{Namespace: "ns"}, &resp)
+		if resp.Namespace != "ns" || resp.Dimension != 128 || resp.VectorCount != 100 {
+			t.Errorf("GetNamespaceInfo = %+v, want ns/128/100", resp)
 		}
 	})
 	t.Run("UpsertVector", func(t *testing.T) {
 		var resp *transport.UpsertVectorResponse
-		if err := tr.Request(ctx, "UpsertVector", &transport.UpsertVectorRequest{ID: 1, Vector: []float32{0.1}}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "UpsertVector", &transport.UpsertVectorRequest{ID: 7, Vector: []float32{0.1}}, &resp)
+		if resp.ID != 7 || resp.Version != 1 {
+			t.Errorf("UpsertVector = %+v, want ID 7 version 1", resp)
 		}
 	})
 	t.Run("GetVector", func(t *testing.T) {
 		var resp *transport.GetVectorResponse
-		if err := tr.Request(ctx, "GetVector", &transport.GetVectorRequest{ID: 1}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "GetVector", &transport.GetVectorRequest{ID: 7}, &resp)
+		if !resp.Found || resp.ID != 7 || len(resp.Vector) != 1 || resp.Metadata["k"] != "v" {
+			t.Errorf("GetVector = %+v, want found ID 7 with vector and metadata", resp)
 		}
 	})
 	t.Run("DeleteVector", func(t *testing.T) {
 		var resp *transport.DeleteVectorResponse
-		if err := tr.Request(ctx, "DeleteVector", &transport.DeleteVectorRequest{ID: 1}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "DeleteVector", &transport.DeleteVectorRequest{ID: 1}, &resp)
+		if !resp.Success {
+			t.Errorf("DeleteVector = %+v, want success", resp)
 		}
 	})
 	t.Run("BatchUpsert", func(t *testing.T) {
 		var resp *transport.BatchUpsertResponse
-		if err := tr.Request(ctx, "BatchUpsert", &transport.BatchUpsertRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		req := &transport.BatchUpsertRequest{Vectors: []*transport.VectorData{{ID: 1, Vector: []float32{0.1}}, {ID: 2, Vector: []float32{0.2}}}}
+		request(t, "BatchUpsert", req, &resp)
+		if resp.InsertedCount != 2 {
+			t.Errorf("InsertedCount = %d, want 2", resp.InsertedCount)
 		}
 	})
 	t.Run("BatchDeleteVectors", func(t *testing.T) {
 		var resp *transport.BatchDeleteVectorsResponse
-		if err := tr.Request(ctx, "BatchDeleteVectors", &transport.BatchDeleteVectorsRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "BatchDeleteVectors", &transport.BatchDeleteVectorsRequest{IDs: []uint64{1, 2, 3}}, &resp)
+		if resp.DeletedCount != 3 {
+			t.Errorf("DeletedCount = %d, want 3", resp.DeletedCount)
 		}
 	})
 	t.Run("ListVectors", func(t *testing.T) {
 		var resp *transport.ListVectorsResponse
-		if err := tr.Request(ctx, "ListVectors", &transport.ListVectorsRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "ListVectors", &transport.ListVectorsRequest{}, &resp)
+		if len(resp.Vectors) != 1 || resp.Vectors[0].ID != 1 {
+			t.Errorf("Vectors = %+v, want one vector ID 1", resp.Vectors)
 		}
 	})
 	t.Run("UpdateMetadata", func(t *testing.T) {
 		var resp *transport.UpdateVectorMetadataResponse
-		if err := tr.Request(ctx, "UpdateMetadata", &transport.UpdateVectorMetadataRequest{ID: 1}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "UpdateMetadata", &transport.UpdateVectorMetadataRequest{ID: 7}, &resp)
+		if resp.ID != 7 || resp.Version != 2 {
+			t.Errorf("UpdateMetadata = %+v, want ID 7 version 2", resp)
 		}
 	})
 	t.Run("SearchSimilar", func(t *testing.T) {
 		var resp *transport.SearchSimilarResponse
-		if err := tr.Request(ctx, "SearchSimilar", &transport.SearchSimilarRequest{K: 5}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "SearchSimilar", &transport.SearchSimilarRequest{K: 5}, &resp)
+		if len(resp.Results) != 1 || resp.Results[0].ID != 1 || resp.Results[0].Score != 0.95 {
+			t.Errorf("Results = %+v, want one result ID 1 score 0.95", resp.Results)
 		}
 	})
 	t.Run("SearchByMetadata", func(t *testing.T) {
 		var resp *transport.SearchByMetadataResponse
-		if err := tr.Request(ctx, "SearchByMetadata", &transport.SearchByMetadataRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "SearchByMetadata", &transport.SearchByMetadataRequest{}, &resp)
+		if len(resp.Results) != 1 || resp.Results[0].ID != 1 {
+			t.Errorf("Results = %+v, want one result ID 1", resp.Results)
 		}
 	})
 	t.Run("HybridSearch", func(t *testing.T) {
 		var resp *transport.HybridSearchResponse
-		if err := tr.Request(ctx, "HybridSearch", &transport.HybridSearchRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "HybridSearch", &transport.HybridSearchRequest{}, &resp)
+		if len(resp.Results) != 1 || resp.Results[0].ID != 1 {
+			t.Errorf("Results = %+v, want one result ID 1", resp.Results)
 		}
 	})
 	t.Run("SearchByID", func(t *testing.T) {
 		var resp *transport.SearchByIDResponse
-		if err := tr.Request(ctx, "SearchByID", &transport.SearchByIDRequest{ID: 1, K: 5}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "SearchByID", &transport.SearchByIDRequest{ID: 1, K: 5}, &resp)
+		if len(resp.Results) != 1 || resp.Results[0].ID != 1 {
+			t.Errorf("Results = %+v, want one result ID 1", resp.Results)
 		}
 	})
 	t.Run("RebuildIndex", func(t *testing.T) {
 		var resp *transport.RebuildIndexResponse
-		if err := tr.Request(ctx, "RebuildIndex", &transport.RebuildIndexRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "RebuildIndex", &transport.RebuildIndexRequest{}, &resp)
+		if resp.JobID != "j1" {
+			t.Errorf("JobID = %q, want j1", resp.JobID)
 		}
 	})
 	t.Run("GetRebuildProgress", func(t *testing.T) {
 		var resp *transport.GetRebuildProgressResponse
-		if err := tr.Request(ctx, "GetRebuildProgress", &transport.GetRebuildProgressRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "GetRebuildProgress", &transport.GetRebuildProgressRequest{}, &resp)
+		if resp.JobID != "j1" || resp.PercentComplete != 50 {
+			t.Errorf("GetRebuildProgress = %+v, want j1 at 50%%", resp)
 		}
 	})
 	t.Run("GetIndexStats", func(t *testing.T) {
 		var resp *transport.GetIndexStatsResponse
-		if err := tr.Request(ctx, "GetIndexStats", &transport.GetIndexStatsRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "GetIndexStats", &transport.GetIndexStatsRequest{}, &resp)
+		if resp.IndexType != transport.IndexHNSW {
+			t.Errorf("IndexType = %v, want %v", resp.IndexType, transport.IndexHNSW)
 		}
 	})
 	t.Run("CompactNamespace", func(t *testing.T) {
 		var resp *transport.CompactNamespaceResponse
-		if err := tr.Request(ctx, "CompactNamespace", &transport.CompactNamespaceRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "CompactNamespace", &transport.CompactNamespaceRequest{}, &resp)
+		if resp.OperationID != "op1" {
+			t.Errorf("OperationID = %q, want op1", resp.OperationID)
 		}
 	})
 	t.Run("GetCompactionProgress", func(t *testing.T) {
 		var resp *transport.GetCompactionProgressResponse
-		if err := tr.Request(ctx, "GetCompactionProgress", &transport.GetCompactionProgressRequest{}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "GetCompactionProgress", &transport.GetCompactionProgressRequest{}, &resp)
+		if !resp.InProgress || resp.PercentComplete != 50 {
+			t.Errorf("GetCompactionProgress = %+v, want in progress at 50%%", resp)
 		}
 	})
 	t.Run("ExecuteBatch", func(t *testing.T) {
 		var resp *transport.BatchResponse
-		if err := tr.Request(ctx, "ExecuteBatch", &transport.BatchRequest{Ops: []transport.Op{{Type: transport.OpPut, Key: []byte("k"), Value: []byte("v")}}}, &resp); err != nil {
-			t.Fatalf("dispatch: %v", err)
+		request(t, "ExecuteBatch", &transport.BatchRequest{Ops: []transport.Op{{Type: transport.OpPut, Key: []byte("k"), Value: []byte("v")}}}, &resp)
+		if resp == nil {
+			t.Fatal("ExecuteBatch returned a nil BatchResponse")
 		}
 	})
 }
