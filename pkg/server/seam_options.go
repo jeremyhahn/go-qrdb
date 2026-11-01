@@ -54,6 +54,9 @@ type seamOptions struct {
 	holderActLimiter        ratelimit.Limiter
 	webTransportPath        string
 	webTransportHandler     rest.WebTransportHandler
+	// webTransportSet records that WithWebTransportHandler was supplied, so
+	// an explicit ("", nil) still reaches REST's validation.
+	webTransportSet bool
 }
 
 // WithBackupSink sets the durable sink backup artifacts are persisted to. Nil
@@ -117,6 +120,7 @@ func WithWebTransportHandler(path string, h rest.WebTransportHandler) ServerOpti
 	return func(o *serverOptions) {
 		o.webTransportPath = path
 		o.webTransportHandler = h
+		o.webTransportSet = true
 	}
 }
 
