@@ -1,14 +1,15 @@
 # Credentials — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
 > Conflicts with this document are defects. Fix them here first.
 
 Named secrets the engine itself needs, with version history and a rotation
 grace period.
 
 **This is not an application secret store.** It holds the handful of
-operational and boot secrets qrdb needs for itself. Application and tenant
-secrets belong to the KMS one layer up.
+operational and boot secrets qrdb needs for itself, and each tenant has its own
+store for the same kind of secret. Application secrets belong to the KMS one
+layer up.
 
 ## Prerequisites
 
@@ -92,6 +93,26 @@ starting system:
 qrdb credential submit ceremony-seed --value "$SEED"
 ```
 
+## Credentials in a tenant
+
+Every tenant has its own credential store. Sign in as a principal of the tenant
+and the same commands work on that tenant's store, never on another tenant's
+or on the platform's:
+
+```bash
+qrdb credential store smtp-password --value "$ACME_SMTP_PASS"
+qrdb credential list
+```
+
+The same name can hold a different value in every tenant. A tenant
+administrator can grant the `credentials:*` permissions to roles inside the
+tenant. A tenant's store always uses the `barrier` strategy, over the tenant's
+own barrier, so the tenant's barrier must be unsealed.
+
+A tenant needs a dedicated barrier to have a store: onboard it with `barrier`,
+`volume` or `raft` isolation. A tenant on `prefix` isolation shares the system
+barrier, and its credential calls are refused.
+
 ## Referencing credentials from configuration
 
 An application that embeds qrdb can point a field of its own configuration at a
@@ -117,6 +138,14 @@ value would let the boot continue with no credential at all.
 **Everything fails with a barrier error.** The `barrier` strategy needs the
 barrier unsealed. See [../barrier-seal/user.md](../barrier-seal/user.md).
 
+**A tenant's credential call fails with "no dedicated barrier".** The tenant is
+on `prefix` isolation, on the shared system barrier. Credentials need a tenant
+with its own barrier; there is no tenant prefix inside the platform's store.
+
+**A tenant's credential call fails with a sealed-barrier error.** The tenant's
+own barrier is sealed. Unseal it; the platform's barrier being unsealed is not
+enough.
+
 **A version you wanted is gone.** Its grace period elapsed, or a rotation with
 `--grace-period 0` wiped it. There is no recovery — the point of the wipe is
 that the old value stops existing.
@@ -129,7 +158,7 @@ KV store. They are a separate store, distinct from both the data plane and the
 barrier's key custody.
 
 **You want to store application secrets here.** Do not. This is the engine's own
-minimal custody. Application and tenant secrets — with per-key authorization,
+minimal custody. Application secrets — with per-key authorization,
 key-use audit and rotation policy — are the KMS at the services layer, which
 composes above this.
 

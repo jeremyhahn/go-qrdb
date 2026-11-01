@@ -200,7 +200,8 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	)
 	attempt := 0
 	var tenantStatus int
-	if !pollUntil(60*time.Second, 500*time.Millisecond, func() bool {
+	createClient := tenantCreateClient(sysClient)
+	if !pollUntil(tenantCreateWindow, 500*time.Millisecond, func() bool {
 		attempt++
 		tenantID = fmt.Sprintf("aud-acme-%d", attempt)
 		keyPEM, adminCSRPEM, err := certtest.NewCSR(tenantID + "-admin")
@@ -208,7 +209,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 			t.Fatalf("certtest.NewCSR: %v", err)
 		}
 		adminKeyPEM = keyPEM
-		tenantBody, tenantStatus = iraftAPIPost(t, sysClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+		tenantBody, tenantStatus = iraftAPIPost(t, createClient, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
 			map[string]interface{}{
 				"id":             tenantID,
 				"name":           "Audit Acme",

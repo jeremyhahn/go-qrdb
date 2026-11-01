@@ -17,9 +17,11 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -171,12 +173,15 @@ func (t *Transport) LockStatus(ctx context.Context, key string) (*transport.Lock
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, t.decodeErrorResponse("LockStatus", resp)
+		// The server answers an unheld key with a LOCK_NOT_FOUND refusal; only
+		// that refusal means "not locked". Any other 404 -- a missing database,
+		// a route the server does not have -- is a failed read.
+		err := t.decodeErrorResponse("LockStatus", resp)
+		if _, notLocked := errors.AsType[*lock.LockNotFoundError](err); notLocked {
+			return nil, nil
+		}
+		return nil, err
 	}
 
 	var wireResp lockWireResponse

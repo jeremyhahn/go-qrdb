@@ -22,6 +22,7 @@ and `admin capabilities` omits `vector`.
 | Delete namespace | `POST /vector/namespace/delete` | `VectorDeleteNamespace` | `vector.DeleteNamespace` | `qrdb_vector_delete_namespace` | `DeleteNamespace` | `vector:namespace_delete` |
 | List namespaces | `GET /vector/namespaces` | `VectorListNamespaces` | `vector.ListNamespaces` | `qrdb_vector_list_namespaces` | `ListNamespaces` | `vector:namespace_list` |
 | Namespace info | `GET /vector/namespace/info` | `VectorGetNamespaceInfo` | `vector.GetNamespaceInfo` | `qrdb_vector_get_namespace_info` | `GetNamespaceInfo` | `vector:namespace_info` |
+| Update namespace | `POST /vector/namespace/update` | `VectorUpdateNamespace` | `vector.UpdateNamespace` | `qrdb_vector_update_namespace` | `UpdateNamespace` | `vector:namespace_update` |
 | Upsert | `POST /vector/upsert` | `VectorUpsert` | `vector.Upsert` | `qrdb_vector_upsert` | `UpsertVector` | `vector:upsert` |
 | Get | `GET /vector/get` | `VectorGet` | `vector.Get` | `qrdb_vector_get` | `GetVector` | `vector:get` |
 | Delete | `POST /vector/delete` | `VectorDelete` | `vector.Delete` | `qrdb_vector_delete` | `DeleteVector` | `vector:delete` |
@@ -52,10 +53,18 @@ The examples are REST bodies. Namespace creation:
   "distance_metric": "cosine", "index_type": "hnsw", "shard_id": 0 }
 ```
 
-`distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product`; the
-server uses `euclidean` when it is omitted. `index_type`: `hnsw` · `flat` ·
-`ivf_flat`; the server uses `hnsw` when it is omitted. Both are immutable after
-creation.
+`distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product` ·
+`manhattan`, in any case; the server uses `euclidean` when it is omitted and
+refuses any other name with 400 (`INVALID_ARGUMENT` over gRPC). Over gRPC,
+Unix and QUIC the metric is the `DistanceMetric` enum: `DISTANCE_COSINE` (0,
+the default), `DISTANCE_EUCLIDEAN` (1), `DISTANCE_DOT_PRODUCT` (2),
+`DISTANCE_MANHATTAN` (3); any other value is refused with `INVALID_ARGUMENT`,
+never read as cosine. `index_type`: `hnsw` · `flat` ·
+`ivf_flat` (alias `ivf`), in any case; the server uses `hnsw` when it is omitted
+and refuses any other name with 400. Both are immutable after
+creation. A `manhattan` namespace of any index type needs the
+`vector-manhattan` cluster feature; until it is active the create is refused
+with 409 (`FAILED_PRECONDITION` over gRPC).
 
 Upsert:
 

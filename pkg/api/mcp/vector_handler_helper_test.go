@@ -1,5 +1,3 @@
-//go:build qrdb_vector
-
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,33 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rest
+package mcp
 
 import (
-	"net/http"
+	"context"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
-// RAG errors through the one REST mapping
+// Helper: find tool handler by name from tool list
 // ---------------------------------------------------------------------------
-//
-// These used to exercise a build-tagged mapRAGHTTPError hook. The RAG error
-// types are untagged and classified by pkg/api/errclass like every other
-// family, so the hook is gone and the RAG handlers' statuses come from
-// mapHTTPError.
 
-func TestMapHTTPError_RAGDocNotFound(t *testing.T) {
-	err := &service.RAGDocumentNotFoundError{ID: "doc1", Namespace: "ns"}
-	if code := mapHTTPError(err); code != http.StatusNotFound {
-		t.Errorf("code = %d, want 404", code)
+func findVectorHandler(t *testing.T, svc service.VectorServicer, toolName string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	t.Helper()
+	tools := vectorTools(svc)
+	for _, tool := range tools {
+		if tool.Tool.Name == toolName {
+			return tool.Handler
+		}
 	}
-}
-
-func TestMapHTTPError_RAGServiceClosed(t *testing.T) {
-	if code := mapHTTPError(&service.RAGServiceClosedError{}); code != http.StatusServiceUnavailable {
-		t.Errorf("code = %d, want 503", code)
-	}
+	t.Fatalf("tool %q not found in vectorTools", toolName)
+	return nil
 }

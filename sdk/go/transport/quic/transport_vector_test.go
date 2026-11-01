@@ -228,6 +228,31 @@ func TestProtoToVectorData_InvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestProtoToNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
+	got, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{
+		Namespace:    "ns",
+		Dimension:    4,
+		IndexType:    pb.VectorIndexType_INDEX_HNSW,
+		IndexConfig:  map[string]string{"ef_construction": "321"},
+		MetadataJson: `{"owner":"team-a"}`,
+	})
+	if err != nil {
+		t.Fatalf("protoToNamespaceInfo() error = %v", err)
+	}
+	if got.Dimension != 4 || got.IndexType != transport.IndexHNSW {
+		t.Fatalf("protoToNamespaceInfo() = %+v", got)
+	}
+	if got.IndexConfig["ef_construction"] != "321" || got.Metadata["owner"] != "team-a" {
+		t.Fatalf("IndexConfig = %v, Metadata = %v", got.IndexConfig, got.Metadata)
+	}
+}
+
+func TestProtoToNamespaceInfo_InvalidMetadata(t *testing.T) {
+	if _, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{Namespace: "ns", MetadataJson: "{{bad-json"}); err == nil {
+		t.Fatal("protoToNamespaceInfo() should return error for invalid metadata")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // protoToSearchResults tests
 // ---------------------------------------------------------------------------
@@ -436,9 +461,9 @@ func TestDistanceMetricToProto_AllValues(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := distanceMetricToProto[tt.input]
+			got := transportDistanceMetricToProto[tt.input]
 			if got != tt.expected {
-				t.Errorf("distanceMetricToProto[%q] = %v, want %v", tt.input, got, tt.expected)
+				t.Errorf("transportDistanceMetricToProto[%q] = %v, want %v", tt.input, got, tt.expected)
 			}
 		})
 	}

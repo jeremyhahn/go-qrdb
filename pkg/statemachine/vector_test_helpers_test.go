@@ -149,6 +149,19 @@ func NewMockVectorStorageWrapper() *MockVectorStorageWrapper {
 	}
 }
 
+func (m *MockVectorStorageWrapper) UpdateNamespace(ctx context.Context, namespace string, update *vector.NamespaceUpdate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info, exists := m.namespaces[namespace]
+	if !exists {
+		return vector.ErrNamespaceNotFound
+	}
+	info.IndexConfig = update.IndexConfig
+	info.Metadata = update.Metadata
+	info.UpdatedAt = update.UpdatedAt
+	return nil
+}
+
 func (m *MockVectorStorageWrapper) CreateNamespace(ctx context.Context, info *vector.NamespaceInfo) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

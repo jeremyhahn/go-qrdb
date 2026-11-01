@@ -156,6 +156,22 @@ func selfScopedPermissions() []Permission {
 		CollectionsRead,
 		CollectionsUpdate,
 
+		// credentials. Each tenant has its own named-credential store: the
+		// system tenant's is the node-wide store, every other tenant's lives
+		// under its own tenant barrier (service.CredentialService resolves
+		// the store from the caller's tenant), so a grant in one tenant never
+		// reaches another tenant's, or the platform's, credential material.
+		CredentialsDelete,
+		CredentialsGCExpired,
+		CredentialsList,
+		CredentialsListVersions,
+		CredentialsRetrieve,
+		CredentialsRetrieveVersion,
+		CredentialsRotate,
+		CredentialsStore,
+		CredentialsStrategy,
+		CredentialsSubmit,
+
 		// databases. The barrier permissions (seal, unseal, barrier_status)
 		// are ScopeSelfStrict -- see self_strict_scope.go.
 		DatabasesCreate,
@@ -374,6 +390,7 @@ func selfScopedPermissions() []Permission {
 		VectorHybridSearch,
 		VectorList,
 		VectorNamespaceCreate,
+		VectorNamespaceUpdate,
 		VectorNamespaceDelete,
 		VectorNamespaceInfo,
 		VectorNamespaceList,

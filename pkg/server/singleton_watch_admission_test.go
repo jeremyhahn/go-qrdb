@@ -17,11 +17,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -124,12 +126,13 @@ func TestServer_SingletonWatch_SystemWatchSurvivesOtherTenantSuspension(t *testi
 }
 
 // Without auth middleware the singleton watch service is handed to the
-// listeners as configured, with no admitter in front of it.
+// listeners with no admitter in front of it: only the counting wrapper that
+// makes a client's watch hold a watch.max_watchers slot.
 func TestServer_SingletonWatch_NoAuthUnwrapped(t *testing.T) {
 	svc := &registryPushWatchService{w: &registryPushWatcher{}}
 	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithWatch(svc))
-	if got := srv.listenerWatch(); got != svc {
-		t.Fatalf("listenerWatch() = %T, want the configured service", got)
+	if got, want := fmt.Sprintf("%T", srv.listenerWatch()), fmt.Sprintf("%T", service.NewCountedWatch(svc)); got != want {
+		t.Fatalf("listenerWatch() = %s, want the configured service behind only %s", got, want)
 	}
 	if srv.streamAdmitter() != nil {
 		t.Fatal("streamAdmitter() non-nil without auth middleware")

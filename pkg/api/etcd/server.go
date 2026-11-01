@@ -29,6 +29,8 @@ import (
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 
+	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -60,6 +62,18 @@ type serverOptions struct {
 	// authorizer authenticates and authorizes every RPC. Start refuses to
 	// serve without it.
 	authorizer RequestAuthorizer
+
+	// clientLimit admits each call by client address before the authorizer
+	// runs (go-qrdb#1197); nil admits every call.
+	clientLimit *clientlimit.Limiter
+}
+
+// WithClientLimiter admits every RPC through l before any other
+// interceptor -- authentication included -- runs (go-qrdb#1197), exactly as
+// the node's gRPC listener does. Every transport of one server shares the
+// same Limiter. Nil, the default, applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(o *serverOptions) { o.clientLimit = l }
 }
 
 // ServerOption configures optional Server dependencies.
@@ -143,10 +157,11 @@ func (s *Server) Start() error {
 	}
 	s.listener = lis
 
+	unary, stream := s.admissionChains()
 	grpcOpts := []grpc.ServerOption{
 		grpc.Creds(credentials.NewTLS(s.opts.tlsConfig)),
-		grpc.ChainUnaryInterceptor(s.unaryAuthorize),
-		grpc.ChainStreamInterceptor(s.streamAuthorize),
+		grpc.UnaryInterceptor(unary),
+		grpc.StreamInterceptor(stream),
 	}
 
 	s.grpcServer = grpc.NewServer(grpcOpts...)
@@ -213,6 +228,14 @@ func (s *Server) Start() error {
 
 	s.logger.Info("etcd server started", "database", s.dbName, "addr", s.Addr())
 	return nil
+}
+
+// admissionChains returns the interceptors every RPC passes through: the
+// client-address limiter first (go-qrdb#1197), so a refused caller is never
+// authenticated, then the request authorizer.
+func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServerInterceptor) {
+	return grpcapi.ChainUnaryServerInterceptors(grpcapi.ClientLimitUnaryInterceptor(s.opts.clientLimit), s.unaryAuthorize),
+		grpcapi.ChainStreamServerInterceptors(grpcapi.ClientLimitStreamInterceptor(s.opts.clientLimit), s.streamAuthorize)
 }
 
 // Stop gracefully shuts down the etcd gRPC server.

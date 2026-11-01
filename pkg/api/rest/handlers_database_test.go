@@ -1294,6 +1294,48 @@ func TestRaftConfigRequest_JSON(t *testing.T) {
 	}
 }
 
+// TestHandleDatabaseByName_UpdateBadBody proves every PATCH sub-route of
+// /v1/databases/{name} refuses an undecodable body with 400.
+func TestHandleDatabaseByName_UpdateBadBody(t *testing.T) {
+	for _, sub := range []string{"etcd", "raft", "barrier", "connection"} {
+		t.Run(sub, func(t *testing.T) {
+			s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+				WithDatabaseService(newMockDatabaseService()))
+			req := httptest.NewRequest(http.MethodPatch, "/v1/databases/mydb/"+sub, strings.NewReader(`bad`))
+			rec := httptest.NewRecorder()
+			s.dispatch(rec, req)
+			assertStatus(t, rec, http.StatusBadRequest)
+		})
+	}
+}
+
+// TestHandleUpdateDatabaseEtcd_WithCallback proves WithOnEtcdUpdated's
+// callback runs after an etcd update, naming the database and its tenant:
+// another tenant may hold a database named mydb too.
+func TestHandleUpdateDatabaseEtcd_WithCallback(t *testing.T) {
+	called := false
+	dbSvc := &mockDatabaseServiceWithEtcd{
+		updateEtcdResult: &database.DatabaseInfo{TenantID: "acme", Name: "mydb", Backend: database.BackendPebble},
+	}
+	fn := func(tenantID, dbName string, _ *database.EtcdConfig) error {
+		called = true
+		if tenantID != "acme" || dbName != "mydb" {
+			t.Errorf("onEtcdUpdated(%q, %q), want (acme, mydb)", tenantID, dbName)
+		}
+		return nil
+	}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithDatabaseService(dbSvc),
+		WithOnEtcdUpdated(fn))
+	body := `{"enabled":true,"listen_addr":"localhost:2379"}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/databases/mydb/etcd", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleUpdateDatabaseEtcd(rec, req, "mydb")
+	if !called {
+		t.Error("onEtcdUpdated callback not invoked")
+	}
+}
+
 func TestWithDatabaseService_Option(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
@@ -1418,4 +1460,24 @@ func TestHandleScaleDatabase_NotLeader_NoResolver(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusServiceUnavailable)
+}
+
+// ---------------------------------------------------------------------------
+// mockDatabaseServiceWithEtcd overrides UpdateEtcd to return a non-nil
+// DatabaseInfo, avoiding nil dereference in databaseInfoToResponse.
+// ---------------------------------------------------------------------------
+
+type mockDatabaseServiceWithEtcd struct {
+	mockDatabaseService
+	updateEtcdResult *database.DatabaseInfo
+}
+
+func (m *mockDatabaseServiceWithEtcd) UpdateEtcd(_ string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.updateEtcdResult, nil
+}
+
+// UpdateEtcdForTenant overrides the embedded mock's promoted method so it
+// routes to this type's UpdateEtcd (Go embedding is not virtual dispatch).
+func (m *mockDatabaseServiceWithEtcd) UpdateEtcdForTenant(_ context.Context, name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
+	return m.UpdateEtcd(name, cfg)
 }

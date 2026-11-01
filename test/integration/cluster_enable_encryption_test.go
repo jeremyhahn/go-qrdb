@@ -502,7 +502,7 @@ func onboardRaftTenantDBAdmin(t *testing.T, ca *testCA, sysClient *http.Client, 
 	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
 	createReq["id"], createReq["name"] = tenantID, "Raft Tenant "+tenantID
 	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "raft", false
-	createBody, s := iraftAPIPost(t, sysClient,
+	createBody, s := iraftAPIPost(t, tenantCreateClient(sysClient),
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort), createReq)
 	if s != http.StatusCreated && s != http.StatusOK {
 		t.Fatalf("create tenant %s: status %d, body: %s", tenantID, s, createBody)

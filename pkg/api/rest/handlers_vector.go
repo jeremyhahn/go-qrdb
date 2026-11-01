@@ -45,6 +45,24 @@ type vectorCreateNamespaceResponse struct {
 	Success   bool   `json:"success"`
 }
 
+// vectorUpdateNamespaceRequest is the JSON body for POST
+// /vector/namespace/update.
+type vectorUpdateNamespaceRequest struct {
+	Namespace   string                 `json:"namespace"`
+	Dimension   uint32                 `json:"dimension,omitempty"`
+	IndexConfig map[string]string      `json:"index_config,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// vectorUpdateNamespaceResponse is the JSON response for POST
+// /vector/namespace/update.
+type vectorUpdateNamespaceResponse struct {
+	Namespace       string `json:"namespace"`
+	RequiresRebuild bool   `json:"requires_rebuild"`
+	Timestamp       int64  `json:"timestamp"`
+	Success         bool   `json:"success"`
+}
+
 // vectorDeleteNamespaceRequest is the JSON payload for DELETE /vector/namespace.
 type vectorDeleteNamespaceRequest struct {
 	Namespace string `json:"namespace"`
@@ -420,6 +438,43 @@ func (s *Server) handleVectorCreateNamespace(w http.ResponseWriter, r *http.Requ
 		Dimension: resp.Dimension,
 		Timestamp: resp.Timestamp,
 		Success:   resp.Success,
+	})
+}
+
+// handleVectorUpdateNamespace handles POST /vector/namespace/update: it changes
+// a namespace's index parameters and metadata in place, keeping every vector.
+func (s *Server) handleVectorUpdateNamespace(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	vectorSvc := s.vectorSvcFor(w, ctx)
+	if vectorSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "vector"})
+		}
+		return
+	}
+
+	var req vectorUpdateNamespaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	resp, err := vectorSvc.UpdateNamespace(ctx, &service.UpdateNamespaceRequest{
+		Namespace:   req.Namespace,
+		Dimension:   req.Dimension,
+		IndexConfig: req.IndexConfig,
+		Metadata:    req.Metadata,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, vectorUpdateNamespaceResponse{
+		Namespace:       resp.Namespace,
+		RequiresRebuild: resp.RequiresRebuild,
+		Timestamp:       resp.Timestamp,
+		Success:         resp.Success,
 	})
 }
 

@@ -100,7 +100,8 @@ sign it.
 
 An invitation expires after `auth.invitation_ttl` (24 hours by default) and
 can be redeemed exactly once; re-running step 1 with just `--username` issues
-a fresh token for the same still-pending account. If the operator has set
+a fresh token for the same still-pending account and cancels every token sent
+before it, so only the newest one works. If the operator has set
 `auth.invitation_require_key_pin`, step 1 also needs alice's key fingerprint
 (computed from her CSR — ask her to send it first) as `--key-pin-fingerprint`,
 and only a CSR over that exact key redeems it.
@@ -618,7 +619,16 @@ roles and tenant-scoped bindings.
 predates the change. `qrdb roles get <id>` shows a `Retired:` line if the role
 also carries verbs the build has dropped — either way,
 `qrdb roles reconcile --tenant <id>` converges it. This is the one supported way
-to change a built-in role's permissions; `roles update` refuses.
+to change a built-in role's permissions; `roles update` refuses. After an
+upgrade, the platform operator converges every tenant in one pass with
+`qrdb roles reconcile --all-tenants`; it lists sealed tenants as skipped and
+exits non-zero if any tenant failed.
+
+**`roles reconcile --all-tenants` is refused for the system Admin.** The node
+was upgraded from a build that predates `roles:reconcile_all`, so the stored
+system Admin role does not hold it yet. Run `qrdb roles reconcile` as the system
+Admin first; converging the system tenant grants the permission. Then rerun
+`--all-tenants`.
 
 **Creating a role failed on a permission string.** The vocabulary is a fixed
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists

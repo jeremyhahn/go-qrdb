@@ -198,7 +198,7 @@ func (t *Transport) connectOnce(ctx context.Context) error {
 		// A server that refuses the caller's credential has answered: its
 		// typed refusal is the result, as on every other transport, not a
 		// connectivity failure.
-		if refusal, ok := unauthenticatedRefusal(err); ok {
+		if refusal, ok := callerRefusal(err); ok {
 			return refusal
 		}
 		return &transport.ConnectionError{
@@ -220,7 +220,7 @@ func retryableConnect(err error) bool {
 	if errors.As(err, &tlsErr) && tlsErr.ErrorCode.IsCryptoError() {
 		return false
 	}
-	if _, ok := unauthenticatedRefusal(err); ok {
+	if _, ok := callerRefusal(err); ok {
 		return false
 	}
 	var alpn *alpnMismatchError
@@ -239,13 +239,16 @@ func boundSpent(ctx context.Context) bool {
 	return ok && !time.Now().Before(deadline)
 }
 
-// unauthenticatedRefusal returns the server's typed refusal of the caller's
-// credential (wire.StatusUnauthenticated) when err carries one: a revoked or
-// unbound certificate, or an account whose lifecycle forbids it to
-// authenticate. The server reached that verdict, so a retry meets it again.
-func unauthenticatedRefusal(err error) (*transport.RequestError, bool) {
+// callerRefusal returns the server's typed refusal of the caller when err
+// carries one: of its credential (wire.StatusUnauthenticated) -- a revoked
+// or unbound certificate, or an account whose lifecycle forbids it to
+// authenticate -- or of its address under the client-address rate limit
+// (wire.StatusResourceExhausted, with the RetryInfo the server sent). The
+// server reached that verdict, so an immediate retry meets it again.
+func callerRefusal(err error) (*transport.RequestError, bool) {
 	var reqErr *transport.RequestError
-	if errors.As(err, &reqErr) && reqErr.StatusCode == int(wire.StatusUnauthenticated) {
+	if errors.As(err, &reqErr) && (reqErr.StatusCode == int(wire.StatusUnauthenticated) ||
+		reqErr.StatusCode == int(wire.StatusResourceExhausted)) {
 		return reqErr, true
 	}
 	return nil, false

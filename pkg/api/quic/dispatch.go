@@ -216,6 +216,7 @@ func (s *Server) buildHandlers() {
 
 	// Vector
 	s.handle("vector.CreateNamespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.handle("vector.UpdateNamespace", permission.VectorNamespaceUpdate, s.handleVectorUpdateNamespace)
 	s.handle("vector.DeleteNamespace", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
 	s.handle("vector.ListNamespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
 	s.handle("vector.GetNamespaceInfo", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)
@@ -274,6 +275,7 @@ func (s *Server) buildHandlers() {
 	// dedicated permission would be missing from every role seeded before it
 	// existed, so nobody could hold the grant needed to repair that absence.
 	s.handle("role.ReconcileBuiltIn", permission.RolesCreate, s.handleReconcileRoles)
+	s.handle("role.ReconcileBuiltInAllTenants", permission.RolesReconcileAll, s.handleReconcileRolesAllTenants)
 
 	// Certificate management
 	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)

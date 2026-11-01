@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -321,6 +322,18 @@ var IsServicePrincipal = auth.IsServicePrincipal
 // produced it. It matches ErrUnauthenticated under errors.Is, so transports
 // answer 401 / Unauthenticated.
 type ServicePrincipalPresentedError = authmw.ServicePrincipalPresentedError
+
+// StoreUnavailableError is the authentication middleware's refusal when the
+// user store could not answer. Every transport answers 503 / Unavailable, and
+// the request may be retried.
+type StoreUnavailableError = authmw.StoreUnavailableError
+
+// IsLeadershipTransient reports whether err is a shard electing a leader or
+// its leader moving: a state the next attempt, after the election, does not
+// share. An authentication refused for this reason answers 503 / Unavailable
+// on every transport, never a credential failure. (Aliases
+// pkg/service.LeadershipTransient.)
+var IsLeadershipTransient = service.LeadershipTransient
 
 // ---------------------------------------------------------------------------
 // Auth context helpers

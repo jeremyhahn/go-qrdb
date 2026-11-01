@@ -51,6 +51,7 @@ func deleteThenGetCells() []cell {
 func TestDeleteThenGetIsTypedNotFound(t *testing.T) {
 	for _, c := range deleteThenGetCells() {
 		t.Run(c.name(), func(t *testing.T) {
+			c.parallel(t)
 			cl := c.boot(t)
 			shapes := map[string]string{
 				"short":  "dtg/short/",
@@ -83,6 +84,7 @@ func TestDeleteThenGetIsTypedNotFound(t *testing.T) {
 func TestDeleteThenGetIsTypedNotFound_ReusedKey(t *testing.T) {
 	for _, c := range deleteThenGetCells() {
 		t.Run(c.name(), func(t *testing.T) {
+			c.parallel(t)
 			cl := c.boot(t)
 			const key = "dtg/reused"
 			for round := range deleteThenGetRounds {

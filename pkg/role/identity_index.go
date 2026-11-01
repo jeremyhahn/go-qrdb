@@ -178,9 +178,11 @@ func (s *kvRoleStore) forgetIdentity(ctx context.Context, id string, tenantID st
 //     safe because every key was verified free before the first write, and is
 //     not: the NAME key is shared by value, so two concurrent creates of the
 //     same name in one tenant can both pass the uniqueness check, and the one
-//     that fails would delete the winner's index entry. The id-bearing keys
-//     cannot collide that way, but tracking what was written costs nothing
-//     and removes the reasoning entirely.
+//     that fails would delete the winner's index entry. The name key is
+//     therefore never in written: CreateRole claims it with PutIfAbsent and
+//     releaseClaims gives it back only while it still holds this create's id.
+//     The id-bearing keys cannot collide that way, but tracking what was
+//     written costs nothing and removes the reasoning entirely.
 //   - SECONDARY INDEXES BEFORE THE PRIMARY, for the reason DeleteRole
 //     removes it last: while the primary exists the record is still findable,
 //     so a later delete can finish the cleanup. Removing it first and then

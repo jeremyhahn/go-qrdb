@@ -127,7 +127,11 @@ func (m *covMockCredentialSvc) CredentialDelete(ctx context.Context, name string
 	}
 	return nil
 }
-func (m *covMockCredentialSvc) CredentialStrategy() string {
+func (m *covMockCredentialSvc) CredentialStrategy(context.Context) (string, error) {
+	return m.credentialStrategy(), nil
+}
+
+func (m *covMockCredentialSvc) credentialStrategy() string {
 	if m.strategyFn != nil {
 		return m.strategyFn()
 	}

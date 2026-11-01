@@ -76,15 +76,18 @@ func (s *Server) handleCredentialSubmit(w http.ResponseWriter, r *http.Request) 
 
 // handleCredentialStrategy handles GET /v1/credentials/strategy -- returns
 // the active credential strategy name.
-func (s *Server) handleCredentialStrategy(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleCredentialStrategy(w http.ResponseWriter, r *http.Request) {
 	if s.credentialSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "credentials"})
 		return
 	}
 
-	writeJSON(w, transport.CredentialStrategyResponse{
-		Strategy: s.credentialSvc.CredentialStrategy(),
-	})
+	strategy, err := s.credentialSvc.CredentialStrategy(r.Context())
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, transport.CredentialStrategyResponse{Strategy: strategy})
 }
 
 // handleCredentialDelete handles DELETE /v1/credentials/{name} -- removes the

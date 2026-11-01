@@ -574,6 +574,14 @@ func (s *forwardingScope) UpdateMetadata(ctx context.Context, a1 *transport.Upda
 	return r0, err
 }
 
+func (s *forwardingScope) UpdateNamespace(ctx context.Context, a1 *transport.UpdateNamespaceRequest) (*transport.UpdateNamespaceResponse, error) {
+	r0, err := s.Transport.UpdateNamespace(ctx, a1)
+	if remote, ok := s.forwardTo(ctx, err); ok {
+		return remote.UpdateNamespace(ctx, a1)
+	}
+	return r0, err
+}
+
 func (s *forwardingScope) UpsertVector(ctx context.Context, a1 *transport.UpsertVectorRequest) (*transport.UpsertVectorResponse, error) {
 	r0, err := s.Transport.UpsertVector(ctx, a1)
 	if remote, ok := s.forwardTo(ctx, err); ok {

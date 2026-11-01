@@ -55,6 +55,21 @@ type CredentialService struct {
 	// mu so the daemon can attach it after construction (the seal subsystem
 	// builds the service before the compliance logger exists).
 	audit audit.AuditLogger
+
+	// testHooks are interleaving seams for this package's tests; every
+	// field is nil in production.
+	testHooks serviceTestHooks
+}
+
+// serviceTestHooks lets a test run code at fixed points of retrieveManual to
+// force an interleaving with a concurrent submit deterministically.
+type serviceTestHooks struct {
+	// afterManualMiss runs after the fast-path existence check misses and
+	// before the waiter is registered.
+	afterManualMiss func()
+	// afterWaiterRegistered runs after the waiter is registered and before
+	// the existence re-check.
+	afterWaiterRegistered func()
 }
 
 // waiterDelivery is what submitManual hands a blocked retriever: its own
@@ -112,6 +127,16 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 		opt(s)
 	}
 	return s, nil
+}
+
+// ForBarrier returns a barrier-strategy CredentialService over barrier that
+// shares s's logger and audit logger. It is how a tenant's named-credential
+// store is derived from the node-wide one: the same versioned rotation API,
+// persisted in the tenant barrier's own storage and encrypted under that
+// barrier's key. It returns ErrNilBarrier when barrier is nil.
+func (s *CredentialService) ForBarrier(barrier *seal.StorageBarrier) (*CredentialService, error) {
+	return NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, s.logger,
+		WithAuditLogger(s.auditLogger()))
 }
 
 // SetAuditLogger attaches (or replaces) the compliance audit logger after
@@ -327,14 +352,12 @@ func (s *CredentialService) storeManual(ctx context.Context, name string, value 
 func (s *CredentialService) retrieveManual(ctx context.Context, name string) (*secure.Buffer, error) {
 	// Fast path: credential already exists. Open the enclave into a fresh
 	// protected buffer while holding the read lock.
-	s.mu.RLock()
-	sec, ok := s.manualCreds[name]
-	if ok {
-		out, err := sec.Open(ctx)
-		s.mu.RUnlock()
+	if out, ok, err := s.openManual(ctx, name); ok {
 		return out, err
 	}
-	s.mu.RUnlock()
+	if s.testHooks.afterManualMiss != nil {
+		s.testHooks.afterManualMiss()
+	}
 
 	// Slow path: register a waiter and block.
 	ch := make(chan waiterDelivery, 1)
@@ -342,6 +365,27 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) (*s
 	s.waitersMu.Lock()
 	s.waiters[name] = append(s.waiters[name], ch)
 	s.waitersMu.Unlock()
+	if s.testHooks.afterWaiterRegistered != nil {
+		s.testHooks.afterWaiterRegistered()
+	}
+
+	// Re-check after registering. A submit that stored the credential
+	// between the fast-path miss and the registration above has already
+	// notified the waiters that existed then, so this one would never be
+	// woken. A submit that stores after this check finds the waiter
+	// registered, because submitManual stores before it notifies.
+	if out, ok, err := s.openManual(ctx, name); ok {
+		// Deregister, then drop any copy a submit delivered in the
+		// meantime: removeWaiter and the delivery both run under
+		// waitersMu, so once it returns no further delivery can arrive.
+		s.removeWaiter(name, ch)
+		select {
+		case d := <-ch:
+			d.buf.Destroy()
+		default:
+		}
+		return out, err
+	}
 
 	s.logger.Debug("waiting for credential submission",
 		slog.String("name", name))
@@ -363,6 +407,19 @@ func (s *CredentialService) retrieveManual(ctx context.Context, name string) (*s
 		}
 		return nil, ctx.Err()
 	}
+}
+
+// openManual opens the stored manual credential name into a fresh protected
+// buffer under the read lock. ok reports whether the credential exists.
+func (s *CredentialService) openManual(ctx context.Context, name string) (out *secure.Buffer, ok bool, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sec, ok := s.manualCreds[name]
+	if !ok {
+		return nil, false, nil
+	}
+	out, err = sec.Open(ctx)
+	return out, true, err
 }
 
 // removeWaiter removes a single waiter channel from the pending-waiters list

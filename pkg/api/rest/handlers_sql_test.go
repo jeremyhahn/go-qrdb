@@ -180,6 +180,9 @@ func TestHandleSQLQuery_ScopeConflict(t *testing.T) {
 	if !strings.Contains(resp.Error, "scope conflict") {
 		t.Fatalf("error message = %q, want mention of 'scope conflict'", resp.Error)
 	}
+	if !strings.Contains(resp.Error, "bodydb") || !strings.Contains(resp.Error, "headerdb") {
+		t.Fatalf("error message = %q, want both database names", resp.Error)
+	}
 }
 
 func TestHandleSQLQuery_MatchingHeaderAccepted(t *testing.T) {

@@ -52,34 +52,43 @@ func TestClusterAdminScope(t *testing.T) {
 		{"qrdb_update_node_compaction", map[string]any{"mode": "revision", "retainRevisions": 10}},
 		// Replica state hashes cover every tenant's replicas on the node.
 		{"qrdb_state_hashes", nil},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{"qrdb_start_shard", map[string]any{"shard_id": 7, "replica_id": 1}},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
-	for _, op := range ops {
-		for _, c := range authtest.ClusterAdminCallers(t) {
-			t.Run(op.tool+"/"+c.Name, func(t *testing.T) {
-				caller := authtest.NewFixedAuthenticator(c.Identity)
-				admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
-				client := startMCP(t, admin, &atomic.Pointer[string]{},
-					WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
-
-				req := mcpgo.CallToolRequest{}
-				req.Params.Name = op.tool
-				req.Params.Arguments = op.args
-				res, err := client.CallTool(callCtx(t), req)
-				if err != nil {
-					t.Fatalf("%s: %v", op.tool, err)
-				}
-				if c.Admitted {
-					if res.IsError || admin.ClusterChanges() != 1 {
-						t.Fatalf("result=%+v, calls=%d; want served once", res, admin.ClusterChanges())
+	// One server and one session per caller serve every op: the property is
+	// the caller's scope, not the session's, and a TLS server and handshake
+	// per op made the test 27 network setups, each under its own wall-clock
+	// deadline, where 3 suffice.
+	for _, c := range authtest.ClusterAdminCallers(t) {
+		t.Run(c.Name, func(t *testing.T) {
+			caller := authtest.NewFixedAuthenticator(c.Identity)
+			admin := &authtest.Admin{AdminServicer: &mockAdminService{}}
+			client := startMCP(t, admin, &atomic.Pointer[string]{},
+				WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(caller))))
+			for _, op := range ops {
+				t.Run(op.tool, func(t *testing.T) {
+					before := admin.ClusterChanges()
+					req := mcpgo.CallToolRequest{}
+					req.Params.Name = op.tool
+					req.Params.Arguments = op.args
+					res, err := client.CallTool(callCtx(t), req)
+					if err != nil {
+						t.Fatalf("%s: %v", op.tool, err)
 					}
-					return
-				}
-				wantToolCode(t, op.tool, res, wire.CodePermissionDenied)
-				if admin.ClusterChanges() != 0 {
-					t.Fatalf("a refused %s reached the admin service", op.tool)
-				}
-			})
-		}
+					served := admin.ClusterChanges() - before
+					if c.Admitted {
+						if res.IsError || served != 1 {
+							t.Fatalf("result=%+v, calls=%d; want served once", res, served)
+						}
+						return
+					}
+					wantToolCode(t, op.tool, res, wire.CodePermissionDenied)
+					if served != 0 {
+						t.Fatalf("a refused %s reached the admin service", op.tool)
+					}
+				})
+			}
+		})
 	}
 }

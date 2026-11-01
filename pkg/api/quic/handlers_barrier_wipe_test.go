@@ -56,10 +56,10 @@ type capturingQUICBarrierSvc struct {
 
 var _ service.BarrierServicer = (*capturingQUICBarrierSvc)(nil)
 
-// BarrierInitialized reports the double as never initialized, so the
-// initialize handler reaches BarrierInitialize and hands it the credential.
-func (c *capturingQUICBarrierSvc) BarrierInitialized(context.Context) (bool, error) {
-	return false, nil
+// BarrierInitializePrecondition admits every initialize, so the initialize
+// handler reaches BarrierInitialize and hands it the credential.
+func (c *capturingQUICBarrierSvc) BarrierInitializePrecondition(context.Context) error {
+	return nil
 }
 
 func (c *capturingQUICBarrierSvc) BarrierInitialize(_ context.Context, secret []byte) error {

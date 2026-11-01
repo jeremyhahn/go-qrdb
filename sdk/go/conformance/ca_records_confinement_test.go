@@ -281,6 +281,9 @@ func assertCANotInRangeWatchOrList(t *testing.T, tk transportKind, c *clients, c
 func TestCertRecords_NotReadableThroughGenericKV(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
+			// Each transport boots its own memory-backed node on its own
+			// ports and directory, so the cells run side by side.
+			t.Parallel()
 			c := bootConfinedCell(t, tk, confineAcme)
 			roleID := grantKV(t, c.node, confineAcme, "matrix")
 			c.addRoleToEmbeddedIdentity(t, tk, roleID)

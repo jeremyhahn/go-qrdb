@@ -627,11 +627,12 @@ const (
 	// the admin is complete: a non-Shamir barrier init answers only once the
 	// admin is usable, and every node serving the barrier unseals it from
 	// its own key, so the tenant's home group elects a leader unaided. An
-	// unseal, quorum unseal or status read runs the hook this way too.
+	// unseal or status read runs the hook this way too.
 	AdminCompletionWithin AdminCompletion = iota
 
 	// AdminCompletionOnce asks for one attempt on the caller's context. A
-	// Shamir barrier init runs the hook this way: it unseals only the node
+	// Shamir barrier init and a holder quorum unseal run the hook this way:
+	// each unseals only the node
 	// that served it, so the tenant's home group can elect a leader only
 	// once holders have unsealed the other nodes. The hook returns
 	// ErrTenantAdminPending when the home group cannot complete the admin
@@ -2940,10 +2941,16 @@ func (s *TenantService) TenantBarrierQuorumSubmit(ctx context.Context, tenantID 
 			slog.String("tenant_id", tenantID), slog.String("op", string(out.Op)))
 	}
 	// Only the submission that completes an unseal quorum makes the barrier
-	// usable, so only it runs the barrier-ready hook, as TenantBarrierUnseal
-	// does.
-	if out.Complete && out.Op == seal.OpUnseal {
-		s.notifyBarrierReady(ctx, tenantID)
+	// usable, so only it runs the barrier-ready hook. It asks for one attempt
+	// on the caller's context, as a Shamir barrier init does, and not the
+	// bounded wait of TenantBarrierUnseal: a holder quorum unseals only the
+	// node that served it, so the tenant's home group may not lead from here
+	// or elect at all until holders have unsealed the other nodes, and
+	// waiting would hold this reply for the completion's whole budget. A
+	// pending admin stays for the next unseal, status read or leadership
+	// gain to complete.
+	if out.Complete && out.Op == seal.OpUnseal && s.barrierReady != nil {
+		_ = s.barrierReady(ctx, tenantID, AdminCompletionOnce)
 	}
 	return out, nil
 }

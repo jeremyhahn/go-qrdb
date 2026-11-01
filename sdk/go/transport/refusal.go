@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
@@ -94,6 +95,21 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
+	},
+	lock.ReasonLockHeld: func(md map[string]string) error {
+		return lock.LockHeldFromMetadata(md)
+	},
+	lock.ReasonNotLockHolder: func(md map[string]string) error {
+		return lock.NotLockHolderFromMetadata(md)
+	},
+	lock.ReasonLockNotFound: func(md map[string]string) error {
+		return lock.LockNotFoundFromMetadata(md)
+	},
+	ReasonVectorNamespaceNotFound: func(md map[string]string) error {
+		return NamespaceNotFoundFromMetadata(md)
+	},
+	ReasonVectorDimensionMismatch: func(md map[string]string) error {
+		return DimensionMismatchFromMetadata(md)
 	},
 	ceremony.ReasonAdminCredentialRequiresCA: func(md map[string]string) error {
 		return ceremony.AdminCredentialRequiresCAFromMetadata(md)

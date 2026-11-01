@@ -50,6 +50,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -173,6 +174,7 @@ type Server struct {
 	adminSvc    service.AdminServicer
 	restSrv     *rest.Server
 	grpcSrv     *grpcapi.Server
+	clientLimit *clientlimit.Limiter // shared by every transport (go-qrdb#1197); nil when unset
 	quicSrv     *quicapi.Server
 	unixSrv     *unixapi.Server
 	mcpSrv      *mcpapi.Server
@@ -290,6 +292,11 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+
+	// defaultRetention is the retention the scheduler applies to a metric
+	// with no policy, or a policy of duration zero. Zero keeps its points.
+	// See WithDefaultRetention.
+	defaultRetention time.Duration
 	// collectionSweepLeader reports whether this node leads the system
 	// shard; see WithCollectionSweepLeader. Nil means a single node.
 	collectionSweepLeader func() bool
@@ -1770,6 +1777,7 @@ func (s *Server) Start() error {
 		// sockets back half-used: they are closed, as a caller that gave
 		// them up would otherwise leak them.
 		s.closePreboundSockets()
+		s.closeClientLimiter()
 		return err
 	}
 	return nil
@@ -1778,6 +1786,9 @@ func (s *Server) Start() error {
 // start is Start without the pre-bound socket cleanup.
 func (s *Server) start() error {
 	if err := s.checkPreboundSockets(); err != nil {
+		return err
+	}
+	if err := s.openClientLimiter(); err != nil {
 		return err
 	}
 	// Refused before any transport binds: /v1/ca/bootstrap has one owner and
@@ -1999,6 +2010,7 @@ func (s *Server) Stop() {
 	s.stopREST()
 	s.stopModules()
 	s.stopReplicaForwarder()
+	s.closeClientLimiter()
 	s.wg.Wait()
 	s.logger.Info("server orchestrator stopped")
 }
@@ -2092,6 +2104,7 @@ func (s *Server) startREST() error {
 	restOpts = append(restOpts,
 		rest.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		rest.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		rest.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.restListener != nil {
 		ln, err := newLifetimeListener("rest", s.opts.restListener)
@@ -2407,9 +2420,10 @@ func (s *Server) streamAdmitter() service.StreamAdmitter {
 // listenerWatch is the singleton watch service every listener receives: the
 // WithWatch service under the same stream admitter the registry installs, so
 // a watch opened before its tenant was suspended ends on its next event in
-// both configurations.
+// both configurations. Every watch a listener opens is a client's, so it
+// counts against watch.max_watchers (service.NewCountedWatch).
 func (s *Server) listenerWatch() service.WatchServicer {
-	return service.NewAdmittedWatch(s.opts.watchSvc, s.streamAdmitter())
+	return service.NewAdmittedWatch(service.NewCountedWatch(s.opts.watchSvc), s.streamAdmitter())
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -2426,6 +2440,7 @@ func (s *Server) startGRPC() error {
 	grpcOpts = append(grpcOpts,
 		grpcapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()),
 		grpcapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		grpcapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.grpcListener != nil {
 		ln, err := newLifetimeListener("grpc", s.opts.grpcListener)
@@ -2607,6 +2622,7 @@ func (s *Server) startQUIC() error {
 		quicapi.WithMaxPayloadBytes(s.config.Transport.ResolvedMaxMessageBytes()),
 		quicapi.WithMaxStreamsPerConn(s.config.Transport.ResolvedMaxStreamsPerConn()),
 		quicapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		quicapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.quicPacketConn != nil {
 		quicOpts = append(quicOpts, quicapi.WithPacketConn(newLifetimePacketConn(s.opts.quicPacketConn)))
@@ -2777,6 +2793,7 @@ func (s *Server) startUnix() error {
 		unixOpts = append(unixOpts, unixapi.WithMaxConcurrentStreams(s.opts.grpcMaxConcurrentStreams))
 	}
 	unixOpts = append(unixOpts, unixapi.WithMaxMessageBytes(s.config.Transport.ResolvedMaxMessageBytes()))
+	unixOpts = append(unixOpts, unixapi.WithClientLimiter(s.clientLimit))
 	if s.opts.userSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserService(s.opts.userSvc))
 	}
@@ -2953,6 +2970,7 @@ func (s *Server) startMCP() error {
 	mcpOpts = append(mcpOpts,
 		mcpapi.WithMaxBodyBytes(int64(s.config.Transport.ResolvedMaxMessageBytes())),
 		mcpapi.WithMaxConnsPerPeer(s.config.Transport.ResolvedMaxConnsPerPeer()),
+		mcpapi.WithClientLimiter(s.clientLimit),
 	)
 	if s.opts.mcpListener != nil {
 		ln, err := newLifetimeListener("mcp", s.opts.mcpListener)

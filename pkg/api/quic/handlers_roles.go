@@ -124,6 +124,15 @@ type reconcileRolesWireResponse struct {
 	Roles    []roleReconcileResultWire `json:"roles,omitempty"`
 }
 
+// reconcileRolesAllTenantsWireResponse is the JSON response for
+// role.ReconcileBuiltInAllTenants: one single-tenant report per tenant
+// reached, and the tenants skipped or failed.
+type reconcileRolesAllTenantsWireResponse struct {
+	Tenants []reconcileRolesWireResponse `json:"tenants,omitempty"`
+	Skipped []role.SkippedTenant         `json:"skipped,omitempty"`
+	Failed  []role.FailedTenant          `json:"failed,omitempty"`
+}
+
 // listRolesWireResponse is the JSON wire payload returned by role.List.
 type listRolesWireResponse struct {
 	Roles   []*roleWireResponse `json:"roles"`
@@ -359,6 +368,50 @@ func (s *Server) handleReconcileRoles(ctx context.Context, payload []byte) ([]by
 		return nil, &MarshalError{Err: err}
 	}
 	return data, nil
+}
+
+// handleReconcileRolesAllTenants converges every tenant's stored built-in
+// roles onto this build's definitions (role.ReconcileAllTenants) and answers
+// in JSON, like the single-tenant verb, so the QUIC client decodes it without
+// the protobuf types. The dispatcher has already required roles:reconcile_all.
+func (s *Server) handleReconcileRolesAllTenants(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.roleSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "role"}
+	}
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(allTenantsReconcileReportToWire(report))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
+}
+
+// allTenantsReconcileReportToWire converts a role.AllTenantsReconcileReport
+// to its wire representation, each tenant's report in the single-tenant
+// verb's own shape.
+func allTenantsReconcileReportToWire(report *role.AllTenantsReconcileReport) reconcileRolesAllTenantsWireResponse {
+	if report == nil {
+		return reconcileRolesAllTenantsWireResponse{}
+	}
+	out := reconcileRolesAllTenantsWireResponse{
+		Skipped: report.Skipped,
+		Failed:  report.Failed,
+	}
+	if len(report.Tenants) > 0 {
+		out.Tenants = make([]reconcileRolesWireResponse, len(report.Tenants))
+		for i := range report.Tenants {
+			out.Tenants[i] = reconcileReportToWire(&report.Tenants[i])
+		}
+	}
+	return out
 }
 
 // reconcileReportToWire converts a role.ReconcileReport to its wire

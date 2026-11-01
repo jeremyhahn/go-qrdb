@@ -82,7 +82,9 @@ That triple is what makes retention a downsampling policy rather than a delete
 policy: a metric can keep a year at hourly resolution instead of keeping nothing.
 
 **The `duration_ns` half is enforced; `resolution_ns` downsampling
-is not.** See "Retention enforcement" below.
+is not.** A metric with no policy, or a policy whose `duration_ns` is zero
+("use the default"), is swept at the node's `timeseries.default_retention`;
+zero there keeps its points. See "Retention enforcement" below.
 
 ## Current state
 
@@ -137,7 +139,8 @@ It is therefore a command, not a background delete:
   per-tick, leader-gated pattern as the lease-expiry sweeper and the
   compaction scheduler) runs on every node and acts on the stores it leads
   or holds alone. Every `DefaultRetentionInterval` (one minute) it lists a
-  store's written metrics and, for each with a policy, computes `cutoff_ns`
+  store's written metrics and, for each with a non-zero `duration_ns` or a
+  non-zero `timeseries.default_retention`, computes `cutoff_ns`
   from its own clock (`now - duration_ns`) and proposes one
   `protocol.OpTSApplyRetention` command (metric, cutoff) through the store's
   `TimeSeriesServicer` (`ApplyRetention`).
@@ -185,8 +188,10 @@ It is therefore a command, not a background delete:
 - **No alerting, no rules engine.** This stores and queries; deciding something
   is wrong is the consumer's job.
 - **No cross-metric arithmetic.** A query names one metric.
-- **No automatic metric creation policy or cardinality limit** — tag cardinality
-  is the caller's responsibility, and it is the usual way to make a time-series
-  store unusable.
+- **No tag-cardinality limit.** Writing to a metric creates it, and
+  `timeseries.max_metrics` caps how many metric names a shard holds (a write
+  past it is refused with `MetricLimitError`), but nothing bounds the tag
+  combinations under a metric: that is the caller's responsibility, and it is
+  the usual way to make a time-series store unusable.
 - **No CLI parity with the API.** Six of the ten capabilities have no CLI verb
   — see [cli.md](cli.md). That is a gap, not a scope fence.
