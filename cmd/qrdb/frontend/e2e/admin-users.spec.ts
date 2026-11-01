@@ -374,7 +374,7 @@ webTest.describe("Admin - User Management (web mode / auth-disabled regression)"
             }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 

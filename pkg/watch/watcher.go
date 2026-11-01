@@ -20,7 +20,8 @@ import (
 	"sync/atomic"
 )
 
-// defaultEventBufferSize is the default channel buffer for watch events.
+// defaultEventBufferSize is the channel buffer for watch events of a hub
+// built without WithEventBufferSize.
 // A large buffer provides reliability by reducing the chance of blocking
 // the write path when consumers are temporarily slow.
 const defaultEventBufferSize = 4096
@@ -40,6 +41,11 @@ type watcher struct {
 	prevKV        bool
 	startRevision int64
 	filters       []WatchFilter
+
+	// holdsSlot is set when the watcher took a slot of its hub's
+	// WatcherLimit (a counted watch; see CountedContext), which
+	// cleanupOnCancel then returns. Written before the watcher is shared.
+	holdsSlot bool
 
 	// Replay handoff state. A watcher created with a start revision begins
 	// UNSYNCED: live events from notify() are held in staging while the replay
@@ -85,13 +91,13 @@ type watcher struct {
 // newWatcher creates a new watcher with the given configuration. The
 // caller must register the watcher with a Hub shard before events
 // will be delivered.
-func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, parentCtx context.Context) *watcher {
+func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, bufferSize int, parentCtx context.Context) *watcher {
 	ctx, cancel := context.WithCancel(parentCtx)
 	w := &watcher{
 		id:            id,
 		key:           key,
 		rangeEnd:      rangeEnd,
-		events:        make(chan WatchResponse, defaultEventBufferSize),
+		events:        make(chan WatchResponse, bufferSize),
 		ctx:           ctx,
 		cancel:        cancel,
 		prevKV:        opts.PrevKV,

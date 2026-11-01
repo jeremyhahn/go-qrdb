@@ -156,3 +156,50 @@ func TestLockNotFoundError_EmptyKey(t *testing.T) {
 		t.Error("LockNotFoundError.Error() returned empty string")
 	}
 }
+
+// TestRefusalMetadata_RoundTrips pins that every typed lock outcome survives
+// its structured refusal: what Metadata encodes, the FromMetadata decoder of
+// the same reason rebuilds field for field.
+func TestRefusalMetadata_RoundTrips(t *testing.T) {
+	held := &LockHeldError{Key: "orders/1", HolderID: "worker-7"}
+	if got := LockHeldFromMetadata(held.Metadata()); *got != *held {
+		t.Errorf("LockHeldFromMetadata = %+v, want %+v", got, held)
+	}
+	notHolder := &NotLockHolderError{Key: "orders/1", ExpectedToken: 41, ActualToken: -9}
+	if got := NotLockHolderFromMetadata(notHolder.Metadata()); *got != *notHolder {
+		t.Errorf("NotLockHolderFromMetadata = %+v, want %+v", got, notHolder)
+	}
+	notFound := &LockNotFoundError{Key: "orders/1"}
+	if got := LockNotFoundFromMetadata(notFound.Metadata()); *got != *notFound {
+		t.Errorf("LockNotFoundFromMetadata = %+v, want %+v", got, notFound)
+	}
+}
+
+// TestRefusalMetadata_MissingFieldsKeepTheClass pins that the reason, not the
+// metadata, says what happened: a decoder handed nothing, or a malformed
+// token, still returns its typed error, with the unreadable fields zero.
+func TestRefusalMetadata_MissingFieldsKeepTheClass(t *testing.T) {
+	if got := LockHeldFromMetadata(nil); got == nil || *got != (LockHeldError{}) {
+		t.Errorf("LockHeldFromMetadata(nil) = %+v, want the zero LockHeldError", got)
+	}
+	if got := LockNotFoundFromMetadata(nil); got == nil || *got != (LockNotFoundError{}) {
+		t.Errorf("LockNotFoundFromMetadata(nil) = %+v, want the zero LockNotFoundError", got)
+	}
+	md := map[string]string{"key": "k", "expected_token": "not-a-number", "actual_token": "7"}
+	want := NotLockHolderError{Key: "k", ActualToken: 7}
+	if got := NotLockHolderFromMetadata(md); got == nil || *got != want {
+		t.Errorf("NotLockHolderFromMetadata(%v) = %+v, want %+v", md, got, want)
+	}
+}
+
+// TestRefusalReasons_AreDistinct pins that no two lock outcomes share a
+// reason, since a client rebuilds the error from the reason alone.
+func TestRefusalReasons_AreDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for _, r := range []string{ReasonLockHeld, ReasonNotLockHolder, ReasonLockNotFound} {
+		if r == "" || seen[r] {
+			t.Errorf("reason %q is empty or repeated", r)
+		}
+		seen[r] = true
+	}
+}

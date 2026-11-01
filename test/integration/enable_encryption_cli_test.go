@@ -757,7 +757,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
 	createReq["id"], createReq["name"] = tenantID, "Acme CLI"
 	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "volume", false
-	tBody, tStatus := iraftAPIPost(t, sysClient,
+	tBody, tStatus := iraftAPIPost(t, tenantCreateClient(sysClient),
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort), createReq)
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tStatus, tBody)

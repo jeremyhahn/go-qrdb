@@ -88,6 +88,7 @@ empty body on REST.
 | Name held by another owner (a collection's index) on create or drop | 409 | `FAILED_PRECONDITION` — `index.OwnershipError`; drop a collection's index by dropping the collection |
 | Unknown or dropped index on query or scan | 404 | `NOT_FOUND` — never a silent full scan; every SDK transport (REST, gRPC, Unix, QUIC, MCP, embedded) returns `transport.IndexNotFoundError` naming the index |
 | Unknown or already-dropped index on drop | 200 | `OK` — idempotent |
+| New index name when the shard already holds `index.max_indexes` indexes | 429 | `RESOURCE_EXHAUSTED` — `service.IndexLimitError`; drop an index to free a slot |
 | Unique constraint violated (on the entity write) | 409 | `ALREADY_EXISTS` |
 | Malformed request | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |

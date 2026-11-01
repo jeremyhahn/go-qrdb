@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -58,10 +59,16 @@ func (m *mockCeremonyServiceFinal5) CeremonyStatus(_ context.Context) (*service.
 
 func newRootCmdWithCeremony(t *testing.T) (*sdk.Client, func()) {
 	t.Helper()
+	return newRootCmdWithCeremonyService(t, &mockCeremonyServiceFinal5{})
+}
+
+// newRootCmdWithCeremonyService sets up the package-level client over svc.
+func newRootCmdWithCeremonyService(t *testing.T, svc service.CeremonyServicer) (*sdk.Client, func()) {
+	t.Helper()
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 	tr, err := embedded.New(kvSvc, adminSvc,
-		embedded.WithCeremonyService(&mockCeremonyServiceFinal5{}),
+		embedded.WithCeremonyService(svc),
 	)
 	if err != nil {
 		t.Fatalf("embedded.New: %v", err)
@@ -123,6 +130,9 @@ func TestCeremonyStatusCmd_JSON_WithMockCeremony(t *testing.T) {
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE JSON: %v", err)
 	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"state"`)) {
+		t.Fatalf("JSON output missing the state field: %q", buf.String())
+	}
 }
 
 func TestCeremonyStatusCmd_YAML_WithMockCeremony(t *testing.T) {
@@ -140,19 +150,10 @@ func TestCeremonyStatusCmd_YAML_WithMockCeremony(t *testing.T) {
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE YAML: %v", err)
 	}
+	if !bytes.Contains(buf.Bytes(), []byte("state:")) {
+		t.Fatalf("YAML output missing the state field: %q", buf.String())
+	}
 }
-
-// ===========================================================================
-// ceremony.go — newCeremonyClaimCertBeginCmd (57%)
-// ===========================================================================
-
-// ===========================================================================
-// ceremony.go — newCeremonyClaimCertCompleteCmd (66%)
-// ===========================================================================
-
-// ===========================================================================
-// ceremony.go — newCeremonyClaimShareCmd (61%)
-// ===========================================================================
 
 // ===========================================================================
 // ceremony.go — newCeremonySignCSRCmd (77%)
@@ -182,6 +183,9 @@ func TestCeremonySignCSRCmd_Table_WithMockCeremony(t *testing.T) {
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE: %v", err)
 	}
+	if !bytes.Contains(buf.Bytes(), []byte("CertPEM:")) {
+		t.Fatalf("table output missing CertPEM: %q", buf.String())
+	}
 }
 
 func TestCeremonySignCSRCmd_JSON_WithMockCeremony(t *testing.T) {
@@ -196,7 +200,8 @@ func TestCeremonySignCSRCmd_JSON_WithMockCeremony(t *testing.T) {
 	old := outputWriter
 	oldFmt := outputFormat
 	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	outputWriter = &bytes.Buffer{}
+	var buf bytes.Buffer
+	outputWriter = &buf
 	outputFormat = "json"
 
 	cmd := newCeremonySignCSRCmd()
@@ -204,70 +209,67 @@ func TestCeremonySignCSRCmd_JSON_WithMockCeremony(t *testing.T) {
 	_ = cmd.Flags().Set("so-pin", "secret")
 	_ = cmd.Flags().Set("csr-file", csrFile)
 	_ = cmd.Flags().Set("role", "admin")
-	_ = cmd.RunE(cmd, nil)
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("RunE JSON: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"cert_pem"`)) {
+		t.Fatalf("JSON output missing cert_pem: %q", buf.String())
+	}
 }
 
-// ===========================================================================
-// init.go — runInit exercises the code paths via the mock ceremony service.
-// CeremonyInitialize requires a CeremonyCA which we cannot easily provide
-// without a real PKI; we exercise what we can (the ceremony call, error return
-// path) and accept the error from the nil CA check in the embedded transport.
-// ===========================================================================
+// failingCeremonyService fails every ceremony call with errCeremonyTest.
+type failingCeremonyService struct{ mockCeremonyServiceFinal5 }
 
-func TestRunInit_WithMockCeremony_EnterRunE(t *testing.T) {
-	// This test verifies that runInit correctly calls CeremonyInitialize
-	// and handles the transport error. The code path through the request
-	// build and ceremony call is exercised even when the CA is nil.
-	_, cleanup := newRootCmdWithCeremony(t)
+func (failingCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
+	return nil, errCeremonyTest
+}
+
+func (failingCeremonyService) CeremonyStatus(_ context.Context) (*service.CeremonyStatusInfo, error) {
+	return nil, errCeremonyTest
+}
+
+func TestCeremonyStatusCmd_ServiceError(t *testing.T) {
+	_, cleanup := newRootCmdWithCeremonyService(t, &failingCeremonyService{})
 	defer cleanup()
 
 	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	outputWriter = &bytes.Buffer{}
-	outputFormat = "table"
+	defer func() { outputWriter = old }()
+	var buf bytes.Buffer
+	outputWriter = &buf
 
-	f := &initFlags{
-		soPin:           "sopin",
-		userPin:         "userpin",
-		barrierStrategy: "passphrase",
+	cmd := newCeremonyStatusCmd()
+	if err := cmd.RunE(cmd, nil); !errors.Is(err, errCeremonyTest) {
+		t.Fatalf("expected errCeremonyTest, got %v", err)
 	}
-	cmd := newInitCmd()
-	// Accept any error — the mock transport returns a NilServiceError for the CA.
-	_ = runInit(cmd, f)
+	if buf.Len() != 0 {
+		t.Errorf("a failed status must print nothing: %q", buf.String())
+	}
 }
 
-func TestRunInit_WithMockCeremony_WithSANs(t *testing.T) {
-	_, cleanup := newRootCmdWithCeremony(t)
+func TestCeremonySignCSRCmd_ServiceError(t *testing.T) {
+	csrFile := t.TempDir() + "/test.csr"
+	if err := writeTestFileBytes(csrFile, []byte("-----BEGIN CERTIFICATE REQUEST-----\ndata\n-----END CERTIFICATE REQUEST-----\n")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, cleanup := newRootCmdWithCeremonyService(t, &failingCeremonyService{})
 	defer cleanup()
 
 	old := outputWriter
-	oldFmt := outputFormat
-	defer func() { outputWriter = old; outputFormat = oldFmt }()
-	outputWriter = &bytes.Buffer{}
-	outputFormat = "table"
+	defer func() { outputWriter = old }()
+	var buf bytes.Buffer
+	outputWriter = &buf
 
-	f := &initFlags{
-		soPin:           "sopin",
-		userPin:         "userpin",
-		barrierStrategy: "passphrase",
-		hostname:        "localhost",
-		sans:            "dns1.example.com,dns2.example.com",
+	cmd := newCeremonySignCSRCmd()
+	_ = cmd.Flags().Set("username", "alice")
+	_ = cmd.Flags().Set("so-pin", "secret")
+	_ = cmd.Flags().Set("csr-file", csrFile)
+	_ = cmd.Flags().Set("role", "admin")
+	if err := cmd.RunE(cmd, nil); !errors.Is(err, errCeremonyTest) {
+		t.Fatalf("expected errCeremonyTest, got %v", err)
 	}
-	cmd := newInitCmd()
-	_ = runInit(cmd, f)
-}
-
-// ===========================================================================
-// bindings_daemon.go — Start when not already running (exercise log/pid paths)
-// ===========================================================================
-
-func TestDaemonBinding_Start_QRDBNotFound(t *testing.T) {
-	d := newTestDaemonBinding(t)
-	// qrdbd is not in PATH; Start returns DaemonStartError.
-	err := d.Start("/tmp/nonexistent-config.yaml")
-	if err == nil {
-		t.Fatal("expected error when qrdbd not found")
+	if buf.Len() != 0 {
+		t.Errorf("a failed signing must print nothing: %q", buf.String())
 	}
 }
 

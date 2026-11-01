@@ -181,6 +181,49 @@ func TestRetentionScheduler_SkipsNonPositiveDuration(t *testing.T) {
 	}
 }
 
+// TestRetentionScheduler_DefaultRetentionAppliesWithoutAPolicy pins
+// timeseries.default_retention: a metric with no policy, and one whose
+// policy has a duration of zero, are swept at the default, while a metric
+// with its own non-zero duration keeps it.
+func TestRetentionScheduler_DefaultRetentionAppliesWithoutAPolicy(t *testing.T) {
+	store := newFakeTSStore("cpu.usage", "disk.free", "mem.used")
+	store.setPolicy("disk.free", 0)
+	store.setPolicy("mem.used", time.Hour)
+	now := time.Unix(1_700_000_000, 0)
+	s := newTestRetentionScheduler(func() time.Time { return now }, scheduledRetentionStore{name: "s", ts: store, leader: &fakeShardLeader{leads: true}})
+	s.defaultRetention = 24 * time.Hour
+
+	if n := s.passOnce(context.Background()); n != 3 {
+		t.Fatalf("pass swept %d, want 3", n)
+	}
+	want := map[string]int64{
+		"cpu.usage": now.Add(-24 * time.Hour).UnixNano(),
+		"disk.free": now.Add(-24 * time.Hour).UnixNano(),
+		"mem.used":  now.Add(-time.Hour).UnixNano(),
+	}
+	calls := store.appliedCalls()
+	if len(calls) != len(want) {
+		t.Fatalf("applied calls = %v, want %d", calls, len(want))
+	}
+	for _, c := range calls {
+		if c.CutoffNs != want[c.Metric] {
+			t.Errorf("%s swept at cutoff %d, want %d", c.Metric, c.CutoffNs, want[c.Metric])
+		}
+	}
+}
+
+// TestRetentionScheduler_ZeroDefaultKeepsUnpolicedMetrics pins the zero
+// default: a metric with no policy keeps every point.
+func TestRetentionScheduler_ZeroDefaultKeepsUnpolicedMetrics(t *testing.T) {
+	store := newFakeTSStore("cpu.usage", "disk.free")
+	store.setPolicy("disk.free", 0)
+	s := newTestRetentionScheduler(time.Now, scheduledRetentionStore{name: "s", ts: store, leader: &fakeShardLeader{leads: true}})
+
+	if n := s.passOnce(context.Background()); n != 0 || len(store.appliedCalls()) != 0 {
+		t.Fatalf("a zero default swept a metric with no policy: %d, %v", n, store.appliedCalls())
+	}
+}
+
 // TestRetentionScheduler_OnlyTheLeaderRuns: a store this node does not lead
 // is not swept, so exactly one node sweeps each store.
 func TestRetentionScheduler_OnlyTheLeaderRuns(t *testing.T) {
@@ -274,6 +317,18 @@ func TestWithRetentionInterval(t *testing.T) {
 	WithRetentionInterval(time.Second)(&o)
 	if o.retentionInterval != time.Second {
 		t.Fatal("interval not set")
+	}
+}
+
+func TestWithDefaultRetention(t *testing.T) {
+	var o serverOptions
+	WithDefaultRetention(-time.Second)(&o)
+	if o.defaultRetention != 0 {
+		t.Fatal("a non-positive default retention was kept")
+	}
+	WithDefaultRetention(time.Hour)(&o)
+	if o.defaultRetention != time.Hour {
+		t.Fatal("default retention not set")
 	}
 }
 

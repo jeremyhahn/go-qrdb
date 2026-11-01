@@ -43,8 +43,9 @@ type Lock struct {
     // Key is the user-provided key without the internal prefix.
     Key string
 
-    // FencingToken is the MVCC ModRevision at acquisition. It is
-    // monotonically increasing and can be used to detect stale holders.
+    // FencingToken is the lock key's MVCC create revision. Re-entries
+    // leave it unchanged, a release and re-acquisition always raise it,
+    // and it can be used to detect stale holders.
     FencingToken int64
 
     // LeaseID is the underlying lease ID that controls the TTL.
@@ -98,7 +99,7 @@ Lock keys are stored under the `__sys:lock/` internal prefix. A KV list or scan 
 
 ## Fencing Tokens
 
-A fencing token is the MVCC revision of the transaction that created the lock record. `TryLock` writes it into the record so that it stays fixed while a reentrant holder re-acquires; a record without a stored token is checked against its current `ModRevision`. Because MVCC revisions increase monotonically, each new acquisition of a lock gets a higher fencing token than the previous one.
+A fencing token is the lock key's MVCC create revision: the revision of the put that acquired the lock, as in etcd's `CreateRevision`. Because MVCC revisions are globally ordered and monotonically increasing, and a released or expired lock's key is deleted, each new acquisition of a lock gets a higher fencing token than the previous one. A reentrant re-acquisition updates the key, which moves its `ModRevision` but not its create revision, so the token is unchanged. Acquisition is the one create; the token is not copied into the lock record. During a rolling upgrade, until the `lock-create-revision-token` cluster feature is active, the record also carries it as `fencing_token` for older nodes, which read it there (see [the lock engineering contract](distributed-locks/engineering.md#rolling-upgrade-lock-create-revision-token)).
 
 ### Why Fencing Tokens Matter
 
@@ -196,9 +197,9 @@ locker.Unlock(ctx, "resource", lock1.FencingToken)  // AcquireCount = 0, lock re
 
 `Unlock` releases the lock identified by a key and fencing token:
 
-1. Read the lock and validate the fencing token against the one stored at acquisition
-   - Return `LockNotFoundError` if no lock is held on the key; `Unlock` reports a failed read of a lock record the same way
-   - Return `NotLockHolderError` if the token does not match
+1. Read the lock and validate the fencing token against the lock key's create revision
+   - Return `LockNotFoundError` if no lock is held on the key
+   - Return `NotLockHolderError` if token is stale
 2. For reentrant locks with `AcquireCount > 1`:
    - Decrement `AcquireCount`
    - Update the lock, maintain the lease
@@ -206,7 +207,7 @@ locker.Unlock(ctx, "resource", lock1.FencingToken)  // AcquireCount = 0, lock re
    - Compare-and-Swap delete: Assert `ModRevision` still matches → Delete the lock
    - Revoke the lease
 
-The compare-and-swap delete catches a modification of the lock between the read and the delete, and returns `NotLockHolderError` for it.
+The compare-and-swap decrement and delete catch a write to the lock between the read and the update — a re-entry, say. Unlock then re-reads, re-checks the fencing token and the count, and retries; after 16 lost rounds it returns `ErrUnlockContended` and the lock stays held.
 
 ## Extend
 

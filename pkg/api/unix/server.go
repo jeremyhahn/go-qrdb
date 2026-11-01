@@ -47,6 +47,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -115,6 +116,10 @@ type Server struct {
 	tls      *tls.Config
 	tlsErr   error
 	authMW   *authmw.AuthMiddleware
+
+	// clientLimit admits each call by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every call.
+	clientLimit *clientlimit.Limiter
 	// peerChainVerifier verifies a client certificate the TLS
 	// configuration accepted without building a chain.
 	peerChainVerifier auth.IssuerVerifier
@@ -249,6 +254,16 @@ func tlsVersionName(v uint16) string {
 // transport instead of bypassing it as a "local trust" shortcut.
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) { s.authMW = mw }
+}
+
+// WithClientLimiter admits every call through l before any other
+// interceptor -- authentication included -- runs (go-qrdb#1197). A Unix
+// socket peer has no network address and the socket carries no forwarding
+// headers, so every local caller of one socket shares one budget. Every
+// transport of one server shares the same Limiter. Nil, the default,
+// applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // WithPeerChainVerifier sets the verifier that resolves the caller's client
@@ -918,9 +933,11 @@ func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServ
 	// Outermost, independent of authentication: every path above -- the
 	// authenticated chain, the awaiting-admin gate and the sealed window --
 	// sees the peer's TLS state and this socket's chain verifier.
+	// Ahead of even that, the client-address limiter (go-qrdb#1197), exactly
+	// as on TCP gRPC.
 	v := s.chainVerifier()
-	return grpcpkg.ChainUnaryServerInterceptors(authmw.PeerTLSUnaryInterceptor(v), unaryChain),
-		grpcpkg.ChainStreamServerInterceptors(authmw.PeerTLSStreamInterceptor(v), streamChain)
+	return grpcpkg.ChainUnaryServerInterceptors(grpcpkg.ClientLimitUnaryInterceptor(s.clientLimit), authmw.PeerTLSUnaryInterceptor(v), unaryChain),
+		grpcpkg.ChainStreamServerInterceptors(grpcpkg.ClientLimitStreamInterceptor(s.clientLimit), authmw.PeerTLSStreamInterceptor(v), streamChain)
 }
 
 // chainVerifier is the verifier the socket binds to every call:

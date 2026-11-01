@@ -259,6 +259,8 @@ var conditions = []conditionRow{
 
 	// --- collisions ----------------------------------------------------
 	{"index exists", &service.IndexExistsError{Name: "ix"}, wire.StatusAlreadyExists, codes.AlreadyExists},
+	{"index limit", &service.IndexLimitError{Max: 2}, wire.StatusResourceExhausted, codes.ResourceExhausted},
+	{"metric limit", &service.MetricLimitError{Max: 2}, wire.StatusResourceExhausted, codes.ResourceExhausted},
 	{"namespace exists", &service.NamespaceExistsError{Namespace: "ns"}, wire.StatusAlreadyExists, codes.AlreadyExists},
 	{"collection exists", &service.CollectionAlreadyExistsError{Database: "d", Collection: "c"}, wire.StatusAlreadyExists, codes.AlreadyExists},
 	{"PIN already set", pin.ErrPINAlreadySet, wire.StatusAlreadyExists, codes.AlreadyExists},

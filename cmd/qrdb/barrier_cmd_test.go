@@ -641,6 +641,19 @@ func TestBarrierRecoveryStatusCmd_HasKeys(t *testing.T) {
 	}
 }
 
+func TestBarrierRecoveryStatusCmd_ServiceError(t *testing.T) {
+	root := newBarrierTestRoot(t, &mockBarrierService{
+		hasRecoveryKeysFn: func(_ context.Context) (bool, error) { return false, errBarrierTest },
+	})
+	out, err := executeCommand(root, "barrier", "recovery", "status")
+	if !errors.Is(err, errBarrierTest) {
+		t.Fatalf("expected errBarrierTest, got %v", err)
+	}
+	if out != "" {
+		t.Errorf("a failed lookup must print no status: %q", out)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Canonical verb-tree wiring test
 // ---------------------------------------------------------------------------

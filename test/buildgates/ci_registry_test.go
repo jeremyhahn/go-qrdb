@@ -592,18 +592,37 @@ func TestCIRegistry_CheckRefRefusesAThirdOwner(t *testing.T) {
 }
 
 // localDocker stands in for docker on the local path (claude-agents#329): it
-// knows only what `ci-registry.sh local` may run, and any registry verb
-// exits 99 and is recorded, so a test sees a login, push or pull it made.
+// knows only what `ci-registry.sh local` and `release` may run, and any
+// registry verb exits 99 and is recorded, so a test sees a login, push or
+// pull it made. A tag is a registry verb unless it names the hold tag
+// (qrdb-ci-hold:<hold>, DS-4701), which is recorded in $STUB_DIR/holdtag and
+// fails while $STUB_DIR/notag exists. Each container and image removal is
+// appended to $STUB_DIR/ops, in order.
 const localDocker = `#!/bin/sh
 case $1 in
-login | push | pull | tag)
+login | push | pull)
+	echo "$*" >> "$STUB_DIR/registry"
+	exit 99 ;;
+tag)
+	case $3 in
+	qrdb-ci-hold:*)
+		echo "$*" >> "$STUB_DIR/holdtag"
+		[ ! -f "$STUB_DIR/notag" ] || exit 1
+		exit 0 ;;
+	esac
 	echo "$*" >> "$STUB_DIR/registry"
 	exit 99 ;;
 image)
+	if [ "$2" = rm ]; then
+		echo "$*" >> "$STUB_DIR/ops"
+		exit 0
+	fi
 	[ -f "$STUB_DIR/held" ] || exit 1
 	[ "$3" = -f ] && echo "sha256:` + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" + `"
 	exit 0 ;;
-rm) exit 0 ;;
+rm)
+	echo "$*" >> "$STUB_DIR/ops"
+	exit 0 ;;
 create)
 	echo "$*" > "$STUB_DIR/create"
 	exit 0 ;;
@@ -640,7 +659,14 @@ echo "$*" >> "$STUB_DIR/builds"
 // them. held says whether the daemon already holds the image.
 func runRegistryLocal(t *testing.T, held bool, args ...string) (stdout, stderr, stub string, err error) {
 	t.Helper()
-	stub = t.TempDir()
+	return runRegistryStubbed(t, t.TempDir(), held, append([]string{"local"}, args...)...)
+}
+
+// runRegistryStubbed runs `scripts/ci-registry.sh args...` as runRegistryLocal
+// does, with the stubs written to stub, which may already hold a test's
+// control files.
+func runRegistryStubbed(t *testing.T, stub string, held bool, args ...string) (stdout, stderr, _ string, err error) {
+	t.Helper()
 	for name, body := range map[string]string{"docker": localDocker, "make": localMake} {
 		if err := os.WriteFile(filepath.Join(stub, name), []byte(body), 0o700); err != nil { // #nosec G306 -- the stub must be executable
 			t.Fatalf("write stub %s: %v", name, err)
@@ -660,7 +686,7 @@ func runRegistryLocal(t *testing.T, held bool, args ...string) (stdout, stderr, 
 			env = append(env, kv)
 		}
 	}
-	cmd := exec.Command("scripts/ci-registry.sh", append([]string{"local"}, args...)...) // #nosec G204 -- this repository's own script
+	cmd := exec.Command("scripts/ci-registry.sh", args...) // #nosec G204 -- this repository's own script
 	cmd.Dir = repoRoot(t)
 	cmd.Env = env
 	var out, errb bytes.Buffer
@@ -706,6 +732,10 @@ func TestCIRegistry_LocalToolchainBuildsAndHoldsByID(t *testing.T) {
 	create, _ := os.ReadFile(filepath.Join(stub, "create")) // #nosec G304 -- the test's own temp dir
 	if want := "create --pull never --name qrdb-ci-hold-1-1-lint-toolchain " + id + " true"; strings.TrimSpace(string(create)) != want {
 		t.Fatalf("the hold was %q; want %q: it must hold the image ID, never pull", create, want)
+	}
+	holdTag, _ := os.ReadFile(filepath.Join(stub, "holdtag")) // #nosec G304 -- the test's own temp dir
+	if want := "tag " + id + " qrdb-ci-hold:qrdb-ci-hold-1-1-lint-toolchain"; strings.TrimSpace(string(holdTag)) != want {
+		t.Fatalf("the hold tag was %q; want %q: a rebuild that moves the content-hash tag drops an image no other name keeps (DS-4701)", holdTag, want)
 	}
 	auth, _ := os.ReadFile(filepath.Join(stub, "modauth-copy")) // #nosec G304 -- the test's own temp dir
 	if !strings.Contains(string(auth), "GOPRIVATE=example.com/*") || strings.Contains(string(auth), "stub-token") {
@@ -768,4 +798,58 @@ func TestCIRegistry_LocalRefusesBadArguments(t *testing.T) {
 			assertNoRegistry(t, stub)
 		})
 	}
+}
+
+// TestCIRegistry_LocalToolchainFailsWithoutItsHoldTag is DS-4701: a hold
+// container alone does not keep an image whose tag a rebuild moved, so a hold
+// that cannot also tag the image is no hold. local retries once, removes the
+// half-made hold each time and fails rather than print an ID the job's stages
+// may find gone.
+func TestCIRegistry_LocalToolchainFailsWithoutItsHoldTag(t *testing.T) {
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "notag"), nil, 0o600); err != nil {
+		t.Fatalf("write notag: %v", err)
+	}
+	const hold = "qrdb-ci-hold-1-1-lint-toolchain"
+	out, stderr, _, err := runRegistryStubbed(t, stub, true, "local", "toolchain", hold)
+	if err == nil {
+		t.Fatalf("local toolchain succeeded without its hold tag and printed %q", out)
+	}
+	if out != "" {
+		t.Fatalf("local toolchain printed %q; want no image ID from a failed hold", out)
+	}
+	if !strings.Contains(stderr, "was removed before "+hold+" could hold it") {
+		t.Fatalf("stderr %q does not say the hold failed", stderr)
+	}
+	tags, _ := os.ReadFile(filepath.Join(stub, "holdtag")) // #nosec G304 -- the test's own temp dir
+	if got := strings.Count(string(tags), "\n"); got != 2 {
+		t.Fatalf("tried the hold tag %d times; want twice: %q", got, tags)
+	}
+	ops, _ := os.ReadFile(filepath.Join(stub, "ops")) // #nosec G304 -- the test's own temp dir
+	if !strings.HasSuffix(string(ops), "rm -f "+hold+"\n") {
+		t.Fatalf("container removals %q do not end with the half-made hold's", ops)
+	}
+	assertNoRegistry(t, stub)
+}
+
+// TestCIRegistry_ReleaseRemovesEachHoldThenItsTag holds release's order: the
+// hold container goes before its hold tag, so the reaper never sees a live
+// hold without its tag, and the tag's removal is never forced, so an image
+// another job holds or runs keeps its other names. An empty hold name (a job
+// with no integration hold) is skipped.
+func TestCIRegistry_ReleaseRemovesEachHoldThenItsTag(t *testing.T) {
+	stub := t.TempDir()
+	_, stderr, _, err := runRegistryStubbed(t, stub, true, "release", "qrdb-ci-hold-1-1-lint-toolchain", "", "qrdb-ci-hold-1-1-audit")
+	if err != nil {
+		t.Fatalf("release: %v\n%s", err, stderr)
+	}
+	ops, _ := os.ReadFile(filepath.Join(stub, "ops")) // #nosec G304 -- the test's own temp dir
+	want := "rm -f qrdb-ci-hold-1-1-lint-toolchain\n" +
+		"image rm qrdb-ci-hold:qrdb-ci-hold-1-1-lint-toolchain\n" +
+		"rm -f qrdb-ci-hold-1-1-audit\n" +
+		"image rm qrdb-ci-hold:qrdb-ci-hold-1-1-audit\n"
+	if string(ops) != want {
+		t.Fatalf("release ran\n%s\nwant\n%s", ops, want)
+	}
+	assertNoRegistry(t, stub)
 }

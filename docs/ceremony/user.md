@@ -1,6 +1,6 @@
 # Initialization Ceremony — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 The ceremony is how a brand-new system gets its PINs, a CA, a barrier and, for
@@ -48,6 +48,7 @@ qrdb ceremony status
 | `awaiting_init` | nothing has happened yet |
 | `enrolling` | custody initialized; holders still claiming |
 | `operational` | every holder has claimed, or single-admin mode |
+| `restore_failed` | the node could not read its ceremony state at startup; fix the storage fault and restart it |
 
 ## Claiming as a holder
 
@@ -85,18 +86,16 @@ CSR-sign or BYOC flow ([../certificate-authority/user.md](../certificate-authori
 which requires an authenticated, authorized caller rather than only the SO
 PIN. `sign-csr` refuses any other role with "invalid role".
 
-`sign-csr` works only before the ceremony is operational. Until then it is
+`sign-csr` works only while the ceremony is `enrolling`. In that state it is
 reachable on the sealed-window listener without session authentication:
-there is no IAM plane yet, and the SO PIN is the only credential. Once the
-ceremony is operational, `sign-csr` is refused on every transport, whatever
-PIN, session or certificate is presented. Certificates already issued keep
-verifying; only minting a new one through `sign-csr` is pre-operational.
+there is no IAM plane yet, and the SO PIN is the only credential. In any
+other state `sign-csr` is refused on every transport, whatever PIN, session
+or certificate is presented. Certificates already issued keep verifying;
+only minting a new one through `sign-csr` is limited to `enrolling`.
 
 Choose an SO PIN with **at least 40 bits of entropy**, for example 8 random
-characters from letters and digits, or a 12-digit random number. Before
-unseal, sign-csr can be reached on the sealed-window listener without
-session authentication, so the PIN is all that protects it during that
-window. After 5 wrong PINs in a row the check locks for a delay that
+characters from letters and digits, or a 12-digit random number: it is all
+that protects `sign-csr` on the sealed-window listener. After 5 wrong PINs in a row the check locks for a delay that
 doubles from 1 second up to 15 minutes, and the server answers `429` with
 `Retry-After`. A correct PIN resets the count.
 

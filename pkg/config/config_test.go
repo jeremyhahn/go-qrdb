@@ -1232,6 +1232,32 @@ func TestValidate_TimeSeriesZeroValues_Allowed(t *testing.T) {
 	}
 }
 
+func TestTimeSeriesConfig_DefaultRetentionDuration(t *testing.T) {
+	cases := []struct {
+		seconds int64
+		want    time.Duration
+	}{
+		{seconds: 0, want: 0},
+		{seconds: -5, want: 0},
+		{seconds: 86400, want: 24 * time.Hour},
+		{seconds: math.MaxInt64, want: time.Duration(math.MaxInt64)},
+	}
+	for _, c := range cases {
+		got := TimeSeriesConfig{DefaultRetention: c.seconds}.DefaultRetentionDuration()
+		if got != c.want {
+			t.Errorf("DefaultRetention %d: got %v, want %v", c.seconds, got, c.want)
+		}
+	}
+}
+
+func TestTimeSeriesConfig_DefaultRetentionDuration_LargestExactSeconds(t *testing.T) {
+	seconds := int64(math.MaxInt64 / time.Second)
+	got := TimeSeriesConfig{DefaultRetention: seconds}.DefaultRetentionDuration()
+	if got != time.Duration(seconds)*time.Second || got <= 0 {
+		t.Fatalf("DefaultRetention %d: got %v", seconds, got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error type assertions and messages
 // ---------------------------------------------------------------------------

@@ -216,9 +216,35 @@ const TenantUndo feature.Feature = "tenant-undo"
 // See docs/databases/architecture.md.
 const VerifiableLogKeys feature.Feature = "verifiable-log-keys"
 
+// VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
+// vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
+// which a binary from before it refuses as an unknown metric while its
+// up-to-date peers accept it. A Manhattan FLAT or IVF create is refused with
+// a typed failed-precondition error until every replica of the group
+// advertises it (docs/vectors/architecture.md).
+const VectorManhattan feature.Feature = "vector-manhattan"
+
+// CommandCaps is the admission cap a capped command carries: the
+// timeseries.max_metrics trailer on OpTSWrite, OpTSWritePoint and
+// OpTSWriteBatch, and the index.max_indexes field of OpIndexCreate. Every
+// replica enforces the cap the command carries, so a binary from before it,
+// which ignores the trailer, would admit a write its up-to-date peers refuse
+// and diverge the group. Until every replica of the group advertises it the
+// commands are proposed uncapped, exactly as an older binary encodes them
+// (docs/time-series/engineering.md, docs/secondary-indexes/engineering.md).
+const CommandCaps feature.Feature = "command-caps"
+
+// LockCreateRevisionToken is the distributed lock's fencing token read from
+// the lock key's MVCC create revision rather than from the fencing_token
+// field of its stored value. A binary from before it reads the stored field,
+// so until every replica of the group advertises it acquisition and reentry
+// keep writing the field, with the same value (docs/distributed-locks/
+// engineering.md).
+const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, TransactionReads}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

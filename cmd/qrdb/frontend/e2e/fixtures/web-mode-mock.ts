@@ -22,7 +22,8 @@
  * so tests do not need a live qrdbd server.
  */
 
-import { test as base, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test as base } from "./api-guard.ts";
 
 // ---------------------------------------------------------------------------
 // Configurable REST mock state

@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -166,10 +167,7 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 	out := &compactionCell{node: n, tk: tk, base: map[string]*sdk.Client{}, roles: map[string]string{}}
 	for _, id := range append([]string{tenantid.System}, compactionTenants...) {
 		db := compactionDatabase(id)
-		if _, err := n.Services().Database.CreateForTenant(tenant.WithTenantID(ctx, id),
-			database.DatabaseConfig{Name: db, Backend: database.BackendPebble}); err != nil {
-			t.Fatalf("create database %s for %s: %v", db, id, err)
-		}
+		createCompactionDatabase(t, n, id, db)
 		// Every cell, embedded included, needs the role: the embedded
 		// identity `on` binds names it, and a remote cell's client
 		// certificate authenticates as the user holding it. The user id
@@ -186,6 +184,27 @@ func bootCompactionCellWith(t *testing.T, tk transportKind, configure func(*qrdb
 		out.base[id] = dialAsTenant(t, tk, n, ca, id, userID)
 	}
 	return out
+}
+
+// createCompactionDatabase creates db for tenant id on its own callTimeout
+// bound. A create the service cuts short at DefaultDatabaseCreateTimeout is
+// rolled back and retryable (service.DatabaseCreateTimeoutError), so it is
+// sent again; callTimeout (30 s) holds the first attempt at that 10 s bound
+// and a retry at it. Any other error fails at once.
+func createCompactionDatabase(t *testing.T, n *node.Node, id, db string) {
+	t.Helper()
+	ctx := tenant.WithTenantID(boundedCtx(t), id)
+	for {
+		_, err := n.Services().Database.CreateForTenant(ctx, database.DatabaseConfig{Name: db, Backend: database.BackendPebble})
+		if err == nil {
+			return
+		}
+		var timeout *service.DatabaseCreateTimeoutError
+		if !errors.As(err, &timeout) || ctx.Err() != nil {
+			t.Fatalf("create database %s for %s: %v", db, id, err)
+		}
+		t.Logf("create database %s for %s cut short, retrying: %v", db, id, err)
+	}
 }
 
 // seedCompactionIdentity creates, in tenantID, a role holding

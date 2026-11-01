@@ -841,7 +841,7 @@ func TestSQL_MultiTenant_Isolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("certtest.NewCSR for %s: %v", tc.tenantID, err)
 		}
-		body, status := iraftAPIPost(t, sysClient,
+		body, status := iraftAPIPost(t, tenantCreateClient(sysClient),
 			fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
 			map[string]interface{}{
 				"id":             tc.tenantID,

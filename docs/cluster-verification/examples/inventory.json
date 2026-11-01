@@ -1,0 +1,25 @@
+{
+  "image": "<registry>/qrdbd:<tag>",
+  "docker": ["ssh", "{{.Vars.host}}", "--", "docker", "{{shquote .Argv}}"],
+  "credentials": {
+    "ca_file": "<install-dir>/clusterproof/ca.pem",
+    "cert_file": "<install-dir>/clusterproof/admin.pem",
+    "key_file": "<install-dir>/clusterproof/admin-key.pem"
+  },
+  "first_boot": {
+    "so_pin_file": "<install-dir>/clusterproof/so.pin",
+    "user_pin_file": "<install-dir>/clusterproof/user.pin",
+    "secret_file": "<install-dir>/clusterproof/barrier.secret"
+  },
+  "nodes": [
+    {"name": "node-1", "replica_id": 1, "address": "db1.example.com",
+     "tls_dir": "<install-dir>/tls", "data": "<install-dir>/data",
+     "vars": {"host": "db1.example.com"}},
+    {"name": "node-2", "replica_id": 2, "address": "db2.example.com",
+     "tls_dir": "<install-dir>/tls", "data": "<install-dir>/data",
+     "vars": {"host": "db2.example.com"}},
+    {"name": "node-3", "replica_id": 3, "address": "db3.example.com",
+     "tls_dir": "<install-dir>/tls", "data": "<install-dir>/data",
+     "vars": {"host": "db3.example.com"}}
+  ]
+}

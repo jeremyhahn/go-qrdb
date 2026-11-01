@@ -2156,7 +2156,15 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	valueType := IndexCreateValueType(opts)
 
 	e.indexMu.Lock()
-	if existing, exists := e.indexes[name]; exists {
+	existing, exists := e.indexes[name]
+	// The shard's index cap is checked here, against the index set the create
+	// applies over, so it holds across replicas: a check in the service ahead
+	// of the proposal let two nodes each admit the last slot.
+	if index.CreateExceedsCap(exists, len(e.indexes), opts.MaxIndexes) {
+		e.indexMu.Unlock()
+		return sm.Result{Data: protocol.EncodeLimitRefusal(protocol.LimitIndexes, opts.MaxIndexes)}, nil, nil
+	}
+	if exists {
 		owner := e.indexOwners[name]
 		// A create naming an index ANOTHER owner holds is refused rather than
 		// adopted (go-qrdb#426). It is an application error, not a Go error:
@@ -2333,6 +2341,15 @@ func (e *MVCCEngine) handleTSWrite(_ *mvcc.Store, _ *lease.Lessor, batch storage
 		return sm.Result{}, nil, err
 	}
 
+	// The metric cap is admitted against the apply batch, so a metric an
+	// earlier entry of the same batch introduced already counts.
+	if err := timeseries.AdmitMetrics(batch, []string{params.Metric}, params.MaxMetrics); err != nil {
+		if refusal, ok := MetricLimitResult(err); ok {
+			return refusal, nil, nil
+		}
+		return sm.Result{}, nil, err
+	}
+
 	if err := e.ts.Write(batch, params.Metric, params.Value, tsTimestampFromNano(params.Timestamp), params.Tags); err != nil {
 		return sm.Result{}, nil, err
 	}
@@ -2348,8 +2365,14 @@ func (e *MVCCEngine) handleTSWriteBatch(_ *mvcc.Store, _ *lease.Lessor, batch st
 		return statemachine.RefusalResult(&statemachine.ServiceNotConfiguredError{Service: "timeseries"}), nil, nil
 	}
 
-	params, err := protocol.DecodeTSWriteBatch(payload)
+	params, maxMetrics, err := protocol.DecodeTSWriteBatch(payload)
 	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	if err := timeseries.AdmitMetrics(batch, TSBatchMetrics(params), maxMetrics); err != nil {
+		if refusal, ok := MetricLimitResult(err); ok {
+			return refusal, nil, nil
+		}
 		return sm.Result{}, nil, err
 	}
 
@@ -2380,6 +2403,13 @@ func (e *MVCCEngine) handleTSWritePoint(_ *mvcc.Store, _ *lease.Lessor, batch st
 
 	params, err := protocol.DecodeTSWrite(payload)
 	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if err := timeseries.AdmitMetrics(batch, []string{params.Metric}, params.MaxMetrics); err != nil {
+		if refusal, ok := MetricLimitResult(err); ok {
+			return refusal, nil, nil
+		}
 		return sm.Result{}, nil, err
 	}
 

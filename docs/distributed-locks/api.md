@@ -66,7 +66,8 @@ gRPC wraps it as the response's `lock` field):
 }
 ```
 
-`fencing_token` is the MVCC `ModRevision` at acquisition — monotonically
+`fencing_token` is the lock key's MVCC create revision (etcd's
+`create_revision`) — unchanged by a reentrant re-acquisition, and strictly
 increasing across successive acquisitions of the same lock. Pass it to the
 protected resource and have the resource reject anything lower than the highest
 it has seen. `key` is the user key, with the internal `__sys:lock/` prefix
@@ -87,10 +88,11 @@ this scope", never "every lock on this node".
 |---|---|---|
 | Acquired | 200 | `OK` |
 | `trylock` on a held lock (`LockHeldError`) | 409 | `ABORTED` |
+| `release` lost every compare-and-swap to concurrent writes (`lock.ErrUnlockContended`); the lock is still held | 409 | `ABORTED` |
 | The request's deadline passes while `acquire` waits | 504 | `DEADLINE_EXCEEDED` |
 | Stale or wrong fencing token on release/extend (`NotLockHolderError`) | 403 | `PERMISSION_DENIED` |
 | Lock not held / not found (`LockNotFoundError`) | 404 | `NOT_FOUND` |
-| `ttl <= 0` (`lock.ErrInvalidTTL`, unclassified); the MCP tools refuse it before the call | 500 | `INTERNAL` |
+| `ttl <= 0` (`lock.ErrInvalidTTL`); the MCP tools refuse it before the call | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |

@@ -68,12 +68,51 @@ Fixed at creation, immutable thereafter:
 | Field | Values | Default |
 |---|---|---|
 | `dimension` | uint32 | required |
-| `distance_metric` | `cosine`, `euclidean` (alias `l2`), `dot_product` | `euclidean` |
+| `distance_metric` | `cosine`, `euclidean` (alias `l2`), `dot_product`, `manhattan` | `euclidean` |
 | `index_type` | `hnsw`, `flat`, `ivf_flat` | `hnsw` |
 
 These are the wire values (`transport.DistanceMetric`,
 `transport.VectorIndexType`). The CLI spells them `dot-product` and `ivf-flat`
-and defaults `--distance-metric` to `cosine`.
+and defaults `--distance-metric` to `cosine`. The protobuf transports (gRPC,
+Unix, QUIC) carry the metric as the `DistanceMetric` enum:
+
+| Metric | Enum value |
+|---|---|
+| `cosine` | `DISTANCE_COSINE` = 0 (the wire default) |
+| `euclidean` | `DISTANCE_EUCLIDEAN` = 1 |
+| `dot_product` | `DISTANCE_DOT_PRODUCT` = 2 |
+| `manhattan` | `DISTANCE_MANHATTAN` = 3 |
+
+A server refuses an enum value outside the table with
+`service.UnknownDistanceMetricError` (`INVALID_ARGUMENT`), and a stored metric
+with no enum value with `service.UnsupportedNamespaceGeometryError`
+(`FAILED_PRECONDITION`); neither is read as cosine. Every SDK transport reports
+a namespace's metric as the `transport.DistanceMetric` constant whatever case
+the server stored it in (`transport.ParseDistanceMetric`), and refuses a name or
+enum value it does not know with `transport.UnknownDistanceMetricError`.
+Names match case-insensitively, and the
+service refuses any other metric at create with
+`service.UnknownDistanceMetricError`; it never reads one as `euclidean`. It
+refuses an index type outside `hnsw`, `flat` and `ivf_flat` (alias `ivf`) the
+same way, with `service.UnknownIndexTypeError`, and never reads one as `hnsw`.
+A namespace record that an earlier release stored with any other metric or
+index type is refused the same way after an upgrade: search, hybrid search,
+upsert, batch upsert and inspect return
+`service.UnsupportedNamespaceGeometryError`, naming the namespace and the
+stored value, and never an empty result or a default geometry. There is no
+migration; drop the namespace and recreate it with a supported geometry.
+Every index type implements every metric, and a namespace searches the index
+type it was created with. The namespace record stores `manhattan` as metric
+value 3, which a binary older than this one cannot apply, so a `manhattan`
+create of any index type waits for the `vector-manhattan` cluster feature:
+on a Raft host the service refuses it with
+`service.VectorMetricNotActiveError` (failed precondition) until that feature
+is active in the cluster. The vector store is node-local, so the service reads
+the gates from the node's host (`service.WithFeatureGates`), not from a raft
+node of its own. An `hnsw` namespace is gated as `flat` and `ivf_flat` are: a
+replica on an older binary reads a metric it does not know as euclidean, so a
+`manhattan` `hnsw` namespace would rank differently there. A host with no feature gates refuses nothing. Every transport reports that type as the
+`transport.VectorIndexType` value.
 
 ## Namespace update
 
@@ -141,6 +180,20 @@ text.
   `VectorServiceClosedError` before it touches storage. Every Close call waits
   for the jobs to stop, a second one concurrent with the first included. A job
   Close cancelled records the cancellation as its error.
+- **A namespace scan is ordered by vector ID.** `ScanNamespace` returns
+  ascending IDs at or above `ScanOptions.FromID`, at most `Limit` of them, each
+  at its latest version. On Pebble it seeks to the first key of `FromID`, keeps
+  the last version of each ID as the iterator leaves it (keys sort by ID, then
+  version, both big-endian) and stops at `Limit`. The memory store sorts by ID
+  and applies the same bounds. `Offset`, still honoured for the replicated list
+  command, counts in that same order after `FromID`.
+- **`ListVectors` pages by an opaque keyset cursor.** `NextCursor` resumes after
+  the last ID returned: today it is the decimal of that ID plus one, set only
+  when a `limit+1` probe found another vector, and empty when none follows or
+  the last ID is `MaxUint64`. A cursor that does not parse as one is refused
+  with `InvalidVectorError`, never read as the first page. The index rebuild
+  walks the namespace the same way, 1,000 IDs a page, so no vector repeats or
+  is skipped when the namespace is larger than a page.
 - **Search targets exactly one namespace.** There is no cross-namespace search.
 - **`ef_search` applies to HNSW only** and trades recall against latency; it is
   ignored by `flat` and has no meaning for it.
@@ -172,10 +225,14 @@ the search cheaper.
 | Built without `qrdb_vector` | capability absent; verbs and handlers not registered | **yes** |
 | Namespace already exists | `service.NamespaceExistsError` | yes |
 | Unknown namespace | not-found | **yes** — never auto-created |
-| Vector length ≠ namespace dimension | invalid-argument | **yes** |
+| Vector length ≠ namespace dimension | `service.DimensionMismatchError`, invalid-argument; a batch upsert is checked whole before any of it is written, so one wrong-length vector refuses the batch and stores none of it | **yes** |
+| Batch upsert whose namespace metadata cannot be read | that read's error (`service.NamespaceNotFoundError` for a namespace that does not exist); nothing is written, never validated against the batch alone | **yes** |
+| Unknown distance metric at namespace create, on any transport | `service.UnknownDistanceMetricError`, invalid-argument (REST 400, gRPC `INVALID_ARGUMENT`) | **yes** |
+| Unknown index type at namespace create, on any transport | `service.UnknownIndexTypeError`, invalid-argument (REST 400, gRPC `INVALID_ARGUMENT`) | **yes** |
+| Stored namespace whose metric or index type this server does not implement (accepted by an earlier release) | `service.UnsupportedNamespaceGeometryError` on search, hybrid search, upsert, batch upsert and inspect, failed-precondition (REST 409, gRPC `FAILED_PRECONDITION`); delete still drops it | **yes** — never an empty result |
+| Similarity search on an `ivf_flat` namespace holding at least one vector but fewer than its `num_centroids` (default 8) | `service.VectorIndexUntrainedError`, failed-precondition; not retryable — it clears once the namespace holds enough vectors | **yes** |
 | Namespace update of an unknown namespace | `NamespaceNotFoundError` (not-found) | **yes** — never auto-created |
 | Namespace update with a nonzero dimension ≠ the namespace's | `DimensionMismatchError` (invalid-argument); nothing written | **yes** |
-| Unknown distance metric or index type at the CLI or MCP | invalid-argument | **yes** |
 | Unknown vector ID on get/delete/search-by-id | not-found | yes |
 | Malformed metadata filter JSON | invalid-argument | **yes** |
 | Progress polled for an unknown job/operation ID | not-found | yes |
@@ -226,11 +283,12 @@ reclaims space from deleted vectors; `RebuildIndex` reconstructs the ANN
 index from the stored vectors on demand, the same way the automatic
 construction-time rebuild does.
 
-`CreateNamespace`, `loadNamespaces` and the lazy rebuild all derive the
-index's metric from one function (`distanceMetricFromString`), and
-`loadNamespaces` builds each namespace's index through the same rebuild
+`CreateNamespace`, `loadNamespaces`, `RebuildIndex` and the lazy rebuild all
+build the index through one function (`newNamespaceIndex`), which reads the
+metric and the index type from the namespace record (`parseNamespaceGeometry`),
+and `loadNamespaces` builds each namespace's index through the same rebuild
 `ensureHNSWIndex` uses, so a restarted node ranks every namespace under its
-configured metric. `TestVectorService_RestartPreservesConfiguredMetric` and
+configured metric and index type. `TestVectorService_RestartPreservesConfiguredMetric` and
 `TestVectorService_SnapshotInstallPreservesConfiguredMetric`
 (`pkg/service/vector_restart_test.go`) pin both call paths against a real
 PebbleDB-backed store, with a query vector chosen so that L2 and cosine

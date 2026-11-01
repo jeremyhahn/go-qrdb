@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -29,13 +30,15 @@ import (
 
 func TestE2E_ReplicaStates_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	var gotShard uint64
+	// The responder runs on the server's handler goroutine, and the round trip
+	// is no happens-before edge to the race detector: gotShard is atomic.
+	var gotShard atomic.Uint64
 	srv.SetResponder("admin.GetReplicaStates", func(payload []byte) (uint16, []byte) {
 		var req pb.GetReplicaStatesRequest
 		if err := proto.Unmarshal(payload, &req); err != nil {
 			return wire.StatusInvalidArgument, nil
 		}
-		gotShard = req.GetShardId()
+		gotShard.Store(req.GetShardId())
 		return wire.StatusOK, mustMarshal(&pb.ReplicaStatesResponse{NodeId: "n2", Replicas: []*pb.ReplicaStateProto{
 			{ShardId: 1, ReplicaId: 2, AppliedIndex: 48211, Hash: 1<<63 + 5},
 		}})
@@ -44,8 +47,8 @@ func TestE2E_ReplicaStates_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplicaStates: %v", err)
 	}
-	if gotShard != 1 {
-		t.Fatalf("shard on the wire = %d, want 1", gotShard)
+	if s := gotShard.Load(); s != 1 {
+		t.Fatalf("shard on the wire = %d, want 1", s)
 	}
 	want := &transport.ReplicaStatesResponse{NodeID: "n2", Replicas: []transport.ReplicaState{
 		{ShardID: 1, ReplicaID: 2, AppliedIndex: 48211, Hash: 1<<63 + 5},

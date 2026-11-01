@@ -480,6 +480,11 @@ func boundTo(account *user.User, thumbprint string) bool {
 	})
 }
 
+// DefaultAdminCompletionBudget is AdminCompletionBounds' default Budget: the
+// longest a tenant admin's completion retries before it is left to the
+// tenant's next barrier unseal or status read.
+const DefaultAdminCompletionBudget = 2 * time.Minute
+
 // AdminCompletionBounds bounds CompletePendingTenantAdminWithin. A zero
 // field takes its default.
 type AdminCompletionBounds struct {
@@ -500,7 +505,7 @@ type AdminCompletionBounds struct {
 // withDefaults returns b with every zero field set to its default.
 func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
 	if b.Budget <= 0 {
-		b.Budget = 2 * time.Minute
+		b.Budget = DefaultAdminCompletionBudget
 	}
 	if b.AttemptTimeout <= 0 {
 		b.AttemptTimeout = 10 * time.Second

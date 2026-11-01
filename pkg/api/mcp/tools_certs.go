@@ -24,7 +24,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // certTools returns the MCP tool registrations for certificate management
@@ -37,9 +37,10 @@ import (
 // for the second question, answered by the one cross-transport home of the
 // rule (pkg/auth/middleware/cert_authz.go).
 //
-// qrdb_cert_list is the sharpest case here: its tenant_id DEFAULTS to the
-// system tenant when omitted, so without the gate a tenant-local agent that
-// simply left the argument off read the platform's own inventory.
+// qrdb_cert_list resolves an omitted tenant_id to the caller's own tenant, as
+// every transport does, and the gate then authorizes the tenant it resolved:
+// certs:list is ScopeSelfStrict, so a tool call naming another tenant is
+// refused.
 //
 // mw may be nil (no-auth deployments), in which case the gates are no-ops.
 func certTools(svc cert.CertProvider, mw *authmw.AuthMiddleware) []serverTool {
@@ -128,7 +129,7 @@ func toolCertList() mcp.Tool {
 	return mcp.NewTool("qrdb_cert_list",
 		mcp.WithDescription("List all issued client certificates for a tenant."),
 		mcp.WithString("tenant_id",
-			mcp.Description(`The tenant ID to list certificates for. Defaults to the system tenant id when empty.`),
+			mcp.Description(`The tenant ID to list certificates for: the caller's own. Defaults to the caller's tenant when empty; any other tenant is refused.`),
 		),
 	)
 }
@@ -136,7 +137,10 @@ func toolCertList() mcp.Tool {
 // handleCertList returns a tool handler that delegates to svc.ListCerts.
 func handleCertList(svc cert.CertProvider, mw *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		tenantID := mcp.ParseString(req, "tenant_id", tenantid.System)
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		if tenantID == "" {
+			tenantID = tenant.CallerTenant(ctx)
+		}
 
 		if err := authorizeCertTenantTool(ctx, mw, tenantID, permission.CertsList); err != nil {
 			return nil, &ToolError{Tool: "qrdb_cert_list", Err: err}

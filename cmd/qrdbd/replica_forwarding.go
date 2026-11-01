@@ -63,7 +63,9 @@ func replicaForwardingOption(
 	if err != nil {
 		return nil, err
 	}
-	locator := replicaforward.Start(ctx, client.NewMembershipStore(), placements, f.raftAddress, slog.Default())
+	// The watches run until the daemon's ctx ends at process shutdown; nothing
+	// the daemon closes after that is read through them.
+	locator, _ := replicaforward.Start(ctx, client.NewMembershipStore(), placements, f.raftAddress, slog.Default())
 	slog.Info("replica forwarding enabled", "timeout", timeout)
 	return server.WithReplicaForwarding(locator, timeout), nil
 }

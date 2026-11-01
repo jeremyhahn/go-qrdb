@@ -54,6 +54,7 @@ import (
 func TestGuardedVerbConformanceMatrix(t *testing.T) {
 	for _, c := range matrix() {
 		t.Run(c.name(), func(t *testing.T) {
+			c.parallel(t)
 			t.Logf("cell %s: expecting %s", c.name(), c.want)
 			cl := c.boot(t)
 

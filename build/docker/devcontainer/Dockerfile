@@ -168,6 +168,12 @@ FROM base AS integration
 # (BUILD_TAGS plus integration), passed by `make docker-build-it`. No default,
 # so a build that bypasses make fails here instead of vetting a narrower set.
 ARG IT_TAGS
+# The Alpine package index checksum (scripts/apk-index-sum.sh, ci-template
+# v1.29), passed by `make docker-build-it`. A new value misses the cache from
+# here on, so the upgrade takes Alpine's latest packages, a CVE fix among
+# them; base and toolchain do not declare it, so their cache does not move.
+ARG APK_INDEX_SUM
+RUN apk upgrade --no-cache
 WORKDIR /src
 # The whole source, filtered by .dockerignore, owned by root so the suite
 # cannot rewrite it. Not pkg and test alone: the qrdbdharness suites build the

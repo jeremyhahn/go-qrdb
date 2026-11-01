@@ -311,7 +311,7 @@ func serverNamespaceInfoToTransport(n *serverNamespaceInfo) *transport.Namespace
 		Dimension:      n.Dimension,
 		VectorCount:    n.VectorCount,
 		DistanceMetric: n.DistanceMetric,
-		IndexType:      n.IndexType,
+		IndexType:      transport.ParseVectorIndexType(n.IndexType),
 		IndexConfig:    n.IndexConfig,
 		Metadata:       n.Metadata,
 		CreatedAt:      n.CreatedAt,
@@ -500,13 +500,17 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "GetNamespaceInfo", Err: &jsonDecodeError{Err: jsonErr}}
 	}
+	metric, err := transport.ParseDistanceMetric(raw.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 
 	return &transport.GetNamespaceInfoResponse{
 		Namespace:      raw.Namespace,
 		Dimension:      raw.Dimension,
 		VectorCount:    raw.VectorCount,
-		DistanceMetric: raw.DistanceMetric,
-		IndexType:      raw.IndexType,
+		DistanceMetric: metric,
+		IndexType:      transport.ParseVectorIndexType(raw.IndexType),
 		IndexConfig:    raw.IndexConfig,
 		Metadata:       raw.Metadata,
 		CreatedAt:      raw.CreatedAt,
@@ -1131,7 +1135,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 
 	return &transport.GetIndexStatsResponse{
 		Namespace:         raw.Namespace,
-		IndexType:         raw.IndexType,
+		IndexType:         transport.ParseVectorIndexType(raw.IndexType),
 		VectorCount:       raw.VectorCount,
 		Dimension:         raw.Dimension,
 		IndexSizeBytes:    raw.IndexSizeBytes,

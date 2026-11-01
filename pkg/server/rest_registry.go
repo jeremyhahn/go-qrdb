@@ -1027,7 +1027,9 @@ func (r *restServiceRegistry) WatchService(tenantID, db string) (service.WatchSe
 			return r.StreamRefusal(tenantID, db)
 		})
 	}
-	return service.NewAdmittedWatch(watchSvc, r.streamAdmitter), nil
+	// A client's watch holds a watch.max_watchers slot; the node's own
+	// watchers never resolve through here, so the cap cannot starve them.
+	return service.NewAdmittedWatch(service.NewCountedWatch(watchSvc), r.streamAdmitter), nil
 }
 
 // databaseUnservedError is the refusal a stream on dbase ends with once the

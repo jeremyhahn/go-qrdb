@@ -43,6 +43,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -217,6 +218,10 @@ type Server struct {
 	// resolves the configured default before calling WithMaxConnsPerPeer,
 	// so this field only sees "the caller's actual choice."
 	maxConnsPerPeer int
+
+	// clientLimit admits each request by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every request.
+	clientLimit *clientlimit.Limiter
 }
 
 // ServerOption configures optional Server dependencies.
@@ -288,6 +293,14 @@ func WithMaxMessageBytes(n int) ServerOption {
 // WithListener-provided listener the caller already wrapped itself.
 func WithMaxConnsPerPeer(n int) ServerOption {
 	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// WithClientLimiter admits every call by client address through l before
+// any other interceptor -- authentication included -- runs (go-qrdb#1197).
+// Every transport of one server shares the same Limiter, so an address has
+// one budget whichever protocol it uses. Nil, the default, applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // WithMVCC configures the gRPC server with an MVCC key-value service.
@@ -893,9 +906,11 @@ func (s *Server) admissionChains() (grpc.UnaryServerInterceptor, grpc.StreamServ
 	// Outermost, independent of authentication: every path above -- the
 	// authenticated chain, the awaiting-admin gate and the sealed window --
 	// sees the peer's TLS state and this listener's chain verifier.
+	// Ahead of even that, the client-address limiter (go-qrdb#1197) refuses
+	// a flooding address before any of it does work on the call's behalf.
 	v := s.chainVerifier()
-	return ChainUnaryServerInterceptors(authmw.PeerTLSUnaryInterceptor(v), unaryChain),
-		ChainStreamServerInterceptors(authmw.PeerTLSStreamInterceptor(v), streamChain)
+	return ChainUnaryServerInterceptors(ClientLimitUnaryInterceptor(s.clientLimit), authmw.PeerTLSUnaryInterceptor(v), unaryChain),
+		ChainStreamServerInterceptors(ClientLimitStreamInterceptor(s.clientLimit), authmw.PeerTLSStreamInterceptor(v), streamChain)
 }
 
 // chainVerifier is the verifier the listener binds to every call:
