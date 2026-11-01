@@ -114,8 +114,3 @@ func TestAwaitingAdminCredentialStreamInterceptor(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// error_status.go: ErrorClass of the marshal and decode errors
-// ---------------------------------------------------------------------------
-
