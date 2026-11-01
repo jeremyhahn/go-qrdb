@@ -25,6 +25,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -318,6 +319,118 @@ func TestPerTenantRegistry_CloseAllIdempotent(t *testing.T) {
 	}
 	if err := reg.CloseAll(context.Background()); err != nil {
 		t.Errorf("second CloseAll: %v, want nil", err)
+	}
+}
+
+func TestPerTenantRegistry_GetRegistered(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+	opened, _ := openRealTenant(t, reg, "alpha")
+
+	got, err := reg.Get("alpha")
+	if err != nil {
+		t.Fatalf("Get(alpha): %v", err)
+	}
+	if got != opened {
+		t.Errorf("Get returned %p, want the handle Open returned (%p)", got, opened)
+	}
+}
+
+// TestPerTenantRegistry_OpenOpenerFailure verifies an opener error is
+// wrapped in OpenError and leaves no entry behind.
+func TestPerTenantRegistry_OpenOpenerFailure(t *testing.T) {
+	cause := errors.New("opener refused")
+	reg := pebblestore.NewPerTenantRegistry(pebblestore.WithRegistryOpener(
+		func(string) (*pebblestore.PebbleStorage, error) { return nil, cause }))
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+
+	dir := filepath.Join(t.TempDir(), "alpha")
+	_, err := reg.Open(context.Background(), "alpha", dir)
+	var openErr *pebblestore.OpenError
+	if !errors.As(err, &openErr) {
+		t.Fatalf("Open = %v, want *OpenError", err)
+	}
+	if openErr.TenantID != "alpha" || openErr.Path != dir {
+		t.Errorf("OpenError = {%q, %q}, want {%q, %q}", openErr.TenantID, openErr.Path, "alpha", dir)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("Open = %v, want it to wrap %v", err, cause)
+	}
+	if got := reg.List(); len(got) != 0 {
+		t.Errorf("List after failed Open = %v, want empty", got)
+	}
+}
+
+// TestPerTenantRegistry_OpenOpenerFailureRetry verifies a failed Open does
+// not poison the tenant: a later Open through a working opener succeeds.
+func TestPerTenantRegistry_OpenOpenerFailureRetry(t *testing.T) {
+	fail := true
+	reg := pebblestore.NewPerTenantRegistry(pebblestore.WithRegistryOpener(
+		func(path string) (*pebblestore.PebbleStorage, error) {
+			if fail {
+				return nil, errors.New("transient")
+			}
+			return pebblestore.New(&pebblestore.Config{DataDir: path})
+		}))
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+
+	dir := filepath.Join(t.TempDir(), "alpha")
+	if _, err := reg.Open(context.Background(), "alpha", dir); err == nil {
+		t.Fatal("first Open = nil, want the opener's error")
+	}
+	fail = false
+	if _, err := reg.Open(context.Background(), "alpha", dir); err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+}
+
+// TestPerTenantRegistry_CloseStorageFailure verifies a storage close
+// failure is returned as CloseError and the entry is still removed.
+func TestPerTenantRegistry_CloseStorageFailure(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = reg.CloseAll(context.Background()) })
+	s, dir := openRealTenant(t, reg, "alpha")
+	_ = s.NewIterator(nil) // leaked on purpose: PebbleDB.Close reports it
+
+	err := reg.Close(context.Background(), "alpha")
+	var closeErr *pebblestore.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("Close = %v, want *CloseError", err)
+	}
+	if closeErr.TenantID != "alpha" || closeErr.Path != dir {
+		t.Errorf("CloseError = {%q, %q}, want {%q, %q}", closeErr.TenantID, closeErr.Path, "alpha", dir)
+	}
+	var opErr *storage.OpError
+	if !errors.As(err, &opErr) {
+		t.Errorf("Close = %v, want a wrapped *storage.OpError", err)
+	}
+	if got := reg.List(); len(got) != 0 {
+		t.Errorf("List after failed Close = %v, want empty", got)
+	}
+}
+
+// TestPerTenantRegistry_CloseAllStorageFailure verifies CloseAll closes
+// every tenant, returns a CloseError for the failing one, and marks the
+// registry closed.
+func TestPerTenantRegistry_CloseAllStorageFailure(t *testing.T) {
+	reg := pebblestore.NewPerTenantRegistry()
+	bad, badDir := openRealTenant(t, reg, "bad")
+	good, _ := openRealTenant(t, reg, "good")
+	_ = bad.NewIterator(nil) // leaked on purpose: PebbleDB.Close reports it
+
+	err := reg.CloseAll(context.Background())
+	var closeErr *pebblestore.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("CloseAll = %v, want *CloseError", err)
+	}
+	if closeErr.TenantID != "bad" || closeErr.Path != badDir {
+		t.Errorf("CloseError = {%q, %q}, want {%q, %q}", closeErr.TenantID, closeErr.Path, "bad", badDir)
+	}
+	if _, err := good.Get([]byte("k")); !errors.Is(err, storage.ErrStorageClosed) {
+		t.Errorf("good tenant Get after CloseAll = %v, want ErrStorageClosed", err)
+	}
+	if err := reg.CloseAll(context.Background()); err != nil {
+		t.Errorf("second CloseAll = %v, want nil", err)
 	}
 }
 
