@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -247,6 +248,40 @@ func TestRESTServiceRegistry_NilService_ReturnsServiceNotImplementedError(t *tes
 // Barrier-less tenant check
 // ---------------------------------------------------------------------------
 
+// TestRESTServiceRegistry_NilServices_AllServiceMethods verifies that every
+// accessor beside KV refuses a nil engine with a CapabilityUnsupportedError
+// naming the refused service.
+func TestRESTServiceRegistry_NilServices_AllServiceMethods(t *testing.T) {
+	reg := NewDatabaseServiceRegistry("default")
+	reg.Register("default", &DatabaseServices{Name: "default", KV: newMockKVService()})
+	r := NewRESTServiceRegistry(reg, nil, "system")
+
+	tests := []struct {
+		name string
+		fn   func() error
+	}{
+		{"mvcc", func() error { _, err := r.MVCCService("system", "default"); return err }},
+		{"watch", func() error { _, err := r.WatchService("system", "default"); return err }},
+		{"lease", func() error { _, err := r.LeaseService("system", "default"); return err }},
+		{"index", func() error { _, err := r.IndexService("system", "default"); return err }},
+		{"timeseries", func() error { _, err := r.TimeSeriesService("system", "default"); return err }},
+		{"vector", func() error { _, err := r.VectorService("system", "default"); return err }},
+		{"transaction", func() error { _, err := r.TransactionService("system", "default"); return err }},
+		{"batch", func() error { _, err := r.BatchService("system", "default"); return err }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cue *service.CapabilityUnsupportedError
+			if err := tc.fn(); !errors.As(err, &cue) {
+				t.Fatalf("err = %T %v, want *service.CapabilityUnsupportedError", err, err)
+			}
+			if !strings.HasPrefix(cue.Message, tc.name+": ") {
+				t.Errorf("message %q must name the refused service %q", cue.Message, tc.name)
+			}
+		})
+	}
+}
+
 func TestRESTServiceRegistry_NoBarrierRegistry_SkipsTenantCheck(t *testing.T) {
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 	// Any tenant name should succeed when no barrier registry is configured.
@@ -377,6 +412,72 @@ func (e *errTenantServicer) GetTenant(_ context.Context, _ string) (*tenant.Tena
 // TestRESTServiceRegistry_VectorService_WithVectorField verifies that
 // VectorService returns ServiceNotImplemented when Vector field is nil
 // (default in newFilledServices) and succeeds when set.
+// TestRESTServiceRegistry_WithTenantSvc_UnknownTenantIsNotFound verifies that
+// a lookup answering ErrTenantNotFound for a tenant other than the system
+// tenant reaches the caller as a *rest.TenantNotFoundError naming it.
+func TestRESTServiceRegistry_WithTenantSvc_UnknownTenantIsNotFound(t *testing.T) {
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithTenantServicer(&errTenantServicer{}))
+	_, err := r.KVService("unknown-tenant", "default")
+	var tnf *rest.TenantNotFoundError
+	if !errors.As(err, &tnf) {
+		t.Fatalf("err = %T %v, want *rest.TenantNotFoundError", err, err)
+	}
+	if tnf.TenantID != "unknown-tenant" {
+		t.Errorf("TenantID = %q, want %q", tnf.TenantID, "unknown-tenant")
+	}
+}
+
+// errGenericTenantLookup is the failure genericErrTenantServicer answers.
+var errGenericTenantLookup = errors.New("generic tenant error")
+
+// genericErrTenantServicer fails every lookup with an error other than
+// ErrTenantNotFound: a lookup that could not run.
+type genericErrTenantServicer struct{ mockTenantServicer }
+
+func (*genericErrTenantServicer) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	return nil, errGenericTenantLookup
+}
+
+// TestRESTServiceRegistry_GenericTenantError_NonSystemTenant verifies that a
+// GetTenant failure other than ErrTenantNotFound reaches the caller as itself
+// rather than as a TenantNotFoundError: a lookup that could not run has not
+// found the tenant absent.
+func TestRESTServiceRegistry_GenericTenantError_NonSystemTenant(t *testing.T) {
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithTenantServicer(&genericErrTenantServicer{}))
+	_, err := r.KVService("sometenant", "default")
+	if !errors.Is(err, errGenericTenantLookup) {
+		t.Fatalf("err = %v, want the GetTenant error", err)
+	}
+	var tnf *rest.TenantNotFoundError
+	if errors.As(err, &tnf) {
+		t.Errorf("a failed lookup reported the tenant missing: %v", err)
+	}
+}
+
+// notLeaderTenantServicer refuses every lookup the way a node does while the
+// system shard is between leaders.
+type notLeaderTenantServicer struct{ mockTenantServicer }
+
+func (*notLeaderTenantServicer) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	return nil, &service.NotLeaderError{ShardID: 1}
+}
+
+// TestRESTServiceRegistry_LeaderlessTenantLookupIsUnavailable verifies that a
+// tenant lookup refused because the system shard has no leader classifies as
+// Unavailable, so a client retries it, and not as NotFound, which tells it
+// the tenant does not exist.
+func TestRESTServiceRegistry_LeaderlessTenantLookupIsUnavailable(t *testing.T) {
+	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system", WithTenantServicer(&notLeaderTenantServicer{}))
+	_, err := r.KVService("sometenant", "default")
+	var nle *service.NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("err = %T %v, want the *service.NotLeaderError", err, err)
+	}
+	if got := errclass.Classify(err); got != errclass.Unavailable {
+		t.Errorf("Classify = %v, want Unavailable", got)
+	}
+}
+
 func TestRESTServiceRegistry_VectorService_NilVector_NotImplemented(t *testing.T) {
 	r := NewRESTServiceRegistry(newFilledRegistry(), nil, "system")
 	_, err := r.VectorService("system", "default")
