@@ -11,6 +11,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
 
 // WebTransportSession is a WebTransport session as
@@ -33,8 +34,13 @@ type WebTransportHandler func(sess *WebTransportSession, caller *auth.Identity, 
 // fails Start with *InvalidWebTransportHandlerError.
 func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption {
 	return func(s *Server) {
-		if h == nil || !strings.HasPrefix(path, "/") {
-			s.webTransportErr = &InvalidWebTransportHandlerError{Path: path, NilHandler: h == nil}
+		// A path on the middleware's public allowlist is exempt from
+		// authentication for every method, CONNECT included, so the
+		// session handler would never see a caller and every upgrade
+		// would be refused with 401 while Start advertised WebTransport.
+		public := middleware.IsPublicPath(path)
+		if h == nil || !strings.HasPrefix(path, "/") || public {
+			s.webTransportErr = &InvalidWebTransportHandlerError{Path: path, NilHandler: h == nil, PublicPath: public}
 			return
 		}
 		s.webTransportPath = path
@@ -67,6 +73,16 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: &WebTransportNotHTTP3Error{}})
 		return
 	}
+	// What we rely on from webtransport-go v0.13.0 (server.go):
+	// Server.Upgrade returns an error, having written no response and
+	// opened no session, unless the request is CONNECT, its :protocol is
+	// "webtransport-h3" (or the pre-draft-15 "webtransport"), CheckOrigin
+	// accepts it, and the client's SETTINGS enable HTTP/3 datagrams. We set
+	// no CheckOrigin, so its default applies: an Origin header, when sent,
+	// must name the request's Host. Authentication is not Upgrade's job; the
+	// caller check above already ran. Server.Close closes every QUIC
+	// connection and its session manager, ending each session's context and
+	// streams, before it closes H3 and waits for ServeQUICConn to return.
 	sess, err := s.webTransport.wt.Upgrade(w, r)
 	if err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})

@@ -191,16 +191,21 @@ func (e *HTTP3StartError) Unwrap() error {
 }
 
 // InvalidWebTransportHandlerError is returned by Start when
-// WithWebTransportHandler was given a nil handler or a path that is not
-// absolute.
+// WithWebTransportHandler was given a nil handler, a path that is not
+// absolute, or a path the authentication middleware exempts as public
+// (middleware.IsPublicPath), where no session could ever be authenticated.
 type InvalidWebTransportHandlerError struct {
 	Path       string
 	NilHandler bool
+	PublicPath bool
 }
 
 func (e *InvalidWebTransportHandlerError) Error() string {
 	if e.NilHandler {
 		return "rest: WebTransport handler for path " + strconv.Quote(e.Path) + " is nil"
+	}
+	if e.PublicPath {
+		return "rest: WebTransport path " + strconv.Quote(e.Path) + " is a public path exempt from authentication"
 	}
 	return "rest: WebTransport path " + strconv.Quote(e.Path) + " is not an absolute path"
 }

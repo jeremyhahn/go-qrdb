@@ -76,16 +76,23 @@ func wtClientTLS(pool *x509.CertPool) *tls.Config {
 // Authorization header when it is not empty.
 func dialWT(t *testing.T, srv *Server, pool *x509.CertPool, path, authorization string) (int, *webtransport.Session, error) {
 	t.Helper()
+	hdr := http.Header{}
+	if authorization != "" {
+		hdr.Set("Authorization", authorization)
+	}
+	return dialWTHeader(t, srv, pool, path, hdr)
+}
+
+// dialWTHeader opens a WebTransport session on path with hdr as the CONNECT
+// request's headers.
+func dialWTHeader(t *testing.T, srv *Server, pool *x509.CertPool, path string, hdr http.Header) (int, *webtransport.Session, error) {
+	t.Helper()
 	// The CONNECT request's context is the session's: cancelling it on return
 	// would cancel the session stream, so it lives until the test ends.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 	d := &webtransport.Transport{TLSClientConfig: wtClientTLS(pool)}
 	t.Cleanup(func() { _ = d.Close() })
-	hdr := http.Header{}
-	if authorization != "" {
-		hdr.Set("Authorization", authorization)
-	}
 	resp, sess, err := d.Dial(ctx, "https://"+srv.Addr()+path, hdr)
 	status := 0
 	if resp != nil {
@@ -288,12 +295,18 @@ func TestWithWebTransportHandler_InvalidRefusedAtStart(t *testing.T) {
 	h := newWTRecorder()
 	tlsCfg, _ := generateTestTLSConfig(t)
 	for name, tc := range map[string]struct {
-		path string
-		h    WebTransportHandler
+		path   string
+		h      WebTransportHandler
+		public bool
 	}{
 		"nil handler":   {path: wtTestPath},
 		"relative path": {path: "wt", h: h.handle},
 		"empty path":    {path: "", h: h.handle},
+		// The middleware exempts these from authentication for every
+		// method, so a CONNECT there could never carry a caller.
+		"public /health":             {path: "/health", h: h.handle, public: true},
+		"public /v1/ca/bootstrap":    {path: "/v1/ca/bootstrap", h: h.handle, public: true},
+		"public /v1/cluster/nodekey": {path: "/v1/cluster/nodekey", h: h.handle, public: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithTLS(tlsCfg), WithWebTransportHandler(tc.path, tc.h))
@@ -303,7 +316,7 @@ func TestWithWebTransportHandler_InvalidRefusedAtStart(t *testing.T) {
 				srv.Stop()
 				t.Fatalf("Start = %v, want *InvalidWebTransportHandlerError", err)
 			}
-			if target.Path != tc.path || target.NilHandler != (tc.h == nil) || !strings.Contains(err.Error(), "WebTransport") {
+			if target.Path != tc.path || target.NilHandler != (tc.h == nil) || target.PublicPath != tc.public || !strings.Contains(err.Error(), "WebTransport") {
 				t.Fatalf("error %+v (%q) does not describe the option", target, err)
 			}
 		})
@@ -344,7 +357,7 @@ func TestWebTransportErrors_Messages(t *testing.T) {
 	if !errors.Is(up, cause) || !strings.Contains(up.Error(), cause.Error()) {
 		t.Fatalf("upgrade error %q does not carry its cause", up)
 	}
-	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}} {
+	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}, &InvalidWebTransportHandlerError{Path: "/health", PublicPath: true}} {
 		if !strings.Contains(err.Error(), "WebTransport") {
 			t.Errorf("%T message %q does not name WebTransport", err, err)
 		}
@@ -366,5 +379,183 @@ func TestWebTransportServer_ServeListenerEndsOnAcceptError(t *testing.T) {
 	}
 	if err := wt.serveListener(acceptErrListener{err: net.ErrClosed}); !errors.Is(err, net.ErrClosed) {
 		t.Errorf("failed accept: %v, want the accept error", err)
+	}
+}
+
+// TestWebTransport_PathBesidePublicOneServesSessions pins that the public-path
+// refusal is the middleware's exact match, not a prefix: a path under /health
+// is authenticated, so it upgrades.
+func TestWebTransport_PathBesidePublicOneServesSessions(t *testing.T) {
+	h := newWTRecorder()
+	srv, pool := startWTServer(t, WithWebTransportHandler("/health/wt", h.handle))
+	status, _, err := dialWT(t, srv, pool, "/health/wt", "Bearer good")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status %d, want 200", status)
+	}
+	select {
+	case got := <-h.sessions:
+		if got.subject != "alice" {
+			t.Fatalf("handler saw %+v, want alice", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session never reached the handler")
+	}
+}
+
+// rawWTConnect sends one authenticated extended CONNECT to wtTestPath over a
+// bare HTTP/3 client connection, with protocol as its :protocol and the
+// HTTP/3 datagram setting as datagrams says, and returns the status.
+func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, protocol string, datagrams bool) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	if err != nil {
+		t.Fatalf("DialAddr: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
+	cc := (&http3.Transport{EnableDatagrams: datagrams}).NewClientConn(conn)
+	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Proto = protocol
+	req.Header.Set("Authorization", "Bearer good")
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// TestWebTransport_NegotiationFailureOpensNoSession covers webtransport-go's
+// Upgrade refusals on an authenticated CONNECT: a :protocol that is not
+// WebTransport, a WebTransport version it does not speak, and a client whose
+// SETTINGS lack HTTP/3 datagrams. Each is REST's 400 and no session.
+func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
+	h := newWTRecorder()
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
+	for name, tc := range map[string]struct {
+		protocol  string
+		datagrams bool
+	}{
+		"other protocol":      {protocol: "connect-udp", datagrams: true},
+		"unsupported version": {protocol: "webtransport-h4", datagrams: true},
+		"no datagram setting": {protocol: "webtransport-h3", datagrams: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if status := rawWTConnect(t, srv, pool, tc.protocol, tc.datagrams); status != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400", status)
+			}
+		})
+	}
+	if n := h.calls.Load(); n != 0 {
+		t.Fatalf("handler ran %d times for refused negotiations", n)
+	}
+}
+
+// TestWebTransport_CrossOriginRefused covers the origin check: the server sets
+// no CheckOrigin, so webtransport-go's same-origin default applies, and an
+// authenticated CONNECT from another origin is refused before any session.
+func TestWebTransport_CrossOriginRefused(t *testing.T) {
+	h := newWTRecorder()
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle))
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer good")
+	hdr.Set("Origin", "https://attacker.example")
+	status, sess, err := dialWTHeader(t, srv, pool, wtTestPath, hdr)
+	if err == nil || sess != nil {
+		t.Fatal("a cross-origin session was established")
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", status)
+	}
+	if n := h.calls.Load(); n != 0 {
+		t.Fatalf("handler ran %d times for a cross-origin session", n)
+	}
+	hdr.Set("Origin", "https://"+srv.Addr())
+	if status, _, err := dialWTHeader(t, srv, pool, wtTestPath, hdr); err != nil || status != http.StatusOK {
+		t.Fatalf("same-origin Dial = %d, %v; want 200", status, err)
+	}
+}
+
+// TestWebTransport_StopClosesActiveSessionAndStream stops the server while a
+// session has an open stream: Stop returns, both ends see the session and the
+// stream close, and the handler goroutine returns rather than leaking. The
+// module carries no goroutine-leak detector, so the handler's return, which
+// is the goroutine this package starts per session, is observed directly.
+func TestWebTransport_StopClosesActiveSessionAndStream(t *testing.T) {
+	accepted := make(chan struct{})
+	failed := make(chan error, 1)
+	ended := make(chan error, 1)
+	h := func(sess *WebTransportSession, _ *auth.Identity, _ string) {
+		ctx, cancel := context.WithTimeout(sess.Context(), 10*time.Second)
+		defer cancel()
+		str, err := sess.AcceptStream(ctx)
+		if err != nil {
+			failed <- err
+			return
+		}
+		buf := make([]byte, 1)
+		if _, err := io.ReadFull(str, buf); err != nil {
+			failed <- err
+			return
+		}
+		close(accepted)
+		<-sess.Context().Done()
+		_, err = str.Read(buf)
+		ended <- err
+	}
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h))
+	status, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("Dial = %d, %v; want 200", status, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	str, err := sess.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("OpenStreamSync: %v", err)
+	}
+	if _, err := str.Write([]byte{1}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	select {
+	case <-accepted:
+	case err := <-failed:
+		t.Fatalf("handler: %v", err)
+	case <-ctx.Done():
+		t.Fatal("the handler never accepted the stream")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		srv.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		t.Fatal("Stop did not return with a session open")
+	}
+	select {
+	case <-sess.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("the client never saw the session close")
+	}
+	if _, err := str.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the client's stream is still readable after Stop")
+	}
+	select {
+	case err := <-ended:
+		if err == nil {
+			t.Fatal("the handler's stream is still readable after Stop")
+		}
+	case <-ctx.Done():
+		t.Fatal("the handler goroutine never returned after Stop")
 	}
 }

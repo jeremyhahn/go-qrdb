@@ -25,6 +25,25 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 )
 
+// publicPaths is the built-in pre-authentication allowlist RESTMiddleware
+// exempts from authentication whatever the request method. See the comment
+// at its use in RESTMiddleware for why each path is public.
+var publicPaths = map[string]struct{}{
+	"/health":                 {},
+	"/v1/ca/bootstrap":        {},
+	"/v1/config/initialized":  {},
+	"/v1/cluster/keydelivery": {},
+	"/v1/cluster/nodekey":     {},
+}
+
+// IsPublicPath reports whether RESTMiddleware exempts path from
+// authentication for every method. A handler mounted on such a path never
+// sees a caller identity, so a registration that needs one must refuse it.
+func IsPublicPath(path string) bool {
+	_, ok := publicPaths[path]
+	return ok
+}
+
 // RESTMiddleware returns an http.Handler that wraps the given handler with
 // authentication and authorization. Per-route permissions come from the
 // RESTRouteRegistry the REST server populates at route-registration time —
@@ -87,11 +106,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// unauthenticated; each exact path here is a route that self-authorizes.
 		// The same routes are registered as RESTRoutePublic in the registry so
 		// the server's default-deny startup assertion accounts for them.
-		if r.URL.Path == "/health" ||
-			r.URL.Path == "/v1/ca/bootstrap" ||
-			r.URL.Path == "/v1/config/initialized" ||
-			r.URL.Path == "/v1/cluster/keydelivery" ||
-			r.URL.Path == "/v1/cluster/nodekey" {
+		if IsPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
