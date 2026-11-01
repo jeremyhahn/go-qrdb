@@ -49,3 +49,83 @@ func TestIsCircuitOpen(t *testing.T) {
 	assert.False(t, IsCircuitOpen(New(ErrTimeout, "op", "timed out")))
 	assert.False(t, IsCircuitOpen(errors.New("plain error")))
 }
+
+func TestWrapf(t *testing.T) {
+	t.Run("wraps with a formatted message", func(t *testing.T) {
+		err := Wrapf(errors.New("base error"), ErrStorage, "storage.Get", "failed to get key %s", "test-key")
+		require.Error(t, err)
+
+		var de *QRDBError
+		require.ErrorAs(t, err, &de)
+		assert.Equal(t, ErrStorage, de.Code)
+		assert.Equal(t, "storage.Get", de.Op)
+		assert.Contains(t, err.Error(), "failed to get key test-key")
+		assert.Contains(t, err.Error(), "base error")
+	})
+
+	t.Run("nil error stays nil", func(t *testing.T) {
+		assert.Nil(t, Wrapf(nil, ErrStorage, "storage.Get", "some message"))
+	})
+
+	t.Run("retryable code makes the result retryable", func(t *testing.T) {
+		err := Wrapf(errors.New("timeout"), ErrTimeout, "api.call", "request timed out")
+		assert.True(t, IsRetryable(err))
+	})
+}
+
+func TestAs(t *testing.T) {
+	var de *QRDBError
+	assert.True(t, As(New(ErrNotFound, "test", "not found"), &de))
+	assert.Equal(t, ErrNotFound, de.Code)
+
+	var other *QRDBError
+	assert.False(t, As(errors.New("standard error"), &other))
+	assert.False(t, As(nil, &other))
+}
+
+func TestGetContext(t *testing.T) {
+	err := New(ErrNotFound, "test", "not found")
+	_ = err.WithContext("key", "value")
+	_ = err.WithContext("number", 42)
+
+	val, ok := GetContext(err, "key")
+	assert.True(t, ok)
+	assert.Equal(t, "value", val)
+
+	val, ok = GetContext(err, "number")
+	assert.True(t, ok)
+	assert.Equal(t, 42, val)
+
+	for name, e := range map[string]error{
+		"non-QRDBError": errors.New("standard error"),
+		"nil error":     nil,
+		"missing key":   New(ErrNotFound, "test", "not found"),
+	} {
+		val, ok := GetContext(e, "key")
+		assert.False(t, ok, name)
+		assert.Nil(t, val, name)
+	}
+}
+
+func TestInternalf(t *testing.T) {
+	err := Internalf("process", "unexpected state: %s", "invalid")
+	require.Error(t, err)
+
+	var de *QRDBError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, ErrInternal, de.Code)
+	assert.Equal(t, "process", de.Op)
+	assert.Contains(t, err.Error(), "unexpected state: invalid")
+}
+
+func TestUnavailablef(t *testing.T) {
+	err := Unavailablef("cluster", "no leader available in %d nodes", 3)
+	require.Error(t, err)
+
+	var de *QRDBError
+	require.ErrorAs(t, err, &de)
+	assert.Equal(t, ErrUnavailable, de.Code)
+	assert.Equal(t, "cluster", de.Op)
+	assert.Contains(t, err.Error(), "no leader available in 3 nodes")
+	assert.True(t, IsRetryable(err))
+}

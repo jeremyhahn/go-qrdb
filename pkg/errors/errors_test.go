@@ -108,6 +108,18 @@ func TestQRDBError_Is(t *testing.T) {
 			target: nil,
 			want:   false,
 		},
+		{
+			name:   "nil underlying does not match a plain error",
+			err:    &QRDBError{Code: ErrNotFound},
+			target: baseErr,
+			want:   false,
+		},
+		{
+			name:   "nil underlying still matches by code",
+			err:    &QRDBError{Code: ErrNotFound},
+			target: &QRDBError{Code: ErrNotFound},
+			want:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -147,6 +159,10 @@ func TestQRDBError_WithContext(t *testing.T) {
 	if _, ok := err.GetContext("nonexistent"); ok {
 		t.Error("GetContext(nonexistent) should return false")
 	}
+
+	val, ok := (&QRDBError{Code: ErrNotFound}).GetContext("key")
+	assert.Nil(t, val, "GetContext on a nil Context map")
+	assert.False(t, ok, "GetContext on a nil Context map")
 }
 
 func TestQRDBError_IsRetryable(t *testing.T) {
@@ -184,6 +200,24 @@ func TestQRDBError_IsRetryable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQRDBError_WithRetry(t *testing.T) {
+	t.Run("set retry to true", func(t *testing.T) {
+		err := &QRDBError{Code: ErrNotFound}
+		assert.False(t, err.IsRetryable())
+		assert.True(t, err.WithRetry(true).IsRetryable())
+	})
+
+	t.Run("set retry to false keeps a retryable code retryable", func(t *testing.T) {
+		err := &QRDBError{Code: ErrTimeout, Retry: true}
+		assert.True(t, err.WithRetry(false).IsRetryable())
+	})
+
+	t.Run("explicit retry takes precedence over the code", func(t *testing.T) {
+		err := &QRDBError{Code: ErrNotFound, Retry: true}
+		assert.True(t, err.IsRetryable())
+	})
 }
 
 func TestNew(t *testing.T) {
@@ -513,10 +547,34 @@ func TestErrorCode_String(t *testing.T) {
 		code ErrorCode
 		want string
 	}{
+		{ErrUnknown, "unknown"},
 		{ErrNotFound, "not_found"},
-		{ErrTimeout, "timeout"},
 		{ErrConflict, "conflict"},
+		{ErrTimeout, "timeout"},
 		{ErrInternal, "internal"},
+		{ErrInvalidInput, "invalid_input"},
+		{ErrUnauthorized, "unauthorized"},
+		{ErrForbidden, "forbidden"},
+		{ErrUnavailable, "unavailable"},
+		{ErrStorage, "storage"},
+		{ErrRaft, "raft"},
+		{ErrEncryption, "encryption"},
+		{ErrDecryption, "decryption"},
+		{ErrValidation, "validation"},
+		{ErrConfiguration, "configuration"},
+		{ErrCanceled, "canceled"},
+		{ErrDeadlineExceeded, "deadline_exceeded"},
+		{ErrAlreadyExists, "already_exists"},
+		{ErrResourceExhausted, "resource_exhausted"},
+		{ErrPreconditionFailed, "precondition_failed"},
+		{ErrAborted, "aborted"},
+		{ErrOutOfRange, "out_of_range"},
+		{ErrUnimplemented, "unimplemented"},
+		{ErrDataLoss, "data_loss"},
+		{ErrSnapshot, "snapshot"},
+		{ErrReplication, "replication"},
+		{ErrLeaderNotAvailable, "leader_not_available"},
+		{ErrClusterNotReady, "cluster_not_ready"},
 		{ErrQuorumLost, "quorum_lost"},
 		{ErrSplitBrain, "split_brain"},
 		{ErrRateLimited, "rate_limited"},
@@ -533,9 +591,7 @@ func TestErrorCode_String(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.code.String(); got != tt.want {
-				t.Errorf("ErrorCode.String() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tt.code.String())
 		})
 	}
 }
@@ -547,12 +603,32 @@ func TestErrorCode_HTTPStatus(t *testing.T) {
 	}{
 		{ErrNotFound, 404},
 		{ErrConflict, 409},
+		{ErrAlreadyExists, 409},
 		{ErrTimeout, 408},
+		{ErrDeadlineExceeded, 408},
 		{ErrInvalidInput, 400},
+		{ErrValidation, 400},
+		{ErrOutOfRange, 400},
 		{ErrUnauthorized, 401},
 		{ErrForbidden, 403},
 		{ErrUnavailable, 503},
+		{ErrLeaderNotAvailable, 503},
+		{ErrClusterNotReady, 503},
+		{ErrUnimplemented, 501},
+		{ErrResourceExhausted, 429},
+		{ErrPreconditionFailed, 412},
 		{ErrInternal, 500},
+		{ErrUnknown, 500},
+		{ErrStorage, 503},
+		{ErrRaft, 503},
+		{ErrEncryption, 500},
+		{ErrDecryption, 500},
+		{ErrConfiguration, 500},
+		{ErrCanceled, 500},
+		{ErrAborted, 500},
+		{ErrDataLoss, 500},
+		{ErrSnapshot, 500},
+		{ErrReplication, 500},
 		{ErrNotAllowed, 403},
 		{ErrSystemKeyspaceViolation, 403},
 		{ErrCrossTenantAccess, 403},
@@ -569,9 +645,7 @@ func TestErrorCode_HTTPStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.code.String(), func(t *testing.T) {
-			if got := tt.code.HTTPStatus(); got != tt.want {
-				t.Errorf("ErrorCode.HTTPStatus() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tt.code.HTTPStatus())
 		})
 	}
 }
