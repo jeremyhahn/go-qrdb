@@ -137,3 +137,29 @@ func TestProtoToNamespaceInfo_InvalidMetadata(t *testing.T) {
 		t.Fatal("protoToNamespaceInfo accepted malformed metadata JSON")
 	}
 }
+
+func TestTransportProtocolConfigToProto(t *testing.T) {
+	t.Run("WithEtcd", func(t *testing.T) {
+		got := transportProtocolConfigToProto(transport.ProtocolConfig{
+			MySQL:      true,
+			PostgreSQL: true,
+			Etcd: &transport.EtcdProtocolConfig{
+				Enabled: true, ListenAddr: ":2379", AdvertiseClientURLs: []string{"http://localhost:2379"},
+			},
+		})
+		if !got.GetMysql() || !got.GetPostgresql() {
+			t.Fatalf("mysql/postgresql = %v/%v, want true/true", got.GetMysql(), got.GetPostgresql())
+		}
+		etcd := got.GetEtcd()
+		if etcd == nil || !etcd.GetEnabled() || etcd.GetListenAddr() != ":2379" ||
+			len(etcd.GetAdvertiseClientUrls()) != 1 || etcd.GetAdvertiseClientUrls()[0] != "http://localhost:2379" {
+			t.Fatalf("etcd = %+v", etcd)
+		}
+	})
+	t.Run("WithoutEtcd", func(t *testing.T) {
+		got := transportProtocolConfigToProto(transport.ProtocolConfig{MySQL: true})
+		if !got.GetMysql() || got.GetPostgresql() || got.GetEtcd() != nil {
+			t.Fatalf("got %+v, want mysql only and no etcd", got)
+		}
+	})
+}
