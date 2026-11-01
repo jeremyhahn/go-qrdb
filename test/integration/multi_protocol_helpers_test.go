@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -813,7 +814,7 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 
 	// Admission comes first: the joiner exits if it sees no leader within
 	// its fixed internal budget -- see startJoiningSelfIssuedCANode.
-	out, err = runCLIProto(t, nodes[0], multiProtocols[0], "admin", "member", "add", joinerAddr,
+	out, err = runMemberAddWhenAdvertised(t, nodes[0], multiProtocols[0], joinerAddr,
 		"--shard-id", "1", "--replica-id", "3", "--identity", joinerIdentity)
 	if err != nil {
 		t.Fatalf("startSelfIssuedCAMultiProtocolCluster: admin member add %s: %v\noutput: %s", joinerAddr, err, out)
@@ -836,4 +837,31 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	waitForVolumePoolReady(t, adminClient, listeners[0].restPort, "default", len(nodes), 60*time.Second)
 
 	return nodes
+}
+
+// memberAddUnadvertisedRefusal is the text of featuregate's
+// UnsupportedReplicaError: the founder refuses to add a replica on a node
+// whose feature advertisement is not yet live.
+const memberAddUnadvertisedRefusal = "no live feature advertisement from that node"
+
+// runMemberAddWhenAdvertised runs `admin member add` with args through node
+// over proto, acting as the operator who retries the featuregate refusal
+// once the joiner advertises. Advertisements refresh every
+// featuregate.DefaultRefreshInterval, so it retries that refusal alone for
+// twelve intervals, polling five times per interval, and returns any other
+// outcome at once.
+func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
+	t.Helper()
+	cmd := append([]string{"admin", "member", "add"}, args...)
+	var out string
+	var err error
+	pollUntil(12*featuregate.DefaultRefreshInterval, featuregate.DefaultRefreshInterval/5, func() bool {
+		out, err = runCLIProto(t, node, proto, cmd...)
+		if err == nil || !strings.Contains(out, memberAddUnadvertisedRefusal) {
+			return true
+		}
+		t.Logf("[%s] %s refused until the joiner advertises, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
+		return false
+	})
+	return out, err
 }
