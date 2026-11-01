@@ -39,6 +39,9 @@ func TestParseExactInt64(t *testing.T) {
 		{name: "float64 below MinInt64 clamps", value: -math.MaxFloat64, want: math.MinInt64},
 		{name: "string", value: "1234567890", want: 1234567890},
 		{name: "json.Number", value: json.Number("9876543210"), want: 9876543210},
+		{name: "int64", value: int64(math.MaxInt64), want: math.MaxInt64},
+		{name: "int", value: int(-99), want: -99},
+		{name: "other integer type", value: uint64(7), want: 7},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
