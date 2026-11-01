@@ -671,6 +671,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Credentials are per tenant.** Every credential operation, on every transport and through `Client.Credentials()`, acts on the caller's own tenant's store: the platform's for a system principal, a store kept under the tenant's own barrier (always the `barrier` strategy) for a principal of a tenant onboarded with `barrier`, `volume` or `raft` isolation. A tenant on `prefix` isolation is refused with `CapabilityUnsupportedError` (501 / `UNIMPLEMENTED`), and a sealed tenant barrier with `BarrierSealedError` (503 / `UNAVAILABLE`); neither falls back to the system store. The ten `credentials:*` permissions move from `ScopeCross` to `ScopeSelf`, so a tenant administrator can grant them inside the tenant, and their SDK names move to `sdk/go/types_permission_credentials.go`. `credentials.CredentialService.ForBarrier` builds a store over a given barrier. The embedded transport now receives the node's credential service, so `Client.Credentials()` on an in-process node no longer fails with a nil service (#1185).
 - **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
   sign-head returns and records are the tlog-checkpoint text (origin, tree
   size, base64 root) and one signed-note signature line carrying the key name
