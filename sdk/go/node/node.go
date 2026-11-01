@@ -1564,10 +1564,7 @@ func (n *Node) Client() *sdk.Client { return n.client.Load() }
 func (n *Node) Services() *lifecycle.Node { return n.svcNode.Load() }
 
 // BarrierRegistry returns the per-tenant barrier registry built during the
-// seal subsystem phase. Embedders use this to construct tenant-scoped
-// credential resolvers via the sdk/go/secret subpackage's
-// NewTenantScopedCredentialRetrieve so that
-// credential:// lookups route to the correct per-tenant barrier store.
+// seal subsystem phase. Embedders use it to reach a tenant's barrier.
 // Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
 // the node is in the sealed state before Unseal has been called.
 func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry.Load() }
