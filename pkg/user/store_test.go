@@ -1796,6 +1796,9 @@ func TestEnableUser_PutFails(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
 	}
+	if target.Op != "enable" {
+		t.Errorf("Op: got %q, want %q", target.Op, "enable")
+	}
 }
 
 func TestDisableUser_PutFails(t *testing.T) {
@@ -1816,6 +1819,9 @@ func TestDisableUser_PutFails(t *testing.T) {
 	var target *StoreError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+	if target.Op != "disable" {
+		t.Errorf("Op: got %q, want %q", target.Op, "disable")
 	}
 }
 
