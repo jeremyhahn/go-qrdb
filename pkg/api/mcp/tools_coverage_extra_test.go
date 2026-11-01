@@ -491,8 +491,8 @@ func TestCovHandleCeremonySignCSR_ServiceError(t *testing.T) {
 func TestCovCredentialTools_Registration(t *testing.T) {
 	svc := newCovMockCredentialSvc()
 	tools := credentialTools(svc)
-	if len(tools) != 12 {
-		t.Fatalf("expected 12 tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("expected 14 tools, got %d", len(tools))
 	}
 }
 
