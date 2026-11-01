@@ -673,3 +673,19 @@ func TestMaxLimitOptions_Resolve(t *testing.T) {
 		})
 	}
 }
+
+func TestWithKVService_SetsField(t *testing.T) {
+	kv := &mockKVService{}
+	srv := NewServer(nil, nil, "localhost:0", WithKVService(kv))
+	if srv.kvSvc != kv {
+		t.Errorf("kvSvc = %v, want the supplied service", srv.kvSvc)
+	}
+}
+
+func TestWithAdminService_SetsField(t *testing.T) {
+	admin := &mockAdminService{}
+	srv := NewServer(nil, nil, "localhost:0", WithAdminService(admin))
+	if srv.adminSvc != admin {
+		t.Errorf("adminSvc = %v, want the supplied service", srv.adminSvc)
+	}
+}

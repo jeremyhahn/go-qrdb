@@ -257,7 +257,7 @@ func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (
 // business rules (first-admin credential issuance), which pkg/service and
 // pkg/bootstrap test directly against the real TenantOnboardingService. No
 // build constraint: it is used from both the tagged (handlers_tenant_test.go)
-// and untagged (handlers_coverage_extra2_test.go) tenant test files, so its
+// and untagged (tenant_isolation_test.go) tenant test files, so its
 // own constraint must be the superset -- none at all.
 type fakeTenantOnboarding struct {
 	tenants tenant.TenantServicer
