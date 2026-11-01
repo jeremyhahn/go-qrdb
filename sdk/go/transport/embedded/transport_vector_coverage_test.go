@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -229,8 +230,12 @@ func TestEmbeddedVector_AllMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("GetIndexStats", func(t *testing.T) {
-		if _, err := tr.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns"}); err != nil {
+		resp, err := tr.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns"})
+		if err != nil {
 			t.Fatalf("GetIndexStats: %v", err)
+		}
+		if resp.IndexType != transport.IndexHNSW {
+			t.Errorf("index type: %q, want %q", resp.IndexType, transport.IndexHNSW)
 		}
 	})
 	t.Run("CompactNamespace", func(t *testing.T) {
@@ -379,4 +384,44 @@ func TestEmbeddedVector_Dispatch(t *testing.T) {
 			t.Fatalf("dispatch: %v", err)
 		}
 	})
+}
+
+// metricVectorService is a mockVectorService whose GetNamespaceInfo reports
+// a chosen distance metric.
+type metricVectorService struct {
+	mockVectorService
+	metric string
+}
+
+func (m *metricVectorService) GetNamespaceInfo(_ context.Context, req *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
+	return &service.GetNamespaceInfoResponse{Namespace: req.Namespace, Dimension: 2, DistanceMetric: m.metric}, nil
+}
+
+// TestEmbeddedVector_GetNamespaceInfo_DistanceMetric proves the embedded
+// transport reports the SDK constant every other transport returns, and
+// refuses a metric it does not know with the typed error rather than
+// passing it on.
+func TestEmbeddedVector_GetNamespaceInfo_DistanceMetric(t *testing.T) {
+	ctx := context.Background()
+	for reported, want := range map[string]transport.DistanceMetric{
+		"MANHATTAN": transport.DistanceManhattan,
+		"L2":        transport.DistanceEuclidean,
+		"cosine":    transport.DistanceCosine,
+	} {
+		tr := newExtTransport(t, WithVectorService(&metricVectorService{metric: reported}))
+		info, err := tr.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns"})
+		if err != nil {
+			t.Fatalf("GetNamespaceInfo with %q: %v", reported, err)
+		}
+		if info.DistanceMetric != want {
+			t.Errorf("GetNamespaceInfo with %q: metric %q, want %q", reported, info.DistanceMetric, want)
+		}
+	}
+
+	tr := newExtTransport(t, WithVectorService(&metricVectorService{metric: "CHEBYSHEV"}))
+	info, err := tr.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns"})
+	var unknown *transport.UnknownDistanceMetricError
+	if !errors.As(err, &unknown) || unknown.Metric != "CHEBYSHEV" {
+		t.Fatalf("GetNamespaceInfo = %+v, %v; want *UnknownDistanceMetricError{CHEBYSHEV}", info, err)
+	}
 }

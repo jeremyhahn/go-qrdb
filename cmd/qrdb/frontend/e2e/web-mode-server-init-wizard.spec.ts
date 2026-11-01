@@ -27,7 +27,8 @@
  * No live qrdbd is required; all REST calls are intercepted via page.route().
  */
 
-import { test as base, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
+import { test as base } from "./fixtures/api-guard.ts";
 import type { Page } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
@@ -51,6 +52,17 @@ async function injectSealedUninitializedMock(page: Page): Promise<void> {
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({ error: "sealed" }),
+    });
+  });
+
+  // /status is not on the sealed-window allowlist, so a sealed server refuses
+  // it as the REST sealed-window gate does. connect() reads it for the server
+  // version and tolerates the refusal.
+  await page.route((url) => url.pathname === "/status", (route) => {
+    void route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "barrier sealed", code: "SEALED" }),
     });
   });
 

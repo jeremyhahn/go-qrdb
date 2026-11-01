@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
@@ -328,6 +329,12 @@ var dataPlaneRules = []rule{
 	as(&service.WatchCanceledError{}, Canceled),
 	as(&service.IndexNotFoundError{}, NotFound),
 	as(&service.IndexExistsError{}, AlreadyExists),
+	// The shard holds index.max_indexes indexes: a create succeeds once one
+	// is dropped.
+	as(&service.IndexLimitError{}, ResourceExhausted),
+	// The shard holds timeseries.max_metrics metric names: a write that
+	// would create another succeeds once one is deleted.
+	as(&service.MetricLimitError{}, ResourceExhausted),
 	// A scan bound on a numeric index that is not a number, or is NaN: the
 	// caller's request, refused before anything is read. It reaches a
 	// transport inside ReadError, which would otherwise claim it as a fault.
@@ -336,6 +343,8 @@ var dataPlaneRules = []rule{
 	is(watch.ErrCompacted, OutOfRange),
 	// A replay requested of a store that keeps no change history.
 	is(watch.ErrStartRevisionUnsupported, Unimplemented),
+	// A watch opened with every watch.max_watchers slot on the node held.
+	as(&watch.WatcherLimitError{}, ResourceExhausted),
 	// A raw-KV point verb (Get/Put/Delete/CAS) or a transaction compare
 	// named the cluster CA's key material on an un-namespaced servicer
 	// (the embedded SDK transport -- see service.hardConfinedPrefixes' own
@@ -367,6 +376,13 @@ var vectorRules = []rule{
 	as(&service.NamespaceExistsError{}, AlreadyExists),
 	as(&service.DimensionMismatchError{}, InvalidArgument),
 	as(&service.InvalidVectorError{}, InvalidArgument),
+	as(&service.UnknownDistanceMetricError{}, InvalidArgument),
+	as(&service.UnknownIndexTypeError{}, InvalidArgument),
+	// A FLAT or IVF create whose metric's record value waits on a cluster
+	// feature: only an upgrade of every replica lets it succeed.
+	as(&service.VectorMetricNotActiveError{}, FailedPrecondition),
+	as(&service.VectorIndexUntrainedError{}, FailedPrecondition),
+	as(&service.UnsupportedNamespaceGeometryError{}, FailedPrecondition),
 	as(&service.InvalidNamespaceNameError{}, InvalidArgument),
 	as(&service.VectorJobNotFoundError{}, NotFound),
 	as(&service.VectorServiceClosedError{}, Unavailable),
@@ -654,6 +670,9 @@ var lockRules = []rule{
 	as(&lock.LockHeldError{}, Aborted),
 	as(&lock.NotLockHolderError{}, PermissionDenied),
 	as(&lock.LockNotFoundError{}, NotFound),
+	is(lock.ErrEmptyKey, InvalidArgument),
+	is(lock.ErrInvalidTTL, InvalidArgument),
+	is(lock.ErrUnlockContended, Aborted),
 }
 
 // sqlRules are the SQL-over-API conditions: validation and engine failures
@@ -1314,6 +1333,9 @@ var holderRules = []rule{
 	is(ceremony.ErrAlreadyInitialized, FailedPrecondition),
 	is(ceremony.ErrTooManyPendingChallenges, ResourceExhausted),
 	as(&ceremony.QuorumRateLimitedError{}, ResourceExhausted),
+	// The pre-authentication client-address limiter (go-qrdb#1197): a
+	// throttle, not a denial, so retrying after the wait is correct.
+	as(&clientlimit.RateLimitedError{}, ResourceExhausted),
 	is(ceremony.ErrCANotInitialized, FailedPrecondition),
 	is(ceremony.ErrInvalidHolderRole, InvalidArgument),
 	is(ceremony.ErrMissingUsername, InvalidArgument),
@@ -1536,6 +1558,10 @@ var genericRules = []rule{
 	// *service.InvitationInvalidError, so an outage classifies as a server
 	// fault instead of a forged credential.
 	as(&invite.StoreError{}, Internal),
+	// Two re-invitations of one pending account raced and this one lost the
+	// guarded write; the winner's token is the live one, and a retry
+	// supersedes it in turn.
+	is(invite.ErrReissueConflict, Aborted),
 	is(seal.ErrWrappedRootKeyCorrupt, Internal),
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.

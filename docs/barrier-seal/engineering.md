@@ -591,6 +591,21 @@ services and to the server, which wraps the node's sealed-window probe with
   node before wiping* in [architecture.md](architecture.md)). Gating every
   writer narrows that window to the check-then-propose race; it does not
   close it.
+- **An encrypted Pebble store refuses work once its barrier seals, with a
+  typed error.** A sealed barrier refuses every file `encfs` would create, and
+  Pebble retries a refused flush at once and forever and panics when it cannot
+  create its next WAL file. Every Pebble database under a barrier opens
+  through `pebble.Open` in `pkg/storage/pebble`, which attaches a `SealWatch`:
+  it logs the first sealed background error of an episode and counts the rest,
+  and its `Flush` and `Check` return a `*SealedError` wrapping
+  `ErrBarrierSealed` instead of waiting. `PebbleStorage` checks before every
+  flush, durable write and compaction, and the state machines' `Sync` flushes
+  through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
+  node closes its own data-plane store before it seals its barriers, so a
+  clean `Close` never meets the refusal. The check and Pebble's next file
+  creation are not atomic, so a seal landing between them is still a crash;
+  closing that window is the planned seal-quiesce row in
+  [SPEC.md](../SPEC.md).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -757,6 +772,15 @@ re-encrypted with the WAL into a keyed sibling, recorded in the journal's
 `StagedSnapshots`, and renamed into place once the swaps commit. A
 verification mismatch rolls the migration back before any swap, leaving every
 store under the old key.
+
+A standalone node whose `pebble` store keeps its write-ahead log outside the
+store directory (`storage.wal_dir` naming another directory) is refused
+before anything is minted or quiesced, with `MigrationNotSupportedError`
+naming `storage.wal_dir`. The migration copies, verifies and swaps the store
+directory alone: records still only in the external WAL would be lost, and
+that WAL would stay under the old encryption. A node that will migrate keeps
+`storage.wal_dir` empty from its first boot: Pebble refuses to reopen a store
+whose WAL directory has changed.
 
 ### A tenant-scope migration right after a system-scope recycle
 

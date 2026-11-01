@@ -19,16 +19,46 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 func TestValidDistanceMetric(t *testing.T) {
-	for _, m := range []DistanceMetric{DistanceCosine, DistanceEuclidean, DistanceDotProduct} {
+	for _, m := range []DistanceMetric{DistanceCosine, DistanceEuclidean, DistanceDotProduct, DistanceManhattan} {
 		if !ValidDistanceMetric(m) {
 			t.Errorf("ValidDistanceMetric(%d) = false, want true", m)
 		}
 	}
 	if ValidDistanceMetric(99) {
 		t.Error("ValidDistanceMetric(99) = true, want false")
+	}
+}
+
+func TestMetricFeature_GatesManhattan(t *testing.T) {
+	f, gated := MetricFeature(DistanceManhattan)
+	if !gated || f != featuregate.VectorManhattan {
+		t.Errorf("MetricFeature(Manhattan) = %q, %v; want %q, true", f, gated, featuregate.VectorManhattan)
+	}
+}
+
+func TestMetricFeature_OriginalMetricsNeedNoGate(t *testing.T) {
+	for _, m := range []DistanceMetric{DistanceCosine, DistanceEuclidean, DistanceDotProduct, 99} {
+		if f, gated := MetricFeature(m); gated {
+			t.Errorf("MetricFeature(%d) = %q, true; want no gate", m, f)
+		}
+	}
+}
+
+func TestMetricFeature_EveryGateIsAdvertised(t *testing.T) {
+	supported := map[feature.Feature]bool{}
+	for _, f := range featuregate.Supported() {
+		supported[f] = true
+	}
+	for m, f := range metricFeatures {
+		if !supported[f] {
+			t.Errorf("metric %d waits for %q, which this binary does not advertise; it could never activate", m, f)
+		}
 	}
 }
 

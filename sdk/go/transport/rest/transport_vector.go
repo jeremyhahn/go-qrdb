@@ -109,6 +109,9 @@ func (t *Transport) ListNamespaces(ctx context.Context, req *transport.ListNames
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "ListNamespaces", Err: &jsonDecodeError{Err: err}}
 	}
+	for _, ns := range wireResp.Namespaces {
+		ns.IndexType = transport.ParseVectorIndexType(ns.IndexType)
+	}
 
 	return &wireResp, nil
 }
@@ -146,6 +149,10 @@ func (t *Transport) GetNamespaceInfo(ctx context.Context, req *transport.GetName
 	var wireResp transport.GetNamespaceInfoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "GetNamespaceInfo", Err: &jsonDecodeError{Err: err}}
+	}
+	wireResp.IndexType = transport.ParseVectorIndexType(wireResp.IndexType)
+	if wireResp.DistanceMetric, err = transport.ParseDistanceMetric(wireResp.DistanceMetric); err != nil {
+		return nil, err
 	}
 
 	return &wireResp, nil
@@ -484,6 +491,7 @@ func (t *Transport) GetIndexStats(ctx context.Context, req *transport.GetIndexSt
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
 		return nil, &transport.RequestError{Method: "GetIndexStats", Err: &jsonDecodeError{Err: err}}
 	}
+	wireResp.IndexType = transport.ParseVectorIndexType(wireResp.IndexType)
 
 	return &wireResp, nil
 }

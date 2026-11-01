@@ -116,6 +116,28 @@ func TestTransport_Connect_UnauthenticatedIsReturnedAtOnce(t *testing.T) {
 	}
 }
 
+// TestTransport_Connect_RateLimitedIsReturnedAtOnce pins that the
+// client-address limiter's refusal (go-qrdb#1197) ends Connect at once
+// rather than being retried until the bound is spent.
+func TestTransport_Connect_RateLimitedIsReturnedAtOnce(t *testing.T) {
+	srv, clientCfg := startAnsweringServer(t, wire.StatusResourceExhausted)
+	tr := newConnectTransport(t, srv.ln.Addr().String(), clientCfg, time.Minute)
+
+	err := tr.Connect(context.Background())
+
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(wire.StatusResourceExhausted) {
+		t.Fatalf("Connect error = %T %v, want a RequestError carrying RESOURCE_EXHAUSTED", err, err)
+	}
+	var connErr *transport.ConnectionError
+	if errors.As(err, &connErr) {
+		t.Errorf("Connect error = %v, want the server's refusal, not a connection failure", err)
+	}
+	if got := srv.requests.Load(); got != 1 {
+		t.Errorf("server answered %d requests, want 1: a refusal is not retried", got)
+	}
+}
+
 // TestTransport_Connect_ServerFailureIsStillRetried: an answer that says
 // nothing about the caller -- an internal error on a node still starting --
 // stays a connectivity failure, retried until the caller's bound.
@@ -140,31 +162,35 @@ func TestTransport_Connect_ServerFailureIsStillRetried(t *testing.T) {
 
 // TestUnauthenticatedRefusal: only a RequestError carrying UNAUTHENTICATED,
 // however deeply wrapped, is the server's refusal of the caller.
-func TestUnauthenticatedRefusal(t *testing.T) {
+func TestCallerRefusal(t *testing.T) {
 	refusal := &transport.RequestError{Method: "admin.Health", StatusCode: int(wire.StatusUnauthenticated), Err: errors.New("revoked")}
+	limited := &transport.RequestError{Method: "admin.Health", StatusCode: int(wire.StatusResourceExhausted), Err: errors.New("rate limited")}
 	cases := []struct {
-		name string
-		err  error
-		want bool
+		name    string
+		err     error
+		refusal *transport.RequestError
 	}{
-		{"bare refusal", refusal, true},
-		{"refusal under the health probe", &transport.ConnectionError{Err: &dialError{Err: &healthCheckError{Err: refusal}}}, true},
-		{"permission denied", &transport.RequestError{StatusCode: int(wire.StatusPermissionDenied)}, false},
-		{"unavailable", &transport.RequestError{StatusCode: int(wire.StatusUnavailable)}, false},
-		{"not a request error", errors.New("dial failed"), false},
-		{"nil", nil, false},
+		{"bare refusal", refusal, refusal},
+		{"refusal under the health probe", &transport.ConnectionError{Err: &dialError{Err: &healthCheckError{Err: refusal}}}, refusal},
+		{"rate limited", limited, limited},
+		{"rate limited under the health probe", &transport.ConnectionError{Err: &dialError{Err: &healthCheckError{Err: limited}}}, limited},
+		{"permission denied", &transport.RequestError{StatusCode: int(wire.StatusPermissionDenied)}, nil},
+		{"unavailable", &transport.RequestError{StatusCode: int(wire.StatusUnavailable)}, nil},
+		{"not a request error", errors.New("dial failed"), nil},
+		{"nil", nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := unauthenticatedRefusal(tc.err)
-			if ok != tc.want {
-				t.Fatalf("unauthenticatedRefusal(%v) ok = %v, want %v", tc.err, ok, tc.want)
+			want := tc.refusal != nil
+			got, ok := callerRefusal(tc.err)
+			if ok != want {
+				t.Fatalf("callerRefusal(%v) ok = %v, want %v", tc.err, ok, want)
 			}
-			if ok && got != refusal {
-				t.Fatalf("unauthenticatedRefusal returned %v, want the wrapped refusal", got)
+			if ok && got != tc.refusal {
+				t.Fatalf("callerRefusal returned %v, want the wrapped refusal", got)
 			}
-			if retryableConnect(tc.err) == tc.want && tc.err != nil {
-				t.Fatalf("retryableConnect(%v) = %v, want %v", tc.err, tc.want, !tc.want)
+			if retryableConnect(tc.err) == want && tc.err != nil {
+				t.Fatalf("retryableConnect(%v) = %v, want %v", tc.err, want, !want)
 			}
 		})
 	}

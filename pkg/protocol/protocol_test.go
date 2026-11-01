@@ -2859,7 +2859,7 @@ func TestEncodeTSWriteBatch_RoundTrip(t *testing.T) {
 		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSWriteBatch)
 	}
 
-	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	decoded, _, err := DecodeTSWriteBatch(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWriteBatch: %v", err)
 	}
@@ -2890,7 +2890,7 @@ func TestEncodeTSWriteBatch_RoundTrip(t *testing.T) {
 
 func TestEncodeTSWriteBatch_EmptyPoints(t *testing.T) {
 	encoded := mustEncode(EncodeTSWriteBatch(nil))
-	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	decoded, _, err := DecodeTSWriteBatch(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWriteBatch: %v", err)
 	}
@@ -2900,7 +2900,7 @@ func TestEncodeTSWriteBatch_EmptyPoints(t *testing.T) {
 }
 
 func TestDecodeTSWriteBatch_PayloadTooShort(t *testing.T) {
-	_, err := DecodeTSWriteBatch([]byte{0x01})
+	_, _, err := DecodeTSWriteBatch([]byte{0x01})
 	if err == nil {
 		t.Fatal("expected error for short payload")
 	}
@@ -2919,7 +2919,7 @@ func TestDecodeTSWriteBatch_TruncatedPointLength(t *testing.T) {
 	// Overwrite point count to 2 but don't add second point
 	encoded[1] = 2
 	encoded[2] = 0
-	_, err := DecodeTSWriteBatch(encoded[1:])
+	_, _, err := DecodeTSWriteBatch(encoded[1:])
 	if err == nil {
 		t.Fatal("expected error for truncated point")
 	}
@@ -3215,7 +3215,7 @@ func TestEncodeTSWriteBatch_MultipleTags(t *testing.T) {
 		{Metric: "m1", Timestamp: 100, Value: math.Pi, Tags: tags},
 	}
 	encoded := mustEncode(EncodeTSWriteBatch(points))
-	decoded, err := DecodeTSWriteBatch(encoded[1:])
+	decoded, _, err := DecodeTSWriteBatch(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWriteBatch: %v", err)
 	}

@@ -353,10 +353,16 @@ func (s *MemoryVectorStorage) ScanNamespace(ctx context.Context, namespace strin
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var fromID uint64
+	if opts != nil {
+		fromID = opts.FromID
+	}
 	ns := s.vectors[namespace]
 	results := make([]*VectorValue, 0, len(ns))
-	for _, vec := range ns {
-		results = append(results, cloneVectorValue(vec))
+	for id, vec := range ns {
+		if id >= fromID {
+			results = append(results, cloneVectorValue(vec))
+		}
 	}
 	return applyScanOptions(sortedByID(results), opts), nil
 }

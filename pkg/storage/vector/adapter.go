@@ -749,51 +749,57 @@ func (s *PebbleVectorStorage) scanNamespace(namespace string, opts *ScanOptions)
 
 	s.metrics.scanOps.Inc()
 
+	var fromID uint64
+	skip, limit := 0, 0
+	if opts != nil {
+		fromID, skip, limit = opts.FromID, opts.Offset, opts.Limit
+	}
+
+	// Keys sort by ID and then by version, both big-endian, so the iterator
+	// yields ascending IDs and an ID's last key is its latest version.
 	prefix := schema.EncodeNamespacePrefix(namespace)
 	iter := newVectorIterator(s.db, prefix)
 	defer func() { _ = iter.Close() }()
+	if fromID > 0 && iter.iter != nil {
+		iter.iter.SetBounds(schema.EncodeVectorKeyPrefix(namespace, fromID), schema.PrefixSuccessor(prefix))
+	}
 
-	// Use map to deduplicate by ID (keep latest version)
-	vectorMap := make(map[uint64]*VectorValue)
+	var (
+		results  []*VectorValue
+		latest   *VectorValue
+		latestID uint64
+	)
+	// emit settles the previous ID's latest version, past the offset, and
+	// reports whether the page is full.
+	emit := func() bool {
+		if latest == nil {
+			return false
+		}
+		if skip > 0 {
+			skip--
+		} else {
+			results = append(results, latest)
+		}
+		latest = nil
+		return limit > 0 && len(results) >= limit
+	}
 
 	for iter.Next() {
-		_, id, _, err := schema.DecodeVectorKey(iter.iter.Key())
-		if err != nil {
-			continue
-		}
-
 		schemaVec, err := iter.Value()
 		if err != nil {
 			continue
 		}
-		vec := fromSchemaVectorValue(schemaVec)
-
-		// Keep latest version
-		if existing, exists := vectorMap[id]; !exists || vec.Version > existing.Version {
-			vectorMap[id] = vec
+		if latest != nil && iter.id != latestID && emit() {
+			return results, nil
 		}
+		latest, latestID = fromSchemaVectorValue(schemaVec), iter.id
 	}
 
 	if err := iter.Err(); err != nil {
 		s.metrics.errors.Inc()
 		return nil, err
 	}
-
-	// Convert map to slice
-	results := make([]*VectorValue, 0, len(vectorMap))
-	for _, vec := range vectorMap {
-		results = append(results, vec)
-	}
-
-	// Apply scan options
-	if opts != nil {
-		if opts.Offset > 0 && opts.Offset < len(results) {
-			results = results[opts.Offset:]
-		}
-		if opts.Limit > 0 && opts.Limit < len(results) {
-			results = results[:opts.Limit]
-		}
-	}
+	emit()
 
 	return results, nil
 }

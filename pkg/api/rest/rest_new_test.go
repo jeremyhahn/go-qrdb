@@ -2735,6 +2735,8 @@ func TestMapHTTPError_AllTypes(t *testing.T) {
 		{"BatchError", &service.BatchError{Index: 0, Err: errors.New("fail")}, http.StatusInternalServerError},
 		{"IndexNotFound", &service.IndexNotFoundError{Name: "idx"}, http.StatusNotFound},
 		{"IndexExists", &service.IndexExistsError{Name: "idx"}, http.StatusConflict},
+		{"IndexLimit", &service.IndexLimitError{Max: 2}, http.StatusTooManyRequests},
+		{"MetricLimit", &service.MetricLimitError{Max: 2}, http.StatusTooManyRequests},
 		{"TimeSeriesError", &service.TimeSeriesError{Op: "w", Err: errors.New("f")}, http.StatusInternalServerError},
 		{"ConsistencyError", &service.ConsistencyError{Level: "strong", Reason: "stale"}, http.StatusPreconditionFailed},
 		{"NotLeader", &service.NotLeaderError{ShardID: 1, LeaderID: 2}, http.StatusServiceUnavailable},

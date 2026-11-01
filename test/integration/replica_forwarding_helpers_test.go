@@ -279,7 +279,7 @@ func startFwdClusterWith(t *testing.T, n int, embedded map[int]fwdEmbedded) *fwd
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
-	tenantBody, st := iraftAPIPost(t, c.sys, base+"/v1/tenants", map[string]interface{}{
+	tenantBody, st := iraftAPIPost(t, tenantCreateClient(c.sys), base+"/v1/tenants", map[string]interface{}{
 		"id": fwdTenantID, "name": "Replica Forwarding Tenant",
 		"isolation_type": "raft", "barrier_auto_unseal": true,
 		"admin_username": fwdTenantID + "-admin", "admin_csr_pem": string(adminCSRPEM),

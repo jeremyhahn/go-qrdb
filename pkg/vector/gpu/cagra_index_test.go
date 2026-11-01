@@ -18,6 +18,8 @@ package gpu
 import (
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 )
 
 func TestCAGRAIndex_NewReturnsStubError(t *testing.T) {
@@ -77,4 +79,19 @@ func TestCAGRAIndex_AllMethodsReturnStubError(t *testing.T) {
 			t.Errorf("expected ErrGPUNotCompiled, got: %v", err)
 		}
 	})
+}
+
+// TestGPUIndexFactory_CreateIndex_DimensionReachesCAGRA proves that a config
+// carrying a dimension passes the factory's check and reaches the CAGRA
+// constructor, which in a !gpu build is the stub.
+func TestGPUIndexFactory_CreateIndex_DimensionReachesCAGRA(t *testing.T) {
+	cfg := DefaultGPUConfig()
+	cfg.Enabled = true
+	factory := &GPUIndexFactory{config: cfg, gpuAvailable: true, fallback: &mockHNSWFactory{}}
+
+	hnswCfg := interfaces.DefaultHNSWConfig()
+	hnswCfg.Dimensions = 64
+	if _, err := factory.CreateIndex(hnswCfg); !errors.Is(err, ErrGPUNotCompiled) {
+		t.Fatalf("CreateIndex(Dimensions=64) error = %v, want ErrGPUNotCompiled from the CAGRA stub", err)
+	}
 }

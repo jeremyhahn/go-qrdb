@@ -19,6 +19,8 @@ package node
 import (
 	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,5 +112,53 @@ func TestClusteredNode_EmbeddedWatchEndsOnClusterSeal(t *testing.T) {
 		if !terminal {
 			t.Fatalf("node %d's embedded watch closed with no terminal frame; a seal ends it with its refusal", replicas[i].id)
 		}
+	}
+}
+
+// TestClusteredNode_CloseWaitsForTheClusterSealMonitor proves the cluster seal
+// monitor is node work Close waits for: it reads the seal records through the
+// service graph and seals through the barriers Close tears down, so none the
+// node started may still be running when Close returns. A Close that only
+// cancels the monitor's ctx leaves the goroutine to exit on its own, which it
+// usually does within microseconds, so this catches that defect only when the
+// goroutine is still unwinding as Close returns; with the join it cannot fail.
+func TestClusteredNode_CloseWaitsForTheClusterSealMonitor(t *testing.T) {
+	before := clusterSealMonitors()
+	ca, replicas := newFormationReplicas(t, 1)
+	r := replicas[0]
+	cfg := sealClustered(formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas)))
+	mtls := &RaftMTLSConfig{CACert: mustReadCAPEM(t, ca), Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
+	n, err := NewClusteredNode(context.Background(), cfg, map[uint64]string{r.id: r.addr}, nil, WithRaftMTLS(mtls))
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	if err := n.Unseal(context.Background(), seal.MustCredentials(context.Background(), []byte("wal-encryption-test"))); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+	// The monitor's goroutine may not have been scheduled yet when Unseal
+	// returns; yield until it has.
+	for clusterSealMonitors() <= before {
+		runtime.Gosched()
+	}
+
+	if err := n.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := clusterSealMonitors(); got != before {
+		t.Fatalf("cluster seal monitors running when Close returned = %d, want the %d before the node", got, before)
+	}
+}
+
+// clusterSealMonitors counts the goroutines inside a cluster seal monitor's
+// Run.
+func clusterSealMonitors() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Count(string(buf[:n]), "clusterseal.(*Monitor).Run(")
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }

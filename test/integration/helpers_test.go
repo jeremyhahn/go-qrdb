@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,6 +47,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -504,6 +506,48 @@ func spawnNode(t *testing.T, binary string, args []string, out io.Writer) *exec.
 	}
 	spawnedDaemons.Store(daemon.Cmd(), daemon)
 	return daemon.Cmd()
+}
+
+// startNodeReady is startNode over qrdbdharness.StartReady: ready runs on the
+// started daemon, and a start whose harness-reserved listener port another
+// process took before the daemon bound it is started again on fresh ports.
+// The returned command's Args are the ones the ready daemon runs with; read a
+// reserved port back with flagPort.
+func startNodeReady(t *testing.T, binary string, args []string, prefix string, ready func(*qrdbdharness.Daemon) error) *exec.Cmd {
+	t.Helper()
+	daemon, err := qrdbdharness.StartReady(binary, args, ready, qrdbdharness.WithOutput(&logWriter{t: t, prefix: prefix}))
+	if daemon != nil {
+		t.Cleanup(func() {
+			if err := daemon.Kill(); err != nil {
+				t.Errorf("%skill: %v", prefix, err)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("%sstart: %v", prefix, err)
+	}
+	spawnedDaemons.Store(daemon.Cmd(), daemon)
+	return daemon.Cmd()
+}
+
+// flagPort returns the port args give flag as "--flag N", the form
+// qrdbdharness.ReserveListenerPorts appends.
+func flagPort(args []string, flag string) (int, error) {
+	value := ""
+	if i := slices.Index(args, flag); i >= 0 && i+1 < len(args) {
+		value = args[i+1]
+	}
+	return strconv.Atoi(value)
+}
+
+// mustFlagPort is flagPort for a port the test cannot run without.
+func mustFlagPort(t *testing.T, args []string, flag string) int {
+	t.Helper()
+	port, err := flagPort(args, flag)
+	if err != nil {
+		t.Fatalf("%s in %q: %v", flag, args, err)
+	}
+	return port
 }
 
 // spawnedDaemon returns the harness Daemon behind a cmd spawnNode returned.
@@ -2774,7 +2818,7 @@ func bindUserCert(t *testing.T, client *http.Client, port int, userID uint64, ce
 	url := fmt.Sprintf("https://127.0.0.1:%d/users/%d/cert-bindings", port, userID)
 	// AddCertBinding is idempotent for an identical binding, so a refused
 	// attempt that did commit is safe to send again.
-	body, status := postRetryingRetryable(t, client, url, map[string]any{
+	body, status := postRetryingRetryable(t, client, url, retryableCreateWindow, map[string]any{
 		"thumbprint":     user.ComputeSPKIThumbprint(cert),
 		"not_after_unix": cert.NotAfter.Unix(),
 	})
@@ -2835,7 +2879,8 @@ func createRaftTenant(t *testing.T, client *http.Client, leaderPort int, tenantI
 	if err != nil {
 		t.Fatalf("createRaftTenant: certtest.NewCSR: %v", err)
 	}
-	body, status = postRetryingRetryable(t, client, fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort),
+	body, status = postRetryingRetryable(t, tenantCreateClient(client),
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", leaderPort), tenantCreateWindow,
 		map[string]interface{}{
 			"id":                  tenantID,
 			"name":                name,
@@ -2857,11 +2902,11 @@ const retryableCreateWindow = 60 * time.Second
 // last retryable answer. Retrying cannot mask a create that half-happened:
 // one that committed before its answer timed out, or was undone part-way and
 // retired its id, answers the retry with 409.
-func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, body interface{}) ([]byte, int) {
+func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, window time.Duration, body interface{}) ([]byte, int) {
 	t.Helper()
 	var respBody []byte
 	var status int
-	pollUntil(retryableCreateWindow, 250*time.Millisecond, func() bool {
+	pollUntil(window, 250*time.Millisecond, func() bool {
 		respBody, status = iraftAPIPost(t, client, rawURL, body)
 		if !retryableStatus(status) {
 			return true
@@ -2878,6 +2923,27 @@ func postRetryingRetryable(t *testing.T, client *http.Client, rawURL string, bod
 // NotLeaderError->Unavailable rule), or 504, a consensus step that timed out.
 func retryableStatus(status int) bool {
 	return status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// tenantCreateResponseBound bounds the wait for one POST /v1/tenants answer:
+// the service's own onboarding deadline (service.DefaultTenantOnboardingTimeout;
+// qrdbd does not override it) plus the 5 s on which the handler settles the
+// onboarding's audit outcome before it answers (tenantOnboardingSettleTimeout
+// in pkg/service). The server answers 503 within it, having undone the
+// create; a client that gives up sooner turns that answer into a transport
+// error and fails the test on a slow commit the server would have reported.
+const tenantCreateResponseBound = service.DefaultTenantOnboardingTimeout + 5*time.Second
+
+// tenantCreateWindow bounds a retried tenant create: one attempt answered
+// 503 at tenantCreateResponseBound, then one more attempt with a fresh id.
+const tenantCreateWindow = 2 * tenantCreateResponseBound
+
+// tenantCreateClient returns a copy of client, sharing its transport, whose
+// timeout admits the server's own tenant-create bound.
+func tenantCreateClient(client *http.Client) *http.Client {
+	c := *client
+	c.Timeout = max(c.Timeout, tenantCreateResponseBound)
+	return &c
 }
 
 // raftTenantAdminClient builds an mTLS client for the admin createRaftTenant

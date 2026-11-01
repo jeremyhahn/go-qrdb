@@ -2497,9 +2497,10 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of CI's lint stages, so CI runs them on a push to main and on the daily
-# full-tier dispatch, not on a pull request; release.yml still runs both
-# before a tag. `make lint-gates lint-sweeps` is the whole set.
+# hour of CI's lint stages, so they run in ci.yml's lint job on the nightly
+# schedule: event alone (ci-template v1.30, ruling 216(1)); release.yml still runs both before a
+# tag. `make lint-gates lint-sweeps` is the whole set. A pull request's lint
+# job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
@@ -4014,8 +4015,26 @@ TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 # run 57540). CI names one per job under qrdb-ci-, so the reaper removes the
 # hold of a job that died before its teardown, as it does any stale
 # container. Empty, the default off CI, takes no hold.
+#
+# APK_INDEX_SUM is the checksum of the Alpine package indexes the build
+# resolves against (scripts/apk-index-sum.sh, ci-template v1.29): CI reads it
+# into the environment, the tag hashes it, and docker-build-it passes it to
+# the integration stage, which runs `apk upgrade` after it, so a new Alpine
+# package release changes the tag and forces a rebuild with the fixed
+# package. Empty when unset, so a local tag is the tree's alone.
+APK_INDEX_SUM ?=
+
+# apk-index-sum prints that checksum; every ci.yml job that reads it runs
+# `make -s apk-index-sum`. The Dockerfile's FROM lines name ${GO_IMAGE}, a
+# global ARG with no default because the pin lives in scripts/tool-pins.sh
+# alone, so the script cannot resolve the base image from the Dockerfile. This
+# target hands it the pin as APK_BASE_IMAGES, the script's input for a base
+# its FROM parse cannot read, and ci.yml carries no copy of the pin.
+.PHONY: apk-index-sum
+apk-index-sum:
+	@APK_BASE_IMAGES='$(GO_IMAGE)' scripts/apk-index-sum.sh
 IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1; then \
-	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
+	{ echo '$(GO_IMAGE) $(INT_FEATURE_TAGS) $(APK_INDEX_SUM)'; git rev-parse 'HEAD^{tree}'; git diff --no-ext-diff --binary HEAD; \
 	  git ls-files -z -o --exclude-standard | xargs -0r sha256sum --; } | sha256sum | cut -c1-16; \
 	else echo $(DOCKER_TAG); fi)
 IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
@@ -4038,14 +4057,17 @@ REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx
 
 # The module credentials are the same $(stage-gomodauth) secret every other
 # image build here passes; without them the build resolves from the public
-# proxy. GO_BUILD_PROXY is passed only when the caller sets it (handbook
-# devcontainer.md section 4). IT_TAGS is the tag set the integration stage
-# compiles its suites under, the same set the per-feature targets use.
+# proxy. GO_BUILD_PROXY comes from the caller (handbook devcontainer.md
+# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY, which on
+# the CI runners is the fleet Athens first (m1544, ruling 236(3)); unset, the
+# Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
+# runners' value uses the | separator. IT_TAGS is the tag set the integration
+# stage compiles its suites under, the same set the per-feature targets use.
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--secret id=gomodauth,env=GOMODAUTH \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
-	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY=$(GO_BUILD_PROXY)) \
+	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
@@ -4053,8 +4075,15 @@ docker-build: docker-build-toolchain docker-build-it
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
-	@$(stage-gomodauth) \
-	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
+	@# ci-template v1.30: the tag is the content hash, so an image already on
+	@# this daemon (built here, or pulled by scripts/ci-image-cache.sh) is the
+	@# image this tree would build.
+	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
@@ -4078,7 +4107,8 @@ docker-build-it:
 			echo "==> $(IT_IMAGE) is already built on this daemon"; \
 		else \
 			$(stage-gomodauth) \
-			$(DEVCONTAINER_BUILD) --target integration -t $(IT_IMAGE) . || { \
+			$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+				--target integration -t $(IT_IMAGE) . || { \
 				status=$$?; \
 				docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
 				echo "==> a concurrent build loaded $(IT_IMAGE) first"; \

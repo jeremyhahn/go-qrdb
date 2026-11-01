@@ -16,6 +16,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -50,9 +51,29 @@ type WatchServicer interface {
 
 // MVCCKVServicer is the minimal MVCC KV interface required by the lock
 // package. Only GetRevision and Range are used by lock operations.
+//
+// GetRevision reports a key it does not hold with an error satisfying
+// keyNotFoundError (service.KeyNotFoundError does); every other error is a
+// failed read and is returned to the lock caller unchanged.
 type MVCCKVServicer interface {
 	GetRevision(ctx context.Context, key string) (*kv.KeyValue, error)
 	Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, int64, error)
+}
+
+// keyNotFoundError matches the error GetRevision returns for an absent key.
+// It is matched by behaviour because the service package, which defines
+// KeyNotFoundError, imports this one.
+type keyNotFoundError interface {
+	error
+	// KeyNotFound returns the key that was not found.
+	KeyNotFound() string
+}
+
+// isKeyNotFound reports whether err, or an error it wraps, means the key
+// does not exist.
+func isKeyNotFound(err error) bool {
+	var knf keyNotFoundError
+	return errors.As(err, &knf)
 }
 
 // ---------------------------------------------------------------------------

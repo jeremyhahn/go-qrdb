@@ -68,6 +68,11 @@ type retentionScheduler struct {
 	now      func() time.Time
 	logger   *slog.Logger
 
+	// defaultRetention is how long a metric with no retention policy, or
+	// one whose duration is zero, keeps its points
+	// (timeseries.default_retention). Zero keeps them all.
+	defaultRetention time.Duration
+
 	// ticks, when non-nil, replaces the interval ticker as run's pass
 	// trigger, so a test drives each pass with one send.
 	ticks <-chan time.Time
@@ -131,10 +136,14 @@ func (r *retentionScheduler) runStore(ctx context.Context, st scheduledRetention
 	swept := 0
 	for _, metric := range metrics {
 		policy, err := st.ts.GetRetentionPolicy(metric)
-		if err != nil || policy == nil || policy.Duration <= 0 {
+		if err != nil {
 			continue
 		}
-		cutoff := now.Add(-policy.Duration)
+		duration := r.retentionFor(policy)
+		if duration <= 0 {
+			continue
+		}
+		cutoff := now.Add(-duration)
 		if err := st.ts.ApplyRetention(sctx, metric, cutoff); err != nil {
 			r.logWriteRefusal(metric, err, st.name)
 			continue
@@ -142,6 +151,16 @@ func (r *retentionScheduler) runStore(ctx context.Context, st scheduledRetention
 		swept++
 	}
 	return swept
+}
+
+// retentionFor is the retention a metric keeps: its own policy's duration,
+// or, for a metric with no policy or one whose duration is zero, the
+// node's timeseries.default_retention. Zero keeps every point.
+func (r *retentionScheduler) retentionFor(policy *service.RetentionPolicy) time.Duration {
+	if policy != nil && policy.Duration > 0 {
+		return policy.Duration
+	}
+	return r.defaultRetention
 }
 
 // logWriteRefusal logs a refused sweep. A database that was dropped, or
@@ -223,6 +242,19 @@ func WithRetentionInterval(interval time.Duration) ServerOption {
 	}
 }
 
+// WithDefaultRetention sets how long the retention scheduler keeps the
+// points of a metric with no retention policy, or with a policy whose
+// duration is zero (timeseries.default_retention). A metric's own non-zero
+// duration always wins. Zero or less, the default, keeps such a metric's
+// points for good.
+func WithDefaultRetention(retention time.Duration) ServerOption {
+	return func(o *serverOptions) {
+		if retention > 0 {
+			o.defaultRetention = retention
+		}
+	}
+}
+
 // startRetentionScheduler starts the scheduler. It runs on every node;
 // each pass acts only on the stores this node leads or holds alone.
 func (s *Server) startRetentionScheduler() {
@@ -231,10 +263,11 @@ func (s *Server) startRetentionScheduler() {
 		interval = DefaultRetentionInterval
 	}
 	scheduler := &retentionScheduler{
-		stores:   s.retentionStores,
-		interval: interval,
-		now:      time.Now,
-		logger:   s.logger,
+		stores:           s.retentionStores,
+		interval:         interval,
+		now:              time.Now,
+		logger:           s.logger,
+		defaultRetention: s.opts.defaultRetention,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.retentionCancel = cancel

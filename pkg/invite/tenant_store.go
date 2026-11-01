@@ -108,6 +108,26 @@ func (s *TenantStore) Redeem(ctx context.Context, tenantID, token string) (*Enti
 	return store.Redeem(ctx, token)
 }
 
+// Reissue supersedes every unredeemed invitation userID holds in tenantID's
+// store and issues a new one in the same guarded write (see Store.Reissue).
+func (s *TenantStore) Reissue(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...CreateOption) (string, *Entity, error) {
+	store, err := s.storeFor(ctx, tenantID)
+	if err != nil {
+		return "", nil, err
+	}
+	return store.Reissue(ctx, userID, tenantID, ttl, opts...)
+}
+
+// Activate records userID's account in tenantID as active (see
+// Store.Activate).
+func (s *TenantStore) Activate(ctx context.Context, userID, tenantID string, at time.Time) error {
+	store, err := s.storeFor(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	return store.Activate(ctx, userID, tenantID, at)
+}
+
 // GC removes redeemed and expired invitations from the named tenant's store.
 //
 // It is per-tenant rather than global because there is no store that holds

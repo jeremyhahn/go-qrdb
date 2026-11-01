@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -741,4 +742,79 @@ func TestHandleCredentialStoreRetrieve_BinaryRoundTrip(t *testing.T) {
 	if !bytes.Equal(resp.Value, nonUTF8CredentialValue) {
 		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
 	}
+}
+
+func TestHandleCredentialSubmit_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.handleCredentialSubmit(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCredentialSubmit_BadBody(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`bad`))
+	rec := httptest.NewRecorder()
+	s.handleCredentialSubmit(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCredentialSubmit_ServiceError(t *testing.T) {
+	svc := newCoverageCredentialService()
+	svc.submitFn = func(_ context.Context, _ string, _ []byte) error {
+		return &service.KeyNotFoundError{Key: "k"}
+	}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(svc))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{"name":"k","value":"dg=="}`))
+	rec := httptest.NewRecorder()
+	s.handleCredentialSubmit(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestHandleCredentialStrategy_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/strategy", nil)
+	rec := httptest.NewRecorder()
+	s.handleCredentialStrategy(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCredentialStrategy_Success(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(newCoverageCredentialService()))
+	req := httptest.NewRequest(http.MethodGet, "/v1/credentials/strategy", nil)
+	rec := httptest.NewRecorder()
+	s.handleCredentialStrategy(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["strategy"] != "manual" {
+		t.Errorf("strategy = %q, want 'manual'", resp["strategy"])
+	}
+}
+
+func TestHandleCredentialDelete_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodDelete, "/v1/credentials/mykey", nil)
+	rec := httptest.NewRecorder()
+	s.handleCredentialDelete(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+func TestHandleCredentialDelete_ServiceError(t *testing.T) {
+	svc := newCoverageCredentialService()
+	svc.deleteFn = func(_ context.Context, _ string) error {
+		return &service.KeyNotFoundError{Key: "k"}
+	}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCredentialService(svc))
+	req := httptest.NewRequest(http.MethodDelete, "/v1/credentials/mykey", nil)
+	rec := httptest.NewRecorder()
+	s.handleCredentialDelete(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
 }

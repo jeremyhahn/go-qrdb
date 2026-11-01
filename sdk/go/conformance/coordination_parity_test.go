@@ -192,6 +192,10 @@ func (c cell) bootClient(t *testing.T) (*sdk.Client, context.Context) {
 func TestCoordinationFamilies_SameOnStandaloneAndRaft(t *testing.T) {
 	for _, c := range coordinationCells() {
 		t.Run(c.name(), func(t *testing.T) {
+			// Each cell boots its own node, ports and directories, so cells
+			// run side by side; the subtests within one share its node and
+			// fixed keys and stay in order.
+			c.parallel(t)
 			client, ctx := c.bootClient(t)
 			t.Run("lease", func(t *testing.T) { assertLeaseLifecycle(t, subtestCtx(t, ctx), client) })
 			t.Run("lease-expiry", func(t *testing.T) { assertLeaseExpiryDeletesKeys(t, subtestCtx(t, ctx), client) })
@@ -490,6 +494,7 @@ func assertLockLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 func TestCoordinator_SameOnEveryTransport(t *testing.T) {
 	for _, c := range coordinationCells() {
 		t.Run(c.name(), func(t *testing.T) {
+			c.parallel(t)
 			client, ctx := c.bootClient(t)
 			coord, err := client.Coordination()
 			if err != nil {

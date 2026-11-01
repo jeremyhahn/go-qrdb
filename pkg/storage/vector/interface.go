@@ -62,8 +62,16 @@ type NamespaceStats struct {
 
 // ScanOptions configures vector scanning behavior.
 type ScanOptions struct {
-	Limit      int
-	Offset     int
+	Limit int
+	// Offset skips that many results. The metadata scans page by it; a
+	// namespace scan applies it after FromID, in ascending ID order, and
+	// pages by FromID instead.
+	Offset int
+	// FromID is the inclusive lower bound on the vector ID of a namespace
+	// scan, which returns IDs in ascending order. The zero value scans from
+	// the namespace's first vector, so a pager resumes after a page by
+	// setting it to the page's last ID plus one.
+	FromID     uint64
 	OrderBy    string
 	Descending bool
 }

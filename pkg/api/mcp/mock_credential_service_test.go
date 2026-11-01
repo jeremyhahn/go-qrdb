@@ -76,7 +76,11 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 	return nil
 }
 
-func (m *mockCredentialService) CredentialStrategy() string {
+func (m *mockCredentialService) CredentialStrategy(context.Context) (string, error) {
+	return m.credentialStrategy(), nil
+}
+
+func (m *mockCredentialService) credentialStrategy() string {
 	if m.strategyFn != nil {
 		return m.strategyFn()
 	}

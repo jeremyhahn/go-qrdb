@@ -65,17 +65,29 @@ type fakeSQLSvc struct {
 	result *service.SQLQueryResult
 	err    error
 
+	// mu guards what follows: the QUIC server calls the double on a handler
+	// goroutine while the test reads it.
+	mu                    sync.Mutex
 	gotDatabase, gotQuery string
 }
 
 var _ service.SQLServicer = (*fakeSQLSvc)(nil)
 
 func (f *fakeSQLSvc) Execute(_ context.Context, database, query string) (*service.SQLQueryResult, error) {
+	f.mu.Lock()
 	f.gotDatabase, f.gotQuery = database, query
+	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.result, nil
+}
+
+// received returns the database and query the server passed to Execute.
+func (f *fakeSQLSvc) received() (database, query string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotDatabase, f.gotQuery
 }
 
 // fakeInvitationSvc is a service.InvitationServicer that records each request
@@ -196,8 +208,8 @@ func TestQUICRoundTrip_SQLQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if svc.gotDatabase != "app" || svc.gotQuery != "SELECT id, name FROM users" {
-		t.Fatalf("server ran %q on %q", svc.gotQuery, svc.gotDatabase)
+	if db, q := svc.received(); db != "app" || q != "SELECT id, name FROM users" {
+		t.Fatalf("server ran %q on %q", q, db)
 	}
 	if len(res.Columns) != 2 || res.Columns[1] != "name" || res.RowCount != 2 || res.Duration != "1ms" {
 		t.Fatalf("result = %+v", res)
@@ -218,8 +230,8 @@ func TestQUICRoundTrip_SQLQuery_Errors(t *testing.T) {
 	if _, err := tr.Query(ctx, "app", ""); err == nil {
 		t.Fatal("Query: an empty query returned no error")
 	}
-	if svc.gotQuery != "SELEC" {
-		t.Fatalf("an empty query reached the service: %q", svc.gotQuery)
+	if _, q := svc.received(); q != "SELEC" {
+		t.Fatalf("an empty query reached the service: %q", q)
 	}
 	if _, err := startRoundTripServer(t).Query(ctx, "app", "SELECT 1"); err == nil {
 		t.Fatal("Query: a server without SQL returned no error")

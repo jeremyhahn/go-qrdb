@@ -185,7 +185,7 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `changes`, `schedule-guard` (ci-template v1.29.3), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage`), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
@@ -229,7 +229,7 @@ needs every job, fails on that result; a run whose `docker-build`,
 
 The stages are separate jobs, not the ci-template's one image job, because
 together they outlast one job's 90-minute limit on a loaded runner: `lint`
-with `make lint-sweeps` takes most of an hour, and `make coverage` with the
+took most of an hour while it carried `make lint-sweeps`, and `make coverage` with the
 other four unit suites about 36 minutes, which ran in series in `image` until
 ruling 211 made each suite its own job. As separate jobs they run
 concurrently, each under a limit sized to its own stage, and the run waits on
@@ -286,14 +286,16 @@ parallel with the `lint` job's `make lint` rather than a step after it, so
 the PR tier's lint wall time is the longer of the two and not their sum. It
 runs on every run and holds `make vet` over the default tag set and the
 secure analyzer's self-test (`test-secure-analyzer`). Within the `lint` job,
-one step depends on the trigger. `make lint-sweeps`,
-`make vet-tags` and `make secure-analyzer` over every `SUPPORTED_TAG_SETS`
-combination, is the longest stage (about 45 minutes), so it runs only on a
-push to `main` and on `workflow_dispatch` (the daily full-tier dispatch
-included), never on a pull request, whose pipeline is held to one hour. The
-sweeps run in the `lint` job beside the unit-suite jobs, so no job's limit
-exceeds 90 minutes. `release.yml`
-runs both sweeps again before a tag. The integration legs run without
+one step depends on the trigger: `make gosec` runs on the PR tier alone,
+since the full tier's `make security` in `image` runs it already
+(ci-template v1.30). `make lint-sweeps`, `make vet-tags` and
+`make secure-analyzer` over every `SUPPORTED_TAG_SETS` combination, is the
+longest stage (about 45 minutes), so the `lint` job runs it on `ci.yml`'s
+nightly `schedule:` event alone, cron `0 4 * * *`, never on a pull request, a
+push or a dispatch (ci-template v1.30; the template's `nightly.yml` home for it
+would need a second schedule trigger, which ruling 216(1) forbids).
+Every job carries a `timeout-minutes` of ceil(1.5 x its measured p95), and 5
+for the small ones. `release.yml` runs both sweeps again before a tag. The integration legs run without
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`
@@ -330,6 +332,8 @@ of the full tier on the PR branch is the accepted alternative.
 it cancels that ref's older run. On `main` the group carries the event and the
 commit (ci-template v1.26.2's group), so no `main` run cancels another: a push to `main` leaves the run of
 the previous `main` commit to finish, and every merge keeps a completed run.
+A scheduled run's group is `schedule-<repository>` (ci-template v1.29.3), so a
+repository has one scheduled run at a time and a newer one cancels the older.
 No expression reaches `cancel-in-progress`. The other workflows on pull
 requests keep one group per ref (handbook `devops.md` §9), whose
 `cancel-in-progress` expression spares `main`.
@@ -340,7 +344,21 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 It was restored under Company Agent ruling 216(1) (Software's typed order
 DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
 scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid
-host cron, timers and watchers, not this trigger. `automerge.yml` is the only other workflow with a
+host cron, timers and watchers, not this trigger.
+
+A scheduled run yields to `main` (ci-template v1.29.3). The `schedule-guard`
+job, beside `changes`, reads ci.yml's runs on `main` and sets its `verdict`:
+`run` when no push run on `main` is in progress or waiting, `busy` when one
+is, and `unreadable` when neither the job token nor `AGENT_TOKEN` reads the
+runs API. On any event but a schedule it says `run` without a request. On a
+scheduled run `docker-build`, the one job with no bigdisk job before it, runs
+only on `run`, and every other bigdisk job needs `docker-build` and skips with
+it; `soak` also carries the guard's clause itself, as the template's does. On `busy` `ci-gate` skips, so the nightly
+run reports `skipped`; on any other verdict but `run` it fails closed.
+`test/buildgates/ci_schedule_guard_test.go` holds every bigdisk job behind the
+guard, the gate's condition, and the step's verdicts against a stub `curl`.
+
+`automerge.yml` is the only other workflow with a
 `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
 on `workflow_dispatch`, and is dispatched by hand each night.
 

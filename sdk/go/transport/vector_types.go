@@ -14,6 +14,8 @@
 
 package transport
 
+import "strings"
+
 // ---------------------------------------------------------------------------
 // Enumeration type aliases
 // ---------------------------------------------------------------------------
@@ -26,6 +28,7 @@ const (
 	DistanceCosine     DistanceMetric = "cosine"
 	DistanceEuclidean  DistanceMetric = "euclidean"
 	DistanceDotProduct DistanceMetric = "dot_product"
+	DistanceManhattan  DistanceMetric = "manhattan"
 )
 
 // VectorIndexType is a type alias for vector index type strings.
@@ -37,6 +40,49 @@ const (
 	IndexFlat    VectorIndexType = "flat"
 	IndexIVFFlat VectorIndexType = "ivf_flat"
 )
+
+// serverIndexTypes maps every index-type name a server reports, upper-cased,
+// to its VectorIndexType: the service's canonical names (HNSW, FLAT, IVF) and
+// the SDK's own, which a namespace record written by an SDK client carries.
+var serverIndexTypes = map[string]VectorIndexType{
+	"HNSW":     IndexHNSW,
+	"FLAT":     IndexFlat,
+	"IVF":      IndexIVFFlat,
+	"IVF_FLAT": IndexIVFFlat,
+}
+
+// ParseVectorIndexType resolves an index-type name a server reports,
+// case-insensitively, to its VectorIndexType, so a transport that carries the
+// name as a string reports the same value as one that carries the protobuf
+// enum. A name it does not know is returned unchanged.
+func ParseVectorIndexType(name string) VectorIndexType {
+	if indexType, ok := serverIndexTypes[strings.ToUpper(name)]; ok {
+		return indexType
+	}
+	return name
+}
+
+// serverDistanceMetrics maps the distance metric names a server reports, in
+// upper case, to the SDK constants. A server reports a metric in the case it
+// was created with, and L2 for Euclidean.
+var serverDistanceMetrics = map[string]DistanceMetric{
+	"COSINE":      DistanceCosine,
+	"EUCLIDEAN":   DistanceEuclidean,
+	"L2":          DistanceEuclidean,
+	"DOT_PRODUCT": DistanceDotProduct,
+	"MANHATTAN":   DistanceManhattan,
+}
+
+// ParseDistanceMetric converts a distance metric name a server reported, in
+// any case, to its SDK constant, so every transport reports one name for one
+// metric. A name the SDK does not know is refused with
+// *UnknownDistanceMetricError, never read as cosine.
+func ParseDistanceMetric(name string) (DistanceMetric, error) {
+	if metric, ok := serverDistanceMetrics[strings.ToUpper(name)]; ok {
+		return metric, nil
+	}
+	return "", &UnknownDistanceMetricError{Metric: name}
+}
 
 // ---------------------------------------------------------------------------
 // Namespace types

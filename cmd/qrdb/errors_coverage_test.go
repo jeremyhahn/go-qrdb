@@ -18,6 +18,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -172,6 +173,58 @@ func TestCLIErrors_DescribeThemselves(t *testing.T) {
 	} {
 		if got := err.Error(); got != want {
 			t.Errorf("%T = %q, want %q", err, got, want)
+		}
+	}
+}
+
+// TestCLIErrors_MessagesNameTheirFields checks that each typed CLI error's
+// message carries the fields an operator needs to act on it.
+func TestCLIErrors_MessagesNameTheirFields(t *testing.T) {
+	cases := []struct {
+		err  error
+		want []string
+	}{
+		{&MissingFactorIDError{Op: "auth factor remove"}, []string{"factor id is required", "auth factor remove"}},
+		{&MissingLabelError{Op: "auth factor add"}, []string{"--label is required", "auth factor add"}},
+		{&MissingUserError{Op: "auth factor list"}, []string{"--user is required"}},
+		{&InvalidUserIDError{Value: "abc", Cause: errors.New("invalid syntax")}, []string{"abc", "invalid syntax"}},
+		{&InvalidFactorTypeError{Type: "otp"}, []string{"otp"}},
+		{&InvalidAuthMethodError{Method: "totp"}, []string{"totp"}},
+		{&MissingCertPathError{}, []string{"--cert"}},
+		{&MissingCredentialError{Type: "fido2"}, []string{"fido2"}},
+		{&MissingCredentialError{Type: "piv"}, []string{"piv"}},
+		{&CertReadError{Path: "/tmp/cert.pem", Cause: errors.New("no such file")}, []string{"/tmp/cert.pem", "no such file"}},
+		{&CertReadError{Cause: errors.New("parse failed")}, []string{"cert read error:", "parse failed"}},
+		{&InvalidCredentialHexError{Cause: errors.New("encoding/hex: odd length")}, []string{"odd length"}},
+		{&AuthFactorTransportUnsupportedError{}, []string{"AuthFactor"}},
+		{&PendingBootstrapBackendError{Mode: "dane"}, []string{"dane", "xkms"}},
+		{&UserAbortError{Op: "barrier seal"}, []string{"barrier seal", "aborted by user"}},
+		{&EmbeddedTransportUnavailableError{}, []string{"embedded"}},
+		{&DuplicateDataDirError{ID: "profile-1", Path: "/data/qrdb"}, []string{"profile-1", "/data/qrdb"}},
+		{&DataDirLockedError{Path: "/data/db", Err: errors.New("LOCK: could not obtain lock")}, []string{"/data/db", "LOCK"}},
+	}
+	for _, tc := range cases {
+		got := tc.err.Error()
+		for _, w := range tc.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%T = %q, want it to contain %q", tc.err, got, w)
+			}
+		}
+	}
+}
+
+// TestCLIErrors_UnwrapToCause checks that each wrapping CLI error exposes its
+// cause to errors.Is.
+func TestCLIErrors_UnwrapToCause(t *testing.T) {
+	cause := errors.New("cause")
+	for _, err := range []error{
+		&InvalidUserIDError{Value: "bad", Cause: cause},
+		&CertReadError{Path: "/x", Cause: cause},
+		&InvalidCredentialHexError{Cause: cause},
+		&DataDirLockedError{Path: "/p", Err: cause},
+	} {
+		if !errors.Is(err, cause) {
+			t.Errorf("%T does not unwrap to its cause", err)
 		}
 	}
 }

@@ -98,13 +98,16 @@ func NewIndexFactory() *IndexFactory {
 
 // CreateIndex creates a new HNSW index with the specified configuration.
 func (f *IndexFactory) CreateIndex(config *interfaces.HNSWConfig) (interfaces.HNSWIndex, error) {
-	// Convert interface config to internal config
+	metric, err := ParseDistanceMetric(config.DistanceMetric)
+	if err != nil {
+		return nil, err
+	}
 	hnswConfig := &Config{
 		M:              config.M,
 		MMax:           config.MMax,
 		EfConstruction: config.EfConstruction,
 		EfSearch:       config.EfSearch,
-		DistanceMetric: parseDistanceMetric(config.DistanceMetric),
+		DistanceMetric: metric,
 	}
 
 	index, err := NewHNSWIndex(hnswConfig)
@@ -113,18 +116,4 @@ func (f *IndexFactory) CreateIndex(config *interfaces.HNSWConfig) (interfaces.HN
 	}
 
 	return NewIndexAdapter(index), nil
-}
-
-// parseDistanceMetric converts a string distance metric to the internal type.
-func parseDistanceMetric(metric string) DistanceMetric {
-	switch metric {
-	case "cosine", "COSINE":
-		return CosineDistance
-	case "dot_product", "DOT_PRODUCT":
-		return DotProductDistance
-	case "l2", "L2", "euclidean", "EUCLIDEAN":
-		return L2Distance
-	default:
-		return L2Distance
-	}
 }

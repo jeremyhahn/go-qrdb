@@ -47,12 +47,20 @@ type namespacedTransactionService struct {
 }
 
 // Compile-time interface check.
-var _ service.TransactionServicer = (*namespacedTransactionService)(nil)
+var (
+	_ service.TransactionServicer  = (*namespacedTransactionService)(nil)
+	_ service.TransactionUnwrapper = (*namespacedTransactionService)(nil)
+)
 
 // newNamespacedTransactionService creates a TransactionServicer scoped to the
 // given composite namespace prefix.
 func newNamespacedTransactionService(inner service.TransactionServicer, prefix string) *namespacedTransactionService {
 	return &namespacedTransactionService{inner: inner, prefix: prefix}
+}
+
+// Unwrap returns the transaction service the namespace decorates.
+func (s *namespacedTransactionService) Unwrap() service.TransactionServicer {
+	return s.inner
 }
 
 // prefixCompares returns a copy of compares with each key namespaced. A

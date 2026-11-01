@@ -832,6 +832,19 @@ type RoleClient interface {
 	// calls this AFTER those permissions are registered, or it will converge
 	// every tenant onto a definition missing its own verbs.
 	ReconcileBuiltInRoles(ctx context.Context, req *ReconcileRolesRequest) (*ReconcileRolesResponse, error)
+
+	// ReconcileBuiltInRolesAllTenants runs ReconcileBuiltInRoles for EVERY
+	// tenant the serving node knows, in one pass: the way an embedding node's
+	// service principal brings every tenant's built-ins up to date after an
+	// upgrade renamed a permission. It needs the cross-scope
+	// roles:reconcile_all, effective only for a system-tenant caller. A
+	// tenant whose barrier is sealed, or that the node refuses, is reported
+	// in Skipped; one tenant's failure is reported in Failed and never stops
+	// the pass, so the caller decides on Failed.
+	//
+	// Run the system tenant's own ReconcileBuiltInRoles first when its
+	// built-ins predate roles:reconcile_all: that grants it.
+	ReconcileBuiltInRolesAllTenants(ctx context.Context) (*ReconcileAllTenantsRolesResponse, error)
 }
 
 // ---------------------------------------------------------------------------

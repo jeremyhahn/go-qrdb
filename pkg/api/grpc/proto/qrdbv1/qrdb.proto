@@ -804,6 +804,17 @@ service QRDBService {
         option (qrdb.v1.permission) = "roles:create";
     }
 
+    // ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+    // EVERY tenant the serving node knows onto this build's definitions, in
+    // one pass, leaving custom roles untouched. It writes every tenant's IAM
+    // data, so it carries the cross-scope roles:reconcile_all, effective only
+    // for a system-tenant caller. A tenant whose barrier is sealed, or that
+    // the node refuses, is reported skipped; one tenant's failure is
+    // reported in failed and never stops the pass.
+    rpc ReconcileBuiltInRolesAllTenants(google.protobuf.Empty) returns (ReconcileBuiltInRolesAllTenantsResponse) {
+        option (qrdb.v1.permission) = "roles:reconcile_all";
+    }
+
     // -----------------------------------------------------------------------
     // Certificate management
     // -----------------------------------------------------------------------
@@ -2648,6 +2659,10 @@ enum DistanceMetric {
 
     // DISTANCE_DOT_PRODUCT measures similarity via the dot product.
     DISTANCE_DOT_PRODUCT = 2;
+
+    // DISTANCE_MANHATTAN measures the sum of absolute coordinate differences
+    // (the L1 distance) between vectors.
+    DISTANCE_MANHATTAN = 3;
 }
 
 // VectorIndexType specifies the vector index algorithm.
@@ -3458,6 +3473,31 @@ message RoleReconcileResult {
 message ReconcileBuiltInRolesResponse {
     string tenant_id = 1;
     repeated RoleReconcileResult roles = 2;
+}
+
+// RoleReconcileSkippedTenant names a tenant the all-tenant reconcile did not
+// open. reason is "sealed" (its barrier is sealed on this node) or "refused"
+// (this node does not serve it); detail is the human-readable cause.
+message RoleReconcileSkippedTenant {
+    string tenant_id = 1;
+    string reason = 2;
+    string detail = 3;
+}
+
+// RoleReconcileFailedTenant names a tenant whose reconcile failed, and why.
+message RoleReconcileFailedTenant {
+    string tenant_id = 1;
+    string error = 2;
+}
+
+// ReconcileBuiltInRolesAllTenantsResponse is the all-tenant pass's report:
+// one per-tenant report for every tenant converged (system first, then by
+// id; an empty roles list is a tenant already in agreement), and the
+// tenants skipped or failed. A non-empty failed list is a partial pass.
+message ReconcileBuiltInRolesAllTenantsResponse {
+    repeated ReconcileBuiltInRolesResponse tenants = 1;
+    repeated RoleReconcileSkippedTenant skipped = 2;
+    repeated RoleReconcileFailedTenant failed = 3;
 }
 
 // UpdateRoleProtoRequest applies partial updates to an existing role.

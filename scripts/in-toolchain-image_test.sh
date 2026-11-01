@@ -136,19 +136,21 @@ if [ "$rc" = 0 ] && ! called '^run ' && ! grep -q 'ip route' "$D/state/stage-cmd
 else bad "a bridge stage starts no configurator"; cat "$D/state/calls"; fi
 
 # 9-10. The stage's command waits for the route, then runs; without the route
-# it gives up after MULTICAST_WAIT seconds.
-mkdir -p "$D/ipbin"
+# it gives up after MULTICAST_WAIT seconds. The replay sets the scratch
+# directory the stage's guard checks, as the stage's container does, so it
+# does not depend on the caller's TMPDIR.
+mkdir -p "$D/ipbin" "$D/scratch"
 # shellcheck disable=SC2016 # the stub expands ROUTE when it runs
 printf '#!/bin/sh\n[ -n "${ROUTE:-}" ] && echo "224.0.0.0/4 scope link"\nexit 0\n' > "$D/ipbin/ip"
 chmod +x "$D/ipbin/ip"
 reset
 run MULTICAST_WAIT=1
 gate=$(cat "$D/state/stage-cmd")
-if (PATH="$D/ipbin:$PATH" ROUTE=1 sh -c "${gate%make test}echo ran") | grep -qx ran; then
+if (PATH="$D/ipbin:$PATH" ROUTE=1 TMPDIR="$D/scratch" sh -c "${gate%make test}echo ran") | grep -qx ran; then
   ok "the stage runs once the route is there"
 else bad "the stage runs once the route is there"; echo "$gate"; fi
 grc=0
-(PATH="$D/ipbin:$PATH" sh -c "${gate%make test}echo ran") > "$D/gate" 2>&1 || grc=$?
+(PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate%make test}echo ran") > "$D/gate" 2>&1 || grc=$?
 if [ "$grc" = 1 ] && grep -q 'no multicast route after 1 s' "$D/gate" && ! grep -q ran "$D/gate"; then
   ok "the stage gives up without the route"
 else bad "the stage gives up without the route (rc=$grc)"; cat "$D/gate"; fi
@@ -159,6 +161,24 @@ run MULTICAST_WAIT=0
 if [ "$rc" = 2 ] && grep -q 'MULTICAST_WAIT must be' "$D/out"; then
   ok "a bad MULTICAST_WAIT is refused"
 else bad "a bad MULTICAST_WAIT is refused (rc=$rc)"; cat "$D/out"; fi
+
+# 12-13. The stage's command checks its scratch directory before anything else
+# runs: an unset or missing TMPDIR fails it by name with status 2.
+reset
+run
+gate=$(cat "$D/state/stage-cmd")
+# scratch_refused <what> <env argv...>: the stage's command, replayed under env
+# with <env argv>, exits 2 naming the scratch directory and runs nothing.
+scratch_refused() {
+  local what=$1 grc=0
+  shift
+  (PATH="$D/ipbin:$PATH" ROUTE=1 env "$@" sh -c "${gate%make test}echo ran") > "$D/gate" 2>&1 || grc=$?
+  if [ "$grc" = 2 ] && grep -q 'scratch directory .* is missing or not writable' "$D/gate" && ! grep -q ran "$D/gate"; then
+    ok "a scratch directory that is $what fails the stage"
+  else bad "a scratch directory that is $what fails the stage (rc=$grc)"; cat "$D/gate"; fi
+}
+scratch_refused unset -u TMPDIR
+scratch_refused missing TMPDIR="$D/no-such-dir"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

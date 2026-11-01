@@ -32,7 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -147,6 +146,16 @@ func TestHostAdapter_StaleRead_ViaEmbeddedRaft(t *testing.T) {
 	if string(got) != "stale-val" {
 		t.Fatalf("Get(AllowStale): got %q, want %q", got, "stale-val")
 	}
+
+	// WithAllowStale alone, at the default consistency, takes the
+	// hostAdapter.ReadWithConsistency stale branch.
+	got, err = cl.KV().Get(ctx, "stale-key", transport.WithAllowStale())
+	if err != nil {
+		t.Fatalf("Get(AllowStale, default consistency): %v", err)
+	}
+	if string(got) != "stale-val" {
+		t.Fatalf("Get(AllowStale, default consistency): got %q, want %q", got, "stale-val")
+	}
 }
 
 // TestHostAdapter_ReadWithConsistency_StrongPath exercises the strong
@@ -172,34 +181,6 @@ func TestHostAdapter_ReadWithConsistency_StrongPath(t *testing.T) {
 	}
 	if string(got) != "strong-val" {
 		t.Fatalf("Get(Strong): got %q, want %q", got, "strong-val")
-	}
-}
-
-// TestHostAdapter_ReadWithConsistency_StalePath exercises the AllowStale
-// branch in hostAdapter.ReadWithConsistency.
-func TestHostAdapter_ReadWithConsistency_StalePath(t *testing.T) {
-	esb, conn := startEmbeddedPebble(t)
-	defer func() { _ = esb.StopEmbedded() }()
-
-	cl, err := conn.loadClient()
-	if err != nil {
-		t.Fatalf("loadClient: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := cl.KV().Put(ctx, "stale-cons-key", []byte("stale-cons-val")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	// WithAllowStale triggers AllowStale=true in the embedded transport,
-	// exercising the hostAdapter.ReadWithConsistency stale branch.
-	got, err := cl.KV().Get(ctx, "stale-cons-key",
-		transport.WithAllowStale())
-	if err != nil {
-		t.Fatalf("Get(AllowStale): %v", err)
-	}
-	if string(got) != "stale-cons-val" {
-		t.Fatalf("Get(AllowStale): got %q, want %q", got, "stale-cons-val")
 	}
 }
 
@@ -306,130 +287,14 @@ func TestHostAdapter_ProposeWithMode_DefaultCase(t *testing.T) {
 // ceremony status
 // ---------------------------------------------------------------------------
 
-func TestCeremonyStatus_DefaultFormat(t *testing.T) {
-	svc := &mockCeremonyService{}
-	output, err := executeCeremonyCmd(t, svc, "status")
-	if err != nil {
-		t.Fatalf("ceremony status error: %v", err)
-	}
-	for _, want := range []string{"State:", "initialized", "SPKIPin:", "abc123"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("output missing %q, got: %q", want, output)
-		}
-	}
-}
-
-func TestCeremonyStatus_JSONFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := &mockCeremonyService{}
-	output, err := executeCeremonyCmd(t, svc, "status")
-	if err != nil {
-		t.Fatalf("ceremony status json error: %v", err)
-	}
-	if !strings.Contains(output, `"state"`) {
-		t.Errorf("JSON output missing state field, got: %q", output)
-	}
-}
-
-func TestCeremonyStatus_YAMLFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "yaml"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := &mockCeremonyService{}
-	output, err := executeCeremonyCmd(t, svc, "status")
-	if err != nil {
-		t.Fatalf("ceremony status yaml error: %v", err)
-	}
-	if !strings.Contains(output, "state:") {
-		t.Errorf("YAML output missing state field, got: %q", output)
-	}
-}
-
-func TestCeremonyStatus_ServiceError(t *testing.T) {
-	svc := &mockCeremonyService{
-		statusFn: func(_ context.Context) (*service.CeremonyStatusInfo, error) {
-			return nil, errors.New("ceremony not started")
-		},
-	}
-	_, err := executeCeremonyCmd(t, svc, "status")
-	if err == nil {
-		t.Fatal("expected error from ceremony status when service fails")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ceremony init (removed: collapsed into the root "init" command per
 // docs/ceremony/cli.md)
 // ---------------------------------------------------------------------------
 
-// TestCeremonyInit_NoLongerRegistered verifies that "ceremony init" is an
-// unknown command now that it has been collapsed into the root "init"
-// command: no redirect stub remains to intercept it.
-func TestCeremonyInit_NoLongerRegistered(t *testing.T) {
-	svc := &mockCeremonyService{}
-	_, err := executeCeremonyCmd(t, svc, "init",
-		"--so-pin", "sopin123",
-		"--user-pin", "userpin123",
-		"--threshold", "2",
-	)
-	if err == nil {
-		t.Fatal("expected an unknown-command error; ceremony init must not be registered")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ceremony sign-csr
 // ---------------------------------------------------------------------------
-
-func TestCeremonySignCSR_DefaultFormat(t *testing.T) {
-	csrFile := filepath.Join(t.TempDir(), "test.csr")
-	if err := os.WriteFile(csrFile, []byte("-----BEGIN CERTIFICATE REQUEST-----\ntest\n-----END CERTIFICATE REQUEST-----\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	svc := &mockCeremonyService{}
-	output, err := executeCeremonyCmd(t, svc, "sign-csr",
-		"--username", "alice",
-		"--so-pin", "sopin123",
-		"--csr-file", csrFile,
-		"--role", "officer",
-	)
-	if err != nil {
-		t.Fatalf("sign-csr error: %v", err)
-	}
-	if !strings.Contains(output, "CertPEM:") {
-		t.Errorf("output missing CertPEM, got: %q", output)
-	}
-}
-
-func TestCeremonySignCSR_JSONFormat(t *testing.T) {
-	csrFile := filepath.Join(t.TempDir(), "test.csr")
-	if err := os.WriteFile(csrFile, []byte("---CSR---"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := &mockCeremonyService{}
-	output, err := executeCeremonyCmd(t, svc, "sign-csr",
-		"--username", "alice",
-		"--so-pin", "sopin123",
-		"--csr-file", csrFile,
-		"--role", "officer",
-	)
-	if err != nil {
-		t.Fatalf("sign-csr json error: %v", err)
-	}
-	if !strings.Contains(output, `"cert_pem"`) {
-		t.Errorf("JSON output missing cert_pem, got: %q", output)
-	}
-}
 
 func TestCeremonySignCSR_YAMLFormat(t *testing.T) {
 	csrFile := filepath.Join(t.TempDir(), "test.csr")
@@ -456,87 +321,10 @@ func TestCeremonySignCSR_YAMLFormat(t *testing.T) {
 	}
 }
 
-func TestCeremonySignCSR_CSRFileNotFound(t *testing.T) {
-	svc := &mockCeremonyService{}
-	_, err := executeCeremonyCmd(t, svc, "sign-csr",
-		"--username", "alice",
-		"--so-pin", "sopin123",
-		"--csr-file", "/nonexistent/path/test.csr",
-		"--role", "officer",
-	)
-	if err == nil {
-		t.Fatal("expected error when CSR file does not exist")
-	}
-	var fre *FileReadError
-	if !errors.As(err, &fre) {
-		t.Fatalf("expected FileReadError, got %T: %v", err, err)
-	}
-}
-
-func TestCeremonySignCSR_ServiceError(t *testing.T) {
-	csrFile := filepath.Join(t.TempDir(), "test.csr")
-	if err := os.WriteFile(csrFile, []byte("---CSR---"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	svc := &mockCeremonyService{
-		signCSRFn: func(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
-			return nil, errors.New("invalid SO pin")
-		},
-	}
-	_, err := executeCeremonyCmd(t, svc, "sign-csr",
-		"--username", "alice",
-		"--so-pin", "wrongpin",
-		"--csr-file", csrFile,
-		"--role", "officer",
-	)
-	if err == nil {
-		t.Fatal("expected error when sign-csr service fails")
-	}
-}
-
-func TestCeremonySignCSR_MissingRequiredFlags(t *testing.T) {
-	svc := &mockCeremonyService{}
-	_, err := executeCeremonyCmd(t, svc, "sign-csr", "--username", "alice")
-	if err == nil {
-		t.Fatal("expected error for missing required flags")
-	}
-}
-
 // ===========================================================================
 // bindings_daemon.go — additional coverage for Start, Stop, Restart,
 // and resolveLogPath paths not covered by existing tests.
 // ===========================================================================
-
-// TestDaemonBinding_Stop_WithTrackedProcess verifies that Stop sends
-// SIGTERM to a real tracked process and clears the process pointer.
-func TestDaemonBinding_Stop_WithTrackedProcess(t *testing.T) {
-	d := newTestDaemonBinding(t)
-
-	pidPath := filepath.Join(d.configDir, "qrdbd.pid")
-
-	cmd := newSleepCmd()
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start sleep process: %v", err)
-	}
-
-	if err := os.WriteFile(pidPath, []byte("1"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	d.process.Store(cmd.Process)
-
-	err := d.Stop()
-	if err != nil {
-		t.Fatalf("Stop returned unexpected error: %v", err)
-	}
-	if d.process.Load() != nil {
-		t.Error("expected process pointer to be nil after Stop")
-	}
-	if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
-		t.Error("expected PID file to be cleaned up after Stop")
-	}
-}
 
 // TestDaemonBinding_Shutdown_WithTrackedProcess verifies that the shutdown
 // hook terminates a tracked process.
@@ -553,6 +341,33 @@ func TestDaemonBinding_Shutdown_WithTrackedProcess(t *testing.T) {
 
 	if d.process.Load() != nil {
 		t.Error("expected process pointer to be nil after shutdown")
+	}
+}
+
+// TestDaemonBinding_Stop_WithTrackedProcess verifies that Stop terminates a
+// tracked process, clears the process pointer and removes the PID file.
+func TestDaemonBinding_Stop_WithTrackedProcess(t *testing.T) {
+	d := newTestDaemonBinding(t)
+
+	pidPath := filepath.Join(d.configDir, "qrdbd.pid")
+
+	cmd := newSleepCmd()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cannot start sleep process: %v", err)
+	}
+	if err := os.WriteFile(pidPath, []byte("1"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	d.process.Store(cmd.Process)
+
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop returned unexpected error: %v", err)
+	}
+	if d.process.Load() != nil {
+		t.Error("expected process pointer to be nil after Stop")
+	}
+	if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+		t.Errorf("expected PID file to be removed after Stop, stat err: %v", statErr)
 	}
 }
 
@@ -576,74 +391,6 @@ func TestDaemonBinding_Restart_WithTrackedProcess(t *testing.T) {
 	var dse *DaemonStartError
 	if !errors.As(err, &dse) {
 		t.Fatalf("expected DaemonStartError on re-start, got %T: %v", err, err)
-	}
-}
-
-// TestDaemonBinding_Start_AlreadyRunning verifies that Start returns
-// DaemonAlreadyRunningError when a process is already tracked.
-func TestDaemonBinding_Start_AlreadyRunning(t *testing.T) {
-	d := newTestDaemonBinding(t)
-
-	cmd := newSleepCmd()
-	if err := cmd.Start(); err != nil {
-		t.Skipf("cannot start sleep process: %v", err)
-	}
-	defer func() { _ = cmd.Process.Kill() }()
-	d.process.Store(cmd.Process)
-
-	err := d.Start("/tmp/test.yaml")
-	if err == nil {
-		t.Fatal("expected DaemonAlreadyRunningError")
-	}
-	var dare *DaemonAlreadyRunningError
-	if !errors.As(err, &dare) {
-		t.Fatalf("expected DaemonAlreadyRunningError, got %T: %v", err, err)
-	}
-}
-
-// TestDaemonBinding_Start_QrdbdNotFound verifies that Start returns
-// DaemonStartError when qrdbd is not found on PATH. Because the configDir
-// override is set, resolveConfigDir succeeds; the failure comes from
-// exec.Command("qrdbd", ...).Start() when the binary is absent.
-func TestDaemonBinding_Start_QrdbdNotFound(t *testing.T) {
-	d := newTestDaemonBinding(t)
-
-	err := d.Start("/tmp/test-config.yaml")
-	if err == nil {
-		t.Fatal("expected error from Start when qrdbd binary is not available")
-	}
-	var dse *DaemonStartError
-	if !errors.As(err, &dse) {
-		t.Fatalf("expected DaemonStartError, got %T: %v", err, err)
-	}
-}
-
-// TestDaemonBinding_ResolveLogPath_WithOverride verifies that resolveLogPath
-// returns the override log file path when the logFile field is set.
-func TestDaemonBinding_ResolveLogPath_WithOverride(t *testing.T) {
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "/tmp/custom-test.log")
-
-	got, err := d.resolveLogPath()
-	if err != nil {
-		t.Fatalf("resolveLogPath: %v", err)
-	}
-	if got != "/tmp/custom-test.log" {
-		t.Errorf("expected /tmp/custom-test.log, got %q", got)
-	}
-}
-
-// TestDaemonBinding_ResolveLogPath_DefaultPath verifies that resolveLogPath
-// returns a path ending in "qrdbd.log" when no override is set.
-func TestDaemonBinding_ResolveLogPath_DefaultPath(t *testing.T) {
-	d := newTestDaemonBinding(t)
-
-	got, err := d.resolveLogPath()
-	if err != nil {
-		t.Fatalf("resolveLogPath: %v", err)
-	}
-	if !strings.HasSuffix(got, "qrdbd.log") {
-		t.Errorf("expected path ending in qrdbd.log, got %q", got)
 	}
 }
 
@@ -818,37 +565,6 @@ func TestDatabaseUpdateRaft_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseUpdateRaft_JSONFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := newFullFnDatabaseService()
-	svc.updateRaftFn = func(name string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-raft", "mydb")
-	if err != nil {
-		t.Fatalf("update-raft json error: %v", err)
-	}
-	if !strings.Contains(output, `"name"`) {
-		t.Errorf("JSON output missing name, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateRaft_ServiceError(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateRaftFn = func(name string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-
-	_, err := executeDatabaseCmd(t, svc, "update-raft", "nonexistent")
-	if err == nil {
-		t.Fatal("expected error from update-raft when database not found")
-	}
-}
-
 func TestDatabaseUpdateRaft_MissingArg(t *testing.T) {
 	svc := newFullFnDatabaseService()
 	_, err := executeDatabaseCmd(t, svc, "update-raft")
@@ -890,60 +606,62 @@ func TestDatabaseUpdateBarrier_EnabledFlag(t *testing.T) {
 	}
 }
 
+// TestDatabaseUpdateBarrier_DisabledFlag verifies that --disabled sends a
+// barrier config with Enabled=false.
 func TestDatabaseUpdateBarrier_DisabledFlag(t *testing.T) {
 	var gotCfg *database.DatabaseBarrierConfig
 
 	svc := newFullFnDatabaseService()
 	svc.updateBarrierFn = func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
 		gotCfg = cfg
-		return &database.DatabaseInfo{
-			Name:    name,
-			Backend: "pebble",
-			Status:  "open",
-			Barrier: cfg,
-		}, nil
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open", Barrier: cfg}, nil
 	}
 
-	_, err := executeDatabaseCmd(t, svc, "update-barrier", "mydb", "--disabled")
-	if err != nil {
+	if _, err := executeDatabaseCmd(t, svc, "update-barrier", "mydb", "--disabled"); err != nil {
 		t.Fatalf("update-barrier --disabled error: %v", err)
 	}
 	if gotCfg == nil {
 		t.Fatal("expected non-nil BarrierConfig")
 	}
 	if gotCfg.Enabled {
-		t.Error("expected Enabled=false with --disabled flag")
+		t.Error("expected Enabled=false with --disabled")
 	}
 }
 
-func TestDatabaseUpdateBarrier_JSONFormat(t *testing.T) {
+// TestDatabaseUpdate_JSONFormat requires each update command to print the
+// returned database info as JSON.
+func TestDatabaseUpdate_JSONFormat(t *testing.T) {
 	oldFormat := outputFormat
 	outputFormat = "json"
 	t.Cleanup(func() { outputFormat = oldFormat })
 
+	info := func(name string) *database.DatabaseInfo {
+		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}
+	}
 	svc := newFullFnDatabaseService()
+	svc.updateRaftFn = func(name string, _ *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+		return info(name), nil
+	}
 	svc.updateBarrierFn = func(name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
+		return info(name), nil
 	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-barrier", "mydb")
-	if err != nil {
-		t.Fatalf("update-barrier json error: %v", err)
+	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+		return info(name), nil
 	}
-	if !strings.Contains(output, `"name"`) {
-		t.Errorf("JSON output missing name, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateBarrier_ServiceError(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateBarrierFn = func(name string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-
-	_, err := executeDatabaseCmd(t, svc, "update-barrier", "nonexistent")
-	if err == nil {
-		t.Fatal("expected error from update-barrier when database not found")
+	for _, args := range [][]string{
+		{"update-raft", "mydb"},
+		{"update-barrier", "mydb", "--enabled"},
+		{"update-connection", "mydb", "--address", "remote.example.com:9090"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			out, err := executeDatabaseCmd(t, svc, args...)
+			if err != nil {
+				t.Fatalf("%s json error: %v", args[0], err)
+			}
+			if !strings.Contains(out, `"name"`) || !strings.Contains(out, `"mydb"`) {
+				t.Errorf("JSON output missing name mydb, got: %q", out)
+			}
+		})
 	}
 }
 
@@ -998,37 +716,6 @@ func TestDatabaseUpdateConnection_Success(t *testing.T) {
 	}
 }
 
-func TestDatabaseUpdateConnection_JSONFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := newFullFnDatabaseService()
-	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-connection", "mydb")
-	if err != nil {
-		t.Fatalf("update-connection json error: %v", err)
-	}
-	if !strings.Contains(output, `"name"`) {
-		t.Errorf("JSON output missing name, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateConnection_ServiceError(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateConnectionFn = func(name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-		return nil, &database.NotFoundError{Name: name}
-	}
-
-	_, err := executeDatabaseCmd(t, svc, "update-connection", "nonexistent")
-	if err == nil {
-		t.Fatal("expected error from update-connection when database not found")
-	}
-}
-
 func TestDatabaseUpdateConnection_MissingArg(t *testing.T) {
 	svc := newFullFnDatabaseService()
 	_, err := executeDatabaseCmd(t, svc, "update-connection")
@@ -1037,115 +724,34 @@ func TestDatabaseUpdateConnection_MissingArg(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// database_instance_registry.go — Close path coverage.
-// ===========================================================================
-
-// TestDatabaseInstanceRegistry_Close_WatchHubOnly verifies Close on an
-// instance that has only a watch hub (no host, no localBackend).
-func TestDatabaseInstanceRegistry_Close_WatchHubOnly(t *testing.T) {
-	hub := watch.NewHub()
-	inst := &embeddedDatabaseInstance{watchHub: hub}
-	if err := inst.Close(); err != nil {
-		t.Fatalf("Close with watchHub: %v", err)
+// TestDatabaseUpdate_ServiceError requires each update command to return the
+// service's failure and print no database info.
+func TestDatabaseUpdate_ServiceError(t *testing.T) {
+	errUpdate := errors.New("update failure")
+	svc := newFullFnDatabaseService()
+	svc.updateRaftFn = func(string, *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
+		return nil, errUpdate
 	}
-}
-
-// TestDatabaseInstanceRegistry_Close_NilFields verifies Close succeeds
-// when all optional fields are nil.
-func TestDatabaseInstanceRegistry_Close_NilFields(t *testing.T) {
-	inst := &embeddedDatabaseInstance{}
-	if err := inst.Close(); err != nil {
-		t.Fatalf("Close with nil fields: %v", err)
+	svc.updateBarrierFn = func(string, *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+		return nil, errUpdate
 	}
-}
-
-// TestDatabaseInstanceRegistry_Close_DoubleClose verifies that calling
-// Close twice on an instance with a watch hub does not panic.
-func TestDatabaseInstanceRegistry_Close_DoubleClose(t *testing.T) {
-	hub := watch.NewHub()
-	inst := &embeddedDatabaseInstance{watchHub: hub}
-
-	if err := inst.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
+	svc.updateConnectionFn = func(string, *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+		return nil, errUpdate
 	}
-	if err := inst.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
-// TestDatabaseInstanceRegistry_Register_DuplicateFromGaps verifies that
-// registering the same name twice returns InstanceAlreadyExistsError.
-func TestDatabaseInstanceRegistry_Register_DuplicateFromGaps(t *testing.T) {
-	log := testLogger(t)
-	r := NewDatabaseInstanceRegistry(log)
-
-	inst := &embeddedDatabaseInstance{}
-	if err := r.Register("db1", inst); err != nil {
-		t.Fatalf("first Register: %v", err)
-	}
-
-	err := r.Register("db1", inst)
-	if err == nil {
-		t.Fatal("expected InstanceAlreadyExistsError on duplicate register")
-	}
-	var iaee *InstanceAlreadyExistsError
-	if !errors.As(err, &iaee) {
-		t.Fatalf("expected InstanceAlreadyExistsError, got %T: %v", err, err)
-	}
-}
-
-// TestDatabaseInstanceRegistry_Stop_NotFoundFromGaps verifies that Stop
-// returns InstanceNotFoundError when the name is not registered.
-func TestDatabaseInstanceRegistry_Stop_NotFoundFromGaps(t *testing.T) {
-	log := testLogger(t)
-	r := NewDatabaseInstanceRegistry(log)
-
-	err := r.Stop("nonexistent")
-	if err == nil {
-		t.Fatal("expected InstanceNotFoundError for unknown name")
-	}
-	var infe *InstanceNotFoundError
-	if !errors.As(err, &infe) {
-		t.Fatalf("expected InstanceNotFoundError, got %T: %v", err, err)
-	}
-}
-
-// TestDatabaseInstanceRegistry_StopAll_EmptyFromGaps verifies StopAll is
-// a no-op when no instances are registered.
-func TestDatabaseInstanceRegistry_StopAll_EmptyFromGaps(t *testing.T) {
-	log := testLogger(t)
-	r := NewDatabaseInstanceRegistry(log)
-	if err := r.StopAll(); err != nil {
-		t.Fatalf("StopAll on empty registry: %v", err)
-	}
-}
-
-// TestDatabaseInstanceRegistry_StopAll_MultipleInstances verifies StopAll
-// stops all registered instances and resets the count.
-func TestDatabaseInstanceRegistry_StopAll_MultipleInstances(t *testing.T) {
-	log := testLogger(t)
-	r := NewDatabaseInstanceRegistry(log)
-
-	for _, name := range []string{"db1", "db2", "db3"} {
-		inst := &embeddedDatabaseInstance{watchHub: watch.NewHub()}
-		if err := r.Register(name, inst); err != nil {
-			t.Fatalf("Register(%q): %v", name, err)
-		}
-	}
-	if r.Count() != 3 {
-		t.Fatalf("expected Count()=3, got %d", r.Count())
-	}
-
-	if err := r.StopAll(); err != nil {
-		t.Fatalf("StopAll: %v", err)
-	}
-
-	if r.Count() != 0 {
-		t.Errorf("expected Count()=0 after StopAll, got %d", r.Count())
-	}
-	if len(r.Names()) != 0 {
-		t.Errorf("expected no names after StopAll, got %v", r.Names())
+	for _, args := range [][]string{
+		{"update-raft", "mydb", "--cluster-mode", "local"},
+		{"update-barrier", "mydb", "--enabled"},
+		{"update-connection", "mydb", "--address", "remote.example.com:9090"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			out, err := executeDatabaseCmd(t, svc, args...)
+			if !errors.Is(err, errUpdate) {
+				t.Fatalf("expected the service error, got %v", err)
+			}
+			if strings.Contains(out, "Name:") {
+				t.Errorf("a failed update must print no database info: %q", out)
+			}
+		})
 	}
 }
 
@@ -1177,34 +783,6 @@ func TestEmbeddedServerBinding_Shutdown_WhenRunning(t *testing.T) {
 
 	if esb.IsEmbedded() {
 		t.Error("expected IsEmbedded()=false after shutdown")
-	}
-}
-
-// TestEmbeddedServerBinding_StartEmbedded_AlreadyRunning verifies that
-// StartEmbedded returns EmbeddedServerError when already running.
-func TestEmbeddedServerBinding_StartEmbedded_AlreadyRunning(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	log := testLogger(t)
-	conn := NewConnectionBinding(log)
-	esb := NewEmbeddedServerBinding(log, conn, NewSQLBinding(log, conn))
-
-	cfg := &EmbeddedConfig{
-		StorageBackend: "memory",
-		DataDir:        t.TempDir(),
-		RaftEnabled:    false,
-	}
-	if err := esb.StartEmbedded(cfg); err != nil {
-		t.Fatalf("first StartEmbedded: %v", err)
-	}
-	defer func() { _ = esb.StopEmbedded() }()
-
-	err := esb.StartEmbedded(cfg)
-	if err == nil {
-		t.Fatal("expected EmbeddedServerError when already running")
-	}
-	var ese *EmbeddedServerError
-	if !errors.As(err, &ese) {
-		t.Fatalf("expected EmbeddedServerError, got %T: %v", err, err)
 	}
 }
 

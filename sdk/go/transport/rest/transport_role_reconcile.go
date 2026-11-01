@@ -38,3 +38,18 @@ func (t *Transport) ReconcileBuiltInRoles(ctx context.Context, req *transport.Re
 	}
 	return &resp, nil
 }
+
+// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of every
+// tenant on the server onto the server build's definitions. The caller must be
+// a platform operator holding roles:reconcile_all.
+func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*transport.ReconcileAllTenantsRolesResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var resp transport.ReconcileAllTenantsRolesResponse
+	if err := t.postJSONDecode(ctx, "ReconcileBuiltInRolesAllTenants", "/roles/reconcile/all-tenants", struct{}{}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
