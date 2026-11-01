@@ -1,13 +1,16 @@
 # Backup and Restore — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
 
-**Raft mode only.** In standalone every capability here refuses with
-`requires mode: raft` — REST 501, gRPC/QUIC `Unimplemented`.
+**Raft mode only.** A standalone server is composed without the backup
+service: gRPC, Unix and QUIC answer `Unimplemented`; REST answers 501
+(`service not implemented: backup`) on `GET /v1/backups/list` and the
+`/v1/backups/{id}` routes, and does not register `POST /v1/backups` or
+`POST /v1/backups/restore`.
 
 ## Capability matrix
 
@@ -114,8 +117,7 @@ of them**; a tampered/missing shard, a tampered manifest, or a stored-
 metadata/artifact mismatch aborts the whole restore with one typed,
 top-level error and imports nothing. `errors`/`shards_restored` above
 report a narrower case: an OPERATIONAL import failure after every shard
-has already passed verification, named per shard rather than collapsed
-into the top-level refusal.
+has already passed verification, named per shard.
 
 `POST /v1/backups/{id}/verify` — `VerifyResult`:
 
@@ -133,11 +135,6 @@ validated and recorded in `BackupInfo`; shard data is stored uncompressed.
 |---|---|
 | `aes256` | AES-256-GCM, authenticated — the default when `encryption` is left unset |
 | `none` | plaintext — only by explicit request; logged at WARN and, where a compliance audit logger is configured, recorded |
-
-A request that names neither a `key_ref` nor `encryption: "none"` is refused
-with `BackupEncryptionRequiredError` (`INVALID_ARGUMENT`); naming `aes256`
-explicitly without a key reference is refused with
-`BackupEncryptionKeyRequiredError`.
 
 The checksum provides **integrity**; authenticated encryption provides
 **authenticity**. Both are on by default.
@@ -158,7 +155,7 @@ The checksum provides **integrity**; authenticated encryption provides
 | Checksum mismatch under `validate_first` | 409 | `FAILED_PRECONDITION` — restore aborts before touching shards |
 | Snapshot capture failed | 500 | `INTERNAL` — recorded as `status: failed` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
-| Standalone mode | 501 | `UNIMPLEMENTED` — `requires mode: raft` |
+| Standalone mode | 501 on the routes it registers (see above) | `UNIMPLEMENTED` — `backup service is not configured` |
 
 ## Pagination
 

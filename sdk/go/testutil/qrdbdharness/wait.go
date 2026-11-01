@@ -88,18 +88,23 @@ func HTTPSClient(pool *x509.CertPool, cert *tls.Certificate, timeout time.Durati
 
 // WaitForFile polls until path exists or the timeout expires.
 func WaitForFile(path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		_, err := os.Stat(path)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if !sleepUntil(deadline, pollInterval) {
-			return &TimeoutError{Op: "WaitForFile", Target: path, Timeout: timeout, LastErr: lastErr}
-		}
-	}
+	return waitForFile(nil, path, timeout)
+}
+
+// WaitForFile is the package-level WaitForFile that fails at once, with the
+// daemon's output tail, if the daemon exits first.
+func (d *Daemon) WaitForFile(path string, timeout time.Duration) error {
+	return waitForFile(d, path, timeout)
+}
+
+func waitForFile(d *Daemon, path string, timeout time.Duration) error {
+	return poll{
+		op: "WaitForFile", target: path, timeout: timeout, interval: pollInterval,
+		probe: func() error {
+			_, err := os.Stat(path)
+			return err
+		},
+	}.run(d)
 }
 
 // errEmptyFile reports a file that exists but holds no bytes yet.
@@ -111,22 +116,27 @@ var errEmptyFile = errors.New("file is empty")
 // it holds the id: go-quicraft writes it with os.WriteFile, which creates the
 // file before it writes the id, so a bare existence check can see it empty.
 func WaitForNodeHost(dataDir string, timeout time.Duration) error {
+	return waitForNodeHost(nil, dataDir, timeout)
+}
+
+// WaitForNodeHost is the package-level WaitForNodeHost that fails at once,
+// with the daemon's output tail, if the daemon exits first.
+func (d *Daemon) WaitForNodeHost(dataDir string, timeout time.Duration) error {
+	return waitForNodeHost(d, dataDir, timeout)
+}
+
+func waitForNodeHost(d *Daemon, dataDir string, timeout time.Duration) error {
 	path := filepath.Join(dataDir, filepath.FromSlash(hostIDPath))
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		info, err := os.Stat(path)
-		if err == nil && info.Size() > 0 {
-			return nil
-		}
-		if err == nil {
-			err = errEmptyFile
-		}
-		lastErr = err
-		if !sleepUntil(deadline, pollInterval) {
-			return &TimeoutError{Op: "WaitForNodeHost", Target: path, Timeout: timeout, LastErr: lastErr}
-		}
-	}
+	return poll{
+		op: "WaitForNodeHost", target: path, timeout: timeout, interval: pollInterval,
+		probe: func() error {
+			info, err := os.Stat(path)
+			if err == nil && info.Size() == 0 {
+				return errEmptyFile
+			}
+			return err
+		},
+	}.run(d)
 }
 
 // WaitForHTTPOK polls url until it answers 200, optionally presenting cert.
@@ -137,18 +147,22 @@ func WaitForNodeHost(dataDir string, timeout time.Duration) error {
 // names the call it is blocked in. The signalled daemon exits; the returned
 // *TimeoutError lists its process ID in StackDumped.
 func WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForHTTPOK(nil, url, pool, cert, timeout)
+}
+
+// WaitForHTTPOK is the package-level WaitForHTTPOK that fails at once, with
+// the daemon's output tail, if the daemon exits first.
+func (d *Daemon) WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForHTTPOK(d, url, pool, cert, timeout)
+}
+
+func waitForHTTPOK(d *Daemon, url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
 	client := HTTPSClient(pool, cert, probeTimeout)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		lastErr = probeOK(client, url)
-		if lastErr == nil {
-			return nil
-		}
-		if !sleepUntil(deadline, pollInterval) {
-			return &TimeoutError{Op: "WaitForHTTPOK", Target: url, Timeout: timeout, LastErr: lastErr, StackDumped: dumpStacks(url)}
-		}
-	}
+	return poll{
+		op: "WaitForHTTPOK", target: url, timeout: timeout, interval: pollInterval,
+		probe:     func() error { return probeOK(client, url) },
+		onTimeout: func() []int { return dumpStacks(url) },
+	}.run(d)
 }
 
 // WaitForHTTPUp polls url until the node answers it with a 200 or with the
@@ -157,18 +171,21 @@ func WaitForHTTPOK(url string, pool *x509.CertPool, cert *tls.Certificate, timeo
 // route is how it says it is up and sealed; a 503 without the SEALED code (a
 // node still starting) keeps the wait going.
 func WaitForHTTPUp(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForHTTPUp(nil, url, pool, cert, timeout)
+}
+
+// WaitForHTTPUp is the package-level WaitForHTTPUp that fails at once, with
+// the daemon's output tail, if the daemon exits first.
+func (d *Daemon) WaitForHTTPUp(url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForHTTPUp(d, url, pool, cert, timeout)
+}
+
+func waitForHTTPUp(d *Daemon, url string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
 	client := HTTPSClient(pool, cert, probeTimeout)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		lastErr = probeUp(client, url)
-		if lastErr == nil {
-			return nil
-		}
-		if !sleepUntil(deadline, pollInterval) {
-			return &TimeoutError{Op: "WaitForHTTPUp", Target: url, Timeout: timeout, LastErr: lastErr}
-		}
-	}
+	return poll{
+		op: "WaitForHTTPUp", target: url, timeout: timeout, interval: pollInterval,
+		probe: func() error { return probeUp(client, url) },
+	}.run(d)
 }
 
 // WaitForLeader polls statusURL — an authenticated /status endpoint, so cert
@@ -176,29 +193,73 @@ func WaitForHTTPUp(url string, pool *x509.CertPool, cert *tls.Certificate, timeo
 // leader. A single-node cluster self-elects almost immediately; this confirms
 // Raft has caught up before ReadIndex-dependent operations are issued.
 func WaitForLeader(statusURL string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForLeader(nil, statusURL, pool, cert, timeout)
+}
+
+// WaitForLeader is the package-level WaitForLeader that fails at once, with
+// the daemon's output tail, if the daemon exits first.
+func (d *Daemon) WaitForLeader(statusURL string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
+	return waitForLeader(d, statusURL, pool, cert, timeout)
+}
+
+func waitForLeader(d *Daemon, statusURL string, pool *x509.CertPool, cert *tls.Certificate, timeout time.Duration) error {
 	client := HTTPSClient(pool, cert, leaderProbeTimeout)
-	deadline := time.Now().Add(timeout)
-	var lastErr error
+	return poll{
+		op: "WaitForLeader", target: statusURL, timeout: timeout, interval: leaderPollInterval,
+		probe: func() error { return probeLeader(client, statusURL) },
+	}.run(d)
+}
+
+// poll is one readiness wait: probe runs until it succeeds or timeout
+// elapses, with interval between attempts.
+type poll struct {
+	op       string
+	target   string
+	timeout  time.Duration
+	interval time.Duration
+	probe    func() error
+	// onTimeout, when set, runs as the wait gives up and returns the daemons
+	// it sent SIGQUIT, for TimeoutError.StackDumped.
+	onTimeout func() []int
+}
+
+// run polls p.probe, with one probe attempt before the first sleep. With a
+// non-nil d it also watches the daemon and, the moment it exits, returns
+// d.exitError rather than polling a process that is gone until the timeout.
+// A nil d waits on a nil channel, which never fires.
+func (p poll) run(d *Daemon) error {
+	var exited <-chan struct{}
+	if d != nil {
+		exited = d.Exited()
+	}
+	deadline := time.Now().Add(p.timeout)
 	for {
-		lastErr = probeLeader(client, statusURL)
+		lastErr := p.probe()
 		if lastErr == nil {
 			return nil
 		}
-		if !sleepUntil(deadline, leaderPollInterval) {
-			return &TimeoutError{Op: "WaitForLeader", Target: statusURL, Timeout: timeout, LastErr: lastErr}
+		if !time.Now().Before(deadline) {
+			return p.timeoutError(lastErr)
+		}
+		timer := time.NewTimer(p.interval)
+		select {
+		case <-exited:
+			timer.Stop()
+			return d.exitError(p.op, p.target)
+		case <-timer.C:
+		}
+		if !time.Now().Before(deadline) {
+			return p.timeoutError(lastErr)
 		}
 	}
 }
 
-// sleepUntil sleeps for interval and reports whether the deadline still lies
-// ahead, so callers get one probe attempt before the first sleep and one
-// final attempt at the deadline.
-func sleepUntil(deadline time.Time, interval time.Duration) bool {
-	if !time.Now().Before(deadline) {
-		return false
+func (p poll) timeoutError(lastErr error) *TimeoutError {
+	err := &TimeoutError{Op: p.op, Target: p.target, Timeout: p.timeout, LastErr: lastErr}
+	if p.onTimeout != nil {
+		err.StackDumped = p.onTimeout()
 	}
-	time.Sleep(interval)
-	return time.Now().Before(deadline)
+	return err
 }
 
 // probeOK issues one request and reports why it was not a 200, if it was not.

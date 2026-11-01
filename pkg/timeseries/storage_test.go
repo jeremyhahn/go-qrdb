@@ -53,6 +53,51 @@ func write(t *testing.T, s *Storage, metric string, value float64, timestamp tim
 	return b.Commit()
 }
 
+func TestStorage_View_ReadsThroughSnapshot(t *testing.T) {
+	s := newStorage(t)
+	at := time.Unix(1_700_000_000, 0).UTC()
+	if err := write(t, s, "cpu", 1, at, nil); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	snap, err := s.stg.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+	if err := write(t, s, "cpu", 2, at.Add(time.Second), nil); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+
+	view, err := s.View(snap).Query("cpu", at.Add(-time.Minute), at.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("View.Query: %v", err)
+	}
+	if len(view) != 1 || view[0].Value != 1 {
+		t.Fatalf("View.Query = %+v, want the one point before the snapshot", view)
+	}
+	live, err := s.Query("cpu", at.Add(-time.Minute), at.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(live) != 2 {
+		t.Fatalf("Query(live) = %d points, want 2", len(live))
+	}
+}
+
+func TestStorage_View_SharesClosedState(t *testing.T) {
+	s := newStorage(t)
+	view := s.View(s.stg)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	at := time.Unix(1_700_000_000, 0).UTC()
+	_, err := view.Query("cpu", at, at.Add(time.Minute))
+	var closed *ClosedError
+	if !errors.As(err, &closed) {
+		t.Fatalf("View.Query after Close = %v, want *ClosedError", err)
+	}
+}
+
 // writeBatch stages and commits a slice of data points in one batch.
 func writeBatch(t *testing.T, s *Storage, points []DataPoint) error {
 	t.Helper()

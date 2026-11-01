@@ -654,6 +654,83 @@ func TestMVCCEngine_Lookup_MissingIndex_NotFoundError(t *testing.T) {
 	}
 }
 
+// TestMVCCEngine_Lookup_LiveOnlyIndex_Refused pins that an index which can
+// only read live storage is refused rather than answered from it: LookupAt
+// reads every index through the published snapshot (#1287), and answering
+// from live storage would show a commit the snapshot's KV reads cannot see.
+func TestMVCCEngine_Lookup_LiveOnlyIndex_Refused(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	// failingIndex embeds the index.Index interface, which promotes no
+	// reader-bound read, so it stands for an index that reads live storage.
+	eng.indexMu.Lock()
+	eng.indexes["live"] = &failingIndex{Index: newNameIndex(t, stg)}
+	eng.indexMu.Unlock()
+
+	lookups := map[string]interface{}{
+		"query": service.IndexQueryRequest{IndexName: "live", Value: []byte("x")},
+		"scan":  service.IndexScanRequest{IndexName: "live"},
+	}
+	for name, q := range lookups {
+		t.Run(name, func(t *testing.T) {
+			_, err := eng.Lookup(context.Background(), q)
+			var iqe *InvalidQueryError
+			if !errors.As(err, &iqe) {
+				t.Fatalf("Lookup(%s) error = %v, want *InvalidQueryError", name, err)
+			}
+		})
+	}
+}
+
+// TestMVCCEngine_LookupAt_IndexReadsThroughReader pins that an index query
+// answers from the reader LookupAt is given, not from live storage.
+func TestMVCCEngine_LookupAt_IndexReadsThroughReader(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	idx := newNameIndex(t, stg)
+	eng.indexMu.Lock()
+	eng.indexes["name_idx"] = idx
+	eng.indexMu.Unlock()
+
+	snap, err := stg.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	defer func() { _ = snap.Close() }()
+	if err := idx.Put([]byte("doc:1"), []byte("alice")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := eng.LookupAt(context.Background(), snap, 0, service.IndexQueryRequest{IndexName: "name_idx", Value: []byte("alice")})
+	if err != nil {
+		t.Fatalf("LookupAt(snapshot): %v", err)
+	}
+	if keys := got.([][]byte); len(keys) != 0 {
+		t.Fatalf("LookupAt(snapshot) = %q, want none: the entry was written after the snapshot", keys)
+	}
+	got, err = eng.Lookup(context.Background(), service.IndexQueryRequest{IndexName: "name_idx", Value: []byte("alice")})
+	if err != nil {
+		t.Fatalf("Lookup(live): %v", err)
+	}
+	if keys := got.([][]byte); len(keys) != 1 {
+		t.Fatalf("Lookup(live) = %q, want [doc:1]", keys)
+	}
+}
+
+// newNameIndex returns a storage-backed index named name_idx over stg.
+func newNameIndex(t *testing.T, stg storage.Storage) *index.StoragePebbleIndex {
+	t.Helper()
+	idx, err := index.NewStoragePebbleIndex(stg, index.IndexConfig{Name: "name_idx", Type: index.IndexTypeNormal}, defaultLogger())
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+	return idx
+}
+
 func TestMVCCEngine_Lookup_UnsupportedStructType(t *testing.T) {
 	eng, stg := newMVCCEngine(t)
 	defer func() { _ = stg.Close() }()

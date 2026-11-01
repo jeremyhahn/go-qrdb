@@ -38,8 +38,11 @@ import (
 // Storage provides time-series data storage and aggregation over a
 // storage.Storage. All methods are safe for concurrent use.
 type Storage struct {
-	stg    storage.Storage
-	closed atomic.Bool
+	stg storage.Storage
+	// reader serves every query: stg itself, or the snapshot a View binds.
+	reader storage.Reader
+	// closed is shared with every View of this Storage.
+	closed *atomic.Bool
 }
 
 // New creates a new time-series Storage over the given storage.Storage. The
@@ -49,7 +52,16 @@ func New(stg storage.Storage) (*Storage, error) {
 	if stg == nil {
 		return nil, &NilDBError{}
 	}
-	return &Storage{stg: stg}, nil
+	return &Storage{stg: stg, reader: stg, closed: new(atomic.Bool)}, nil
+}
+
+// View returns s with every query read through r rather than through live
+// storage. A caller binds r to a published snapshot so a time-series answer
+// and a KV read through the same reader come from one commit; writes still
+// go to the batch each write method is given. The view shares s's closed
+// state.
+func (s *Storage) View(r storage.Reader) *Storage {
+	return &Storage{stg: s.stg, reader: r, closed: s.closed}
 }
 
 // Write stages a single data point into batch.
@@ -175,7 +187,7 @@ func (s *Storage) Query(metric string, start, end time.Time, opts ...TSQueryOpti
 	// Upper bound is exclusive; use end+1ns to include data points at exactly end.
 	upperBound := buildRangeStartKey(metric, end.Add(time.Nanosecond))
 
-	iter := s.stg.NewIterator(&storage.IteratorOptions{
+	iter := s.reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
@@ -230,7 +242,7 @@ func (s *Storage) QueryRich(req *QueryRequest) (*QueryResult, error) {
 	lowerBound := buildRangeStartKey(req.Metric, req.StartTime)
 	upperBound := buildRangeStartKey(req.Metric, req.EndTime.Add(time.Nanosecond))
 
-	iter := s.stg.NewIterator(&storage.IteratorOptions{
+	iter := s.reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
@@ -347,7 +359,7 @@ func (s *Storage) GetRetentionPolicy(metric string) (*RetentionPolicy, error) {
 		return nil, &ClosedError{}
 	}
 
-	data, err := s.stg.Get([]byte(KeyPrefixRetention + metric))
+	data, err := s.reader.Get([]byte(KeyPrefixRetention + metric))
 	if err != nil {
 		return nil, &ReadError{Err: err}
 	}
@@ -442,7 +454,7 @@ func (s *Storage) ListMetrics(prefix string, limit int) ([]string, error) {
 		upperBound = []byte(KeyPrefixMetricIndex + prefix + "\xff")
 	}
 
-	iter := s.stg.NewIterator(&storage.IteratorOptions{
+	iter := s.reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 		OnlyKeys:   true,
@@ -485,7 +497,7 @@ func (s *Storage) Aggregate(metric string, start, end time.Time, fn AggFunc, int
 	lowerBound := buildRangeStartKey(metric, start)
 	upperBound := buildRangeStartKey(metric, end.Add(time.Nanosecond))
 
-	iter := s.stg.NewIterator(&storage.IteratorOptions{
+	iter := s.reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})

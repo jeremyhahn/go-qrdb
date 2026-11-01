@@ -84,6 +84,7 @@ func (r WatchResponse) Err() error {
 const (
 	watchCompactedReasonSubstr          = "required start revision has been compacted"
 	watchStartRevisionUnsupportedSubstr = "start revision replay is not supported by this store"
+	watchWatcherLimitSubstr             = "watcher limit reached"
 )
 
 // capabilityUnsupportedPrefix opens every CapabilityUnsupportedError message.
@@ -115,6 +116,8 @@ func classifyWatchReason(reason string) error {
 		return &WatchCompactedError{Reason: reason}
 	case strings.Contains(reason, watchStartRevisionUnsupportedSubstr):
 		return &WatchStartRevisionUnsupportedError{Reason: reason}
+	case strings.Contains(reason, watchWatcherLimitSubstr):
+		return &WatcherLimitError{Reason: reason}
 	case strings.HasPrefix(reason, capabilityUnsupportedPrefix):
 		return &CapabilityUnsupportedError{Message: strings.TrimPrefix(reason, capabilityUnsupportedPrefix)}
 	default:
@@ -124,8 +127,8 @@ func classifyWatchReason(reason string) error {
 
 // ClassifyWatchError inspects err's message for a known watch-history
 // condition surfaced by the server (see classifyWatchReason) and, if found,
-// returns the corresponding typed error (WatchCompactedError or
-// WatchStartRevisionUnsupportedError). It returns err unchanged if the
+// returns the corresponding typed error (WatchCompactedError,
+// WatchStartRevisionUnsupportedError or WatcherLimitError). It returns err unchanged if the
 // message does not match a known condition, and nil if err is nil. Transport
 // implementations call this when decoding a request-time error from the
 // Watch/WatchPrefix call so every transport surfaces the same typed error

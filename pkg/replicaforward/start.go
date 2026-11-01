@@ -30,8 +30,15 @@ type Members interface {
 // leader cache kept honest by placement and member watches (RunInvalidation)
 // until ctx ends. It is how a node composes forwarding; selfRaftAddr is the
 // node's Raft address.
-func Start(ctx context.Context, members Members, placements PlacementWatcher, selfRaftAddr string, logger *slog.Logger) *Locator {
+//
+// done closes once the watches have returned, after ctx ends, so the caller
+// can wait for them before closing the services they read through.
+func Start(ctx context.Context, members Members, placements PlacementWatcher, selfRaftAddr string, logger *slog.Logger) (locator *Locator, done <-chan struct{}) {
 	cache := NewLeaderCache()
-	go RunInvalidation(ctx, cache, placements, members, logger)
-	return NewLocator(members, cache, selfRaftAddr, logger)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		RunInvalidation(ctx, cache, placements, members, logger)
+	}()
+	return NewLocator(members, cache, selfRaftAddr, logger), closed
 }

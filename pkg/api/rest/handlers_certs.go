@@ -348,7 +348,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 
 // handleListCerts handles GET /certs/list -- returns all issued certificate
 // records for the specified tenant.
-// Query parameter: tenantID (required).
+// Query parameter: tenantID (optional; empty means the caller's own tenant).
 func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 	if s.certProv == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "cert"})
@@ -357,8 +357,7 @@ func (s *Server) handleListCerts(w http.ResponseWriter, r *http.Request) {
 
 	tenantID := r.URL.Query().Get("tenantID")
 	if tenantID == "" {
-		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "tenantID"})
-		return
+		tenantID = tenant.CallerTenant(r.Context())
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)

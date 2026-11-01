@@ -113,13 +113,13 @@ INTTEST_firstboot           := init_cli_test.go
 # full-text-search: no CLI surface; its assertions are pkg/fts unit tests (see the note above).
 INTTEST_full_text_search    :=
 INTTEST_guarded_swap        := feature_gate_cluster_test.go
-INTTEST_identity_rbac       := roles_cli_test.go roles_own_permissions_cli_test.go role_grant_rule_cli_test.go users_cli_test.go invitation_cli_test.go tenant_owner_test.go tenant_owner_cli_test.go identity_hydrator_test.go cert_tenant_agreement_cli_test.go abac_policy_cli_test.go separation_posture_cli_test.go ca_delegate_policy_cli_test.go
+INTTEST_identity_rbac       := roles_cli_test.go roles_reconcile_all_cli_test.go roles_own_permissions_cli_test.go role_grant_rule_cli_test.go users_cli_test.go invitation_cli_test.go tenant_owner_test.go tenant_owner_cli_test.go identity_hydrator_test.go cert_tenant_agreement_cli_test.go abac_policy_cli_test.go separation_posture_cli_test.go ca_delegate_policy_cli_test.go
 INTTEST_key_value           := kv_cli_test.go kv_test.go kv_version_cli_test.go kv_read_permission_test.go kv_restore_cli_test.go kv_restore_default_sm_cli_test.go batch_cli_test.go batch_import_cli_test.go batch_import_session_test.go
 INTTEST_key_wrapping        := key_wrapping_cli_test.go
 INTTEST_leases              := lease_binding_test.go lease_cli_test.go lease_keepalive_test.go
 INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go tenant_status_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go tenant_barrier_signed_init_cli_test.go strict_home_cluster_test.go tenant_home_test.go tenant_home_dataplane_cli_test.go tenant_undo_reuse_cli_test.go tenant_so_cli_test.go
 INTTEST_rag                 := rag_cli_test.go
-INTTEST_rate_limit          :=
+INTTEST_rate_limit          := client_rate_limit_cli_test.go client_rate_limit_embedded_test.go
 INTTEST_release             :=
 INTTEST_replica_forwarding  := replica_forwarding_grpc_test.go replica_forwarding_mcp_test.go replica_forwarding_mixed_test.go replica_forwarding_quic_test.go replica_forwarding_rest_test.go replica_forwarding_test.go
 INTTEST_row_locking         := sql_row_lock_test.go
@@ -129,7 +129,7 @@ INTTEST_shamir_custody      := barrier_cli_test.go tenant_barrier_officer_cli_te
 INTTEST_sql                 := sql_alter_rewrite_test.go sql_autoincrement_test.go sql_catalog_enumeration_test.go sql_ddl_test.go sql_pgsql_literals_test.go sql_query_cli_test.go sql_query_tenant_scope_test.go sql_readonly_ddl_test.go sql_test.go entity_bridge_test.go
 # sqlite-vfs: a future feature, not implemented; nothing to select yet.
 INTTEST_sqlite_vfs          :=
-INTTEST_storage_engines     := admin_node_compaction_cli_test.go objstore_credentials_cli_test.go sm_storage_file_test.go
+INTTEST_storage_engines     := admin_node_compaction_cli_test.go objstore_credentials_cli_test.go sm_storage_file_test.go storage_tuning_cli_test.go
 INTTEST_tenant_dek          := dek_test.go dek_cli_test.go
 INTTEST_time_series         := ts_cli_test.go
 INTTEST_transactions        := sql_transaction_test.go tx_cli_test.go

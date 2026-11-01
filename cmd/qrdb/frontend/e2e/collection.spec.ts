@@ -283,10 +283,13 @@ test.describe("Collection CRUD", () => {
     await expect(page.locator(".breadcrumbs").getByText("test-kv", { exact: false })).toBeVisible({
       timeout: LOAD_TIMEOUT,
     });
-    await injectError(page, "CollectionBinding.List", "network timeout");
+    // A non-transient message: withRetry (src/lib/retry.ts) backs off for
+    // seconds on a transient one ("timeout", "unavailable", ...), which races
+    // this assertion's timeout.
+    await injectError(page, "CollectionBinding.List", "collection catalog corrupted");
     // DbNavRail: use page.locator("main nav") for tool navigation
     await page.locator("main nav").getByText("Collections", { exact: true }).click();
-    await expect(page.getByText("network timeout").first()).toBeVisible({
+    await expect(page.getByText("collection catalog corrupted").first()).toBeVisible({
       timeout: 5_000,
     });
     await clearError(page, "CollectionBinding.List");

@@ -117,8 +117,8 @@ saying so. An `--identity` that contradicts the committed one is refused.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard-id` | uint | shard ID |
-| `--replica-id` | uint | replica ID |
+| `--shard-id` | uint | shard ID (required) |
+| `--replica-id` | uint | replica ID (required) |
 | `--identity` | string | the replica's member identity (`spki:<hex>`); required only for a node no committed membership names |
 
 ```bash
@@ -135,8 +135,8 @@ the Raft role the new replica comes up in. Promote it to a voter later with
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard-id` | uint | shard ID |
-| `--replica-id` | uint | replica ID |
+| `--shard-id` | uint | shard ID (required) |
+| `--replica-id` | uint | replica ID (required) |
 | `--identity` | string | the replica's member identity (`spki:<hex>`); required only for a node no committed membership names |
 
 ```bash
@@ -154,7 +154,7 @@ Remove a replica from a shard.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard-id` | uint | shard ID |
+| `--shard-id` | uint | shard ID (required) |
 
 ```bash
 qrdb admin member remove 4 --shard-id 1
@@ -184,7 +184,7 @@ absent, already a voter, or a witness.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard-id` | uint | shard ID |
+| `--shard-id` | uint | shard ID (required) |
 
 ```bash
 qrdb admin member promote 4 --shard-id 1
@@ -226,7 +226,7 @@ Request a shard snapshot.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard-id` | uint | shard ID |
+| `--shard-id` | uint | shard ID (required) |
 
 ## `qrdb admin drain`
 
@@ -271,7 +271,7 @@ Show statistics for one shard: key count, byte count, leader and replica count.
 
 | Flag | Type | Meaning |
 |---|---|---|
-| `--shard` | uint | shard ID to inspect |
+| `--shard` | uint | shard ID to inspect (required) |
 
 ## `qrdb rebalance report`
 

@@ -40,8 +40,8 @@ func TestSealDisabledBarrierService_StatusIsProtectionNoneUnsealed(t *testing.T)
 func TestSealDisabledBarrierService_ReadVerbsAnswer(t *testing.T) {
 	ctx := context.Background()
 	svc := newSealDisabledBarrierServiceForTest(t)
-	if ok, err := svc.BarrierInitialized(ctx); err != nil || !ok {
-		t.Fatalf("BarrierInitialized = %v, %v; want true, nil", ok, err)
+	if err := svc.BarrierInitializePrecondition(ctx); !errors.Is(err, seal.ErrAlreadyInitialized) {
+		t.Fatalf("BarrierInitializePrecondition = %v; want seal.ErrAlreadyInitialized", err)
 	}
 	if ok, err := svc.BarrierHasRecoveryKeys(ctx); err != nil || ok {
 		t.Fatalf("BarrierHasRecoveryKeys = %v, %v; want false, nil", ok, err)

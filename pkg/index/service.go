@@ -21,8 +21,9 @@ import "context"
 // all keys.
 type IndexServicer interface {
 	// CreateIndex creates a new secondary index with the given name,
-	// targeting the specified field. Returns IndexExistsError if an
-	// index with the same name already exists.
+	// targeting the specified field. Creating a name that already exists
+	// under the same owner is an idempotent success; a name another owner
+	// holds is refused with *OwnershipError.
 	CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error
 
 	// DropIndex removes a secondary index by name, WHOEVER owns it. Returns

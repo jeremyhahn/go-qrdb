@@ -315,6 +315,20 @@ type RaftBackendFactory struct {
 	// documents. See WithImportSessionConfig.
 	importSessionCfg qrdbconfig.ImportSessionConfig
 
+	// indexCfg caps the secondary indexes of every shard this factory builds
+	// (config.Index, "index:" in YAML), each shard on its own. The zero value
+	// leaves them unlimited. See WithIndexConfig.
+	indexCfg qrdbconfig.IndexConfig
+
+	// tsCfg caps the metric names of every shard this factory builds
+	// (config.TimeSeries.MaxMetrics), each shard on its own. The zero value
+	// leaves them unlimited. See WithTimeSeriesConfig.
+	tsCfg qrdbconfig.TimeSeriesConfig
+
+	// watchHubOpts configures every shard's watch hub. See
+	// WithWatchHubOptions.
+	watchHubOpts []watch.HubOption
+
 	// snapshotEntries and compactionOverhead are the automatic snapshot
 	// cadence of every shard this factory starts: the system shard's
 	// raft.snapshot_entries and raft.compaction_overhead. Zero takes
@@ -356,6 +370,28 @@ func WithFeatureGate(gate *featuregate.Gate) RaftBackendOption {
 // defaults WithImportSessionLimits documents, not unbounded staging.
 func WithImportSessionConfig(cfg qrdbconfig.ImportSessionConfig) RaftBackendOption {
 	return func(f *RaftBackendFactory) { f.importSessionCfg = cfg }
+}
+
+// WithIndexConfig caps the secondary indexes of every shard this factory
+// builds at cfg.MaxIndexes, each shard on its own. Omitting it leaves them
+// unlimited.
+func WithIndexConfig(cfg qrdbconfig.IndexConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.indexCfg = cfg }
+}
+
+// WithTimeSeriesConfig caps the metric names of every shard this factory
+// builds at cfg.MaxMetrics, each shard on its own. Omitting it leaves them
+// unlimited.
+func WithTimeSeriesConfig(cfg qrdbconfig.TimeSeriesConfig) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.tsCfg = cfg }
+}
+
+// WithWatchHubOptions configures the watch hub of every shard this factory
+// builds: the node's watch.buffer_size and the watch.max_watchers limit its
+// other hubs share. Omitting it leaves each hub at the package defaults,
+// unlimited.
+func WithWatchHubOptions(opts ...watch.HubOption) RaftBackendOption {
+	return func(f *RaftBackendFactory) { f.watchHubOpts = opts }
 }
 
 // WithSnapshotSettings gives every shard the factory starts the system
@@ -1321,7 +1357,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 	}
 
 	lessor := lease.NewLessor()
-	hub := watch.NewHub()
+	hub := watch.NewHub(f.watchHubOpts...)
 	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
 
 	// 4d Option C: when the database opted into a per-tenant-KEY WAL and the
@@ -1373,7 +1409,7 @@ func (f *RaftBackendFactory) startShardAsMember(plan *shardStartPlan) (*raftShar
 		dataDir:      absDir,
 		hub:          hub,
 		lessor:       lessor,
-		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, service.WithDedicatedKeyspace()),
+		services:     buildDataPlaneServices(f.adapter, shardID, hub, f.importSessionCfg, f.indexCfg, f.tsCfg, service.WithDedicatedKeyspace()),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
 

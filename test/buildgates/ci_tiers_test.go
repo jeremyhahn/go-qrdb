@@ -77,7 +77,7 @@ const (
 	// ci:full. ci.yml's env evaluates it into CI_FULL_TIER, which ci-gate
 	// reads into FULL_TIER (fullTierGateEnv); a job-level `if:` cannot read
 	// env, so each full-tier job repeats it.
-	fullTierIf = `github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')`
+	fullTierIf = `(github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')`
 
 	// fullTierGateEnv is ci-gate's FULL_TIER: the workflow's CI_FULL_TIER.
 	fullTierGateEnv = "${{ env.CI_FULL_TIER }}"

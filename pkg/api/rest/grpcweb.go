@@ -8,6 +8,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 )
 
 // grpcWebSegment is grpcweb.PathPrefix's single path segment.
@@ -77,13 +78,19 @@ func collidesWithGRPCWeb(pattern string) bool {
 }
 
 // grpcWebDispatch sends a request under grpcweb.PathPrefix to gw and every
-// other request to next.
-func grpcWebDispatch(gw, next http.Handler) http.Handler {
+// other request to next. Every request under the prefix is charged by l
+// before gw runs, whether gw answers it itself (a CORS preflight, another
+// method or media type) or translates it for the gRPC server, which refuses
+// an unknown service or method before its interceptors run. HTTPOnce marks
+// the request charged, so a call that does reach the gRPC server's
+// interceptors, which share l, is not charged there again.
+func grpcWebDispatch(gw http.Handler, l *clientlimit.Limiter, next http.Handler) http.Handler {
+	charged := l.HTTPOnce(gw)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, grpcweb.PathPrefix) {
-			gw.ServeHTTP(w, r)
+		if !strings.HasPrefix(r.URL.Path, grpcweb.PathPrefix) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		charged.ServeHTTP(w, r)
 	})
 }

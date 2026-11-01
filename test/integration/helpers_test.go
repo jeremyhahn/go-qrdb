@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -505,6 +506,48 @@ func spawnNode(t *testing.T, binary string, args []string, out io.Writer) *exec.
 	}
 	spawnedDaemons.Store(daemon.Cmd(), daemon)
 	return daemon.Cmd()
+}
+
+// startNodeReady is startNode over qrdbdharness.StartReady: ready runs on the
+// started daemon, and a start whose harness-reserved listener port another
+// process took before the daemon bound it is started again on fresh ports.
+// The returned command's Args are the ones the ready daemon runs with; read a
+// reserved port back with flagPort.
+func startNodeReady(t *testing.T, binary string, args []string, prefix string, ready func(*qrdbdharness.Daemon) error) *exec.Cmd {
+	t.Helper()
+	daemon, err := qrdbdharness.StartReady(binary, args, ready, qrdbdharness.WithOutput(&logWriter{t: t, prefix: prefix}))
+	if daemon != nil {
+		t.Cleanup(func() {
+			if err := daemon.Kill(); err != nil {
+				t.Errorf("%skill: %v", prefix, err)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("%sstart: %v", prefix, err)
+	}
+	spawnedDaemons.Store(daemon.Cmd(), daemon)
+	return daemon.Cmd()
+}
+
+// flagPort returns the port args give flag as "--flag N", the form
+// qrdbdharness.ReserveListenerPorts appends.
+func flagPort(args []string, flag string) (int, error) {
+	value := ""
+	if i := slices.Index(args, flag); i >= 0 && i+1 < len(args) {
+		value = args[i+1]
+	}
+	return strconv.Atoi(value)
+}
+
+// mustFlagPort is flagPort for a port the test cannot run without.
+func mustFlagPort(t *testing.T, args []string, flag string) int {
+	t.Helper()
+	port, err := flagPort(args, flag)
+	if err != nil {
+		t.Fatalf("%s in %q: %v", flag, args, err)
+	}
+	return port
 }
 
 // spawnedDaemon returns the harness Daemon behind a cmd spawnNode returned.

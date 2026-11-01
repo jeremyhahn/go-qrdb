@@ -256,6 +256,7 @@ func (m *mockVectorSvc) GetIndexStats(ctx context.Context, req *service.GetIndex
 	}
 	return &service.GetIndexStatsResponse{
 		IndexType:        transport.IndexHNSW,
+		DistanceMetric:   "L2",
 		VectorCount:      100,
 		Dimension:        128,
 		IndexSizeBytes:   1024,

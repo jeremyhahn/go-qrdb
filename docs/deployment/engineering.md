@@ -1,6 +1,6 @@
 # Deployment — Engineering
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-23
 > Conflicts with this document are defects. Fix them here first.
 
 <!--
@@ -44,8 +44,8 @@ limitations under the License.
 - `cmd/qrdbd`'s start command calls it as the first statement of its RunE,
   through the `hardenSecureProcess` seam, before `resolveStartFlags` loads any
   configuration. The outcome travels in `startFlags.processHardening`;
-  `runStart` passes it to `auditInspectionOptOut` once the compliance audit
-  trail is built.
+  `runStart` passes it to `openComplianceAudit`, which records it through
+  `auditInspectionOptOut` as soon as the compliance audit trail is open.
 - `cmd/qrdb.run` calls it through `hardenAtStartup(os.Stderr)` (the
   `hardenProcess` seam) after the logger is initialised and before the
   GUI/CLI branch; a refusal exits 1.
@@ -115,8 +115,9 @@ Unit tests in `cmd/qrdbd/secure_budget_test.go` present limits through the
 `RLIMIT_MEMLOCK`: unlimited, `CAP_IPC_LOCK`, stock 8 MiB, exactly default plus
 headroom, large, unaligned, tiny (64 KiB and the boundary values), and
 unreadable; explicit within-limit and explicit over-limit through `runStart`.
-`TestMain` presents an unlimited limit to the rest of the binary so no test
-depends on the host.
+`TestMain` (`signal_guard_test.go`, through `installTestSecureLifecycle`)
+presents an unlimited limit to the rest of the binary so no test depends on
+the host.
 
 Process hardening cannot be undone, so no test applies it to its own test
 binary. `pkg/secure/harden_test.go` drives `HardenProcess`'s decisions against

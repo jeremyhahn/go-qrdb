@@ -103,9 +103,20 @@ func (f *fixture) as(id *auth.Identity) { f.caller.Set(id) }
 
 func (f *fixture) operator() { f.as(authtest.AdminIdentity(tenantid.System, "root")) }
 
+// callBound caps one RPC issued under callCtx. It is generous on purpose: an
+// SO request is verified twice, by the SO gate and then by the barrier's own
+// SO PIN check, each PBKDF2-SHA256 at the production 600,000 iterations.
+// Under GODEBUG=fips140=only on a loaded CI runner one verification took
+// 3.67 s (main run 75275), about 7x its unloaded cost, putting a served SO
+// request near 11 s, past the former 10 s bound. The bound still fails a
+// handler that never answers well inside the package timeout.
+const callBound = 30 * time.Second
+
+// callCtx returns a context for one RPC, cancelled at the test's end and
+// bounded by callBound.
 func callCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), callBound)
 	t.Cleanup(cancel)
 	return ctx
 }

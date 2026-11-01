@@ -2371,15 +2371,45 @@ func TestHandleListCerts_Success(t *testing.T) {
 	}
 }
 
-func TestHandleListCerts_MissingTenantID(t *testing.T) {
-	prov := &mockCertProvider{}
+func TestHandleListCerts_MissingTenantIDIsCallers(t *testing.T) {
+	var listed string
+	prov := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			listed = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
+	srv := newAuthServer(nil, nil, prov)
+
+	req := httptest.NewRequest(http.MethodGet, "/certs/list", nil)
+	req = req.WithContext(tenant.WithTenantID(req.Context(), "acme"))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	if listed != "acme" {
+		t.Fatalf("listed tenant = %q, want the caller's own %q", listed, "acme")
+	}
+}
+
+func TestHandleListCerts_MissingTenantIDNoTenantIsSystem(t *testing.T) {
+	var listed string
+	prov := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			listed = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
 	srv := newAuthServer(nil, nil, prov)
 
 	req := httptest.NewRequest(http.MethodGet, "/certs/list", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusBadRequest)
+	assertStatus(t, rec, http.StatusOK)
+	if listed != "system" {
+		t.Fatalf("listed tenant = %q, want %q for a caller bound to no tenant", listed, "system")
+	}
 }
 
 func TestHandleListCerts_NilService(t *testing.T) {

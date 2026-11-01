@@ -63,8 +63,9 @@ limitations under the License.
   `make test-tags`) against the exact tagged tree, not a re-run of every
   ci.yml step — see architecture.md for why the rest is skipped. The two
   sweeps, `make vet-tags` and `make secure-analyzer`, run here on every tag
-  although ci.yml runs them (`make lint-sweeps`) only on a push to `main` and
-  on `workflow_dispatch`, never on a pull request.
+  although ci.yml runs them (`make lint-sweeps`, in the `lint` job) only on its
+  nightly `schedule:` event, cron `0 4 * * *`, never on a pull request, a push
+  or a dispatch (ci-template v1.30; the one schedule trigger, ruling 216(1)).
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
   the pinned `ACTIONLINT_VERSION` (`scripts/tool-pins.sh`, the only copy of
@@ -133,6 +134,12 @@ CI's stages run in one image, built from `build/docker/devcontainer/Dockerfile`
 at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
 `.devcontainer/` is a different image, the developer's VS Code container and
 the Docker `test/integration/api` stack, and runs none of these stages.
+`make docker-build-toolchain` builds the toolchain image alone, under its
+content-hash tag, and skips the build when that tag is already on the daemon;
+`scripts/ci-image-cache.sh pull` puts it there from the registry cache when
+main has published it (ci-template v1.30). `make gosec` is the gosec scan
+alone, with no network, which the PR tier's `lint` job runs and
+`make security` calls.
 
 | Stage | Holds | Runs |
 |---|---|---|
@@ -270,8 +277,9 @@ registry token is on none of these steps.
 
 Eleven jobs consume the images, each before its first stage: `lint`, in the
 PR tier (`make lint`, `make deps-check`, a lint-class gate on the PR tier
-from ci-template v1.28.0, and, on a push to `main` and a dispatch,
-`make lint-sweeps`), `lint-gates`, in the PR tier (`make lint-gates`, its own
+from ci-template v1.28.0, and, on the PR tier, `make gosec`; the sweeps,
+`make lint-sweeps`, run in it on the nightly `schedule:` event alone from
+ci-template v1.30), `lint-gates`, in the PR tier (`make lint-gates`, its own
 job from ci-template v1.27.0), the five unit-suite jobs, in the code tier,
 one suite each (ruling 211): `coverage` (`make coverage`),
 `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`, and `fips`,
@@ -324,8 +332,18 @@ and `/dev/shm` is 2 GiB, not Docker's 64 MiB. Build and test run with no
 network: the container's own namespace has only loopback, which a one-shot
 `--rm` container joining it once the stage has started (granted `NET_ADMIN`
 and nothing else) marks multicast-capable and routes `224.0.0.0/4` over before
-it exits; the stage's command waits for that route, `MULTICAST_WAIT` seconds
-at most (default 60). So the multicast discovery tests join their group as
+it exits. The configurator signals its own progress on a marker volume the
+stage mounts read-only: it writes `started` when it runs and `ready` once the
+route is in place, and the stage's command waits for `ready` and the route,
+`MULTICAST_WAIT` seconds at most (default 60) counted from `started`, not from
+the stage's own start. A loaded daemon can take minutes to start the
+configurator, and a clock counting that wait ran out before the route existed
+(#1275). Until `started` the stage waits on the script, which retries a failed
+configurator once (`ip route replace` makes the retry safe) and on a second
+failure exits, removing the stage and the marker volume, and on a clock of its
+own, `MULTICAST_START_WAIT` seconds (default 240: two configurator runs, each
+behind one 120 s cache trim) from the stage's start, past which it exits 1, so
+a stage whose script died before the configurator ran does not wait forever. So the multicast discovery tests join their group as
 they do on a host, nothing leaves the namespace, and no container holds the
 namespace but the stage: the holder it replaced slept until the script's EXIT
 trap removed it, and every job killed first left one running. The script
@@ -361,7 +379,15 @@ repository, trust class and Docker host. The class is `CI_CACHE_CLASS`:
 `main` for a push to `main`, `pr` for every other event, so a pull request
 never writes a cache that `main`'s build reads. After the image build,
 `scripts/trim-ci-caches.sh` bounds the repository's cache volumes on the host
-to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. Over
+to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. One
+trim runs at a time per host: the script takes a `flock` on
+`ci-cache-trim.lock` in the runner's tool cache (`RUNNER_TOOL_CACHE`, the
+directory every job on a runner host shares; `CI_CACHE_LOCK` overrides the
+path), because concurrent jobs each walking the daemon's volumes stalled a
+loaded daemon long enough that a stage's configurator could not start
+(#1275). A job that cannot take the lock within `CI_CACHE_LOCK_WAIT` seconds
+(default 120, about one trim on a loaded host) skips its trim with one line:
+the holder is trimming the same volumes. Over
 the bound, it first deletes the build and golangci-lint cache entries unused
 for three days, then one day, 12, 6 and 3 hours, measuring after each, and
 only then removes the largest volume no container mounts; the module cache is
@@ -492,7 +518,8 @@ minute held a `bigdisk` runner slot for well over a minute. The lists are
 balanced longest-first by the per-feature job times of main run 65165, with
 setup assumed to be about 60 s of each leg (counted once per shard) and
 `barrier-seal` taken at its first-attempt 300 s rather than the 585 s its
-rerun recorded:
+rerun recorded. `rate-limit`, added after that run, is counted at the 24 s its
+test took in a lane, in shard 5, then the shard with the least expected time:
 
 | Shard | Features | Expected (s) | Limit |
 |---|---|---|---|
@@ -500,12 +527,12 @@ rerun recorded:
 | 2 | backup-restore capabilities ceremony clustering firstboot tenant-dek | 551 | 30 min |
 | 3 | barrier-seal certificate-authority guarded-swap key-wrapping rag trust-anchors watch | 563 | 30 min |
 | 4 | api-server auth-factors replica-forwarding run-modes secondary-indexes storage-engines volume-pools | 551 | 30 min |
-| 5 | cluster-verification collections embeddings identity-rbac key-value shamir-custody vectors | 550 | 30 min |
+| 5 | cluster-verification collections embeddings identity-rbac key-value rate-limit shamir-custody vectors | 574 | 30 min |
 | 6 | coordination credentials etcd-compatibility leases row-locking sql transactions trust-bootstrap | 562 | 30 min |
 
 That run's 40 feature legs held 5654 slot-seconds (1.57 slot-hours; 5369, or
-1.49, with `barrier-seal` at 300 s); the six shards are expected to hold 3329
-(0.92 slot-hours), with the wall time of the job going from its slowest leg
+1.49, with `barrier-seal` at 300 s); the six shards are expected to hold 3353
+(0.93 slot-hours), with the wall time of the job going from its slowest leg
 to its slowest shard, about nine and a half minutes. A new feature goes in the
 `features:` of the shard with the least expected time; rebalance when a
 shard's measured time drifts well past the others.

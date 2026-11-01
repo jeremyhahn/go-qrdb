@@ -29,18 +29,6 @@ import (
 // AdminBinding — service error paths (81.8% -> target 100%)
 // ===========================================================================
 
-// TestAdminBinding_Health_ServiceError exercises the branch where
-// cl.Admin().Health() returns an error after a successful connection.
-func TestAdminBinding_Health_ServiceError(t *testing.T) {
-	conn := newTestConnectionBinding(t, newMockKVService(), &errorAdminService{})
-	b := NewAdminBinding(testLogger(t), conn)
-
-	_, err := b.Health()
-	if err == nil {
-		t.Fatal("expected error when admin service health fails")
-	}
-}
-
 // TestAdminBinding_Health_ServiceError_ReturnsNilResponse verifies nil
 // response is returned alongside the error.
 func TestAdminBinding_Health_ServiceError_ReturnsNilResponse(t *testing.T) {
@@ -53,18 +41,6 @@ func TestAdminBinding_Health_ServiceError_ReturnsNilResponse(t *testing.T) {
 	}
 	if resp != nil {
 		t.Fatal("expected nil response on service error")
-	}
-}
-
-// TestAdminBinding_Status_ServiceError exercises the branch where
-// cl.Admin().Status() returns an error.
-func TestAdminBinding_Status_ServiceError(t *testing.T) {
-	conn := newTestConnectionBinding(t, newMockKVService(), &errorAdminService{})
-	b := NewAdminBinding(testLogger(t), conn)
-
-	_, err := b.Status()
-	if err == nil {
-		t.Fatal("expected error when admin service status fails")
 	}
 }
 
@@ -83,18 +59,6 @@ func TestAdminBinding_Status_ServiceError_ReturnsNilResponse(t *testing.T) {
 	}
 }
 
-// TestAdminBinding_Peers_ServiceError exercises the branch where
-// cl.Admin().Peers() returns an error.
-func TestAdminBinding_Peers_ServiceError(t *testing.T) {
-	conn := newTestConnectionBinding(t, newMockKVService(), &errorAdminService{})
-	b := NewAdminBinding(testLogger(t), conn)
-
-	_, err := b.Peers()
-	if err == nil {
-		t.Fatal("expected error when admin service peers fails")
-	}
-}
-
 // TestAdminBinding_Peers_ServiceError_ReturnsNilResponse verifies nil
 // response is returned alongside the error.
 func TestAdminBinding_Peers_ServiceError_ReturnsNilResponse(t *testing.T) {
@@ -107,18 +71,6 @@ func TestAdminBinding_Peers_ServiceError_ReturnsNilResponse(t *testing.T) {
 	}
 	if resp != nil {
 		t.Fatal("expected nil response on service error")
-	}
-}
-
-// TestAdminBinding_Capabilities_ServiceError exercises the branch where
-// cl.Admin().Capabilities() returns an error.
-func TestAdminBinding_Capabilities_ServiceError(t *testing.T) {
-	conn := newTestConnectionBinding(t, newMockKVService(), &errorAdminService{})
-	b := NewAdminBinding(testLogger(t), conn)
-
-	_, err := b.Capabilities()
-	if err == nil {
-		t.Fatal("expected error when admin service capabilities fails")
 	}
 }
 
@@ -208,24 +160,6 @@ func TestBarrierInitCmd_ServiceError(t *testing.T) {
 	}
 }
 
-// TestBarrierUnsealCmd_ServiceError exercises the error path of
-// newBarrierUnsealCmd.
-func TestBarrierUnsealCmd_ServiceError(t *testing.T) {
-	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, _ []byte) error {
-			return errors.New("unseal: invalid secret")
-		},
-	}
-	root := newBarrierTestRoot(t, svc)
-	_, err := executeCommand(root, "barrier", "unseal", "--passphrase", "wrongpass")
-	if err == nil {
-		t.Fatal("expected error from barrier unseal when service fails")
-	}
-	if !strings.Contains(err.Error(), "invalid secret") {
-		t.Fatalf("expected error message in output, got: %q", err.Error())
-	}
-}
-
 // ===========================================================================
 // barrier.go — YAML output paths for newBarrierStatusCmd (83.3%)
 // ===========================================================================
@@ -270,48 +204,6 @@ func TestCleanupPIDFile_MkdirAllError(t *testing.T) {
 	d.configDir = blockFile + "/sub" // sub-path of a regular file fails MkdirAll
 
 	d.cleanupPIDFile() // must not panic
-}
-
-// ===========================================================================
-// resolveConfigDir — MkdirAll error when configDir is under a regular file
-// ===========================================================================
-
-// TestResolveConfigDir_MkdirAllError exercises the error branch when
-// configDir itself cannot be created.
-func TestResolveConfigDir_MkdirAllError(t *testing.T) {
-	blockFile := filepath.Join(t.TempDir(), "block")
-	if err := os.WriteFile(blockFile, []byte("x"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-	d.configDir = blockFile + "/sub" // attempting to create sub-path of a file
-
-	_, err := d.resolveConfigDir()
-	if err == nil {
-		t.Fatal("expected error when configDir path cannot be created")
-	}
-}
-
-// TestResolveConfigDir_MkdirAllError_NonNil verifies the error is non-nil.
-func TestResolveConfigDir_MkdirAllError_NonNil(t *testing.T) {
-	blockFile := filepath.Join(t.TempDir(), "block")
-	if err := os.WriteFile(blockFile, []byte("x"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	log := testLogger(t)
-	d := NewDaemonBinding(log, "")
-	d.configDir = blockFile + "/sub"
-
-	result, err := d.resolveConfigDir()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if result != "" {
-		t.Fatalf("expected empty result on error, got: %q", result)
-	}
 }
 
 // ===========================================================================

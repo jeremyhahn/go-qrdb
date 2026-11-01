@@ -351,7 +351,7 @@ webTest.describe("Admin - Tenant CRUD (web mode / REST route regression)", () =>
             }),
           });
         } else {
-          await route.continue();
+          await route.fallback();
         }
       });
 

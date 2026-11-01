@@ -209,6 +209,11 @@ type TransportConfig struct {
 	// DefaultTransportMaxStreamsPerConn; a negative value is an explicit
 	// opt-out and means unlimited.
 	MaxStreamsPerConn int `yaml:"max_streams_per_conn"`
+
+	// ClientRateLimit is the pre-authentication request-rate limit per
+	// client address, shared by every transport. Unset (the default)
+	// applies no limit. See ClientRateLimitConfig.
+	ClientRateLimit ClientRateLimitConfig `yaml:"client_rate_limit"`
 }
 
 // DefaultTransportMaxMessageBytes is the pre-auth per-message cap applied
@@ -1068,7 +1073,7 @@ type MVCCConfig struct {
 // WatchConfig configures the real-time watch notification system.
 type WatchConfig struct {
 	// Enabled toggles the watch service in either mode. Nil means
-	// enabled.
+	// enabled; false removes the watch capability.
 	Enabled *bool `yaml:"enabled"`
 
 	// BufferSize is the per-watcher event channel buffer size. Larger
@@ -1150,13 +1155,34 @@ type IndexConfig struct {
 // TimeSeriesConfig configures the time-series storage engine.
 type TimeSeriesConfig struct {
 	// DefaultRetention is the default data retention period in seconds.
-	// Data points older than this are eligible for automatic deletion.
-	// Zero disables automatic retention.
+	// The retention scheduler applies it to every metric with no retention
+	// policy, and to every metric whose policy has a duration of zero: a
+	// zero duration means "use the default". Points older than it are
+	// deleted on the scheduler's next sweep. A policy with a non-zero
+	// duration always wins. Zero keeps such metrics' points for good.
 	DefaultRetention int64 `yaml:"default_retention"`
 
-	// MaxMetrics is the maximum number of distinct metric names allowed.
-	// Zero means unlimited.
+	// MaxMetrics is the maximum number of distinct metric names a shard's
+	// time-series store holds. A write that would create a metric past it
+	// is refused with service.MetricLimitError (429 REST,
+	// RESOURCE_EXHAUSTED gRPC); a write to an existing metric never is, and
+	// deleting a whole series frees its slot. Zero means unlimited.
 	MaxMetrics int `yaml:"max_metrics"`
+}
+
+// DefaultRetentionDuration is DefaultRetention as a time.Duration: the
+// retention the scheduler applies to a metric with no policy, or with a
+// policy of duration zero. Zero or less keeps such a metric's points.
+func (c TimeSeriesConfig) DefaultRetentionDuration() time.Duration {
+	if c.DefaultRetention <= 0 {
+		return 0
+	}
+	// A period too long for a Duration keeps everything a Duration can
+	// reach rather than wrapping negative.
+	if c.DefaultRetention > int64(math.MaxInt64/time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(c.DefaultRetention) * time.Second
 }
 
 // WriteModeConfig configures the default write durability mode and batch
@@ -2265,6 +2291,9 @@ func (c *Config) Validate() error {
 		// its own and must fail closed here rather than be silently
 		// resolved to a cap, which would reopen go-qrdb#576.
 		return &ValidationError{Field: "transport.max_message_bytes", Reason: "must not be negative"}
+	}
+	if err := c.Transport.ClientRateLimit.validate(); err != nil {
+		return err
 	}
 
 	if c.Raft.DataDir == "" {

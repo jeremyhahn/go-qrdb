@@ -2535,7 +2535,26 @@ func TestCertListTool_SystemTenantID(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capturedTenantID != "system" {
-		t.Errorf("expected default tenant_id 'system', got %q", capturedTenantID)
+		t.Errorf("expected a caller bound to no tenant to list 'system', got %q", capturedTenantID)
+	}
+}
+
+func TestCertListTool_DefaultsToCallerTenant(t *testing.T) {
+	var capturedTenantID string
+	svc := &mockCertProvider{
+		listCertsFn: func(_ context.Context, tenantID string) ([]*cert.CertRecord, error) {
+			capturedTenantID = tenantID
+			return []*cert.CertRecord{}, nil
+		},
+	}
+	handler := handleCertList(svc, nil)
+
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	if _, err := handler(ctx, makeReq(map[string]any{})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedTenantID != "acme" {
+		t.Errorf("expected an omitted tenant_id to list the caller's own 'acme', got %q", capturedTenantID)
 	}
 }
 

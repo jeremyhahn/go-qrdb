@@ -15,6 +15,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -256,5 +257,65 @@ func TestBufferedBatch_IteratorExhaustedAndClosed(t *testing.T) {
 		if it.SeekToFirst() || it.SeekToLast() || it.Seek([]byte("a")) || it.Valid() {
 			t.Fatalf("reverse=%v: a closed iterator repositioned", reverse)
 		}
+	}
+}
+
+// errBaseValueFetch is the fault valueFaultBaseIterator injects.
+var errBaseValueFetch = errors.New("base value fetch failed")
+
+// valueFaultBaseReader wraps a Reader so its iterator fails the value read at
+// failAt the way the Pebble iterator does: Value returns nil, the failure is
+// recorded, Valid turns false and Error reports it.
+type valueFaultBaseReader struct {
+	Reader
+	failAt string
+}
+
+func (r valueFaultBaseReader) NewIterator(opts *IteratorOptions) Iterator {
+	return &valueFaultBaseIterator{Iterator: r.Reader.NewIterator(opts), failAt: r.failAt}
+}
+
+type valueFaultBaseIterator struct {
+	Iterator
+	failAt string
+	err    error
+}
+
+func (it *valueFaultBaseIterator) Valid() bool { return it.err == nil && it.Iterator.Valid() }
+
+func (it *valueFaultBaseIterator) Value() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	if string(it.Key()) == it.failAt {
+		it.err = errBaseValueFetch
+		return nil
+	}
+	return it.Iterator.Value()
+}
+
+func (it *valueFaultBaseIterator) Error() error { return it.err }
+
+// TestBufferedBatch_IteratorBaseValueFetchErrorEndsIteration proves a failed
+// base value read invalidates the overlay iterator and reports through Error,
+// so no caller takes the nil value of a failed read for the record.
+func TestBufferedBatch_IteratorBaseValueFetchErrorEndsIteration(t *testing.T) {
+	base := valueFaultBaseReader{Reader: newMapReader(map[string]string{"a": "1", "b": "2"}), failAt: "a"}
+	b := NewBufferedBatch(base, func([]BufferedOp) error { return nil })
+	mustNil(t, b.Set([]byte("c"), []byte("3")))
+
+	it := b.NewIterator(&IteratorOptions{})
+	defer func() { _ = it.Close() }()
+	if !it.SeekToFirst() || string(it.Key()) != "a" {
+		t.Fatalf("iterator not positioned at the base key: %v", it.Error())
+	}
+	if v := it.Value(); v != nil {
+		t.Fatalf("Value after a failed base fetch = %q, want nil", v)
+	}
+	if it.Valid() || it.Next() {
+		t.Fatal("overlay iterator stayed valid after a failed base value fetch")
+	}
+	if err := it.Error(); !errors.Is(err, errBaseValueFetch) {
+		t.Fatalf("Error() = %v, want the base value-fetch fault", err)
 	}
 }

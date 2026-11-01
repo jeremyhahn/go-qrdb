@@ -46,7 +46,7 @@ namespace's index parameters or metadata" below.
 | Choice | Options | Rule of thumb |
 |---|---|---|
 | `--dimension` | your model's output size | must match your embedding model exactly |
-| `--distance-metric` | `cosine` (default), `euclidean`, `dot-product` | `cosine` for normalized text embeddings |
+| `--distance-metric` | `cosine` (default), `euclidean`, `dot-product`, `manhattan` | `cosine` for normalized text embeddings |
 | `--index-type` | `hnsw` (default), `flat`, `ivf-flat` | `hnsw` for speed at scale; `flat` for exact results on small sets |
 
 `flat` is exhaustive, so it is exact and slow. `hnsw` is approximate and fast.

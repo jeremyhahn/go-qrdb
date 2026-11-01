@@ -360,6 +360,15 @@ type Infra struct {
 	// gets production bounds, not unbounded staging.
 	ImportSession qrdbconfig.ImportSessionConfig
 
+	// Index caps the system shard's secondary indexes (config.Index,
+	// "index:" in YAML). The zero value leaves them unlimited.
+	Index qrdbconfig.IndexConfig
+
+	// TimeSeries caps the system shard's metric names
+	// (config.TimeSeries.MaxMetrics, "timeseries.max_metrics" in YAML). The
+	// zero value leaves them unlimited.
+	TimeSeries qrdbconfig.TimeSeriesConfig
+
 	// ReplicaID is this node's Raft replica identifier (config.Raft.ReplicaID).
 	// It seeds the coordination-free Snowflake generator that assigns uint64
 	// user IDs, keeping IDs globally unique across cluster members. Defaults
@@ -853,8 +862,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	))
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
 	n.Lease = service.NewLeaseService(infra.Host, shard.ShardKV)
-	n.Index = service.NewIndexService(infra.Host, shard.ShardKV)
-	n.TimeSeries = service.NewTimeSeriesService(infra.Host, shard.ShardKV)
+	n.Index = service.NewIndexService(infra.Host, shard.ShardKV, service.WithMaxIndexes(infra.Index.MaxIndexes))
+	n.TimeSeries = service.NewTimeSeriesService(infra.Host, shard.ShardKV, service.WithMaxMetrics(infra.TimeSeries.MaxMetrics))
 	n.Watch = service.NewWatchService(infra.WatchHub)
 
 	lockSvc, err := service.NewLockService(n.Transaction, n.Lease, n.Watch, n.MVCC, log)
@@ -1140,9 +1149,17 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	vectorLog := logger.NewAdapter(newMinimalLogger(log))
 	n.addCloser(func() error { return vectorStorage.Close() })
 
+	// The vector store is node-local, so the service has no raft node to ask
+	// whether a record value older binaries cannot read may be written yet;
+	// the cluster's feature gates come from the host instead.
+	var vectorOpts []service.VectorServiceOption
+	if gates, ok := infra.Host.(service.FeatureGatedHost); ok {
+		vectorOpts = append(vectorOpts, service.WithFeatureGates(gates))
+	}
 	vectorSvc, err := service.NewVectorService(
 		vectorStorage,
 		vectorLog,
+		vectorOpts...,
 	)
 	if err != nil {
 		return nil, &VectorServiceError{Err: err}
@@ -1594,12 +1611,23 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	return opts
 }
 
+// credentialServiceOptions binds the barrier registry, when the node has one,
+// as the lookup through which a tenant caller reaches its own named-credential
+// store. A nil registry stays unbound rather than becoming a non-nil
+// interface holding a nil pointer.
+func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
+	if infra.BarrierRegistry == nil {
+		return nil
+	}
+	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
-		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)
 		if err != nil {
@@ -2020,7 +2048,7 @@ func BuildSealServicesOnly(ctx context.Context, infra Infra) (*Node, error) {
 	}
 
 	n := &Node{}
-	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc)
+	n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 	ceremonyCoreSvc, err := ceremonyService(infra, log)
 	if err != nil {

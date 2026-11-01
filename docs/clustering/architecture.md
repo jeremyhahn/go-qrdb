@@ -28,9 +28,8 @@ consensus primitives.
 | SDK cluster client (`Cluster()`) | **go-qrdb** SDK |
 | Service discovery / registry  | go-quicbaas (on go-qrdb lease+watch+KV)|
 
-That split is the central decision: go-quicraft provides only Raft primitives
-(`StartShard`, `GetLeaderID`, replica add/remove) and go-qrdb owns the layer
-that actually knows what a cluster is.
+That split is the central decision: go-qrdb, not the consensus library, owns
+the layer that knows what a cluster is.
 
 **Cluster discovery is not service discovery**, and not trust bootstrap.
 Registering and resolving *application* service instances is built by downstream
@@ -371,8 +370,8 @@ A joiner with no minted token (`JoinRequest.Token == ""`) is not refused
 outright: its CSR is queued, replicated, in `pkg/clusterenroll`'s own
 namespace (`__sys:cluster_join_pending/`, keyed by the hex SHA-256 digest of
 the CSR itself — a value the joiner's own keypair determines, not an admin
-choice), and `HandleJoinRequest` reports `*JoinResponse.Pending` with a
-`RequestID` rather than an error. `Join`'s own retry loop (`BootstrapOptions.
+choice), and `HandleJoinRequest` returns a `JoinResponse` with `Pending` set
+and a `RequestID` rather than an error. `Join`'s own retry loop (`BootstrapOptions.
 JoinApprovalPollInterval`, default 15s) keeps re-presenting the identical
 CSR, indefinitely, until an operator decides — a node configured this way
 blocks at startup exactly as a human-gated system is meant to, rather than
@@ -434,7 +433,7 @@ The join-identity ledger (`__sys:cluster_join_identities/`) that blocks a
 second `MintJoinToken`/`ConsumeJoinToken` for an already-admitted identity
 (above) is not a single bit. Each record classifies into one of five
 states (`clusterenroll.identityState`): **absent**, a live **reservation**
-(in flight, see "The full sequence" above), an **active** admission, a
+(a join in flight between reserve and promote), an **active** admission, a
 **lapsed** one, or **retired**.
 
 - **Active vs. lapsed.** `PromoteJoinIdentityAdmitted` and
@@ -471,9 +470,8 @@ states (`clusterenroll.identityState`): **absent**, a live **reservation**
   complete, since the token's single use is already spent by the time
   `ReserveJoinIdentity` ran; an operator who needs the retirement to win
   retires the identity again afterward.
-- **CSR identity validation.** Before the token is touched — the same
-  ordering the proof-of-possession and key-strength checks above already
-  use — `HandleJoinRequest` requires the CSR to carry the join request's
+- **CSR identity validation.** Before the token is touched,
+  `HandleJoinRequest` requires the CSR to carry the join request's
   own claimed identity (`JoinRequest.NodeURI`) as its **sole** subject
   alternative name: exactly one URI SAN, equal to `NodeURI`, and no DNS,
   IP or email SANs at all. This is the shape every legitimate joiner's
@@ -487,9 +485,8 @@ states (`clusterenroll.identityState`): **absent**, a live **reservation**
 ### The CA key never crosses the wire
 
 There is no shared-CA-key enrollment mode, on any transport: Key A's private
-half is never serialized onto the wire in any direction, by either side, in
-this design. What crosses the
-wire is a certificate (anchor, step 1) and a CSR/leaf pair (steps 2–4),
+half is never serialized onto the wire in any direction, by either side. What
+crosses the wire is a certificate (anchor, step 2) and a CSR/leaf pair (steps 3–4),
 exactly the two artifact types trust-bootstrap already treats as public.
 
 ## Enrollment role
@@ -553,9 +550,7 @@ lease and watch subsystem:
   reconfiguration per replica, latest intent wins).
 - On startup and after a watch re-subscribe, the manager reconciles against a
   full membership **snapshot** (`ListMembers`) so members that joined or left
-  while it was not watching are converged in both directions. The snapshot is
-  O(cluster size); because membership sets are small and reconnects are rare,
-  this full rescan is intentional rather than a revision-resumed watch.
+  while it was not watching are converged in both directions.
 
 It is built against two narrow interfaces (`MembershipStore` for lease-backed
 entries + prefix watch, and `Reconfigurer` for the Raft add/remove + leader
@@ -983,12 +978,10 @@ the WAL directory (see `storage-latency-observability` in
   unauthenticated node; nothing else in this feature is.
 - **Rebalance `execute` physically moves shards** and is gated apart from the
   read-only `stats`/`plan`/`report`.
-- **Member-side CSR join is admitted by the operator-configured join token
-  or by operator approval.** The token is an operator-chosen secret,
-  following the same no-default-secret rule as multicast discovery's PSK. A
-  CSR presented without it is queued for operator approval
-  ([Approval queue](#approval-queue-tokenless-join)) and is never signed without that
-  approval.
+- **Member-side CSR join requires an admin-minted single-use join token or
+  an operator's approval** (`cluster:join_token`); a CSR presented without a
+  token is queued for review, and Key A signs nothing until one of the two
+  admits it.
 - **The peer/Raft/enrollment transport trusts Key A only.** A certificate
   issued by Key B (a tenant login CA) is refused on this transport even
   though it is a validly-chained client certificate elsewhere — see

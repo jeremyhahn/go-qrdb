@@ -80,15 +80,6 @@ func newVecSvcWithNamespace(t *testing.T, namespace string, dimension uint32) (V
 	return svc, storage
 }
 
-func newBasicVecSvc(t *testing.T) (VectorService, *vecMockStorage) {
-	t.Helper()
-	storage := newVecMockStorage()
-	logger := newVecTestLogger()
-	svc, err := NewVectorService(storage, logger)
-	require.NoError(t, err)
-	return svc, storage
-}
-
 // =============================================================================
 // CreateNamespace - Coverage paths
 // These tests exercise the full CreateNamespace code path including storage
@@ -728,12 +719,19 @@ func TestVecBatchUpsert_ServiceClosed(t *testing.T) {
 }
 
 func TestVecBatchUpsert_OtherTenantUsesDifferentScopedKey(t *testing.T) {
-	// Verify BatchUpsert routes to the attacker's own scoped namespace key.
+	// Verify BatchUpsert resolves the attacker's own scoped namespace key,
+	// which does not exist, so the batch is refused and the owner's
+	// namespace is never written.
 	svc, storage := newVecSvcWithNamespace(t, "tenant-ns", 3)
 
-	var capturedNS string
+	var lookedUp string
+	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
+		lookedUp = namespace
+		return nil, vector.ErrNamespaceNotFound
+	}
+	written := false
 	storage.batchUpsertVectorsFn = func(ctx context.Context, namespace string, vecs []*vector.VectorValue) error {
-		capturedNS = namespace
+		written = true
 		return nil
 	}
 
@@ -745,10 +743,11 @@ func TestVecBatchUpsert_OtherTenantUsesDifferentScopedKey(t *testing.T) {
 		Namespace: "tenant-ns",
 		Vectors:   []*VectorData{{ID: 1, Vector: []float32{1.0, 2.0, 3.0}}},
 	})
-	require.NoError(t, err)
+	requireErrorAs[*NamespaceNotFoundError](t, err)
 
-	assert.Equal(t, attackerScoped, capturedNS)
-	assert.NotEqual(t, ownerScoped, capturedNS)
+	assert.Equal(t, attackerScoped, lookedUp)
+	assert.NotEqual(t, ownerScoped, lookedUp)
+	assert.False(t, written, "a batch into an unknown namespace is not written")
 }
 
 func TestVecBatchUpsert_MultipleVectors(t *testing.T) {

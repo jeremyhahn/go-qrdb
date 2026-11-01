@@ -1040,6 +1040,10 @@ type GetIndexStatsResponse struct {
 	// IndexType is the index algorithm
 	IndexType string
 
+	// DistanceMetric is the distance metric the namespace was created with,
+	// as GetNamespaceInfo reports it
+	DistanceMetric string
+
 	// VectorCount is the number of indexed vectors
 	VectorCount uint64
 

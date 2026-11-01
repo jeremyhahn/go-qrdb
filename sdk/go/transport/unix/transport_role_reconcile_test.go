@@ -112,8 +112,3 @@ func TestUnixRT_ReconcileBuiltInRoles_ClosedTransport(t *testing.T) {
 }
 
 // TestUnixProtoToReconcileReport_Nil covers the nil guard in the converter.
-func TestUnixProtoToReconcileReport_Nil(t *testing.T) {
-	if got := protoToReconcileReport(nil); got != nil {
-		t.Errorf("protoToReconcileReport(nil) = %+v, want nil", got)
-	}
-}

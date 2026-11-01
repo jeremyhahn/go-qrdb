@@ -56,6 +56,13 @@ type Hub struct {
 	watchCount atomic.Uint64
 	closed     atomic.Bool
 
+	// bufferSize is every watcher's event buffer, in responses; see
+	// WithEventBufferSize.
+	bufferSize int
+	// limit is the node-wide watcher cap this hub draws from; nil is
+	// unlimited. See WithWatcherLimit.
+	limit *WatcherLimit
+
 	// history replays committed changes for start-revision catch-up. Attached
 	// via SetHistory at construction (nil on a non-MVCC hub, which then serves
 	// live-only watches). Stored atomically so a late attach never races a Watch.
@@ -95,9 +102,12 @@ type shard struct {
 	mu            sync.RWMutex
 }
 
-// NewHub creates a new Hub with pre-initialized shards.
-func NewHub() *Hub {
-	h := &Hub{}
+// NewHub creates a new Hub with pre-initialized shards, configured by opts.
+func NewHub(opts ...HubOption) *Hub {
+	h := &Hub{bufferSize: defaultEventBufferSize}
+	for _, opt := range opts {
+		opt(h)
+	}
 	for i := range h.shards {
 		h.shards[i] = &shard{
 			exactWatches:  make(map[string][]*watcher),
@@ -122,9 +132,16 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 	if err != nil {
 		return nil, err
 	}
+	// A held slot is released by cleanupOnCancel, which every registered
+	// watcher runs exactly once.
+	slot, err := h.limit.acquireFor(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	id := h.idSeq.Add(1)
-	w := newWatcher(id, []byte(key), nil, wo, ctx)
+	w := newWatcher(id, []byte(key), nil, wo, h.bufferSize, ctx)
+	w.holdsSlot = slot
 	if replay {
 		w.beginReplay()
 	}
@@ -168,9 +185,14 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 	if err != nil {
 		return nil, err
 	}
+	slot, err := h.limit.acquireFor(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	id := h.idSeq.Add(1)
-	w := newWatcher(id, []byte(prefix), rangeEnd, wo, ctx)
+	w := newWatcher(id, []byte(prefix), rangeEnd, wo, h.bufferSize, ctx)
+	w.holdsSlot = slot
 	if replay {
 		w.beginReplay()
 	}
@@ -495,6 +517,11 @@ func (h *Hub) cleanupOnCancel(w *watcher) {
 	// live send already in flight has completed under the read lock it waited
 	// on — which is exactly the state Close publishes to its caller.
 	h.removeWatcher(w)
+	// Free the watcher's slot before Close returns, so a caller that closes
+	// one watch and opens another at the cap is not refused.
+	if w.holdsSlot {
+		h.limit.release()
+	}
 	w.markDeregistered()
 
 	// Closing the event channel additionally requires the replay goroutine to

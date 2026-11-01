@@ -275,6 +275,7 @@ func (s *Server) buildHandlers() {
 	// dedicated permission would be missing from every role seeded before it
 	// existed, so nobody could hold the grant needed to repair that absence.
 	s.handle("role.ReconcileBuiltIn", permission.RolesCreate, s.handleReconcileRoles)
+	s.handle("role.ReconcileBuiltInAllTenants", permission.RolesReconcileAll, s.handleReconcileRolesAllTenants)
 
 	// Certificate management
 	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)

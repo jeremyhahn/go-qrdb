@@ -77,6 +77,12 @@ Response `TSAggResult` carries `timestamp_ns`, `value` and `count` per bucket.
 `resolution_ns` and `aggregation` are stored and returned but not applied —
 see [architecture.md](architecture.md#retention-enforcement).
 
+A `duration_ns` of zero means "use the default": a metric whose policy has a
+zero duration, and a metric with no policy at all, are swept at the node's
+`timeseries.default_retention` (seconds). A non-zero `duration_ns` always
+wins. With `default_retention` at zero, its default, such metrics keep every
+point.
+
 `TSDeleteRequest`: `metric`, optional `tags`, optional `start_ns`/`end_ns`.
 **With no range, the whole series is deleted.**
 
@@ -126,6 +132,7 @@ Aggregate results are bounded by the bucket count.
 | Built without `qrdb_ts` | 501 — `ServiceNotImplementedError` | `UNIMPLEMENTED` |
 | Write reaching a state machine with no time-series store | 501 | `UNIMPLEMENTED` — `service.CapabilityUnsupportedError` |
 | Point refused by the store on its merits (empty metric, zero timestamp, bad batch point) | 400 | `INVALID_ARGUMENT` — `service.CommandRejectedError` |
+| Write, batch or narrow write that would create a metric when the shard already holds `timeseries.max_metrics` metrics | 429 | `RESOURCE_EXHAUSTED` — `service.MetricLimitError`; the whole batch is refused, a write to a metric that exists never is, and deleting a whole series frees its slot |
 | Time-series store closed on this replica | 503 | `UNAVAILABLE` — `service.SubsystemClosedError` |
 | Time-series store failed during apply | 500 | `INTERNAL` — `service.ApplyFaultError` |
 

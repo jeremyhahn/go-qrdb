@@ -265,6 +265,17 @@ func CheckCreateOwner(name, existing, requested string) error {
 	return &OwnershipError{Name: name, Owner: existing, Requested: requested}
 }
 
+// CreateExceedsCap reports whether creating an index the shard does not hold
+// yet would take it past maxIndexes, given the held indexes it holds now. A
+// maxIndexes of zero is no cap, and a create naming a held index adds none.
+//
+// The apply path calls it against the shard's own index set, so every replica
+// reaches the same verdict in log order and two creates proposed through
+// different nodes cannot both take the last slot.
+func CreateExceedsCap(exists bool, held int, maxIndexes uint32) bool {
+	return maxIndexes > 0 && !exists && uint64(held) >= uint64(maxIndexes)
+}
+
 // CheckDropOwner decides a drop of an existing index recorded under owner
 // existing. An unconditional drop (checkOwner false) is always permitted; an
 // owner-checked drop is permitted only for the caller's own index.

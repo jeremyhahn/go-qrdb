@@ -257,9 +257,10 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.Update": true, "role.Delete": true, "role.List": true,
 		"role.Assign": true, "role.Unassign": true,
 		"role.ListPermissions": true, "role.ResolvePermissions": true,
-		"role.ListOwnPermissions": true,
-		"role.Authorize":          true,
-		"role.ReconcileBuiltIn":   true,
+		"role.ListOwnPermissions":         true,
+		"role.Authorize":                  true,
+		"role.ReconcileBuiltIn":           true,
+		"role.ReconcileBuiltInAllTenants": true,
 		// Certificate management
 		"cert.Issue": true, "cert.Enroll": true, "cert.Delegate": true,
 		"cert.DelegationPolicyPut": true, "cert.DelegationPolicyList": true,
@@ -529,6 +530,7 @@ func TestBuildHandlers_RoleMethods(t *testing.T) {
 		"role.ResolvePermissions",
 		"role.ListOwnPermissions", "role.Authorize",
 		"role.ReconcileBuiltIn",
+		"role.ReconcileBuiltInAllTenants",
 	}
 	for _, m := range roleMethods {
 		if _, ok := srv.handlers[m]; !ok {
