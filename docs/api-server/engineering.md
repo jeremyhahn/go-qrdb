@@ -532,6 +532,16 @@ Invariants:
 - **HTTP/3 only.** The route on the HTTP/1.1 or HTTP/2 listener answers 400
   (`*rest.WebTransportUpgradeError` over `*rest.WebTransportNotHTTP3Error`),
   as does a failed upgrade (`*rest.WebTransportUpgradeError`).
+- **`webtransport-h3` only.** webtransport-go v0.13.0 also accepts the
+  pre-draft-15 `webtransport` token. -16 section 3.2 allows only
+  `webtransport-h3`, so `pkg/api/rest` checks the `:protocol` before the
+  upgrade. Any other token gets 400 (`*rest.WebTransportUpgradeError` over
+  `*rest.WebTransportProtocolError`).
+- **One session per connection.** The server enables no WebTransport flow
+  control (-16 section 5.1). While a session is open on a connection, a
+  second CONNECT on that connection is reset with `H3_REQUEST_REJECTED`, as
+  section 5.1 requires; webtransport-go's `Upgrade` does this. A session on a
+  connection of its own is unaffected.
 - **Nothing changes without a handler.** Only with a handler does the HTTP/3
   listener set `EnableDatagrams` and `EnableStreamResetPartialDelivery` in its
   QUIC configuration (-16 section 3), and only then does it send the

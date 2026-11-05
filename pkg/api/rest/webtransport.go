@@ -73,6 +73,12 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: &WebTransportNotHTTP3Error{}})
 		return
 	}
+	// webtransport-go also accepts the pre-draft-15 "webtransport" token;
+	// draft-16 section 3.2 does not, so the token is checked here.
+	if r.Proto != webTransportProtocol {
+		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: &WebTransportProtocolError{Protocol: r.Proto}})
+		return
+	}
 	if err := webTransportClientRequirementsMet(w, r); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})
 		return
@@ -80,11 +86,16 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	// What we rely on from webtransport-go v0.13.0 (server.go):
 	// Server.Upgrade returns an error, having written no response and
 	// opened no session, unless the request is CONNECT, its :protocol is
-	// "webtransport-h3" (or the pre-draft-15 "webtransport"), CheckOrigin
-	// accepts it, and the client's SETTINGS enable HTTP/3 datagrams. We set
-	// no CheckOrigin, so its default applies: an Origin header, when sent,
-	// must name the request's Host. Authentication is not Upgrade's job; the
-	// caller check above already ran. Server.Close closes every QUIC
+	// "webtransport-h3" (or the pre-draft-15 "webtransport", which the
+	// check above has already refused), CheckOrigin accepts it, and the
+	// client's SETTINGS enable HTTP/3 datagrams. We set no CheckOrigin, so
+	// its default applies: an Origin header, when sent, must name the
+	// request's Host. We set no Config either, so flow control is never
+	// enabled (draft-16 section 5.1), and Upgrade resets the CONNECT stream
+	// of a second session on a connection that already has one with
+	// H3_REQUEST_REJECTED, as section 5.1 requires, and returns an error.
+	// Authentication is not Upgrade's job; the caller check above already
+	// ran. Server.Close closes every QUIC
 	// connection and its session manager, ending each session's context and
 	// streams, before it closes H3 and waits for ServeQUICConn to return.
 	sess, err := s.webTransport.wt.Upgrade(w, r)
@@ -94,6 +105,10 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	s.webTransportFunc(sess, caller, tenantID)
 }
+
+// webTransportProtocol is the extended CONNECT :protocol of a WebTransport
+// session, draft-ietf-webtrans-http3-16 section 3.2.
+const webTransportProtocol = "webtransport-h3"
 
 // settingsWTEnabled is SETTINGS_WT_ENABLED, draft-ietf-webtrans-http3-16
 // section 9.2: the draft-16 codepoint a client must send with the value 1.

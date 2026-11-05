@@ -237,6 +237,18 @@ func (e *WebTransportClientRequirementError) Error() string {
 	return "WebTransport client did not send " + e.Requirement
 }
 
+// WebTransportProtocolError is the cause of a WebTransport CONNECT whose
+// :protocol is not "webtransport-h3", the one upgrade token
+// draft-ietf-webtrans-http3-16 sections 3.2 and 9.1 define. The pre-draft-15
+// "webtransport" token is among those refused.
+type WebTransportProtocolError struct {
+	Protocol string
+}
+
+func (e *WebTransportProtocolError) Error() string {
+	return "unexpected protocol " + strconv.Quote(e.Protocol) + " for a WebTransport session, want " + strconv.Quote(webTransportProtocol)
+}
+
 // WebTransportUpgradeError refuses a CONNECT on the WebTransport path that
 // could not be upgraded to a session.
 type WebTransportUpgradeError struct {

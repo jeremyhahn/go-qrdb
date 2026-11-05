@@ -353,7 +353,7 @@ func TestWebTransportErrors_Messages(t *testing.T) {
 	if !errors.Is(up, cause) || !strings.Contains(up.Error(), cause.Error()) {
 		t.Fatalf("upgrade error %q does not carry its cause", up)
 	}
-	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}, &InvalidWebTransportHandlerError{Path: "/health", PublicPath: true}, &WebTransportClientRequirementError{Requirement: "SETTINGS_WT_ENABLED"}} {
+	for _, err := range []error{&WebTransportUnauthenticatedError{}, cause, up, &InvalidWebTransportHandlerError{Path: "x"}, &InvalidWebTransportHandlerError{Path: "/x", NilHandler: true}, &InvalidWebTransportHandlerError{Path: "/health", PublicPath: true}, &WebTransportClientRequirementError{Requirement: "SETTINGS_WT_ENABLED"}, &WebTransportProtocolError{Protocol: "webtransport"}} {
 		if !strings.Contains(err.Error(), "WebTransport") {
 			t.Errorf("%T message %q does not name WebTransport", err, err)
 		}
@@ -461,26 +461,11 @@ func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
-		EnableDatagrams:                  hs.quicDatagram,
-		EnableStreamResetPartialDelivery: hs.resetStreamAt,
-	})
+	cc, err := rawWTClientConn(ctx, t, srv, pool, hs)
 	if err != nil {
 		return 0, "", err
 	}
-	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
-	settings := map[uint64]uint64{}
-	if hs.wtEnabled {
-		settings[settingsWTEnabled] = 1
-	}
-	cc := (&http3.Transport{EnableDatagrams: hs.h3Datagram, AdditionalSettings: settings}).NewClientConn(conn)
-	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, nil)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	req.Proto = hs.protocol
-	req.Header.Set("Authorization", "Bearer good")
-	resp, err := cc.RoundTrip(req)
+	resp, err := rawWTConnectOn(ctx, t, cc, srv, hs.protocol)
 	if err != nil {
 		return 0, "", err
 	}
@@ -491,6 +476,52 @@ func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake
 	}
 	body, err := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body), err
+}
+
+// rawWTClientConn dials a bare HTTP/3 client connection to srv that
+// advertises what hs says, closed when the test ends. It returns once the
+// server's SETTINGS have arrived, since draft-ietf-webtrans-http3-16 section
+// 3.1 bars a client from opening a session before then, or once the server
+// has closed the connection, which the first request then reports.
+func rawWTClientConn(ctx context.Context, t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake) (*http3.ClientConn, error) {
+	t.Helper()
+	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
+		EnableDatagrams:                  hs.quicDatagram,
+		EnableStreamResetPartialDelivery: hs.resetStreamAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
+	settings := map[uint64]uint64{}
+	if hs.wtEnabled {
+		settings[settingsWTEnabled] = 1
+	}
+	cc := (&http3.Transport{EnableDatagrams: hs.h3Datagram, AdditionalSettings: settings}).NewClientConn(conn)
+	select {
+	case <-cc.ReceivedSettings():
+	case <-conn.Context().Done():
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return cc, nil
+}
+
+// rawWTConnectOn sends one authenticated extended CONNECT with the given
+// :protocol to wtTestPath on cc. The request stream stays open for writing
+// until the test ends, as a WebTransport client's CONNECT stream does: a
+// session reads capsules from it, and its end closes the session.
+func rawWTConnectOn(ctx context.Context, t *testing.T, cc *http3.ClientConn, srv *Server, protocol string) (*http.Response, error) {
+	t.Helper()
+	body, open := io.Pipe()
+	t.Cleanup(func() { _ = open.Close() })
+	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Proto = protocol
+	req.Header.Set("Authorization", "Bearer good")
+	return cc.RoundTrip(req)
 }
 
 // TestWebTransport_NegotiationFailureOpensNoSession starts from a handshake
@@ -532,9 +563,11 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 	}{
 		"other protocol":      {broken(func(hs *wtHandshake) { hs.protocol = "connect-udp" }), refusal("unexpected protocol")},
 		"unsupported version": {broken(func(hs *wtHandshake) { hs.protocol = "webtransport-h4" }), refusal("unexpected protocol")},
-		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), refusal("did not send SETTINGS_WT_ENABLED")},
-		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), refusal("datagram")},
-		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), refusal("did not send the reset_stream_at transport parameter")},
+		// The pre-draft-15 token, which webtransport-go itself accepts.
+		"legacy token":       {broken(func(hs *wtHandshake) { hs.protocol = "webtransport" }), refusal(`unexpected protocol \"webtransport\"`)},
+		"no WT_ENABLED":      {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), refusal("did not send SETTINGS_WT_ENABLED")},
+		"no H3_DATAGRAM":     {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), refusal("datagram")},
+		"no reset_stream_at": {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), refusal("did not send the reset_stream_at transport parameter")},
 		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
 		// without the max_datagram_frame_size transport parameter is
 		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1).
@@ -552,6 +585,64 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 	}
 	if n := h.calls.Load(); n != 1 {
 		t.Fatalf("handler ran %d times, want once, for the valid handshake alone", n)
+	}
+}
+
+// TestWebTransport_SecondSimultaneousSessionRejected covers
+// draft-ietf-webtrans-http3-16 section 5.1: the server enables no flow
+// control, so while one session is open on a connection, a second CONNECT on
+// that connection is reset with H3_REQUEST_REJECTED and opens no session. The
+// same CONNECT on a connection of its own opens one.
+func TestWebTransport_SecondSimultaneousSessionRejected(t *testing.T) {
+	var calls atomic.Int32
+	opened := make(chan struct{}, 2)
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, func(sess *WebTransportSession, _ *auth.Identity, _ string) {
+		calls.Add(1)
+		opened <- struct{}{}
+		// Hold the session open until its connection or the server ends.
+		<-sess.Context().Done()
+	}))
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	awaitSession := func(what string) {
+		t.Helper()
+		select {
+		case <-opened:
+		case <-ctx.Done():
+			t.Fatalf("%s never reached the handler", what)
+		}
+	}
+
+	cc, err := rawWTClientConn(ctx, t, srv, pool, validWTHandshake)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	first, err := rawWTConnectOn(ctx, t, cc, srv, validWTHandshake.protocol)
+	if err != nil || first.StatusCode != http.StatusOK {
+		t.Fatalf("first CONNECT: %v, err %v; want 200", first, err)
+	}
+	t.Cleanup(func() { _ = first.Body.Close() })
+	awaitSession("the first session")
+
+	second, err := rawWTConnectOn(ctx, t, cc, srv, validWTHandshake.protocol)
+	var streamErr *quic.StreamError
+	if !errors.As(err, &streamErr) || streamErr.ErrorCode != quic.StreamErrorCode(http3.ErrCodeRequestRejected) || !streamErr.Remote {
+		t.Fatalf("second CONNECT on the same connection: %v, err %v; want the server's H3_REQUEST_REJECTED", second, err)
+	}
+
+	other, err := rawWTClientConn(ctx, t, srv, pool, validWTHandshake)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	third, err := rawWTConnectOn(ctx, t, other, srv, validWTHandshake.protocol)
+	if err != nil || third.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT on a second connection: %v, err %v; want 200", third, err)
+	}
+	t.Cleanup(func() { _ = third.Body.Close() })
+	awaitSession("the second connection's session")
+
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("handler ran %d times, want 2: the rejected CONNECT opened a session", n)
 	}
 }
 

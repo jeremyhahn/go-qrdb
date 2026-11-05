@@ -13,7 +13,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
-- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route.
+- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Only the `webtransport-h3` token is accepted (the pre-draft-15 `webtransport` token gets 400), and a second simultaneous session on one connection is reset with `H3_REQUEST_REJECTED` (draft-16 section 5.1). Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route.
 
 ### Fixed
 

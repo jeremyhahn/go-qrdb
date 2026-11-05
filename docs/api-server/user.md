@@ -104,8 +104,11 @@ the `webtransport-h3` protocol, `SETTINGS_WT_ENABLED` and `SETTINGS_H3_DATAGRAM`
 set to 1, and the `max_datagram_frame_size` and `reset_stream_at` transport
 parameters. A client that sends `SETTINGS_H3_DATAGRAM` without
 `max_datagram_frame_size` has its connection closed with `H3_SETTINGS_ERROR`
-instead.
-A browser's `Origin` must match the host it connects to.
+instead. The older `webtransport` protocol token gets 400.
+A browser's `Origin` must match the host it connects to. Each connection
+carries one session at a time: a second session opened on a connection that
+already has one is refused (`H3_REQUEST_REJECTED`). To run several sessions,
+open one connection for each.
 
 Without this option the server announces no WebTransport support, and `/wt`
 is an unknown path (404). A nil handler, or a path not starting with `/`, stops
