@@ -443,8 +443,12 @@ on:
   # v1.29.3: one schedule run per repository (the concurrency group below),
   # and its bigdisk jobs skip while a main push run is in flight (the
   # schedule-guard job).
+  # CUSTOMIZE (go-qrdb, #1348): weekly, not nightly. Company Agent m1919
+  # rotates the nightlies one project per night while the fleet is
+  # reduced; go-qrdb's is Saturday night, so the day-of-week field is 0
+  # (Sunday 04:00 UTC, the end of Saturday night).
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 4 * * 0'
 
 # v1.26.2 (ruling 145; go-qrdb's since DS-3465): on main the group is the
 # workflow, the event and the commit, so main runs never cancel each other: a push to main leaves
@@ -973,7 +977,7 @@ jobs:
       # they took over an hour, more than a pull request's pipeline has.
       # CUSTOMIZE (go-qrdb, #1331): the template runs them in nightly.yml;
       # here they run on this workflow's nightly schedule: event (cron
-      # 0 4 * * *), because no other workflow may carry a schedule (ruling
+      # 0 4 * * 0), because no other workflow may carry a schedule (ruling
       # 216(1)), as go-quicraft #504 does. release.yml runs both again before
       # a tag. A network for vet-tags' nested benchmark modules; -k reports
       # every failing sweep, not the first.
