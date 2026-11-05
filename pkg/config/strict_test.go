@@ -245,6 +245,16 @@ func TestLoad_EmptyFile_StillLoads(t *testing.T) {
 	}
 }
 
+// TestLoad_NullSections_StillLoad: a section key with no value ("server:",
+// "databases:") is a null node, not a mapping or sequence; the strict check
+// has no keys in it to refuse, so the file loads on its defaults.
+func TestLoad_NullSections_StillLoad(t *testing.T) {
+	path := writeTemp(t, "server:\ndatabases:\n")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: unexpected error on null sections: %v", err)
+	}
+}
+
 // TestLoad_KnownKeysNeverRefused is a broad guard that every key the real
 // schema defines, exercised together across every section Load's own
 // tests already construct, continues to load. It complements the
