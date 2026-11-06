@@ -259,6 +259,25 @@ func TestGetRevision_NotFound(t *testing.T) {
 	}
 }
 
+// TestGetRevision_ServiceError checks that a store failure other than a
+// missing key reaches the caller as a RequestError, not as a not-found.
+func TestGetRevision_ServiceError(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.getRevErr = errors.New("mvcc store offline")
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.GetRevision(context.Background(), "k1")
+	var re *transport.RequestError
+	if !errors.As(err, &re) {
+		t.Fatalf("want *transport.RequestError, got %T (%v)", err, err)
+	}
+	var knf *transport.KeyNotFoundError
+	if errors.As(err, &knf) {
+		t.Fatalf("a store failure was reported as key-not-found: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetAtRevision
 // ---------------------------------------------------------------------------
