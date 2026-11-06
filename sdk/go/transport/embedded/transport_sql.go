@@ -18,11 +18,21 @@ package embedded
 
 import (
 	"context"
+	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// sqlCache lazily constructs the SQL query service from kvSvc/dbSvc on
+// the first Query call. Without the qrdb_sql build tag it is the empty
+// struct in transport_nosql.go and the transport does not implement
+// transport.SQLProvider.
+type sqlCache struct {
+	once sync.Once
+	svc  service.SQLServicer
+}
 
 // Compile-time interface assertions.
 var (
@@ -40,12 +50,12 @@ var (
 // isolation applied. Without one the query reads t.kvSvc under the
 // "<tenant>/<db>/" prefix.
 func (t *Transport) sqlSvc() service.SQLServicer {
-	t.sqlOnce.Do(func() {
+	t.sql.once.Do(func() {
 		if t.kvSvc != nil && t.dbSvc != nil {
-			t.sqlSvcCache = sqlquery.NewService(t.kvSvc, t.dbSvc, sqlquery.WithRegistry(t.registry))
+			t.sql.svc = sqlquery.NewService(t.kvSvc, t.dbSvc, sqlquery.WithRegistry(t.registry))
 		}
 	})
-	return t.sqlSvcCache
+	return t.sql.svc
 }
 
 // Query executes an ad-hoc SQL query against a named database by
