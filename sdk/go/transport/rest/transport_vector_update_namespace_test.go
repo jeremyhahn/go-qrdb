@@ -15,9 +15,12 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"testing"
 
@@ -49,6 +52,166 @@ func TestRESTUpdateNamespace_Success(t *testing.T) {
 	if got.Namespace != "ns" || got.IndexConfig["ef_search"] != "128" || got.Metadata["owner"] != "search" {
 		t.Fatalf("server saw %+v", got)
 	}
+}
+
+// TestRESTVector_SendsTheDocumentedRequest pins, per vector RPC, the verb,
+// path, query and body the transport puts on the wire, and that the answer
+// decodes into the RPC's response type. A POST RPC sends its whole request
+// as the JSON body; a GET RPC sends no body and every set option as a query
+// parameter.
+func TestRESTVector_SendsTheDocumentedRequest(t *testing.T) {
+	// answer carries one distinctive value under every key a vector response
+	// type decodes, so each row can prove its own field arrived.
+	const answer = `{"namespace":"ns-7","success":true,"id":7,"ids":[7],"deleted_count":7,` +
+		`"total_count":7,"source_id":7,"job_id":"j7","operation_id":"op7","distance_metric":"L2"}`
+	type row struct {
+		name, verb, path, query string
+		req                     any
+		call                    func(context.Context, *Transport) (any, error)
+		want                    string
+	}
+	rows := []row{
+		{"CreateNamespace", http.MethodPost, "/vector/namespace", "", &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 3},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.CreateNamespace(ctx, &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 3})
+				return field(err, func() any { return r.Namespace })
+			}, "ns-7"},
+		{"DeleteNamespace", http.MethodPost, "/vector/namespace/delete", "", &transport.DeleteNamespaceRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{Namespace: "ns"})
+				return field(err, func() any { return r.Success })
+			}, "true"},
+		{"ListNamespaces", http.MethodGet, "/vector/namespaces", "shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.ListNamespaces(ctx, &transport.ListNamespacesRequest{ShardID: 1})
+				return field(err, func() any { return r.TotalCount })
+			}, "7"},
+		{"GetNamespaceInfo", http.MethodGet, "/vector/namespace/info", "namespace=ns&shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{Namespace: "ns", ShardID: 1})
+				return field(err, func() any { return r.Namespace + "/" + r.DistanceMetric })
+			}, "ns-7/" + string(transport.DistanceEuclidean)},
+		{"UpsertVector", http.MethodPost, "/vector/upsert", "", &transport.UpsertVectorRequest{Namespace: "ns", ID: 1, Vector: []float32{0.5}},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.UpsertVector(ctx, &transport.UpsertVectorRequest{Namespace: "ns", ID: 1, Vector: []float32{0.5}})
+				return field(err, func() any { return r.ID })
+			}, "7"},
+		{"GetVector", http.MethodGet, "/vector/get", "consistency=1&id=1&include_metadata=true&include_vector=true&namespace=ns&shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.GetVector(ctx, &transport.GetVectorRequest{Namespace: "ns", ID: 1, IncludeVector: true, IncludeMetadata: true, ShardID: 1, Consistency: 1})
+				return field(err, func() any { return r.ID })
+			}, "7"},
+		{"DeleteVector", http.MethodPost, "/vector/delete", "", &transport.DeleteVectorRequest{Namespace: "ns", ID: 1},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.DeleteVector(ctx, &transport.DeleteVectorRequest{Namespace: "ns", ID: 1})
+				return field(err, func() any { return r.Success })
+			}, "true"},
+		{"BatchUpsert", http.MethodPost, "/vector/batch/upsert", "", &transport.BatchUpsertRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.BatchUpsert(ctx, &transport.BatchUpsertRequest{Namespace: "ns"})
+				return field(err, func() any { return r.IDs })
+			}, "[7]"},
+		{"BatchDeleteVectors", http.MethodPost, "/vector/batch/delete", "", &transport.BatchDeleteVectorsRequest{Namespace: "ns", IDs: []uint64{1}},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.BatchDeleteVectors(ctx, &transport.BatchDeleteVectorsRequest{Namespace: "ns", IDs: []uint64{1}})
+				return field(err, func() any { return r.DeletedCount })
+			}, "7"},
+		{"ListVectors", http.MethodGet, "/vector/list", "consistency=1&cursor=c&id_prefix=p&include_metadata=true&include_vectors=true&limit=10&namespace=ns&shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.ListVectors(ctx, &transport.ListVectorsRequest{Namespace: "ns", Limit: 10, Cursor: "c", IDPrefix: "p", IncludeVectors: true, IncludeMetadata: true, ShardID: 1, Consistency: 1})
+				return field(err, func() any { return r.TotalCount })
+			}, "7"},
+		{"UpdateMetadata", http.MethodPost, "/vector/metadata", "", &transport.UpdateVectorMetadataRequest{Namespace: "ns", ID: 1},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.UpdateMetadata(ctx, &transport.UpdateVectorMetadataRequest{Namespace: "ns", ID: 1})
+				return field(err, func() any { return r.ID })
+			}, "7"},
+		{"SearchSimilar", http.MethodPost, "/vector/search/similar", "", &transport.SearchSimilarRequest{Namespace: "ns", K: 5},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.SearchSimilar(ctx, &transport.SearchSimilarRequest{Namespace: "ns", K: 5})
+				return field(err, func() any { return r.Results != nil })
+			}, "false"},
+		{"SearchByMetadata", http.MethodPost, "/vector/search/metadata", "", &transport.SearchByMetadataRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.SearchByMetadata(ctx, &transport.SearchByMetadataRequest{Namespace: "ns"})
+				return field(err, func() any { return r.TotalCount })
+			}, "7"},
+		{"HybridSearch", http.MethodPost, "/vector/search/hybrid", "", &transport.HybridSearchRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.HybridSearch(ctx, &transport.HybridSearchRequest{Namespace: "ns"})
+				return field(err, func() any { return r.Results != nil })
+			}, "false"},
+		{"SearchByID", http.MethodPost, "/vector/search/by-id", "", &transport.SearchByIDRequest{Namespace: "ns", ID: 1, K: 5},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.SearchByID(ctx, &transport.SearchByIDRequest{Namespace: "ns", ID: 1, K: 5})
+				return field(err, func() any { return r.SourceID })
+			}, "7"},
+		{"RebuildIndex", http.MethodPost, "/vector/index/rebuild", "", &transport.RebuildIndexRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.RebuildIndex(ctx, &transport.RebuildIndexRequest{Namespace: "ns"})
+				return field(err, func() any { return r.JobID })
+			}, "j7"},
+		{"GetRebuildProgress", http.MethodGet, "/vector/index/rebuild/progress", "job_id=j1&namespace=ns", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.GetRebuildProgress(ctx, &transport.GetRebuildProgressRequest{Namespace: "ns", JobID: "j1"})
+				return field(err, func() any { return r.JobID })
+			}, "j7"},
+		{"GetIndexStats", http.MethodGet, "/vector/index/stats", "namespace=ns&shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.GetIndexStats(ctx, &transport.GetIndexStatsRequest{Namespace: "ns", ShardID: 1})
+				return field(err, func() any { return r.Namespace })
+			}, "ns-7"},
+		{"CompactNamespace", http.MethodPost, "/vector/compact", "", &transport.CompactNamespaceRequest{Namespace: "ns"},
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.CompactNamespace(ctx, &transport.CompactNamespaceRequest{Namespace: "ns"})
+				return field(err, func() any { return r.OperationID })
+			}, "op7"},
+		{"GetCompactionProgress", http.MethodGet, "/vector/compact/progress", "namespace=ns&operation_id=op1&shard_id=1", nil,
+			func(ctx context.Context, rt *Transport) (any, error) {
+				r, err := rt.GetCompactionProgress(ctx, &transport.GetCompactionProgressRequest{Namespace: "ns", OperationID: "op1", ShardID: 1})
+				return field(err, func() any { return r.OperationID })
+			}, "op7"},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, rs, _ := newExtTransport(t)
+			var verb, path, query string
+			var body []byte
+			rs.handle(func(*http.Request) bool { return true }, func(w http.ResponseWriter, r *http.Request) {
+				verb, path, query = r.Method, r.URL.Path, r.URL.RawQuery
+				body, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, answer)
+			})
+			got, err := tc.call(context.Background(), rt)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if verb != tc.verb || path != tc.path || query != tc.query {
+				t.Fatalf("request = %s %s?%s, want %s %s?%s", verb, path, query, tc.verb, tc.path, tc.query)
+			}
+			wantBody := []byte{}
+			if tc.req != nil {
+				if wantBody, err = json.Marshal(tc.req); err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+			}
+			if !bytes.Equal(bytes.TrimSpace(body), wantBody) {
+				t.Fatalf("body = %s, want %s", body, wantBody)
+			}
+			if s := fmt.Sprint(got); s != tc.want {
+				t.Fatalf("decoded = %s, want %s", s, tc.want)
+			}
+		})
+	}
+}
+
+// field returns the value read from a decoded response, or the call's error.
+func field(err error, read func() any) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return read(), nil
 }
 
 // TestRESTUpdateNamespace_TypedRefusals proves the REST client rebuilds the

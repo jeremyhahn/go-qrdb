@@ -172,3 +172,16 @@ func TestTransport_Watch_MidStreamCancelPropagated(t *testing.T) {
 		t.Fatalf("resp.Err() = %T (%v), want *transport.WatchCompactedError", resp.Err(), resp.Err())
 	}
 }
+
+func TestRESTWatch_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"Watch": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.Watch(ctx, "k", transport.WatchOptions{})
+			return err
+		},
+		"WatchPrefix": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.WatchPrefix(ctx, "p", transport.WatchOptions{})
+			return err
+		},
+	})
+}
