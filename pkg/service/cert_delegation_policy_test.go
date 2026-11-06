@@ -20,17 +20,6 @@ import (
 
 var policyScope = []string{"certs:delegate", "kv:get", "kv:put"}
 
-// Exported for the external delegated-caller tests, which need authtest,
-// and authtest imports this package.
-var (
-	NewPolicyServiceForTest    = newPolicyService
-	AnchorCallerForTest        = anchorCaller
-	DelegationCSRForTest       = delegationCSR
-	ServicePrincipalCtxForTest = servicePrincipalCtx
-	BillingPolicyForTest       = billingPolicy
-	FindEventForTest           = findEvent
-)
-
 // newPolicyService is a delegation service whose CA also keeps the
 // tenants' standing delegation policies, as the node wires it.
 func newPolicyService(t *testing.T, opts ...CertEnrollmentOption) *CertEnrollmentService {
