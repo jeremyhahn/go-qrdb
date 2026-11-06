@@ -15,7 +15,9 @@
 package grpc
 
 import (
+	"bytes"
 	"testing"
+	"time"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -92,19 +94,71 @@ func TestAnyToString_NonString(t *testing.T) {
 	}
 }
 
-// TestPrefixRangeEnd_AllFF verifies the all-0xff prefix branch returns the
-// no-upper-bound sentinel.
-func TestPrefixRangeEnd_AllFF(t *testing.T) {
-	end := prefixRangeEnd([]byte{0xff, 0xff})
-	if len(end) != 1 || end[0] != 0 {
-		t.Errorf("prefixRangeEnd(all-0xff) = %v, want [0]", end)
+// TestPrefixRangeEnd verifies the watch range end for a prefix: the last
+// byte below 0xff is incremented and everything after it dropped, an
+// all-0xff prefix maps to the no-upper-bound sentinel, and an empty prefix
+// has no range end.
+func TestPrefixRangeEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix []byte
+		want   []byte
+	}{
+		{"Empty", nil, nil},
+		{"Increments", []byte("a"), []byte("b")},
+		{"DropsTrailingFF", []byte{'a', 0xff}, []byte("b")},
+		{"AllFF", []byte{0xff, 0xff}, []byte{0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := prefixRangeEnd(tc.prefix); !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Errorf("prefixRangeEnd(%v) = %v, want %v", tc.prefix, got, tc.want)
+			}
+		})
 	}
 }
 
-// TestPrefixRangeEnd_Empty verifies the empty-prefix branch returns nil.
-func TestPrefixRangeEnd_Empty(t *testing.T) {
-	if end := prefixRangeEnd(nil); end != nil {
-		t.Errorf("prefixRangeEnd(nil) = %v, want nil", end)
+// TestPbUserFactorToTransport verifies every field of a user auth factor
+// record crosses the wire, the optional timestamps included, and that an
+// unset optional timestamp stays nil.
+func TestPbUserFactorToTransport(t *testing.T) {
+	registered := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	lastUsed := registered.Add(time.Hour)
+	revoked := registered.Add(2 * time.Hour)
+	got := pbUserFactorToTransport(&pb.UserAuthFactorRecord{
+		Id:             "f1",
+		UserId:         7,
+		Type:           "fido2",
+		Label:          "key",
+		Credential:     []byte("cred"),
+		SpkiCredential: []byte("spki"),
+		Metadata:       map[string]string{"aaguid": "x"},
+		CreatedBy:      "admin",
+		RegisteredAt:   registered.Format(time.RFC3339),
+		LastUsedAt:     lastUsed.Format(time.RFC3339),
+		RevokedAt:      revoked.Format(time.RFC3339),
+	})
+	if got.ID != "f1" || got.UserID != 7 || got.Type != "fido2" || got.Label != "key" || got.CreatedBy != "admin" {
+		t.Errorf("scalar fields = %+v", got)
+	}
+	if string(got.Credential) != "cred" || string(got.SPKICredential) != "spki" || got.Metadata["aaguid"] != "x" {
+		t.Errorf("credential/metadata = %q/%q/%v", got.Credential, got.SPKICredential, got.Metadata)
+	}
+	if !got.RegisteredAt.Equal(registered) {
+		t.Errorf("RegisteredAt = %v, want %v", got.RegisteredAt, registered)
+	}
+	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(lastUsed) {
+		t.Errorf("LastUsedAt = %v, want %v", got.LastUsedAt, lastUsed)
+	}
+	if got.RevokedAt == nil || !got.RevokedAt.Equal(revoked) {
+		t.Errorf("RevokedAt = %v, want %v", got.RevokedAt, revoked)
+	}
+
+	unset := pbUserFactorToTransport(&pb.UserAuthFactorRecord{Id: "f2"})
+	if unset.LastUsedAt != nil || unset.RevokedAt != nil {
+		t.Errorf("unset timestamps = %v/%v, want nil/nil", unset.LastUsedAt, unset.RevokedAt)
+	}
+	if zero := pbUserFactorToTransport(nil); zero.ID != "" || zero.Credential != nil {
+		t.Errorf("pbUserFactorToTransport(nil) = %+v, want the zero record", zero)
 	}
 }
 
