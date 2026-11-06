@@ -39,6 +39,18 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		call func() error
 		want func(error) bool
 	}{
+		{"CreateCollection", func() error {
+			_, err := tr.CreateCollection(ctx, transport.CreateCollectionRequest{})
+			return err
+		}, nilService},
+		{"GetCollectionInfo", func() error { _, err := tr.GetCollectionInfo(ctx, "db", "x"); return err }, nilService},
+		{"ListCollections", func() error { _, err := tr.ListCollections(ctx, "db"); return err }, nilService},
+		{"DropCollection", func() error { return tr.DropCollection(ctx, "db", "users") }, nilService},
+		{"InsertDocument", func() error { _, err := tr.InsertDocument(ctx, transport.InsertDocumentRequest{}); return err }, nilService},
+		{"GetDocument", func() error { _, err := tr.GetDocument(ctx, "db", "x", 1); return err }, nilService},
+		{"UpdateDocument", func() error { return tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}) }, nilService},
+		{"DeleteDocument", func() error { return tr.DeleteDocument(ctx, "db", "users", 1) }, nilService},
+		{"ListDocuments", func() error { _, err := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); return err }, nilService},
 		{"LeaseGrant", func() error { _, err := tr.LeaseGrant(ctx, 5); return err }, nilService},
 		{"LockAcquire", func() error {
 			_, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 5})
