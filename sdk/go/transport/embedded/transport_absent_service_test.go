@@ -29,6 +29,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	nilEmbed := newExtTransport(t, WithEmbeddingService(nil))
 	closed := closedExtTransport(t)
 	closedFactors := closedExtTransport(t, WithAuthFactorService(&mockAuthFactorService{}))
+	closedCeremony := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}), WithCeremonyCA(&mockCeremonyCA{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -74,6 +75,21 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		}, isClosed},
 		{"RevokeFactor", func() error { return tr.RevokeFactor(ctx, &transport.RevokeFactorRequest{}) }, nilService},
 		{"RevokeFactor/closed", func() error { return closedFactors.RevokeFactor(ctx, &transport.RevokeFactorRequest{}) }, isClosed},
+		{"CeremonyInitialize", func() error {
+			_, err := tr.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{})
+			return err
+		}, nilService},
+		{"CeremonyInitialize/closed", func() error {
+			_, err := closedCeremony.CeremonyInitialize(ctx, &transport.CeremonyInitializeRequest{})
+			return err
+		}, isClosed},
+		{"CeremonyStatus", func() error { _, err := tr.CeremonyStatus(ctx); return err }, nilService},
+		{"CeremonyStatus/closed", func() error { _, err := closedCeremony.CeremonyStatus(ctx); return err }, isClosed},
+		{"CeremonySignCSR", func() error { _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); return err }, nilService},
+		{"CeremonySignCSR/closed", func() error {
+			_, err := closedCeremony.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{})
+			return err
+		}, isClosed},
 		{"LeaseGrant", func() error { _, err := tr.LeaseGrant(ctx, 5); return err }, nilService},
 		{"LockAcquire", func() error {
 			_, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 5})
