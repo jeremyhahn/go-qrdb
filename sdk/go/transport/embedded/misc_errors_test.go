@@ -30,6 +30,8 @@ func TestErrorMessages(t *testing.T) {
 		{&MissingAuditLoggerError{}, "embedded: audit logger is not configured"},
 		{&UnregisteredOperationError{Method: "Frobnicate"}, "embedded: Frobnicate has no registered permission; refusing rather than admitting an uncontrolled operation"},
 		{&NilRequestError{Method: "Get"}, "embedded: Get request must not be nil"},
+		{&BarrierSealedError{}, "embedded: data-plane barrier is sealed"},
+		{&BarrierSealedError{Err: errors.New("inner")}, "embedded: data-plane barrier is sealed: inner"},
 	}
 	for _, tt := range tests {
 		if got := tt.err.Error(); got != tt.want {
