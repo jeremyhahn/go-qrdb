@@ -75,16 +75,19 @@ func TestRegisterStateMachines(t *testing.T) {
 func composedAsTheDaemonComposesIt(t *testing.T, name string, hub *watch.Hub) sm.DiskStateMachine {
 	t.Helper()
 	lr := lease.NewLessor()
+	// A node without an at-rest key: its encryptor is nil and leaves the
+	// filesystem as it is.
+	pebbleOpts := []Option{WithEncryptor(nil)}
 	var createFn sm.CreateFunc
 	switch name {
 	case "pebble":
-		createFn = NewPebbleCreateFuncWith(nil, func(s *PebbleStateMachine) {
+		createFn = NewPebbleCreateFuncWith(pebbleOpts, func(s *PebbleStateMachine) {
 			s.SetLessor(lr)
 			s.SetWatchHub(hub)
 			s.SetTimeSeriesEnabled(true)
 		})
 	case "mvcc":
-		createFn = NewMVCCCreateFuncWith(nil, WithLessor(lr), WithWatchHub(hub), WithTimeSeriesEnabled())
+		createFn = NewMVCCCreateFuncWith(pebbleOpts, WithLessor(lr), WithWatchHub(hub), WithTimeSeriesEnabled())
 	default:
 		t.Fatalf("no daemon composition for %q", name)
 	}
