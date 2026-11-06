@@ -1438,3 +1438,30 @@ func TestAddMember_CarriesIdentity(t *testing.T) {
 		t.Fatalf("service received identity %q, want %q", adminSvc.addIdentity, identity)
 	}
 }
+
+// TestConverters_NilInput checks that every pointer converter maps a nil
+// service value to a nil transport value rather than dereferencing it.
+func TestConverters_NilInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		isNil bool
+	}{
+		{"toTransportLease", toTransportLease(nil) == nil},
+		{"toTransportRetentionPolicy", toTransportRetentionPolicy(nil) == nil},
+		{"toTransportNamespaceInfo", toTransportNamespaceInfo(nil) == nil},
+		{"toTransportVectorData", toTransportVectorData(nil) == nil},
+		{"toTransportUsage", toTransportUsage(nil) == nil},
+	}
+	for _, tt := range tests {
+		if !tt.isNil {
+			t.Errorf("%s(nil) is not nil", tt.name)
+		}
+	}
+}
+
+func TestToTransportUsage_CopiesCounts(t *testing.T) {
+	got := toTransportUsage(&service.UsageInfo{PromptTokens: 7, TotalTokens: 14})
+	if got == nil || got.PromptTokens != 7 || got.TotalTokens != 14 {
+		t.Errorf("toTransportUsage = %+v, want PromptTokens 7, TotalTokens 14", got)
+	}
+}
