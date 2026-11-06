@@ -1015,6 +1015,13 @@ func TestDatabaseConnectionConfig_Validate_MissingAddress(t *testing.T) {
 	}
 }
 
+func TestEtcdConfig_Validate_DisabledNeedsNoListenAddr(t *testing.T) {
+	cfg := &EtcdConfig{Enabled: false, ListenAddr: ""}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() returned unexpected error for disabled config: %v", err)
+	}
+}
+
 func TestDatabaseConfig_Validate_EmptyModeDefaultsToEmbedded(t *testing.T) {
 	cfg := DatabaseConfig{
 		Name:    "testdb",
@@ -1056,6 +1063,25 @@ func TestDatabaseConfig_Validate_RemoteWithConnection(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() returned unexpected error: %v", err)
+	}
+}
+
+// TestDatabaseConfig_Validate_RemoteInvalidConnection pins that a remote
+// database's Validate runs its connection's own validation rather than
+// stopping at the nil check.
+func TestDatabaseConfig_Validate_RemoteInvalidConnection(t *testing.T) {
+	cfg := DatabaseConfig{
+		Name: "remote-db",
+		Mode: ModeRemote,
+		Connection: &DatabaseConnectionConfig{
+			Transport: "grpc",
+			Address:   "",
+		},
+	}
+	err := cfg.Validate()
+	var connErr *ConnectionRequiredError
+	if !errors.As(err, &connErr) {
+		t.Fatalf("Validate() error = %v (%T), want *ConnectionRequiredError", err, err)
 	}
 }
 
