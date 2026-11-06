@@ -265,455 +265,244 @@ func connectDatabaseBarrierInProcess(t *testing.T, svc service.DatabaseServicer)
 // Backup tests
 // ---------------------------------------------------------------------------
 
-func TestMCP_Backup_CreateBackup_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
+// rpcCase is one RPC of a service. call invokes it and check asserts its
+// result; fail makes the service method behind it return err.
+type rpcCase[S any] struct {
+	name  string
+	fail  func(svc S, err error)
+	call  func(tr *Transport) (any, error)
+	check func(t *testing.T, got any)
+}
 
-	info, err := tr.CreateBackup(context.Background(), &transport.BackupRequest{
-		Destination: "/tmp/bk", ShardIDs: []uint64{1},
+// runRPCCases runs every case twice: once against the service's answer,
+// which check asserts, and once with fail applied, where the service error
+// must reach the caller as a *transport.RequestError.
+func runRPCCases[S any](t *testing.T, newSvc func() S, connect func(*testing.T, S) (*Transport, func()), cases []rpcCase[S]) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, cleanup := connect(t, newSvc())
+			defer cleanup()
+			got, err := tc.call(tr)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if tc.check != nil {
+				tc.check(t, got)
+			}
+		})
+		t.Run(tc.name+"/ServiceError", func(t *testing.T) {
+			svc := newSvc()
+			tc.fail(svc, errors.New("service failed"))
+			tr, cleanup := connect(t, svc)
+			defer cleanup()
+			_, err := tc.call(tr)
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				t.Fatalf("%s: want *transport.RequestError, got %T (%v)", tc.name, err, err)
+			}
+		})
+	}
+}
+
+func TestMCP_Backup_RPCs(t *testing.T) {
+	ctx := context.Background()
+	connect := func(t *testing.T, svc *minimalBackupSvc) (*Transport, func()) {
+		return connectBackupInProcess(t, svc)
+	}
+	runRPCCases(t, newMinimalBackupSvc, connect, []rpcCase[*minimalBackupSvc]{
+		{
+			name: "CreateBackup",
+			fail: func(s *minimalBackupSvc, err error) { s.createErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.CreateBackup(ctx, &transport.BackupRequest{Destination: "/tmp/bk", ShardIDs: []uint64{1}})
+			},
+			check: func(t *testing.T, got any) {
+				if id := got.(*transport.BackupInfo).ID; id != "bk-1" {
+					t.Fatalf("ID = %q, want bk-1", id)
+				}
+			},
+		},
+		{
+			name: "ListBackups",
+			fail: func(s *minimalBackupSvc, err error) { s.listErr = err },
+			call: func(tr *Transport) (any, error) { return tr.ListBackups(ctx) },
+			check: func(t *testing.T, got any) {
+				if n := len(got.([]transport.BackupInfo)); n == 0 {
+					t.Fatal("ListBackups returned no backups")
+				}
+			},
+		},
+		{
+			name: "GetBackup",
+			fail: func(s *minimalBackupSvc, err error) { s.getErr = err },
+			call: func(tr *Transport) (any, error) { return tr.GetBackup(ctx, "bk-1") },
+			check: func(t *testing.T, got any) {
+				if id := got.(*transport.BackupInfo).ID; id != "bk-1" {
+					t.Fatalf("ID = %q, want bk-1", id)
+				}
+			},
+		},
+		{
+			name: "DeleteBackup",
+			fail: func(s *minimalBackupSvc, err error) { s.deleteErr = err },
+			call: func(tr *Transport) (any, error) { return nil, tr.DeleteBackup(ctx, "bk-1") },
+		},
+		{
+			name: "RestoreBackup",
+			fail: func(s *minimalBackupSvc, err error) { s.restoreErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: "bk-1", TargetShards: []uint64{1, 2}})
+			},
+			check: func(t *testing.T, got any) {
+				if n := got.(*transport.RestoreResult).ShardsRestored; n != 2 {
+					t.Fatalf("ShardsRestored = %d, want 2", n)
+				}
+			},
+		},
+		{
+			name: "VerifyBackup",
+			fail: func(s *minimalBackupSvc, err error) { s.verifyErr = err },
+			call: func(tr *Transport) (any, error) { return tr.VerifyBackup(ctx, "bk-1") },
+			check: func(t *testing.T, got any) {
+				if !got.(*transport.VerifyResult).Valid {
+					t.Fatal("Valid = false, want true")
+				}
+			},
+		},
 	})
-	if err != nil {
-		t.Fatalf("CreateBackup: %v", err)
+}
+
+// TestMCP_DatabaseBarrier_SealUnsealStatus drives the per-database barrier
+// RPCs against a server with the database service, and checks that each one
+// refuses on a server without it.
+func TestMCP_DatabaseBarrier_SealUnsealStatus(t *testing.T) {
+	ctx := context.Background()
+	calls := []struct {
+		name string
+		call func(tr *Transport) error
+	}{
+		{"SealDatabase", func(tr *Transport) error { return tr.SealDatabase(ctx, "mydb") }},
+		{"UnsealDatabase", func(tr *Transport) error { return tr.UnsealDatabase(ctx, "mydb", "s3cr3t") }},
+		{"DatabaseBarrierStatus", func(tr *Transport) error {
+			status, err := tr.DatabaseBarrierStatus(ctx, "mydb")
+			if err == nil && status == nil {
+				t.Fatal("DatabaseBarrierStatus returned a nil status and no error")
+			}
+			return err
+		}},
 	}
-	if info.ID != "bk-1" {
-		t.Fatalf("unexpected ID: %q", info.ID)
+
+	served, cleanupServed := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
+	defer cleanupServed()
+	bare, cleanupBare := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanupBare()
+
+	for _, c := range calls {
+		if err := c.call(served); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		var re *transport.RequestError
+		if err := c.call(bare); !errors.As(err, &re) {
+			t.Errorf("%s without a database service: want *transport.RequestError, got %T (%v)", c.name, err, err)
+		}
 	}
 }
 
-func TestMCP_Backup_CreateBackup_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.createErr = errors.New("storage full")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.CreateBackup(context.Background(), &transport.BackupRequest{Destination: "/x"})
-	if err == nil {
-		t.Fatal("expected error")
+func TestMCP_Embedding_RPCs(t *testing.T) {
+	ctx := context.Background()
+	connect := func(t *testing.T, svc *minimalEmbeddingSvc) (*Transport, func()) {
+		return connectEmbeddingInProcess(t, svc)
 	}
-	var re *transport.RequestError
-	if !errors.As(err, &re) {
-		t.Fatalf("expected RequestError, got %T", err)
-	}
-}
-
-func TestMCP_Backup_ListBackups_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	list, err := tr.ListBackups(context.Background())
-	if err != nil {
-		t.Fatalf("ListBackups: %v", err)
-	}
-	if len(list) == 0 {
-		t.Fatal("expected backups")
-	}
-}
-
-func TestMCP_Backup_ListBackups_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.listErr = errors.New("list failed")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.ListBackups(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Backup_GetBackup_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	info, err := tr.GetBackup(context.Background(), "bk-1")
-	if err != nil {
-		t.Fatalf("GetBackup: %v", err)
-	}
-	if info.ID != "bk-1" {
-		t.Fatalf("unexpected ID: %q", info.ID)
-	}
-}
-
-func TestMCP_Backup_GetBackup_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.getErr = errors.New("not found")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetBackup(context.Background(), "missing")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Backup_DeleteBackup_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	if err := tr.DeleteBackup(context.Background(), "bk-1"); err != nil {
-		t.Fatalf("DeleteBackup: %v", err)
-	}
-}
-
-func TestMCP_Backup_DeleteBackup_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.deleteErr = errors.New("not found")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	if err := tr.DeleteBackup(context.Background(), "missing"); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Backup_RestoreBackup_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	result, err := tr.RestoreBackup(context.Background(), &transport.RestoreRequest{
-		BackupID: "bk-1", TargetShards: []uint64{1, 2},
+	runRPCCases(t, newMinimalEmbeddingSvc, connect, []rpcCase[*minimalEmbeddingSvc]{
+		{
+			name: "Embed",
+			fail: func(s *minimalEmbeddingSvc, err error) { s.embedErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.Embed(ctx, &transport.EmbedRequest{Texts: []string{"hello"}, Model: "ada-002"})
+			},
+			check: func(t *testing.T, got any) {
+				if len(got.(*transport.EmbedResponse).Embeddings) == 0 {
+					t.Fatal("Embed returned no embeddings")
+				}
+			},
+		},
+		{
+			name: "BatchEmbed",
+			fail: func(s *minimalEmbeddingSvc, err error) { s.batchEmbedErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.BatchEmbed(ctx, &transport.BatchEmbedRequest{Texts: []string{"a", "b"}, Model: "ada-002"})
+			},
+			check: func(t *testing.T, got any) {
+				if len(got.(*transport.BatchEmbedResponse).Embeddings) == 0 {
+					t.Fatal("BatchEmbed returned no embeddings")
+				}
+			},
+		},
+		{
+			name: "ListEmbeddingModels",
+			fail: func(s *minimalEmbeddingSvc, err error) { s.listModelsErr = err },
+			call: func(tr *Transport) (any, error) { return tr.ListEmbeddingModels(ctx, "openai") },
+			check: func(t *testing.T, got any) {
+				if len(got.(*transport.ListEmbeddingModelsResponse).Models) == 0 {
+					t.Fatal("ListEmbeddingModels returned no models")
+				}
+			},
+		},
 	})
-	if err != nil {
-		t.Fatalf("RestoreBackup: %v", err)
+}
+
+func TestMCP_Rebalance_RPCs(t *testing.T) {
+	ctx := context.Background()
+	connect := func(t *testing.T, svc *minimalRebalanceSvc) (*Transport, func()) {
+		return connectRebalanceInProcess(t, svc)
 	}
-	if result.ShardsRestored != 2 {
-		t.Fatalf("unexpected ShardsRestored: %d", result.ShardsRestored)
-	}
-}
-
-func TestMCP_Backup_RestoreBackup_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.restoreErr = errors.New("restore failed")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.RestoreBackup(context.Background(), &transport.RestoreRequest{BackupID: "x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Backup_VerifyBackup_Success(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	result, err := tr.VerifyBackup(context.Background(), "bk-1")
-	if err != nil {
-		t.Fatalf("VerifyBackup: %v", err)
-	}
-	if !result.Valid {
-		t.Fatal("expected Valid=true")
-	}
-}
-
-func TestMCP_Backup_VerifyBackup_ServiceError(t *testing.T) {
-	svc := newMinimalBackupSvc()
-	svc.verifyErr = errors.New("checksum error")
-	tr, cleanup := connectBackupInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.VerifyBackup(context.Background(), "bk-1")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DatabaseBarrier tests (via WithDatabaseService)
-// ---------------------------------------------------------------------------
-
-func TestMCP_DatabaseBarrier_SealDatabase_Success(t *testing.T) {
-	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
-	defer cleanup()
-
-	if err := tr.SealDatabase(context.Background(), "mydb"); err != nil {
-		t.Fatalf("SealDatabase: %v", err)
-	}
-}
-
-func TestMCP_DatabaseBarrier_SealDatabase_ServiceError(t *testing.T) {
-	// The mock SealDatabase always returns nil; just verify the method works.
-	// For error coverage, use a transport with no database service registered.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	err := tr.SealDatabase(context.Background(), "mydb")
-	// Tool not registered → RequestError expected.
-	if err == nil {
-		// If tool is registered on base server, this is expected to succeed.
-		// Either way the code path is exercised.
-		t.Logf("SealDatabase returned nil (tool may be registered)")
-	}
-}
-
-func TestMCP_DatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
-	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
-	defer cleanup()
-
-	if err := tr.UnsealDatabase(context.Background(), "mydb", "s3cr3t"); err != nil {
-		t.Fatalf("UnsealDatabase: %v", err)
-	}
-}
-
-func TestMCP_DatabaseBarrier_UnsealDatabase_ServiceError(t *testing.T) {
-	// The mock UnsealDatabase always returns nil; test error path via unregistered tool.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	err := tr.UnsealDatabase(context.Background(), "mydb", "wrong")
-	// Either RequestError (tool not found) or nil is acceptable.
-	_ = err
-}
-
-func TestMCP_DatabaseBarrier_Status_Success(t *testing.T) {
-	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
-	defer cleanup()
-
-	status, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
-	if err != nil {
-		t.Fatalf("DatabaseBarrierStatus: %v", err)
-	}
-	if status == nil {
-		t.Fatal("expected non-nil status")
-	}
-}
-
-func TestMCP_DatabaseBarrier_Status_ServiceError(t *testing.T) {
-	// The mock DatabaseBarrierStatus always returns ok; test error path via unregistered tool.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
-	// Either RequestError (tool not found) or nil is acceptable.
-	_ = err
-}
-
-// ---------------------------------------------------------------------------
-// CredentialStore / CredentialRetrieve (via existing mockCredentialSvc)
-// ---------------------------------------------------------------------------
-
-func TestMCP_Credential_Store_Success(t *testing.T) {
-	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
-	defer cleanup()
-
-	if err := tr.CredentialStore(context.Background(), "db-pass", []byte("s3cr3t")); err != nil {
-		t.Fatalf("CredentialStore: %v", err)
-	}
-}
-
-func TestMCP_Credential_Store_UnregisteredTool(t *testing.T) {
-	// Call CredentialStore on a transport without credentials service → callTool error.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-	// The tool may or may not be registered; just ensure no panic.
-	_ = tr.CredentialStore(context.Background(), "n", []byte("v"))
-}
-
-func TestMCP_Credential_Retrieve_Success(t *testing.T) {
-	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
-	defer cleanup()
-
-	val, err := tr.retrieveBytes(context.Background(), "db-pass")
-	if err != nil {
-		t.Fatalf("CredentialRetrieve: %v", err)
-	}
-	// nil value is valid (mock returns nil,nil)
-	_ = val
-}
-
-func TestMCP_Credential_Retrieve_UnregisteredTool(t *testing.T) {
-	// Call CredentialRetrieve on a transport without credentials service → callTool error.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-	// The tool may or may not be registered; just ensure no panic.
-	_, _ = tr.retrieveBytes(context.Background(), "missing")
-}
-
-// ---------------------------------------------------------------------------
-// Embedding tests
-// ---------------------------------------------------------------------------
-
-func TestMCP_Embedding_Embed_Success(t *testing.T) {
-	tr, cleanup := connectEmbeddingInProcess(t, newMinimalEmbeddingSvc())
-	defer cleanup()
-
-	resp, err := tr.Embed(context.Background(), &transport.EmbedRequest{
-		Texts: []string{"hello"}, Model: "ada-002",
+	runRPCCases(t, newMinimalRebalanceSvc, connect, []rpcCase[*minimalRebalanceSvc]{
+		{
+			name: "GetShardStats",
+			fail: func(s *minimalRebalanceSvc, err error) { s.shardStatsErr = err },
+			call: func(tr *Transport) (any, error) { return tr.GetShardStats(ctx, 1) },
+			check: func(t *testing.T, got any) {
+				if n := got.(*transport.ShardStatsResponse).KeyCount; n != 100 {
+					t.Fatalf("KeyCount = %d, want 100", n)
+				}
+			},
+		},
+		{
+			name: "CreateRebalancePlan",
+			fail: func(s *minimalRebalanceSvc, err error) { s.createPlanErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.CreateRebalancePlan(ctx, &transport.RebalancePlanRequest{MaxMoves: 5})
+			},
+			check: func(t *testing.T, got any) {
+				if len(got.(*transport.RebalancePlan).Moves) == 0 {
+					t.Fatal("CreateRebalancePlan returned no moves")
+				}
+			},
+		},
+		{
+			name: "ExecuteRebalance",
+			fail: func(s *minimalRebalanceSvc, err error) { s.executeErr = err },
+			call: func(tr *Transport) (any, error) {
+				return tr.ExecuteRebalance(ctx, &transport.RebalancePlan{
+					Moves: []transport.RebalanceMove{{ShardID: 1, FromNode: "n1", ToNode: "n2"}},
+				})
+			},
+			check: func(t *testing.T, got any) {
+				if n := got.(*transport.RebalanceResult).MovesCompleted; n != 1 {
+					t.Fatalf("MovesCompleted = %d, want 1", n)
+				}
+			},
+		},
+		{
+			name: "GetImbalanceReport",
+			fail: func(s *minimalRebalanceSvc, err error) { s.imbalanceReportErr = err },
+			call: func(tr *Transport) (any, error) { return tr.GetImbalanceReport(ctx) },
+			check: func(t *testing.T, got any) {
+				if len(got.(*transport.ImbalanceReport).Nodes) == 0 {
+					t.Fatal("GetImbalanceReport returned no nodes")
+				}
+			},
+		},
 	})
-	if err != nil {
-		t.Fatalf("Embed: %v", err)
-	}
-	if len(resp.Embeddings) == 0 {
-		t.Fatal("expected embeddings")
-	}
-}
-
-func TestMCP_Embedding_Embed_ServiceError(t *testing.T) {
-	svc := newMinimalEmbeddingSvc()
-	svc.embedErr = errors.New("model unavailable")
-	tr, cleanup := connectEmbeddingInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.Embed(context.Background(), &transport.EmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Embedding_BatchEmbed_Success(t *testing.T) {
-	tr, cleanup := connectEmbeddingInProcess(t, newMinimalEmbeddingSvc())
-	defer cleanup()
-
-	resp, err := tr.BatchEmbed(context.Background(), &transport.BatchEmbedRequest{
-		Texts: []string{"a", "b"}, Model: "ada-002",
-	})
-	if err != nil {
-		t.Fatalf("BatchEmbed: %v", err)
-	}
-	if len(resp.Embeddings) == 0 {
-		t.Fatal("expected embeddings")
-	}
-}
-
-func TestMCP_Embedding_BatchEmbed_ServiceError(t *testing.T) {
-	svc := newMinimalEmbeddingSvc()
-	svc.batchEmbedErr = errors.New("batch too large")
-	tr, cleanup := connectEmbeddingInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.BatchEmbed(context.Background(), &transport.BatchEmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Embedding_ListModels_Success(t *testing.T) {
-	tr, cleanup := connectEmbeddingInProcess(t, newMinimalEmbeddingSvc())
-	defer cleanup()
-
-	resp, err := tr.ListEmbeddingModels(context.Background(), "openai")
-	if err != nil {
-		t.Fatalf("ListEmbeddingModels: %v", err)
-	}
-	if len(resp.Models) == 0 {
-		t.Fatal("expected models")
-	}
-}
-
-func TestMCP_Embedding_ListModels_ServiceError(t *testing.T) {
-	svc := newMinimalEmbeddingSvc()
-	svc.listModelsErr = errors.New("provider offline")
-	tr, cleanup := connectEmbeddingInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.ListEmbeddingModels(context.Background(), "openai")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Rebalance tests
-// ---------------------------------------------------------------------------
-
-func TestMCP_Rebalance_GetShardStats_Success(t *testing.T) {
-	tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
-	defer cleanup()
-
-	stats, err := tr.GetShardStats(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("GetShardStats: %v", err)
-	}
-	if stats.KeyCount != 100 {
-		t.Fatalf("unexpected KeyCount: %d", stats.KeyCount)
-	}
-}
-
-func TestMCP_Rebalance_GetShardStats_ServiceError(t *testing.T) {
-	svc := newMinimalRebalanceSvc()
-	svc.shardStatsErr = errors.New("shard not found")
-	tr, cleanup := connectRebalanceInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetShardStats(context.Background(), 999)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Rebalance_CreateRebalancePlan_Success(t *testing.T) {
-	tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
-	defer cleanup()
-
-	plan, err := tr.CreateRebalancePlan(context.Background(), &transport.RebalancePlanRequest{MaxMoves: 5})
-	if err != nil {
-		t.Fatalf("CreateRebalancePlan: %v", err)
-	}
-	if len(plan.Moves) == 0 {
-		t.Fatal("expected moves")
-	}
-}
-
-func TestMCP_Rebalance_CreateRebalancePlan_ServiceError(t *testing.T) {
-	svc := newMinimalRebalanceSvc()
-	svc.createPlanErr = errors.New("cluster unhealthy")
-	tr, cleanup := connectRebalanceInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.CreateRebalancePlan(context.Background(), &transport.RebalancePlanRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Rebalance_ExecuteRebalance_Success(t *testing.T) {
-	tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
-	defer cleanup()
-
-	result, err := tr.ExecuteRebalance(context.Background(), &transport.RebalancePlan{
-		Moves: []transport.RebalanceMove{{ShardID: 1, FromNode: "n1", ToNode: "n2"}},
-	})
-	if err != nil {
-		t.Fatalf("ExecuteRebalance: %v", err)
-	}
-	if result.MovesCompleted != 1 {
-		t.Fatalf("unexpected MovesCompleted: %d", result.MovesCompleted)
-	}
-}
-
-func TestMCP_Rebalance_ExecuteRebalance_ServiceError(t *testing.T) {
-	svc := newMinimalRebalanceSvc()
-	svc.executeErr = errors.New("execute failed")
-	tr, cleanup := connectRebalanceInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.ExecuteRebalance(context.Background(), &transport.RebalancePlan{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestMCP_Rebalance_GetImbalanceReport_Success(t *testing.T) {
-	tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
-	defer cleanup()
-
-	report, err := tr.GetImbalanceReport(context.Background())
-	if err != nil {
-		t.Fatalf("GetImbalanceReport: %v", err)
-	}
-	if len(report.Nodes) == 0 {
-		t.Fatal("expected nodes")
-	}
-}
-
-func TestMCP_Rebalance_GetImbalanceReport_ServiceError(t *testing.T) {
-	svc := newMinimalRebalanceSvc()
-	svc.imbalanceReportErr = errors.New("unavailable")
-	tr, cleanup := connectRebalanceInProcess(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetImbalanceReport(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
 }
