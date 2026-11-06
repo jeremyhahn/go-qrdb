@@ -15,10 +15,13 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -168,3 +171,143 @@ func TestEmbeddedBatch_Closed(t *testing.T) {
 		t.Errorf("ExecuteBatch answer = %+v, want none", resp)
 	}
 }
+
+// TestEmbeddedImportFile_ConvertsTheResult asserts ImportFile streams the
+// file through the batch service's chunked session and maps its result,
+// row errors included, to the transport's.
+func TestEmbeddedImportFile_ConvertsTheResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *service.ImportResult
+		check  func(*transport.ImportResult) bool
+	}{
+		{"counts", &service.ImportResult{Total: 1, Succeeded: 1}, func(r *transport.ImportResult) bool {
+			return r.Total == 1 && r.Succeeded == 1
+		}},
+		{"no result is an empty one", nil, func(r *transport.ImportResult) bool { return r != nil }},
+		{"row errors", &service.ImportResult{
+			Total: 3, Succeeded: 1, Failed: 2,
+			Errors: []service.ImportError{{Row: 2, Key: "k1", Message: "duplicate"}, {Row: 3, Key: "k2", Message: "invalid"}},
+		}, func(r *transport.ImportResult) bool {
+			return r.Failed == 2 && len(r.Errors) == 2 && r.Errors[0].Row == 2 && r.Errors[0].Message == "duplicate"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var imported string
+			tr := newExtTransport(t, WithBatchService(&fullBatchService{
+				importFn: func(_ context.Context, r io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+					data, err := io.ReadAll(r)
+					imported = string(data)
+					return tt.result, err
+				},
+			}))
+			result, err := tr.ImportFile(t.Context(), "data.csv", strings.NewReader("k,v\n1,2"), transport.ImportOptions{Format: "csv"})
+			if err != nil {
+				t.Fatalf("ImportFile: %v", err)
+			}
+			if imported != "k,v\n1,2" {
+				t.Fatalf("service imported %q", imported)
+			}
+			if !tt.check(result) {
+				t.Fatalf("result = %+v", result)
+			}
+		})
+	}
+}
+
+// TestEmbeddedImportFile_ServiceError asserts a failed import reaches the
+// caller.
+func TestEmbeddedImportFile_ServiceError(t *testing.T) {
+	tr := newExtTransport(t, WithBatchService(&fullBatchService{
+		importFn: func(context.Context, io.Reader, service.ImportOptions) (*service.ImportResult, error) {
+			return nil, errSentinel
+		},
+	}))
+	_, err := tr.ImportFile(t.Context(), "x", strings.NewReader(""), transport.ImportOptions{})
+	if !errors.Is(err, errSentinel) {
+		t.Fatalf("ImportFile error = %v, want the service's error", err)
+	}
+}
+
+// fullBatchService is a service.BatchServicer whose Import a test
+// configures. Its chunked session is a minimal real one (not just stubs),
+// so ImportFile's session, which ImportCommit ends, reaches the same
+// importFn hook. seq is deliberately not validated here -- that belongs to
+// *service.BatchService's own tests (pkg/service/batch_import_session_test.go).
+type fullBatchService struct {
+	importFn func(ctx context.Context, r io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
+	sessions map[string]*fullBatchSession
+}
+
+// fullBatchSession is one in-memory chunked-import session for
+// fullBatchService.
+type fullBatchSession struct {
+	opts service.ImportOptions
+	buf  bytes.Buffer
+}
+
+var _ service.BatchServicer = (*fullBatchService)(nil)
+
+func (b *fullBatchService) Execute(context.Context, []service.Op) (*service.BatchResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (b *fullBatchService) ExecuteWithMode(context.Context, []service.Op, writemode.Mode) (*service.BatchResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (b *fullBatchService) ExecuteEntity(context.Context, *service.BatchEntityRequest) (*service.BatchEntityResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (b *fullBatchService) Import(ctx context.Context, r io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	if b.importFn != nil {
+		return b.importFn(ctx, r, opts)
+	}
+	return &service.ImportResult{Total: 1, Succeeded: 1}, nil
+}
+
+func (b *fullBatchService) ImportBegin(_ context.Context, opts service.ImportOptions) (string, error) {
+	if b.sessions == nil {
+		b.sessions = make(map[string]*fullBatchSession)
+	}
+	id := strconv.Itoa(len(b.sessions))
+	b.sessions[id] = &fullBatchSession{opts: opts}
+	return id, nil
+}
+
+func (b *fullBatchService) ImportAppend(_ context.Context, sessionID string, _ uint64, chunk []byte) error {
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	sess.buf.Write(chunk)
+	return nil
+}
+
+func (b *fullBatchService) ImportCommit(ctx context.Context, sessionID string) (*service.ImportResult, error) {
+	sess, ok := b.sessions[sessionID]
+	if !ok {
+		return nil, &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(b.sessions, sessionID)
+	return b.Import(ctx, bytes.NewReader(sess.buf.Bytes()), sess.opts)
+}
+
+func (b *fullBatchService) ImportAbort(_ context.Context, sessionID string) error {
+	if _, ok := b.sessions[sessionID]; !ok {
+		return &service.ImportSessionNotFoundError{SessionID: sessionID}
+	}
+	delete(b.sessions, sessionID)
+	return nil
+}
+
+// SetImportKeyGuard satisfies service.ImportKeyGuardSetter as a no-op: this
+// double tests ImportFile's plumbing, the mapping between
+// transport.ImportResult and service.ImportResult, never hard confinement,
+// and its inputs never name the confined key -- so declaring it (rather
+// than leaving NewHardConfinedBatch to refuse Import outright for a
+// BatchServicer with no confinement of its own) is a deliberate, visible
+// opt-out for this one concern.
+func (b *fullBatchService) SetImportKeyGuard(func(string) error) {}

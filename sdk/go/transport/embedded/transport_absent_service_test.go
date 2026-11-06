@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -33,6 +34,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	closedLease := closedExtTransport(t, WithLeaseService(&mockLeaseService{}))
 	closedWatch := closedExtTransport(t, WithWatchService(&mockWatchService{}))
 	closedTS := closedExtTransport(t, WithTimeSeriesService(&mockTSService{}))
+	closedBatch := closedExtTransport(t, WithBatchService(&fullBatchService{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -134,6 +136,14 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		}, isClosed},
 		{"TSDeleteSeries/closed", func() error {
 			_, err := closedTS.TSDeleteSeries(ctx, &transport.TSDeleteRequest{})
+			return err
+		}, isClosed},
+		{"ImportFile", func() error {
+			_, err := tr.ImportFile(ctx, "x", strings.NewReader(""), transport.ImportOptions{})
+			return err
+		}, nilService},
+		{"ImportFile/closed", func() error {
+			_, err := closedBatch.ImportFile(ctx, "x", strings.NewReader(""), transport.ImportOptions{})
 			return err
 		}, isClosed},
 		{"LockAcquire", func() error {
