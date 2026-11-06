@@ -151,7 +151,7 @@ func TestCapabilities_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	if !resp.KV {
-		t.Error("expected KV=true")
+	if !resp.KV || !resp.MVCC || !resp.Watch {
+		t.Errorf("core capabilities = %+v, want KV, MVCC and Watch reported", resp)
 	}
 }

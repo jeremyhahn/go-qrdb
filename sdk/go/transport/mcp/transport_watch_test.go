@@ -702,3 +702,171 @@ func TestClassifyWatchPollError_WatcherLimitIsTerminal(t *testing.T) {
 		t.Fatalf("terminal reason %q rebuilds as %T, want *transport.WatcherLimitError", reason, err)
 	}
 }
+
+// connectScriptedWatch connects a transport to a stub whose qrdb_watch tool
+// answers each poll with the next scripted result, and returns a watch on
+// "key" with the given options.
+func connectScriptedWatch(t *testing.T, opts transport.WatchOptions, script ...func() (*mcp.CallToolResult, error)) (<-chan transport.WatchResponse, context.CancelFunc) {
+	t.Helper()
+	tr, err := NewInProcess(stubMCPServerWithDynamic(t, map[string][]func() (*mcp.CallToolResult, error){"qrdb_watch": script}))
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	ch, err := tr.Watch(ctx, "key", opts)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	return ch, cancel
+}
+
+// TestWatchPoll_RetriesATransientFailure checks that a poll which fails with a
+// non-terminal tool error, or returns a body that does not decode, is retried
+// and the next poll's events are delivered.
+func TestWatchPoll_RetriesATransientFailure(t *testing.T) {
+	for name, first := range map[string]*mcp.CallToolResult{
+		"tool error":     mcp.NewToolResultError("temporary"),
+		"malformed body": mcp.NewToolResultText("not-json"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ch, cancel := connectScriptedWatch(t, transport.WatchOptions{},
+				func() (*mcp.CallToolResult, error) { return first, nil },
+				func() (*mcp.CallToolResult, error) {
+					return mcp.NewToolResultText(`{"events":[{"type":"PUT","kv":{"Key":"a2V5","Value":"dg=="}}],"revision":11,"watch_id":1}`), nil
+				},
+			)
+			resp, ok := <-ch
+			cancel()
+			for range ch {
+			}
+			if !ok || len(resp.Events) != 1 || resp.Revision != 11 {
+				t.Fatalf("first response = %+v (open %v), want the retried poll's event at revision 11", resp, ok)
+			}
+		})
+	}
+}
+
+// TestWatchPoll_DeliversFullEvent checks that a poll's PUT and DELETE events
+// reach the channel with their key-values, previous key-values and revision.
+func TestWatchPoll_DeliversFullEvent(t *testing.T) {
+	payload := `{
+		"events": [
+			{"type":"PUT","kv":{"Key":"a2V5","Value":"dmFs","CreateRevision":1,"ModRevision":1,"Version":1},
+			 "prev_kv":{"Key":"a2V5","Value":"b2xk","CreateRevision":0,"ModRevision":0,"Version":0}},
+			{"type":"DELETE","kv":{"Key":"a2V5","Value":"","CreateRevision":1,"ModRevision":2,"Version":0}}
+		],
+		"revision": 7,
+		"watch_id": 99
+	}`
+	ch, cancel := connectScriptedWatch(t, transport.WatchOptions{PrevKV: true, StartRevision: 1},
+		func() (*mcp.CallToolResult, error) { return mcp.NewToolResultText(payload), nil })
+	resp, ok := <-ch
+	cancel()
+	for range ch {
+	}
+	if !ok || len(resp.Events) != 2 || resp.Revision != 7 || resp.WatchID != 99 {
+		t.Fatalf("response = %+v (open %v), want two events at revision 7 on watch 99", resp, ok)
+	}
+	put, del := resp.Events[0], resp.Events[1]
+	if put.Type != transport.EventPut || put.Kv == nil || string(put.Kv.Value) != "val" || put.PrevKv == nil || string(put.PrevKv.Value) != "old" {
+		t.Errorf("PUT event = %+v", put)
+	}
+	if del.Type != transport.EventDelete || del.Kv == nil || del.Kv.ModRevision != 2 {
+		t.Errorf("DELETE event = %+v", del)
+	}
+}
+
+// TestWatchPoll_ServerCanceledWatch checks that a poll the server answers
+// with a watch-canceled failure ends the watch with a Canceled response
+// rather than retrying.
+func TestWatchPoll_ServerCanceledWatch(t *testing.T) {
+	ch, _ := connectScriptedWatch(t, transport.WatchOptions{},
+		func() (*mcp.CallToolResult, error) { return mcp.NewToolResultError("watch canceled by server"), nil })
+	saw := false
+	for resp := range ch {
+		if resp.Canceled {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("expected a Canceled response before the channel closed")
+	}
+}
+
+// connectWatchHandler connects a transport to a stub whose qrdb_watch tool is
+// served by handler.
+func connectWatchHandler(t *testing.T, handler mcpserver.ToolHandlerFunc) *Transport {
+	t.Helper()
+	srv := mcpserver.NewMCPServer("qrdb-stub-watch", "1.0.0", mcpserver.WithToolCapabilities(false))
+	srv.AddTool(mcp.NewTool("qrdb_watch"), handler)
+	tr, err := NewInProcess(srv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	return tr
+}
+
+// TestWatchPrefix_SendsPrefixAndPrevKV checks that WatchPrefix polls with the
+// prefix flag and, when asked, the prev_kv flag: the stub answers with an
+// event only when both are present.
+func TestWatchPrefix_SendsPrefixAndPrevKV(t *testing.T) {
+	tr := connectWatchHandler(t, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.GetArguments()
+		if args["key"] == "prefix/" && args["prefix"] == true && args["prev_kv"] == true {
+			return mcp.NewToolResultText(`{"events":[{"type":"PUT","kv":{"Key":"cHJlZml4L2E=","Value":"dg=="}}],"revision":4,"watch_id":1}`), nil
+		}
+		return mcp.NewToolResultText(`{"events":[],"revision":0}`), nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch, err := tr.WatchPrefix(ctx, "prefix/", transport.WatchOptions{PrevKV: true})
+	if err != nil {
+		t.Fatalf("WatchPrefix: %v", err)
+	}
+	resp, ok := <-ch
+	cancel()
+	for range ch {
+	}
+	if !ok || len(resp.Events) != 1 || resp.Revision != 4 {
+		t.Fatalf("first response = %+v (open %v), want the prefix event at revision 4", resp, ok)
+	}
+}
+
+// TestWatchPoll_CancelDuringPollClosesTheChannel checks that canceling the
+// watch's context while a poll is in flight closes the channel rather than
+// retrying the failed call.
+func TestWatchPoll_CancelDuringPollClosesTheChannel(t *testing.T) {
+	polling := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	tr := connectWatchHandler(t, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		select {
+		case polling <- struct{}{}:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+		return mcp.NewToolResultError("interrupted"), nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := tr.Watch(ctx, "never-fired", transport.WatchOptions{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	<-polling
+	cancel()
+	for resp := range ch {
+		t.Errorf("response after cancel: %+v", resp)
+	}
+}

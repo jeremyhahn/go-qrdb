@@ -47,6 +47,7 @@ type mockVectorSvc struct {
 	updateMetaErr  error
 	searchSimErr   error
 	searchMetaErr  error
+	lastSearchMeta *service.SearchByMetadataRequest
 	hybridErr      error
 	searchByIDErr  error
 	rebuildErr     error
@@ -208,7 +209,8 @@ func (m *mockVectorSvc) SearchSimilar(_ context.Context, _ *service.SearchSimila
 	}, nil
 }
 
-func (m *mockVectorSvc) SearchByMetadata(_ context.Context, _ *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+func (m *mockVectorSvc) SearchByMetadata(_ context.Context, req *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+	m.lastSearchMeta = req
 	if m.searchMetaErr != nil {
 		return nil, m.searchMetaErr
 	}
@@ -608,12 +610,17 @@ func TestSearchByMetadata_Success(t *testing.T) {
 	resp, err := tr.SearchByMetadata(context.Background(), &transport.SearchByMetadataRequest{
 		Namespace: "ns1",
 		Filters:   map[string]interface{}{"tag": "foo"},
+		Limit:     10,
+		Offset:    5,
 	})
 	if err != nil {
 		t.Fatalf("SearchByMetadata: %v", err)
 	}
 	if len(resp.Results) != 1 {
 		t.Errorf("results: %d", len(resp.Results))
+	}
+	if got := svc.lastSearchMeta; got == nil || got.Limit != 10 || got.Offset != 5 {
+		t.Errorf("service request = %+v, want Limit 10 and Offset 5", got)
 	}
 }
 
