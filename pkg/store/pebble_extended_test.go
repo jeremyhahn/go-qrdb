@@ -780,6 +780,41 @@ func TestPebbleStateMachine_Transaction_InvalidPayload(t *testing.T) {
 	}
 }
 
+// TestPebbleEvaluateCompare checks a compare against the key's state read
+// through the apply batch. A non-MVCC state machine has no revisions, so a
+// revision compare fails closed even on a key that exists.
+func TestPebbleEvaluateCompare(t *testing.T) {
+	s := openExtendedStore(t)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("cmp-key"), []byte("bbb"), 0))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
+
+	present, absent := []byte("cmp-key"), []byte("cmp-missing")
+	for _, tc := range []struct {
+		name string
+		dc   protocol.DecodedCompare
+		want bool
+	}{
+		{"create revision fails closed", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetCreateRevision, CreateRevision: 1}, false},
+		{"mod revision fails closed", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetModRevision, ModRevision: 1}, false},
+		{"unknown target", protocol.DecodedCompare{Key: present, Target: 99}, false},
+		{"version 1 on present", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetVersion, Version: 1}, true},
+		{"version 0 on absent", protocol.DecodedCompare{Key: absent, Target: protocol.CompareTargetVersion}, true},
+		{"version greater", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetVersion, Result: protocol.CompareResultGreater}, true},
+		{"value equal", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Value: []byte("bbb")}, true},
+		{"value mismatch", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Value: []byte("other")}, false},
+		{"value greater", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultGreater, Value: []byte("aaa")}, true},
+		{"value less", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultLess, Value: []byte("ccc")}, true},
+		{"value not equal", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultNotEqual, Value: []byte("ccc")}, true},
+		{"non-empty value on absent", protocol.DecodedCompare{Key: absent, Target: protocol.CompareTargetValue, Value: []byte("x")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pebbleEvaluateCompare(s, readBatch(t, s), tc.dc); got != tc.want {
+				t.Fatalf("pebbleEvaluateCompare = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: Lease operations
 // ---------------------------------------------------------------------------
