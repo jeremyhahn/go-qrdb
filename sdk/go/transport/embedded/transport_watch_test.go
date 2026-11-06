@@ -600,6 +600,32 @@ func TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation(t *testing.T) {
 	}
 }
 
+// TestEmbeddedWatch_ForwardsOptions asserts every transport watch option
+// reaches the service as its watch.WatchOption.
+func TestEmbeddedWatch_ForwardsOptions(t *testing.T) {
+	for name, open := range watchOpeners {
+		t.Run(name, func(t *testing.T) {
+			var got watch.WatchOptions
+			record := func(_ context.Context, _ string, opts ...watch.WatchOption) (watch.Watcher, error) {
+				got = watch.ApplyWatchOptions(opts)
+				w := newStubWatcher()
+				close(w.ch)
+				return w, nil
+			}
+			tr := newExtTransport(t, WithWatchService(&mockWatchService{watchFn: record, watchPrefixFn: record}))
+			ch, err := open(tr, t.Context(), "k", transport.WatchOptions{StartRevision: 5, PrevKV: true, ProgressNotify: true})
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			for range ch {
+			}
+			if got.StartRevision != 5 || !got.PrevKV || !got.ProgressNotify {
+				t.Fatalf("service received %+v, want StartRevision 5, PrevKV and ProgressNotify", got)
+			}
+		})
+	}
+}
+
 // TestEmbeddedWatch_Request_DeliversTheServiceStream checks that Watch and
 // WatchPrefix sent through Request open the service watch on the request's
 // key or prefix and hand back a channel carrying the service's events.
@@ -701,4 +727,54 @@ func TestEmbeddedWatch_WatchResponse_Delivery(t *testing.T) {
 	if !got[1].Canceled || got[1].CancelReason != "test cancel" {
 		t.Errorf("second frame = %+v, want canceled with reason %q", got[1], "test cancel")
 	}
+}
+
+// stubWatcher is a watch.Watcher whose events a test sends on ch.
+type stubWatcher struct {
+	ch chan watch.WatchResponse
+}
+
+func newStubWatcher() *stubWatcher {
+	return &stubWatcher{ch: make(chan watch.WatchResponse, 4)}
+}
+
+func (s *stubWatcher) Events() <-chan watch.WatchResponse { return s.ch }
+func (s *stubWatcher) WatchID() int64                     { return 1 }
+func (s *stubWatcher) Close() error                       { return nil }
+func (s *stubWatcher) Err() error                         { return nil }
+
+// mockWatchService opens a stubWatcher that has already ended; a non-nil Fn
+// field replaces it. The embedded transport does not use WatchEntity or
+// WatchEntityType, so they fail.
+type mockWatchService struct {
+	watchFn       func(ctx context.Context, key string, opts ...watch.WatchOption) (watch.Watcher, error)
+	watchPrefixFn func(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error)
+}
+
+var _ service.WatchServicer = (*mockWatchService)(nil)
+
+func (m *mockWatchService) Watch(ctx context.Context, key string, opts ...watch.WatchOption) (watch.Watcher, error) {
+	if m.watchFn != nil {
+		return m.watchFn(ctx, key, opts...)
+	}
+	w := newStubWatcher()
+	close(w.ch)
+	return w, nil
+}
+
+func (m *mockWatchService) WatchPrefix(ctx context.Context, prefix string, opts ...watch.WatchOption) (watch.Watcher, error) {
+	if m.watchPrefixFn != nil {
+		return m.watchPrefixFn(ctx, prefix, opts...)
+	}
+	w := newStubWatcher()
+	close(w.ch)
+	return w, nil
+}
+
+func (m *mockWatchService) WatchEntity(context.Context, *service.WatchEntityRequest) (<-chan service.WatchEntityEvent, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (m *mockWatchService) WatchEntityType(context.Context, *service.WatchEntityTypeRequest) (<-chan service.WatchEntityEvent, error) {
+	return nil, errors.New("not implemented")
 }

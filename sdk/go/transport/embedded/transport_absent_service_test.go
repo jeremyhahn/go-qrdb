@@ -31,6 +31,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	closedFactors := closedExtTransport(t, WithAuthFactorService(&mockAuthFactorService{}))
 	closedCeremony := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}), WithCeremonyCA(&mockCeremonyCA{}))
 	closedLease := closedExtTransport(t, WithLeaseService(&mockLeaseService{}))
+	closedWatch := closedExtTransport(t, WithWatchService(&mockWatchService{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -101,6 +102,13 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		{"LeaseKeepAlive/closed", func() error { _, err := closedLease.LeaseKeepAlive(ctx, 1); return err }, isClosed},
 		{"LeaseTimeToLive/closed", func() error { _, err := closedLease.LeaseTimeToLive(ctx, 1); return err }, isClosed},
 		{"LeaseList/closed", func() error { _, err := closedLease.LeaseList(ctx); return err }, isClosed},
+		{"Watch", func() error { _, err := tr.Watch(ctx, "k", transport.WatchOptions{}); return err }, nilService},
+		{"WatchPrefix", func() error { _, err := tr.WatchPrefix(ctx, "p", transport.WatchOptions{}); return err }, nilService},
+		{"Watch/closed", func() error { _, err := closedWatch.Watch(ctx, "k", transport.WatchOptions{}); return err }, isClosed},
+		{"WatchPrefix/closed", func() error {
+			_, err := closedWatch.WatchPrefix(ctx, "p", transport.WatchOptions{})
+			return err
+		}, isClosed},
 		{"LockAcquire", func() error {
 			_, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 5})
 			return err
