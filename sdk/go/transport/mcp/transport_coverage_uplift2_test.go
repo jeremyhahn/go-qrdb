@@ -27,6 +27,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -47,6 +48,9 @@ type minimalBackupSvc struct {
 	deleteErr  error
 	restoreErr error
 	verifyErr  error
+
+	lastCreate  service.BackupOptions
+	lastRestore service.RestoreOptions
 }
 
 var _ service.BackupServicer = (*minimalBackupSvc)(nil)
@@ -54,6 +58,7 @@ var _ service.BackupServicer = (*minimalBackupSvc)(nil)
 func newMinimalBackupSvc() *minimalBackupSvc { return &minimalBackupSvc{} }
 
 func (m *minimalBackupSvc) CreateBackup(_ context.Context, opts service.BackupOptions) (*service.BackupInfo, error) {
+	m.lastCreate = opts
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -86,7 +91,8 @@ func (m *minimalBackupSvc) DeleteBackup(_ context.Context, _ string) error {
 	return m.deleteErr
 }
 
-func (m *minimalBackupSvc) RestoreBackup(_ context.Context, _ service.RestoreOptions) (*service.RestoreResult, error) {
+func (m *minimalBackupSvc) RestoreBackup(_ context.Context, opts service.RestoreOptions) (*service.RestoreResult, error) {
+	m.lastRestore = opts
 	if m.restoreErr != nil {
 		return nil, m.restoreErr
 	}
@@ -106,6 +112,8 @@ type minimalRebalanceSvc struct {
 	createPlanErr      error
 	executeErr         error
 	imbalanceReportErr error
+
+	lastPlanOpts *service.RebalancePlanOptions
 }
 
 var _ service.RebalanceServicer = (*minimalRebalanceSvc)(nil)
@@ -119,7 +127,8 @@ func (m *minimalRebalanceSvc) GetShardStats(_ context.Context, shardID uint64) (
 	return &service.ShardStats{ShardID: shardID, KeyCount: 100, ByteCount: 2048, LeaderID: 1, ReplicaCount: 3}, nil
 }
 
-func (m *minimalRebalanceSvc) CreateRebalancePlan(_ context.Context, _ *service.RebalancePlanOptions) (*service.RebalancePlanResult, error) {
+func (m *minimalRebalanceSvc) CreateRebalancePlan(_ context.Context, opts *service.RebalancePlanOptions) (*service.RebalancePlanResult, error) {
+	m.lastPlanOpts = opts
 	if m.createPlanErr != nil {
 		return nil, m.createPlanErr
 	}
@@ -152,6 +161,8 @@ type minimalEmbeddingSvc struct {
 	embedErr      error
 	batchEmbedErr error
 	listModelsErr error
+
+	lastBatch *service.BatchEmbedRequest
 }
 
 var _ service.EmbeddingServicer = (*minimalEmbeddingSvc)(nil)
@@ -170,6 +181,7 @@ func (m *minimalEmbeddingSvc) Embed(_ context.Context, req *service.EmbedRequest
 }
 
 func (m *minimalEmbeddingSvc) BatchEmbed(_ context.Context, req *service.BatchEmbedRequest) (*service.BatchEmbedResponse, error) {
+	m.lastBatch = req
 	if m.batchEmbedErr != nil {
 		return nil, m.batchEmbedErr
 	}
@@ -374,6 +386,58 @@ func TestMCP_Backup_RPCs(t *testing.T) {
 			},
 		},
 	})
+
+	t.Run("CreateBackup/AllOptions", func(t *testing.T) {
+		svc := newMinimalBackupSvc()
+		tr, cleanup := connectBackupInProcess(t, svc)
+		defer cleanup()
+		if _, err := tr.CreateBackup(ctx, &transport.BackupRequest{
+			Destination:   "/tmp/bk",
+			Compression:   transport.CompressionZstd,
+			Encryption:    transport.EncryptionAES256,
+			KeyProviderID: "software",
+			KeyRef:        "backup.key",
+			ShardIDs:      []uint64{1, 2, 3},
+		}); err != nil {
+			t.Fatalf("CreateBackup: %v", err)
+		}
+		want := service.BackupOptions{
+			Destination:   "/tmp/bk",
+			Compression:   service.CompressionType(transport.CompressionZstd),
+			Encryption:    service.EncryptionType(transport.EncryptionAES256),
+			KeyProviderID: "software",
+			KeyRef:        "backup.key",
+			ShardIDs:      []uint64{1, 2, 3},
+		}
+		if !reflect.DeepEqual(svc.lastCreate, want) {
+			t.Errorf("service received %+v, want %+v", svc.lastCreate, want)
+		}
+	})
+
+	t.Run("RestoreBackup/AllOptions", func(t *testing.T) {
+		svc := newMinimalBackupSvc()
+		tr, cleanup := connectBackupInProcess(t, svc)
+		defer cleanup()
+		if _, err := tr.RestoreBackup(ctx, &transport.RestoreRequest{
+			BackupID:         "bk-1",
+			TargetShards:     []uint64{1, 2},
+			ValidateFirst:    true,
+			DecryptionKeyRef: "backup.key",
+			AllowPlaintext:   true,
+		}); err != nil {
+			t.Fatalf("RestoreBackup: %v", err)
+		}
+		want := service.RestoreOptions{
+			BackupID:         "bk-1",
+			TargetShards:     []uint64{1, 2},
+			ValidateFirst:    true,
+			DecryptionKeyRef: "backup.key",
+			AllowPlaintext:   true,
+		}
+		if !reflect.DeepEqual(svc.lastRestore, want) {
+			t.Errorf("service received %+v, want %+v", svc.lastRestore, want)
+		}
+	})
 }
 
 // TestMCP_DatabaseBarrier_SealUnsealStatus drives the per-database barrier
@@ -453,6 +517,24 @@ func TestMCP_Embedding_RPCs(t *testing.T) {
 			},
 		},
 	})
+
+	t.Run("BatchEmbed/AllOptions", func(t *testing.T) {
+		svc := newMinimalEmbeddingSvc()
+		tr, cleanup := connectEmbeddingInProcess(t, svc)
+		defer cleanup()
+		if _, err := tr.BatchEmbed(ctx, &transport.BatchEmbedRequest{
+			Texts:     []string{"a", "b", "c"},
+			Model:     "ada-002",
+			Provider:  "openai",
+			BatchSize: 2,
+		}); err != nil {
+			t.Fatalf("BatchEmbed: %v", err)
+		}
+		want := &service.BatchEmbedRequest{Texts: []string{"a", "b", "c"}, Model: "ada-002", Provider: "openai", BatchSize: 2}
+		if !reflect.DeepEqual(svc.lastBatch, want) {
+			t.Errorf("service received %+v, want %+v", svc.lastBatch, want)
+		}
+	})
 }
 
 func TestMCP_Rebalance_RPCs(t *testing.T) {
@@ -507,6 +589,19 @@ func TestMCP_Rebalance_RPCs(t *testing.T) {
 				}
 			},
 		},
+	})
+
+	t.Run("CreateRebalancePlan/AllOptions", func(t *testing.T) {
+		svc := newMinimalRebalanceSvc()
+		tr, cleanup := connectRebalanceInProcess(t, svc)
+		defer cleanup()
+		if _, err := tr.CreateRebalancePlan(ctx, &transport.RebalancePlanRequest{MaxMoves: 10, DryRun: true, TargetBalance: 0.2}); err != nil {
+			t.Fatalf("CreateRebalancePlan: %v", err)
+		}
+		want := &service.RebalancePlanOptions{MaxMoves: 10, DryRun: true, TargetBalance: 0.2}
+		if !reflect.DeepEqual(svc.lastPlanOpts, want) {
+			t.Errorf("service received %+v, want %+v", svc.lastPlanOpts, want)
+		}
 	})
 
 	t.Run("ExecuteRebalance/NilPlan", func(t *testing.T) {

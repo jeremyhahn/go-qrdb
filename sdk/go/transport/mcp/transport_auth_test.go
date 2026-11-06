@@ -62,6 +62,9 @@ type mockUserSvc struct {
 	lastSuspend   uint64
 	lastUnsuspend uint64
 
+	lastBindUser         uint64
+	lastBindThumbprint   string
+	lastBindNotAfter     int64
 	lastUnbindUser       uint64
 	lastUnbindThumbprint string
 
@@ -206,8 +209,13 @@ func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.U
 	return nil, nil
 }
 
-func (m *mockUserSvc) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
-	return nil, nil
+func (m *mockUserSvc) AddCertBinding(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastBindUser = userID
+	m.lastBindThumbprint = thumbprint
+	m.lastBindNotAfter = notAfterUnix
+	return &user.User{ID: userID}, nil
 }
 
 func (m *mockUserSvc) RemoveCertBinding(_ context.Context, userID uint64, thumbprint string) (*user.User, error) {
@@ -955,6 +963,27 @@ func TestGetRole_ServiceError(t *testing.T) {
 
 // TestRemoveCertBinding_Success checks that the user ID and thumbprint reach
 // the user service and that its user comes back.
+func TestAddCertBinding_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	const notAfter = int64(1893456000)
+	u, err := tr.AddCertBinding(context.Background(), 42, "aa:bb:cc:dd", notAfter)
+	if err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	if u.ID != 42 {
+		t.Errorf("user ID = %d, want 42", u.ID)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastBindUser != 42 || svc.lastBindThumbprint != "aa:bb:cc:dd" || svc.lastBindNotAfter != notAfter {
+		t.Errorf("service received (%d, %q, %d), want (42, %q, %d)",
+			svc.lastBindUser, svc.lastBindThumbprint, svc.lastBindNotAfter, "aa:bb:cc:dd", notAfter)
+	}
+}
+
 func TestRemoveCertBinding_Success(t *testing.T) {
 	svc := newMockUserSvc()
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
