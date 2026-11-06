@@ -445,6 +445,7 @@ func TestPebbleStateMachine_InvalidPayload(t *testing.T) {
 		open func(*testing.T) *PebbleStateMachine
 		cmd  []byte
 	}{
+		{"delete", openExtendedStore, []byte{kv.OpDelete}},
 		{"mvcc put", openExtendedStore, []byte{protocol.OpMVCCPut}},
 		{"mvcc delete", openExtendedStore, []byte{protocol.OpMVCCDelete}},
 		{"batch", openExtendedStore, []byte{protocol.OpBatch}},
