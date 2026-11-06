@@ -21,12 +21,16 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
 // openStore is a test helper that creates, opens, and registers cleanup for
@@ -396,6 +400,11 @@ func TestPebbleStateMachine_LookupString(t *testing.T) {
 	if !bytes.Equal(val.([]byte), []byte("val")) {
 		t.Fatalf("expected 'val', got %q", val)
 	}
+
+	var knf *kv.KeyNotFoundError
+	if _, err := s.Lookup(context.Background(), "nonexistent"); !errors.As(err, &knf) {
+		t.Fatalf("Lookup(string) of a missing key: got %v, want *kv.KeyNotFoundError", err)
+	}
 }
 
 func TestPebbleStateMachine_LookupListQueryAll(t *testing.T) {
@@ -482,6 +491,140 @@ func TestPebbleStateMachine_LookupListQueryExcludesMetadata(t *testing.T) {
 		if len(k) > 0 && k[0] == '\x00' {
 			t.Fatalf("internal key %q should be excluded from ListQuery results", k)
 		}
+	}
+}
+
+// TestStateMachine_EnumerationExcludesInternalKeys lists and prefix-scans both
+// state machines over a keyspace seeded with every internal namespace. A
+// whole-keyspace enumeration must disclose only the user key, while one rooted
+// at a table's own prefix must return the table's rows: the relational layer
+// reaches the state machine as exactly that scan.
+func TestStateMachine_EnumerationExcludesInternalKeys(t *testing.T) {
+	seed := []string{
+		"user:key",
+		"__sys:role:admin",
+		"ts:metric:cpu",
+		"idx:metric:cpu",
+		"idx:tag:host:server1",
+		"retention:cpu",
+		"__tbl:shop:1/row",
+		"__idx:shop:1:uq_e/a@b",
+		"__seq:shop:__tableid",
+	}
+	type lookuper interface {
+		Lookup(context.Context, any) (any, error)
+	}
+	openPebble := func(t *testing.T) lookuper {
+		s := openStore(t)
+		entries := make([]sm.Entry, len(seed))
+		for i, k := range seed {
+			entries[i] = putEntry(uint64(i+1), k, "v")
+		}
+		applyEntries(t, s, entries)
+		return s
+	}
+	openMVCC := func(t *testing.T) lookuper {
+		s := newTestMVCCStateMachine(t)
+		entries := make([]sm.Entry, len(seed))
+		for i, k := range seed {
+			entries[i] = mvccPutEntry(uint64(i+1), []byte(k), []byte("v"), 0)
+		}
+		applyMVCCEntries(t, s, entries)
+		return s
+	}
+	for _, tc := range []struct {
+		name  string
+		open  func(*testing.T) lookuper
+		query any
+		want  []string
+	}{
+		{"pebble list", openPebble, kv.ListQuery{}, []string{"user:key"}},
+		{"mvcc list", openMVCC, kv.ListQuery{}, []string{"user:key"}},
+		{"pebble scan", openPebble, &statemachine.PrefixQuery{}, []string{"user:key"}},
+		{"mvcc scan", openMVCC, &statemachine.PrefixQuery{}, []string{"user:key"}},
+		{"pebble scan of a table's rows", openPebble,
+			&statemachine.PrefixQuery{Prefix: []byte("__tbl:shop:1/")}, []string{"__tbl:shop:1/row"}},
+		{"pebble list under an all-0xFF prefix", openPebble,
+			kv.ListQuery{Prefix: string([]byte{0xFF, 0xFF})}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tc.open(t).Lookup(context.Background(), tc.query)
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			var got []string
+			switch r := result.(type) {
+			case []string:
+				got = r
+			case map[string][]byte:
+				for k := range r {
+					got = append(got, k)
+				}
+			default:
+				t.Fatalf("Lookup returned %T", result)
+			}
+			sort.Strings(got)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("Lookup = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsInternalKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{name: "sys_prefix", key: "__sys:role:admin", want: true},
+		{name: "ts_prefix", key: "ts:metric:cpu", want: true},
+		{name: "idx_metric_prefix", key: "idx:metric:cpu", want: true},
+		{name: "idx_tag_prefix", key: "idx:tag:host:server1", want: true},
+		{name: "retention_prefix", key: "retention:cpu", want: true},
+		{name: "table_row_prefix", key: "__tbl:shop:1/row", want: true},
+		{name: "table_index_prefix", key: "__idx:shop:1:uq_e/a@b", want: true},
+		{name: "table_sequence_prefix", key: "__seq:shop:__autoinc:1", want: true},
+		{name: "user_key", key: "user:key", want: false},
+		{name: "empty_key", key: "", want: false},
+		{name: "regular_key", key: "regular-key", want: false},
+		{name: "ts_without_colon", key: "tsdata", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isInternalKey(tt.key)
+			if got != tt.want {
+				t.Fatalf("isInternalKey(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSkipInternalKeyFilter_MatchesTheEnumeratingNamespaces pins the skip
+// rule this package's listKeys and scanPrefix consult. The relational row and
+// index namespaces must earn the escape -- a table scan reaches this state
+// machine as a prefix scan of "__tbl:{db}:{id}/" and would otherwise come back
+// empty -- while the namespaces nothing enumerates must not.
+func TestSkipInternalKeyFilter_MatchesTheEnumeratingNamespaces(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{name: "system_store", prefix: "__sys:roles/", want: true},
+		{name: "table_rows", prefix: "__tbl:shop:1/", want: true},
+		{name: "table_index", prefix: "__idx:shop:1:uq_e/", want: true},
+		{name: "sequences", prefix: "__seq:", want: false},
+		{name: "time_series", prefix: "ts:", want: false},
+		{name: "whole_keyspace", prefix: "", want: false},
+		{name: "spanning_underscore", prefix: "_", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := skipInternalKeyFilter(tt.prefix); got != tt.want {
+				t.Fatalf("skipInternalKeyFilter(%q) = %v, want %v", tt.prefix, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -612,6 +755,12 @@ func TestPebbleStateMachine_SnapshotEmptyDB(t *testing.T) {
 	var buf bytes.Buffer
 	if err := s.SaveSnapshot(context.Background(), snapCtx, &buf, nil); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if buf.Len() < 4 {
+		t.Fatalf("empty snapshot is %d bytes, want at least the 4-byte count", buf.Len())
+	}
+	if count := binary.LittleEndian.Uint32(buf.Bytes()[:4]); count != 0 {
+		t.Fatalf("empty snapshot count = %d, want 0", count)
 	}
 
 	// Add a key, then recover empty snapshot: key should be gone.

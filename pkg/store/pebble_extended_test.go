@@ -1518,6 +1518,24 @@ func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
 	}
 }
 
+func TestPebbleStateMachine_Lookup_TSRichQuery(t *testing.T) {
+	s := openStoreWithTS(t)
+
+	result, err := s.Lookup(context.Background(), timeseries.TSRichQueryRequest{
+		Request: &timeseries.QueryRequest{
+			Metric:    "cpu",
+			StartTime: time.Unix(0, 0),
+			EndTime:   time.Unix(0, 0).Add(time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Lookup TSRichQueryRequest: %v", err)
+	}
+	if _, ok := result.(*timeseries.QueryResult); !ok {
+		t.Fatalf("Lookup TSRichQueryRequest returned %T, want *timeseries.QueryResult", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: Watch hub integration
 // ---------------------------------------------------------------------------
@@ -1558,6 +1576,9 @@ func TestPebbleStateMachine_WatchNotifies(t *testing.T) {
 		{"kv delete with prev", func(int64) []byte { return kvPut("k", "v") },
 			func(int64) []byte { return kvDelete("k") }, watch.EventDelete, true},
 		{"mvcc put", nil, func(int64) []byte { return mvccPut("k", 0) }, watch.EventPut, false},
+		{"mvcc put if absent", nil, func(int64) []byte {
+			return mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("k"), []byte("val"), 0))
+		}, watch.EventPut, false},
 		{"mvcc overwrite with prev", func(int64) []byte { return mvccPut("k", 0) },
 			func(int64) []byte { return mvccPut("k", 0) }, watch.EventPut, true},
 		{"mvcc delete", func(int64) []byte { return mvccPut("k", 0) },
