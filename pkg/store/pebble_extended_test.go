@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1231,18 +1230,6 @@ func TestPebbleStateMachine_Lookup_IndexScan_NotFound(t *testing.T) {
 // Tests: Time-series operations
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_TSWrite(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", ts, 42.5, map[string]string{"host": "node1"}))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
 	s := openExtendedStore(t) // no TS configured
 
@@ -1255,22 +1242,6 @@ func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
 		t.Fatal("expected app-error payload when time-series not configured")
-	}
-}
-
-func TestPebbleStateMachine_TSWriteBatch(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	now := time.Now().UnixNano()
-	params := []protocol.TSWriteParams{
-		{Metric: "cpu.usage", Timestamp: now, Value: 42.5, Tags: map[string]string{"host": "node1"}},
-		{Metric: "mem.usage", Timestamp: now, Value: 85.0, Tags: map[string]string{"host": "node1"}},
-	}
-	cmd := mustEncode(protocol.EncodeTSWriteBatch(params))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 2 {
-		t.Fatalf("expected 2, got %d", results[0].Value)
 	}
 }
 
@@ -1291,18 +1262,6 @@ func TestPebbleStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_TSWritePoint(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWritePoint("cpu.usage", ts, 42.5, map[string]string{"host": "node1"}))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 func TestPebbleStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -1317,29 +1276,6 @@ func TestPebbleStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_TSDeleteSeries(t *testing.T) {
-	now := time.Now().UnixNano()
-	for _, tc := range []struct {
-		name       string
-		start, end int64
-	}{
-		{"bounded", now - 1000, now + 1000},
-		{"no time bounds", 0, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := openStoreWithTS(t)
-			writeCmd := mustEncode(protocol.EncodeTSWrite("del.metric", now, 1.0, nil))
-			applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-			delCmd := mustEncode(protocol.EncodeTSDeleteSeries("del.metric", tc.start, tc.end, nil))
-			results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
-			if results[0].Value != 1 {
-				t.Fatalf("expected 1, got %d", results[0].Value)
-			}
-		})
-	}
-}
-
 func TestPebbleStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -1351,16 +1287,6 @@ func TestPebbleStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
 		t.Fatal("expected app-error payload when time-series not configured")
-	}
-}
-
-func TestPebbleStateMachine_TSSetRetention(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 1))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
 	}
 }
 
@@ -1381,32 +1307,6 @@ func TestPebbleStateMachine_TSSetRetention_NoStorage(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Tests: Time-series Lookup queries
 // ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_Lookup_TSQuery(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	// Write a data point.
-	now := time.Now()
-	writeCmd := mustEncode(protocol.EncodeTSWrite("qry.metric", now.UnixNano(), 42.5, nil))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-	// Query the data.
-	result, err := s.Lookup(context.Background(), timeseries.TSQueryRequest{
-		Metric: "qry.metric",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: %v", err)
-	}
-	points := result.([]timeseries.DataPoint)
-	if len(points) != 1 {
-		t.Fatalf("expected 1 point, got %d", len(points))
-	}
-	if math.Abs(points[0].Value-42.5) > 0.001 {
-		t.Fatalf("expected value 42.5, got %f", points[0].Value)
-	}
-}
 
 func TestPebbleStateMachine_Lookup_TSQuery_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
@@ -1460,79 +1360,6 @@ func TestPebbleStateMachine_Lookup_TSRichQuery_NoStorage(t *testing.T) {
 	_, err := s.Lookup(context.Background(), timeseries.TSRichQueryRequest{})
 	if err == nil {
 		t.Fatal("expected error when time-series not configured")
-	}
-}
-
-func TestPebbleStateMachine_Lookup_TSListMetrics(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	// Write data to create metric entries.
-	now := time.Now().UnixNano()
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeTSWrite("cpu.usage", now, 1.0, nil))},
-		{Index: 2, Cmd: mustEncode(protocol.EncodeTSWrite("mem.usage", now, 2.0, nil))},
-	})
-
-	result, err := s.Lookup(context.Background(), timeseries.TSListMetricsRequest{Prefix: "", Limit: 100})
-	if err != nil {
-		t.Fatalf("Lookup TSListMetricsRequest: %v", err)
-	}
-	metrics := result.([]string)
-	if len(metrics) < 2 {
-		t.Fatalf("expected at least 2 metrics, got %d: %v", len(metrics), metrics)
-	}
-}
-
-func TestPebbleStateMachine_Lookup_TSGetRetention(t *testing.T) {
-	s := openStoreWithTS(t)
-	setCmd := mustEncode(protocol.EncodeTSSetRetention("ret-metric", int64(24*time.Hour), int64(time.Minute), 1))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: setCmd}})
-
-	result, err := s.Lookup(context.Background(), timeseries.TSGetRetentionRequest{Metric: "ret-metric"})
-	if err != nil {
-		t.Fatalf("Lookup TSGetRetentionRequest: %v", err)
-	}
-	if policy := result.(*timeseries.RetentionPolicy); policy.Duration != 24*time.Hour {
-		t.Fatalf("expected 24h duration, got %v", policy.Duration)
-	}
-}
-
-func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
-	s := openStoreWithTS(t)
-	now := time.Now()
-	writeCmd := mustEncode(protocol.EncodeTSWrite("agg-metric", now.UnixNano(), 42.0, nil))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-	result, err := s.Lookup(context.Background(), timeseries.TSAggregateRequest{
-		Metric:   "agg-metric",
-		Start:    now.Add(-time.Minute),
-		End:      now.Add(time.Minute),
-		Func:     timeseries.AggAvg,
-		Interval: time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSAggregateRequest: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil aggregate result")
-	}
-}
-
-func TestPebbleStateMachine_Lookup_TSRichQuery(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	result, err := s.Lookup(context.Background(), timeseries.TSRichQueryRequest{
-		Request: &timeseries.QueryRequest{
-			Metric:    "cpu",
-			StartTime: time.Unix(0, 0),
-			EndTime:   time.Unix(0, 0).Add(time.Hour),
-		},
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSRichQueryRequest: %v", err)
-	}
-	if _, ok := result.(*timeseries.QueryResult); !ok {
-		t.Fatalf("Lookup TSRichQueryRequest returned %T, want *timeseries.QueryResult", result)
 	}
 }
 

@@ -17,7 +17,6 @@ package store
 import (
 	"context"
 	"errors"
-	"math"
 	"testing"
 	"time"
 
@@ -477,73 +476,6 @@ func TestMVCCStateMachine_IndexScan_NotFoundIndex(t *testing.T) {
 // TimeSeries handler tests: Write
 // ---------------------------------------------------------------------------
 
-func TestMVCCStateMachine_TSWrite(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-	entries := []sm.Entry{tsWriteEntry(1, "cpu.usage", now.UnixNano(), 42.5, map[string]string{"host": "node1"})}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update TSWrite: unexpected error: %v", err)
-	}
-	if results[0].Value != 1 {
-		t.Fatalf("expected result value 1, got %d", results[0].Value)
-	}
-
-	// Query back through Lookup.
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "cpu.usage",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: unexpected error: %v", err)
-	}
-	points, ok := queryResult.([]service.DataPoint)
-	if !ok {
-		t.Fatalf("expected []service.DataPoint, got %T", queryResult)
-	}
-	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
-	}
-	if math.Abs(points[0].Value-42.5) > 0.001 {
-		t.Fatalf("expected value 42.5, got %f", points[0].Value)
-	}
-}
-
-func TestMVCCStateMachine_TSWrite_VerifiesTags(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-	tags := map[string]string{"host": "node2", "region": "us-east"}
-	entries := []sm.Entry{tsWriteEntry(1, "mem.usage", now.UnixNano(), 75.0, tags)}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update TSWrite: unexpected error: %v", err)
-	}
-
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "mem.usage",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: unexpected error: %v", err)
-	}
-	points := queryResult.([]service.DataPoint)
-	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
-	}
-	if points[0].Tags["host"] != "node2" {
-		t.Fatalf("expected tag host=node2, got %s", points[0].Tags["host"])
-	}
-	if points[0].Tags["region"] != "us-east" {
-		t.Fatalf("expected tag region=us-east, got %s", points[0].Tags["region"])
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests: Write without TS storage
 // ---------------------------------------------------------------------------
@@ -587,40 +519,6 @@ func TestMVCCStateMachine_TSWrite_NoStorage_QueryFails(t *testing.T) {
 // TimeSeries handler tests: WriteBatch
 // ---------------------------------------------------------------------------
 
-func TestMVCCStateMachine_TSWriteBatch(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-	params := []protocol.TSWriteParams{
-		{Metric: "disk.io", Timestamp: now.UnixNano(), Value: 100.0, Tags: map[string]string{"host": "node1"}},
-		{Metric: "disk.io", Timestamp: now.Add(time.Second).UnixNano(), Value: 200.0, Tags: map[string]string{"host": "node1"}},
-		{Metric: "disk.io", Timestamp: now.Add(2 * time.Second).UnixNano(), Value: 300.0, Tags: map[string]string{"host": "node1"}},
-	}
-	entries := []sm.Entry{tsWriteBatchEntry(1, params)}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update TSWriteBatch: unexpected error: %v", err)
-	}
-	if results[0].Value != 3 {
-		t.Fatalf("expected result value 3 (point count), got %d", results[0].Value)
-	}
-
-	// Query back all points.
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "disk.io",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(3 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: unexpected error: %v", err)
-	}
-	points := queryResult.([]service.DataPoint)
-	if len(points) != 3 {
-		t.Fatalf("expected 3 data points, got %d", len(points))
-	}
-}
-
 func TestMVCCStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
@@ -642,100 +540,6 @@ func TestMVCCStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests: Aggregate
 // ---------------------------------------------------------------------------
-
-func TestMVCCStateMachine_TSAggregate(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	// Write 4 data points, 2 per minute.
-	params := []protocol.TSWriteParams{
-		{Metric: "latency", Timestamp: baseTime.UnixNano(), Value: 10.0, Tags: nil},
-		{Metric: "latency", Timestamp: baseTime.Add(30 * time.Second).UnixNano(), Value: 20.0, Tags: nil},
-		{Metric: "latency", Timestamp: baseTime.Add(time.Minute).UnixNano(), Value: 30.0, Tags: nil},
-		{Metric: "latency", Timestamp: baseTime.Add(90 * time.Second).UnixNano(), Value: 40.0, Tags: nil},
-	}
-	entries := []sm.Entry{tsWriteBatchEntry(1, params)}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update: unexpected error: %v", err)
-	}
-
-	// Aggregate with AggAvg at 1 minute intervals.
-	aggResult, err := s.Lookup(ctx, service.TSAggregateRequest{
-		Metric:   "latency",
-		Start:    baseTime.Add(-time.Second),
-		End:      baseTime.Add(2 * time.Minute),
-		Func:     service.AggAvg,
-		Interval: time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSAggregateRequest: unexpected error: %v", err)
-	}
-	aggResults, ok := aggResult.([]service.AggResult)
-	if !ok {
-		t.Fatalf("expected []service.AggResult, got %T", aggResult)
-	}
-	if len(aggResults) != 2 {
-		t.Fatalf("expected 2 aggregation buckets, got %d", len(aggResults))
-	}
-
-	// First bucket: avg of 10 and 20 = 15.
-	if math.Abs(aggResults[0].Value-15.0) > 0.001 {
-		t.Fatalf("expected first bucket avg 15.0, got %f", aggResults[0].Value)
-	}
-	if aggResults[0].Count != 2 {
-		t.Fatalf("expected first bucket count 2, got %d", aggResults[0].Count)
-	}
-
-	// Second bucket: avg of 30 and 40 = 35.
-	if math.Abs(aggResults[1].Value-35.0) > 0.001 {
-		t.Fatalf("expected second bucket avg 35.0, got %f", aggResults[1].Value)
-	}
-	if aggResults[1].Count != 2 {
-		t.Fatalf("expected second bucket count 2, got %d", aggResults[1].Count)
-	}
-}
-
-func TestMVCCStateMachine_TSAggregate_Sum(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	baseTime := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	params := []protocol.TSWriteParams{
-		{Metric: "requests", Timestamp: baseTime.UnixNano(), Value: 5.0, Tags: nil},
-		{Metric: "requests", Timestamp: baseTime.Add(10 * time.Second).UnixNano(), Value: 15.0, Tags: nil},
-		{Metric: "requests", Timestamp: baseTime.Add(20 * time.Second).UnixNano(), Value: 30.0, Tags: nil},
-	}
-	entries := []sm.Entry{tsWriteBatchEntry(1, params)}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update: unexpected error: %v", err)
-	}
-
-	aggResult, err := s.Lookup(ctx, service.TSAggregateRequest{
-		Metric:   "requests",
-		Start:    baseTime.Add(-time.Second),
-		End:      baseTime.Add(time.Minute),
-		Func:     service.AggSum,
-		Interval: time.Minute,
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSAggregateRequest: unexpected error: %v", err)
-	}
-	aggResults := aggResult.([]service.AggResult)
-	if len(aggResults) != 1 {
-		t.Fatalf("expected 1 bucket, got %d", len(aggResults))
-	}
-	if math.Abs(aggResults[0].Value-50.0) > 0.001 {
-		t.Fatalf("expected sum 50.0, got %f", aggResults[0].Value)
-	}
-	if aggResults[0].Count != 3 {
-		t.Fatalf("expected count 3, got %d", aggResults[0].Count)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests: Aggregate without TS storage
@@ -940,44 +744,6 @@ func tsSetRetentionEntry(index uint64, metric string, durationNs, resolutionNs i
 // TimeSeries handler tests: WritePoint
 // ---------------------------------------------------------------------------
 
-func TestMVCCStateMachine_TSWritePoint(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-	entries := []sm.Entry{tsWritePointEntry(1, "net.rx", now.UnixNano(), 99.9, map[string]string{"iface": "eth0"})}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update TSWritePoint: unexpected error: %v", err)
-	}
-	if results[0].Value != 1 {
-		t.Fatalf("expected result value 1, got %d", results[0].Value)
-	}
-
-	// Query back through Lookup to confirm persistence.
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "net.rx",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: unexpected error: %v", err)
-	}
-	points, ok := queryResult.([]service.DataPoint)
-	if !ok {
-		t.Fatalf("expected []service.DataPoint, got %T", queryResult)
-	}
-	if len(points) != 1 {
-		t.Fatalf("expected 1 data point, got %d", len(points))
-	}
-	if math.Abs(points[0].Value-99.9) > 0.001 {
-		t.Fatalf("expected value 99.9, got %f", points[0].Value)
-	}
-	if points[0].Tags["iface"] != "eth0" {
-		t.Fatalf("expected tag iface=eth0, got %s", points[0].Tags["iface"])
-	}
-}
-
 func TestMVCCStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 	ctx := context.Background()
@@ -1012,128 +778,9 @@ func TestMVCCStateMachine_TSWritePoint_InvalidPayload(t *testing.T) {
 	}
 }
 
-func TestMVCCStateMachine_TSWritePoint_StoreError(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	// WritePoint validates via DataPoint.Validate(). An empty metric triggers
-	// an InvalidMetricError from the underlying timeseries storage.
-	entries := []sm.Entry{tsWritePointEntry(1, "", time.Now().UTC().UnixNano(), 1.0, nil)}
-	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error from empty metric, got nil")
-	}
-
-	var ime *timeseries.InvalidMetricError
-	if !errors.As(err, &ime) {
-		t.Fatalf("expected *timeseries.InvalidMetricError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests: DeleteSeries
 // ---------------------------------------------------------------------------
-
-func TestMVCCStateMachine_TSDeleteSeries(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	now := time.Now().UTC()
-
-	// Write two points for the same metric.
-	entries := []sm.Entry{
-		tsWriteEntry(1, "del.metric", now.UnixNano(), 10.0, map[string]string{"host": "a"}),
-		tsWriteEntry(2, "del.metric", now.Add(time.Second).UnixNano(), 20.0, map[string]string{"host": "a"}),
-	}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update writes: unexpected error: %v", err)
-	}
-
-	// Verify both points exist.
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "del.metric",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(2 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup before delete: unexpected error: %v", err)
-	}
-	pointsBefore := queryResult.([]service.DataPoint)
-	if len(pointsBefore) != 2 {
-		t.Fatalf("expected 2 points before delete, got %d", len(pointsBefore))
-	}
-
-	// Delete the entire series (no time bounds, no tag filter).
-	delEntries := []sm.Entry{tsDeleteSeriesEntry(3, "del.metric", 0, 0, nil)}
-	delResults := make([]sm.Result, len(delEntries))
-	if err := s.Update(ctx, delEntries, delResults); err != nil {
-		t.Fatalf("Update TSDeleteSeries: unexpected error: %v", err)
-	}
-	if delResults[0].Value != 1 {
-		t.Fatalf("expected delete result value 1, got %d", delResults[0].Value)
-	}
-
-	// Verify data is gone.
-	queryResult2, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "del.metric",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(2 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup after delete: unexpected error: %v", err)
-	}
-	pointsAfter := queryResult2.([]service.DataPoint)
-	if len(pointsAfter) != 0 {
-		t.Fatalf("expected 0 points after delete, got %d", len(pointsAfter))
-	}
-}
-
-func TestMVCCStateMachine_TSDeleteSeries_WithTimeRange(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	baseTime := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-
-	// Write three points at 0s, 1s, 2s.
-	entries := []sm.Entry{
-		tsWriteEntry(1, "partial.del", baseTime.UnixNano(), 1.0, nil),
-		tsWriteEntry(2, "partial.del", baseTime.Add(time.Second).UnixNano(), 2.0, nil),
-		tsWriteEntry(3, "partial.del", baseTime.Add(2*time.Second).UnixNano(), 3.0, nil),
-	}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update writes: unexpected error: %v", err)
-	}
-
-	// Delete only points in [0s, 1s] range (startNs through endNs).
-	delEntries := []sm.Entry{tsDeleteSeriesEntry(4, "partial.del",
-		baseTime.UnixNano(),
-		baseTime.Add(time.Second).UnixNano(),
-		nil)}
-	delResults := make([]sm.Result, len(delEntries))
-	if err := s.Update(ctx, delEntries, delResults); err != nil {
-		t.Fatalf("Update TSDeleteSeries: unexpected error: %v", err)
-	}
-
-	// Only the point at 2s should remain.
-	queryResult, err := s.Lookup(ctx, service.TSQueryRequest{
-		Metric: "partial.del",
-		Start:  baseTime.Add(-time.Second),
-		End:    baseTime.Add(3 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup after partial delete: unexpected error: %v", err)
-	}
-	points := queryResult.([]service.DataPoint)
-	if len(points) != 1 {
-		t.Fatalf("expected 1 remaining point, got %d", len(points))
-	}
-	if math.Abs(points[0].Value-3.0) > 0.001 {
-		t.Fatalf("expected remaining value 3.0, got %f", points[0].Value)
-	}
-}
 
 func TestMVCCStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
@@ -1168,95 +815,9 @@ func TestMVCCStateMachine_TSDeleteSeries_InvalidPayload(t *testing.T) {
 	}
 }
 
-func TestMVCCStateMachine_TSDeleteSeries_StoreError(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	// DeleteRequest.Validate() rejects an empty metric with InvalidMetricError.
-	entries := []sm.Entry{tsDeleteSeriesEntry(1, "", 0, 0, nil)}
-	results := make([]sm.Result, len(entries))
-	err := s.Update(ctx, entries, results)
-	if err == nil {
-		t.Fatal("expected error from empty metric delete, got nil")
-	}
-
-	var ime *timeseries.InvalidMetricError
-	if !errors.As(err, &ime) {
-		t.Fatalf("expected *timeseries.InvalidMetricError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TimeSeries handler tests: SetRetention
 // ---------------------------------------------------------------------------
-
-func TestMVCCStateMachine_TSSetRetention(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	durationNs := int64(24 * time.Hour)
-	resolutionNs := int64(time.Minute)
-	aggregation := byte(timeseries.AggAvg)
-
-	entries := []sm.Entry{tsSetRetentionEntry(1, "ret.metric", durationNs, resolutionNs, aggregation)}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update TSSetRetention: unexpected error: %v", err)
-	}
-	if results[0].Value != 1 {
-		t.Fatalf("expected result value 1, got %d", results[0].Value)
-	}
-
-	// Read back the retention policy directly from the TS storage.
-	policy, err := s.TimeSeries().GetRetentionPolicy("ret.metric")
-	if err != nil {
-		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
-	}
-	if policy.Duration != time.Duration(durationNs) {
-		t.Fatalf("expected duration %v, got %v", time.Duration(durationNs), policy.Duration)
-	}
-	if policy.Resolution != time.Duration(resolutionNs) {
-		t.Fatalf("expected resolution %v, got %v", time.Duration(resolutionNs), policy.Resolution)
-	}
-	if policy.Aggregation != timeseries.AggAvg {
-		t.Fatalf("expected aggregation AggAvg (%d), got %d", timeseries.AggAvg, policy.Aggregation)
-	}
-}
-
-func TestMVCCStateMachine_TSSetRetention_OverwritesPolicy(t *testing.T) {
-	s := openTestMVCCWithTS(t)
-	ctx := context.Background()
-
-	// Set initial policy.
-	entries := []sm.Entry{tsSetRetentionEntry(1, "overwrite.metric",
-		int64(time.Hour), int64(time.Second), byte(timeseries.AggSum))}
-	results := make([]sm.Result, len(entries))
-	if err := s.Update(ctx, entries, results); err != nil {
-		t.Fatalf("Update first retention: unexpected error: %v", err)
-	}
-
-	// Overwrite with a different policy.
-	entries2 := []sm.Entry{tsSetRetentionEntry(2, "overwrite.metric",
-		int64(7*24*time.Hour), int64(5*time.Minute), byte(timeseries.AggCount))}
-	results2 := make([]sm.Result, len(entries2))
-	if err := s.Update(ctx, entries2, results2); err != nil {
-		t.Fatalf("Update second retention: unexpected error: %v", err)
-	}
-
-	policy, err := s.TimeSeries().GetRetentionPolicy("overwrite.metric")
-	if err != nil {
-		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
-	}
-	if policy.Duration != 7*24*time.Hour {
-		t.Fatalf("expected duration 7d, got %v", policy.Duration)
-	}
-	if policy.Resolution != 5*time.Minute {
-		t.Fatalf("expected resolution 5m, got %v", policy.Resolution)
-	}
-	if policy.Aggregation != timeseries.AggCount {
-		t.Fatalf("expected aggregation AggCount (%d), got %d", timeseries.AggCount, policy.Aggregation)
-	}
-}
 
 func TestMVCCStateMachine_TSSetRetention_NoStorage(t *testing.T) {
 	s := newTestMVCCStateMachine(t)

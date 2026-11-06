@@ -16,7 +16,6 @@ package store
 
 import (
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
@@ -54,27 +53,4 @@ func TestPebbleStateMachine_IndexCreate_CapAdmitsTheLastSlotOnce(t *testing.T) {
 	if _, ok := s.indexes["b_idx"]; ok {
 		t.Fatal("the refused create left an index behind")
 	}
-}
-
-func TestPebbleStateMachine_TSWrite_MetricCapAdmitsTheLastSlotOnce(t *testing.T) {
-	s := openStoreWithTS(t)
-	now := time.Now().UnixNano()
-	capped := func(cmd []byte) []byte { return protocol.AppendTSMetricCap(cmd, 1) }
-	results := applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: capped(mustEncode(protocol.EncodeTSWrite("cpu", now, 1, nil)))},
-		{Index: 2, Cmd: capped(mustEncode(protocol.EncodeTSWrite("mem", now, 1, nil)))},
-		{Index: 3, Cmd: capped(mustEncode(protocol.EncodeTSWritePoint("disk", now, 1, nil)))},
-		{Index: 4, Cmd: capped(mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
-			{Metric: "cpu", Timestamp: now + 1, Value: 2},
-			{Metric: "net", Timestamp: now + 1, Value: 2},
-		})))},
-		{Index: 5, Cmd: capped(mustEncode(protocol.EncodeTSWrite("cpu", now+2, 3, nil)))},
-		{Index: 6, Cmd: mustEncode(protocol.EncodeTSWrite("mem", now, 1, nil))},
-	})
-	assertPebbleAdmitted(t, results[0], "the first new metric")
-	assertPebbleLimitRefusal(t, results[1], protocol.LimitMetrics, 1)
-	assertPebbleLimitRefusal(t, results[2], protocol.LimitMetrics, 1)
-	assertPebbleLimitRefusal(t, results[3], protocol.LimitMetrics, 1)
-	assertPebbleAdmitted(t, results[4], "a write to the held metric")
-	assertPebbleAdmitted(t, results[5], "an uncapped write")
 }

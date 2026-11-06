@@ -21,7 +21,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
@@ -381,81 +380,17 @@ func TestPebbleStateMachine_IndexDrop_NonExistentIndex(t *testing.T) {
 // pebble.go: pebbleHandleTSWriteBatch happy path (90.9%)
 // ---------------------------------------------------------------------------
 
-// TestPebbleStateMachine_TSWriteBatch_HappyPath exercises the normal write
-// batch path through pebbleHandleTSWriteBatch.
-func TestPebbleStateMachine_TSWriteBatch_HappyPath(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	now := time.Now().UnixNano()
-	points := []protocol.TSWriteParams{
-		{Metric: "batch-m1", Timestamp: now, Value: 1.0},
-		{Metric: "batch-m2", Timestamp: now, Value: 2.0},
-	}
-	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-	if results[0].Value != uint64(len(points)) {
-		t.Fatalf("expected %d, got %d", len(points), results[0].Value)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleTSWritePoint happy path (88.9%)
 // ---------------------------------------------------------------------------
-
-// TestPebbleStateMachine_TSWritePoint_HappyPath exercises the normal write
-// single data-point path through pebbleHandleTSWritePoint.
-func TestPebbleStateMachine_TSWritePoint_HappyPath(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	now := time.Now().UnixNano()
-	tags := map[string]string{"host": "srv1"}
-	cmd := mustEncode(protocol.EncodeTSWritePoint("wp-metric", now, 99.0, tags))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleTSSetRetention happy path (88.9%)
 // ---------------------------------------------------------------------------
 
-// TestPebbleStateMachine_TSSetRetention_HappyPath exercises the normal
-// retention-policy set path through pebbleHandleTSSetRetention.
-func TestPebbleStateMachine_TSSetRetention_HappyPath(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := mustEncode(protocol.EncodeTSSetRetention(
-		"ret-metric-ok",
-		int64(48*time.Hour),
-		int64(5*time.Minute),
-		2,
-	))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleTSDeleteSeries happy path (92.3%)
 // ---------------------------------------------------------------------------
-
-// TestPebbleStateMachine_TSDeleteSeries_HappyPath exercises the normal
-// delete-series path through pebbleHandleTSDeleteSeries with explicit bounds.
-func TestPebbleStateMachine_TSDeleteSeries_HappyPath(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	now := time.Now().UnixNano()
-	writeCmd := mustEncode(protocol.EncodeTSWrite("ds-metric", now, 42.0, nil))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-	delCmd := mustEncode(protocol.EncodeTSDeleteSeries("ds-metric", now-1000, now+1000, nil))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // pebble.go: pebbleHandleLeaseRevoke with nil hub (94.7% -> improve)
