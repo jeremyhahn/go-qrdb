@@ -21,6 +21,7 @@ import (
 	"math"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -759,6 +760,43 @@ func TestPebbleStateMachine_Transaction_NonexistentKey(t *testing.T) {
 	}
 }
 
+// TestPebbleStateMachine_Transaction_RevisionCompareRejected checks that a
+// transaction comparing on a revision target is refused with an
+// application error on a non-MVCC state machine, and that its success ops
+// do not run: admitting the compare was a lost update.
+func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target byte
+	}{
+		{"create revision", protocol.CompareTargetCreateRevision},
+		{"mod revision", protocol.CompareTargetModRevision},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openExtendedStore(t)
+			putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("rev-key"), []byte("val"), 0))
+			applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
+
+			// Compare against revision 0, the exact shape that used to pass.
+			compare := mustEncode(protocol.EncodeCompare([]byte("rev-key"), tc.target, 0 /* Equal */, nil, 0, 0, 0))
+			successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("rev-result"), []byte("ok"), nil, 0))
+			cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
+			results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
+
+			msg, ok := protocol.DecodeAppError(results[0].Data)
+			if !ok {
+				t.Fatalf("expected an application error for a revision compare on a non-MVCC state machine, got Data=%v", results[0].Data)
+			}
+			if !strings.Contains(msg, "sm_type") {
+				t.Errorf("app error should name the required configuration, got %q", msg)
+			}
+			if _, err := s.getKeyInBatch(readBatch(t, s), []byte("rev-result")); err == nil {
+				t.Fatal("success op executed despite the rejected compare")
+			}
+		})
+	}
+}
+
 // TestPebbleEvaluateCompare checks a compare against the key's state read
 // through the apply batch. A non-MVCC state machine has no revisions, so a
 // revision compare fails closed even on a key that exists.
@@ -1442,6 +1480,41 @@ func TestPebbleStateMachine_Lookup_TSListMetrics(t *testing.T) {
 	metrics := result.([]string)
 	if len(metrics) < 2 {
 		t.Fatalf("expected at least 2 metrics, got %d: %v", len(metrics), metrics)
+	}
+}
+
+func TestPebbleStateMachine_Lookup_TSGetRetention(t *testing.T) {
+	s := openStoreWithTS(t)
+	setCmd := mustEncode(protocol.EncodeTSSetRetention("ret-metric", int64(24*time.Hour), int64(time.Minute), 1))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: setCmd}})
+
+	result, err := s.Lookup(context.Background(), timeseries.TSGetRetentionRequest{Metric: "ret-metric"})
+	if err != nil {
+		t.Fatalf("Lookup TSGetRetentionRequest: %v", err)
+	}
+	if policy := result.(*timeseries.RetentionPolicy); policy.Duration != 24*time.Hour {
+		t.Fatalf("expected 24h duration, got %v", policy.Duration)
+	}
+}
+
+func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
+	s := openStoreWithTS(t)
+	now := time.Now()
+	writeCmd := mustEncode(protocol.EncodeTSWrite("agg-metric", now.UnixNano(), 42.0, nil))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
+
+	result, err := s.Lookup(context.Background(), timeseries.TSAggregateRequest{
+		Metric:   "agg-metric",
+		Start:    now.Add(-time.Minute),
+		End:      now.Add(time.Minute),
+		Func:     timeseries.AggAvg,
+		Interval: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Lookup TSAggregateRequest: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil aggregate result")
 	}
 }
 
