@@ -63,6 +63,8 @@ type mockUserSvc struct {
 	lastUnsuspend uint64
 
 	certErr              error
+	certUser             *user.User
+	lastCertLookup       string
 	lastBindUser         uint64
 	lastBindThumbprint   string
 	lastBindNotAfter     int64
@@ -206,10 +208,14 @@ func (m *mockUserSvc) UnsuspendUser(_ context.Context, id uint64) error {
 	return m.unsuspendErr
 }
 
-func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, thumbprint string) (*user.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return nil, m.certErr
+	m.lastCertLookup = thumbprint
+	if m.certErr != nil {
+		return nil, m.certErr
+	}
+	return m.certUser, nil
 }
 
 func (m *mockUserSvc) AddCertBinding(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
@@ -967,8 +973,30 @@ func TestGetRole_ServiceError(t *testing.T) {
 	}
 }
 
-// TestRemoveCertBinding_Success checks that the user ID and thumbprint reach
-// the user service and that its user comes back.
+// TestGetUserByCertThumbprint_Success checks that the thumbprint reaches the
+// user service and that the bound user comes back decoded.
+func TestGetUserByCertThumbprint_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	svc.certUser = &user.User{ID: 42, Username: "alice", TenantID: "t1"}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	u, err := tr.GetUserByCertThumbprint(context.Background(), "aa:bb:cc:dd")
+	if err != nil {
+		t.Fatalf("GetUserByCertThumbprint: %v", err)
+	}
+	if u.ID != 42 || u.Username != "alice" || u.TenantID != "t1" {
+		t.Errorf("user = %+v, want ID 42 alice/t1", u)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastCertLookup != "aa:bb:cc:dd" {
+		t.Errorf("service looked up %q, want %q", svc.lastCertLookup, "aa:bb:cc:dd")
+	}
+}
+
+// TestAddCertBinding_Success checks that the user ID, thumbprint and expiry
+// reach the user service and that its user comes back.
 func TestAddCertBinding_Success(t *testing.T) {
 	svc := newMockUserSvc()
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
