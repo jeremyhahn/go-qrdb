@@ -166,6 +166,56 @@ func TestDatabaseBarrierManager_EnsureBarrier_NilConfig(t *testing.T) {
 	}
 }
 
+func TestDatabaseBarrierManager_RegisterBarrier_Success(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+
+	err := mgr.RegisterBarrier("reg-barrier-db", "", cfg, storage)
+	if err != nil {
+		t.Fatalf("RegisterBarrier: %v", err)
+	}
+
+	// Barrier should be registered but sealed (no init was done).
+	status, err := mgr.BarrierStatus("reg-barrier-db", "")
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if !status.Sealed {
+		t.Error("expected barrier to be sealed after RegisterBarrier (not initialized)")
+	}
+}
+
+func TestDatabaseBarrierManager_RegisterBarrier_DisabledNoop(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	cfg := &DatabaseBarrierConfig{Enabled: false}
+
+	err := mgr.RegisterBarrier("disabled-db", "", cfg, storage)
+	if err != nil {
+		t.Fatalf("RegisterBarrier with disabled config returned unexpected error: %v", err)
+	}
+
+	_, err = mgr.BarrierStatus("disabled-db", "")
+	if err == nil {
+		t.Error("expected error for unregistered (disabled) database barrier")
+	}
+}
+
+func TestDatabaseBarrierManager_RegisterBarrier_NilConfig(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	if err := mgr.RegisterBarrier("nil-cfg-db", "", nil, storage); err != nil {
+		t.Fatalf("RegisterBarrier with nil config returned unexpected error: %v", err)
+	}
+	if _, err := mgr.BarrierStatus("nil-cfg-db", ""); err == nil {
+		t.Error("BarrierStatus after RegisterBarrier(nil config) = nil error, want no barrier registered")
+	}
+}
+
 func TestDatabaseBarrierManager_EnsureBarrier_DuplicateError(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 	ctx := context.Background()

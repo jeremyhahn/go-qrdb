@@ -17,7 +17,7 @@ require (
 	// module's go-quicraft (#944).
 	github.com/jeremyhahn/go-quicraft/test/performance v0.24.2-alpha
 	github.com/quic-go/quic-go v0.64.1
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 )
 
 require (

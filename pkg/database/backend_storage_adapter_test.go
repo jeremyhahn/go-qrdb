@@ -252,6 +252,26 @@ func TestBackendStorageAdapter_Scan_ListError(t *testing.T) {
 	}
 }
 
+func TestBackendStorageAdapter_Scan_CallbackError(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	ctx := context.Background()
+
+	if err := a.Put(ctx, "cb/key1", []byte("v1")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := a.Put(ctx, "cb/key2", []byte("v2")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	cbErr := errors.New("callback error")
+	err := a.Scan(ctx, "cb/", func(_ string, _ []byte) error {
+		return cbErr
+	})
+	if !errors.Is(err, cbErr) {
+		t.Errorf("Scan: expected callback error, got %v", err)
+	}
+}
+
 func TestBackendStorageAdapter_Exists_GetError(t *testing.T) {
 	// Use a mock inner backend that returns an error from Get.
 	getErr := &NotFoundError{Name: "exists-get-fail"}
