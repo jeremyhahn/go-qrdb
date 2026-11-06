@@ -571,6 +571,42 @@ func TestStateMachine_EnumerationExcludesInternalKeys(t *testing.T) {
 	}
 }
 
+func TestPebbleStateMachine_ScanPrefix(t *testing.T) {
+	s := openStore(t)
+	applyEntries(t, s, []sm.Entry{
+		putEntry(1, "lim:a", "1"),
+		putEntry(2, "lim:b", "2"),
+		putEntry(3, "lim:c", "3"),
+		putEntry(4, "other:d", "4"),
+	})
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  []string
+	}{
+		{"a limit stops the scan in key order", 2, []string{"lim:a", "lim:b"}},
+		{"a limit above the match count returns every match", 10, []string{"lim:a", "lim:b", "lim:c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := s.Lookup(context.Background(), &statemachine.PrefixQuery{
+				Prefix: []byte("lim:"),
+				Limit:  tc.limit,
+			})
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			got := make([]string, 0, len(tc.want))
+			for k := range result.(map[string][]byte) {
+				got = append(got, k)
+			}
+			sort.Strings(got)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("Lookup = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsInternalKey(t *testing.T) {
 	tests := []struct {
 		name string
