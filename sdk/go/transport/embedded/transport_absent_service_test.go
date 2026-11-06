@@ -32,6 +32,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	closedCeremony := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}), WithCeremonyCA(&mockCeremonyCA{}))
 	closedLease := closedExtTransport(t, WithLeaseService(&mockLeaseService{}))
 	closedWatch := closedExtTransport(t, WithWatchService(&mockWatchService{}))
+	closedTS := closedExtTransport(t, WithTimeSeriesService(&mockTSService{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -107,6 +108,32 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		{"Watch/closed", func() error { _, err := closedWatch.Watch(ctx, "k", transport.WatchOptions{}); return err }, isClosed},
 		{"WatchPrefix/closed", func() error {
 			_, err := closedWatch.WatchPrefix(ctx, "p", transport.WatchOptions{})
+			return err
+		}, isClosed},
+		{"TSWrite", func() error { return tr.TSWrite(ctx, &transport.TSDataPoint{}) }, nilService},
+		{"TSWriteBatch", func() error { return tr.TSWriteBatch(ctx, nil) }, nilService},
+		{"TSWritePoint", func() error { return tr.TSWritePoint(ctx, &transport.TSDataPoint{}) }, nilService},
+		{"TSQuery", func() error { _, err := tr.TSQuery(ctx, &transport.TSQueryRequest{}); return err }, nilService},
+		{"TSAggregate", func() error { _, err := tr.TSAggregate(ctx, &transport.TSAggregateRequest{}); return err }, nilService},
+		{"TSRichQuery", func() error { _, err := tr.TSRichQuery(ctx, &transport.TSRichQueryRequest{}); return err }, nilService},
+		{"TSDeleteSeries", func() error { _, err := tr.TSDeleteSeries(ctx, &transport.TSDeleteRequest{}); return err }, nilService},
+		{"TSGetRetention", func() error { _, err := tr.TSGetRetention(ctx, &transport.TSGetRetentionRequest{}); return err }, nilService},
+		{"TSSetRetention", func() error { return tr.TSSetRetention(ctx, &transport.TSSetRetentionRequest{}) }, nilService},
+		{"TSListMetrics", func() error { _, err := tr.TSListMetrics(ctx, &transport.TSListMetricsRequest{}); return err }, nilService},
+		{"TSWrite/closed", func() error { return closedTS.TSWrite(ctx, &transport.TSDataPoint{}) }, isClosed},
+		{"TSWriteBatch/closed", func() error { return closedTS.TSWriteBatch(ctx, nil) }, isClosed},
+		{"TSWritePoint/closed", func() error { return closedTS.TSWritePoint(ctx, &transport.TSDataPoint{}) }, isClosed},
+		{"TSQuery/closed", func() error { _, err := closedTS.TSQuery(ctx, &transport.TSQueryRequest{}); return err }, isClosed},
+		{"TSAggregate/closed", func() error {
+			_, err := closedTS.TSAggregate(ctx, &transport.TSAggregateRequest{})
+			return err
+		}, isClosed},
+		{"TSRichQuery/closed", func() error {
+			_, err := closedTS.TSRichQuery(ctx, &transport.TSRichQueryRequest{})
+			return err
+		}, isClosed},
+		{"TSDeleteSeries/closed", func() error {
+			_, err := closedTS.TSDeleteSeries(ctx, &transport.TSDeleteRequest{})
 			return err
 		}, isClosed},
 		{"LockAcquire", func() error {

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -147,4 +148,142 @@ func TestEmbeddedTS_Request_SendsTheDocumentedRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmbeddedTS_Query_ForwardsOptions asserts the tag filter, limit and
+// order of a TSQuery reach the service as its query options.
+func TestEmbeddedTS_Query_ForwardsOptions(t *testing.T) {
+	var got timeseries.TSQueryOptions
+	tr := newExtTransport(t, WithTimeSeriesService(&mockTSService{
+		queryFn: func(_ context.Context, _ string, _, _ time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+			for _, opt := range opts {
+				opt(&got)
+			}
+			return nil, nil
+		},
+	}))
+	if _, err := tr.TSQuery(t.Context(), &transport.TSQueryRequest{
+		Metric:     "m",
+		Tags:       []transport.TSTag{{Key: "host", Value: "a"}},
+		Limit:      10,
+		Descending: true,
+	}); err != nil {
+		t.Fatalf("TSQuery: %v", err)
+	}
+	want := timeseries.TSQueryOptions{Tags: map[string]string{"host": "a"}, Limit: 10, Descending: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("service received %+v, want %+v", got, want)
+	}
+}
+
+// mockTSService answers every time-series call with a fixed result; a
+// non-nil Fn field replaces the answer. The WithConsistency reads delegate
+// to their plain forms.
+type mockTSService struct {
+	writeFn       func(ctx context.Context, metric string, value float64, ts time.Time, tags map[string]string) error
+	writeBatchFn  func(ctx context.Context, points []timeseries.DataPoint) error
+	queryFn       func(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error)
+	aggregateFn   func(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error)
+	writePointFn  func(ctx context.Context, point *timeseries.DataPoint) error
+	queryRichFn   func(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error)
+	deleteFn      func(ctx context.Context, req *timeseries.DeleteRequest) error
+	getRetFn      func(metric string) (*timeseries.RetentionPolicy, error)
+	setRetFn      func(metric string, policy *timeseries.RetentionPolicy) error
+	applyRetFn    func(ctx context.Context, metric string, cutoff time.Time) error
+	listMetricsFn func(prefix string, limit int) ([]string, error)
+}
+
+var _ timeseries.TimeSeriesServicer = (*mockTSService)(nil)
+
+func (m *mockTSService) Write(ctx context.Context, metric string, value float64, ts time.Time, tags map[string]string) error {
+	if m.writeFn != nil {
+		return m.writeFn(ctx, metric, value, ts, tags)
+	}
+	return nil
+}
+
+func (m *mockTSService) WriteBatch(ctx context.Context, points []timeseries.DataPoint) error {
+	if m.writeBatchFn != nil {
+		return m.writeBatchFn(ctx, points)
+	}
+	return nil
+}
+
+func (m *mockTSService) Query(ctx context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	if m.queryFn != nil {
+		return m.queryFn(ctx, metric, start, end, opts...)
+	}
+	return []timeseries.DataPoint{{Metric: metric, Value: 1.0, Timestamp: start}}, nil
+}
+
+func (m *mockTSService) QueryWithConsistency(ctx context.Context, metric string, start, end time.Time, _ consistency.ReadOptions, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+	return m.Query(ctx, metric, start, end, opts...)
+}
+
+func (m *mockTSService) Aggregate(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration) ([]timeseries.AggResult, error) {
+	if m.aggregateFn != nil {
+		return m.aggregateFn(ctx, metric, start, end, fn, interval)
+	}
+	return []timeseries.AggResult{{Timestamp: start, Value: 100.0, Count: 1}}, nil
+}
+
+func (m *mockTSService) AggregateWithConsistency(ctx context.Context, metric string, start, end time.Time, fn timeseries.AggFunc, interval time.Duration, _ consistency.ReadOptions) ([]timeseries.AggResult, error) {
+	return m.Aggregate(ctx, metric, start, end, fn, interval)
+}
+
+func (m *mockTSService) WritePoint(ctx context.Context, point *timeseries.DataPoint) error {
+	if m.writePointFn != nil {
+		return m.writePointFn(ctx, point)
+	}
+	return nil
+}
+
+func (m *mockTSService) QueryRich(ctx context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
+	if m.queryRichFn != nil {
+		return m.queryRichFn(ctx, req)
+	}
+	return &timeseries.QueryResult{Metric: req.Metric, Points: []*timeseries.DataPoint{{Metric: req.Metric, Value: 1.0, Timestamp: req.StartTime}}}, nil
+}
+
+func (m *mockTSService) QueryRichWithConsistency(ctx context.Context, req *timeseries.QueryRequest, _ consistency.ReadOptions) (*timeseries.QueryResult, error) {
+	return m.QueryRich(ctx, req)
+}
+
+func (m *mockTSService) DeleteSeries(ctx context.Context, req *timeseries.DeleteRequest) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, req)
+	}
+	return nil
+}
+
+func (m *mockTSService) GetRetentionPolicy(metric string) (*timeseries.RetentionPolicy, error) {
+	if m.getRetFn != nil {
+		return m.getRetFn(metric)
+	}
+	return &timeseries.RetentionPolicy{Duration: 24 * time.Hour}, nil
+}
+
+func (m *mockTSService) SetRetentionPolicy(_ context.Context, metric string, policy *timeseries.RetentionPolicy) error {
+	if m.setRetFn != nil {
+		return m.setRetFn(metric, policy)
+	}
+	return nil
+}
+
+func (m *mockTSService) ApplyRetention(ctx context.Context, metric string, cutoff time.Time) error {
+	if m.applyRetFn != nil {
+		return m.applyRetFn(ctx, metric, cutoff)
+	}
+	return nil
+}
+
+func (m *mockTSService) ListMetrics(prefix string, limit int) ([]string, error) {
+	if m.listMetricsFn != nil {
+		return m.listMetricsFn(prefix, limit)
+	}
+	return []string{"cpu.usage", "mem.free"}, nil
+}
+
+func (m *mockTSService) ListMetricsWithConsistency(_ context.Context, prefix string, limit int, _ consistency.ReadOptions) ([]string, error) {
+	return m.ListMetrics(prefix, limit)
 }
