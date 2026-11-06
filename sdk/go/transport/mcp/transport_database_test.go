@@ -237,15 +237,39 @@ func TestCreateDatabase_Success(t *testing.T) {
 	defer cleanup()
 
 	info, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name:    "db1",
-		Backend: "pebble",
-		DataDir: "/tmp",
+		Name:     "db1",
+		Backend:  "raft",
+		DataDir:  "/tmp",
+		Replicas: 3,
+		Protocol: transport.ProtocolConfig{MySQL: true, PostgreSQL: true},
+		Raft: &transport.DatabaseRaftConfig{
+			ClusterMode: "local",
+			ReplicaID:   7,
+			RaftAddress: "127.0.0.1:7000",
+		},
 	})
 	if err != nil {
 		t.Fatalf("CreateDatabase: %v", err)
 	}
 	if info.Name != "db1" {
 		t.Errorf("name: %q", info.Name)
+	}
+
+	svc.mu.Lock()
+	got := svc.lastCreate
+	svc.mu.Unlock()
+
+	if got.DataDir != "/tmp" || got.Replicas != 3 {
+		t.Errorf("DataDir/Replicas = %q/%d, want /tmp/3", got.DataDir, got.Replicas)
+	}
+	if !got.Protocol.MySQL || !got.Protocol.PostgreSQL {
+		t.Errorf("Protocol = %+v, want MySQL and PostgreSQL", got.Protocol)
+	}
+	if got.Raft == nil {
+		t.Fatal("service received no raft config")
+	}
+	if got.Raft.ClusterMode != "local" || got.Raft.ReplicaID != 7 || got.Raft.RaftAddress != "127.0.0.1:7000" {
+		t.Errorf("Raft = %+v, want local/7/127.0.0.1:7000", got.Raft)
 	}
 }
 

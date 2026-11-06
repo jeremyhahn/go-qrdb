@@ -300,3 +300,28 @@ func TestImportFile_ServiceError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestImportAbort_DiscardsTheSession(t *testing.T) {
+	svc := newMockBatchSvc()
+	tr, cleanup := connectBatchInProcess(t, svc)
+	defer cleanup()
+	ctx := context.Background()
+
+	sessionID, err := tr.ImportBegin(ctx, transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"})
+	if err != nil {
+		t.Fatalf("ImportBegin: %v", err)
+	}
+	if err := tr.ImportAbort(ctx, sessionID); err != nil {
+		t.Fatalf("ImportAbort: %v", err)
+	}
+
+	svc.mu.Lock()
+	_, live := svc.sessions[sessionID]
+	svc.mu.Unlock()
+	if live {
+		t.Errorf("session %q survived the abort", sessionID)
+	}
+	if err := tr.ImportAbort(ctx, sessionID); err == nil {
+		t.Error("second abort of the same session: want an error, got nil")
+	}
+}

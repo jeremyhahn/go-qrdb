@@ -46,7 +46,11 @@ func TestWithDatabaseSetsScope(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scoped, ok := base.withDatabase(tc.in), true
+			scopedTr, err := base.WithDatabase(tc.in)
+			if err != nil {
+				t.Fatalf("WithDatabase: %v", err)
+			}
+			scoped, ok := scopedTr.(*Transport)
 			if !ok {
 				t.Fatal("WithDatabase did not return a *Transport")
 			}
