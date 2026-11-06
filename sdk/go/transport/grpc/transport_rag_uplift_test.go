@@ -53,18 +53,51 @@ func TestGRPCRAG_IngestDocument_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRAG_IngestDocument_RPCError(t *testing.T) {
+// TestGRPCRAG_RPCErrorIsRequestError verifies that a server-side refusal on
+// each RAG RPC reaches the caller as a RequestError naming the method.
+func TestGRPCRAG_RPCErrorIsRequestError(t *testing.T) {
+	refused := errors.New("refused")
 	svc := &testQRDBServer{
-		ragIngestFn: func(_ context.Context, _ *pb.RAGIngestDocumentRequest) (*pb.RAGIngestDocumentResponse, error) {
-			return nil, errors.New("ingest failed")
+		ragIngestFn: func(context.Context, *pb.RAGIngestDocumentRequest) (*pb.RAGIngestDocumentResponse, error) {
+			return nil, refused
+		},
+		ragQueryFn: func(context.Context, *pb.RAGQueryRequest) (*pb.RAGQueryResponse, error) { return nil, refused },
+		ragDeleteDocFn: func(context.Context, *pb.RAGDeleteDocumentRequest) (*pb.RAGDeleteDocumentResponse, error) {
+			return nil, refused
+		},
+		ragListDocsFn: func(context.Context, *pb.RAGListDocumentsRequest) (*pb.RAGListDocumentsResponse, error) {
+			return nil, refused
 		},
 	}
 	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
+	ctx := context.Background()
 
-	_, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{DocumentID: "d1"})
-	if err == nil {
-		t.Fatal("expected error")
+	calls := map[string]func() error{
+		"RAGIngestDocument": func() error {
+			_, err := tr.RAGIngestDocument(ctx, &transport.RAGIngestRequest{DocumentID: "d1"})
+			return err
+		},
+		"RAGQuery": func() error {
+			_, err := tr.RAGQuery(ctx, &transport.RAGQueryRequest{Query: "x"})
+			return err
+		},
+		"RAGDeleteDocument": func() error {
+			_, err := tr.RAGDeleteDocument(ctx, &transport.RAGDeleteDocumentRequest{DocumentID: "d1"})
+			return err
+		},
+		"RAGListDocuments": func() error {
+			_, err := tr.RAGListDocuments(ctx, &transport.RAGListDocumentsRequest{Namespace: "ns1"})
+			return err
+		},
+	}
+	for method, call := range calls {
+		t.Run(method, func(t *testing.T) {
+			var re *transport.RequestError
+			if err := call(); !errors.As(err, &re) || re.Method != method {
+				t.Fatalf("error = %T %v, want RequestError for %s", err, err, method)
+			}
+		})
 	}
 }
 
@@ -109,21 +142,6 @@ func TestGRPCRAG_Query_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRAG_Query_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		ragQueryFn: func(_ context.Context, _ *pb.RAGQueryRequest) (*pb.RAGQueryResponse, error) {
-			return nil, errors.New("query failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{Query: "x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCRAG_DeleteDocument_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -147,21 +165,6 @@ func TestGRPCRAG_DeleteDocument_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRAG_DeleteDocument_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		ragDeleteDocFn: func(_ context.Context, _ *pb.RAGDeleteDocumentRequest) (*pb.RAGDeleteDocumentResponse, error) {
-			return nil, errors.New("delete failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{DocumentID: "d1"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCRAG_ListDocuments_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -180,20 +183,5 @@ func TestGRPCRAG_ListDocuments_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCRAG_ListDocuments_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		ragListDocsFn: func(_ context.Context, _ *pb.RAGListDocumentsRequest) (*pb.RAGListDocumentsResponse, error) {
-			return nil, errors.New("list failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{Namespace: "ns1"})
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
