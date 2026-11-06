@@ -209,3 +209,26 @@ func TestEmbeddedRAG_NilService(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddedRAG_Closed checks that a closed transport refuses every RAG
+// call with the typed error, without answering and before the service sees
+// it.
+func TestEmbeddedRAG_Closed(t *testing.T) {
+	svc := &recordingRAGService{}
+	tr := closedExtTransport(t, WithRAGService(svc))
+	for _, tc := range ragCalls() {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.call(context.Background(), tr)
+			var ce *transport.ClosedError
+			if !errors.As(err, &ce) {
+				t.Fatalf("%s error = %T %v, want ClosedError", tc.name, err, err)
+			}
+			if !reflect.ValueOf(got).IsNil() {
+				t.Errorf("%s answer = %+v, want none", tc.name, got)
+			}
+			if sent := tc.sent(svc); !reflect.ValueOf(sent).IsNil() {
+				t.Errorf("service received %+v, want nothing", sent)
+			}
+		})
+	}
+}
