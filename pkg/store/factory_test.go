@@ -18,6 +18,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
+
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -58,6 +60,16 @@ func TestNewMVCCCreateFuncWith_AppliesOptions(t *testing.T) {
 				t.Fatal("the put returned no revision")
 			}
 		})
+	}
+}
+
+func TestWithWALDir_SetsTheWALDirectory(t *testing.T) {
+	for _, dir := range []string{"/var/lib/qrdb/wal", ""} {
+		o := &pebble.Options{WALDir: "unset"}
+		WithWALDir(dir)(o)
+		if o.WALDir != dir {
+			t.Fatalf("WithWALDir(%q) set WALDir %q", dir, o.WALDir)
+		}
 	}
 }
 

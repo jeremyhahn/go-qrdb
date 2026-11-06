@@ -23,6 +23,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -473,6 +474,40 @@ func TestMVCCStateMachine_TSSetRetention_OverwritesPolicy(t *testing.T) {
 	}
 	if policy.Aggregation != timeseries.AggCount {
 		t.Fatalf("expected aggregation AggCount (%d), got %d", timeseries.AggCount, policy.Aggregation)
+	}
+}
+
+func TestMVCCStateMachine_RecoverFromSnapshot_KeepsTimeSeries(t *testing.T) {
+	ctx := context.Background()
+	src := openTestMVCCWithTS(t)
+	entries := []sm.Entry{tsSetRetentionEntry(1, "snap.metric",
+		int64(time.Hour), int64(time.Second), byte(timeseries.AggSum))}
+	if err := src.Update(ctx, entries, make([]sm.Result, len(entries))); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	snapCtx, err := src.PrepareSnapshot()
+	if err != nil {
+		t.Fatalf("PrepareSnapshot: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := src.SaveSnapshot(ctx, snapCtx, &buf, nil); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	dst := openTestMVCCWithTS(t)
+	ts := dst.TimeSeries()
+	if err := dst.RecoverFromSnapshot(ctx, &buf, nil); err != nil {
+		t.Fatalf("RecoverFromSnapshot: %v", err)
+	}
+	if dst.TimeSeries() != ts {
+		t.Fatal("RecoverFromSnapshot dropped the time-series storage from the rebuilt engine")
+	}
+	policy, err := dst.TimeSeries().GetRetentionPolicy("snap.metric")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy after recovery: %v", err)
+	}
+	if policy.Duration != time.Hour {
+		t.Fatalf("recovered retention = %v, want 1h", policy.Duration)
 	}
 }
 
