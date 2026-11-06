@@ -62,6 +62,7 @@ type mockUserSvc struct {
 	lastSuspend   uint64
 	lastUnsuspend uint64
 
+	certErr              error
 	lastBindUser         uint64
 	lastBindThumbprint   string
 	lastBindNotAfter     int64
@@ -206,12 +207,17 @@ func (m *mockUserSvc) UnsuspendUser(_ context.Context, id uint64) error {
 }
 
 func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil, m.certErr
 }
 
 func (m *mockUserSvc) AddCertBinding(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.certErr != nil {
+		return nil, m.certErr
+	}
 	m.lastBindUser = userID
 	m.lastBindThumbprint = thumbprint
 	m.lastBindNotAfter = notAfterUnix
@@ -981,6 +987,39 @@ func TestAddCertBinding_Success(t *testing.T) {
 	if svc.lastBindUser != 42 || svc.lastBindThumbprint != "aa:bb:cc:dd" || svc.lastBindNotAfter != notAfter {
 		t.Errorf("service received (%d, %q, %d), want (42, %q, %d)",
 			svc.lastBindUser, svc.lastBindThumbprint, svc.lastBindNotAfter, "aa:bb:cc:dd", notAfter)
+	}
+}
+
+// TestCertBinding_ServiceError checks that a cert-store failure reaches the
+// caller as itself, not as a user-not-found.
+func TestCertBinding_ServiceError(t *testing.T) {
+	ctx := context.Background()
+	for name, call := range map[string]func(*Transport) error{
+		"GetUserByCertThumbprint": func(tr *Transport) error {
+			_, err := tr.GetUserByCertThumbprint(ctx, "aa:bb")
+			return err
+		},
+		"AddCertBinding": func(tr *Transport) error {
+			_, err := tr.AddCertBinding(ctx, 1, "aa:bb", 0)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockUserSvc()
+			svc.certErr = errors.New("cert store offline")
+			tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+			defer cleanup()
+
+			err := call(tr)
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				t.Fatalf("want *transport.RequestError, got %T (%v)", err, err)
+			}
+			var unf *transport.UserNotFoundError
+			if errors.As(err, &unf) {
+				t.Fatalf("a service failure was reported as user-not-found: %v", err)
+			}
+		})
 	}
 }
 

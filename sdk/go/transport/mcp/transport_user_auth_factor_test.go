@@ -502,7 +502,9 @@ func TestRotateAuthFactor_Success(t *testing.T) {
 		NewFactor: transport.AuthFactorAddRequest{
 			UserID:     42,
 			Type:       "fido2",
+			Label:      "yubikey",
 			Credential: []byte("new"),
+			Metadata:   map[string]string{"device": "phone"},
 		},
 	})
 	if err != nil {
@@ -510,6 +512,14 @@ func TestRotateAuthFactor_Success(t *testing.T) {
 	}
 	if resp.NewFactor.ID == "" {
 		t.Error("expected non-empty new factor id")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastRotateOld != "f-1" {
+		t.Errorf("service rotated %q, want f-1", svc.lastRotateOld)
+	}
+	if got := svc.lastRotateNew; got.Label != "yubikey" || got.Metadata["device"] != "phone" {
+		t.Errorf("service received label %q, metadata %v; want yubikey, device=phone", got.Label, got.Metadata)
 	}
 }
 
