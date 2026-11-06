@@ -599,3 +599,106 @@ func TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddedWatch_Request_DeliversTheServiceStream checks that Watch and
+// WatchPrefix sent through Request open the service watch on the request's
+// key or prefix and hand back a channel carrying the service's events.
+func TestEmbeddedWatch_Request_DeliversTheServiceStream(t *testing.T) {
+	stream := func(opened *string, at string) (watch.Watcher, error) {
+		*opened = at
+		w := newStubWatcher()
+		w.ch <- watch.WatchResponse{WatchID: 1, Revision: 5, Events: []*watch.Event{
+			{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte(at + "/x"), Value: []byte("v"), ModRevision: 5}},
+		}}
+		close(w.ch)
+		return w, nil
+	}
+	cases := []struct {
+		method string
+		req    any
+		at     string
+	}{
+		{"Watch", &watchRequest{Key: "k"}, "k"},
+		{"WatchPrefix", &watchPrefixRequest{Prefix: "p"}, "p"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			var opened string
+			tr := newExtTransport(t, WithWatchService(&mockWatchService{
+				watchFn: func(_ context.Context, key string, _ ...watch.WatchOption) (watch.Watcher, error) {
+					return stream(&opened, key)
+				},
+				watchPrefixFn: func(_ context.Context, prefix string, _ ...watch.WatchOption) (watch.Watcher, error) {
+					return stream(&opened, prefix)
+				},
+			}))
+			var ch <-chan transport.WatchResponse
+			if err := tr.Request(context.Background(), tc.method, tc.req, &ch); err != nil {
+				t.Fatalf("Request(%s): %v", tc.method, err)
+			}
+			var got []transport.WatchResponse
+			for resp := range ch {
+				got = append(got, resp)
+			}
+			if opened != tc.at {
+				t.Errorf("service watch opened on %q, want %q", opened, tc.at)
+			}
+			if len(got) != 1 || got[0].Revision != 5 || len(got[0].Events) != 1 ||
+				string(got[0].Events[0].Kv.Key) != tc.at+"/x" || string(got[0].Events[0].Kv.Value) != "v" {
+				t.Fatalf("delivered %+v, want the one put of %s/x=v at revision 5", got, tc.at)
+			}
+		})
+	}
+}
+
+// TestEmbeddedWatch_WatchResponse_Delivery checks that each service watch
+// frame reaches the caller converted field for field: put and delete events
+// with their key-values, and a cancel frame with its reason.
+func TestEmbeddedWatch_WatchResponse_Delivery(t *testing.T) {
+	w := newStubWatcher()
+	w.ch <- watch.WatchResponse{
+		WatchID:  1,
+		Revision: 5,
+		Events: []*watch.Event{
+			{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte("k"), Value: []byte("v"), ModRevision: 5}},
+			{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte("d")}},
+		},
+	}
+	w.ch <- watch.WatchResponse{
+		Canceled:     true,
+		CancelReason: "test cancel",
+	}
+	close(w.ch)
+
+	tr := newExtTransport(t, WithWatchService(&mockWatchService{
+		watchFn: func(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
+			return w, nil
+		},
+	}))
+	ch, err := tr.Watch(context.Background(), "k", transport.WatchOptions{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	var got []transport.WatchResponse
+	for resp := range ch {
+		got = append(got, resp)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d responses, want 2: %+v", len(got), got)
+	}
+	first := got[0]
+	if first.WatchID != 1 || first.Revision != 5 || len(first.Events) != 2 {
+		t.Fatalf("first frame = %+v, want watch 1 at revision 5 with two events", first)
+	}
+	put, del := first.Events[0], first.Events[1]
+	if put.Type != transport.EventType(watch.EventPut) || string(put.Kv.Key) != "k" ||
+		string(put.Kv.Value) != "v" || put.Kv.ModRevision != 5 {
+		t.Errorf("put event = %+v (kv %+v), want put k=v at revision 5", put, put.Kv)
+	}
+	if del.Type != transport.EventType(watch.EventDelete) || string(del.Kv.Key) != "d" {
+		t.Errorf("delete event = %+v (kv %+v), want delete of d", del, del.Kv)
+	}
+	if !got[1].Canceled || got[1].CancelReason != "test cancel" {
+		t.Errorf("second frame = %+v, want canceled with reason %q", got[1], "test cancel")
+	}
+}

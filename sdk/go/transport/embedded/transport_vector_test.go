@@ -296,3 +296,118 @@ func TestEmbeddedVector_SendsTheDocumentedRequest(t *testing.T) {
 		})
 	}
 }
+
+// vectorCall is one vector operation called with an empty request.
+type vectorCall struct {
+	name string
+	call func(context.Context, *Transport) (any, error)
+}
+
+func vectorCalls() []vectorCall {
+	return []vectorCall{
+		{"CreateNamespace", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.CreateNamespace(ctx, &transport.CreateNamespaceRequest{})
+		}},
+		{"UpdateNamespace", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.UpdateNamespace(ctx, &transport.UpdateNamespaceRequest{})
+		}},
+		{"DeleteNamespace", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{})
+		}},
+		{"ListNamespaces", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.ListNamespaces(ctx, &transport.ListNamespacesRequest{})
+		}},
+		{"GetNamespaceInfo", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{})
+		}},
+		{"UpsertVector", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.UpsertVector(ctx, &transport.UpsertVectorRequest{})
+		}},
+		{"GetVector", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.GetVector(ctx, &transport.GetVectorRequest{})
+		}},
+		{"DeleteVector", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.DeleteVector(ctx, &transport.DeleteVectorRequest{})
+		}},
+		{"BatchUpsert", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.BatchUpsert(ctx, &transport.BatchUpsertRequest{})
+		}},
+		{"BatchDeleteVectors", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.BatchDeleteVectors(ctx, &transport.BatchDeleteVectorsRequest{})
+		}},
+		{"ListVectors", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.ListVectors(ctx, &transport.ListVectorsRequest{})
+		}},
+		{"UpdateMetadata", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.UpdateMetadata(ctx, &transport.UpdateVectorMetadataRequest{})
+		}},
+		{"SearchSimilar", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.SearchSimilar(ctx, &transport.SearchSimilarRequest{})
+		}},
+		{"SearchByMetadata", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.SearchByMetadata(ctx, &transport.SearchByMetadataRequest{})
+		}},
+		{"HybridSearch", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.HybridSearch(ctx, &transport.HybridSearchRequest{})
+		}},
+		{"SearchByID", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.SearchByID(ctx, &transport.SearchByIDRequest{})
+		}},
+		{"RebuildIndex", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.RebuildIndex(ctx, &transport.RebuildIndexRequest{})
+		}},
+		{"GetRebuildProgress", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.GetRebuildProgress(ctx, &transport.GetRebuildProgressRequest{})
+		}},
+		{"GetIndexStats", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.GetIndexStats(ctx, &transport.GetIndexStatsRequest{})
+		}},
+		{"CompactNamespace", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.CompactNamespace(ctx, &transport.CompactNamespaceRequest{})
+		}},
+		{"GetCompactionProgress", func(ctx context.Context, tr *Transport) (any, error) {
+			return tr.GetCompactionProgress(ctx, &transport.GetCompactionProgressRequest{})
+		}},
+	}
+}
+
+// TestEmbeddedVector_NilService checks that every vector operation on a
+// transport built without a vector service refuses with the typed error and
+// no answer.
+func TestEmbeddedVector_NilService(t *testing.T) {
+	tr := newExtTransport(t)
+	for _, tc := range vectorCalls() {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.call(context.Background(), tr)
+			var ne *NilServiceError
+			if !errors.As(err, &ne) {
+				t.Fatalf("%s error = %T %v, want NilServiceError", tc.name, err, err)
+			}
+			if !reflect.ValueOf(got).IsNil() {
+				t.Errorf("%s answer = %+v, want none", tc.name, got)
+			}
+		})
+	}
+}
+
+// TestEmbeddedVector_Closed checks that a closed transport refuses every
+// vector operation with ClosedError before the service is called.
+func TestEmbeddedVector_Closed(t *testing.T) {
+	svc := &recordingVectorService{}
+	tr := closedExtTransport(t, WithVectorService(svc))
+	for _, tc := range vectorCalls() {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.call(context.Background(), tr)
+			var ce *transport.ClosedError
+			if !errors.As(err, &ce) {
+				t.Fatalf("%s error = %T %v, want ClosedError", tc.name, err, err)
+			}
+			if !reflect.ValueOf(got).IsNil() {
+				t.Errorf("%s answer = %+v, want none", tc.name, got)
+			}
+		})
+	}
+	if svc.rebuild != nil || svc.compact != nil || svc.upsert != nil {
+		t.Errorf("closed transport reached the service: %+v", svc)
+	}
+}

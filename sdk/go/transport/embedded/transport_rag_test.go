@@ -209,6 +209,3 @@ func TestEmbeddedRAG_NilService(t *testing.T) {
 		})
 	}
 }
-
-// TestEmbeddedRAG_Closed checks that a closed transport refuses every RAG
-// operation before the service is called.

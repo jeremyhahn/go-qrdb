@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -38,5 +39,31 @@ func TestEmbeddedBatch_Request_SendsTheDocumentedRequest(t *testing.T) {
 	op := resp.Responses[0]
 	if !op.Succeeded || len(op.Kvs) != 1 || string(op.Kvs[0].Key) != "k" || string(op.Kvs[0].Value) != "v" {
 		t.Errorf("op answer = %+v, want the put of k=v echoed back", op)
+	}
+}
+
+// TestEmbeddedBatch_NilService checks that ExecuteBatch on a transport built
+// without a batch service refuses with the typed error and no answer.
+func TestEmbeddedBatch_NilService(t *testing.T) {
+	resp, err := newExtTransport(t).ExecuteBatch(context.Background(), nil)
+	var ne *NilServiceError
+	if !errors.As(err, &ne) {
+		t.Fatalf("ExecuteBatch error = %T %v, want NilServiceError", err, err)
+	}
+	if resp != nil {
+		t.Errorf("ExecuteBatch answer = %+v, want none", resp)
+	}
+}
+
+// TestEmbeddedBatch_Closed checks that a closed transport refuses
+// ExecuteBatch with ClosedError and no answer.
+func TestEmbeddedBatch_Closed(t *testing.T) {
+	resp, err := closedExtTransport(t).ExecuteBatch(context.Background(), nil)
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ExecuteBatch error = %T %v, want ClosedError", err, err)
+	}
+	if resp != nil {
+		t.Errorf("ExecuteBatch answer = %+v, want none", resp)
 	}
 }
