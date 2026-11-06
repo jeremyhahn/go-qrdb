@@ -315,6 +315,53 @@ func TestMCPVector_AfterClose(t *testing.T) {
 	if _, err := tr.ListNamespaces(context.Background(), &transport.ListNamespacesRequest{}); !errors.As(err, &ce) {
 		t.Errorf("ListNamespaces: %v", err)
 	}
+	if _, err := tr.GetNamespaceInfo(context.Background(), &transport.GetNamespaceInfoRequest{}); !errors.As(err, &ce) {
+		t.Errorf("GetNamespaceInfo: %v", err)
+	}
+	if _, err := tr.UpsertVector(context.Background(), &transport.UpsertVectorRequest{}); !errors.As(err, &ce) {
+		t.Errorf("UpsertVector: %v", err)
+	}
+	if _, err := tr.GetVector(context.Background(), &transport.GetVectorRequest{}); !errors.As(err, &ce) {
+		t.Errorf("GetVector: %v", err)
+	}
+	if _, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{}); !errors.As(err, &ce) {
+		t.Errorf("DeleteVector: %v", err)
+	}
+	if _, err := tr.BatchUpsert(context.Background(), &transport.BatchUpsertRequest{}); !errors.As(err, &ce) {
+		t.Errorf("BatchUpsert: %v", err)
+	}
+	if _, err := tr.BatchDeleteVectors(context.Background(), &transport.BatchDeleteVectorsRequest{}); !errors.As(err, &ce) {
+		t.Errorf("BatchDeleteVectors: %v", err)
+	}
+	if _, err := tr.ListVectors(context.Background(), &transport.ListVectorsRequest{}); !errors.As(err, &ce) {
+		t.Errorf("ListVectors: %v", err)
+	}
+	if _, err := tr.SearchSimilar(context.Background(), &transport.SearchSimilarRequest{}); !errors.As(err, &ce) {
+		t.Errorf("SearchSimilar: %v", err)
+	}
+	if _, err := tr.SearchByMetadata(context.Background(), &transport.SearchByMetadataRequest{}); !errors.As(err, &ce) {
+		t.Errorf("SearchByMetadata: %v", err)
+	}
+	if _, err := tr.HybridSearch(context.Background(), &transport.HybridSearchRequest{}); !errors.As(err, &ce) {
+		t.Errorf("HybridSearch: %v", err)
+	}
+}
+
+// TestMCPKV_AfterClose checks that the key-value reads refuse a closed
+// transport with a ClosedError.
+func TestMCPKV_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+
+	if _, err := tr.Scan(context.Background(), "p"); !errors.As(err, &ce) {
+		t.Errorf("Scan: %v", err)
+	}
+	if _, err := tr.Exists(context.Background(), "k"); !errors.As(err, &ce) {
+		t.Errorf("Exists: %v", err)
+	}
+	if _, err := tr.Capabilities(context.Background()); !errors.As(err, &ce) {
+		t.Errorf("Capabilities: %v", err)
+	}
 }
 
 // ===========================================================================
@@ -364,6 +411,36 @@ func TestMCPAuth_AfterClose(t *testing.T) {
 	if _, err := tr.ListPermissions(context.Background()); !errors.As(err, &ce) {
 		t.Errorf("ListPermissions: %v", err)
 	}
+	if _, err := tr.GetUserByUsername(context.Background(), "t", "u"); !errors.As(err, &ce) {
+		t.Errorf("GetUserByUsername: %v", err)
+	}
+	if err := tr.AssignRole(context.Background(), 1, "r"); !errors.As(err, &ce) {
+		t.Errorf("AssignRole: %v", err)
+	}
+	if err := tr.UnassignRole(context.Background(), 1, "r"); !errors.As(err, &ce) {
+		t.Errorf("UnassignRole: %v", err)
+	}
+	if _, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{}); !errors.As(err, &ce) {
+		t.Errorf("IssueCert: %v", err)
+	}
+	if _, err := tr.EnrollCert(context.Background(), &transport.EnrollCertRequest{}); !errors.As(err, &ce) {
+		t.Errorf("EnrollCert: %v", err)
+	}
+	if _, err := tr.RevokeCert(context.Background(), "s"); !errors.As(err, &ce) {
+		t.Errorf("RevokeCert: %v", err)
+	}
+	if _, err := tr.ListCerts(context.Background(), "t"); !errors.As(err, &ce) {
+		t.Errorf("ListCerts: %v", err)
+	}
+	if _, err := tr.AddTrustAnchors(context.Background(), &transport.AddTrustAnchorsRequest{}); !errors.As(err, &ce) {
+		t.Errorf("AddTrustAnchors: %v", err)
+	}
+	if _, err := tr.ListTrustAnchors(context.Background(), "t"); !errors.As(err, &ce) {
+		t.Errorf("ListTrustAnchors: %v", err)
+	}
+	if err := tr.RemoveTrustAnchor(context.Background(), "t", "fp"); !errors.As(err, &ce) {
+		t.Errorf("RemoveTrustAnchor: %v", err)
+	}
 }
 
 // ===========================================================================
@@ -388,6 +465,30 @@ func TestMCPAuthFactor_AfterClose(t *testing.T) {
 	}
 	if err := tr.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{}); !errors.As(err, &ce) {
 		t.Errorf("RevokeFactor: %v", err)
+	}
+	if _, err := tr.AddAuthFactor(context.Background(), &transport.AuthFactorAddRequest{}); !errors.As(err, &ce) {
+		t.Errorf("AddAuthFactor: %v", err)
+	}
+	if _, err := tr.ListAuthFactors(context.Background(), &transport.AuthFactorListRequest{}); !errors.As(err, &ce) {
+		t.Errorf("ListAuthFactors: %v", err)
+	}
+	if _, err := tr.GetAuthFactor(context.Background(), &transport.AuthFactorGetRequest{}); !errors.As(err, &ce) {
+		t.Errorf("GetAuthFactor: %v", err)
+	}
+	if _, err := tr.RemoveAuthFactor(context.Background(), &transport.AuthFactorRemoveRequest{}); !errors.As(err, &ce) {
+		t.Errorf("RemoveAuthFactor: %v", err)
+	}
+	if _, err := tr.DeleteAuthFactor(context.Background(), &transport.AuthFactorDeleteRequest{}); !errors.As(err, &ce) {
+		t.Errorf("DeleteAuthFactor: %v", err)
+	}
+	if _, err := tr.RotateAuthFactor(context.Background(), &transport.AuthFactorRotateRequest{}); !errors.As(err, &ce) {
+		t.Errorf("RotateAuthFactor: %v", err)
+	}
+	if _, err := tr.RelabelAuthFactor(context.Background(), &transport.AuthFactorRelabelRequest{}); !errors.As(err, &ce) {
+		t.Errorf("RelabelAuthFactor: %v", err)
+	}
+	if _, err := tr.LoginAuthFactor(context.Background(), &transport.AuthFactorLoginRequest{}); !errors.As(err, &ce) {
+		t.Errorf("LoginAuthFactor: %v", err)
 	}
 }
 
