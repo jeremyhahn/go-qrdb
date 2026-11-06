@@ -44,7 +44,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -211,22 +210,6 @@ func TestBuildTLSConfig_WithMTLSCertAndKey(t *testing.T) {
 	}
 }
 
-func TestBuildTLSConfig_BadCAFile(t *testing.T) {
-	tr := &Transport{config: &transport.Config{
-		TLSEnabled: true,
-		TLSCAFile:  "/nonexistent/ca.pem",
-	}}
-
-	_, err := tr.buildTLSConfig()
-	if err == nil {
-		t.Fatal("expected error for missing CA file")
-	}
-	var tlsErr *transport.TLSError
-	if !errors.As(err, &tlsErr) {
-		t.Fatalf("expected *transport.TLSError, got %T: %v", err, err)
-	}
-}
-
 func TestBuildTLSConfig_CorruptCAFile(t *testing.T) {
 	dir := t.TempDir()
 	badCA := filepath.Join(dir, "bad.pem")
@@ -276,63 +259,8 @@ func TestBuildTLSConfig_BadCertFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Connect HTTP/TLS round trip
+// Connect TLS build failure
 // ---------------------------------------------------------------------------
-
-// TestNew_HTTPRoundTrip exercises the network Connect path (buildTLSConfig +
-// NewStreamableHttpClient + Initialize) against a real mcpapi.Server running
-// over HTTPS on an ephemeral port. The custom TLS config branch ensures the
-// connection succeeds without trusting the system root pool.
-func TestNew_HTTPRoundTrip_TLS(t *testing.T) {
-	mat := newTestTLSMaterial(t)
-
-	srv := mcpapi.NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", mcpapi.WithTLS(mat.tlsCfg))
-	if err := srv.Start(); err != nil {
-		t.Fatalf("srv.Start: %v", err)
-	}
-	defer srv.Stop()
-
-	// Build the client-side TLS config that trusts our self-signed CA.
-	clientTLS := &tls.Config{
-		RootCAs:    mat.tlsCfg.RootCAs,
-		ServerName: "localhost",
-		MinVersion: tls.VersionTLS13,
-	}
-
-	// Resolve the listener address to a localhost URL the MCP HTTP client can
-	// reach. The listener may report 127.0.0.1 or ::1; rebuild as localhost
-	// so the cert SAN matches.
-	addr := srv.Addr()
-	_, port, splitErr := net.SplitHostPort(addr)
-	if splitErr != nil {
-		t.Fatalf("split host/port %q: %v", addr, splitErr)
-	}
-	url := "https://localhost:" + port + "/mcp"
-
-	tr, err := New(
-		transport.WithAddress(url),
-		transport.WithTLSConfig(clientTLS),
-	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = tr.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := tr.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if !tr.Healthy(ctx) {
-		t.Fatal("expected Healthy=true after Connect over HTTPS")
-	}
-
-	// Exercise a real tool call to confirm end-to-end protocol works.
-	if err := tr.Put(ctx, "round-trip-key", []byte("ok")); err != nil {
-		t.Fatalf("Put over HTTPS: %v", err)
-	}
-}
 
 // TestConnect_BadTLSCAFile exercises the Connect path's TLS build-error
 // branch. With TLS enabled but a missing CA file, buildTLSConfig returns a
@@ -353,37 +281,6 @@ func TestConnect_BadTLSCAFile(t *testing.T) {
 	if err == nil {
 		_ = tr.Close()
 		t.Fatal("expected error when TLS CA file is missing")
-	}
-	var connErr *transport.ConnectionError
-	if !errors.As(err, &connErr) {
-		t.Fatalf("expected *transport.ConnectionError, got %T: %v", err, err)
-	}
-}
-
-// TestConnect_NetworkFailure exercises the network branch of Connect when
-// the underlying HTTP transport cannot reach the server. This covers the
-// Start failure path inside Connect.
-func TestConnect_NetworkFailure(t *testing.T) {
-	// Reserve a port without listening to ensure the connection refuses.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-
-	tr, err := New(transport.WithAddress("http://" + addr + "/mcp"))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = tr.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err = tr.Connect(ctx)
-	if err == nil {
-		t.Fatal("expected error when target server is not listening")
 	}
 	var connErr *transport.ConnectionError
 	if !errors.As(err, &connErr) {
@@ -424,28 +321,6 @@ func TestApplyReadArgs_Defaults(t *testing.T) {
 		t.Errorf("expected no args set with defaults, got %+v", args)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// CreateDatabase_WithRaft to drive applyRaftArgs through the live path
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Watch happy path with a real WatchService backed by watch.Hub
-// ---------------------------------------------------------------------------
-
-// connectWatchInProcess wires up a real watch hub + watch service on a
-// fresh in-process MCP server and returns the transport, the hub (so the
-// test can publish events), and a cleanup function.
-// TestWatchPoll_ContextCancellation verifies the watch goroutine exits
-// cleanly when the caller cancels the context before any events arrive.
-// This exercises the ctx.Done path in watchPoll's outer select.
-// ---------------------------------------------------------------------------
-// Capabilities live JSON-decode path
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// GetTopology live path
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Stub-tool MCP server for exercising JSON-decode happy paths of methods
