@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // TestNewMVCCCreateFuncWith_AppliesOptions holds each MVCCOption to the
@@ -31,7 +32,9 @@ func TestNewMVCCCreateFuncWith_AppliesOptions(t *testing.T) {
 		opt     MVCCOption
 		applied func(*MVCCStateMachine) bool
 	}{
-		"WithNoSync": {WithNoSync(), func(s *MVCCStateMachine) bool { return s.noSync }},
+		"WithNoSync":            {WithNoSync(), func(s *MVCCStateMachine) bool { return s.noSync }},
+		"WithLogs":              {WithLogs(), func(s *MVCCStateMachine) bool { return s.logs != nil }},
+		"WithTimeSeriesEnabled": {WithTimeSeriesEnabled(), func(s *MVCCStateMachine) bool { return s.enableTimeSeries }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, ok := NewMVCCCreateFuncWith(nil, tc.opt)(1, 1).(*MVCCStateMachine)
@@ -55,5 +58,26 @@ func TestNewMVCCCreateFuncWith_AppliesOptions(t *testing.T) {
 				t.Fatal("the put returned no revision")
 			}
 		})
+	}
+}
+
+// TestWithLogs_GivesEachReplicaItsOwnRegistry holds WithLogs to building a
+// fresh log registry per machine: replicas sharing one would see each
+// other's logs.
+func TestWithLogs_GivesEachReplicaItsOwnRegistry(t *testing.T) {
+	cf := NewMVCCCreateFuncWith(nil, WithLogs())
+	seen := make(map[*vlog.Chain]uint64)
+	for _, replica := range []uint64{1, 2} {
+		machine, ok := cf(1, replica).(*MVCCStateMachine)
+		if !ok {
+			t.Fatalf("replica %d: the create function did not build an MVCCStateMachine", replica)
+		}
+		if machine.logs == nil {
+			t.Fatalf("replica %d: the log registry was not attached", replica)
+		}
+		if other, dup := seen[machine.logs]; dup {
+			t.Fatalf("replicas %d and %d share one log registry", other, replica)
+		}
+		seen[machine.logs] = replica
 	}
 }
