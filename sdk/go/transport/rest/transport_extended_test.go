@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -66,6 +67,32 @@ func newExtTransport(t *testing.T) (*Transport, *routerServer, *httptest.Server)
 	srv := httptest.NewServer(rs)
 	t.Cleanup(srv.Close)
 	return newWiredTransport(srv), rs, srv
+}
+
+// assertClosedRefusesBeforeTheWire closes a transport and runs each call
+// against it: every call must fail with *transport.ClosedError, and none may
+// reach the server.
+func assertClosedRefusesBeforeTheWire(t *testing.T, calls map[string]func(ctx context.Context, rt *Transport) error) {
+	t.Helper()
+	rt, rs, _ := newExtTransport(t)
+	if err := rt.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var reached atomic.Int32
+	rs.handle(func(*http.Request) bool { return true }, func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		writeJSON(w, struct{}{})
+	})
+	for method, call := range calls {
+		t.Run(method, func(t *testing.T) {
+			if err := call(context.Background(), rt); !errors.As(err, new(*transport.ClosedError)) {
+				t.Fatalf("%s on a closed transport = %T %v, want *transport.ClosedError", method, err, err)
+			}
+		})
+	}
+	if n := reached.Load(); n != 0 {
+		t.Fatalf("a call on a closed transport reached the server %d time(s)", n)
+	}
 }
 
 // pathPrefix returns a matcher for a specific method+path-prefix combination.

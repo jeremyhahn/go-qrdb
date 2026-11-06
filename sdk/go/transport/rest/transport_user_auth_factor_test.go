@@ -43,3 +43,40 @@ func TestRotateAuthFactor_refusesAnAddCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestRESTUserAuthFactor_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"AddAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.AddAuthFactor(ctx, &transport.AuthFactorAddRequest{})
+			return err
+		},
+		"ListAuthFactors": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ListAuthFactors(ctx, &transport.AuthFactorListRequest{})
+			return err
+		},
+		"GetAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetAuthFactor(ctx, &transport.AuthFactorGetRequest{})
+			return err
+		},
+		"RemoveAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{})
+			return err
+		},
+		"DeleteAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
+			return err
+		},
+		"RotateAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{})
+			return err
+		},
+		"RelabelAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.RelabelAuthFactor(ctx, &transport.AuthFactorRelabelRequest{})
+			return err
+		},
+		"LoginAuthFactor": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.LoginAuthFactor(ctx, &transport.AuthFactorLoginRequest{})
+			return err
+		},
+	})
+}

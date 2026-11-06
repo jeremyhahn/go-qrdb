@@ -2595,6 +2595,42 @@ func TestGetTopology_OnClosedTransport(t *testing.T) {
 	}
 }
 
+func TestRESTMVCC_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"PutWithLease": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.PutWithLease(ctx, "k", []byte("v"), 1)
+			return err
+		},
+		"GetRevision": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetRevision(ctx, "k")
+			return err
+		},
+		"GetAtRevision": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetAtRevision(ctx, "k", 1)
+			return err
+		},
+		"Range": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.Range(ctx, []byte("a"), []byte("z"), transport.RangeOptions{})
+			return err
+		},
+		"Compact": func(ctx context.Context, rt *Transport) error {
+			return rt.Compact(ctx, 1)
+		},
+		"CurrentRevision": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.CurrentRevision(ctx)
+			return err
+		},
+		"RestoreToRevision": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.RestoreToRevision(ctx, &transport.RestoreRevisionRequest{Revision: 1})
+			return err
+		},
+		"ExecuteTransaction": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ExecuteTransaction(ctx, &transport.TransactionRequest{})
+			return err
+		},
+	})
+}
+
 func TestGetShardState_ServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

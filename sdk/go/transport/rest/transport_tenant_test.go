@@ -681,6 +681,34 @@ func TestTenantBarrierStatus_AfterClose(t *testing.T) {
 	}
 }
 
+func TestRESTTenant_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"CreateTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.CreateTenant(ctx, &transport.CreateTenantRequest{})
+			return err
+		},
+		"GetTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetTenant(ctx, "t1")
+			return err
+		},
+		"ListTenants": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ListTenants(ctx)
+			return err
+		},
+		"DeleteTenant": func(ctx context.Context, rt *Transport) error {
+			return rt.DeleteTenant(ctx, "t1")
+		},
+		"UpdateTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateTenant(ctx, &transport.UpdateTenantRequest{})
+			return err
+		},
+		"UpdateTenantQuotas": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateTenantQuotas(ctx, &transport.UpdateTenantQuotasRequest{})
+			return err
+		},
+	})
+}
+
 func TestTenantBarrierStatus_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

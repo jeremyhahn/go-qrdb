@@ -99,13 +99,91 @@ func TestRESTUpdateNamespace_TypedRefusals(t *testing.T) {
 	}
 }
 
-func TestRESTUpdateNamespace_Closed(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	if err := rt.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	_, err := rt.UpdateNamespace(context.Background(), &transport.UpdateNamespaceRequest{Namespace: "ns"})
-	if _, ok := errors.AsType[*transport.ClosedError](err); !ok {
-		t.Fatalf("err = %v, want *ClosedError", err)
-	}
+func TestRESTVector_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"CreateNamespace": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.CreateNamespace(ctx, &transport.CreateNamespaceRequest{})
+			return err
+		},
+		"UpdateNamespace": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateNamespace(ctx, &transport.UpdateNamespaceRequest{Namespace: "ns"})
+			return err
+		},
+		"DeleteNamespace": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{})
+			return err
+		},
+		"ListNamespaces": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ListNamespaces(ctx, &transport.ListNamespacesRequest{})
+			return err
+		},
+		"GetNamespaceInfo": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetNamespaceInfo(ctx, &transport.GetNamespaceInfoRequest{})
+			return err
+		},
+		"UpsertVector": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpsertVector(ctx, &transport.UpsertVectorRequest{})
+			return err
+		},
+		"GetVector": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetVector(ctx, &transport.GetVectorRequest{})
+			return err
+		},
+		"DeleteVector": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.DeleteVector(ctx, &transport.DeleteVectorRequest{})
+			return err
+		},
+		"BatchUpsert": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.BatchUpsert(ctx, &transport.BatchUpsertRequest{})
+			return err
+		},
+		"BatchDeleteVectors": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.BatchDeleteVectors(ctx, &transport.BatchDeleteVectorsRequest{})
+			return err
+		},
+		"ListVectors": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ListVectors(ctx, &transport.ListVectorsRequest{})
+			return err
+		},
+		"UpdateMetadata": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateMetadata(ctx, &transport.UpdateVectorMetadataRequest{})
+			return err
+		},
+		"SearchSimilar": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.SearchSimilar(ctx, &transport.SearchSimilarRequest{})
+			return err
+		},
+		"SearchByMetadata": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.SearchByMetadata(ctx, &transport.SearchByMetadataRequest{})
+			return err
+		},
+		"HybridSearch": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.HybridSearch(ctx, &transport.HybridSearchRequest{})
+			return err
+		},
+		"SearchByID": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.SearchByID(ctx, &transport.SearchByIDRequest{})
+			return err
+		},
+		"RebuildIndex": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.RebuildIndex(ctx, &transport.RebuildIndexRequest{})
+			return err
+		},
+		"GetRebuildProgress": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetRebuildProgress(ctx, &transport.GetRebuildProgressRequest{})
+			return err
+		},
+		"GetIndexStats": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetIndexStats(ctx, &transport.GetIndexStatsRequest{})
+			return err
+		},
+		"CompactNamespace": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.CompactNamespace(ctx, &transport.CompactNamespaceRequest{})
+			return err
+		},
+		"GetCompactionProgress": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetCompactionProgress(ctx, &transport.GetCompactionProgressRequest{})
+			return err
+		},
+	})
 }
