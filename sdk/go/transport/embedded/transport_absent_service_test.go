@@ -28,6 +28,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	tr := newExtTransport(t)
 	nilEmbed := newExtTransport(t, WithEmbeddingService(nil))
 	closed := closedExtTransport(t)
+	closedFactors := closedExtTransport(t, WithAuthFactorService(&mockAuthFactorService{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -51,6 +52,28 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 		{"UpdateDocument", func() error { return tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}) }, nilService},
 		{"DeleteDocument", func() error { return tr.DeleteDocument(ctx, "db", "users", 1) }, nilService},
 		{"ListDocuments", func() error { _, err := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); return err }, nilService},
+		{"EnrollFactor", func() error { _, err := tr.EnrollFactor(ctx, &transport.EnrollFactorRequest{}); return err }, nilService},
+		{"EnrollFactor/closed", func() error {
+			_, err := closedFactors.EnrollFactor(ctx, &transport.EnrollFactorRequest{})
+			return err
+		}, isClosed},
+		{"ChallengeFactor", func() error {
+			_, err := tr.ChallengeFactor(ctx, &transport.ChallengeFactorRequest{})
+			return err
+		}, nilService},
+		{"ChallengeFactor/closed", func() error {
+			_, err := closedFactors.ChallengeFactor(ctx, &transport.ChallengeFactorRequest{})
+			return err
+		}, isClosed},
+		{"VerifyFactor", func() error { return tr.VerifyFactor(ctx, &transport.VerifyFactorRequest{}) }, nilService},
+		{"VerifyFactor/closed", func() error { return closedFactors.VerifyFactor(ctx, &transport.VerifyFactorRequest{}) }, isClosed},
+		{"ListFactors", func() error { _, err := tr.ListFactors(ctx, &transport.ListFactorsRequest{}); return err }, nilService},
+		{"ListFactors/closed", func() error {
+			_, err := closedFactors.ListFactors(ctx, &transport.ListFactorsRequest{})
+			return err
+		}, isClosed},
+		{"RevokeFactor", func() error { return tr.RevokeFactor(ctx, &transport.RevokeFactorRequest{}) }, nilService},
+		{"RevokeFactor/closed", func() error { return closedFactors.RevokeFactor(ctx, &transport.RevokeFactorRequest{}) }, isClosed},
 		{"LeaseGrant", func() error { _, err := tr.LeaseGrant(ctx, 5); return err }, nilService},
 		{"LockAcquire", func() error {
 			_, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 5})
