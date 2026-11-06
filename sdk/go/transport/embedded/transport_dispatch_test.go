@@ -104,19 +104,14 @@ func TestEmbeddedDispatch_ServiceOutcomes(t *testing.T) {
 
 	kv := newMockKVService()
 	kv.store["testkey"] = []byte("testval")
-	answering, err := New(kv, &mockAdminService{}, WithVectorService(&mockVectorService{}))
+	answering, err := New(kv, &mockAdminService{}, WithVectorService(&mockVectorService{}), WithLeaseService(&mockLeaseService{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
-	}
-	failingLease := &mockLeaseService{
-		grantFn:     func(context.Context, int64) (*lease.Lease, error) { return nil, errSentinel },
-		keepAliveFn: func(context.Context, int64) (*lease.Lease, error) { return nil, errSentinel },
-		ttlFn:       func(context.Context, int64) (*lease.Lease, error) { return nil, errSentinel },
 	}
 	failing, err := New(&errorKVService{*newMockKVService()}, &errorAdminService{},
 		WithVectorService(&errVectorService{}),
 		WithTimeSeriesService(&errTSSvc{}),
-		WithLeaseService(failingLease),
+		WithLeaseService(failingLeaseService(errSentinel)),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -128,6 +123,10 @@ func TestEmbeddedDispatch_ServiceOutcomes(t *testing.T) {
 		{"List", &listRequest{}, new([]string)},
 		{"GetShardState", uint64(1), new(*transport.ShardStateResponse)},
 		{"GetTopology", nil, new(*transport.TopologyResponse)},
+		{"LeaseGrant", &leaseGrantRequest{TTL: 60}, new(*transport.LeaseInfo)},
+		{"LeaseKeepAlive", &leaseKeepAliveRequest{LeaseID: 1}, new(*transport.LeaseInfo)},
+		{"LeaseTimeToLive", &leaseTimeToLiveRequest{LeaseID: 1}, new(*transport.LeaseInfo)},
+		{"LeaseList", nil, new([]*transport.LeaseInfo)},
 		{"CreateNamespace", &transport.CreateNamespaceRequest{Namespace: "ns", Dimension: 128}, new(*transport.CreateNamespaceResponse)},
 		{"DeleteNamespace", &transport.DeleteNamespaceRequest{Namespace: "ns"}, new(*transport.DeleteNamespaceResponse)},
 		{"ListNamespaces", &transport.ListNamespacesRequest{}, new(*transport.ListNamespacesResponse)},
@@ -164,6 +163,8 @@ func TestEmbeddedDispatch_ServiceOutcomes(t *testing.T) {
 		{"LeaseGrant", &leaseGrantRequest{TTL: 60}, nil},
 		{"LeaseKeepAlive", &leaseKeepAliveRequest{LeaseID: 1}, nil},
 		{"LeaseTimeToLive", &leaseTimeToLiveRequest{LeaseID: 1}, nil},
+		{"LeaseRevoke", &leaseRevokeRequest{LeaseID: 1}, nil},
+		{"LeaseList", nil, nil},
 		{"CreateNamespace", &transport.CreateNamespaceRequest{}, nil},
 		{"DeleteNamespace", &transport.DeleteNamespaceRequest{}, nil},
 		{"ListNamespaces", &transport.ListNamespacesRequest{}, nil},
@@ -245,6 +246,120 @@ func TestEmbeddedDispatch_ServiceOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmbeddedLease_Delegates drives every lease verb through a service that
+// answers and through one that fails: the transport converts the answer and
+// passes the failure through.
+func TestEmbeddedLease_Delegates(t *testing.T) {
+	ctx := t.Context()
+	tests := []struct {
+		name string
+		call func(t *testing.T, tr *Transport) error
+	}{
+		{"LeaseGrant", func(t *testing.T, tr *Transport) error {
+			info, err := tr.LeaseGrant(ctx, 60)
+			if err == nil && (info.ID != 42 || info.TTL != 60) {
+				t.Errorf("info = %+v", info)
+			}
+			return err
+		}},
+		{"LeaseRevoke", func(_ *testing.T, tr *Transport) error {
+			return tr.LeaseRevoke(ctx, 1)
+		}},
+		{"LeaseKeepAlive", func(t *testing.T, tr *Transport) error {
+			info, err := tr.LeaseKeepAlive(ctx, 7)
+			if err == nil && info.ID != 7 {
+				t.Errorf("ID = %d", info.ID)
+			}
+			return err
+		}},
+		{"LeaseTimeToLive", func(t *testing.T, tr *Transport) error {
+			info, err := tr.LeaseTimeToLive(ctx, 7)
+			if err == nil && info.ID != 7 {
+				t.Errorf("ID = %d", info.ID)
+			}
+			return err
+		}},
+		{"LeaseList", func(t *testing.T, tr *Transport) error {
+			leases, err := tr.LeaseList(ctx)
+			if err == nil && len(leases) != 2 {
+				t.Errorf("len = %d, want 2", len(leases))
+			}
+			return err
+		}},
+	}
+	ok := newExtTransport(t, WithLeaseService(&mockLeaseService{}))
+	bad := newExtTransport(t, WithLeaseService(failingLeaseService(errSentinel)))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(t, ok); err != nil {
+				t.Fatalf("answering service: %v", err)
+			}
+			if err := tt.call(t, bad); !errors.Is(err, errSentinel) {
+				t.Fatalf("failing service: err = %v, want the service's error", err)
+			}
+		})
+	}
+}
+
+// mockLeaseService answers every lease call with a fixed result; a non-nil
+// Fn field replaces the answer.
+type mockLeaseService struct {
+	grantFn     func(ctx context.Context, ttl int64) (*lease.Lease, error)
+	revokeFn    func(ctx context.Context, id int64) error
+	keepAliveFn func(ctx context.Context, id int64) (*lease.Lease, error)
+	ttlFn       func(ctx context.Context, id int64) (*lease.Lease, error)
+	leasesFn    func(ctx context.Context) ([]*lease.Lease, error)
+}
+
+var _ lease.LeaseServicer = (*mockLeaseService)(nil)
+
+// failingLeaseService returns a mockLeaseService whose every call fails
+// with err.
+func failingLeaseService(err error) *mockLeaseService {
+	return &mockLeaseService{
+		grantFn:     func(context.Context, int64) (*lease.Lease, error) { return nil, err },
+		revokeFn:    func(context.Context, int64) error { return err },
+		keepAliveFn: func(context.Context, int64) (*lease.Lease, error) { return nil, err },
+		ttlFn:       func(context.Context, int64) (*lease.Lease, error) { return nil, err },
+		leasesFn:    func(context.Context) ([]*lease.Lease, error) { return nil, err },
+	}
+}
+
+func (m *mockLeaseService) Grant(ctx context.Context, ttl int64) (*lease.Lease, error) {
+	if m.grantFn != nil {
+		return m.grantFn(ctx, ttl)
+	}
+	return &lease.Lease{ID: 42, TTL: ttl, GrantedTTL: ttl, RemainingTTL: ttl}, nil
+}
+
+func (m *mockLeaseService) Revoke(ctx context.Context, id int64) error {
+	if m.revokeFn != nil {
+		return m.revokeFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockLeaseService) KeepAlive(ctx context.Context, id int64) (*lease.Lease, error) {
+	if m.keepAliveFn != nil {
+		return m.keepAliveFn(ctx, id)
+	}
+	return &lease.Lease{ID: id, TTL: 60, RemainingTTL: 60}, nil
+}
+
+func (m *mockLeaseService) TimeToLive(ctx context.Context, id int64) (*lease.Lease, error) {
+	if m.ttlFn != nil {
+		return m.ttlFn(ctx, id)
+	}
+	return &lease.Lease{ID: id, TTL: 60, RemainingTTL: 30}, nil
+}
+
+func (m *mockLeaseService) Leases(ctx context.Context) ([]*lease.Lease, error) {
+	if m.leasesFn != nil {
+		return m.leasesFn(ctx)
+	}
+	return []*lease.Lease{{ID: 1, TTL: 60}, {ID: 2, TTL: 120}}, nil
 }
 
 // errorKVService fails every KV read with errSentinel.

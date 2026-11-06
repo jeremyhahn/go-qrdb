@@ -30,6 +30,7 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	closed := closedExtTransport(t)
 	closedFactors := closedExtTransport(t, WithAuthFactorService(&mockAuthFactorService{}))
 	closedCeremony := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}), WithCeremonyCA(&mockCeremonyCA{}))
+	closedLease := closedExtTransport(t, WithLeaseService(&mockLeaseService{}))
 	ctx := t.Context()
 	nilService := func(err error) bool { _, ok := errors.AsType[*NilServiceError](err); return ok }
 	notImplemented := func(err error) bool { _, ok := errors.AsType[*transport.NotImplementedError](err); return ok }
@@ -91,6 +92,15 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 			return err
 		}, isClosed},
 		{"LeaseGrant", func() error { _, err := tr.LeaseGrant(ctx, 5); return err }, nilService},
+		{"LeaseRevoke", func() error { return tr.LeaseRevoke(ctx, 1) }, nilService},
+		{"LeaseKeepAlive", func() error { _, err := tr.LeaseKeepAlive(ctx, 1); return err }, nilService},
+		{"LeaseTimeToLive", func() error { _, err := tr.LeaseTimeToLive(ctx, 1); return err }, nilService},
+		{"LeaseList", func() error { _, err := tr.LeaseList(ctx); return err }, nilService},
+		{"LeaseGrant/closed", func() error { _, err := closedLease.LeaseGrant(ctx, 5); return err }, isClosed},
+		{"LeaseRevoke/closed", func() error { return closedLease.LeaseRevoke(ctx, 1) }, isClosed},
+		{"LeaseKeepAlive/closed", func() error { _, err := closedLease.LeaseKeepAlive(ctx, 1); return err }, isClosed},
+		{"LeaseTimeToLive/closed", func() error { _, err := closedLease.LeaseTimeToLive(ctx, 1); return err }, isClosed},
+		{"LeaseList/closed", func() error { _, err := closedLease.LeaseList(ctx); return err }, isClosed},
 		{"LockAcquire", func() error {
 			_, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 5})
 			return err
