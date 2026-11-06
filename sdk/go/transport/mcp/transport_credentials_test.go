@@ -884,3 +884,8 @@ func TestCredential_StoreRetrieveWithoutService(t *testing.T) {
 		t.Errorf("retrieveBytes: want *transport.RequestError, got %T (%v)", err, err)
 	}
 }
+
+func TestCredentialStore_Closed(t *testing.T) {
+	tr := newClosedTransport()
+	assertClosed(t, tr.CredentialStore(context.Background(), "k", []byte("v")))
+}

@@ -128,11 +128,14 @@ func (m *minimalRebalanceSvc) CreateRebalancePlan(_ context.Context, _ *service.
 	}, nil
 }
 
-func (m *minimalRebalanceSvc) ExecuteRebalance(_ context.Context, _ *service.RebalancePlanResult) (*service.RebalanceExecutionResult, error) {
+func (m *minimalRebalanceSvc) ExecuteRebalance(_ context.Context, plan *service.RebalancePlanResult) (*service.RebalanceExecutionResult, error) {
 	if m.executeErr != nil {
 		return nil, m.executeErr
 	}
-	return &service.RebalanceExecutionResult{MovesCompleted: 1}, nil
+	if plan == nil {
+		return &service.RebalanceExecutionResult{}, nil
+	}
+	return &service.RebalanceExecutionResult{MovesCompleted: len(plan.Moves)}, nil
 }
 
 func (m *minimalRebalanceSvc) GetImbalanceReport(_ context.Context) (*service.ImbalanceReportResult, error) {
@@ -504,5 +507,17 @@ func TestMCP_Rebalance_RPCs(t *testing.T) {
 				}
 			},
 		},
+	})
+
+	t.Run("ExecuteRebalance/NilPlan", func(t *testing.T) {
+		tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
+		defer cleanup()
+		result, err := tr.ExecuteRebalance(ctx, nil)
+		if err != nil {
+			t.Fatalf("ExecuteRebalance(nil): %v", err)
+		}
+		if result.MovesCompleted != 0 {
+			t.Errorf("MovesCompleted = %d for a nil plan, want 0", result.MovesCompleted)
+		}
 	})
 }
