@@ -35,6 +35,8 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
@@ -422,25 +424,6 @@ func TestGRPCBackup_CreateBackup_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCBackup_CreateBackup_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		backupCreateFn: func(_ context.Context, _ *pb.BackupCreateRequest) (*pb.BackupInfo, error) {
-			return nil, errors.New("storage full")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.CreateBackup(context.Background(), &transport.BackupRequest{Destination: "/x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	var re *transport.RequestError
-	if !errors.As(err, &re) {
-		t.Fatalf("expected RequestError, got %T", err)
-	}
-}
-
 func TestGRPCBackup_ListBackups_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -459,21 +442,6 @@ func TestGRPCBackup_ListBackups_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCBackup_ListBackups_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		backupListFn: func(_ context.Context, _ *emptypb.Empty) (*pb.BackupListResponse, error) {
-			return nil, errors.New("db error")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.ListBackups(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -498,27 +466,22 @@ func TestGRPCBackup_GetBackup_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCBackup_GetBackup_RPCError(t *testing.T) {
+func TestGRPCBackup_DeleteBackup_Success(t *testing.T) {
+	var got string
 	svc := &testQRDBServer{
-		backupGetFn: func(_ context.Context, _ *pb.BackupGetRequest) (*pb.BackupInfo, error) {
-			return nil, errors.New("not found")
+		backupDeleteFn: func(_ context.Context, req *pb.BackupDeleteRequest) (*emptypb.Empty, error) {
+			got = req.GetId()
+			return &emptypb.Empty{}, nil
 		},
 	}
 	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
 
-	_, err := tr.GetBackup(context.Background(), "missing")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestGRPCBackup_DeleteBackup_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
-	defer cleanup()
-
 	if err := tr.DeleteBackup(context.Background(), "bk-1"); err != nil {
 		t.Fatalf("DeleteBackup: %v", err)
+	}
+	if got != "bk-1" {
+		t.Fatalf("server deleted %q, want bk-1", got)
 	}
 }
 
@@ -527,20 +490,6 @@ func TestGRPCBackup_DeleteBackup_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCBackup_DeleteBackup_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		backupDeleteFn: func(_ context.Context, _ *pb.BackupDeleteRequest) (*emptypb.Empty, error) {
-			return nil, errors.New("access denied")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	if err := tr.DeleteBackup(context.Background(), "bk-1"); err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -567,21 +516,6 @@ func TestGRPCBackup_RestoreBackup_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCBackup_RestoreBackup_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		backupRestoreFn: func(_ context.Context, _ *pb.BackupRestoreRequest) (*pb.BackupRestoreResponse, error) {
-			return nil, errors.New("restore failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.RestoreBackup(context.Background(), &transport.RestoreRequest{BackupID: "x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCBackup_VerifyBackup_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -603,21 +537,6 @@ func TestGRPCBackup_VerifyBackup_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCBackup_VerifyBackup_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		backupVerifyFn: func(_ context.Context, _ *pb.BackupVerifyRequest) (*pb.BackupVerifyResponse, error) {
-			return nil, errors.New("checksum error")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.VerifyBackup(context.Background(), "bk-1")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // protoToBackupInfo nil guard
 func TestGRPCBackup_ProtoToBackupInfo_Nil(t *testing.T) {
 	if got := protoToBackupInfo(nil); got != nil {
@@ -630,11 +549,21 @@ func TestGRPCBackup_ProtoToBackupInfo_Nil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGRPCDatabaseBarrier_SealDatabase_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
+	var got string
+	svc := &testQRDBServer{
+		dbSealFn: func(_ context.Context, req *pb.DatabaseSealRequest) (*emptypb.Empty, error) {
+			got = req.GetName()
+			return &emptypb.Empty{}, nil
+		},
+	}
+	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
 
 	if err := tr.SealDatabase(context.Background(), "mydb"); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
+	}
+	if got != "mydb" {
+		t.Fatalf("server sealed %q, want mydb", got)
 	}
 }
 
@@ -646,26 +575,39 @@ func TestGRPCDatabaseBarrier_SealDatabase_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCDatabaseBarrier_SealDatabase_RPCError(t *testing.T) {
+func TestGRPCDatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
+	var got *pb.DatabaseUnsealRequest
 	svc := &testQRDBServer{
-		dbSealFn: func(_ context.Context, _ *pb.DatabaseSealRequest) (*emptypb.Empty, error) {
-			return nil, errors.New("not permitted")
+		dbUnsealFn: func(_ context.Context, req *pb.DatabaseUnsealRequest) (*emptypb.Empty, error) {
+			got = req
+			return &emptypb.Empty{}, nil
 		},
 	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	if err := tr.SealDatabase(context.Background(), "mydb"); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestGRPCDatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
-	tr, cleanup := startTestServerTLS(t, &testQRDBServer{}, newTestTLS(t))
+	tr, cleanup := startTestServerTLS(t, svc, newTestTLS(t))
 	defer cleanup()
 
 	if err := tr.UnsealDatabase(context.Background(), "mydb", "s3cr3t"); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
+	}
+	if got.GetName() != "mydb" || got.GetSecret() != "s3cr3t" {
+		t.Fatalf("server got name=%q secret=%q, want mydb/s3cr3t", got.GetName(), got.GetSecret())
+	}
+}
+
+// TestGRPCDatabaseBarrier_UnsealDatabase_RPCError verifies a refused unseal
+// over TLS reaches the caller as a RequestError naming the method.
+func TestGRPCDatabaseBarrier_UnsealDatabase_RPCError(t *testing.T) {
+	svc := &testQRDBServer{
+		dbUnsealFn: func(context.Context, *pb.DatabaseUnsealRequest) (*emptypb.Empty, error) {
+			return nil, errors.New("bad secret")
+		},
+	}
+	tr, cleanup := startTestServerTLS(t, svc, newTestTLS(t))
+	defer cleanup()
+
+	var re *transport.RequestError
+	if err := tr.UnsealDatabase(context.Background(), "mydb", "wrong"); !errors.As(err, &re) || re.Method != "UnsealDatabase" {
+		t.Fatalf("error = %T %v, want RequestError for UnsealDatabase", err, err)
 	}
 }
 
@@ -674,20 +616,6 @@ func TestGRPCDatabaseBarrier_UnsealDatabase_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCDatabaseBarrier_UnsealDatabase_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		dbUnsealFn: func(_ context.Context, _ *pb.DatabaseUnsealRequest) (*emptypb.Empty, error) {
-			return nil, errors.New("bad secret")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	if err := tr.UnsealDatabase(context.Background(), "mydb", "wrong"); err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -709,21 +637,6 @@ func TestGRPCDatabaseBarrier_Status_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCDatabaseBarrier_Status_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		dbBarrierStatusFn: func(_ context.Context, _ *pb.DatabaseBarrierStatusRequest) (*pb.DatabaseBarrierStatusResponse, error) {
-			return nil, errors.New("unavailable")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -757,21 +670,6 @@ func TestGRPCEmbedding_Embed_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCEmbedding_Embed_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		embedFn: func(_ context.Context, _ *pb.EmbedRequest) (*pb.EmbedResponse, error) {
-			return nil, errors.New("model unavailable")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.Embed(context.Background(), &transport.EmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCEmbedding_BatchEmbed_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -795,21 +693,6 @@ func TestGRPCEmbedding_BatchEmbed_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCEmbedding_BatchEmbed_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		batchEmbedFn: func(_ context.Context, _ *pb.BatchEmbedRequest) (*pb.BatchEmbedResponse, error) {
-			return nil, errors.New("batch too large")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.BatchEmbed(context.Background(), &transport.BatchEmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCEmbedding_ListModels_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -828,21 +711,6 @@ func TestGRPCEmbedding_ListModels_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCEmbedding_ListModels_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		listModelsFn: func(_ context.Context, _ *pb.ListEmbeddingModelsRequest) (*pb.ListEmbeddingModelsResponse, error) {
-			return nil, errors.New("provider offline")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.ListEmbeddingModels(context.Background(), "openai")
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -892,21 +760,6 @@ func TestGRPCRebalance_GetShardStats_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRebalance_GetShardStats_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		shardStatsFn: func(_ context.Context, _ *pb.RebalanceShardStatsRequest) (*pb.ShardStats, error) {
-			return nil, errors.New("shard not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetShardStats(context.Background(), 999)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCRebalance_CreateRebalancePlan_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -930,21 +783,6 @@ func TestGRPCRebalance_CreateRebalancePlan_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRebalance_CreateRebalancePlan_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		createPlanFn: func(_ context.Context, _ *pb.RebalancePlanRequest) (*pb.RebalancePlan, error) {
-			return nil, errors.New("cluster unhealthy")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.CreateRebalancePlan(context.Background(), &transport.RebalancePlanRequest{})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCRebalance_ExecuteRebalance_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -964,13 +802,22 @@ func TestGRPCRebalance_ExecuteRebalance_Success(t *testing.T) {
 }
 
 func TestGRPCRebalance_ExecuteRebalance_NilPlan(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
+	var got *pb.RebalancePlan
+	svc := &testQRDBServer{
+		executeFn: func(_ context.Context, req *pb.RebalancePlan) (*pb.RebalanceExecutionResponse, error) {
+			got = req
+			return &pb.RebalanceExecutionResponse{}, nil
+		},
+	}
+	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
 
-	// nil plan should be handled gracefully by rebalancePlanToProto
-	_, err := tr.ExecuteRebalance(context.Background(), nil)
-	// May succeed or fail depending on server; just ensure no panic
-	_ = err
+	if _, err := tr.ExecuteRebalance(context.Background(), nil); err != nil {
+		t.Fatalf("ExecuteRebalance(nil): %v", err)
+	}
+	if !proto.Equal(got, &pb.RebalancePlan{}) {
+		t.Fatalf("server got plan %v, want an empty plan", got)
+	}
 }
 
 func TestGRPCRebalance_ExecuteRebalance_Closed(t *testing.T) {
@@ -978,21 +825,6 @@ func TestGRPCRebalance_ExecuteRebalance_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCRebalance_ExecuteRebalance_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		executeFn: func(_ context.Context, _ *pb.RebalancePlan) (*pb.RebalanceExecutionResponse, error) {
-			return nil, errors.New("rebalance failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.ExecuteRebalance(context.Background(), &transport.RebalancePlan{})
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -1017,21 +849,6 @@ func TestGRPCRebalance_GetImbalanceReport_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCRebalance_GetImbalanceReport_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		imbalanceReportFn: func(_ context.Context, _ *emptypb.Empty) (*pb.ImbalanceReport, error) {
-			return nil, errors.New("unavailable")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetImbalanceReport(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 // protoToRebalancePlan nil guard
 func TestGRPCRebalance_ProtoToRebalancePlan_Nil(t *testing.T) {
 	if got := protoToRebalancePlan(nil); got != nil {
@@ -1052,11 +869,21 @@ func TestGRPCRebalance_RebalancePlanToProto_Nil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGRPCCredential_Store_Success(t *testing.T) {
-	tr, cleanup := startTestServer(t, &testQRDBServer{})
+	var got *pb.CredentialStoreRequest
+	svc := &testQRDBServer{
+		credStoreFn: func(_ context.Context, req *pb.CredentialStoreRequest) (*emptypb.Empty, error) {
+			got = req
+			return &emptypb.Empty{}, nil
+		},
+	}
+	tr, cleanup := startTestServer(t, svc)
 	defer cleanup()
 
-	if err := tr.CredentialStore(context.Background(), "db-pass", []byte("s3cr3t")); err != nil {
+	if err := tr.CredentialStore(context.Background(), "n", []byte("v")); err != nil {
 		t.Fatalf("CredentialStore: %v", err)
+	}
+	if got.GetName() != "n" || string(got.GetValue()) != "v" {
+		t.Fatalf("server stored %q=%q, want n=v", got.GetName(), got.GetValue())
 	}
 }
 
@@ -1065,20 +892,6 @@ func TestGRPCCredential_Store_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCCredential_Store_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		credStoreFn: func(_ context.Context, _ *pb.CredentialStoreRequest) (*emptypb.Empty, error) {
-			return nil, errors.New("store failed")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	if err := tr.CredentialStore(context.Background(), "n", []byte("v")); err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -1100,21 +913,6 @@ func TestGRPCCredential_Retrieve_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCCredential_Retrieve_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		credRetrieveFn: func(_ context.Context, _ *pb.CredentialRetrieveRequest) (*pb.CredentialRetrieveResponse, error) {
-			return nil, errors.New("not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.retrieveBytes(context.Background(), "missing")
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -1145,21 +943,6 @@ func TestGRPCAuth_GetUserByCertThumbprint_Closed(t *testing.T) {
 	}
 }
 
-func TestGRPCAuth_GetUserByCertThumbprint_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		getUserByCertFn: func(_ context.Context, _ *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error) {
-			return nil, errors.New("cert not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.GetUserByCertThumbprint(context.Background(), "tp")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestGRPCAuth_AddCertBinding_Success(t *testing.T) {
 	tr, cleanup := startTestServer(t, &testQRDBServer{})
 	defer cleanup()
@@ -1178,21 +961,6 @@ func TestGRPCAuth_AddCertBinding_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCAuth_AddCertBinding_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		addCertBindFn: func(_ context.Context, _ *pb.AddCertBindingRequest) (*pb.UserResponse, error) {
-			return nil, errors.New("user not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	_, err := tr.AddCertBinding(context.Background(), 999, "fp", 0)
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 
@@ -1230,20 +998,6 @@ func TestGRPCAuth_RemoveCertBinding_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGRPCAuth_RemoveCertBinding_RPCError(t *testing.T) {
-	svc := &testQRDBServer{
-		removeCertBindFn: func(_ context.Context, _ *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) {
-			return nil, errors.New("binding not found")
-		},
-	}
-	tr, cleanup := startTestServer(t, svc)
-	defer cleanup()
-
-	if _, err := tr.RemoveCertBinding(context.Background(), 999, "fp"); err == nil {
-		t.Fatal("a refused withdrawal was reported as a success")
 	}
 }
 
@@ -1308,4 +1062,98 @@ func TestGRPCRegisterOptions_NilSafe(t *testing.T) {
 		grpcpkg.WithRegisterEmbedding(nil),
 		grpcpkg.WithRegisterRAGService(nil),
 	)
+}
+
+// TestGRPCUplift_RPCErrorIsRequestError verifies that a server-side refusal on
+// each admin RPC reaches the caller as a RequestError naming the method and
+// carrying the gRPC status code, rather than as a bare or untyped error.
+func TestGRPCUplift_RPCErrorIsRequestError(t *testing.T) {
+	refused := errors.New("refused")
+	svc := &testQRDBServer{
+		backupCreateFn: func(context.Context, *pb.BackupCreateRequest) (*pb.BackupInfo, error) { return nil, refused },
+		backupListFn:   func(context.Context, *emptypb.Empty) (*pb.BackupListResponse, error) { return nil, refused },
+		backupGetFn:    func(context.Context, *pb.BackupGetRequest) (*pb.BackupInfo, error) { return nil, refused },
+		backupDeleteFn: func(context.Context, *pb.BackupDeleteRequest) (*emptypb.Empty, error) { return nil, refused },
+		backupRestoreFn: func(context.Context, *pb.BackupRestoreRequest) (*pb.BackupRestoreResponse, error) {
+			return nil, refused
+		},
+		backupVerifyFn: func(context.Context, *pb.BackupVerifyRequest) (*pb.BackupVerifyResponse, error) {
+			return nil, refused
+		},
+		dbSealFn: func(context.Context, *pb.DatabaseSealRequest) (*emptypb.Empty, error) { return nil, refused },
+		dbBarrierStatusFn: func(context.Context, *pb.DatabaseBarrierStatusRequest) (*pb.DatabaseBarrierStatusResponse, error) {
+			return nil, refused
+		},
+		embedFn:      func(context.Context, *pb.EmbedRequest) (*pb.EmbedResponse, error) { return nil, refused },
+		batchEmbedFn: func(context.Context, *pb.BatchEmbedRequest) (*pb.BatchEmbedResponse, error) { return nil, refused },
+		listModelsFn: func(context.Context, *pb.ListEmbeddingModelsRequest) (*pb.ListEmbeddingModelsResponse, error) {
+			return nil, refused
+		},
+		shardStatsFn:      func(context.Context, *pb.RebalanceShardStatsRequest) (*pb.ShardStats, error) { return nil, refused },
+		createPlanFn:      func(context.Context, *pb.RebalancePlanRequest) (*pb.RebalancePlan, error) { return nil, refused },
+		executeFn:         func(context.Context, *pb.RebalancePlan) (*pb.RebalanceExecutionResponse, error) { return nil, refused },
+		imbalanceReportFn: func(context.Context, *emptypb.Empty) (*pb.ImbalanceReport, error) { return nil, refused },
+		credStoreFn:       func(context.Context, *pb.CredentialStoreRequest) (*emptypb.Empty, error) { return nil, refused },
+		credRetrieveFn: func(context.Context, *pb.CredentialRetrieveRequest) (*pb.CredentialRetrieveResponse, error) {
+			return nil, refused
+		},
+		getUserByCertFn: func(context.Context, *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error) {
+			return nil, refused
+		},
+		addCertBindFn:    func(context.Context, *pb.AddCertBindingRequest) (*pb.UserResponse, error) { return nil, refused },
+		removeCertBindFn: func(context.Context, *pb.RemoveCertBindingRequest) (*pb.UserResponse, error) { return nil, refused },
+	}
+	tr, cleanup := startTestServer(t, svc)
+	defer cleanup()
+	ctx := context.Background()
+
+	calls := map[string]func() error{
+		"CreateBackup": func() error {
+			_, err := tr.CreateBackup(ctx, &transport.BackupRequest{Destination: "/x"})
+			return err
+		},
+		"ListBackups":           func() error { _, err := tr.ListBackups(ctx); return err },
+		"GetBackup":             func() error { _, err := tr.GetBackup(ctx, "bk-1"); return err },
+		"DeleteBackup":          func() error { return tr.DeleteBackup(ctx, "bk-1") },
+		"RestoreBackup":         func() error { _, err := tr.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: "x"}); return err },
+		"VerifyBackup":          func() error { _, err := tr.VerifyBackup(ctx, "bk-1"); return err },
+		"SealDatabase":          func() error { return tr.SealDatabase(ctx, "mydb") },
+		"DatabaseBarrierStatus": func() error { _, err := tr.DatabaseBarrierStatus(ctx, "mydb"); return err },
+		"Embed": func() error {
+			_, err := tr.Embed(ctx, &transport.EmbedRequest{Texts: []string{"x"}})
+			return err
+		},
+		"BatchEmbed": func() error {
+			_, err := tr.BatchEmbed(ctx, &transport.BatchEmbedRequest{Texts: []string{"x"}})
+			return err
+		},
+		"ListEmbeddingModels": func() error { _, err := tr.ListEmbeddingModels(ctx, "openai"); return err },
+		"GetShardStats":       func() error { _, err := tr.GetShardStats(ctx, 1); return err },
+		"CreateRebalancePlan": func() error {
+			_, err := tr.CreateRebalancePlan(ctx, &transport.RebalancePlanRequest{})
+			return err
+		},
+		"ExecuteRebalance": func() error {
+			_, err := tr.ExecuteRebalance(ctx, &transport.RebalancePlan{})
+			return err
+		},
+		"GetImbalanceReport":      func() error { _, err := tr.GetImbalanceReport(ctx); return err },
+		"CredentialStore":         func() error { return tr.CredentialStore(ctx, "n", []byte("v")) },
+		"CredentialRetrieve":      func() error { _, err := tr.retrieveBytes(ctx, "n"); return err },
+		"GetUserByCertThumbprint": func() error { _, err := tr.GetUserByCertThumbprint(ctx, "tp"); return err },
+		"AddCertBinding":          func() error { _, err := tr.AddCertBinding(ctx, 1, "fp", 0); return err },
+		"RemoveCertBinding":       func() error { _, err := tr.RemoveCertBinding(ctx, 1, "fp"); return err },
+	}
+	for method, call := range calls {
+		t.Run(method, func(t *testing.T) {
+			var re *transport.RequestError
+			if err := call(); !errors.As(err, &re) {
+				t.Fatalf("error = %T %v, want *transport.RequestError", err, err)
+			}
+			if re.Method != method || re.StatusCode != int(codes.Unknown) {
+				t.Fatalf("RequestError{Method: %q, StatusCode: %d}, want {%q, %d}",
+					re.Method, re.StatusCode, method, codes.Unknown)
+			}
+		})
+	}
 }
