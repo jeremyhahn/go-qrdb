@@ -609,6 +609,9 @@ are not reconstructed here — their history is in the git log.
 
 - `github.com/mark3labs/mcp-go` v1.4.0 → v1.5.0 in the root and `sdk/go`
   modules (indirect in `sdk/go/gorm/conformance` and `test/clusterproof`).
+- `github.com/jackc/pgx/v5` v5.11.0 → v5.12.0 in the root module (indirect in
+  `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`; the
+  conformance module also takes `github.com/jackc/puddle/v2` v2.2.3).
 
 ### Security
 
