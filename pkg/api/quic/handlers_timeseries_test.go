@@ -333,6 +333,44 @@ func TestHandleTSQuery_WithOptions(t *testing.T) {
 	}
 }
 
+func TestHandleTSQuery_WithTags(t *testing.T) {
+	var gotTags map[string]string
+	tsSvc := &mockTimeSeriesService{
+		queryFn: func(_ context.Context, _ string, _, _ time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+			gotTags = timeseries.ApplyTSQueryOptions(opts).Tags
+			return []timeseries.DataPoint{}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTimeSeries(tsSvc))
+
+	payload, err := proto.Marshal(&pb.TSQueryRequest{
+		Metric:  "cpu.usage",
+		StartNs: 1000,
+		EndNs:   2000,
+		Tags:    []*pb.TSTag{{Key: "host", Value: "web-01"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if _, err := srv.handleTSQuery(context.Background(), payload); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotTags) != 1 || gotTags["host"] != "web-01" {
+		t.Errorf("tags forwarded = %v, want map[host:web-01]", gotTags)
+	}
+}
+
+func TestHandleTSQuery_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTimeSeries(&mockTimeSeriesService{}))
+
+	_, err := srv.handleTSQuery(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
+	}
+}
+
 func TestHandleTSQuery_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "ts query failed"}
 	tsSvc := &mockTimeSeriesService{
@@ -617,6 +655,7 @@ func TestHandleTSRichQuery_Success(t *testing.T) {
 	end := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	aggVal := 75.0
 	grpAggVal := 80.0
+	grpAggVal2 := 65.0
 
 	tsSvc := &mockTimeSeriesService{
 		queryRichFn: func(_ context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
@@ -635,6 +674,14 @@ func TestHandleTSRichQuery_Success(t *testing.T) {
 							{Metric: req.Metric, Value: 50.0, Timestamp: start},
 						},
 						AggregatedValue: &grpAggVal,
+					},
+					{
+						Tags: map[string]string{"region": "eu-west"},
+						Points: []*timeseries.DataPoint{
+							{Metric: req.Metric, Value: 60.0, Timestamp: start},
+							{Metric: req.Metric, Value: 70.0, Timestamp: end},
+						},
+						AggregatedValue: &grpAggVal2,
 					},
 				},
 			}, nil
@@ -683,17 +730,33 @@ func TestHandleTSRichQuery_Success(t *testing.T) {
 	if wireResp.AggregatedValue == nil || *wireResp.AggregatedValue != 75.0 {
 		t.Errorf("expected aggregated value 75.0, got %v", wireResp.AggregatedValue)
 	}
-	if len(wireResp.GroupedResults) != 1 {
-		t.Fatalf("expected 1 grouped result, got %d", len(wireResp.GroupedResults))
+	if len(wireResp.GroupedResults) != 2 {
+		t.Fatalf("expected 2 grouped results, got %d", len(wireResp.GroupedResults))
 	}
-	if wireResp.GroupedResults[0].Tags["region"] != "us-east" {
-		t.Errorf("expected grouped tag region=us-east, got %q", wireResp.GroupedResults[0].Tags["region"])
+	wantGroups := []struct {
+		region string
+		values []float64
+		agg    float64
+	}{
+		{region: "us-east", values: []float64{50.0}, agg: 80.0},
+		{region: "eu-west", values: []float64{60.0, 70.0}, agg: 65.0},
 	}
-	if len(wireResp.GroupedResults[0].Points) != 1 {
-		t.Fatalf("expected 1 point in grouped result, got %d", len(wireResp.GroupedResults[0].Points))
-	}
-	if wireResp.GroupedResults[0].AggregatedValue == nil || *wireResp.GroupedResults[0].AggregatedValue != 80.0 {
-		t.Errorf("expected grouped aggregated value 80.0, got %v", wireResp.GroupedResults[0].AggregatedValue)
+	for i, want := range wantGroups {
+		got := wireResp.GroupedResults[i]
+		if got.Tags["region"] != want.region {
+			t.Errorf("group %d: expected tag region=%s, got %q", i, want.region, got.Tags["region"])
+		}
+		if len(got.Points) != len(want.values) {
+			t.Fatalf("group %d: expected %d points, got %d", i, len(want.values), len(got.Points))
+		}
+		for j, v := range want.values {
+			if got.Points[j].Value != v {
+				t.Errorf("group %d point %d: expected value %f, got %f", i, j, v, got.Points[j].Value)
+			}
+		}
+		if got.AggregatedValue == nil || *got.AggregatedValue != want.agg {
+			t.Errorf("group %d: expected aggregated value %f, got %v", i, want.agg, got.AggregatedValue)
+		}
 	}
 }
 

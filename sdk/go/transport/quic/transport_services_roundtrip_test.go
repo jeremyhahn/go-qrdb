@@ -354,6 +354,9 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 				UsedBytes:   7,
 				TenantCount: 2,
 				NodeCounts:  volume.NodeHealthCounts{Ready: 3, Unmapped: 2},
+			}, {
+				Pool:        volume.Pool{Name: "slow", Provider: "dir", CapacityBytes: 10, CreatedAt: created},
+				TenantCount: 1,
 			}}, nil
 		},
 		GetPoolFn: func(_ context.Context, name string) (*volume.PoolDetail, error) {
@@ -400,9 +403,10 @@ func TestQUICRoundTrip_VolumePools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPools: %v", err)
 	}
-	if len(pools) != 1 || pools[0].Name != "fast" || pools[0].CapacityBytes != 100 || pools[0].Overcommit != 1.5 ||
+	if len(pools) != 2 || pools[0].Name != "fast" || pools[0].CapacityBytes != 100 || pools[0].Overcommit != 1.5 ||
 		pools[0].UsedBytes != 7 || pools[0].TenantCount != 2 || !pools[0].CreatedAt.Equal(created) ||
-		pools[0].Nodes != (transport.VolumePoolNodeCounts{Ready: 3, Unmapped: 2}) {
+		pools[0].Nodes != (transport.VolumePoolNodeCounts{Ready: 3, Unmapped: 2}) ||
+		pools[1].Name != "slow" || pools[1].CapacityBytes != 10 || pools[1].TenantCount != 1 {
 		t.Fatalf("ListPools = %+v", pools)
 	}
 
