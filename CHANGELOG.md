@@ -588,7 +588,9 @@ are not reconstructed here — their history is in the git log.
   `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`; the
   conformance module also takes `github.com/jackc/puddle/v2` v2.2.3).
 - `github.com/jeremyhahn/go-codec` v1.4.0 → v1.5.1-alpha,
-  `github.com/jeremyhahn/go-objstore` v0.9.0-alpha → v0.9.1-alpha and
+  `github.com/jeremyhahn/go-enclave` v0.10.0-alpha → v0.11.1-alpha,
+  `github.com/jeremyhahn/go-objstore` v0.9.0-alpha → v0.9.1-alpha,
+  `github.com/jeremyhahn/go-quicraft` v0.24.2-alpha → v0.24.3-alpha and
   `github.com/jeremyhahn/go-truststrap` v0.7.0-alpha → v0.7.1-alpha in the
   root, `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof` modules.
 

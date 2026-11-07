@@ -118,11 +118,11 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jeremyhahn/go-codec v1.5.1-alpha // indirect
-	github.com/jeremyhahn/go-enclave v0.10.0-alpha // indirect
+	github.com/jeremyhahn/go-enclave v0.11.1-alpha // indirect
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha // indirect
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha // indirect
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
-	github.com/jeremyhahn/go-quicraft v0.24.2-alpha // indirect
+	github.com/jeremyhahn/go-quicraft v0.24.3-alpha // indirect
 	github.com/jeremyhahn/go-truststrap v0.7.1-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.20.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
