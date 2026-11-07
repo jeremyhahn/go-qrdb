@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,7 @@ import (
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // mockBatch is a minimal mock batch implementation.
@@ -190,6 +192,10 @@ func TestNewIndexManager_NilStorage(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, mgr)
 	assert.Contains(t, err.Error(), "storage is required")
+
+	var qrdbErr *dberrors.QRDBError
+	require.ErrorAs(t, err, &qrdbErr)
+	assert.Equal(t, dberrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestNewIndexManager_NilLogger(t *testing.T) {
@@ -199,6 +205,10 @@ func TestNewIndexManager_NilLogger(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, mgr)
 	assert.Contains(t, err.Error(), "logger is required")
+
+	var qrdbErr *dberrors.QRDBError
+	require.ErrorAs(t, err, &qrdbErr)
+	assert.Equal(t, dberrors.ErrInvalidInput, qrdbErr.Code)
 }
 
 func TestIndexManager_DeleteIndexes_Unit(t *testing.T) {
@@ -222,7 +232,18 @@ func TestIndexManager_DeleteIndexes_Unit(t *testing.T) {
 	assert.NoError(t, err)
 
 	keys, err := mgr.QueryIndex("Name", "test")
-	assert.True(t, len(keys) == 0 || err != nil)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+// TestIndexManager_DeleteIndexes_NeverIndexed verifies deleting an entity
+// that was never indexed is a no-op that succeeds.
+func TestIndexManager_DeleteIndexes_NeverIndexed(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entity := &TestEntity{ID: 99, Name: "ghost", Email: "ghost@example.com"}
+	assert.NoError(t, mgr.DeleteIndexes(entity, uint64ToBytes(99)))
 }
 
 func TestIndexManager_DeleteIndexes_ClosedManager(t *testing.T) {
@@ -233,6 +254,162 @@ func TestIndexManager_DeleteIndexes_ClosedManager(t *testing.T) {
 	err := mgr.DeleteIndexes(&entity, []byte("1"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
+}
+
+// TestIndexManager_DeleteIndexes_GetFieldError verifies DeleteIndexes returns
+// the field-read error when the entity lacks an indexed field.
+func TestIndexManager_DeleteIndexes_GetFieldError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	mgr.indexes["Name"] = &deletefailIndex{}
+
+	type Other struct{ X int }
+	err := mgr.DeleteIndexes(Other{X: 1}, []byte("ek"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to get value for field Name")
+}
+
+// TestIndexManager_UpdateIndexes_DeleteError verifies UpdateIndexes returns
+// the index's Delete error when removing the old value fails.
+func TestIndexManager_UpdateIndexes_DeleteError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	deleteErr := &ClosedError{Name: "delete-error"}
+	mgr.indexes["Name"] = &deletefailIndex{deleteErr: deleteErr}
+
+	err := mgr.UpdateIndexes(User{Name: "alice"}, User{Name: "bob"}, []byte("ek1"))
+	require.ErrorIs(t, err, deleteErr)
+	assert.Contains(t, err.Error(), "failed to delete old index entry for field Name")
+}
+
+// TestIndexManager_UpdateIndexes_PutError verifies UpdateIndexes returns the
+// index's Put error when adding the new value fails after a successful Delete.
+func TestIndexManager_UpdateIndexes_PutError(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	putErr := &ClosedError{Name: "put-error"}
+	mgr.indexes["Name"] = &putfailIndex{putErr: putErr}
+
+	err := mgr.UpdateIndexes(User{Name: "alice"}, User{Name: "bob"}, []byte("ek1"))
+	require.ErrorIs(t, err, putErr)
+	assert.Contains(t, err.Error(), "failed to add index entry for field Name")
+}
+
+func TestIndexManager_UpdateIndexes_MultipleEntities(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entities := []*TestEntity{
+		{ID: 1, Name: "alice", Email: "alice@example.com"},
+		{ID: 2, Name: "bob", Email: "bob@example.com"},
+		{ID: 3, Name: "alice", Email: "alice2@example.com"},
+	}
+	for _, e := range entities {
+		require.NoError(t, mgr.UpdateIndexes(nil, e, uint64ToBytes(e.ID)))
+	}
+
+	// "alice" maps to entities 1 and 3.
+	keys, err := mgr.QueryIndex("Name", "alice")
+	require.NoError(t, err)
+	assert.Len(t, keys, 2)
+	assert.True(t, containsKey(keys, uint64ToBytes(1)))
+	assert.True(t, containsKey(keys, uint64ToBytes(3)))
+}
+
+func TestIndexManager_UpdateIndexes_ValueChanged(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entityKey := uint64ToBytes(1)
+	oldEntity := &TestEntity{ID: 1, Name: "alice", Email: "alice@example.com"}
+	newEntity := &TestEntity{ID: 1, Name: "bob", Email: "alice@example.com"}
+	require.NoError(t, mgr.UpdateIndexes(nil, oldEntity, entityKey))
+	require.NoError(t, mgr.UpdateIndexes(oldEntity, newEntity, entityKey))
+
+	keys, err := mgr.QueryIndex("Name", "alice")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	keys, err = mgr.QueryIndex("Name", "bob")
+	require.NoError(t, err)
+	assert.True(t, containsKey(keys, entityKey))
+}
+
+func TestIndexManager_UpdateIndexes_ValueUnchangedNoOp(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entityKey := uint64ToBytes(1)
+	entity := &TestEntity{ID: 1, Name: "alice", Email: "alice@example.com"}
+	require.NoError(t, mgr.UpdateIndexes(nil, entity, entityKey))
+	require.NoError(t, mgr.UpdateIndexes(entity, entity, entityKey))
+
+	keys, err := mgr.QueryIndex("Name", "alice")
+	require.NoError(t, err)
+	assert.Len(t, keys, 1)
+	assert.True(t, containsKey(keys, entityKey))
+}
+
+func TestIndexManager_UpdateIndexes_ClosedManager(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	cleanup()
+
+	entity := &TestEntity{ID: 1, Name: "alice", Email: "alice@example.com"}
+	err := mgr.UpdateIndexes(nil, entity, uint64ToBytes(1))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_UpdateIndexes_InvalidNewEntity(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	err := mgr.UpdateIndexes(nil, "not-a-struct", uint64ToBytes(1))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected struct")
+}
+
+func TestIndexManager_UpdateIndexes_InvalidOldEntity(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	newEntity := &TestEntity{ID: 1, Name: "alice", Email: "alice@example.com"}
+	err := mgr.UpdateIndexes("not-a-struct", newEntity, uint64ToBytes(1))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected struct")
+}
+
+// TestIndexManager_QueryIndexWithContext_ConvertError verifies
+// QueryIndexWithContext rejects a value it cannot convert to bytes on a
+// context-aware index.
+func TestIndexManager_QueryIndexWithContext_ConvertError(t *testing.T) {
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	mgr, err := NewIndexManager(s, newTestLogger(t))
+	require.NoError(t, err)
+
+	type User struct {
+		Name string `index:"true"`
+	}
+	require.NoError(t, mgr.RegisterIndexes(reflect.TypeOf(User{})))
+	_, isCtx := mgr.indexes["Name"].(IndexWithContext)
+	require.True(t, isCtx, "registered index must take the context-aware path")
+
+	ids, err := mgr.QueryIndexWithContext(context.Background(), "Name", nil)
+	require.Error(t, err)
+	assert.Nil(t, ids)
+	assert.Contains(t, err.Error(), "failed to convert value to bytes")
 }
 
 func TestIndexManager_QueryIndexWithContext_Unit(t *testing.T) {
@@ -276,6 +453,142 @@ func TestIndexManager_QueryIndexWithContext_ClosedManager(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, ids)
 	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_QueryIndex_NoMatch(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	keys, err := mgr.QueryIndex("Name", "nonexistent")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+func TestIndexManager_QueryIndex_NonExistentIndex(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	keys, err := mgr.QueryIndex("DoesNotExist", "value")
+	assert.Nil(t, keys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestIndexManager_QueryIndex_ClosedManager(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	cleanup()
+
+	keys, err := mgr.QueryIndex("Name", "alice")
+	assert.Nil(t, keys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_QueryIndex_NilValue(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	keys, err := mgr.QueryIndex("Name", nil)
+	assert.Nil(t, keys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestIndexManager_QueryIndex_UnsupportedType(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	keys, err := mgr.QueryIndex("Name", struct{}{})
+	assert.Nil(t, keys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+}
+
+func TestIndexManager_ScanIndex_WithResults(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entities := []*TestEntity{
+		{ID: 1, Name: "alice", Email: "a@example.com"},
+		{ID: 2, Name: "bob", Email: "b@example.com"},
+		{ID: 3, Name: "charlie", Email: "c@example.com"},
+	}
+	for _, e := range entities {
+		require.NoError(t, mgr.UpdateIndexes(nil, e, uint64ToBytes(e.ID)))
+	}
+
+	// [alice, charlie) returns alice and bob: the upper bound is exclusive.
+	results, err := mgr.ScanIndex("Name", "alice", "charlie")
+	require.NoError(t, err)
+	assert.Contains(t, results, "alice")
+	assert.Contains(t, results, "bob")
+	assert.NotContains(t, results, "charlie")
+}
+
+func TestIndexManager_ScanIndex_EmptyRange(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entity := &TestEntity{ID: 1, Name: "alice", Email: "a@example.com"}
+	require.NoError(t, mgr.UpdateIndexes(nil, entity, uint64ToBytes(1)))
+
+	results, err := mgr.ScanIndex("Name", "zzz", "zzzz")
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestIndexManager_ScanIndex_NilBounds(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	entity := &TestEntity{ID: 1, Name: "alice", Email: "a@example.com"}
+	require.NoError(t, mgr.UpdateIndexes(nil, entity, uint64ToBytes(1)))
+
+	// Nil start and end scan every entry.
+	results, err := mgr.ScanIndex("Name", nil, nil)
+	require.NoError(t, err)
+	assert.Contains(t, results, "alice")
+}
+
+func TestIndexManager_ScanIndex_NonExistentIndex(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	results, err := mgr.ScanIndex("DoesNotExist", "a", "z")
+	assert.Nil(t, results)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestIndexManager_ScanIndex_ClosedManager(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	cleanup()
+
+	results, err := mgr.ScanIndex("Name", "a", "z")
+	assert.Nil(t, results)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_ScanIndex_InvalidBoundType(t *testing.T) {
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
+	defer cleanup()
+
+	tests := []struct {
+		name       string
+		start, end interface{}
+	}{
+		{"start", struct{}{}, "z"},
+		{"end", "a", struct{}{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := mgr.ScanIndex("Name", tt.start, tt.end)
+			assert.Nil(t, results)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unsupported")
+		})
+	}
 }
 
 func TestIndexManager_GetIndex_Unit(t *testing.T) {
@@ -419,6 +732,55 @@ func TestIndexManager_ClearAllIndexes_ClosedManager(t *testing.T) {
 	err := mgr.ClearAllIndexes()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_ClearAllIndexes_WithFailingIndex(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	clearErr := &dberrors.MessageError{Message: "clear failed"}
+	mgr.indexes["broken"] = &failingIndex{clearErr: clearErr}
+
+	err := mgr.ClearAllIndexes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "clear failed")
+}
+
+func TestIndexManager_ListIndexes_EmptyManager(t *testing.T) {
+	mgr, cleanup := setupUnitTestManager(t)
+	defer cleanup()
+
+	names := mgr.ListIndexes()
+	assert.NotNil(t, names)
+	assert.Empty(t, names)
+}
+
+func TestIndexManager_Close_DoubleClose(t *testing.T) {
+	mgr, _ := setupManagerWithMemoryIndexes(t)
+
+	assert.NoError(t, mgr.Close())
+	// A second Close is a no-op.
+	assert.NoError(t, mgr.Close())
+}
+
+func TestIndexManager_Close_WithFailingIndex(t *testing.T) {
+	mgr, _ := setupUnitTestManager(t)
+
+	closeErr := &dberrors.MessageError{Message: "close failed"}
+	mgr.indexes["broken"] = &failingIndex{closeErr: closeErr}
+
+	err := mgr.Close()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "close failed")
+	// The manager is closed despite the index error.
+	assert.True(t, mgr.closed)
+}
+
+func TestIndexManager_Close_EmptyManager(t *testing.T) {
+	mgr, _ := setupUnitTestManager(t)
+
+	assert.NoError(t, mgr.Close())
+	assert.True(t, mgr.closed)
 }
 
 func TestIndexManager_RebuildIndex_Unit(t *testing.T) {
@@ -582,6 +944,12 @@ func TestBytesEqual(t *testing.T) {
 		{"different_length", []byte("test"), []byte("testing"), false},
 		{"both_empty", []byte{}, []byte{}, true},
 		{"one_empty", []byte("test"), []byte{}, false},
+		{"both_nil", nil, nil, true},
+		{"nil_and_empty", nil, []byte{}, true},
+		{"empty_and_nil", []byte{}, nil, true},
+		{"nil_and_non_empty", nil, []byte{1}, false},
+		{"non_empty_and_nil", []byte{1}, nil, false},
+		{"same_length_different_content", []byte{1, 2, 3}, []byte{1, 2, 4}, false},
 	}
 
 	for _, tt := range tests {
@@ -612,4 +980,26 @@ func TestIndexManager_RegisterIndexes_ClosedManager(t *testing.T) {
 	err := mgr.RegisterIndexes(entityType)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
+}
+
+func TestIndexManager_RegisterIndexes_ViaConstructor(t *testing.T) {
+	mgr, err := NewIndexManager(newMockStorage(), newTestLogger(t))
+	require.NoError(t, err)
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.RegisterIndexes(reflect.TypeOf(TestEntity{})))
+
+	names := mgr.ListIndexes()
+	sort.Strings(names)
+	assert.Equal(t, []string{"Email", "ID", "Name"}, names)
+}
+
+func TestIndexManager_RegisterIndexes_InvalidType(t *testing.T) {
+	mgr, err := NewIndexManager(newMockStorage(), newTestLogger(t))
+	require.NoError(t, err)
+	defer func() { _ = mgr.Close() }()
+
+	err = mgr.RegisterIndexes(reflect.TypeOf(42))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected struct")
 }

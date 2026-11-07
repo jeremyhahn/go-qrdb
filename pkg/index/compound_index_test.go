@@ -15,6 +15,7 @@
 package index
 
 import (
+	"context"
 	"sort"
 	"testing"
 
@@ -267,4 +268,200 @@ func TestNewCompoundIndex_Validation(t *testing.T) {
 		FieldNames: []string{"A"},
 	}, log)
 	require.Error(t, err)
+}
+
+func TestIndexConfig_IsCompound(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		want   bool
+	}{
+		{"single field", []string{"Field1"}, false},
+		{"multi field", []string{"Field1", "Field2"}, true},
+		{"no fields", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := IndexConfig{Name: "test.compound", FieldNames: tt.fields}
+			assert.Equal(t, tt.want, cfg.IsCompound())
+		})
+	}
+}
+
+func TestCompoundIndex_Config(t *testing.T) {
+	cfg := IndexConfig{
+		Name:       "test.messages.ConvID_TS",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	}
+	idx := newTestCompoundIndex(t, cfg)
+	got := idx.Config()
+	assert.Equal(t, cfg.Name, got.Name)
+	assert.Equal(t, cfg.FieldNames, got.FieldNames)
+}
+
+// scanEntityKeys flattens a ScanCompound result into sorted entity keys.
+func scanEntityKeys(result map[string][][]byte) []string {
+	var keys []string
+	for _, entityKeys := range result {
+		for _, k := range entityKeys {
+			keys = append(keys, string(k))
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func TestCompoundIndex_ScanCompound_Empty(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.msg.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	result, err := idx.ScanCompound([][]byte{[]byte("conv-1")}, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestCompoundIndex_ScanCompound_PrefixOnly(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.scanmsg.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("conv-1"), []byte("1000")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/2"), [][]byte{[]byte("conv-1"), []byte("2000")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/3"), [][]byte{[]byte("conv-2"), []byte("1500")}))
+
+	result, err := idx.ScanCompound([][]byte{[]byte("conv-1")}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1", "messages/2"}, scanEntityKeys(result))
+}
+
+func TestCompoundIndex_ScanCompound_WithRangeBounds(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.rangescan.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/1"), [][]byte{[]byte("conv-1"), []byte("1000")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/2"), [][]byte{[]byte("conv-1"), []byte("2000")}))
+	require.NoError(t, idx.PutCompound([]byte("messages/3"), [][]byte{[]byte("conv-1"), []byte("3000")}))
+
+	// [1000, 2500) holds 1000 and 2000 but not 3000.
+	result, err := idx.ScanCompound([][]byte{[]byte("conv-1")}, []byte("1000"), []byte("2500"))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"messages/1", "messages/2"}, scanEntityKeys(result))
+}
+
+func TestCompoundIndex_DeleteCompoundBatch(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.delbatch.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	values := [][]byte{[]byte("conv-A"), []byte("100")}
+	require.NoError(t, idx.PutCompound([]byte("messages/10"), values))
+	keys, err := idx.GetCompound(values)
+	require.NoError(t, err)
+	require.NotEmpty(t, keys)
+
+	batch := idx.storage.Batch()
+	require.NoError(t, idx.DeleteCompoundBatch(batch, []byte("messages/10"), values))
+	require.NoError(t, batch.Commit())
+	require.NoError(t, batch.Close())
+
+	keys, err = idx.GetCompound(values)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+}
+
+func TestCompoundIndex_ValueTypes_PadsWithDefaultValueType(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:            "test.vtypes.pad",
+		FieldNames:      []string{"A", "B", "C"},
+		ValueTypes:      []IndexValueType{IndexValueTypeNumeric},
+		ValueType:       IndexValueTypeString,
+		EncodingVersion: NumericEncodingVersion,
+	})
+
+	assert.Equal(t,
+		[]IndexValueType{IndexValueTypeNumeric, IndexValueTypeString, IndexValueTypeString},
+		idx.valueTypes())
+}
+
+func TestCompoundIndex_ValueTypes_NoPerFieldTypes(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.vtypes.none",
+		FieldNames: []string{"A", "B"},
+		ValueType:  IndexValueTypeString,
+	})
+
+	assert.Equal(t, []IndexValueType{IndexValueTypeString, IndexValueTypeString}, idx.valueTypes())
+}
+
+func TestCompoundIndex_PutCompoundWithContext_Success(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.putctx.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	values := [][]byte{[]byte("conv-B"), []byte("200")}
+	require.NoError(t, idx.PutCompoundWithContext(context.Background(), []byte("messages/20"), values))
+
+	keys, err := idx.GetCompound(values)
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("messages/20")}, keys)
+}
+
+func TestCompoundIndex_PutCompoundWithContext_CanceledContext(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.putctxcancel.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	values := [][]byte{[]byte("conv-X"), []byte("999")}
+	err := idx.PutCompoundWithContext(ctx, []byte("messages/99"), values)
+	require.ErrorIs(t, err, context.Canceled)
+
+	keys, err := idx.GetCompound(values)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a canceled put must not write the entry")
+}
+
+func TestCompoundIndex_GetCompoundWithContext_Success(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.getctx.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	require.NoError(t, idx.PutCompound([]byte("messages/30"), [][]byte{[]byte("conv-C"), []byte("300")}))
+
+	keys, err := idx.GetCompoundWithContext(context.Background(), [][]byte{[]byte("conv-C"), []byte("300")})
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("messages/30")}, keys)
+}
+
+func TestCompoundIndex_GetCompoundWithContext_CanceledContext(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.getctxcancel.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := idx.GetCompoundWithContext(ctx, [][]byte{[]byte("conv-Z"), []byte("999")})
+	require.ErrorIs(t, err, context.Canceled)
 }
