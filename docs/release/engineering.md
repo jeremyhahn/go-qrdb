@@ -64,7 +64,7 @@ limitations under the License.
   ci.yml step — see architecture.md for why the rest is skipped. The two
   sweeps, `make vet-tags` and `make secure-analyzer`, run here on every tag
   although ci.yml runs them (`make lint-sweeps`, in the `lint` job) only on its
-  nightly `schedule:` event, cron `0 4 * * *`, never on a pull request, a push
+  nightly `schedule:` event, cron `0 4 * * 0`, never on a pull request, a push
   or a dispatch (ci-template v1.30; the one schedule trigger, ruling 216(1)).
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
