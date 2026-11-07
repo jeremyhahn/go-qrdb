@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
-
 package grpc
 
 import (
@@ -22,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -545,5 +544,131 @@ func TestRevokeFactorHandler_NotFound(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.NotFound {
 		t.Fatalf("expected NotFound, got %s", st.Code())
+	}
+}
+
+// TestEnrollFactorHandler_PassesParams asserts the handler hands the
+// service the factor, subject, tenant and method params from the request,
+// and that a request without method params still yields a non-nil map.
+func TestEnrollFactorHandler_PassesParams(t *testing.T) {
+	var gotName, gotSubject string
+	var got authfactors.EnrollParams
+	svc := newMockAuthFactorService()
+	svc.enrollFn = func(_ context.Context, factorName, subject string, params authfactors.EnrollParams) (*authfactors.Enrollment, error) {
+		gotName, gotSubject, got = factorName, subject, params
+		return &authfactors.Enrollment{EnrollmentID: "e1", FactorName: factorName, UserID: subject, TenantID: params.TenantID}, nil
+	}
+	srv := &authFactorServer{svc: svc}
+
+	resp, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		Subject: "alice", FactorName: "totp", TenantId: "t1", MethodParams: map[string]string{"k": "v"},
+	})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+	if gotName != "totp" || gotSubject != "alice" || got.UserID != "alice" || got.TenantID != "t1" {
+		t.Fatalf("service got name=%q subject=%q params=%+v", gotName, gotSubject, got)
+	}
+	if got.MethodParams["k"] != "v" {
+		t.Fatalf("MethodParams = %v, want k=v", got.MethodParams)
+	}
+	if resp.GetUserId() != "alice" || resp.GetTenantId() != "t1" {
+		t.Fatalf("response UserId=%q TenantId=%q", resp.GetUserId(), resp.GetTenantId())
+	}
+
+	if _, err := srv.EnrollFactor(context.Background(), &pb.EnrollFactorRequest{Subject: "alice", FactorName: "totp"}); err != nil {
+		t.Fatalf("EnrollFactor without params: %v", err)
+	}
+	if got.MethodParams == nil {
+		t.Fatal("MethodParams is nil for a request without params")
+	}
+}
+
+// TestChallengeFactorHandler_MapsChallenge asserts the response carries the
+// enrollment and nonce of the challenge the service issued.
+func TestChallengeFactorHandler_MapsChallenge(t *testing.T) {
+	svc := newMockAuthFactorService()
+	svc.challengeFn = func(_ context.Context, enrollmentID string) (*authfactors.Challenge, error) {
+		return &authfactors.Challenge{ChallengeID: "c1", EnrollmentID: enrollmentID, Nonce: []byte("n")}, nil
+	}
+	srv := &authFactorServer{svc: svc}
+
+	resp, err := srv.ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{EnrollmentId: "enroll-9"})
+	if err != nil {
+		t.Fatalf("ChallengeFactor: %v", err)
+	}
+	if resp.GetChallengeId() != "c1" || resp.GetEnrollmentId() != "enroll-9" || string(resp.GetNonce()) != "n" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+// TestVerifyFactorHandler_PassesResponse asserts the handler hands the
+// service the factor name, challenge and response value, and replaces a nil
+// metadata map with an empty one.
+func TestVerifyFactorHandler_PassesResponse(t *testing.T) {
+	var gotName, gotChallenge string
+	var got *authfactors.Response
+	svc := newMockAuthFactorService()
+	svc.verifyFn = func(_ context.Context, factorName, challengeID string, response *authfactors.Response) error {
+		gotName, gotChallenge, got = factorName, challengeID, response
+		return nil
+	}
+	srv := &authFactorServer{svc: svc}
+
+	if _, err := srv.VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
+		ChallengeId: "c1", FactorName: "totp", Value: []byte("123456"),
+	}); err != nil {
+		t.Fatalf("VerifyFactor: %v", err)
+	}
+	if gotName != "totp" || gotChallenge != "c1" || got == nil || string(got.Value) != "123456" {
+		t.Fatalf("service got name=%q challenge=%q response=%+v", gotName, gotChallenge, got)
+	}
+	if got.Metadata == nil {
+		t.Fatal("Metadata is nil for a request without metadata")
+	}
+}
+
+// TestRegisterAuthFactorService_RegistersOnlyWithService asserts the
+// AuthFactorService is registered for a non-nil service and skipped for nil.
+func TestRegisterAuthFactorService_RegistersOnlyWithService(t *testing.T) {
+	name := pb.AuthFactorService_ServiceDesc.ServiceName
+
+	without := grpc.NewServer()
+	RegisterAuthFactorService(without, nil)
+	if _, ok := without.GetServiceInfo()[name]; ok {
+		t.Fatalf("%s registered for a nil service", name)
+	}
+
+	with := grpc.NewServer()
+	RegisterAuthFactorService(with, newMockAuthFactorService())
+	if _, ok := with.GetServiceInfo()[name]; !ok {
+		t.Fatalf("%s not registered for a non-nil service", name)
+	}
+}
+
+// TestServer_WithAuthFactorService_ServesEnroll asserts a Server built with
+// WithAuthFactorService answers AuthFactorService RPCs from that service.
+func TestServer_WithAuthFactorService_ServesEnroll(t *testing.T) {
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
+		WithTLS(tlsCfg), WithAuthFactorService(newMockAuthFactorService()))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
+		FactorName: "pkcs11", Subject: "alice", TenantId: "t1",
+	})
+	if err != nil {
+		t.Fatalf("EnrollFactor: %v", err)
+	}
+	if resp.GetEnrollmentId() != "enroll-1" || resp.GetUserId() != "alice" || resp.GetTenantId() != "t1" {
+		t.Fatalf("response = %+v", resp)
 	}
 }

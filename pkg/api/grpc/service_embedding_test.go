@@ -19,12 +19,9 @@ package grpc
 import (
 	"context"
 	"errors"
-	"net"
 	"testing"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -32,7 +29,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Embedding handler tests (service_embedding.go – 0% covered)
+// Embedding handler tests (service_embedding.go)
 // ---------------------------------------------------------------------------
 
 // embeddingMockService is a controllable implementation of
@@ -174,8 +171,8 @@ func TestGRPC_Embed_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.Embed(context.Background(), &pb.EmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("code = %s, want Internal", st.Code())
 	}
 }
 
@@ -225,8 +222,8 @@ func TestGRPC_BatchEmbed_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BatchEmbed(context.Background(), &pb.BatchEmbedRequest{Texts: []string{"x"}})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("code = %s, want Internal", st.Code())
 	}
 }
 
@@ -275,8 +272,8 @@ func TestGRPC_ListEmbeddingModels_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.ListEmbeddingModels(context.Background(), &pb.ListEmbeddingModelsRequest{})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("code = %s, want Internal", st.Code())
 	}
 }
 
@@ -317,243 +314,4 @@ func TestEmbeddingUsageToProto_NonNil(t *testing.T) {
 	if out.GetTotalTokens() != 7 {
 		t.Errorf("expected total_tokens=7, got %d", out.GetTotalTokens())
 	}
-}
-
-// ---------------------------------------------------------------------------
-// AddCertBinding (service_auth.go – 0% covered)
-// ---------------------------------------------------------------------------
-
-func TestGRPC_AddCertBinding_NilService(t *testing.T) {
-	client, cleanup := startTestServerFull(t)
-	defer cleanup()
-
-	_, err := client.AddCertBinding(context.Background(), &pb.AddCertBindingRequest{
-		UserId:       42,
-		Thumbprint:   "sha256:abc123",
-		NotAfterUnix: 1800000000,
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.Unimplemented {
-		t.Fatalf("expected Unimplemented, got %s", st.Code())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// AuthFactorService native pb round-trip (authfactor_server.go – 0% covered)
-//
-// We test the five RPC methods via an in-process server that has
-// RegisterAuthFactorService wired, verifying the full request/response
-// round-trip for the happy path and the connection-error path.
-// ---------------------------------------------------------------------------
-
-// startAuthFactorServer starts an in-process gRPC server with the auth factor
-// service registered and returns a connected ClientConn + cleanup.
-func startAuthFactorServer(t *testing.T, svc *mockAuthFactorService) (*grpc.ClientConn, func()) {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
-	srv := grpc.NewServer()
-	RegisterAuthFactorService(srv, svc)
-	go func() { _ = srv.Serve(lis) }()
-
-	conn, err := grpc.NewClient(lis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		srv.Stop()
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	return conn, func() {
-		_ = conn.Close()
-		srv.Stop()
-	}
-}
-
-func TestEnrollFactor_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	conn, cleanup := startAuthFactorServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewAuthFactorServiceClient(conn).EnrollFactor(context.Background(), &pb.EnrollFactorRequest{
-		FactorName: "pkcs11",
-		Subject:    "alice",
-		TenantId:   "tenant-1",
-	})
-	if err != nil {
-		t.Fatalf("EnrollFactor failed: %v", err)
-	}
-	if resp.EnrollmentId != "enroll-1" {
-		t.Fatalf("expected enrollment_id 'enroll-1', got %q", resp.EnrollmentId)
-	}
-}
-
-func TestEnrollFactor_ConnectionError(t *testing.T) {
-	conn, err := grpc.NewClient("127.0.0.1:1",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	cancel()
-	_, err = pb.NewAuthFactorServiceClient(conn).EnrollFactor(ctx, &pb.EnrollFactorRequest{
-		FactorName: "piv",
-		Subject:    "bob",
-	})
-	if err == nil {
-		t.Fatal("expected error from dead connection, got nil")
-	}
-}
-
-func TestChallengeFactor_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	conn, cleanup := startAuthFactorServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewAuthFactorServiceClient(conn).ChallengeFactor(context.Background(), &pb.ChallengeFactorRequest{
-		EnrollmentId: "enroll-1",
-	})
-	if err != nil {
-		t.Fatalf("ChallengeFactor failed: %v", err)
-	}
-	if resp.ChallengeId != "challenge-1" {
-		t.Fatalf("expected challenge_id 'challenge-1', got %q", resp.ChallengeId)
-	}
-}
-
-func TestChallengeFactor_ConnectionError(t *testing.T) {
-	conn, err := grpc.NewClient("127.0.0.1:1",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	cancel()
-	_, err = pb.NewAuthFactorServiceClient(conn).ChallengeFactor(ctx, &pb.ChallengeFactorRequest{
-		EnrollmentId: "x",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestVerifyFactor_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	conn, cleanup := startAuthFactorServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewAuthFactorServiceClient(conn).VerifyFactor(context.Background(), &pb.VerifyFactorRequest{
-		ChallengeId: "challenge-1",
-		Value:       []byte("sig"),
-	})
-	if err != nil {
-		t.Fatalf("VerifyFactor failed: %v", err)
-	}
-}
-
-func TestVerifyFactor_ConnectionError(t *testing.T) {
-	conn, err := grpc.NewClient("127.0.0.1:1",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	cancel()
-	_, err = pb.NewAuthFactorServiceClient(conn).VerifyFactor(ctx, &pb.VerifyFactorRequest{
-		ChallengeId: "c",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestListFactors_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	conn, cleanup := startAuthFactorServer(t, svc)
-	defer cleanup()
-
-	resp, err := pb.NewAuthFactorServiceClient(conn).ListFactors(context.Background(), &pb.ListFactorsRequest{
-		Subject: "alice",
-	})
-	if err != nil {
-		t.Fatalf("ListFactors failed: %v", err)
-	}
-	if resp.Total != 1 {
-		t.Fatalf("expected total=1, got %d", resp.Total)
-	}
-}
-
-func TestListFactors_ConnectionError(t *testing.T) {
-	conn, err := grpc.NewClient("127.0.0.1:1",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	cancel()
-	_, err = pb.NewAuthFactorServiceClient(conn).ListFactors(ctx, &pb.ListFactorsRequest{
-		Subject: "x",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestRevokeFactor_Success(t *testing.T) {
-	svc := newMockAuthFactorService()
-	conn, cleanup := startAuthFactorServer(t, svc)
-	defer cleanup()
-
-	_, err := pb.NewAuthFactorServiceClient(conn).RevokeFactor(context.Background(), &pb.RevokeFactorRequest{
-		EnrollmentId: "enroll-1",
-	})
-	if err != nil {
-		t.Fatalf("RevokeFactor failed: %v", err)
-	}
-}
-
-func TestRevokeFactor_ConnectionError(t *testing.T) {
-	conn, err := grpc.NewClient("127.0.0.1:1",
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("grpc.NewClient: %v", err)
-	}
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	cancel()
-	_, err = pb.NewAuthFactorServiceClient(conn).RevokeFactor(ctx, &pb.RevokeFactorRequest{
-		EnrollmentId: "e",
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RegisterAuthFactorService with nil (0% covered)
-// ---------------------------------------------------------------------------
-
-func TestRegisterAuthFactorService_NilService(t *testing.T) {
-	srv := grpc.NewServer()
-	// Must not panic; nil means the service is not registered.
-	RegisterAuthFactorService(srv, nil)
-	srv.Stop()
-}
-
-func TestRegisterAuthFactorService_NonNil(t *testing.T) {
-	srv := grpc.NewServer()
-	RegisterAuthFactorService(srv, newMockAuthFactorService())
-	srv.Stop()
 }

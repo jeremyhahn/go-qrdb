@@ -5,17 +5,11 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -118,101 +112,5 @@ func TestAwaitingAdminCredentialStreamInterceptor(t *testing.T) {
 				t.Errorf("handler ran = %v, want %v", handled, tt.wantHandler)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// error_status.go: ErrorClass of the marshal and decode errors
-// ---------------------------------------------------------------------------
-
-func TestErrorClass_MarshalAndDecodeErrors(t *testing.T) {
-	inner := errors.New("boom")
-	tests := []struct {
-		name string
-		err  interface{ ErrorClass() errclass.Class }
-		want errclass.Class
-	}{
-		{name: "metadata marshal", err: &MetadataMarshalError{Err: inner}, want: errclass.Internal},
-		{name: "document marshal", err: &DocumentMarshalError{Err: inner}, want: errclass.Internal},
-		{name: "signature decode", err: &SignatureDecodeError{Err: inner}, want: errclass.InvalidArgument},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.err.ErrorClass(); got != tt.want {
-				t.Errorf("ErrorClass() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// register.go: RegisterOptions that attach a dependency
-// ---------------------------------------------------------------------------
-
-// Each stub embeds its interface, so it satisfies it without implementing a
-// method; the tests compare identity and never call through it.
-type (
-	cvgEncMigrator      struct{ service.EncryptionMigrator }
-	cvgDEKService       struct{ service.DEKServicer }
-	cvgCertEnrollment   struct{ service.CertEnrollmentServicer }
-	cvgInvitation       struct{ service.InvitationServicer }
-	cvgTenantOnboarding struct {
-		service.TenantOnboardingServicer
-	}
-	cvgSQLService struct{ service.SQLServicer }
-	cvgRegistry   struct{ service.Registry }
-)
-
-func TestRegisterOptions_AttachDependency(t *testing.T) {
-	encMigrator := &cvgEncMigrator{}
-	dekSvc := &cvgDEKService{}
-	certEnroll := &cvgCertEnrollment{}
-	invitationSvc := &cvgInvitation{}
-	onboarding := &cvgTenantOnboarding{}
-	mw := &authmw.AuthMiddleware{}
-	sqlSvc := &cvgSQLService{}
-	registry := &cvgRegistry{}
-
-	tests := []struct {
-		name string
-		opt  RegisterOption
-		got  func(*qrdbServiceServer) any
-		want any
-	}{
-		{"encryption migrator", WithRegisterEncryptionMigrator(encMigrator), func(s *qrdbServiceServer) any { return s.encMigrator }, encMigrator},
-		{"dek service", WithRegisterDEKService(dekSvc), func(s *qrdbServiceServer) any { return s.dekSvc }, dekSvc},
-		{"cert enrollment", WithRegisterCertEnrollment(certEnroll), func(s *qrdbServiceServer) any { return s.certEnroll }, certEnroll},
-		{"invitation service", WithRegisterInvitationService(invitationSvc), func(s *qrdbServiceServer) any { return s.invitationSvc }, invitationSvc},
-		{"tenant onboarding", WithRegisterTenantOnboarding(onboarding), func(s *qrdbServiceServer) any { return s.onboarding }, onboarding},
-		{"auth middleware", WithRegisterAuthMiddleware(mw), func(s *qrdbServiceServer) any { return s.authMW }, mw},
-		{"sql service", WithRegisterSQLService(sqlSvc), func(s *qrdbServiceServer) any { return s.sqlSvc }, sqlSvc},
-		{"service registry", WithRegisterServiceRegistry(registry), func(s *qrdbServiceServer) any { return s.registry }, registry},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &qrdbServiceServer{}
-			tt.opt(s)
-			if got := tt.got(s); got != tt.want {
-				t.Errorf("field = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRegisterOptions_RegisterService(t *testing.T) {
-	grpcSrv := grpc.NewServer()
-	defer grpcSrv.Stop()
-	RegisterService(grpcSrv, newMockKVService(), newMockAdminService(),
-		WithRegisterEncryptionMigrator(&cvgEncMigrator{}),
-		WithRegisterDEKService(&cvgDEKService{}),
-		WithRegisterCertEnrollment(&cvgCertEnrollment{}),
-		WithRegisterInvitationService(&cvgInvitation{}),
-		WithRegisterTenantOnboarding(&cvgTenantOnboarding{}),
-		WithRegisterAuthMiddleware(&authmw.AuthMiddleware{}),
-		WithRegisterSQLService(&cvgSQLService{}),
-		WithRegisterServiceRegistry(&cvgRegistry{}),
-	)
-	if _, ok := grpcSrv.GetServiceInfo()[pb.QRDBService_ServiceDesc.ServiceName]; !ok {
-		t.Fatalf("QRDBService not registered: %v", grpcSrv.GetServiceInfo())
 	}
 }

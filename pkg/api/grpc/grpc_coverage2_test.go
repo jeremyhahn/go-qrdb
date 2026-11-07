@@ -1574,40 +1574,6 @@ func (m *relabelGetErrSvc) Get(_ context.Context, _ string) (*auth.AuthFactor, e
 	return m.getResult, nil
 }
 
-// ---------------------------------------------------------------------------
-// mapServiceError (authfactor_server.go) - 0% coverage
-// Test the existing function from authfactor_server.go.
-// ---------------------------------------------------------------------------
-
-func TestMapAuthFactorGRPCError_AllCases(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want codes.Code
-	}{
-		{"nil", nil, codes.OK},
-		{"internal", errors.New("generic"), codes.Internal},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := mapServiceError(tc.err)
-			if tc.err == nil {
-				if got != nil {
-					t.Fatalf("expected nil, got %v", got)
-				}
-				return
-			}
-			st, ok := status.FromError(got)
-			if !ok {
-				t.Fatalf("not a gRPC status: %v", got)
-			}
-			if st.Code() != tc.want {
-				t.Errorf("got %s, want %s", st.Code(), tc.want)
-			}
-		})
-	}
-}
-
 func (m *mockTenantBarrierOnlySvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
 }
