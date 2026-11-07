@@ -580,6 +580,11 @@ are not reconstructed here — their history is in the git log.
   `SearchByID` among them) with `VectorServiceClosedError` before it touches
   storage.
 
+### Dependencies
+
+- `github.com/mark3labs/mcp-go` v1.4.0 → v1.5.0 in the root and `sdk/go`
+  modules (indirect in `sdk/go/gorm/conformance` and `test/clusterproof`).
+
 ### Security
 
 - **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
