@@ -33,26 +33,29 @@ func TestApplyRaftArgs_SendsPeersAndLocalNodeCount(t *testing.T) {
 		LocalNodeCount: 3,
 	}
 	for _, tc := range []struct {
+		cfg    *transport.DatabaseRaftConfig
 		prefix string
 		want   map[string]any
 	}{
-		{"raft_", map[string]any{
+		{cfg, "raft_", map[string]any{
 			"raft_cluster_mode":     "distributed",
 			"raft_replica_id":       uint64(2),
 			"raft_address":          "db2.example.com:63001",
 			"raft_peers":            []string{"db2.example.com:63001", "db3.example.com:63001"},
 			"raft_local_node_count": 3,
 		}},
-		{"", map[string]any{
+		{cfg, "", map[string]any{
 			"cluster_mode":     "distributed",
 			"replica_id":       uint64(2),
 			"raft_address":     "db2.example.com:63001",
 			"peers":            []string{"db2.example.com:63001", "db3.example.com:63001"},
 			"local_node_count": 3,
 		}},
+		// Zero values are omitted rather than sent.
+		{&transport.DatabaseRaftConfig{}, "raft_", map[string]any{}},
 	} {
 		args := map[string]any{}
-		applyRaftArgs(args, cfg, tc.prefix)
+		applyRaftArgs(args, tc.cfg, tc.prefix)
 		if !reflect.DeepEqual(args, tc.want) {
 			t.Errorf("prefix %q: args = %#v, want %#v", tc.prefix, args, tc.want)
 		}

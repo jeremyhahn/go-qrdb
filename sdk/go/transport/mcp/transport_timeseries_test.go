@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,7 @@ type mockTSSvc struct {
 	lastInterval  time.Duration
 
 	// consistency capture fields
+	lastQueryOpts            timeseries.TSQueryOptions
 	lastQueryConsistency     *consistency.ReadOptions
 	lastAggConsistency       *consistency.ReadOptions
 	lastRichQueryConsistency *consistency.ReadOptions
@@ -109,9 +111,10 @@ func (m *mockTSSvc) WriteBatch(_ context.Context, points []timeseries.DataPoint)
 	return m.writeBatchErr
 }
 
-func (m *mockTSSvc) Query(_ context.Context, metric string, start, end time.Time, _ ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+func (m *mockTSSvc) Query(_ context.Context, metric string, start, end time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastQueryOpts = timeseries.ApplyTSQueryOptions(opts)
 	m.lastMetric = metric
 	m.lastStart = start
 	m.lastEnd = end
@@ -300,15 +303,24 @@ func TestTSQuery_Success(t *testing.T) {
 
 	now := time.Now().UTC()
 	resp, err := tr.TSQuery(context.Background(), &transport.TSQueryRequest{
-		Metric:  "cpu",
-		StartNs: now.Add(-time.Hour).UnixNano(),
-		EndNs:   now.UnixNano(),
+		Metric:     "cpu",
+		StartNs:    now.Add(-time.Hour).UnixNano(),
+		EndNs:      now.UnixNano(),
+		Tags:       []transport.TSTag{{Key: "host", Value: "server1"}},
+		Limit:      10,
+		Descending: true,
 	})
 	if err != nil {
 		t.Fatalf("TSQuery: %v", err)
 	}
 	if len(resp.Points) != 2 {
 		t.Errorf("points: %d", len(resp.Points))
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	want := timeseries.TSQueryOptions{Tags: map[string]string{"host": "server1"}, Limit: 10, Descending: true}
+	if !reflect.DeepEqual(svc.lastQueryOpts, want) {
+		t.Errorf("service received options %+v, want %+v", svc.lastQueryOpts, want)
 	}
 }
 

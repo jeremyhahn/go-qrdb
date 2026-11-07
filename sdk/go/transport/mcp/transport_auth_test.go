@@ -62,6 +62,15 @@ type mockUserSvc struct {
 	lastSuspend   uint64
 	lastUnsuspend uint64
 
+	certErr              error
+	certUser             *user.User
+	lastCertLookup       string
+	lastBindUser         uint64
+	lastBindThumbprint   string
+	lastBindNotAfter     int64
+	lastUnbindUser       uint64
+	lastUnbindThumbprint string
+
 	getResp  *user.User
 	listResp *user.ListUsersResponse
 }
@@ -199,16 +208,34 @@ func (m *mockUserSvc) UnsuspendUser(_ context.Context, id uint64) error {
 	return m.unsuspendErr
 }
 
-func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
-	return nil, nil
+func (m *mockUserSvc) UserByCertThumbprint(_ context.Context, thumbprint string) (*user.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastCertLookup = thumbprint
+	if m.certErr != nil {
+		return nil, m.certErr
+	}
+	return m.certUser, nil
 }
 
-func (m *mockUserSvc) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
-	return nil, nil
+func (m *mockUserSvc) AddCertBinding(_ context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.certErr != nil {
+		return nil, m.certErr
+	}
+	m.lastBindUser = userID
+	m.lastBindThumbprint = thumbprint
+	m.lastBindNotAfter = notAfterUnix
+	return &user.User{ID: userID}, nil
 }
 
-func (m *mockUserSvc) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
-	return nil, nil
+func (m *mockUserSvc) RemoveCertBinding(_ context.Context, userID uint64, thumbprint string) (*user.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastUnbindUser = userID
+	m.lastUnbindThumbprint = thumbprint
+	return &user.User{ID: userID}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -926,6 +953,123 @@ func TestGetRole_NotFound(t *testing.T) {
 	}
 }
 
+// TestGetRole_ServiceError checks that a role-service failure other than
+// not-found reaches the caller as a *transport.RequestError, not as
+// *transport.KeyNotFoundError.
+func TestGetRole_ServiceError(t *testing.T) {
+	svc := newMockRoleSvc()
+	svc.getErr = errors.New("role store offline")
+	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), svc, nil)
+	defer cleanup()
+
+	_, err := tr.GetRole(context.Background(), "r1")
+	var re *transport.RequestError
+	if !errors.As(err, &re) {
+		t.Fatalf("want *transport.RequestError, got %T (%v)", err, err)
+	}
+	var knfErr *transport.KeyNotFoundError
+	if errors.As(err, &knfErr) {
+		t.Errorf("a service failure must not read as not-found: %v", err)
+	}
+}
+
+// TestGetUserByCertThumbprint_Success checks that the thumbprint reaches the
+// user service and that the bound user comes back decoded.
+func TestGetUserByCertThumbprint_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	svc.certUser = &user.User{ID: 42, Username: "alice", TenantID: "t1"}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	u, err := tr.GetUserByCertThumbprint(context.Background(), "aa:bb:cc:dd")
+	if err != nil {
+		t.Fatalf("GetUserByCertThumbprint: %v", err)
+	}
+	if u.ID != 42 || u.Username != "alice" || u.TenantID != "t1" {
+		t.Errorf("user = %+v, want ID 42 alice/t1", u)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastCertLookup != "aa:bb:cc:dd" {
+		t.Errorf("service looked up %q, want %q", svc.lastCertLookup, "aa:bb:cc:dd")
+	}
+}
+
+// TestAddCertBinding_Success checks that the user ID, thumbprint and expiry
+// reach the user service and that its user comes back.
+func TestAddCertBinding_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	const notAfter = int64(1893456000)
+	u, err := tr.AddCertBinding(context.Background(), 42, "aa:bb:cc:dd", notAfter)
+	if err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	if u.ID != 42 {
+		t.Errorf("user ID = %d, want 42", u.ID)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastBindUser != 42 || svc.lastBindThumbprint != "aa:bb:cc:dd" || svc.lastBindNotAfter != notAfter {
+		t.Errorf("service received (%d, %q, %d), want (42, %q, %d)",
+			svc.lastBindUser, svc.lastBindThumbprint, svc.lastBindNotAfter, "aa:bb:cc:dd", notAfter)
+	}
+}
+
+// TestCertBinding_ServiceError checks that a cert-store failure reaches the
+// caller as itself, not as a user-not-found.
+func TestCertBinding_ServiceError(t *testing.T) {
+	ctx := context.Background()
+	for name, call := range map[string]func(*Transport) error{
+		"GetUserByCertThumbprint": func(tr *Transport) error {
+			_, err := tr.GetUserByCertThumbprint(ctx, "aa:bb")
+			return err
+		},
+		"AddCertBinding": func(tr *Transport) error {
+			_, err := tr.AddCertBinding(ctx, 1, "aa:bb", 0)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockUserSvc()
+			svc.certErr = errors.New("cert store offline")
+			tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+			defer cleanup()
+
+			err := call(tr)
+			var re *transport.RequestError
+			if !errors.As(err, &re) {
+				t.Fatalf("want *transport.RequestError, got %T (%v)", err, err)
+			}
+			var unf *transport.UserNotFoundError
+			if errors.As(err, &unf) {
+				t.Fatalf("a service failure was reported as user-not-found: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoveCertBinding_Success(t *testing.T) {
+	svc := newMockUserSvc()
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	u, err := tr.RemoveCertBinding(context.Background(), 7, "aa:bb:cc")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if u.ID != 7 {
+		t.Errorf("user ID = %d, want 7", u.ID)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastUnbindUser != 7 || svc.lastUnbindThumbprint != "aa:bb:cc" {
+		t.Errorf("service received (%d, %q), want (7, %q)", svc.lastUnbindUser, svc.lastUnbindThumbprint, "aa:bb:cc")
+	}
+}
+
 func TestUpdateRole_Success(t *testing.T) {
 	svc := newMockRoleSvc()
 	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), svc, nil)
@@ -1049,6 +1193,19 @@ func TestListPermissions_Success(t *testing.T) {
 		t.Fatal("expected non-nil response")
 	}
 	// Categories may be empty in tests with no registry — we just check decode
+}
+
+// TestListPermissions_WithoutUserService checks that the server's refusal
+// reaches the caller as a *transport.RequestError.
+func TestListPermissions_WithoutUserService(t *testing.T) {
+	tr, cleanup := connectAuthInProcess(t, nil, newMockRoleSvc(), nil)
+	defer cleanup()
+
+	_, err := tr.ListPermissions(context.Background())
+	var re *transport.RequestError
+	if !errors.As(err, &re) {
+		t.Fatalf("want *transport.RequestError, got %T (%v)", err, err)
+	}
 }
 
 // ---------------------------------------------------------------------------

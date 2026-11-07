@@ -86,7 +86,11 @@ func newMockCredentialSvc() *mockCredentialSvc {
 	}
 }
 
-func (m *mockCredentialSvc) CredentialStore(_ context.Context, _ string, _ []byte) error {
+func (m *mockCredentialSvc) CredentialStore(_ context.Context, name string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastSubmitName = name
+	m.lastSubmitValue = append([]byte(nil), value...)
 	return nil
 }
 
@@ -844,4 +848,44 @@ func TestCredential_BinaryRoundTrip(t *testing.T) {
 	if string(resp.Value) != string(nonUTF8CredentialValue) {
 		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
 	}
+
+	stored := []byte{0xfe, 0x00, 's'}
+	if err := tr.CredentialStore(context.Background(), "bin", stored); err != nil {
+		t.Fatalf("CredentialStore: %v", err)
+	}
+	svc.mu.Lock()
+	got = append([]byte(nil), svc.lastSubmitValue...)
+	svc.mu.Unlock()
+	if string(got) != string(stored) {
+		t.Fatalf("server received stored value %#v, want %#v", got, stored)
+	}
+	// The double's CredentialRetrieveBuffer answers "value" for every name.
+	value, err := tr.retrieveBytes(context.Background(), "bin")
+	if err != nil {
+		t.Fatalf("retrieveBytes: %v", err)
+	}
+	if string(value) != "value" {
+		t.Errorf("retrieved value = %q, want %q", value, "value")
+	}
+}
+
+// TestCredential_StoreRetrieveWithoutService checks that CredentialStore and
+// the retrieve path refuse with a *transport.RequestError on a server that
+// has no credential service.
+func TestCredential_StoreRetrieveWithoutService(t *testing.T) {
+	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
+	defer cleanup()
+
+	var re *transport.RequestError
+	if err := tr.CredentialStore(context.Background(), "n", []byte("v")); !errors.As(err, &re) {
+		t.Errorf("CredentialStore: want *transport.RequestError, got %T (%v)", err, err)
+	}
+	if _, err := tr.retrieveBytes(context.Background(), "n"); !errors.As(err, &re) {
+		t.Errorf("retrieveBytes: want *transport.RequestError, got %T (%v)", err, err)
+	}
+}
+
+func TestCredentialStore_Closed(t *testing.T) {
+	tr := newClosedTransport()
+	assertClosed(t, tr.CredentialStore(context.Background(), "k", []byte("v")))
 }

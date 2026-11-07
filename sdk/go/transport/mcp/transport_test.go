@@ -1547,6 +1547,7 @@ func TestConnect_NetworkInvalidAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	defer func() { _ = tr.Close() }()
 	// Attempt connect with very short timeout context
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -1554,7 +1555,10 @@ func TestConnect_NetworkInvalidAddress(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected connection error")
 	}
-	_ = tr.Close()
+	var connErr *transport.ConnectionError
+	if !errors.As(err, &connErr) {
+		t.Fatalf("expected *transport.ConnectionError, got %T: %v", err, err)
+	}
 }
 
 // CompareAndSwap is the edit half of the guarded set (go-qrdb#56), and it

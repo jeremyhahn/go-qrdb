@@ -47,6 +47,48 @@ func malformedCalls() map[string]malformedCall {
 			return err
 		}},
 
+		// Cluster and key-value reads.
+		"Capabilities": {"qrdb_capabilities", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Capabilities(ctx)
+			return err
+		}},
+		"Status": {"qrdb_status", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Status(ctx)
+			return err
+		}},
+		"Health": {"qrdb_health", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Health(ctx)
+			return err
+		}},
+		"GetTopology": {"qrdb_topology", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.GetTopology(ctx)
+			return err
+		}},
+		"Peers": {"qrdb_peers", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Peers(ctx)
+			return err
+		}},
+		"GetShardState": {"qrdb_shard_state", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.GetShardState(ctx, 1)
+			return err
+		}},
+		"List": {"qrdb_list", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.List(ctx, "p")
+			return err
+		}},
+		"Scan": {"qrdb_scan", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Scan(ctx, "p")
+			return err
+		}},
+		"ExecuteTransaction": {"qrdb_tx_execute", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.ExecuteTransaction(ctx, &transport.TransactionRequest{Compares: []transport.Compare{}})
+			return err
+		}},
+		"CredentialStrategy": {"qrdb_credential_strategy", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.CredentialStrategy(ctx)
+			return err
+		}},
+
 		// Users, roles, certificates.
 		"CreateUser": {"qrdb_user_create", func(ctx context.Context, tr *Transport) error {
 			_, err := tr.CreateUser(ctx, &transport.CreateUserRequest{Username: "u"})

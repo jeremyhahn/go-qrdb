@@ -502,7 +502,9 @@ func TestRotateAuthFactor_Success(t *testing.T) {
 		NewFactor: transport.AuthFactorAddRequest{
 			UserID:     42,
 			Type:       "fido2",
+			Label:      "yubikey",
 			Credential: []byte("new"),
+			Metadata:   map[string]string{"device": "phone"},
 		},
 	})
 	if err != nil {
@@ -510,6 +512,14 @@ func TestRotateAuthFactor_Success(t *testing.T) {
 	}
 	if resp.NewFactor.ID == "" {
 		t.Error("expected non-empty new factor id")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastRotateOld != "f-1" {
+		t.Errorf("service rotated %q, want f-1", svc.lastRotateOld)
+	}
+	if got := svc.lastRotateNew; got.Label != "yubikey" || got.Metadata["device"] != "phone" {
+		t.Errorf("service received label %q, metadata %v; want yubikey, device=phone", got.Label, got.Metadata)
 	}
 }
 
@@ -606,7 +616,7 @@ func TestMcpRecordToTransport(t *testing.T) {
 		Metadata:     map[string]string{"k": "v"},
 		RegisteredAt: "2026-01-01T00:00:00Z",
 		LastUsedAt:   "2026-02-01T00:00:00Z",
-		RevokedAt:    "",
+		RevokedAt:    "2026-03-01T00:00:00Z",
 		CreatedBy:    "self",
 	}
 	out := mcpRecordToTransport(in)
@@ -616,7 +626,10 @@ func TestMcpRecordToTransport(t *testing.T) {
 	if string(out.Credential) != "hash" {
 		t.Errorf("credential: %q", string(out.Credential))
 	}
-	if out.LastUsedAt == nil {
-		t.Error("expected non-nil LastUsedAt")
+	if out.LastUsedAt == nil || !out.LastUsedAt.Equal(time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("LastUsedAt = %v, want 2026-02-01T00:00:00Z", out.LastUsedAt)
+	}
+	if out.RevokedAt == nil || !out.RevokedAt.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("RevokedAt = %v, want 2026-03-01T00:00:00Z", out.RevokedAt)
 	}
 }
