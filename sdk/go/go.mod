@@ -10,11 +10,11 @@ require (
 	github.com/google/uuid v1.6.0
 	// go-enclave: v0.10.0-alpha, in lockstep with the root module and with
 	// go-quicraft v0.24.2-alpha, which builds on it (#944).
-	github.com/jeremyhahn/go-enclave v0.10.0-alpha
+	github.com/jeremyhahn/go-enclave v0.11.1-alpha
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
-	github.com/jeremyhahn/go-quicraft v0.24.2-alpha
+	github.com/jeremyhahn/go-quicraft v0.24.3-alpha
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/quic-go/quic-go v0.64.1
 	github.com/stretchr/testify v1.12.1

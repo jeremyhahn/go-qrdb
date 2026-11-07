@@ -34,11 +34,11 @@ require (
 	// go-enclave: v0.10.0-alpha, in lockstep with go-quicraft v0.24.2-alpha
 	// and go-truststrap v0.7.0-alpha, which build on it (#944), as does
 	// go-objstore v0.9.0-alpha.
-	github.com/jeremyhahn/go-enclave v0.10.0-alpha
+	github.com/jeremyhahn/go-enclave v0.11.1-alpha
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.58.0-alpha
 	// go-quicraft: the newest tag (#944), built on go-enclave v0.10.0-alpha.
-	github.com/jeremyhahn/go-quicraft v0.24.2-alpha
+	github.com/jeremyhahn/go-quicraft v0.24.3-alpha
 	github.com/jeremyhahn/go-truststrap v0.7.1-alpha
 	github.com/jeroenrinzema/psql-wire v0.20.0
 	github.com/mark3labs/mcp-go v1.5.0
