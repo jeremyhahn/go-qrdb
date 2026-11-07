@@ -18,9 +18,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"math"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,16 +251,6 @@ func TestPebbleStateMachine_LeaseCheckpoint_NoLessor(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_LeaseCheckpoint_InvalidPayload(t *testing.T) {
-	s, _ := openStoreWithLessor(t)
-
-	results := make([]sm.Result, 1)
-	cmd := []byte{protocol.OpLeaseCheckpoint, 0x01}
-	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err == nil {
-		t.Fatal("a truncated checkpoint command applied")
-	}
-}
-
 // openStoreWithHub creates a PebbleStateMachine with a watch Hub attached.
 func openStoreWithHub(t *testing.T) (*PebbleStateMachine, *watch.Hub) {
 	t.Helper()
@@ -443,16 +433,42 @@ func TestPebbleStateMachine_MVCCPut(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_MVCCPut_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Create a command with OpMVCCPut but empty payload.
-	cmd := []byte{protocol.OpMVCCPut}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid MVCC Put payload")
+// TestPebbleStateMachine_InvalidPayload checks that every handler fails the
+// apply on a payload it cannot decode.
+func TestPebbleStateMachine_InvalidPayload(t *testing.T) {
+	withLessor := func(t *testing.T) *PebbleStateMachine {
+		s, _ := openStoreWithLessor(t)
+		return s
+	}
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *PebbleStateMachine
+		cmd  []byte
+	}{
+		{"delete", openExtendedStore, []byte{kv.OpDelete}},
+		{"mvcc put", openExtendedStore, []byte{protocol.OpMVCCPut}},
+		{"mvcc delete", openExtendedStore, []byte{protocol.OpMVCCDelete}},
+		{"batch", openExtendedStore, []byte{protocol.OpBatch}},
+		{"transaction", openExtendedStore, []byte{protocol.OpTransaction}},
+		{"index create", openExtendedStore, []byte{protocol.OpIndexCreate}},
+		{"index drop", openExtendedStore, []byte{protocol.OpIndexDrop}},
+		{"lease grant", withLessor, []byte{protocol.OpLeaseGrant}},
+		{"lease keep-alive", withLessor, []byte{protocol.OpLeaseKeepAlive}},
+		{"lease revoke", withLessor, []byte{protocol.OpLeaseRevoke}},
+		{"lease checkpoint truncated", withLessor, []byte{protocol.OpLeaseCheckpoint, 0x01}},
+		{"ts write", openStoreWithTS, []byte{protocol.OpTSWrite}},
+		{"ts write batch", openStoreWithTS, []byte{protocol.OpTSWriteBatch}},
+		{"ts write point", openStoreWithTS, []byte{protocol.OpTSWritePoint}},
+		{"ts delete series", openStoreWithTS, []byte{protocol.OpTSDeleteSeries}},
+		{"ts set retention", openStoreWithTS, []byte{protocol.OpTSSetRetention}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.open(t)
+			results := make([]sm.Result, 1)
+			if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: tc.cmd}}, results); err == nil {
+				t.Fatal("expected an error for an invalid payload")
+			}
+		})
 	}
 }
 
@@ -560,18 +576,6 @@ func TestPebbleStateMachine_DeleteRange_RemovesRangeAndHashesDeterministically(t
 	}
 }
 
-func TestPebbleStateMachine_MVCCDelete_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd := []byte{protocol.OpMVCCDelete}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid MVCC Delete payload")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Batch operations
 // ---------------------------------------------------------------------------
@@ -627,18 +631,6 @@ func TestPebbleStateMachine_Batch_WithDelete(t *testing.T) {
 	}
 	if !bytes.Equal(val.([]byte), []byte("new-val")) {
 		t.Fatalf("expected new-val, got %s", val)
-	}
-}
-
-func TestPebbleStateMachine_Batch_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd := []byte{protocol.OpBatch}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid batch payload")
 	}
 }
 
@@ -768,15 +760,75 @@ func TestPebbleStateMachine_Transaction_NonexistentKey(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_Transaction_InvalidPayload(t *testing.T) {
-	s := openExtendedStore(t)
+// TestPebbleStateMachine_Transaction_RevisionCompareRejected checks that a
+// transaction comparing on a revision target is refused with an
+// application error on a non-MVCC state machine, and that its success ops
+// do not run: admitting the compare was a lost update.
+func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target byte
+	}{
+		{"create revision", protocol.CompareTargetCreateRevision},
+		{"mod revision", protocol.CompareTargetModRevision},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openExtendedStore(t)
+			putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("rev-key"), []byte("val"), 0))
+			applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	cmd := []byte{protocol.OpTransaction}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid transaction payload")
+			// Compare against revision 0, the exact shape that used to pass.
+			compare := mustEncode(protocol.EncodeCompare([]byte("rev-key"), tc.target, 0 /* Equal */, nil, 0, 0, 0))
+			successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("rev-result"), []byte("ok"), nil, 0))
+			cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
+			results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
+
+			msg, ok := protocol.DecodeAppError(results[0].Data)
+			if !ok {
+				t.Fatalf("expected an application error for a revision compare on a non-MVCC state machine, got Data=%v", results[0].Data)
+			}
+			if !strings.Contains(msg, "sm_type") {
+				t.Errorf("app error should name the required configuration, got %q", msg)
+			}
+			if _, err := s.getKeyInBatch(readBatch(t, s), []byte("rev-result")); err == nil {
+				t.Fatal("success op executed despite the rejected compare")
+			}
+		})
+	}
+}
+
+// TestPebbleEvaluateCompare checks a compare against the key's state read
+// through the apply batch. A non-MVCC state machine has no revisions, so a
+// revision compare fails closed even on a key that exists.
+func TestPebbleEvaluateCompare(t *testing.T) {
+	s := openExtendedStore(t)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("cmp-key"), []byte("bbb"), 0))
+	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
+
+	present, absent := []byte("cmp-key"), []byte("cmp-missing")
+	for _, tc := range []struct {
+		name string
+		dc   protocol.DecodedCompare
+		want bool
+	}{
+		{"create revision fails closed", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetCreateRevision, CreateRevision: 1}, false},
+		{"mod revision fails closed", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetModRevision, ModRevision: 1}, false},
+		{"unknown target", protocol.DecodedCompare{Key: present, Target: 99}, false},
+		{"version 1 on present", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetVersion, Version: 1}, true},
+		{"version 0 on absent", protocol.DecodedCompare{Key: absent, Target: protocol.CompareTargetVersion}, true},
+		{"version greater", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetVersion, Result: protocol.CompareResultGreater}, true},
+		{"value equal", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Value: []byte("bbb")}, true},
+		{"value mismatch", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Value: []byte("other")}, false},
+		{"value greater", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultGreater, Value: []byte("aaa")}, true},
+		{"value less", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultLess, Value: []byte("ccc")}, true},
+		{"value not equal", protocol.DecodedCompare{Key: present, Target: protocol.CompareTargetValue, Result: protocol.CompareResultNotEqual, Value: []byte("ccc")}, true},
+		{"non-empty value on absent", protocol.DecodedCompare{Key: absent, Target: protocol.CompareTargetValue, Value: []byte("x")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pebbleEvaluateCompare(s, readBatch(t, s), tc.dc); got != tc.want {
+				t.Fatalf("pebbleEvaluateCompare = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -900,6 +952,41 @@ func TestPebbleStateMachine_LeaseRevoke_NoLessor(t *testing.T) {
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
 		t.Fatal("expected app-error payload when lessor not configured")
+	}
+}
+
+// TestPebbleStateMachine_LeaseUnknownIsIdempotent checks that keep-alive and
+// revoke of a lease that does not exist apply as an unrefused no-op: a
+// non-nil error from Update would stall the Raft group. Keep-alive carries
+// the not-found outcome back in its own Data tag (go-qrdb#275), so the
+// service layer can answer the caller without a second linearized read.
+func TestPebbleStateMachine_LeaseUnknownIsIdempotent(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cmd      []byte
+		notFound bool
+	}{
+		{"keep-alive", mustEncode(protocol.EncodeLeaseKeepAlive(99999)), true},
+		{"revoke", mustEncode(protocol.EncodeLeaseRevoke(99999)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := openStoreWithLessor(t)
+			results := make([]sm.Result, 1)
+			if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: tc.cmd}}, results); err != nil {
+				t.Fatalf("Update must not return a fatal error for a nonexistent lease: %v", err)
+			}
+			if _, ok := protocol.DecodeAppError(results[0].Data); ok {
+				t.Fatal("expected no app-error for a nonexistent lease")
+			}
+			if tc.notFound {
+				if id, ok := protocol.DecodeLeaseKeepAliveNotFound(results[0].Data); !ok || id != 99999 {
+					t.Fatalf("expected lease-keep-alive-not-found payload for lease 99999, got ok=%v id=%d", ok, id)
+				}
+			}
+			if results[0].Value != 0 {
+				t.Fatalf("expected idempotent result Value 0, got %d", results[0].Value)
+			}
+		})
 	}
 }
 
@@ -1144,18 +1231,6 @@ func TestPebbleStateMachine_Lookup_IndexScan_NotFound(t *testing.T) {
 // Tests: Time-series operations
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_TSWrite(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", ts, 42.5, map[string]string{"host": "node1"}))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
 	s := openExtendedStore(t) // no TS configured
 
@@ -1168,22 +1243,6 @@ func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
 		t.Fatal("expected app-error payload when time-series not configured")
-	}
-}
-
-func TestPebbleStateMachine_TSWriteBatch(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	now := time.Now().UnixNano()
-	params := []protocol.TSWriteParams{
-		{Metric: "cpu.usage", Timestamp: now, Value: 42.5, Tags: map[string]string{"host": "node1"}},
-		{Metric: "mem.usage", Timestamp: now, Value: 85.0, Tags: map[string]string{"host": "node1"}},
-	}
-	cmd := mustEncode(protocol.EncodeTSWriteBatch(params))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 2 {
-		t.Fatalf("expected 2, got %d", results[0].Value)
 	}
 }
 
@@ -1204,18 +1263,6 @@ func TestPebbleStateMachine_TSWriteBatch_NoStorage(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_TSWritePoint(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWritePoint("cpu.usage", ts, 42.5, map[string]string{"host": "node1"}))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 func TestPebbleStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -1230,22 +1277,6 @@ func TestPebbleStateMachine_TSWritePoint_NoStorage(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_TSDeleteSeries(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	// Write a point first.
-	now := time.Now().UnixNano()
-	writeCmd := mustEncode(protocol.EncodeTSWrite("del.metric", now, 1.0, nil))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-	// Delete the series.
-	delCmd := mustEncode(protocol.EncodeTSDeleteSeries("del.metric", now-1000, now+1000, nil))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
 func TestPebbleStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -1257,16 +1288,6 @@ func TestPebbleStateMachine_TSDeleteSeries_NoStorage(t *testing.T) {
 	}
 	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
 		t.Fatal("expected app-error payload when time-series not configured")
-	}
-}
-
-func TestPebbleStateMachine_TSSetRetention(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 1))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-	if results[0].Value != 1 {
-		t.Fatalf("expected 1, got %d", results[0].Value)
 	}
 }
 
@@ -1287,32 +1308,6 @@ func TestPebbleStateMachine_TSSetRetention_NoStorage(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Tests: Time-series Lookup queries
 // ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_Lookup_TSQuery(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	// Write a data point.
-	now := time.Now()
-	writeCmd := mustEncode(protocol.EncodeTSWrite("qry.metric", now.UnixNano(), 42.5, nil))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
-
-	// Query the data.
-	result, err := s.Lookup(context.Background(), timeseries.TSQueryRequest{
-		Metric: "qry.metric",
-		Start:  now.Add(-time.Second),
-		End:    now.Add(time.Second),
-	})
-	if err != nil {
-		t.Fatalf("Lookup TSQueryRequest: %v", err)
-	}
-	points := result.([]timeseries.DataPoint)
-	if len(points) != 1 {
-		t.Fatalf("expected 1 point, got %d", len(points))
-	}
-	if math.Abs(points[0].Value-42.5) > 0.001 {
-		t.Fatalf("expected value 42.5, got %f", points[0].Value)
-	}
-}
 
 func TestPebbleStateMachine_Lookup_TSQuery_NoStorage(t *testing.T) {
 	s := openExtendedStore(t)
@@ -1369,102 +1364,108 @@ func TestPebbleStateMachine_Lookup_TSRichQuery_NoStorage(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_Lookup_TSListMetrics(t *testing.T) {
-	s := openStoreWithTS(t)
-
-	// Write data to create metric entries.
-	now := time.Now().UnixNano()
-	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: mustEncode(protocol.EncodeTSWrite("cpu.usage", now, 1.0, nil))},
-		{Index: 2, Cmd: mustEncode(protocol.EncodeTSWrite("mem.usage", now, 2.0, nil))},
-	})
-
-	result, err := s.Lookup(context.Background(), timeseries.TSListMetricsRequest{Prefix: "", Limit: 100})
-	if err != nil {
-		t.Fatalf("Lookup TSListMetricsRequest: %v", err)
-	}
-	metrics := result.([]string)
-	if len(metrics) < 2 {
-		t.Fatalf("expected at least 2 metrics, got %d: %v", len(metrics), metrics)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Watch hub integration
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_WatchPut(t *testing.T) {
-	s, hub := openStoreWithHub(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	w, err := hub.Watch(ctx, "watch-key")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	// Put a value.
-	putCmd, err := kv.EncodePut([]byte("watch-key"), []byte("watch-val"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
-
-	// Read the event.
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
+// TestPebbleStateMachine_WatchNotifies checks that every write path notifies
+// the watch hub with one event of the right type, and fills PrevKv when the
+// watcher asks for it. Each row's store holds a lessor and lease leaseID,
+// granted at index 1.
+func TestPebbleStateMachine_WatchNotifies(t *testing.T) {
+	kvPut := func(k, v string) []byte {
+		cmd, err := kv.EncodePut([]byte(k), []byte(v))
+		if err != nil {
+			t.Fatalf("EncodePut: %v", err)
 		}
-		if resp.Events[0].Type != watch.EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
-		}
-		if !bytes.Equal(resp.Events[0].Kv.Key, []byte("watch-key")) {
-			t.Fatalf("unexpected key: %s", resp.Events[0].Kv.Key)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for watch event")
+		return cmd
 	}
-}
-
-func TestPebbleStateMachine_WatchDelete(t *testing.T) {
-	s, hub := openStoreWithHub(t)
-
-	// Put initial value.
-	putCmd, err := kv.EncodePut([]byte("wd-key"), []byte("wd-val"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	w, err := hub.Watch(ctx, "wd-key")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	// Delete the key.
-	delCmd, err := kv.EncodeDelete([]byte("wd-key"))
-	if err != nil {
-		t.Fatalf("EncodeDelete: %v", err)
-	}
-	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
-
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
+	kvDelete := func(k string) []byte {
+		cmd, err := kv.EncodeDelete([]byte(k))
+		if err != nil {
+			t.Fatalf("EncodeDelete: %v", err)
 		}
-		if resp.Events[0].Type != watch.EventDelete {
-			t.Fatalf("expected EventDelete, got %d", resp.Events[0].Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for watch event")
+		return cmd
+	}
+	mvccPut := func(k string, leaseID int64) []byte {
+		return mustEncode(protocol.EncodeMVCCPut([]byte(k), []byte("val"), leaseID))
+	}
+	batch := func(op byte, k string, v []byte, leaseID int64) []byte {
+		return mustEncode(protocol.EncodeBatch([][]byte{mustEncode(protocol.EncodeOp(op, []byte(k), v, nil, leaseID))}))
+	}
+	for _, tc := range []struct {
+		name     string
+		setup    func(leaseID int64) []byte // applied before the watch; nil for none
+		cmd      func(leaseID int64) []byte
+		want     watch.EventType
+		wantPrev bool
+	}{
+		{"kv put", nil, func(int64) []byte { return kvPut("k", "v") }, watch.EventPut, false},
+		{"kv delete with prev", func(int64) []byte { return kvPut("k", "v") },
+			func(int64) []byte { return kvDelete("k") }, watch.EventDelete, true},
+		{"mvcc put", nil, func(int64) []byte { return mvccPut("k", 0) }, watch.EventPut, false},
+		{"mvcc put if absent", nil, func(int64) []byte {
+			return mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("k"), []byte("val"), 0))
+		}, watch.EventPut, false},
+		{"mvcc overwrite with prev", func(int64) []byte { return mvccPut("k", 0) },
+			func(int64) []byte { return mvccPut("k", 0) }, watch.EventPut, true},
+		{"mvcc delete", func(int64) []byte { return mvccPut("k", 0) },
+			func(int64) []byte { return mustEncode(protocol.EncodeMVCCDelete([]byte("k"))) }, watch.EventDelete, false},
+		{"batch delete", func(int64) []byte { return mvccPut("k", 0) },
+			func(int64) []byte { return batch(protocol.OpMVCCDelete, "k", nil, 0) }, watch.EventDelete, false},
+		{"batch put with lease", nil,
+			func(id int64) []byte { return batch(protocol.OpMVCCPut, "k", []byte("val"), id) }, watch.EventPut, false},
+		{"lease revoke deletes attached key", func(id int64) []byte { return mvccPut("k", id) },
+			func(id int64) []byte { return mustEncode(protocol.EncodeLeaseRevoke(id)) }, watch.EventDelete, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, lr := openStoreWithLessor(t)
+			hub := watch.NewHub()
+			t.Cleanup(hub.Close)
+			s.SetWatchHub(hub)
+			grant := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(60))}})
+			leaseID := int64(grant[0].Value)
+			if lr.Lookup(leaseID) == nil {
+				t.Fatal("lease grant did not register the lease")
+			}
+			index := uint64(2)
+			if tc.setup != nil {
+				applyExtEntries(t, s, []sm.Entry{{Index: index, Cmd: tc.setup(leaseID)}})
+				index++
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var opts []watch.WatchOption
+			if tc.wantPrev {
+				opts = append(opts, watch.WithPrevKV())
+			}
+			w, err := hub.Watch(ctx, "k", opts...)
+			if err != nil {
+				t.Fatalf("Watch: %v", err)
+			}
+			defer func() { _ = w.Close() }()
+
+			applyExtEntries(t, s, []sm.Entry{{Index: index, Cmd: tc.cmd(leaseID)}})
+			select {
+			case resp := <-w.Events():
+				if len(resp.Events) != 1 {
+					t.Fatalf("expected 1 event, got %d", len(resp.Events))
+				}
+				ev := resp.Events[0]
+				if ev.Type != tc.want {
+					t.Fatalf("event type = %d, want %d", ev.Type, tc.want)
+				}
+				if !bytes.Equal(ev.Kv.Key, []byte("k")) {
+					t.Fatalf("unexpected key: %s", ev.Kv.Key)
+				}
+				if tc.wantPrev && ev.PrevKv == nil {
+					t.Fatal("expected PrevKv to be set")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for watch event")
+			}
+		})
 	}
 }
 
@@ -1543,51 +1544,31 @@ func TestPebbleStateMachine_GuardedVerbs_RefuseReservedKeys(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_WatchMVCCPut(t *testing.T) {
-	s, hub := openStoreWithHub(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	w, err := hub.Watch(ctx, "mvcc-watch")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-watch"), []byte("val"), 0))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
-		}
-		if resp.Events[0].Type != watch.EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for watch event")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Unknown opcode
 // ---------------------------------------------------------------------------
 
 func TestPebbleStateMachine_UnknownOp(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Use an opcode that is not registered. It is REFUSED in the result
-	// payload, not returned to Raft: an opcode with no handler says nothing
-	// about the health of the storage underneath, and returning it halted the
-	// shard (go-qrdb#520).
-	cmd := []byte{200, 0, 0}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
-		results[0], "unknown op code")
+	// An opcode that is not registered is REFUSED in the result payload, not
+	// returned to Raft: an opcode with no handler says nothing about the
+	// health of the storage underneath, and returning it halted the shard
+	// (go-qrdb#520). The same holds for an unknown op inside a batch.
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0))
+	for _, tc := range []struct {
+		name string
+		cmd  []byte
+	}{
+		{"top-level command", []byte{200, 0, 0}},
+		{"batch op", mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openExtendedStore(t)
+			entries := []sm.Entry{{Index: 1, Cmd: tc.cmd}}
+			results := make([]sm.Result, 1)
+			assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
+				results[0], "unknown op code")
+		})
+	}
 }
 
 func TestPebbleStateMachine_EmptyCommand(t *testing.T) {

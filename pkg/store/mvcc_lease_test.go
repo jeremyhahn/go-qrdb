@@ -99,6 +99,14 @@ func TestMVCCLease_SetLessor_AttachesLessor(t *testing.T) {
 	if got != lr {
 		t.Fatal("Lessor() returned a different lessor than what was set")
 	}
+
+	if _, err := s.Open(context.Background(), t.TempDir(), nil); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	if s.Lessor() != lr {
+		t.Fatal("Lessor() after Open returned a different lessor than what was set")
+	}
 }
 
 func TestMVCCLease_SetLessor_Nil(t *testing.T) {

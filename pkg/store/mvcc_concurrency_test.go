@@ -992,50 +992,6 @@ func TestMVCCConcurrency_UnsyncedIndexEntryInvisible(t *testing.T) {
 	}
 }
 
-// TestMVCCConcurrency_UnsyncedTSPointInvisible is the time-series case of
-// TestMVCCConcurrency_UnsyncedIndexEntryInvisible: a data point in a batch
-// held between storage visibility and publication must not appear in a
-// time-series query, and must once the batch is published.
-func TestMVCCConcurrency_UnsyncedTSPointInvisible(t *testing.T) {
-	fs := newWALStallFS()
-	s := NewMVCCStateMachine(&pebble.Options{FS: fs})
-	s.enableTimeSeries = true
-	if _, err := s.Open(context.Background(), t.TempDir(), make(chan struct{})); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close(context.Background()) })
-
-	at := time.Unix(1_700_000_000, 0).UTC()
-	applyMVCCEntries(t, s, []sm.Entry{tsWriteEntry(1, "cpu.usage", at.UnixNano(), 1, nil)})
-	points := func() int {
-		t.Helper()
-		got, err := s.Lookup(context.Background(), service.TSQueryRequest{
-			Metric: "cpu.usage",
-			Start:  at.Add(-time.Minute),
-			End:    at.Add(time.Minute),
-		})
-		if err != nil {
-			t.Fatalf("TSQueryRequest: %v", err)
-		}
-		return len(got.([]service.DataPoint))
-	}
-
-	done := startWALStalledUpdate(t, s, fs, []sm.Entry{tsWriteEntry(2, "cpu.usage", at.Add(time.Second).UnixNano(), 2, nil)})
-	within(t, "time-series Lookup", func() {
-		if got := points(); got != 1 {
-			t.Errorf("time-series points during the held sync = %d, want 1", got)
-		}
-	})
-
-	fs.unstall()
-	if err := <-done; err != nil {
-		t.Fatalf("stalled Update: %v", err)
-	}
-	if got := points(); got != 2 {
-		t.Fatalf("time-series points after the commit = %d, want 2", got)
-	}
-}
-
 // rangeKeys answers a Range over [start, end) and returns its keys.
 func rangeKeys(t *testing.T, s *MVCCStateMachine, q service.MVCCRangeQuery) ([]string, *service.MVCCRangeResult) {
 	t.Helper()

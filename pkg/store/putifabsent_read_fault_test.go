@@ -15,6 +15,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync/atomic"
@@ -60,8 +61,16 @@ func TestPebble_getKeyInBatch_DistinguishesAbsenceFromFault(t *testing.T) {
 	if serr := batch.Set([]byte("present"), []byte("v"), nil); serr != nil {
 		t.Fatalf("Set: %v", serr)
 	}
-	if _, gerr := s.getKeyInBatch(batch, []byte("present")); gerr != nil {
+	got, gerr := s.getKeyInBatch(batch, []byte("present"))
+	if gerr != nil {
 		t.Fatalf("getKeyInBatch(present) = %v, want nil", gerr)
+	}
+
+	// The value is a copy: a caller writing into it leaves the stored value
+	// as it was.
+	got[0] = 'X'
+	if again, _ := s.getKeyInBatch(batch, []byte("present")); !bytes.Equal(again, []byte("v")) {
+		t.Fatalf("getKeyInBatch(present) after the caller wrote into its result = %q, want %q", again, "v")
 	}
 }
 
