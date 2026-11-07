@@ -15,46 +15,104 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-func TestRESTUpdateDatabaseSQL_SendsTheDocumentedRequest(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(func(r *http.Request) bool {
-		return r.Method == http.MethodPatch && r.URL.Path == "/v1/databases/shop/sql"
-	}, func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			SQL *transport.DatabaseSQLConfig `json:"sql"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SQL == nil {
-			http.Error(w, "bad body", http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, &transport.DatabaseInfo{Name: "shop", SQL: body.SQL})
-	})
+// TestRESTUpdateDatabase_SendsTheDocumentedRequest drives each
+// UpdateDatabase* method against a server that records what it receives: the
+// method must PATCH its own sub-resource with exactly the documented body
+// (the whole request for some, only the inner config for others) and decode
+// the DatabaseInfo the server answers.
+func TestRESTUpdateDatabase_SendsTheDocumentedRequest(t *testing.T) {
+	sql := transport.UpdateDatabaseSQLRequest{Name: "shop", SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"}}
+	protocol := transport.UpdateDatabaseProtocolRequest{Name: "shop", MySQL: true}
+	etcd := transport.UpdateDatabaseEtcdRequest{Name: "shop", Enabled: true, ListenAddr: "127.0.0.1:2379"}
+	raft := transport.UpdateDatabaseRaftRequest{Name: "shop", Raft: &transport.DatabaseRaftConfig{}}
+	connection := transport.UpdateDatabaseConnectionRequest{Name: "shop", Connection: &transport.DatabaseConnectionConfig{}}
 
-	info, err := rt.UpdateDatabaseSQL(context.Background(), transport.UpdateDatabaseSQLRequest{
-		Name: "shop", SQL: &transport.DatabaseSQLConfig{Concurrency: "pessimistic"},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseSQL: %v", err)
+	cases := []struct {
+		name     string
+		path     string
+		wantBody any
+		call     func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error)
+	}{
+		{"UpdateDatabaseSQL", "/v1/databases/shop/sql", sql, func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error) {
+			return rt.UpdateDatabaseSQL(ctx, sql)
+		}},
+		{"UpdateDatabaseProtocol", "/v1/databases/shop/protocol", protocol, func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error) {
+			return rt.UpdateDatabaseProtocol(ctx, protocol)
+		}},
+		{"UpdateDatabaseEtcd", "/v1/databases/shop/etcd", etcd, func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error) {
+			return rt.UpdateDatabaseEtcd(ctx, etcd)
+		}},
+		{"UpdateDatabaseRaft", "/v1/databases/shop/raft", raft.Raft, func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error) {
+			return rt.UpdateDatabaseRaft(ctx, raft)
+		}},
+		{"UpdateDatabaseConnection", "/v1/databases/shop/connection", connection.Connection, func(ctx context.Context, rt *Transport) (*transport.DatabaseInfo, error) {
+			return rt.UpdateDatabaseConnection(ctx, connection)
+		}},
 	}
-	if info.SQL == nil || info.SQL.Concurrency != "pessimistic" {
-		t.Fatalf("SQL = %+v, want pessimistic", info.SQL)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			want, err := json.Marshal(c.wantBody)
+			if err != nil {
+				t.Fatalf("marshal want: %v", err)
+			}
+			rt, rs, _ := newExtTransport(t)
+			var gotBody []byte
+			rs.handle(func(r *http.Request) bool {
+				return r.Method == http.MethodPatch && r.URL.Path == c.path
+			}, func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				writeJSON(w, &transport.DatabaseInfo{Name: "shop"})
+			})
+
+			info, err := c.call(context.Background(), rt)
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if !bytes.Equal(bytes.TrimSpace(gotBody), want) {
+				t.Fatalf("PATCH %s body = %s, want %s", c.path, gotBody, want)
+			}
+			if info.Name != "shop" {
+				t.Fatalf("DatabaseInfo.Name = %q, want shop", info.Name)
+			}
+		})
 	}
 }
 
-func TestRESTUpdateDatabaseSQL_Closed(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	_ = rt.Close()
-	var closed *transport.ClosedError
-	if _, err := rt.UpdateDatabaseSQL(context.Background(), transport.UpdateDatabaseSQLRequest{Name: "shop"}); !errors.As(err, &closed) {
-		t.Fatalf("closed transport = %v, want *ClosedError", err)
-	}
+func TestRESTUpdateDatabase_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"UpdateDatabaseSQL": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseSQL(ctx, transport.UpdateDatabaseSQLRequest{Name: "shop"})
+			return err
+		},
+		"UpdateDatabaseProtocol": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseProtocol(ctx, transport.UpdateDatabaseProtocolRequest{Name: "shop"})
+			return err
+		},
+		"UpdateDatabaseEtcd": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseEtcd(ctx, transport.UpdateDatabaseEtcdRequest{Name: "shop"})
+			return err
+		},
+		"UpdateDatabaseRaft": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseRaft(ctx, transport.UpdateDatabaseRaftRequest{Name: "shop"})
+			return err
+		},
+		"UpdateDatabaseBarrier": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseBarrier(ctx, transport.UpdateDatabaseBarrierRequest{Name: "shop"})
+			return err
+		},
+		"UpdateDatabaseConnection": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateDatabaseConnection(ctx, transport.UpdateDatabaseConnectionRequest{Name: "shop"})
+			return err
+		},
+	})
 }

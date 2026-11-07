@@ -681,6 +681,155 @@ func TestTenantBarrierStatus_AfterClose(t *testing.T) {
 	}
 }
 
+func TestRESTTenant_Closed(t *testing.T) {
+	assertClosedRefusesBeforeTheWire(t, map[string]func(context.Context, *Transport) error{
+		"CreateTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.CreateTenant(ctx, &transport.CreateTenantRequest{})
+			return err
+		},
+		"GetTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.GetTenant(ctx, "t1")
+			return err
+		},
+		"ListTenants": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.ListTenants(ctx)
+			return err
+		},
+		"DeleteTenant": func(ctx context.Context, rt *Transport) error {
+			return rt.DeleteTenant(ctx, "t1")
+		},
+		"UpdateTenant": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateTenant(ctx, &transport.UpdateTenantRequest{})
+			return err
+		},
+		"UpdateTenantQuotas": func(ctx context.Context, rt *Transport) error {
+			_, err := rt.UpdateTenantQuotas(ctx, &transport.UpdateTenantQuotasRequest{})
+			return err
+		},
+	})
+}
+
+// TestRESTTenant_SendsTheDocumentedRequest pins, per tenant RPC, the verb,
+// path and body the transport sends, and that the answer decodes into the
+// tenant the RPC returns. ListTenants is answered with a null entry beside a
+// real one, which the transport drops.
+func TestRESTTenant_SendsTheDocumentedRequest(t *testing.T) {
+	const tenant = `{"id":"t1","name":"test"}`
+	create := &transport.CreateTenantRequest{Name: "test"}
+	update := &transport.UpdateTenantRequest{TenantID: "t1"}
+	quotas := &transport.UpdateTenantQuotasRequest{TenantID: "t1"}
+	marshal := func(v any) string {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(data)
+	}
+	rows := []struct {
+		name, verb, path, body string
+		status                 int
+		answer                 string
+		call                   func(context.Context, *Transport) (string, error)
+	}{
+		{"CreateTenant", http.MethodPost, "/v1/tenants", marshal(create), http.StatusCreated, tenant,
+			func(ctx context.Context, rt *Transport) (string, error) {
+				r, err := rt.CreateTenant(ctx, create)
+				if err != nil {
+					return "", err
+				}
+				return r.Tenant.ID, nil
+			}},
+		{"GetTenant", http.MethodGet, "/v1/tenants/t1", "", http.StatusOK, tenant,
+			func(ctx context.Context, rt *Transport) (string, error) {
+				r, err := rt.GetTenant(ctx, "t1")
+				if err != nil {
+					return "", err
+				}
+				return r.Tenant.ID, nil
+			}},
+		{"ListTenants", http.MethodGet, "/v1/tenants/list", "", http.StatusOK, `{"tenants":[null,` + tenant + `],"total":1}`,
+			func(ctx context.Context, rt *Transport) (string, error) {
+				r, err := rt.ListTenants(ctx)
+				if err != nil {
+					return "", err
+				}
+				ids := make([]string, 0, len(r.Tenants))
+				for _, tenant := range r.Tenants {
+					ids = append(ids, tenant.ID)
+				}
+				return strings.Join(ids, ","), nil
+			}},
+		{"UpdateTenant", http.MethodPut, "/v1/tenants/t1", marshal(update), http.StatusOK, tenant,
+			func(ctx context.Context, rt *Transport) (string, error) {
+				r, err := rt.UpdateTenant(ctx, update)
+				if err != nil {
+					return "", err
+				}
+				return r.Tenant.ID, nil
+			}},
+		{"UpdateTenantQuotas", http.MethodPost, "/v1/tenants/t1/quotas", marshal(&quotas.Quotas), http.StatusOK, tenant,
+			func(ctx context.Context, rt *Transport) (string, error) {
+				r, err := rt.UpdateTenantQuotas(ctx, quotas)
+				if err != nil {
+					return "", err
+				}
+				return r.Tenant.ID, nil
+			}},
+		{"DeleteTenant", http.MethodDelete, "/v1/tenants/t1", "", http.StatusNoContent, "",
+			func(ctx context.Context, rt *Transport) (string, error) {
+				return "t1", rt.DeleteTenant(ctx, "t1")
+			}},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, rs, _ := newExtTransport(t)
+			var verb, path string
+			var body []byte
+			rs.handle(func(*http.Request) bool { return true }, func(w http.ResponseWriter, r *http.Request) {
+				verb, path = r.Method, r.URL.Path
+				body, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.answer)
+			})
+			id, err := tc.call(context.Background(), rt)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if verb != tc.verb || path != tc.path {
+				t.Fatalf("request = %s %s, want %s %s", verb, path, tc.verb, tc.path)
+			}
+			if got := string(bytes.TrimSpace(body)); got != tc.body {
+				t.Fatalf("body = %s, want %s", got, tc.body)
+			}
+			if id != "t1" {
+				t.Fatalf("tenant id = %q, want t1", id)
+			}
+		})
+	}
+}
+
+// TestRESTTenant_UpdateTenantEntitlements_NilRequest proves a nil request is
+// refused as a typed error before anything goes on the wire.
+func TestRESTTenant_UpdateTenantEntitlements_NilRequest(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	var reached atomic.Bool
+	rs.handle(func(*http.Request) bool { return true }, func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	_, err := rt.UpdateTenantEntitlements(context.Background(), nil)
+	var nre *transport.NilRequestError
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.Method != "UpdateTenantEntitlements" || !errors.As(err, &nre) {
+		t.Fatalf("UpdateTenantEntitlements(nil) = %T %v, want RequestError wrapping NilRequestError", err, err)
+	}
+	if reached.Load() {
+		t.Fatal("a nil request reached the server")
+	}
+}
+
 func TestTenantBarrierStatus_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
