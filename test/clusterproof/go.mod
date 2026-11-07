@@ -102,12 +102,12 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/jackc/pgx/v5 v5.12.0 // indirect
-	github.com/jeremyhahn/go-codec v1.4.0 // indirect
+	github.com/jeremyhahn/go-codec v1.5.1-alpha // indirect
 	github.com/jeremyhahn/go-enclave v0.10.0-alpha // indirect
-	github.com/jeremyhahn/go-objstore v0.9.0-alpha // indirect
+	github.com/jeremyhahn/go-objstore v0.9.1-alpha // indirect
 	// go-quicraft: the newest tag, in lockstep with the root module (#944).
 	github.com/jeremyhahn/go-quicraft v0.24.2-alpha // indirect
-	github.com/jeremyhahn/go-truststrap v0.7.0-alpha // indirect
+	github.com/jeremyhahn/go-truststrap v0.7.1-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.20.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
