@@ -25,8 +25,11 @@
 # §2); no internal address is written here or in ci.yml. The owner is GITHUB_REPOSITORY_OWNER.
 #
 # A push to the Gitea registry runs on the release runner alone (ruling 169)
-# and reads that runner's credential contract and nothing else (ruling 173,
-# claude-agents#329): the three names its runner env file exports,
+# and reads three names and nothing else. RELEASE_REGISTRY is the repository
+# variable vars.RELEASE_REGISTRY, which ci.yml's push step hands on on the
+# forge alone (ruling 312, #1352); the other two are that runner's credential
+# contract, the two names its runner env file exports (ruling 173,
+# claude-agents#329):
 #
 #   RELEASE_REGISTRY         the registry's host[:port]; the push goes there and
 #                            the digest reference it prints names it. It must
@@ -113,8 +116,9 @@ registry_host() {
 
 # push_host prints the registry a push goes to, which is registry_host's, the
 # one every consumer's pull accepts: GHCR on GitHub; on the forge, the release
-# runner's RELEASE_REGISTRY (ruling 173), validated as a host[:port] and refused
-# when it names any registry but the forge's, so a misconfigured runner fails
+# repository variable RELEASE_REGISTRY (ruling 312), validated as a host[:port]
+# and refused when it names any registry but the forge's, so a misconfigured
+# variable fails
 # the push once rather than every consumer's pull of the digest it printed.
 push_host() {
 	local host release
@@ -124,7 +128,7 @@ push_host() {
 		return 0
 	fi
 	release=${RELEASE_REGISTRY:-}
-	[ -n "$release" ] || die "RELEASE_REGISTRY is empty: the release runner's credential is not in the job's environment"
+	[ -n "$release" ] || die "RELEASE_REGISTRY is empty: set the repository variable RELEASE_REGISTRY (Settings > Actions > Variables) to the forge registry's host[:port]"
 	[[ $release =~ $host_re ]] || die "RELEASE_REGISTRY does not name a registry host"
 	release=${release,,}
 	[ "$release" = "$host" ] || die "RELEASE_REGISTRY names $release, not $host, the registry GITHUB_SERVER_URL names and every pull accepts"

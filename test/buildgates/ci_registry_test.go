@@ -53,7 +53,7 @@ exit 99
 `
 
 // forgeURL is the Gitea forge these tests run on, and releaseRegistry the
-// registry the release runner's RELEASE_REGISTRY names: the forge's own
+// registry the repository variable RELEASE_REGISTRY names: the forge's own
 // host:port, the one registry a consumer's pull accepts (docs/release/
 // engineering.md, "The CI image").
 const (
@@ -71,8 +71,9 @@ type registryPush struct {
 }
 
 // runRegistryPush runs scripts/ci-registry.sh push against registryDocker on
-// the forge serverURL, with both the run's token (CI_REGISTRY_*) and the
-// release runner's credential (RELEASE_REGISTRY*) in its environment, each
+// the forge serverURL, with the run's token (CI_REGISTRY_*), the repository
+// variable RELEASE_REGISTRY and the release runner's credential
+// (RELEASE_REGISTRY_USER, RELEASE_REGISTRY_TOKEN) in its environment, each
 // overridable by env, and returns what it did and its error.
 func runRegistryPush(t *testing.T, serverURL string, refuse bool, env ...string) (registryPush, error) {
 	t.Helper()
@@ -201,7 +202,8 @@ type registryPullRun struct {
 
 // runRegistryPull runs scripts/ci-registry.sh pull ref against registryDocker
 // on the forge serverURL as a consumer runs it: with the run's token and no
-// RELEASE_REGISTRY*, which only the release runner holds; env overrides.
+// RELEASE_REGISTRY*, which only the forge push step and the release runner
+// hold; env overrides.
 func runRegistryPull(t *testing.T, serverURL, ref string, env ...string) (registryPullRun, error) {
 	t.Helper()
 	stub := t.TempDir()
@@ -413,18 +415,52 @@ func TestCIRegistry_RefusedLoginNamesTheRegistry(t *testing.T) {
 	}
 }
 
-// TestCIRegistry_MissingCredentialNamesItsSource holds rulings 169 and 173: a
-// push to the Gitea registry with any of the release runner's three names
-// empty, or a RELEASE_REGISTRY that is no host[:port], names the variable and
-// the release runner's credential, a push to GHCR with the run's token empty
-// names the run's token, and none logs in or prints a credential.
+// releaseRegistryEmpty is the error a forge push stops on when the repository
+// variable RELEASE_REGISTRY is unset (ruling 312, #1352): it names the
+// variable, where it is set, and what it holds.
+const releaseRegistryEmpty = "RELEASE_REGISTRY is empty: set the repository variable RELEASE_REGISTRY (Settings > Actions > Variables) to the forge registry's host[:port]"
+
+// TestCIRegistry_EmptyRegistryVariable holds ruling 312: on the forge an empty
+// RELEASE_REGISTRY, which ci.yml's push step hands on when the repository
+// variable is unset, fails the push with releaseRegistryEmpty and no login; on
+// github.com, where the step hands on an empty value by design, the push goes
+// to GHCR and never reads it.
+func TestCIRegistry_EmptyRegistryVariable(t *testing.T) {
+	got, err := runRegistryPush(t, forgeURL, false, "RELEASE_REGISTRY=")
+	if err == nil {
+		t.Fatalf("forge push succeeded with RELEASE_REGISTRY empty:\n%s", got.out)
+	}
+	if !strings.Contains(got.out, "::error::ci-registry: "+releaseRegistryEmpty+"\n") {
+		t.Fatalf("forge push output lacks the line %q:\n%s", releaseRegistryEmpty, got.out)
+	}
+	if got.host != "" {
+		t.Fatalf("forge push logged in to %q with RELEASE_REGISTRY empty", got.host)
+	}
+
+	got, err = runRegistryPush(t, "https://github.com", false, "RELEASE_REGISTRY=")
+	if err != nil {
+		t.Fatalf("github.com push failed with RELEASE_REGISTRY empty: %v\n%s", err, got.out)
+	}
+	if got.host != "ghcr.io" {
+		t.Fatalf("github.com push logged in to %q, want ghcr.io", got.host)
+	}
+	if strings.Contains(got.out, "RELEASE_REGISTRY") {
+		t.Fatalf("github.com push read RELEASE_REGISTRY:\n%s", got.out)
+	}
+}
+
+// TestCIRegistry_MissingCredentialNamesItsSource holds rulings 169, 173 and
+// 312: a push to the Gitea registry with RELEASE_REGISTRY or either of the
+// release runner's two names empty, or a RELEASE_REGISTRY that is no
+// host[:port], names the variable and its source, a push to GHCR with the
+// run's token empty names the run's token, and none logs in or prints a
+// credential.
 func TestCIRegistry_MissingCredentialNamesItsSource(t *testing.T) {
 	const gitea = "http://forge.example:3001"
 	for _, tc := range []struct {
 		name, serverURL, set, want string
 	}{
-		{name: "Gitea registry", serverURL: gitea, set: "RELEASE_REGISTRY=",
-			want: "RELEASE_REGISTRY is empty: the release runner's credential is not in the job's environment"},
+		{name: "Gitea registry", serverURL: gitea, set: "RELEASE_REGISTRY=", want: releaseRegistryEmpty},
 		{name: "Gitea token", serverURL: gitea, set: "RELEASE_REGISTRY_TOKEN=",
 			want: "RELEASE_REGISTRY_TOKEN is empty: the release runner's credential is not in the job's environment"},
 		{name: "Gitea user", serverURL: gitea, set: "RELEASE_REGISTRY_USER=",
@@ -459,7 +495,7 @@ func TestCIRegistry_MissingCredentialNamesItsSource(t *testing.T) {
 }
 
 // TestCIRegistry_ForgePushIgnoresTheRunsToken holds ruling 173: the forge push
-// reads the release runner's three names and no others, so the run's token in
+// reads RELEASE_REGISTRY and the release runner's two names and no others, so the run's token in
 // the environment neither stands in for an empty RELEASE_REGISTRY_TOKEN nor
 // reaches the login.
 func TestCIRegistry_ForgePushIgnoresTheRunsToken(t *testing.T) {

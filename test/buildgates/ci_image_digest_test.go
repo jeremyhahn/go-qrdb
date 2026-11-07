@@ -109,9 +109,19 @@ var releaseLabel = regexp.MustCompile(`(^|')release('|$)`)
 
 // runnerCredential lists the names the release runner's env file exports, its
 // credential contract (ruling 173, claude-agents#329), which the forge push in
-// scripts/ci-registry.sh reads: an env entry under any of them, in the
-// workflow, a job or a step, would mask the runner's.
-var runnerCredential = []string{"RELEASE_REGISTRY", "RELEASE_REGISTRY_USER", "RELEASE_REGISTRY_TOKEN"}
+// scripts/ci-registry.sh reads: an env entry under either, in the workflow, a
+// job or a step, would mask the runner's.
+var runnerCredential = []string{"RELEASE_REGISTRY_USER", "RELEASE_REGISTRY_TOKEN"}
+
+// releaseRegistryVar is the registry the forge push goes to, which comes from
+// the repository variable (ruling 312, #1352) and not the runner's env file.
+// Exactly one env entry sets it, on docker-build's push step, with exactly
+// releaseRegistryExpr: the forge alone reads the variable, and github.com,
+// whose push goes to GHCR, gets an empty value.
+const (
+	releaseRegistryVar  = "RELEASE_REGISTRY"
+	releaseRegistryExpr = "${{ github.server_url != 'https://github.com' && vars.RELEASE_REGISTRY || '' }}"
+)
 
 // digestOutputs maps the outputs a consumer may read, the digest
 // references, to the image family scripts/ci-registry.sh local builds for
@@ -136,6 +146,7 @@ var imageStages = map[string]*regexp.Regexp{
 }
 
 type digestStep struct {
+	ID   string            `yaml:"id"`
 	Name string            `yaml:"name"`
 	If   string            `yaml:"if"`
 	Uses string            `yaml:"uses"`
@@ -264,19 +275,32 @@ func producerProblems(job digestJob) []string {
 	return problems
 }
 
-// runnerCredentialProblems holds ruling 173: no env entry in ci.yml, at the
-// workflow, a job or a step, sets a name of the release runner's credential
-// contract, because it would mask the value the runner's env file exports.
+// runnerCredentialProblems holds rulings 173 and 312: no env entry in ci.yml,
+// at the workflow, a job or a step, sets a name of the release runner's
+// credential contract, because it would mask the value the runner's env file
+// exports; and RELEASE_REGISTRY is set once, on docker-build's push step, from
+// the repository variable on the forge alone (releaseRegistryExpr).
 func runnerCredentialProblems(wf digestWorkflow) []string {
 	var problems []string
-	check := func(where string, env map[string]string) {
+	pushes := 0
+	check := func(where string, env map[string]string, push bool) {
 		for _, name := range runnerCredential {
 			if _, ok := env[name]; ok {
 				problems = append(problems, where+" sets "+name+": it masks the release runner's credential (ruling 173)")
 			}
 		}
+		value, ok := env[releaseRegistryVar]
+		switch {
+		case !ok:
+		case !push:
+			problems = append(problems, where+" sets "+releaseRegistryVar+": only docker-build's push step may, from the repository variable (ruling 312)")
+		case value != releaseRegistryExpr:
+			problems = append(problems, where+" sets "+releaseRegistryVar+" to "+strconv.Quote(value)+", not "+strconv.Quote(releaseRegistryExpr)+" (ruling 312)")
+		default:
+			pushes++
+		}
 	}
-	check("ci.yml's workflow env", wf.Env)
+	check("ci.yml's workflow env", wf.Env, false)
 	names := make([]string, 0, len(wf.Jobs))
 	for name := range wf.Jobs {
 		names = append(names, name)
@@ -284,10 +308,13 @@ func runnerCredentialProblems(wf digestWorkflow) []string {
 	slices.Sort(names)
 	for _, name := range names {
 		job := wf.Jobs[name]
-		check(name+"'s job env", job.Env)
+		check(name+"'s job env", job.Env, false)
 		for _, s := range job.Steps {
-			check(name+"'s step "+strconv.Quote(s.Name), s.Env)
+			check(name+"'s step "+strconv.Quote(s.Name), s.Env, name == "docker-build" && s.ID == "push")
 		}
+	}
+	if pushes != 1 {
+		problems = append(problems, "docker-build's push step does not set "+releaseRegistryVar+": "+releaseRegistryExpr+" (ruling 312, #1352)")
 	}
 	return problems
 }
@@ -537,6 +564,7 @@ jobs:
         id: push
         if: ${{ env.CI_PUBLISH == 'true' }}
         env:
+          RELEASE_REGISTRY: ${{ github.server_url != 'https://github.com' && vars.RELEASE_REGISTRY || '' }}
           RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}
         run: scripts/ci-registry.sh push "$TOOLCHAIN_IMAGE" qrdb-ci-toolchain "$TRUST"
       - name: Validate
@@ -637,12 +665,23 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "the release runner on every event", old: "(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk'", new: "'release'"},
 		{name: "the release runner on a pull request", old: "(github.event_name == 'push' && github.ref", new: "(github.event_name == 'pull_request' && github.ref"},
 		{name: "the release runner on github.com", old: "&& 'ubuntu-latest' ||", new: "&& 'release' ||"},
-		{name: "the push step masks the runner's registry", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY: ${{ github.server_url }}\n          RUN_REGISTRY_TOKEN:"},
+		{name: "the push step drops the registry variable", old: "          RELEASE_REGISTRY: " + releaseRegistryExpr + "\n", new: ""},
+		{name: "the push step sets the registry to a literal", old: releaseRegistryExpr, new: "forge.example:3001"},
+		{name: "the push step reads the registry from env", old: releaseRegistryExpr, new: "${{ env.RELEASE_REGISTRY }}"},
+		{name: "the push step reads the registry from a secret", old: releaseRegistryExpr, new: "${{ github.server_url != 'https://github.com' && secrets.RELEASE_REGISTRY || '' }}"},
+		{name: "the push step drops the github.com guard", old: releaseRegistryExpr, new: "${{ vars.RELEASE_REGISTRY }}"},
+		{name: "another step sets the registry", old: "      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n",
+			new: "      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n        env:\n          RELEASE_REGISTRY: " + releaseRegistryExpr + "\n"},
+		{name: "the registry moves to another step", old: "          RELEASE_REGISTRY: " + releaseRegistryExpr + "\n          RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}\n        run: scripts/ci-registry.sh push \"$TOOLCHAIN_IMAGE\" qrdb-ci-toolchain \"$TRUST\"\n      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n",
+			new: "          RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}\n        run: scripts/ci-registry.sh push \"$TOOLCHAIN_IMAGE\" qrdb-ci-toolchain \"$TRUST\"\n      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n        env:\n          RELEASE_REGISTRY: " + releaseRegistryExpr + "\n"},
+		{name: "the docker-build job env sets the registry", old: "    permissions:\n      contents: read\n      packages: write\n",
+			new: "    env:\n      RELEASE_REGISTRY: " + releaseRegistryExpr + "\n    permissions:\n      contents: read\n      packages: write\n"},
+		{name: "the workflow env sets the registry", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY: " + releaseRegistryExpr + "\n  CI_PUBLISH"},
 		{name: "the push step masks the runner's user", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
 		{name: "the push step masks the runner's token", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          RUN_REGISTRY_TOKEN:"},
 		{name: "a consumer step sets the runner's token", old: toolchainLocal,
 			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          RELEASE_REGISTRY_TOKEN: x\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
-		{name: "a job env sets the runner's registry", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
+		{name: "a job env sets the registry to a literal", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
 		{name: "the workflow env sets the runner's user", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY_USER: x\n  CI_PUBLISH"},
 		{name: "a non-consumer on the release runner", old: "  typescript:\n    runs-on: ubuntu-latest", new: "  typescript:\n    runs-on: release"},
 		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},

@@ -196,7 +196,7 @@ or the nightly `schedule:`, under `if: env.CI_PUBLISH != 'true'`.
 digest** (DS-3516). The `docker-build` job builds both stages
 (`make docker-build`; `make -s toolchain-image` prints the toolchain tag) and
 pushes each to the forge's registry (handbook `devops.md` §2): the Gitea
-registry, which the release runner's `RELEASE_REGISTRY` names (below) and so
+registry, which the repository variable `RELEASE_REGISTRY` names (below) and so
 is never written in a tracked file, or `ghcr.io` when the run is on GitHub,
 as `qrdb-ci-toolchain` and `qrdb-ci-it`. The images go under the namespace of
 the credential that pushes them: on the forge the release credential's own
@@ -221,21 +221,32 @@ and github.com keeps `ubuntu-latest`. `runs-on` cannot read `env`, so the job
 restates `CI_PUBLISH`'s condition from the `github` context, and it stays one
 job definition.
 
-**The release runner's credential contract is the three names its runner env
-file exports** (ruling 173): `RELEASE_REGISTRY`, the
-registry's host[:port], which the push goes to and the digest reference names;
-`RELEASE_REGISTRY_USER`; and `RELEASE_REGISTRY_TOKEN`. The forge push in
-`scripts/ci-registry.sh` reads those names and no others; it is not a
-repository secret, and no new identity or token exists for it. An empty name,
-or a `RELEASE_REGISTRY` that is no host[:port], fails the push with a typed
-`::error::` naming the variable and the release runner's credential.
+**The forge push reads three names: the registry from the repository, the
+login from the release runner.** `RELEASE_REGISTRY`, the registry's
+host[:port], which the push goes to and the digest reference names, is the
+repository variable `vars.RELEASE_REGISTRY` (Settings > Actions > Variables;
+ruling 312): it is a host, not a secret, and the push step alone sets it, with
+`${{ github.server_url != 'https://github.com' && vars.RELEASE_REGISTRY || '' }}`,
+so only the forge reads the variable and github.com, whose push goes to GHCR,
+gets an empty value that `scripts/ci-registry.sh` never reads. The release
+runner's credential contract is the two names its runner env file exports
+(ruling 173), `RELEASE_REGISTRY_USER` and `RELEASE_REGISTRY_TOKEN`, unchanged:
+they are not repository secrets, and no new identity or token exists for them.
+The forge push in `scripts/ci-registry.sh` reads those three names and no
+others. An empty `RELEASE_REGISTRY` fails the push with
+`::error::ci-registry: RELEASE_REGISTRY is empty: set the repository variable
+RELEASE_REGISTRY (Settings > Actions > Variables) to the forge registry's
+host[:port]`; an empty `RELEASE_REGISTRY_USER` or `RELEASE_REGISTRY_TOKEN`, or
+a `RELEASE_REGISTRY` that is no host[:port], fails it with a typed `::error::`
+naming the variable and its source.
 `RELEASE_REGISTRY` is the same registry the consumers derive from
 `github.server_url`: a pull refuses a reference in any other registry, and the
 push refuses a `RELEASE_REGISTRY` whose host[:port] is not that one, with a
-typed `::error::` naming both, so a misconfigured release runner fails once,
+typed `::error::` naming both, so a misconfigured variable fails once,
 in `docker-build`, rather than in every consumer. No step,
-job or workflow `env:` in ci.yml sets any of the three, since an entry would
-mask the runner's. A name change to the contract is an Infrastructure PR to
+job or workflow `env:` in ci.yml sets `RELEASE_REGISTRY_USER` or
+`RELEASE_REGISTRY_TOKEN`, since an entry would mask the runner's. A name
+change to the runner's contract is an Infrastructure PR to
 claude-agents, announced before it lands on the claude-agents issue that
 records the runner's contract, and this repo follows it. On github.com the push step hands the run's own
 `secrets.GITHUB_TOKEN` on under `RUN_REGISTRY_*` as `CI_REGISTRY_*`, empty on
@@ -248,7 +259,11 @@ Every consumer stays on `bigdisk`. The job's `permissions:` grant `packages: wri
 `docker-build` and `packages: read` to every consumer.
 `test/buildgates/ci_image_digest_test.go` fails when `docker-build`'s
 `runs-on` is anything but that one expression, when any `env:` in ci.yml sets
-a `RELEASE_REGISTRY*` name, or when any other job can run on `release`.
+`RELEASE_REGISTRY_USER` or `RELEASE_REGISTRY_TOKEN`, when `RELEASE_REGISTRY`
+is not set exactly once, on `docker-build`'s push step, to exactly the
+expression above (a literal, an `env.` or `secrets.` reference, the github.com
+guard dropped, or the entry on another step, a job or the workflow all fail),
+or when any other job can run on `release`.
 `scripts/ci-registry.sh` feeds the credential to `docker login --password-stdin` in a
 private `DOCKER_CONFIG` that it deletes on exit, so the credential reaches no
 other job on the same Docker host. A refused login, push or pull fails the job
