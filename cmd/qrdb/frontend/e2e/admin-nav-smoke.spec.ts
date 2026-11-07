@@ -102,8 +102,14 @@ async function assertNoErrorsAndContentLoaded(
   collector: { errors: Error[] },
   sectionLabel: string,
 ): Promise<void> {
-  // Allow a short settle window for async rendering to complete.
-  await page.waitForTimeout(300);
+  // The main element must contain at least one visible child — a blank screen
+  // means the view failed to mount, which is the symptom of a missing binding.
+  const main = page.locator("main");
+  await expect(main).not.toBeEmpty();
+
+  // A view shows a spinner or skeleton until its loads resolve; once none is
+  // left, every load has settled and any error it raised has been collected.
+  await expect(main.locator(".loading, .skeleton")).toHaveCount(0, { timeout: LOAD_TIMEOUT });
 
   if (collector.errors.length > 0) {
     const messages = collector.errors.map((e) => e.message).join("\n  ");
@@ -111,11 +117,6 @@ async function assertNoErrorsAndContentLoaded(
       `JavaScript exception(s) after navigating to "${sectionLabel}":\n  ${messages}`,
     );
   }
-
-  // The main element must contain at least one visible child — a blank screen
-  // means the view failed to mount, which is the symptom of a missing binding.
-  const main = page.locator("main");
-  await expect(main).not.toBeEmpty();
 }
 
 // ---------------------------------------------------------------------------
@@ -272,8 +273,10 @@ test.describe("Admin Nav Smoke — binding regression guards", () => {
 
     await clickSidebarItem(page, "Tenants");
 
-    // Wait for the async TenantBinding.List() call to resolve.
-    await page.waitForTimeout(500);
+    // The mocked tenant's row renders once TenantBinding.List() has resolved.
+    await expect(
+      page.locator("main").getByRole("cell", { name: "Default Tenant", exact: true }),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
     const tenantErrors = collector.errors.filter(
       (e) =>

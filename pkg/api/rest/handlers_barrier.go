@@ -82,8 +82,8 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 	// so a deferred wipe covers every exit path including the error ones.
 	defer secure.Wipe(req.Secret)
 
-	// Refuse an initialized barrier before any PIN is compared, then
-	// provision the SO / User PINs. PINs supplied with no backend configured
+	// Refuse an initialize the service would refuse before any PIN is
+	// written or compared, then provision the SO / User PINs. PINs supplied with no backend configured
 	// are refused, never ignored.
 	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, req.SOPin, req.UserPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -232,8 +232,8 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Refuse an initialized barrier before any PIN is compared, then
-	// provision the SO / User PINs. PINs supplied with no backend configured
+	// Refuse an initialize the service would refuse before any PIN is
+	// written or compared, then provision the SO / User PINs. PINs supplied with no backend configured
 	// are refused, never ignored.
 	if err := service.ProvisionInitializePINs(r.Context(), s.barrierSvc, s.pinBackend, req.SOPin, req.UserPin); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

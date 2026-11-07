@@ -2067,6 +2067,15 @@ func TestWriteJSON(t *testing.T) {
 	}
 }
 
+func TestWriteJSON_IgnoresEncodeError(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// A channel is not JSON-serializable; writeJSON ignores the error.
+	writeJSON(rec, make(chan int))
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
 func TestWriteErrorJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeErrorJSON(rec, http.StatusBadRequest, errors.New("bad input"))

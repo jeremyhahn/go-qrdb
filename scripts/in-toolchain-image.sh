@@ -4,7 +4,7 @@
 #   usage: scripts/in-toolchain-image.sh <image> <command...>
 #   e.g.   scripts/in-toolchain-image.sh go-enclave-toolchain:abc make build
 #
-# in-toolchain-template: v3 (ci-template v1.22.2). Ships beside ci.yml; copy it to
+# in-toolchain-template: v4 (ci-template v1.29.5). Ships beside ci.yml; copy it to
 # scripts/ with the workflow. From go-quicraft's scripts/in-toolchain-image.sh
 # (a141c3c), with the container prefix and uid taken from the environment.
 #
@@ -40,8 +40,24 @@
 # one-shot container joins the stage's own namespace, given NET_ADMIN and
 # nothing else, marks loopback multicast-capable, routes 224.0.0.0/4 over it
 # and exits: the multicast a host offers, with nothing leaving the namespace.
-# The stage's command waits for that route before it runs (MULTICAST_WAIT
-# seconds at most). The namespace is the stage's, so no container holds it
+# The stage's command waits for that route before it runs. The configurator
+# says so itself, on a marker volume (<stage>-mcast) the stage mounts
+# read-only, labelled qrdb.ci.multicast-marker=1 so that
+# scripts/reap-stale-ci-stacks.sh removes one a killed launcher left. Each
+# attempt n (the run, then its one retry) writes `started.<n>` when it runs and
+# `ready.<n>` once the route is in place. The stage's MULTICAST_WAIT clock
+# starts at `started.<n>`, never at its own start: a loaded daemon can take minutes to start the configurator, and a
+# clock that counted that wait ran out before the route existed (#1275). Until
+# `started.1` the stage runs a clock of its own, MULTICAST_START_WAIT, which
+# starts with the stage and is sized for those minutes; this script removes
+# the stage sooner if the configurator fails twice, and the clock ends the
+# stage if this script dies first. So each attempt has two clocks:
+# MULTICAST_START_WAIT to `started.<n>`, then MULTICAST_WAIT from it to a
+# `ready` marker and the route. A `started` of the next attempt ends the
+# current one's clocks and starts its MULTICAST_WAIT; an attempt whose
+# MULTICAST_WAIT runs out before the last one restarts MULTICAST_START_WAIT
+# for the retry, so a retry the daemon starts late is not judged on the clock
+# of the attempt that failed. The namespace is the stage's, so no container holds it
 # but the stage: a holder that slept until the script removed it outlived
 # every job killed before its EXIT trap ran (#1264).
 #
@@ -105,6 +121,14 @@
 # CUSTOMIZE (go-qrdb): every container the script starts carries the label
 # qrdb.ci.job=<GITHUB_RUN_ID>-<GITHUB_JOB> (local-local off CI), so a teardown
 # or a sweep tells the job a container belongs to without guessing by age.
+# v4 (ci-template v1.29.4 and v1.29.5, Company Agent rulings 261(c) and
+# 262(a)): Go's build and link scratch (TMPDIR,
+# GOTMPDIR) is an anonymous volume on the image's /var/tmp (IN_IMAGE_SCRATCH
+# overrides), on the daemon's data disk, removed with the container. A scratch directory that is missing or not writable fails
+# the stage by name. A bridge stage's GOPROXY puts DEVCACHE_GOPROXY (Athens)
+# first when the runner sets it: <DEVCACHE_GOPROXY>|https://proxy.golang.org|direct,
+# so any error falls through to the public proxy; GOPRIVATE travels with it.
+#
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -160,6 +184,11 @@ if ! [[ $memory =~ ^[1-9][0-9]*[mg]?$ ]]; then
   echo "IN_IMAGE_MEMORY must be a size in bytes, m or g, e.g. 16g: $memory" >&2
   exit 2
 fi
+scratch=${IN_IMAGE_SCRATCH:-/var/tmp}
+case $scratch in
+  /*) ;;
+  *) echo "IN_IMAGE_SCRATCH must be an absolute path: $scratch" >&2; exit 2 ;;
+esac
 cgroup_parent=${CI_CGROUP_PARENT-ci.slice}
 if [ -n "$cgroup_parent" ] && ! [[ $cgroup_parent =~ ^[A-Za-z0-9][A-Za-z0-9_.@:/-]*$ ]]; then
   echo "CI_CGROUP_PARENT must be a cgroup name such as ci.slice, or empty: $cgroup_parent" >&2
@@ -167,12 +196,25 @@ if [ -n "$cgroup_parent" ] && ! [[ $cgroup_parent =~ ^[A-Za-z0-9][A-Za-z0-9_.@:/
 fi
 # CUSTOMIZE (go-qrdb) begin: the multicast configurator and the job label.
 netns="$name-netns"
+mcast="$name-mcast" # CUSTOMIZE (go-qrdb): the configurator's marker volume
 job="${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-local}"
 # The stage's wait for the multicast route: the configurator's `docker run`
 # on an image the daemon holds, never the stage's own run time.
 mwait=${MULTICAST_WAIT:-60}
 case $mwait in
   "" | 0 | *[!0-9]*) echo "MULTICAST_WAIT must be a positive integer: $mwait" >&2; exit 2 ;;
+esac
+# The stage's wait for the configurator to start, so a stage whose launcher
+# died before the configurator ran does not wait forever. 240 s: in the run
+# #1275 records (70401) the daemon started no container for over a minute
+# while a cache trim walked its volumes, and one trim takes about 2 min on
+# that loaded host (scripts/trim-ci-caches.sh, CI_CACHE_LOCK_WAIT). The
+# configurator runs at most twice (one retry), each run waiting at most one
+# trim: 2 x 120 s.
+tries=2 # the configurator's run and its one retry (below)
+swait=${MULTICAST_START_WAIT:-240}
+case $swait in
+  "" | 0 | *[!0-9]*) echo "MULTICAST_START_WAIT must be a positive integer: $swait" >&2; exit 2 ;;
 esac
 # CUSTOMIZE (go-qrdb) end.
 args=(
@@ -193,6 +235,10 @@ args=(
   # CUSTOMIZE (go-qrdb): no tmpfs on /tmp, a 2 GiB /dev/shm, and the network
   # chosen below (see the header).
   --shm-size 2g
+  # Go's build and link scratch on its own volume (v4, above).
+  -v "$scratch"
+  --env TMPDIR="$scratch"
+  --env GOTMPDIR="$scratch"
   --user "$uid:$uid"
   --workdir /src
   --env HOME=/tmp
@@ -221,7 +267,7 @@ if [ "$network" = bridge ]; then
   # the cache on that is the gomod volume, kept across jobs; with CI_CACHE=off
   # the run takes a writable copy of the baked cache on the container's own
   # layer, so nothing baked is downloaded twice.
-  args+=(--network bridge --env "GOPROXY=https://proxy.golang.org,direct" --env "GOMODCACHE=$modcache")
+  args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org|direct" --env "GOMODCACHE=$modcache")
   if [ "$cache" = off ]; then cmd="cp -a /gomodcache/. $modcache/ && $cmd"; fi
   # CUSTOMIZE (go-qrdb) end.
   for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
@@ -230,16 +276,31 @@ if [ "$network" = bridge ]; then
 else
   # CUSTOMIZE (go-qrdb) begin: the stage's own namespace, which the
   # configurator below makes multicast-capable once the stage has started.
-  args+=(--network none)
-  gate="i=0; until ip route show dev lo | grep -q '^224\\.0\\.0\\.0/4'; do"
-  gate="$gate i=\$((i + 1)); if [ \$i -gt $((mwait * 10)) ]; then"
-  gate="$gate echo 'in-toolchain-image: no multicast route after $mwait s' >&2; exit 1; fi;"
+  # The marker volume is created with the stage, labelled, so that
+  # scripts/reap-stale-ci-stacks.sh can tell one a killed launcher left.
+  args+=(--network none --mount "type=volume,src=$mcast,dst=/run/qrdb-mcast,readonly,volume-label=qrdb.ci.multicast-marker=1")
+  # The gate below, in the stage: n is the configurator attempt it waits for
+  # and s its phase, `start` (on MULTICAST_START_WAIT) or `route` (on
+  # MULTICAST_WAIT); i counts 0.1 s ticks in the phase (see the header).
+  # shellcheck disable=SC2016 # expands in the stage, not here
+  gate='m=/run/qrdb-mcast; n=1; s=start; i=0; mready() { for r in "$m"/ready.*; do [ -e "$r" ] && return 0; done; return 1; };'
+  gate="$gate"' until mready && ip route show dev lo | grep -q "^224\.0\.0\.0/4"; do'
+  gate="$gate"' if [ $n -lt '"$tries"' ] && [ -e "$m/started.$((n + 1))" ]; then n=$((n + 1)); s=route; i=0;'
+  gate="$gate"' elif [ $s = start ] && [ -e "$m/started.$n" ]; then s=route; i=0; fi; i=$((i + 1));'
+  gate="$gate"' if [ $s = start ] && [ $i -gt '"$((swait * 10))"' ]; then'
+  gate="$gate"' echo "in-toolchain-image: the configurator did not start within '"$swait"' s (attempt $n)" >&2; exit 1; fi;'
+  gate="$gate"' if [ $s = route ] && [ $i -gt '"$((mwait * 10))"' ]; then if [ $n -ge '"$tries"' ]; then'
+  gate="$gate"' echo "in-toolchain-image: no multicast route '"$mwait"' s after the configurator started (attempt $n)" >&2; exit 1; fi;'
+  gate="$gate"' n=$((n + 1)); s=start; i=0; fi;'
   cmd="$gate sleep 0.1; done; $cmd"
   # CUSTOMIZE (go-qrdb) end.
 fi
 
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
-cleanup() { docker rm -f -v "$name" "$netns" >/dev/null 2>&1 || true; }
+cleanup() {
+  docker rm -f -v "$name" "$netns" >/dev/null 2>&1 || true
+  if [ "$network" = none ]; then docker volume rm "$mcast" >/dev/null 2>&1 || true; fi
+}
 # A signalled script cleans up too: bash runs no EXIT trap on a signal it does
 # not trap, and the stage is a sibling on the host's daemon that would run on.
 trap cleanup EXIT
@@ -247,7 +308,11 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-docker create "${args[@]}" "$image" sh -c "$cmd" >/dev/null
+# The scratch directory is checked in the container first (v4), so a missing
+# or unwritable one fails the stage here by name, not later as ENOSPC or EACCES.
+# shellcheck disable=SC2016 # expands in the container, not here
+guard='[ -d "$TMPDIR" ] && [ -w "$TMPDIR" ] || { echo "in-toolchain-image: scratch directory $TMPDIR is missing or not writable" >&2; exit 2; }'
+docker create "${args[@]}" "$image" sh -c "$guard; $cmd" >/dev/null
 # DS-3998 (ruling 108): the volume roots go to the run's uid only after the
 # create, while the stage's container holds the volumes. Another job's
 # scripts/trim-ci-caches.sh removes a cache volume no container holds, so a
@@ -269,12 +334,20 @@ docker start "$name" >/dev/null
 # namespace, root in it for the two `ip` commands with NET_ADMIN its only
 # capability, and exits; --rm has the daemon remove it on that exit, so it
 # outlives nothing, whatever kills this script. The stage never holds
-# NET_ADMIN.
-if [ "$network" = none ]; then
+# NET_ADMIN. It writes the stage's markers (see the header) on the marker
+# volume, numbered by attempt (configure <n>); `ip route replace` makes the
+# one retry safe after a run that got as far as the route.
+configure() {
   docker run --rm --name "$netns" --label "qrdb.ci.job=$job" \
     --network "container:$name" --read-only --cap-drop ALL --cap-add NET_ADMIN \
     --security-opt no-new-privileges:true --pids-limit 16 --user 0:0 \
-    "$image" sh -c 'ip link set lo multicast on && ip route add 224.0.0.0/4 dev lo' >/dev/null
+    -v "$mcast:/m" "$image" \
+    sh -c "touch /m/started.$1 && ip link set lo multicast on && ip route replace 224.0.0.0/4 dev lo && touch /m/ready.$1" >/dev/null
+}
+if [ "$network" = none ] && ! configure 1; then
+  echo "in-toolchain-image: the multicast configurator failed; retrying once" >&2
+  docker rm -f "$netns" >/dev/null 2>&1 || true
+  configure 2
 fi
 # CUSTOMIZE (go-qrdb) end.
 # The stage's output from its start, its exit status after. The stream runs

@@ -29,6 +29,7 @@ import (
 	querypb "github.com/dolthub/vitess/go/vt/proto/query"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sessionguard"
 )
@@ -111,13 +112,18 @@ func (g sealedQueryGate) StmtExecute(ctx context.Context, chain server.Chain, c 
 }
 
 // handlerOptions composes the server's statement handling into the
-// go-mysql-server handler, each part only when configured: the sealed-window
+// go-mysql-server handler, each part only when configured: the client-address
+// limiter charges every query, prepare and execute first; the sealed-window
 // gate (probe) refuses every query, prepare and execute; the query timeout
 // bounds each; sealedConnHandler refuses COM_INIT_DB, which no interceptor
 // sees, and releases each connection's seal guard session when it closes.
-func handlerOptions(probe sealedWindowProbe, sessions *sealedSessions, queryTimeout time.Duration) []server.Option {
+func handlerOptions(limiter *clientlimit.Limiter, probe sealedWindowProbe, sessions *sealedSessions, queryTimeout time.Duration) []server.Option {
 	var chain server.InterceptorChain
 	interceptors := 0
+	if limiter != nil {
+		chain.WithInterceptor(clientLimitGate{limiter: limiter})
+		interceptors++
+	}
 	if probe != nil {
 		chain.WithInterceptor(sealedQueryGate{probe: probe})
 		interceptors++

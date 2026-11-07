@@ -15,10 +15,14 @@
 package pebble
 
 import (
+	"bytes"
+	"errors"
 	"sync/atomic"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/cockroachdb/pebble/v2/vfs/errorfs"
 )
 
 // countingFS is a thin instrumentation wrapper around vfs.Default that
@@ -113,5 +117,69 @@ func TestNewWithCustomFS_PreservedAcrossWithDefaults(t *testing.T) {
 	defaulted := original.WithDefaults()
 	if defaulted.FS != fs {
 		t.Fatalf("WithDefaults dropped Config.FS: got %p, want %p", defaulted.FS, fs)
+	}
+}
+
+// TestPebbleIterator_ValueFetchErrorIsReported proves that a value whose read
+// fails at Value() time is reported through Error rather than by a panic.
+// Value separation stores a large value out of line in a blob file, which
+// pebble reads lazily when the value is asked for; read faults are armed only
+// once the iterator is positioned, so the failing read is the value fetch.
+func TestPebbleIterator_ValueFetchErrorIsReported(t *testing.T) {
+	var armed atomic.Bool
+	fs := errorfs.Wrap(vfs.NewMem(), errorfs.InjectorFunc(func(op errorfs.Op) error {
+		if armed.Load() && (op.Kind == errorfs.OpFileRead ||
+			op.Kind == errorfs.OpFileReadAt || op.Kind == errorfs.OpOpen) {
+			return errorfs.ErrInjected
+		}
+		return nil
+	}))
+	opts := &pebble.Options{
+		FS:                 fs,
+		Cache:              pebble.NewCache(1),
+		FormatMajorVersion: pebble.FormatNewest,
+	}
+	opts.Experimental.ValueSeparationPolicy = func() pebble.ValueSeparationPolicy {
+		return pebble.ValueSeparationPolicy{
+			Enabled:               true,
+			MinimumSize:           64,
+			MaxBlobReferenceDepth: 10,
+			TargetGarbageRatio:    1.0,
+		}
+	}
+	db, err := pebble.Open("db", opts)
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	t.Cleanup(func() {
+		armed.Store(false)
+		_ = db.Close()
+	})
+
+	if err := db.Set([]byte("k"), bytes.Repeat([]byte("v"), 4096), pebble.Sync); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := db.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	it := newIterator(db, nil)
+	defer func() { _ = it.Close() }()
+	if !it.SeekToFirst() || !it.Valid() {
+		t.Fatalf("iterator not positioned: %v", it.Error())
+	}
+
+	armed.Store(true)
+	if v := it.Value(); v != nil {
+		t.Fatalf("Value after a failed fetch = %d bytes, want nil", len(v))
+	}
+	if it.Valid() {
+		t.Fatal("Valid() = true after a failed value fetch")
+	}
+	if err := it.Error(); !errors.Is(err, errorfs.ErrInjected) {
+		t.Fatalf("Error() = %v, want the injected read error", err)
+	}
+	if it.Next() || it.Valid() || it.Key() != nil {
+		t.Fatal("iterator advanced past a recorded value-fetch error")
 	}
 }

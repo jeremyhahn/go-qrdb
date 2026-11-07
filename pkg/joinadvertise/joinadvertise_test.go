@@ -39,7 +39,7 @@ import (
 // implementations, not a hand-rolled double standing in for them.
 func newTestServices(t *testing.T) (service.LeaseServicer, service.MVCCKVServicer) {
 	t.Helper()
-	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.ObjstoreConfig{})
+	stg, pdb, err := lifecycle.NewLocalStorage(database.BackendMemory, t.TempDir(), nil, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage: %v", err)
 	}

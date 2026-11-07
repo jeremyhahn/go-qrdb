@@ -15,6 +15,8 @@
 package qrdbdharness
 
 import (
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -78,6 +80,36 @@ func ReserveListenerPorts(args []string) ([]string, error) {
 		out = append(out, l.port, strconv.Itoa(port))
 	}
 	return out, nil
+}
+
+// addrInUse is how a failed bind ends (EADDRINUSE's strerror), on Linux and
+// in Go's own net error text alike.
+const addrInUse = "address already in use"
+
+// portInLine matches a ":port" in a bind failure's "host:port" address.
+var portInLine = regexp.MustCompile(`:(\d{1,5})\b`)
+
+// portCollision classifies an exited daemon's wait error. When err's tail
+// carries a failed bind, it returns a *PortCollisionError wrapping err, with
+// Port and Reserved set when the failing line names one of the reserved
+// ports; otherwise it returns err unchanged.
+func portCollision(err *DaemonWaitError, reserved []string) error {
+	collided := false
+	for _, line := range strings.Split(err.Tail, "\n") {
+		if !strings.Contains(line, addrInUse) {
+			continue
+		}
+		collided = true
+		for _, m := range portInLine.FindAllStringSubmatch(line, -1) {
+			if slices.Contains(reserved, m[1]) {
+				return &PortCollisionError{Port: m[1], Reserved: true, Err: err}
+			}
+		}
+	}
+	if collided {
+		return &PortCollisionError{Err: err}
+	}
+	return err
 }
 
 // hasFlag reports whether args carry the flag, as "--name" or "--name=value".

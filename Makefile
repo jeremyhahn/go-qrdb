@@ -2497,9 +2497,10 @@ vet-sdk:
 #
 # lint-sweeps is the two whole-tree sweeps over every SUPPORTED_TAG_SETS
 # combination, vet-tags and the secure analyzer. Together they took over an
-# hour of CI's lint stages, so CI runs them on a push to main and on the daily
-# full-tier dispatch, not on a pull request; release.yml still runs both
-# before a tag. `make lint-gates lint-sweeps` is the whole set.
+# hour of CI's lint stages, so they run in ci.yml's lint job on the nightly
+# schedule: event alone (ci-template v1.30, ruling 216(1)); release.yml still runs both before a
+# tag. `make lint-gates lint-sweeps` is the whole set. A pull request's lint
+# job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
 	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
@@ -4056,14 +4057,17 @@ REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx
 
 # The module credentials are the same $(stage-gomodauth) secret every other
 # image build here passes; without them the build resolves from the public
-# proxy. GO_BUILD_PROXY is passed only when the caller sets it (handbook
-# devcontainer.md section 4). IT_TAGS is the tag set the integration stage
-# compiles its suites under, the same set the per-feature targets use.
+# proxy. GO_BUILD_PROXY comes from the caller (handbook devcontainer.md
+# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY, which on
+# the CI runners is the fleet Athens first (m1544, ruling 236(3)); unset, the
+# Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
+# runners' value uses the | separator. IT_TAGS is the tag set the integration
+# stage compiles its suites under, the same set the per-feature targets use.
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--secret id=gomodauth,env=GOMODAUTH \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
-	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY=$(GO_BUILD_PROXY)) \
+	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
@@ -4071,8 +4075,15 @@ docker-build: docker-build-toolchain docker-build-it
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
-	@$(stage-gomodauth) \
-	$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .
+	@# ci-template v1.30: the tag is the content hash, so an image already on
+	@# this daemon (built here, or pulled by scripts/ci-image-cache.sh) is the
+	@# image this tree would build.
+	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this

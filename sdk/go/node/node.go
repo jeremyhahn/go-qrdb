@@ -1436,6 +1436,13 @@ type Node struct {
 	// constructor).
 	tenantIsolation bool
 
+	// watchHubOpts configures every watch hub this node builds, its own and
+	// its tenants': watch.buffer_size and the one watch.max_watchers limit
+	// they share (server.WatchHubOptions). Set once by the constructor so a
+	// data-plane rebuild draws from the same limit as the tenant hubs that
+	// outlive it.
+	watchHubOpts []watch.HubOption
+
 	// defaultTenantEntitlements are forwarded to lifecycle.Infra so the built-in
 	// TenantService permits the isolation modes and features the embedder needs.
 	defaultTenantEntitlements *quota.Entitlements
@@ -1737,14 +1744,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		encryptor = atrest.New(barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -1785,6 +1792,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Backend:           pending.backendType,
 		DatabaseManager:   dbManager,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -1866,6 +1875,9 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
@@ -2303,7 +2315,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		encryptor = atrest.New(barrier)
 	}
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(encryptor)}
@@ -2394,6 +2406,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -2474,6 +2488,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Host is the shared quicraft.Host that carries IsolationRaft shards.
 			// Passing it here enables NewRaftBackendFactoryFromManager and
 			// reattachRaftTenants so clustered embedded nodes gain full
@@ -2907,6 +2924,15 @@ func (n *Node) Close() error {
 		record(n.tenantHosts.CloseAll())
 		n.tenantHosts = nil
 	}
+	// Close the node's own store BEFORE sealing: with encryption at rest it
+	// sits on encfs over the system barrier, and a store still open when that
+	// barrier seals has every file it creates refused -- a background
+	// compaction's table, or the WAL Pebble cannot live without.
+	if n.stg != nil {
+		record(n.stg.Close())
+		n.stg = nil
+		n.pebbleDB = nil
+	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
 	// service.SealWholeNode seals every database barrier, every tenant
@@ -2936,11 +2962,6 @@ func (n *Node) Close() error {
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
-	}
-	if n.stg != nil {
-		record(n.stg.Close())
-		n.stg = nil
-		n.pebbleDB = nil
 	}
 	// Close the database manager last — after all raft shards, host, and
 	// storage are down — mirroring the daemon's deferred dbManager.Close()
@@ -3031,6 +3052,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3111,14 +3133,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Seal disabled: build storage + engine + services immediately.
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: string(backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -3144,6 +3166,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		Backend:         backendType,
 		DatabaseManager: dbManager,
 		ReplicaID:       cfg.Raft.ReplicaID,
+		Index:           cfg.Index,
+		TimeSeries:      cfg.TimeSeries,
 		Profile:         &profile,
 		Logger:          log,
 		SealEnabled:     cfg.Seal.Enabled,
@@ -3253,6 +3277,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3341,7 +3366,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	// Seal disabled: build the host and services immediately.
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(atrest.New(nil))}
@@ -3388,6 +3413,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
 		ReplicaID:         cfg.Raft.ReplicaID,
+		Index:             cfg.Index,
+		TimeSeries:        cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            log,
 		SealEnabled:       cfg.Seal.Enabled,
@@ -4218,6 +4245,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.contextBinder != nil {
 		embeddedOpts = append(embeddedOpts, n.contextBinder)
 	}
+	// The caller's watch is a client's: it holds a watch.max_watchers slot
+	// like one opened over the network. The feature client above does not.
+	embeddedOpts = append(embeddedOpts, embedded.WithCountedWatch())
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
@@ -4250,6 +4280,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if fwdOpt != nil {
 		allOpts = append(allOpts, fwdOpt)
 	}
+	allOpts = append(allOpts, server.WithDefaultRetention(cfg.TimeSeries.DefaultRetentionDuration()))
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
@@ -4450,6 +4481,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	)
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
+	}
+	if svcNode.Credential != nil {
+		opts = append(opts, embedded.WithCredentialService(svcNode.Credential))
 	}
 	if svcNode.Policy != nil {
 		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
@@ -4875,7 +4909,7 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
 	if factory != nil {
 		// A composer's storage writes its files through the barrier's
 		// encrypting file system whatever the backend type names.
@@ -4896,7 +4930,7 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 	default:
 		backendType = database.BackendPebble
 	}
-	return lifecycle.NewLocalStorage(backendType, dataDir, enc, objCfg)
+	return lifecycle.NewLocalStorage(backendType, dataDir, enc, storageCfg)
 }
 
 // createNodeEngine creates the appropriate store engine via the canonical

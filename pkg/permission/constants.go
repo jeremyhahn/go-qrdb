@@ -1151,7 +1151,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			RolesCreate, RolesRead, RolesUpdate, RolesDelete,
 			RolesList, RolesAssign, RolesUnassign, PermissionsList,
-			PermissionsResolve,
+			PermissionsResolve, RolesReconcileAll,
 		},
 	},
 	{
@@ -1408,30 +1408,11 @@ var categories = []Category{
 	},
 }
 
-// credentialPermissions returns every named-credential permission. The
-// credential store is a single system-scoped barrier keyed by credential name
-// with NO tenant namespacing (see pkg/credentials/versioned.go), so these
-// permissions MUST be system-scoped: a tenant-local role must never be able to
-// satisfy them and thereby read or mutate another tenant's (or the platform's)
-// credential material. Tagging them ScopeCross confines every credential
-// operation to the structurally privileged system tenant.
-func credentialPermissions() []Permission {
-	return []Permission{
-		CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
-		CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion,
-		CredentialsListVersions, CredentialsStore, CredentialsRetrieve,
-	}
-}
-
 func init() {
 	// Register all permissions from all categories into the global registry.
 	for _, cat := range categories {
 		Register(cat.Permissions...)
 	}
-	// The credential store is not tenant-namespaced; confine every credential
-	// permission to the system tenant so a tenant-scoped role can never satisfy
-	// it (latent cross-tenant hole — no built-in tenant role grants these).
-	RegisterScope(ScopeCross, credentialPermissions()...)
 	// The cert-binding PAIR is declared ScopeSelf here, beside its
 	// definitions, rather than in self_scope.go with the rest: it was the
 	// first pair declared deliberately, back when LookupScope still answered

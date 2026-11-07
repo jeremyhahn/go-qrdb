@@ -1,6 +1,6 @@
 # Authentication Factors and PINs — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 Two distinct gRPC services, because there are two distinct factor models:
@@ -52,8 +52,7 @@ The response is `{ "status": "deleted" }` (gRPC / Unix
 - **A revoked factor is refused** (`410` / `FAILED_PRECONDITION`,
   `ErrFactorRevoked`) and keeps every index it holds. Nothing reinstates an
   administrator's revocation: neither `Delete` nor delete-then-`Add`.
-- **The last active factor needs `force`**, exactly as for `Remove`; with it
-  the user is deactivated.
+- **The last active factor needs `force`**, exactly as for `Remove`.
 - **Deleting a factor that is not there is not found**, including the second
   of two deletes of the same id. A delete is never silently idempotent.
 - An index entry that names a different factor is left alone: `Delete` frees
@@ -197,9 +196,8 @@ against the one the call's context already resolved to:
 
 - **Empty** — filled in from the context tenant.
 - **Equal to the context tenant** — passes unchanged.
-- **Anything else** (compared case-insensitively, as the registry compares
-  factor names) — refused. The record would otherwise physically land in
-  the context tenant while the field claimed a different one, and correcting
+- **Anything else** (compared exactly) — refused. The record would
+  otherwise physically land in the context tenant while the field claimed a different one, and correcting
   it silently would hide that the caller's belief about its own tenant was
   wrong rather than surface it.
 
@@ -256,7 +254,7 @@ of ceremony and barrier operations:
 |---|---|
 | `POST /v1/ceremony/initialize` (`so_pin`, `user_pin`) | [../ceremony/api.md](../ceremony/api.md) |
 | `POST /v1/barrier/initialize` (`so_pin`, `user_pin`) | [../barrier-seal/api.md](../barrier-seal/api.md) |
-| `POST /v1/barrier/seal`, `/rekey`, `/recovery/generate` (`so_pin`) | [../barrier-seal/api.md](../barrier-seal/api.md) |
+| `POST /v1/barrier/seal`, `/rekey/start`, `/recovery/generate` (`so_pin`) | [../barrier-seal/api.md](../barrier-seal/api.md) |
 
 That is deliberate: a PIN is an authorization input to a privileged operation,
 not an object with its own CRUD surface.
@@ -267,23 +265,27 @@ Factor add / rotate:
 
 ```json
 { "user_id": 42, "type": "fido2", "label": "yubikey-5",
-  "credential": "<hex>", "device": "YubiKey 5 NFC",
-  "reader": "", "slot": "9a", "created_by": "self" }
+  "credential": "<base64>", "spki_credential": "<base64>",
+  "created_by": "self" }
 ```
 
-`type`: `mtls` · `fido2` · `piv`. `created_by`: `self` · `admin` · `ceremony`.
-`slot` defaults to `9a` for PIV.
+`type`: `mtls` · `fido2` · `piv` · `pkcs11`. `created_by` is a provenance
+string: `self`, `admin` or `ceremony`. `credential` and `spki_credential` are
+bytes, base64 on the wire. `spki_credential` is optional: for `mtls` and `piv`
+it is the SHA-256 of the certificate's SubjectPublicKeyInfo, and for `fido2`
+it is empty.
 
 `Add` alone also accepts the two condition fields described under
 [Conditional add](#conditional-add--the-one-time-claim-and-the-expected-version):
 
 ```json
 { "user_id": 42, "type": "fido2", "label": "yubikey-5",
-  "credential": "<hex>", "if_no_active_type": true,
+  "credential": "<base64>", "if_no_active_type": true,
   "expected_factor_set_version": 3 }
 ```
 
-The `Add` response is `{ "factor": { … }, "factor_set_version": 4 }`; the
+The `Add` response is `{ "factor": { … }, "factor_set_version": 4 }`, with
+`factor_set_version` omitted after an unconditional add; the
 `List` response is `{ "factors": [ … ], "total": N, "factor_set_version": V }`.
 
 Login resolves a `(method, lookup key)` tuple to a user:
@@ -293,6 +295,7 @@ Login resolves a `(method, lookup key)` tuple to a user:
 | `mtls` | SHA-256 of the certificate DER |
 | `fido2` | WebAuthn `credentialID` bytes |
 | `piv` | SHA-256 of the slot certificate DER |
+| `pkcs11` | SHA-256 of the enrolled public key's SubjectPublicKeyInfo DER |
 
 **This RPC performs no hardware verification.** It maps the tuple to a user.
 Hardware verification is the caller's — go-xkms's — responsibility.
@@ -389,17 +392,17 @@ call is routed to rather than anything in the request:
 | Delete on a server composed over a store without a multi-key guarded batch (never a production store) | 500 | `INTERNAL` — `ErrUserAuthFactorBatchStoreRequired` |
 | Unknown factor type or method | 400 | `INVALID_ARGUMENT` |
 | Metadata key inside the server-owned `attest_*` namespace | 400 | `INVALID_ARGUMENT` — `ErrReservedMetadata` |
-| Login tuple resolves to no user | 401 | `UNAUTHENTICATED` |
-| PIN shorter than 6 characters | 400 | `INVALID_ARGUMENT` — `ErrPINTooShort` |
-| PIN does not verify | 403 | `PERMISSION_DENIED` — `ErrPINInvalid` |
-| One PIN of a required pair supplied | 400 | `INVALID_ARGUMENT` — dual control |
-| Backend locked out | 429 | `RESOURCE_EXHAUSTED` — `ErrTPMLocked` / `ErrPINLocked`, carrying `LockoutStatus` |
+| Login tuple resolves to no factor | 404 | `NOT_FOUND` — `*auth.FactorNotFoundError` |
+| PIN shorter than 6 characters | 400 | `INVALID_ARGUMENT` — `pin.ErrPINTooShort` |
+| PIN does not verify | 401 | `UNAUTHENTICATED` — `pin.ErrPINInvalid` |
+| A user PIN supplied without the SO PIN | 401 | `UNAUTHENTICATED` — `pin.ErrSOPINRequired` |
+| PIN backend locked out | 429 | `RESOURCE_EXHAUSTED` — `pin.ErrPINLocked` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
 Every PIN failure path fails closed. Note that the **software backend has no
 lockout of its own**: `GetLockoutStatus()` returns nil and `ResetLockout()` is a
 no-op, so a nil status means "this backend has no lockout", **not** "not locked
-out". The SO PIN lockout is `pin.NewLockoutBackend(backend) PINBackend`, a
+out". The SO PIN lockout is `pin.NewLockoutBackend(backend, opts...) PINBackend`, a
 decorator a node installs once around its backend; while locked it refuses
 every SO PIN check with `*pin.SOPINLockedError{RetryAfter}` (unwraps to
 `ErrPINLocked`; 429 / `RESOURCE_EXHAUSTED`).

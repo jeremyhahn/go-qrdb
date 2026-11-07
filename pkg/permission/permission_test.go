@@ -642,7 +642,9 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 1 vector:namespace_update, the in-place update of a vector
 	//   namespace's configuration that keeps its vectors (ScopeSelf) = 411
 	//   total.
-	const expectedTotal = 411
+	// + 1 roles:reconcile_all, the platform operator's all-tenant built-in
+	//   role convergence (ScopeCross) = 412 total.
+	const expectedTotal = 412
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

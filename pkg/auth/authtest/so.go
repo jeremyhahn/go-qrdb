@@ -115,10 +115,10 @@ func (b *Barrier) BarrierInitialize(context.Context, []byte) error {
 	return nil
 }
 
-// BarrierInitialized reports false, consistent with this double's
-// BarrierInitialize, which records every call and never refuses one as
-// already initialized.
-func (b *Barrier) BarrierInitialized(context.Context) (bool, error) { return false, nil }
+// BarrierInitializePrecondition admits every initialize, consistent with
+// this double's BarrierInitialize, which records every call and never
+// refuses one.
+func (b *Barrier) BarrierInitializePrecondition(context.Context) error { return nil }
 
 // BarrierUnseal records the unseal.
 func (b *Barrier) BarrierUnseal(context.Context, []byte) error {

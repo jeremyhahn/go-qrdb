@@ -164,6 +164,7 @@ const (
 	QRDBService_ListOwnPermissions_FullMethodName                = "/qrdb.v1.QRDBService/ListOwnPermissions"
 	QRDBService_Authorize_FullMethodName                         = "/qrdb.v1.QRDBService/Authorize"
 	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
+	QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName   = "/qrdb.v1.QRDBService/ReconcileBuiltInRolesAllTenants"
 	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
 	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
 	QRDBService_IssueDelegation_FullMethodName                   = "/qrdb.v1.QRDBService/IssueDelegation"
@@ -630,6 +631,14 @@ type QRDBServiceClient interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error)
+	// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+	// EVERY tenant the serving node knows onto this build's definitions, in
+	// one pass, leaving custom roles untouched. It writes every tenant's IAM
+	// data, so it carries the cross-scope roles:reconcile_all, effective only
+	// for a system-tenant caller. A tenant whose barrier is sealed, or that
+	// the node refuses, is reported skipped; one tenant's failure is
+	// reported in failed and never stops the pass.
+	ReconcileBuiltInRolesAllTenants(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReconcileBuiltInRolesAllTenantsResponse, error)
 	// IssueCert issues a certificate from a CSR for an EXISTING account of the
 	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
 	// to the account. The requester keeps its private key: no RPC generates
@@ -2281,6 +2290,16 @@ func (c *qRDBServiceClient) ReconcileBuiltInRoles(ctx context.Context, in *Recon
 	return out, nil
 }
 
+func (c *qRDBServiceClient) ReconcileBuiltInRolesAllTenants(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ReconcileBuiltInRolesAllTenantsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReconcileBuiltInRolesAllTenantsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*EnrolledCertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnrolledCertResponse)
@@ -3852,6 +3871,14 @@ type QRDBServiceServer interface {
 	// role seeded before it existed -- so nobody would hold the permission
 	// needed to repair that exact absence.
 	ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error)
+	// ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+	// EVERY tenant the serving node knows onto this build's definitions, in
+	// one pass, leaving custom roles untouched. It writes every tenant's IAM
+	// data, so it carries the cross-scope roles:reconcile_all, effective only
+	// for a system-tenant caller. A tenant whose barrier is sealed, or that
+	// the node refuses, is reported skipped; one tenant's failure is
+	// reported in failed and never stops the pass.
+	ReconcileBuiltInRolesAllTenants(context.Context, *emptypb.Empty) (*ReconcileBuiltInRolesAllTenantsResponse, error)
 	// IssueCert issues a certificate from a CSR for an EXISTING account of the
 	// caller's own tenant, signed by that tenant's own Key B CA, and binds it
 	// to the account. The requester keeps its private key: no RPC generates
@@ -4583,6 +4610,9 @@ func (UnimplementedQRDBServiceServer) Authorize(context.Context, *AuthorizeReque
 }
 func (UnimplementedQRDBServiceServer) ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRoles not implemented")
+}
+func (UnimplementedQRDBServiceServer) ReconcileBuiltInRolesAllTenants(context.Context, *emptypb.Empty) (*ReconcileBuiltInRolesAllTenantsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRolesAllTenants not implemented")
 }
 func (UnimplementedQRDBServiceServer) IssueCert(context.Context, *IssueCertRequest) (*EnrolledCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
@@ -7303,6 +7333,24 @@ func _QRDBService_ReconcileBuiltInRoles_Handler(srv interface{}, ctx context.Con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).ReconcileBuiltInRoles(ctx, req.(*ReconcileBuiltInRolesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ReconcileBuiltInRolesAllTenants_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRolesAllTenants(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRolesAllTenants(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -10043,6 +10091,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReconcileBuiltInRoles",
 			Handler:    _QRDBService_ReconcileBuiltInRoles_Handler,
+		},
+		{
+			MethodName: "ReconcileBuiltInRolesAllTenants",
+			Handler:    _QRDBService_ReconcileBuiltInRolesAllTenants_Handler,
 		},
 		{
 			MethodName: "IssueCert",

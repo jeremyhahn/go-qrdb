@@ -103,6 +103,12 @@ func (a *Admin) StateHashes(context.Context, []uint64) (*service.StateHashesResp
 	return &service.StateHashesResponse{}, nil
 }
 
+// StartShard counts the shard start.
+func (a *Admin) StartShard(context.Context, *service.StartShardRequest) error {
+	a.changes.Add(1)
+	return nil
+}
+
 // ClusterChanges reports how many of the platform-only calls -- add-member,
 // remove-member, snapshot, drain, the node compaction policy's read and
 // write, and the replica state hashes read -- reached the service.

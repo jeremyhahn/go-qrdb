@@ -276,6 +276,7 @@ func TestDistanceMetricString(t *testing.T) {
 		{L2Distance, "L2"},
 		{CosineDistance, "Cosine"},
 		{DotProductDistance, "DotProduct"},
+		{ManhattanDistance, "Manhattan"},
 		{DistanceMetric(999), "Unknown"},
 	}
 

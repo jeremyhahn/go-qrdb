@@ -53,10 +53,18 @@ The examples are REST bodies. Namespace creation:
   "distance_metric": "cosine", "index_type": "hnsw", "shard_id": 0 }
 ```
 
-`distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product`; the
-server uses `euclidean` when it is omitted. `index_type`: `hnsw` · `flat` ·
-`ivf_flat`; the server uses `hnsw` when it is omitted. Both are immutable after
-creation.
+`distance_metric`: `cosine` · `euclidean` (alias `l2`) · `dot_product` ·
+`manhattan`, in any case; the server uses `euclidean` when it is omitted and
+refuses any other name with 400 (`INVALID_ARGUMENT` over gRPC). Over gRPC,
+Unix and QUIC the metric is the `DistanceMetric` enum: `DISTANCE_COSINE` (0,
+the default), `DISTANCE_EUCLIDEAN` (1), `DISTANCE_DOT_PRODUCT` (2),
+`DISTANCE_MANHATTAN` (3); any other value is refused with `INVALID_ARGUMENT`,
+never read as cosine. `index_type`: `hnsw` · `flat` ·
+`ivf_flat` (alias `ivf`), in any case; the server uses `hnsw` when it is omitted
+and refuses any other name with 400. Both are immutable after
+creation. A `manhattan` namespace of any index type needs the
+`vector-manhattan` cluster feature; until it is active the create is refused
+with 409 (`FAILED_PRECONDITION` over gRPC).
 
 Upsert:
 

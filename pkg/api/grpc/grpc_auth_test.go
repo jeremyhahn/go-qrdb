@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -1675,6 +1676,43 @@ func TestGRPC_ListCerts_NilService(t *testing.T) {
 	st, _ := status.FromError(err)
 	if st.Code() != codes.Unimplemented {
 		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+// listTenantRecorder records the tenant ListCerts was asked for.
+type listTenantRecorder struct {
+	*mockCertProvider
+	listed string
+}
+
+func (p *listTenantRecorder) ListCerts(ctx context.Context, tenantID string) ([]*cert.CertRecord, error) {
+	p.listed = tenantID
+	return p.mockCertProvider.ListCerts(ctx, tenantID)
+}
+
+func TestGRPC_ListCerts_EmptyTenantIsCallers(t *testing.T) {
+	prov := &listTenantRecorder{mockCertProvider: &mockCertProvider{}}
+	s := &qrdbServiceServer{certProv: prov}
+
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	if _, err := s.ListCerts(ctx, &pb.ListCertsRequest{}); err != nil {
+		t.Fatalf("ListCerts: %v", err)
+	}
+	if prov.listed != "acme" {
+		t.Fatalf("listed tenant = %q, want the caller's own %q", prov.listed, "acme")
+	}
+}
+
+func TestGRPC_ListCerts_NamedTenantPassesThrough(t *testing.T) {
+	prov := &listTenantRecorder{mockCertProvider: &mockCertProvider{}}
+	s := &qrdbServiceServer{certProv: prov}
+
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	if _, err := s.ListCerts(ctx, &pb.ListCertsRequest{TenantId: "acme"}); err != nil {
+		t.Fatalf("ListCerts: %v", err)
+	}
+	if prov.listed != "acme" {
+		t.Fatalf("listed tenant = %q, want %q", prov.listed, "acme")
 	}
 }
 

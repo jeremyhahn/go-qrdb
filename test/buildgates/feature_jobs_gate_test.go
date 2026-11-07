@@ -81,8 +81,9 @@ const (
 	// hosts is off (owner-queue 178): main run 70592's worst shard took 22
 	// minutes, and in run 70834 five of six shards hit 30 on the other,
 	// overloaded host (#1286). It goes back to 30 with ci.yml's limit when
-	// the host returns.
-	featureJobLimit = 45
+	// the host returns. ci-template v1.30 (#1331) sets it to
+	// ceil(1.5 x p95) of the Integration jobs' measured 30.2 minutes: 46.
+	featureJobLimit = 46
 
 	// featureShardKey and featureListKey are the two keys of each of the
 	// matrix's include entries: the shard's name and its space-separated
@@ -613,7 +614,15 @@ case "$1 $2" in
 	[ -f "$ctr/$4" ] || exit 1
 	{ read -r used; read -r created; } < "$ctr/$4"
 	echo "created 0001-01-01T00:00:00Z $created"; exit 0 ;;
-"network ls" | "volume ls") exit 0 ;;
+"network ls") exit 0 ;;
+"volume ls")
+	# A file under volumes/ is a marker volume; an empty one is mounted by
+	# no container (dangling).
+	case "$*" in *"label=qrdb.ci.multicast-marker=1 --filter dangling=true"*)
+		for v in "$STUB_DIR"/volumes/*; do [ -f "$v" ] && [ ! -s "$v" ] && echo "${v##*/}"; done ;;
+	esac
+	exit 0 ;;
+"volume rm") [ -f "$STUB_DIR/volumes/$3" ] || exit 1; rm -f "$STUB_DIR/volumes/$3"; exit 0 ;;
 esac
 echo "stub docker: unexpected $*" >&2
 exit 99
@@ -877,7 +886,7 @@ const featureJobFixture = `on:
 jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')
     needs: [docker-build, arch-gates]
     timeout-minutes: 30
     env:
@@ -979,12 +988,12 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "a matrix axis", old: "        include:\n", new: "        feature: [audit]\n        include:\n"},
 		{name: "no include", old: "        include:\n", new: "        shards:\n"},
 		{name: "no matrix", old: "      matrix:\n        include:\n", new: "      other:\n        include:\n"},
-		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 46"},
+		{name: "limit raised", old: "timeout-minutes: 30", new: "timeout-minutes: 47"},
 		{name: "limit zero", old: "timeout-minutes: 30", new: "timeout-minutes: 0"},
 		{name: "no limit", old: "    timeout-minutes: 30\n", new: ""},
 		{name: "fail-fast default", old: "      fail-fast: false\n", new: ""},
 		{name: "fail-fast true", old: "fail-fast: false", new: "fail-fast: true"},
-		{name: "left the full tier", old: "    if: github.event_name != 'pull_request' || ", new: "    if: "},
+		{name: "left the full tier", old: "    if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || ", new: "    if: "},
 		{name: "a fixed list", old: `IT_FEATURES="$IT_FEATURES"`, new: `IT_FEATURES="cluster"`},
 		{name: "the list spliced in", old: "      IT_FEATURES: ${{ matrix.features }}\n", new: ""},
 		{name: "the list from elsewhere", old: "IT_FEATURES: ${{ matrix.features }}", new: "IT_FEATURES: audit"},
@@ -1104,5 +1113,43 @@ func TestReaper_RemovesOnlyOrphanHoldTags(t *testing.T) {
 	}
 	if !strings.Contains(reaped, "2 hold tag(s) removed") {
 		t.Errorf("the reaper's summary does not count the 2 orphan hold tags:\n%s", reaped)
+	}
+}
+
+// TestReaper_RemovesOrphanMarkerVolumes is #1275: scripts/in-toolchain-image.sh
+// creates a no-network stage's multicast marker volume labelled
+// qrdb.ci.multicast-marker=1 and removes it only in its EXIT trap, so a
+// launcher killed first leaves it behind. The reaper removes a marker volume
+// under its prefix that no container mounts, and keeps one a stage still
+// mounts and one under another repository's prefix.
+func TestReaper_RemovesOrphanMarkerVolumes(t *testing.T) {
+	root := repoRoot(t)
+	const toolchain = "qrdb-toolchain:0123456789abcdef"
+	stub := holdStub(t, toolchain, time.Now().UTC().Format(time.RFC3339), neverTagged)
+	volumes := filepath.Join(stub, "volumes")
+	if err := os.MkdirAll(volumes, 0o700); err != nil {
+		t.Fatalf("mkdir stub volumes: %v", err)
+	}
+	cases := []struct {
+		name, mountedBy string
+		kept            bool
+	}{
+		{name: "qrdb-ci-tc-1-1-mcast", kept: false},
+		{name: "qrdb-ci-tc-2-2-mcast", mountedBy: "qrdb-ci-tc-2-2\n", kept: true},
+		{name: "other-ci-tc-3-3-mcast", kept: true},
+	}
+	for _, tc := range cases {
+		if err := os.WriteFile(filepath.Join(volumes, tc.name), []byte(tc.mountedBy), 0o600); err != nil {
+			t.Fatalf("seed stub volume %s: %v", tc.name, err)
+		}
+	}
+	reaped := runHoldStubAged(t, root, stub, toolchain, "7200", "scripts/reap-stale-ci-stacks.sh", "qrdb-ci-")
+	for _, tc := range cases {
+		if _, err := os.Stat(filepath.Join(volumes, tc.name)); (err == nil) != tc.kept {
+			t.Errorf("after the reap %s exists: %v; want %v:\n%s", tc.name, err == nil, tc.kept, reaped)
+		}
+	}
+	if !strings.Contains(reaped, "1 marker volume(s)") {
+		t.Errorf("the reaper's summary does not count the 1 orphan marker volume:\n%s", reaped)
 	}
 }

@@ -168,41 +168,6 @@ func TestUserAuthFactorService_List_StaleSecondaryIndex(t *testing.T) {
 // and for oldFactor's data can fail.
 // ---------------------------------------------------------------------------
 
-func TestUserAuthFactorService_Rotate_NewFactorPrimaryPutFails(t *testing.T) {
-	// Add an old factor successfully, then fail on the first Put during Rotate
-	// (which is newFactor's primary key).
-	kv := newAFMockKV()
-	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{
-		KV:               kv,
-		UserStateUpdater: newStubUserStateUpdater(),
-	})
-	if err != nil {
-		t.Fatalf("NewUserAuthFactorService: %v", err)
-	}
-	ctx := context.Background()
-	userID := uint64(3000)
-
-	// Add factor first (uses kv.Put 3 times).
-	f := mtlsFactor("f-rot-pk", userID, []byte("old-cert"))
-	if addErr := svc.Add(ctx, userID, f); addErr != nil {
-		t.Fatalf("Add: %v", addErr)
-	}
-
-	// Now set the KV to fail on the next Put (4th overall = 1st in Rotate).
-	kv.store["__fail_trigger"] = nil // signal to fail
-	// We'll use a wrapper — but the existing kv doesn't support this.
-	// Instead just verify the Rotate itself exercises the code path.
-	newFactor := &auth.AuthFactor{
-		Type:       auth.AuthFactorMTLS,
-		UserID:     userID,
-		Credential: []byte("new-cert"),
-	}
-	err = svc.Rotate(ctx, f.ID, newFactor)
-	// With a working KV, Rotate should succeed.
-	// This exercises the success path + the error-handling branches.
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // authfactor_service.go – ChallengeFactor revoked enrollment (84.6% → higher)
 // Line 123-125 (revoked enrollment check)

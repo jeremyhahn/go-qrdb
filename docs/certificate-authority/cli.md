@@ -125,23 +125,26 @@ and revocation state.
 
 | Flag | Type | Default |
 |---|---|---|
-| `--tenant-id` | string | `system` |
+| `--tenant-id` | string | your own tenant |
+
+The only tenant you can list is your own, so the flag is never needed. Naming
+another tenant is refused for everyone, `system` included. Leave it off:
 
 ```bash
-qrdb ca list --tenant-id acme --output json
+qrdb ca list --output json
 ```
 
 ## `qrdb ca info` and `qrdb ca bundle`
 
-**Both are aliases for `list`.** The help text says so directly:
+**Both are aliases for `list`:**
 
 - `info` — CA-only metadata such as DN, fingerprint and validity is **not yet
   exposed through the SDK**.
 - `bundle` — a standalone CA+chain bundle export is **not yet exposed through
   the SDK**.
 
-Both take `--tenant-id` (default `system`). They exist so the canonical verb
-tree is complete; do not read their names as descriptions of what they return.
+Both take `--tenant-id` (default: your own tenant). Do not read their names as
+descriptions of what they return.
 
 ## `qrdb ca revoke`
 
@@ -210,8 +213,6 @@ everyone else: it cannot issue a certificate for, list, or revoke the
 certificates of a customer tenant. Each tenant's own Admin does that. A new
 tenant's **first** admin certificate is the one exception, and it is issued at
 tenant creation — see [../multi-tenancy/cli.md](../multi-tenancy/cli.md).
-
-`ca export-bundle` names no tenant: it runs locally and contacts no server.
 
 ## `qrdb ca export-bundle`
 

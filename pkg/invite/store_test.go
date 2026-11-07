@@ -733,8 +733,11 @@ func TestTenantStoreToleratesANonComparableStore(t *testing.T) {
 
 	// Every one of these would panic with "hash of unhashable type" if the
 	// resolved store were used as a sync.Map key.
-	if _, _, err := store.Create(ctx, "user-1", "acme", time.Hour); err != nil {
-		t.Errorf("Create: %v", err)
+	// The fake discards every write, so the subject Create records never
+	// reads back and the invitation it minted reads as superseded: that, not
+	// a panic, is the one outcome a black-hole store can produce.
+	if _, _, err := store.Create(ctx, "user-1", "acme", time.Hour); !errors.Is(err, ErrReissueConflict) {
+		t.Errorf("Create = %v, want ErrReissueConflict", err)
 	}
 	if _, err := store.Lookup(ctx, "acme", "tok"); err == nil {
 		t.Error("Lookup of an absent token should not succeed")

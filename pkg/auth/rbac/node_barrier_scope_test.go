@@ -108,7 +108,7 @@ func TestNodeBarrier_TenantRoleHoldersAreDenied(t *testing.T) {
 func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
 	const other = "acme"
 	perms := []permission.Permission{
-		permission.AdminStartShard, permission.AdminStopShard,
+		permission.AdminStopShard,
 		permission.AdminShardState, permission.AdminTopology,
 		permission.AdminReplicaState,
 		permission.RebalanceExecute, permission.RebalancePlan,
@@ -134,5 +134,51 @@ func TestClusterAdmin_TenantGrantedPermissionsAreDenied(t *testing.T) {
 				t.Errorf("tenant holder of %s: got %v, want *rbac.PermissionDeniedError", p, err)
 			}
 		}
+	}
+}
+
+// TestStartShard_BuiltInAdminIsSystemTenantOnly covers admin:start_shard on
+// the built-in roles (#1281). The Admin role carries it beside add_member,
+// remove_member and drain, so the system tenant's Admin starts a shard
+// without being Owner; the permission is ScopeCross, so a tenant's Admin
+// holds the same grant and is refused. Owner is unchanged.
+func TestStartShard_BuiltInAdminIsSystemTenantOnly(t *testing.T) {
+	const other = "acme"
+	roles := authtest.BuiltInRoles(t, tenantid.System, other)
+	// Owner is outside the built-in set: first boot seeds it, as here.
+	owner := role.OwnerRole(tenantid.System)
+	if _, err := roles.CreateRole(context.Background(), &role.CreateRoleRequest{
+		ID: owner.ID, Name: owner.Name, TenantID: owner.TenantID, Permissions: owner.Permissions,
+	}); err != nil {
+		t.Fatalf("seed Owner: %v", err)
+	}
+	authz := rbac.New(roles)
+	p := permission.AdminStartShard
+	cases := []struct {
+		name     string
+		id       *auth.Identity
+		admitted bool
+	}{
+		{"the system tenant's Admin is admitted", authtest.AdminIdentity(tenantid.System, "operator"), true},
+		{"the system tenant's Owner is admitted", &auth.Identity{
+			Subject: "owner", TenantID: tenantid.System,
+			Roles: []string{owner.ID},
+		}, true},
+		{"a tenant's Admin is refused", authtest.AdminIdentity(other, "acme-admin"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := authz.Authorize(tenant.WithTenantID(context.Background(), c.id.TenantID), c.id, permission.Resource(p), permission.Action(p))
+			if c.admitted {
+				if err != nil {
+					t.Fatalf("refused %s: %v", p, err)
+				}
+				return
+			}
+			var denied *rbac.PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("got %v, want *rbac.PermissionDeniedError", err)
+			}
+		})
 	}
 }

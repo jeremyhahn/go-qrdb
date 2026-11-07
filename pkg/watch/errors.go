@@ -14,7 +14,10 @@
 
 package watch
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
 // ErrWatcherOverflow indicates a watcher's event buffer filled because the
 // consumer could not keep up. The hub evicts such a watcher (cancelling it)
@@ -56,6 +59,18 @@ type HubClosedError struct{}
 
 func (e *HubClosedError) Error() string {
 	return "watch hub is closed"
+}
+
+// WatcherLimitError is returned when opening a watcher would exceed the
+// node's watch.max_watchers cap. Closing a watcher frees its slot.
+type WatcherLimitError struct {
+	// Max is the cap that was reached.
+	Max uint64
+}
+
+// Error implements the error interface.
+func (e *WatcherLimitError) Error() string {
+	return "qrdb/watch: watcher limit reached (max_watchers " + strconv.FormatUint(e.Max, 10) + ")"
 }
 
 // WatchCreateError is returned when creating a watch fails.

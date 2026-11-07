@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -360,6 +361,33 @@ func TestClassify_NumericScanBoundIsInvalidArgument(t *testing.T) {
 	}
 	if got := Classify(&service.ReadError{Err: errors.New("disk")}); got != Internal {
 		t.Errorf("a read fault is still a fault: got %s, want %s", got, Internal)
+	}
+}
+
+// TestClassify_LockErrors pins every lock error's class: a malformed request
+// (empty key, non-positive TTL) is the caller's to fix, not a server fault,
+// and the typed outcomes keep the classes every transport maps them by.
+func TestClassify_LockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want Class
+	}{
+		{"empty key", lock.ErrEmptyKey, InvalidArgument},
+		{"non-positive TTL", lock.ErrInvalidTTL, InvalidArgument},
+		{"held by another holder", &lock.LockHeldError{Key: "k", HolderID: "other"}, Aborted},
+		{"stale fencing token", &lock.NotLockHolderError{Key: "k", ExpectedToken: 1, ActualToken: 2}, PermissionDenied},
+		{"not locked", &lock.LockNotFoundError{Key: "k"}, NotFound},
+		{"unlock contended", lock.ErrUnlockContended, Aborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(wrapped{tc.err}); got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+	if got := Classify(errors.New("lock: key must not be empty")); got == InvalidArgument {
+		t.Errorf("an unrelated error with the sentinel's text must not match it: got %s", got)
 	}
 }
 

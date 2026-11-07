@@ -17,7 +17,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -33,50 +32,6 @@ import (
 // they used to live in. A binary without qrdb_etcd has no way to exercise
 // this behavior, so there is nothing to test there, not a gap to cover.
 // ---------------------------------------------------------------------------
-
-func TestDatabaseUpdateEtcd_EnabledWithListenAddr(t *testing.T) {
-	svc := newFullFnDatabaseService()
-	svc.updateEtcdFn = func(name string, cfg *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{
-			Name:    name,
-			Backend: "pebble",
-			Status:  "open",
-			Protocol: database.ProtocolConfig{
-				Etcd: &database.EtcdConfig{Enabled: true, ListenAddr: cfg.ListenAddr},
-			},
-		}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-etcd", "mydb",
-		"--enabled",
-		"--listen-addr", "localhost:2379",
-	)
-	if err != nil {
-		t.Fatalf("update-etcd --enabled error: %v", err)
-	}
-	if !strings.Contains(output, "Etcd:") {
-		t.Errorf("output missing Etcd:, got: %q", output)
-	}
-}
-
-func TestDatabaseUpdateEtcd_JSONFormat(t *testing.T) {
-	oldFormat := outputFormat
-	outputFormat = "json"
-	t.Cleanup(func() { outputFormat = oldFormat })
-
-	svc := newFullFnDatabaseService()
-	svc.updateEtcdFn = func(name string, _ *database.EtcdConfig) (*database.DatabaseInfo, error) {
-		return &database.DatabaseInfo{Name: name, Backend: "pebble", Status: "open"}, nil
-	}
-
-	output, err := executeDatabaseCmd(t, svc, "update-etcd", "mydb", "--enabled")
-	if err != nil {
-		t.Fatalf("update-etcd json error: %v", err)
-	}
-	if !strings.Contains(output, `"name"`) {
-		t.Errorf("JSON output missing name, got: %q", output)
-	}
-}
 
 func TestDatabaseUpdateEtcd_ServiceError(t *testing.T) {
 	svc := newFullFnDatabaseService()
