@@ -1909,11 +1909,18 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
 	n.PendingSOs = tenantadmin.NewSOKVStore(certStore)
 	n.CertTargets = service.NewCertTargetGuard()
-	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
+	enrollmentOpts := []service.CertEnrollmentOption{
 		service.WithEnrollmentTrustDomain(infra.ClusterTrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy),
-		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)))
+		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)),
+	}
+	// The tenants' standing delegation policies sit beside their
+	// certificates, in the CA that mints under them (#1186).
+	if policies, ok := n.CertProv.(cert.DelegationPolicyStore); ok {
+		enrollmentOpts = append(enrollmentOpts, service.WithDelegationPolicyStore(policies))
+	}
+	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors, enrollmentOpts...)
 	onboardingDeps := service.TenantOnboardingDeps{
 		Tenants:     n.Tenant,
 		Users:       n.User,

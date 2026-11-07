@@ -837,8 +837,28 @@ service QRDBService {
     // IssueDelegation has the caller's own tenant's CA issue a short-lived
     // delegation certificate from a CSR: the named service principal may act
     // inside the tenant with at most the delegated scope. The system tenant
-    // and a delegated caller are refused.
+    // is refused; a delegated caller renews its own delegation, within the
+    // standing policy its tenant wrote for it, and nothing more.
     rpc IssueDelegation(IssueDelegationRequest) returns (IssuedDelegationResponse) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // PutDelegationPolicy writes the caller's own tenant's standing
+    // delegation policy for a service principal. A delegated caller is
+    // refused.
+    rpc PutDelegationPolicy(PutDelegationPolicyRequest) returns (DelegationPolicy) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // ListDelegationPolicies lists the caller's own tenant's standing
+    // delegation policies.
+    rpc ListDelegationPolicies(ListDelegationPoliciesRequest) returns (ListDelegationPoliciesResponse) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // DeleteDelegationPolicy revokes the caller's own tenant's standing
+    // delegation policy for a service principal.
+    rpc DeleteDelegationPolicy(DeleteDelegationPolicyRequest) returns (DeleteDelegationPolicyResponse) {
         option (qrdb.v1.permission) = "certs:delegate";
     }
 
@@ -3657,6 +3677,37 @@ message IssueDelegationRequest {
     // more than 24h is refused.
     string ttl = 4;
 }
+
+// PutDelegationPolicyRequest writes the caller's own tenant's standing
+// delegation policy for principal.
+message PutDelegationPolicyRequest {
+    string principal = 1;
+    repeated string scope = 2;
+    // ttl is a Go duration, the longest a minted certificate may live; empty
+    // is the delegation default of one hour, and more than 24h is refused.
+    string ttl = 3;
+}
+
+// DelegationPolicy is a tenant's standing delegation policy.
+message DelegationPolicy {
+    string tenant_id = 1;
+    string principal = 2;
+    repeated string scope = 3;
+    // ttl is the policy's lifetime as a Go duration.
+    string ttl = 4;
+}
+
+message ListDelegationPoliciesRequest {}
+
+message ListDelegationPoliciesResponse {
+    repeated DelegationPolicy policies = 1;
+}
+
+message DeleteDelegationPolicyRequest {
+    string principal = 1;
+}
+
+message DeleteDelegationPolicyResponse {}
 
 // IssuedDelegationResponse is a delegation certificate the tenant's CA
 // issued; it is revoked by serial like any other.

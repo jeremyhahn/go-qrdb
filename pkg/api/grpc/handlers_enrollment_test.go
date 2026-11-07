@@ -30,44 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
 
-// fakeCertEnrollHandler is a configurable, faithful
-// service.CertEnrollmentServicer double for the IssueCert/EnrollCert/
-// TrustAnchor* handler tests below.
-type fakeCertEnrollHandler struct {
-	signFn   func(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error)
-	enrollFn func(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error)
-	addFn    func(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
-	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
-	removeFn func(ctx context.Context, tenantID, fingerprint string) error
-	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
-}
-
-var _ service.CertEnrollmentServicer = (*fakeCertEnrollHandler)(nil)
-
-func (f *fakeCertEnrollHandler) IssueDelegation(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
-	return f.delegFn(ctx, req)
-}
-
-func (f *fakeCertEnrollHandler) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
-	return f.signFn(ctx, req)
-}
-
-func (f *fakeCertEnrollHandler) EnrollCertificate(ctx context.Context, req *service.EnrollCertificateRequest) (*service.EnrolledCertificate, error) {
-	return f.enrollFn(ctx, req)
-}
-
-func (f *fakeCertEnrollHandler) AddTrustAnchors(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
-	return f.addFn(ctx, tenantID, bundlePEM)
-}
-
-func (f *fakeCertEnrollHandler) ListTrustAnchors(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error) {
-	return f.listFn(ctx, tenantID)
-}
-
-func (f *fakeCertEnrollHandler) RemoveTrustAnchor(ctx context.Context, tenantID, fingerprint string) error {
-	return f.removeFn(ctx, tenantID, fingerprint)
-}
-
 // ---------------------------------------------------------------------------
 // IssueCert
 // ---------------------------------------------------------------------------
