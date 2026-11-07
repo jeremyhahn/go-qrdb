@@ -332,8 +332,18 @@ and `/dev/shm` is 2 GiB, not Docker's 64 MiB. Build and test run with no
 network: the container's own namespace has only loopback, which a one-shot
 `--rm` container joining it once the stage has started (granted `NET_ADMIN`
 and nothing else) marks multicast-capable and routes `224.0.0.0/4` over before
-it exits; the stage's command waits for that route, `MULTICAST_WAIT` seconds
-at most (default 60). So the multicast discovery tests join their group as
+it exits. The configurator signals its own progress on a marker volume the
+stage mounts read-only: it writes `started` when it runs and `ready` once the
+route is in place, and the stage's command waits for `ready` and the route,
+`MULTICAST_WAIT` seconds at most (default 60) counted from `started`, not from
+the stage's own start. A loaded daemon can take minutes to start the
+configurator, and a clock counting that wait ran out before the route existed
+(#1275). Until `started` the stage waits on the script, which retries a failed
+configurator once (`ip route replace` makes the retry safe) and on a second
+failure exits, removing the stage and the marker volume, and on a clock of its
+own, `MULTICAST_START_WAIT` seconds (default 240: two configurator runs, each
+behind one 120 s cache trim) from the stage's start, past which it exits 1, so
+a stage whose script died before the configurator ran does not wait forever. So the multicast discovery tests join their group as
 they do on a host, nothing leaves the namespace, and no container holds the
 namespace but the stage: the holder it replaced slept until the script's EXIT
 trap removed it, and every job killed first left one running. The script
@@ -369,7 +379,15 @@ repository, trust class and Docker host. The class is `CI_CACHE_CLASS`:
 `main` for a push to `main`, `pr` for every other event, so a pull request
 never writes a cache that `main`'s build reads. After the image build,
 `scripts/trim-ci-caches.sh` bounds the repository's cache volumes on the host
-to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. Over
+to `CI_CACHE_MAX_GIB` (32 GiB by default), and it never fails the job. One
+trim runs at a time per host: the script takes a `flock` on
+`ci-cache-trim.lock` in the runner's tool cache (`RUNNER_TOOL_CACHE`, the
+directory every job on a runner host shares; `CI_CACHE_LOCK` overrides the
+path), because concurrent jobs each walking the daemon's volumes stalled a
+loaded daemon long enough that a stage's configurator could not start
+(#1275). A job that cannot take the lock within `CI_CACHE_LOCK_WAIT` seconds
+(default 120, about one trim on a loaded host) skips its trim with one line:
+the holder is trimming the same volumes. Over
 the bound, it first deletes the build and golangci-lint cache entries unused
 for three days, then one day, 12, 6 and 3 hours, measuring after each, and
 only then removes the largest volume no container mounts; the module cache is

@@ -80,6 +80,7 @@ reset() {
 }
 trim() {
   PATH="$D/bin:$PATH" STUB_VOLS="$D/vols" STUB_STATE="$D/state" \
+    CI_CACHE_LOCK="${CI_CACHE_LOCK:-$D/lock}" \
     "$here/trim-ci-caches.sh" p- img "$@" > "$D/out" 2>&1
 }
 has() { [ -e "$D/vols/$1/$2" ]; }
@@ -157,6 +158,51 @@ if STUB_FIND_FAILS=1 trim 10 && grep -q '^warn  eviction' "$D/out" &&
   [ ! -d "$D/vols/$P-gobuild" ]; then
   ok "a failed eviction falls back and exits 0"
 else bad "a failed eviction falls back and exits 0"; cat "$D/out"; fi
+
+# 9. A trim takes the host lock: one that ran left its lock file behind.
+if [ -e "$D/lock" ]; then
+  ok "a trim takes the host lock"
+else bad "a trim takes the host lock"; fi
+
+# 10. While another job holds the lock past CI_CACHE_LOCK_WAIT, the trim is
+# skipped with one line, touches nothing and exits 0 (#1275).
+reset
+entry $P-gobuild old 20 10000
+exec 8>>"$D/lock"
+flock 8
+if CI_CACHE_LOCK_WAIT=0 trim 10 && grep -q '^trim: skipped, another job held' "$D/out" &&
+  has $P-gobuild old && [ ! -e "$D/state/runs" ]; then
+  ok "a held lock skips the trim and exits 0"
+else bad "a held lock skips the trim and exits 0"; cat "$D/out"; fi
+
+# 11. Once the holder lets go, the next trim runs.
+exec 8>&-
+if CI_CACHE_LOCK_WAIT=0 trim 10 && ! has $P-gobuild old; then
+  ok "a released lock lets the trim run"
+else bad "a released lock lets the trim run"; cat "$D/out"; fi
+
+# 12. A lock wait that is not a number is refused.
+if ! CI_CACHE_LOCK_WAIT=2m trim 10 && grep -q 'CI_CACHE_LOCK_WAIT must be a number' "$D/out"; then
+  ok "a bad lock wait is refused"
+else bad "a bad lock wait is refused"; cat "$D/out"; fi
+
+# 13. The toolchain image's BusyBox flock rejects -w ("flock: unrecognized
+# option: w"); with it on PATH a free lock is still taken and the trim runs
+# (#1275, run 75927).
+reset
+entry $P-gobuild old 20 10000
+mkdir -p "$D/busybox"
+cat > "$D/busybox/flock" <<STUB
+#!/usr/bin/env bash
+for a; do
+  case \$a in -w*) echo 'flock: unrecognized option: w' >&2; exit 1 ;; esac
+done
+exec $(command -v flock) "\$@"
+STUB
+chmod +x "$D/busybox/flock"
+if PATH="$D/busybox:$PATH" CI_CACHE_LOCK_WAIT=5 trim 10 && ! has $P-gobuild old; then
+  ok "a flock without -w still takes a free lock"
+else bad "a flock without -w still takes a free lock"; cat "$D/out"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

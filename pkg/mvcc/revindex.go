@@ -69,11 +69,16 @@ func (s *Store) setRevIndexInBatch(batch storage.Batch, rev int64, key []byte, e
 // For a put, Change.Value is the value stored at that revision; for a delete,
 // Value is nil and IsDelete is true.
 func (s *Store) ScanChanges(startRev, endRev int64, match func(key []byte) bool, fn func(Change) bool) error {
+	return s.ScanChangesFrom(s.storage, startRev, endRev, match, fn)
+}
+
+// ScanChangesFrom is ScanChanges read through r.
+func (s *Store) ScanChangesFrom(r storage.Reader, startRev, endRev int64, match func(key []byte) bool, fn func(Change) bool) error {
 	if startRev > endRev {
 		return nil
 	}
 
-	iter := s.storage.NewIterator(&storage.IteratorOptions{
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: RevIndexLowerBound(startRev),
 		UpperBound: RevIndexUpperBound(endRev),
 	})
@@ -103,7 +108,7 @@ func (s *Store) ScanChanges(startRev, endRev int64, match func(key []byte) bool,
 
 		// For a put, read the value from its data entry at this exact revision.
 		if !ch.IsDelete {
-			raw, gerr := s.storage.Get(EncodeDataKey(key, rev))
+			raw, gerr := r.Get(EncodeDataKey(key, rev))
 			if gerr != nil {
 				return &StoreError{Op: "scan changes value", Err: gerr}
 			}

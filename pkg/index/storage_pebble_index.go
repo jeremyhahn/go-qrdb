@@ -233,8 +233,17 @@ func (idx *StoragePebbleIndex) GetInBatch(batch storage.Batch, fieldValue []byte
 	return idx.getFrom(batch, fieldValue, "index.StoragePebbleIndex.GetInBatch")
 }
 
-// getFrom is Get and GetInBatch's shared body, reading through whichever
-// storage.Reader the caller supplies -- committed storage or a live batch.
+// GetFrom retrieves all entity keys for the given field value, reading
+// through reader rather than through live storage. A reader bound to a
+// published snapshot answers from that commit alone, so the index answer and
+// a KV read through the same reader never come from different commits.
+func (idx *StoragePebbleIndex) GetFrom(reader storage.Reader, fieldValue []byte) ([][]byte, error) {
+	return idx.getFrom(reader, fieldValue, "index.StoragePebbleIndex.GetFrom")
+}
+
+// getFrom is Get, GetInBatch and GetFrom's shared body, reading through
+// whichever storage.Reader the caller supplies -- committed storage, a live
+// batch or a snapshot.
 func (idx *StoragePebbleIndex) getFrom(reader storage.Reader, fieldValue []byte, op string) ([][]byte, error) {
 	start := time.Now()
 	defer func() {
@@ -323,6 +332,17 @@ func (idx *StoragePebbleIndex) Delete(entityKey []byte, fieldValue []byte) error
 // be parsed as a number on a numeric index; an unparseable bound is a
 // caller error and must never be reported as an empty result.
 func (idx *StoragePebbleIndex) Scan(start, end []byte) (map[string][][]byte, error) {
+	return idx.scanFrom(idx.storage, start, end, "index.StoragePebbleIndex.Scan")
+}
+
+// ScanFrom is Scan read through reader rather than through live storage; see
+// GetFrom for why a caller binds it to a snapshot.
+func (idx *StoragePebbleIndex) ScanFrom(reader storage.Reader, start, end []byte) (map[string][][]byte, error) {
+	return idx.scanFrom(reader, start, end, "index.StoragePebbleIndex.ScanFrom")
+}
+
+// scanFrom is Scan and ScanFrom's shared body.
+func (idx *StoragePebbleIndex) scanFrom(reader storage.Reader, start, end []byte, op string) (map[string][][]byte, error) {
 	startTime := time.Now()
 	defer func() {
 		idx.metrics.scanLatency.Observe(time.Since(startTime).Seconds())
@@ -371,7 +391,7 @@ func (idx *StoragePebbleIndex) Scan(start, end []byte) (map[string][][]byte, err
 	}
 
 	// Create iterator
-	iter := idx.storage.NewIterator(&storage.IteratorOptions{
+	iter := reader.NewIterator(&storage.IteratorOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 		OnlyKeys:   true,
@@ -400,7 +420,7 @@ func (idx *StoragePebbleIndex) Scan(start, end []byte) (map[string][][]byte, err
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
-			"index.StoragePebbleIndex.Scan",
+			op,
 			"iterator error",
 		)
 	}
