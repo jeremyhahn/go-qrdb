@@ -225,6 +225,48 @@ func DecodeCompactRefusal(data []byte) (reason CompactRefusalReason, requested, 
 	return reason, requested, bound, true
 }
 
+// txnReadRefusalMarker distinguishes the refusal of a transaction whose reads
+// would answer past the engine's byte bound. Its body is [limit:8 LE][read:8
+// LE]: the service layer returns a typed error carrying both.
+var txnReadRefusalMarker = []byte("\x00txnread\x00")
+
+// EncodeTxnReadRefusal encodes the refusal of a transaction whose reads
+// crossed limit key and value bytes at read bytes.
+func EncodeTxnReadRefusal(limit, read int64) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(txnReadRefusalMarker)+8+8)
+	out = append(out, appErrorPrefix...)
+	out = append(out, txnReadRefusalMarker...)
+	out = binary.LittleEndian.AppendUint64(out, uint64(limit)) //nolint:gosec // G115: two's-complement round trip of an int64
+	out = binary.LittleEndian.AppendUint64(out, uint64(read))  //nolint:gosec // G115: two's-complement round trip of an int64
+	return out
+}
+
+// DecodeTxnReadRefusal reports whether data is a transaction-read refusal
+// and, if so, the bound and the bytes read when it was crossed.
+func DecodeTxnReadRefusal(data []byte) (limit, read int64, ok bool) {
+	if !bytes.HasPrefix(data, appErrorPrefix) {
+		return 0, 0, false
+	}
+	body := data[len(appErrorPrefix):]
+	if !bytes.HasPrefix(body, txnReadRefusalMarker) {
+		return 0, 0, false
+	}
+	body = body[len(txnReadRefusalMarker):]
+	if len(body) != 8+8 {
+		return 0, 0, false
+	}
+	limit = int64(binary.LittleEndian.Uint64(body[:8])) //nolint:gosec // G115: two's-complement round trip of an int64
+	read = int64(binary.LittleEndian.Uint64(body[8:]))  //nolint:gosec // G115: two's-complement round trip of an int64
+	return limit, read, true
+}
+
+// txnReadRefusalMessage renders a transaction-read refusal as the message a
+// generic DecodeAppError caller reads.
+func txnReadRefusalMessage(limit, read int64) string {
+	return "transaction reads answer at least " + strconv.FormatInt(read, 10) +
+		" bytes, past the limit of " + strconv.FormatInt(limit, 10) + " bytes"
+}
+
 // compactRefusalMessage renders a compaction refusal as the message a
 // generic DecodeAppError caller reads.
 func compactRefusalMessage(reason CompactRefusalReason, requested, bound int64) string {
@@ -513,6 +555,13 @@ func DecodeAppErrorKind(data []byte) (msg string, kind AppErrorKind, ok bool) {
 	// kind -- the request named a lease that does not exist.
 	if id, nf := DecodeLeaseNotFoundError(data); nf {
 		return "lease not found: " + strconv.FormatInt(id, 10), AppErrorInvalid, true
+	}
+	// A transaction-read refusal carries its bound and the bytes read (see
+	// EncodeTxnReadRefusal). The service layer decodes it into its typed
+	// error first; a generic reader gets a message and the invalid kind --
+	// the request asked for more than one reply may carry.
+	if limit, read, refused := DecodeTxnReadRefusal(data); refused {
+		return txnReadRefusalMessage(limit, read), AppErrorInvalid, true
 	}
 	// A verifiable-log refusal carries its own marker and payload (see
 	// EncodeLogRefusal). The log service decodes it into its typed vlog

@@ -84,6 +84,12 @@ func checkResultError(result sm.Result) error {
 			return typed(int(maxCount))
 		}
 	}
+	// A transaction whose reads would answer past the engine's bound is
+	// refused with the bound and the bytes read, which the typed error
+	// carries.
+	if limit, read, refused := protocol.DecodeTxnReadRefusal(result.Data); refused {
+		return &TxnReadResultTooLargeError{Limit: limit, Read: read}
+	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		return nil
@@ -283,6 +289,37 @@ func (e *EncodeRequestError) Unwrap() error {
 // never proposed, so nothing was stored.
 func (e *EncodeRequestError) Is(target error) bool {
 	return target == ErrNotStored
+}
+
+// TransactionResultError is returned when a transaction's apply result cannot
+// be decoded, or does not answer every op of the branch it ran. The
+// transaction was applied; only its answer is unreadable, so this is a SERVER
+// error: a client cannot tell from it which branch ran or what a read saw.
+type TransactionResultError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the decode failure.
+func (e *TransactionResultError) Error() string {
+	return "service: cannot decode transaction result: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *TransactionResultError) Unwrap() error {
+	return e.Err
+}
+
+// TransactionResultShapeError is the Err of a TransactionResultError whose
+// result decoded but answers a different number of ops than the executed
+// branch holds.
+type TransactionResultShapeError struct {
+	Ops     int
+	Answers int
+}
+
+// Error returns a human-readable description of the mismatch.
+func (e *TransactionResultShapeError) Error() string {
+	return "transaction result answers " + strconv.Itoa(e.Answers) + " ops, branch holds " + strconv.Itoa(e.Ops)
 }
 
 // ProposeError is returned when a Raft proposal fails.
@@ -914,6 +951,21 @@ func (e *UnsupportedTransactionOpError) Error() string {
 		" (transaction branches support only Put and Delete)"
 }
 
+// TransactionGetRangeEndError is returned when a transaction branch carries
+// a Get with a range end. A transaction get reads exactly its key
+// (docs/transactions/api.md); a read of [key, range_end) is a Range. The
+// request is refused before the hard-confinement guard and before encoding,
+// so the guard and the executor never disagree about what a get reads.
+type TransactionGetRangeEndError struct {
+	Key []byte
+}
+
+// Error returns a human-readable description of the ranged get.
+func (e *TransactionGetRangeEndError) Error() string {
+	return "service: transaction get of key " + strconv.Quote(string(e.Key)) +
+		" carries a range end (a get reads one key; use a range)"
+}
+
 // ---------------------------------------------------------------------------
 // Import errors
 // ---------------------------------------------------------------------------
@@ -1055,6 +1107,25 @@ type ImportProposalTooLargeError struct {
 func (e *ImportProposalTooLargeError) Error() string {
 	return "service: transactional import's encoded batch command exceeds the maximum proposal size of " +
 		strconv.Itoa(e.Max) + " bytes; split the import into smaller, non-transactional batches"
+}
+
+// TxnReadResultTooLargeError is returned when the reads of a transaction's
+// executed branch would answer more than Limit key and value bytes. A
+// transaction's reads run inside the replicated apply and travel back in one
+// reply, so the bound is checked before any write of the branch is staged:
+// the transaction is refused whole, nothing is applied, and the group keeps
+// applying. Read is the byte count at which the bound was crossed; it is a
+// lower bound on what the reads would have answered, never the full size.
+type TxnReadResultTooLargeError struct {
+	Limit int64
+	Read  int64
+}
+
+// Error returns a human-readable description.
+func (e *TxnReadResultTooLargeError) Error() string {
+	return "service: transaction reads answer at least " + strconv.FormatInt(e.Read, 10) +
+		" bytes, past the limit of " + strconv.FormatInt(e.Limit, 10) +
+		" bytes; read fewer or smaller keys per transaction"
 }
 
 // ---------------------------------------------------------------------------
