@@ -529,3 +529,41 @@ func TestTransportBackup_FullLifecycle(t *testing.T) {
 		t.Fatalf("expected BackupNotFoundError, got %T: %v", err, err)
 	}
 }
+
+// TestTranslateBackupError asserts each service backup error becomes its
+// transport counterpart and any other error passes through.
+func TestTranslateBackupError(t *testing.T) {
+	other := errors.New("other")
+	tests := []struct {
+		name string
+		in   error
+		ok   func(error) bool
+	}{
+		{"nil", nil, func(err error) bool { return err == nil }},
+		{"NotFound", &service.BackupNotFoundError{ID: "b1"}, isType[*transport.BackupNotFoundError]},
+		{"EmptyDestination", &service.BackupEmptyDestinationError{}, isType[*transport.BackupEmptyDestinationError]},
+		{"EmptyID", &service.BackupEmptyIDError{}, isType[*transport.BackupEmptyIDError]},
+		{"Create", &service.BackupCreateError{Err: other}, isType[*transport.BackupCreateError]},
+		{"Restore", &service.BackupRestoreError{BackupID: "b1", Err: other}, isType[*transport.BackupRestoreError]},
+		{"ChecksumMismatch", &service.BackupChecksumMismatchError{Expected: "a", Actual: "b"}, isType[*transport.BackupChecksumMismatchError]},
+		{"EncryptionKeyRequired is a create failure", &service.BackupEncryptionKeyRequiredError{}, isType[*transport.BackupCreateError]},
+		{"DecryptionFailed keeps the backup ID", &service.BackupDecryptionFailedError{BackupID: "b1", Err: other}, func(err error) bool {
+			e, ok := errors.AsType[*transport.BackupDecryptionFailedError](err)
+			return ok && e.BackupID == "b1"
+		}},
+		{"other passes through", other, func(err error) bool { return errors.Is(err, other) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := translateBackupError(tt.in); !tt.ok(got) {
+				t.Fatalf("translateBackupError(%T) = %T %v", tt.in, got, got)
+			}
+		})
+	}
+}
+
+// isType reports whether err's chain holds an error of type T.
+func isType[T error](err error) bool {
+	_, ok := errors.AsType[T](err)
+	return ok
+}

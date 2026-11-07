@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -969,5 +970,23 @@ func TestLoginClient_BeginLogin_RateLimitsTenantWideChallengeIssuance(t *testing
 	var limited *authmw.RateLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("second BeginLogin over burst: err = %v, want *authmw.RateLimitedError", err)
+	}
+}
+
+func TestMergeLoginMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		stored, req map[string]string
+		want        map[string]string
+	}{
+		{"both empty", nil, nil, nil},
+		{"only stored", map[string]string{"session": "abc"}, nil, map[string]string{"session": "abc"}},
+		{"only request", nil, map[string]string{"assertion": "xyz"}, map[string]string{"assertion": "xyz"}},
+		{"request wins", map[string]string{"key": "old-val"}, map[string]string{"key": "new-val"}, map[string]string{"key": "new-val"}},
+	}
+	for _, tt := range tests {
+		if got := mergeLoginMetadata(tt.stored, tt.req); !maps.Equal(got, tt.want) || (got == nil) != (tt.want == nil) {
+			t.Errorf("%s: mergeLoginMetadata = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

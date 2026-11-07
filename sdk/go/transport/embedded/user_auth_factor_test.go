@@ -128,3 +128,9 @@ func TestRotateAuthFactor_refusesAnAddCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestDomainToUserAuthRecord_Nil(t *testing.T) {
+	if got := domainToUserAuthRecord(nil); got.ID != "" {
+		t.Errorf("domainToUserAuthRecord(nil).ID = %q, want empty", got.ID)
+	}
+}

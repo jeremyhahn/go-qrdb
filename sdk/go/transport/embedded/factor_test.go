@@ -594,10 +594,34 @@ func TestFactorType_UnknownInvalid(t *testing.T) {
 	}
 }
 
-func TestFactorTypeToDomain_PKCS11(t *testing.T) {
-	got := factorTypeToDomain(transport.FactorTypePKCS11)
-	if got != auth.AuthFactorPKCS11 {
-		t.Fatalf("factorTypeToDomain(PKCS11) = %q, want %q", got, auth.AuthFactorPKCS11)
+func TestFactorTypeToDomain(t *testing.T) {
+	tests := []struct {
+		in   transport.FactorType
+		want auth.AuthFactorType
+	}{
+		{transport.FactorTypePKCS11, auth.AuthFactorPKCS11},
+		{transport.FactorTypeMTLS, "mtls"},
+		{transport.FactorTypeFIDO2, "fido2"},
+		{transport.FactorTypePIV, "piv"},
+		{transport.FactorType("custom"), "custom"},
+	}
+	for _, tt := range tests {
+		if got := factorTypeToDomain(tt.in); got != tt.want {
+			t.Errorf("factorTypeToDomain(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestFactorToDomain_CopiesMetadata(t *testing.T) {
+	f := transport.Factor{
+		ID:       "factor-5",
+		Type:     transport.FactorTypeMTLS,
+		Label:    "cert",
+		Metadata: map[string]string{"env": "prod"},
+	}
+	got := factorToDomain(10, f)
+	if got.UserID != 10 || got.Metadata["env"] != "prod" {
+		t.Errorf("factorToDomain = UserID %d, Metadata %v; want 10, env=prod", got.UserID, got.Metadata)
 	}
 }
 

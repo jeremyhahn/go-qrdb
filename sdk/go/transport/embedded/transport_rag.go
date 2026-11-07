@@ -35,6 +35,9 @@ func (t *Transport) RAGIngestDocument(ctx context.Context, req *transport.RAGIng
 	if err := t.authorize(ctx, "RAGIngestDocument"); err != nil {
 		return nil, err
 	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}
@@ -65,6 +68,9 @@ func (t *Transport) RAGQuery(ctx context.Context, req *transport.RAGQueryRequest
 	}
 	if err := t.authorize(ctx, "RAGQuery"); err != nil {
 		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
@@ -102,6 +108,9 @@ func (t *Transport) RAGDeleteDocument(ctx context.Context, req *transport.RAGDel
 	if err := t.authorize(ctx, "RAGDeleteDocument"); err != nil {
 		return nil, err
 	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}
 	}
@@ -126,6 +135,9 @@ func (t *Transport) RAGListDocuments(ctx context.Context, req *transport.RAGList
 	}
 	if err := t.authorize(ctx, "RAGListDocuments"); err != nil {
 		return nil, err
+	}
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
 	}
 	if t.ragSvc == nil {
 		return nil, &NilServiceError{Service: "RAGServicer"}

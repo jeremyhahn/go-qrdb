@@ -163,12 +163,9 @@ type Transport struct {
 	// change once WithServiceRegistry sets it.
 	registry service.Registry
 
-	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
-	// kvSvc/dbSvc on first Query call. See transport_sql.go (compiled
-	// only under the qrdb_sql build tag; without it the fields are
-	// unused and the transport does not implement transport.SQLProvider).
-	sqlOnce     sync.Once
-	sqlSvcCache service.SQLServicer
+	// sql lazily constructs the SQL query service; see sqlCache. Without
+	// qrdb_sql it is empty and nothing reads it.
+	sql sqlCache //nolint:unused // read only by transport_sql.go (qrdb_sql)
 
 	// authMW is the AuthMiddleware the node's network transports enforce
 	// with, installed by WithAuthMiddleware so this transport's gated

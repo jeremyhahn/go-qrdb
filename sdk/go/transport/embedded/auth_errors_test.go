@@ -85,6 +85,35 @@ func TestFactorToTransport_Nil(t *testing.T) {
 	}
 }
 
+func TestMapFactorError(t *testing.T) {
+	plain := errors.New("unexpected")
+	tests := []struct {
+		name string
+		in   error
+		want func(error) bool
+	}{
+		{"nil", nil, func(err error) bool { return err == nil }},
+		{"not found", &auth.FactorNotFoundError{FactorID: "fid-7"}, func(err error) bool {
+			_, ok := errors.AsType[*transport.FactorNotFoundError](err)
+			return ok
+		}},
+		{"type unsupported", &auth.FactorTypeUnsupportedError{Type: "unknown"}, func(err error) bool {
+			_, ok := errors.AsType[*transport.FactorTypeUnsupportedError](err)
+			return ok
+		}},
+		{"already exists", &auth.FactorAlreadyExistsError{Type: "fido2", FactorID: "fid-3"}, func(err error) bool {
+			_, ok := errors.AsType[*transport.FactorAlreadyEnrolledError](err)
+			return ok
+		}},
+		{"other passes through", plain, func(err error) bool { return err == plain }},
+	}
+	for _, tt := range tests {
+		if got := mapFactorError(tt.in); !tt.want(got) {
+			t.Errorf("%s: mapFactorError = %T (%v)", tt.name, got, got)
+		}
+	}
+}
+
 // closed-transport coverage on Login.BeginLogin and FinishLogin.
 func TestLoginClient_BeginLogin_Closed(t *testing.T) {
 	tr := newLoginTestTransport(t,

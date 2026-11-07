@@ -146,7 +146,7 @@ func TestWithDatabase_ResolvesThroughRegistry(t *testing.T) {
 // not copied would silently be missing from every scoped transport.
 func TestCloneShared_CoversEveryField(t *testing.T) {
 	// Fields cloneShared deliberately does not copy: its own sync state.
-	own := map[string]bool{"sqlOnce": true, "sqlSvcCache": true, "factorVerifierMu": true, "closed": true, "factorVerifiers": true}
+	own := map[string]bool{"sql": true, "factorVerifierMu": true, "closed": true, "factorVerifiers": true}
 	// Fields cloneShared copies. A field of Transport in neither list is one
 	// nobody decided about.
 	copied := map[string]bool{}
