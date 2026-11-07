@@ -156,6 +156,7 @@ are not reconstructed here — their history is in the git log.
 
 - **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
   `make deps-check` passes on `main` and every pull request.
+- **Dependencies**: google.golang.org/grpc v1.85.0, golang.org/x/net v0.62.0 and github.com/jeremyhahn/go-objstore v0.9.0-alpha wherever they are direct requirements (#1349); `make deps-check` passes again.
 - **The cluster feature identity moved to the leaf package `pkg/feature`**
   (#627). `featuregate.Feature` is now `feature.Feature` and
   `featuregate.NotActiveError` is now `feature.NotActiveError`, unchanged in
@@ -578,6 +579,11 @@ are not reconstructed here — their history is in the git log.
   write, `BatchDeleteVectors`, `ListVectors`, `UpdateMetadata` and
   `SearchByID` among them) with `VectorServiceClosedError` before it touches
   storage.
+
+### Dependencies
+
+- `github.com/mark3labs/mcp-go` v1.4.0 → v1.5.0 in the root and `sdk/go`
+  modules (indirect in `sdk/go/gorm/conformance` and `test/clusterproof`).
 
 ### Security
 
