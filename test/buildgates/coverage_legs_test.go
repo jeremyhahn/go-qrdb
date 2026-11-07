@@ -42,8 +42,8 @@ const (
 // legJob describes one sharded job a workflow must carry.
 type legJob struct {
 	workflow, job string
-	// printTarget prints the Makefile's leg list.
-	printTarget string
+	// legsTarget is the make target that prints the Makefile's leg list.
+	legsTarget string
 	// target is the make invocation the leg's step runs, up to the leg.
 	target string
 	// legVar is the step env variable carrying the leg.
@@ -105,7 +105,7 @@ func legJobProblems(body []byte, spec legJob, legs []string) []string {
 	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 		problems = append(problems, where+" lacks `fail-fast: false`: one failing leg would cancel the others")
 	}
-	problems = append(problems, legMatrixProblems(where, spec.printTarget, job.Strategy.Matrix, legs)...)
+	problems = append(problems, legMatrixProblems(where, spec.legsTarget, job.Strategy.Matrix, legs)...)
 	minutes, err := strconv.Atoi(job.Timeout)
 	if err != nil || minutes <= legBudgetMargin || minutes > jobMinutesCeiling {
 		problems = append(problems, where+"'s timeout-minutes "+strconv.Quote(job.Timeout)+
@@ -146,7 +146,7 @@ func legJobProblems(body []byte, spec legJob, legs []string) []string {
 
 // legMatrixProblems checks the matrix is one literal `leg:` list naming every
 // Makefile leg once.
-func legMatrixProblems(where, printTarget string, m yaml.Node, legs []string) []string {
+func legMatrixProblems(where, legsTarget string, m yaml.Node, legs []string) []string {
 	if m.Kind != yaml.MappingNode || len(m.Content) != 2 || m.Content[0].Value != "leg" || m.Content[1].Kind != yaml.SequenceNode {
 		return []string{where + "'s matrix is not one literal `leg:` list: any other axis multiplies or edits the legs"}
 	}
@@ -157,14 +157,14 @@ func legMatrixProblems(where, printTarget string, m yaml.Node, legs []string) []
 			problems = append(problems, where+"'s matrix names leg "+strconv.Quote(e.Value)+" twice")
 		case !slices.Contains(legs, e.Value):
 			problems = append(problems, where+"'s matrix names leg "+strconv.Quote(e.Value)+
-				", which `make -s "+printTarget+"` does not print; fix: delete it from the matrix")
+				", which `make -s "+legsTarget+"` does not print; fix: delete it from the matrix")
 		}
 		got = append(got, e.Value)
 	}
 	for _, l := range legs {
 		if !slices.Contains(got, l) {
 			problems = append(problems, where+"'s matrix runs no leg "+strconv.Quote(l)+
-				", which `make -s "+printTarget+"` prints; fix: add it to the matrix")
+				", which `make -s "+legsTarget+"` prints; fix: add it to the matrix")
 		}
 	}
 	return problems
@@ -201,13 +201,13 @@ func TestCoverageLegs_MatchTheMakefile(t *testing.T) {
 	root := repoRoot(t)
 	files := workflowFiles(t)
 	for _, spec := range legJobs {
-		legs := strings.Fields(makeOutput(t, root, spec.printTarget))
+		legs := strings.Fields(makeOutput(t, root, spec.legsTarget))
 		floor := coverLegFloor
 		if spec.job == "test-sdk" {
 			floor = sdkLegFloor
 		}
 		if len(legs) < floor {
-			t.Fatalf("`make -s %s` printed %d legs, under the floor of %d", spec.printTarget, len(legs), floor)
+			t.Fatalf("`make -s %s` printed %d legs, under the floor of %d", spec.legsTarget, len(legs), floor)
 		}
 		for _, p := range legJobProblems(files[spec.workflow], spec, legs) {
 			t.Error(p)
