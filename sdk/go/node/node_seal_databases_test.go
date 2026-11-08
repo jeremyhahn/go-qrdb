@@ -53,11 +53,15 @@ func newNodeWithPassphraseDatabase(t *testing.T) *Node {
 func databaseKeyWiped(t *testing.T, n *Node, name string) bool {
 	t.Helper()
 	bm := n.dbManager.BarrierManager()
-	st, err := bm.BarrierStatus(name)
+	db, err := n.dbManager.Get(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc := bm.GetBarrier(name)
+	st, err := bm.BarrierStatus(name, db.TenantID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := bm.GetBarrier(name, db.TenantID())
 	return st.Sealed && enc != nil && enc.IsSealed()
 }
 

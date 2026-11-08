@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -87,7 +88,7 @@ type Enforcer interface {
 // ActivationReader reports cluster-wide feature activation;
 // *featuregate.Gate satisfies it.
 type ActivationReader interface {
-	Activated(feature featuregate.Feature) bool
+	Activated(feature feature.Feature) bool
 	// ActivationsLoaded reports whether the activations have been read.
 	// Until they have, Activated answers false without knowing.
 	ActivationsLoaded() bool

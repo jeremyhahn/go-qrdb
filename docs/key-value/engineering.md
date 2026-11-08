@@ -247,6 +247,14 @@ sweep becoming an enumeration of the internal keyspace.
   zero-length value for the second; `Exists` is false and true respectively.
   This is a promise about the read plane, not about any one state machine —
   see [Point reads and absence](#point-reads-and-absence).
+- **A `Get` issued after `Delete` has returned reports not-found.** On every
+  storage engine (memory, file, pebble, objstore) and every transport, the
+  answer is the typed `*transport.KeyNotFoundError` and `Exists` is false,
+  never a read failure: `Delete` returns only once applied, `Get` is a
+  linearizable read, and every engine maps its backend's own not-found to an
+  absent key. `TestDeleteThenGetIsTypedNotFound` in `sdk/go/conformance`
+  holds it over 50 rounds per cell, for short keys and for keys long enough
+  that objstore stores them under a hashed name (#1163).
 - **A refusal never costs the shard its reads.** Raft treats any non-nil error
   out of `Update` as a fatal apply failure: `lastApplied` stops advancing, and
   every subsequent linearizable read on that shard — on any engine sharing it,
@@ -278,6 +286,68 @@ sweep becoming an enumeration of the internal keyspace.
   [../clustering/engineering.md](../clustering/engineering.md#replica-state-hashes)):
   it is answered through `Lookup` but takes the batch lock exclusively, as
   `GetHash` does, for the same reason and at the same cost.
+- **`MVCCStateMachine` never holds readers behind a sync.** Its `Update` builds
+  and commits the apply batch, fsync included, holding its `sync.RWMutex` only
+  for reading, so `Lookup`, `GetHash` and `Sync` (also a reader) run beside a
+  slow commit. Readers never read the live database: Pebble makes a batch
+  visible before its WAL fsync completes, and a reader there would see a write
+  that is not yet durable, or new metadata under the old revision bound (a
+  `Range` omitting deleted keys, a count-only `Range` counting unpublished
+  inserts). Instead, once the commit returns, `Update` takes the lock for
+  writing to publish: it takes a storage snapshot and stores it, paired with
+  the revision it holds, as one immutable read view behind an atomic pointer;
+  then `MarkCommitted`, which advances the revision that bounds `Range` and the
+  current-revision query, then the watch deliveries and vector index effects.
+  `Lookup` and `GetHash` read that view, so every read sees one durable
+  revision whole. Secondary-index queries and scans and time-series queries
+  read the same view (`StoragePebbleIndex.GetFrom`/`ScanFrom`,
+  `timeseries.Storage.View`): their entries are written in the same apply
+  batch as the keys they describe, so an index or time-series answer never
+  names a commit a KV read cannot see yet, and an index that can only read
+  live storage is refused with `InvalidQueryError` rather than answered. The
+  vector index is in memory and takes a commit's effects only after the view
+  is published. The view is reference-counted: a superseded snapshot closes
+  when its last reader releases it, and `Close` releases the current one. A
+  commit that fails publishes nothing, and a snapshot that cannot be taken
+  fails the `Update` with `PublishError` and leaves the previous view
+  current. `Update` is serial, one apply loop per shard under go-quicraft's
+  `DiskStateMachine` contract, so a sequence number per call is enough to keep
+  publications in apply order; a call that is not next is refused with
+  `ApplyOrderError` instead of publishing out of order. `Lookup` waits for the
+  lock under its `ctx` and, if `ctx` ends first, returns a `ReadError`
+  wrapping `ctx`'s error rather than waiting for the commit. Sync semantics are
+  unchanged: every apply batch is still fsynced before `Update` returns.
+- **A batch that changes in-memory read state is built exclusively.** Four
+  components that `Lookup` consults beside the read view change in place while
+  a batch is built, before it is published: the index catalog
+  (`handleIndexCreate` and `handleIndexDrop` replace the index object, so a
+  query beside a same-name rebuild would run the new index over the old
+  snapshot), the lessor's lease and binding tables (`Lessor.Grant`, `Revoke`,
+  `KeepAlive`, `ApplyCheckpoints`, `Bind`; a TTL query beside a revoke would
+  report the lease gone while a KV read still returned its keys), the
+  compaction floors (`CompactPrefixInBatch` and `CompactNodeKeyspaceInBatch`
+  publish theirs as they queue the compaction, so `GetAtRevisionFrom`,
+  `RangeFrom` and `scanChanges` would refuse a revision the published view
+  still holds), and each tenant's audit chain head (`audit.Chain.Append` and
+  `Prune` advance it in memory, and `Chain.Verify` reads it from there rather
+  than from the snapshot it is handed, so a verify beside an
+  append would match the old events against the new head and report a healthy
+  chain broken with "missing sequence"). `MVCCEngine.RequiresExclusiveApply`
+  classifies the batch from its entries, under the read lock and before
+  anything is built: an index create or drop, a lease grant, revoke,
+  keep-alive or checkpoint, a prefix or node compaction, an audit append or
+  prune, any of those wrapped in a guarded write (`handleGuarded` dispatches
+  its inner command directly, so the classifier decodes the guard and judges
+  the inner opcode; a guard that does not decode is exclusive), an entry it
+  cannot decode, or any entry while the lessor
+  holds a lease (every key write may then bind or release a binding) makes the
+  batch exclusive, and `Update` then builds, commits and publishes it under the
+  write lock, as every batch was before; readers wait for it and see it whole.
+  Every other batch keeps the shared-lock path above. Staging each
+  component's changes and publishing them with the view would keep those
+  batches on the shared path too, but that is a redesign of the lessor, the
+  index catalog and the floor table, each of which is read and written in
+  place by the handlers of later entries in the same batch.
 - **Every KV state machine records its applied index.** The reserved
   applied-index record (`diskMetaKeyLastApplied`) is stamped at the end of
   every applied batch: by `DiskAdapter` directly on its storage, and by `KVStateMachine.Update` through the backend for every
@@ -644,7 +714,7 @@ boundary as a typed value and is mapped per transport by
 | `Compact` to a revision below 1 | `service.CompactRevisionInvalidError` | **yes** |
 | `Compact` to a revision above the current one | `service.CompactRevisionFutureError` | **yes** |
 | `Compact` to a revision the database is already compacted to | `service.RevisionCompactedError`; the floor is unchanged | **yes** |
-| `Compact` before every replica of the group supports per-database compaction | `featuregate.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
+| `Compact` before every replica of the group supports per-database compaction | `feature.NotActiveError` naming `prefix-compaction` (503 / `UNAVAILABLE`); nothing proposed | **yes** |
 | As-of read against a non-MVCC state machine | `service.MVCCBackendRequiredError` (501 / `UNIMPLEMENTED`) | **yes** |
 | Restore naming a reserved prefix or key | refused, HTTP 403 equivalent, **no override** | **yes** |
 | Restore with no scope or both scopes | refused | **yes** |
@@ -817,7 +887,7 @@ consumes no revision, fires no watch and is never itself compacted.
   policy, recording a sample -- is `protocol.OpCompactionState` (16), proposed
   to the database's own group and applied in the apply batch, so every replica
   holds the same record. It is proposed only once the cluster feature
-  `prefix-compaction` is activated (`featuregate.NotActiveError` before),
+  `prefix-compaction` is activated (`feature.NotActiveError` before),
   the gate that carries `OpMVCCCompactPrefix` too. A state machine that does
   not apply it -- the pebble KV state machine, the KV engine, the state
   machines of `pkg/statemachine` -- refuses it as an unknown opcode. Such

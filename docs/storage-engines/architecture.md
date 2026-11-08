@@ -1,7 +1,20 @@
 # Storage Engines — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
+> decision — for the object-storage LSM target design.** · Scope: go-qrdb ·
+> Last verified: 2026-10-27
+>
+> This document has two layers.
+>
+> - **Current state** sections (everything through "What this feature
+>   deliberately does not do") describe the code as shipped. The proposal
+>   below does not change them.
+> - **Target design: object-storage LSM segment layout** is the proposed
+>   design for rebuilding `pkg/storage/objstore` as an LSM segment layout,
+>   future work under the SPEC row `object-storage-lsm`. The questions it
+>   needs decided are listed, each with a recommendation, in "Decisions
+>   needing the owner" inside that section. **Nothing in that section is
+>   implemented.**
 >
 > Volume pools are documented in [../volume-pools/](../volume-pools/).
 
@@ -388,6 +401,18 @@ go-xkms, not only for this repo.
   no cipher. Engines store what they are given.
 - Volume pool paths are filesystem paths on the node; a pool registration is a
   privileged operation.
+- **An object-storage credential crosses into go-objstore as a handle, never
+  as a value.** Configuration carries only file references
+  (`storage.objstore.credentials.{key_file,secret_file}`); a credential in the
+  YAML is refused at load. `objstore.New` reads each owner-only file straight
+  into a go-enclave locked-memory handle through `pkg/secure`, passes the
+  handles as go-objstore's `common.Credentials`, and destroys them before it
+  returns: go-objstore copies the bytes out only inside `Credentials.Open`,
+  zeroizes them after configuring the provider, and keeps no handle. File
+  references were chosen because the alternatives cannot hold this
+  credential: an environment variable is readable through `/proc` and lands in
+  an unzeroizable Go string, and `pkg/credentials` stores through a
+  `StorageBarrier`, which itself needs the storage this credential opens.
 
 ## What this feature deliberately does not do
 
@@ -399,11 +424,392 @@ go-xkms, not only for this repo.
   are build-tag gated (`awss3`, `gcpstorage`, `azureblob`, `glacier`,
   `azurearchive`).
 
-## Not built
+## Target design: object-storage LSM segment layout
 
-An object-storage LSM segment layout for `objstore` (SPEC row
-`object-storage-lsm`, `future`) is not implemented. The shipped `objstore`
-engine stores one object per key, as described above.
+### Problem with the shipped `objstore` engine
+
+`pkg/storage/objstore` stores one object per key, under a name encoded from
+the key (see "The objstore engine: encoded object names" above). The encoding
+makes every key up to the global cap storable on every provider, so the
+engine is correct for arbitrary bytes. What it cannot change is the cost of
+the model itself:
+
+- **Write cost scales with key count.** Every `Set` and `Delete` is one
+  provider request, and a batch adds a journal object published, applied and
+  cleared around its records.
+- **Listing cost scales with key count.** `List` and iteration list objects;
+  a hashed name (a key longer than about 500 bytes) cannot narrow a listing,
+  so every hashed record is read for its key.
+- **It is outside the barrier.** A standalone `objstore` store starts with
+  one WARN and an `unencryptedAtRest` capability entry naming the gap; the
+  barrier's encrypting file system does not reach a provider's objects.
+- **It is refused where a database needs it.** A per-database `objstore`
+  backend is refused when the database opens
+  (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
+  apply path.
+
+### Direction this design proposes
+
+**Object storage moves to an LSM segment layout.** Keys live inside sorted,
+immutable segment files; object names are short, opaque segment identifiers
+that carry no key material. When it ships, this layout replaces the
+one-object-per-key engine; the two are not kept side by side.
+
+**go-objstore stays the only source of object-storage backends.** The seam is
+`pkg/storage.Storage`, as it is today: go-qrdb adds no backend of its own, and
+a composer configures the provider per go-objstore backend exactly as it does
+for the shipped engine. What changes is the layout go-qrdb keeps in the
+bucket, not who supplies the bucket.
+
+### Shape chosen
+
+**Do not write an LSM from scratch. Compose Pebble v2's remote-storage support
+over go-objstore.** qrdb already depends on `github.com/cockroachdb/pebble/v2`
+(v2.1.7 at the time of writing) for the `pebble` engine. Pebble v2 can keep its sorted SSTables on an
+object-storage-shaped backend through two pieces in
+`objstorage/remote` / `objstorage/objstorageprovider`:
+
+```go
+type remote.Storage interface {
+    io.Closer
+    ReadObject(ctx context.Context, objName string) (remote.ObjectReader, int64, error)
+    CreateObject(objName string) (io.WriteCloser, error)
+    List(prefix, delimiter string) ([]string, error)
+    Delete(objName string) error
+    Size(objName string) (int64, error)
+    IsNotExistError(err error) bool
+}
+
+pebble.Options{
+    Experimental: pebble.Experimental{
+        RemoteStorage:         remote.StorageFactory,  // locator -> remote.Storage
+        CreateOnShared:        remote.CreateOnSharedAll, // every sstable remote
+        CreateOnSharedLocator: remote.Locator("<provider>/<prefix>"),
+    },
+}
+```
+
+Object names Pebble generates for remote objects are its own, not qrdb's keys:
+`<hash>-<creator-id>-<file-num>.sst` (e.g. `1a3f-2-000001.sst`,
+`objstorageprovider/remote_obj_name.go`) — at most ~24 bytes, no NUL bytes, no
+path separators. **This retires the entire key-length problem**: it is not
+narrowed, it does not apply, because segment names never derive from qrdb
+keys. See "Decisions needing the owner" (OS-5) for what becomes of the
+encoded-name layout and the stores written in it.
+
+**The new `pkg/storage/objstore` package stops being a KV engine and becomes a
+`remote.Storage` adapter over go-objstore**, consumed by `pkg/storage/pebble`
+through a new construction option, e.g. `pebble.WithRemote(objstore.NewRemote(provider,
+settings), locator, strategy)`. There is no second, parallel engine
+implementation:
+
+```
+pkg/storage/pebble        — unchanged: *pebble.DB, storage.Storage, Batch, Iterator, Snapshot
+pkg/storage/objstore       — rewritten: remote.Storage adapter + encrypting wrapper over go-objstore
+                             (ReadObject/CreateObject/List/Delete/Size/IsNotExistError)
+```
+
+This is what makes "every engine on every backend" true for `objstore` by
+construction rather than by re-implementation: `pkg/storage/pebble.Engine` is
+already composed by `MVCCEngine`, secondary indexes, time series and vector
+storage. An `objstore`-backed database becomes a `*pebble.DB` whose SSTables
+happen to live in a bucket; nothing above `storage.Storage` changes, and
+nothing needs to be re-taught to a second KV implementation. The flat
+`Engine`/`Batch`/`Iterator` in `pkg/storage/objstore` and its batch commit
+journal (`pkg/storage/objstore/journal.go`) are deleted with it: Pebble's own
+WAL and manifest give this backend the same atomic-batch and crash-replay
+guarantees the `pebble` backend has today, for the same reason — it **is**
+the `pebble` backend, with one storage option changed.
+
+Composition, conceptually:
+
+```
+                     +-------------------------------+
+                     |   pkg/storage/pebble.Engine    |   storage.Storage
+                     |   (*pebble.DB, unchanged)      |   (Get/Set/Delete/List/
+                     +----------------+----------------+   Exists/Batch/Snapshot)
+                                      |
+                 local vfs.FS         |         remote.Storage
+         (WAL, MANIFEST, block cache) |     (sorted, immutable SSTables)
+                                      |
+                              +-------+--------+
+                              |  pkg/storage/   |
+                              |  objstore       |  encrypts, then calls go-objstore
+                              |  (remote.Storage|
+                              |   adapter)      |
+                              +-------+--------+
+                                      |
+                          go-objstore common.Storage
+                          (local | memory | s3 | gcs | azure)
+```
+
+### Decisions needing the owner
+
+Each question implementing this design requires deciding is answered below
+with a recommendation. Whether to adopt the design at all is the first
+decision; these are the ones that follow from adopting it.
+
+**OS-1 — Is Pebble v2's remote storage a stable, supported surface?**
+No — it is real, functional and already used in production by CockroachDB, but
+every knob lives under `pebble.Options.Experimental`
+(`RemoteStorage`, `CreateOnShared`, `CreateOnSharedLocator`,
+`SecondaryCacheSizeBytes`), which is Pebble's own naming for "no API
+stability promise." Two concrete caveats: (1) it requires
+`FormatMajorVersion >= FormatMinForSharedObjects` (`= FormatVirtualSSTables`);
+Pebble's `Options.EnsureDefaults` bumps the format version for us
+automatically the moment `CreateOnShared != CreateOnSharedNone` is set, so this needs no manual version pinning on our side,
+but it does mean a store opened with remote storage can never be read by an
+older Pebble build. (2) Every Pebble instance that writes to a shared locator
+needs a `CreatorID` (`SetCreatorID`, `objstorage.CreatorID`), assigned once and
+persisted locally — this is the "whose object is this" identity the design
+below (OS-4) builds on.
+**Recommendation: proceed.** "Experimental" here means Pebble reserves the
+right to change the Go API shape across versions, not that the mechanism is
+unsound; CockroachDB's disaggregated-storage deployments are the production
+proof. Pin to an exact `pebble/v2` version (already qrdb's practice) and treat
+an upgrade that touches `objstorage/remote` as a reviewed change, same as any
+other Pebble bump.
+
+**OS-2 — WAL placement.**
+Pebble's WAL and MANIFEST are never remote-storage candidates — only SSTables
+(and blobs) go through `remote.Storage`; `WALDir` is always a local `vfs.FS`
+path, and `WALFailover` only fails over to a second *local* directory.
+There is no "remote WAL" option to evaluate; the question is really whether
+the local WAL needs to be durable on its own.
+- A `raft.sm_storage` / `raft.state_storage: objstore` database (hot apply
+  path, only if OS-7 is accepted): the Raft log is the durability backstop beyond `lastApplied`, exactly
+  as for `sm_storage: pebble` today. The local WAL can be small and the
+  replica's own recovery already depends on replaying from the Raft log past
+  whatever the local WAL lost — this is not a new property this design
+  introduces.
+- A standalone node's `storage.backend: objstore`, or a database's
+  `backend: objstore` (a non-replicated binding — see
+  [../databases/architecture.md](../databases/architecture.md)): there is no
+  replicated log underneath it. The local WAL **must** be durable, on a real
+  local disk, exactly like `backend: pebble` today. It lives in the store's
+  local data directory, resolved the same way as the `pebble` engine's (the
+  node's data directory, or a volume pool —
+  [../volume-pools/](../volume-pools/)). **Nothing here is optional or
+  remote.**
+**Recommendation:** local, durable WAL + MANIFEST in both modes, in the same
+local data directory the `pebble` engine uses. Only the SSTables move to the
+bucket.
+
+**OS-3 — Ownership: per-replica prefix, or shared across replicas?**
+qrdb's Raft model has every replica apply independently to its own state
+machine and its own storage (`../key-value/architecture.md` — "replication is
+the host's property, not the engine's"). CockroachDB's own shared-storage work
+goes further (replicas sharing one physical SSTable set, follower reads served
+from shared storage without a local copy) — that changes *what a replica is*,
+which is out of scope for a storage-engine change and is not needed for an
+LSM segment layout.
+**Recommendation: each owning Pebble instance gets its own bucket prefix and
+its own `CreatorID` — never shared.** For a `backend: objstore` local binding
+there is exactly one instance (one owning node per OD-2 in
+`../databases/architecture.md`), so this is trivially one prefix. For a future
+Raft-replicated `objstore` hot apply path (OS-7, not phase 1), each replica
+still applies independently and still gets its own exclusive prefix; a
+replica that is replaced does not inherit the old replica's objects, which are
+reclaimed like any other obsolete SSTable. Compaction ownership therefore
+never crosses an instance boundary, and cost is the same N-times storage a
+Raft group already pays on local disks today — this design changes *where*
+the bytes are durable, not how many copies of them must exist.
+
+**OS-4 — Encryption at rest: a real gap, not a detail.**
+`pkg/atrest.Encryptor.Apply` wraps `pebble.Options.FS` — a `vfs.FS` — with
+`seal/encfs`. `Options.Experimental.RemoteStorage` is a **different**
+interface; Pebble never routes a remote object through `FS` at all. **The
+existing barrier wiring does not reach remote SSTables, full stop; this is not
+covered by "engines store what they are given" today because the engine has
+no encrypting layer on this path yet.** The shipped engine has the same gap
+today: a standalone `objstore` store under the seal starts with one WARN and
+an `unencryptedAtRest` capability entry.
+- A: go-objstore has its own `Encrypter`/`EncryptedStorage` (`pkg/common`).
+  Rejected — a second, parallel crypto path with its own key material is
+  exactly the "no hand-rolled crypto, one canonical home" problem this
+  project avoids everywhere else, and it does not share key custody with the
+  barrier.
+- B: rely on the provider's own server-side encryption (SSE-S3, SSE-KMS) only.
+  Rejected as the sole mechanism — it is provider-conditional (the "local" and
+  "memory" providers have none), and leaves data outside the barrier's custody
+  model entirely.
+- C (recommended): a new encrypting `remote.Storage` wrapper in
+  `pkg/storage/objstore`, parallel in spirit to `seal/encfs` but shaped for
+  whole-object payloads instead of a `vfs.File`: encrypt the plaintext object
+  with the **same `seal.StorageBarrier` AEAD** (AES-256-GCM, already audited,
+  already the mechanism `encfs` uses) before `CreateObject`, decrypt after
+  `ReadObject`. No new cipher, no new key hierarchy — the barrier's existing
+  per-tenant DEK is the key, as it already is for local Pebble files.
+**Recommendation: C.** This closes the gap rather than documenting around it.
+
+**OS-5 — The encoded-name layout, and the stores written in it.**
+Pebble's object-naming code (`remoteObjectName`) never takes a qrdb key as
+input, so the direct and hashed key encodings, the per-name length limits
+they work within, and the hashed records' key verification all go away with
+the one-object-per-key engine; nothing replaces them. A store written in the
+encoded-name layout (format marker `qrdb-objstore-format`, version `2`) is a
+different on-disk format from an LSM store. The shipped engine already
+refuses a foreign layout at open rather than misread it, and ships no
+migration code.
+**Recommendation:** the LSM store carries its own format marker, and opening
+a version-`2` store with it is refused at open with the typed format error,
+as any foreign layout is today. There is no in-place migration: data moves by
+a logical copy, read out through the binary that wrote it and written in
+through the new one, or through backup and restore
+([../backup-restore/](../backup-restore/)).
+
+**OS-6 — go-objstore has no ranged read.**
+`common.Storage.Get`/`GetWithContext` return a whole-object `io.ReadCloser`;
+there is no `ReadAt`/byte-range method. Pebble's `remote.ObjectReader.ReadAt`
+expects concurrent, partial, offset reads of potentially large SSTables — the
+pattern every mainstream object-store API (S3, GCS, Azure, MinIO) supports
+natively via HTTP Range, and every local filesystem supports via
+`os.File.ReadAt`. go-objstore's own interface does not expose it.
+**Recommendation:** ask go-objstore, which owns the provider interface, for a
+ranged read method on `common.Storage`; go-qrdb does not add one around it. Until it lands, `pkg/storage/objstore`'s
+`ReadObject` fetches the whole object once per Pebble open (not per `ReadAt`
+call — cached locally, keyed by object name) and serves `ReadAt` from the
+cached bytes; this is a performance caveat for cold reads of large SSTables,
+not a correctness one, and Pebble's own `SecondaryCacheSizeBytes` block cache
+already absorbs the common case (repeated reads of the same block range).
+
+**OS-7 — Lifting "objstore is refused as a hot apply path."**
+Today [engineering.md](engineering.md)'s error table refuses objstore as
+`raft.sm_storage` outright, and a database's `backend: objstore` is refused
+when the database opens. With Pebble's native atomic batch and WAL, an
+`objstore`-backed store is the `pebble` engine, so the per-database refusal
+has nothing left to protect. Whether to also allow it as a Raft
+`sm_storage`/`state_storage` choice is a separate question with its own blast
+radius (every replica now writes to a bucket under load, under compaction,
+under leader failover).
+**Recommendation:** lift the refusal only for a database's
+`backend: objstore` non-replicated binding, in phase 2 (see "Phased
+implementation plan"). Leave the Raft hot-apply-path refusal in place until a
+phase 3 that is scoped, acceptance-tested under compaction and
+leader-failover load, and — because it changes what a replica durably writes
+where — proposed into a group the same way every new Raft-visible behavior is
+gated (the cluster feature gate described in
+[../databases/architecture.md](../databases/architecture.md)).
+
+### Alternatives considered
+
+- **Keep one object per key, under encoded names** — the shipped engine. It
+  is correct for every key, but write and listing cost scale with key count
+  whatever the encoding, it carries a journal object to make a batch atomic,
+  and it stays outside the barrier.
+- **Keep the batch commit journal on the flat engine.** Moot under this
+  design: Pebble's own WAL gives the LSM layout atomic batches, so the journal
+  is deleted with the flat engine.
+- **A different pure-Go LSM-on-object-storage library.** Surveyed and none
+  found at comparable maturity: the closest prior art (e.g. SlateDB) is Rust,
+  not Go, and RocksDB-Cloud is C++. Pebble is already a qrdb dependency,
+  already production-hardened as the `pebble` engine, and its remote-storage
+  support is exercised in production by CockroachDB. No alternative library
+  clears that bar.
+- **CockroachDB-style disaggregated storage** (replicas sharing one physical
+  SSTable set; followers serve reads from shared storage without their own
+  local copy). Rejected for this program: it changes the Raft apply model
+  itself (replicas stop being independent appliers), which is a materially
+  larger change than a storage engine, and is not what "every engine runs on
+  every backend" or "no node-local logical state" asked for — see OS-3.
+- **An in-house LSM.** Not pursued — it is the last resort, and nothing here
+  forces it: Pebble's remote storage reaches the target shape (sorted segments, short opaque segment names) without writing
+  one.
+
+### Recovery and backup, briefly
+
+- **Node loss, `objstore` (single owner, non-replicated binding).** The
+  bucket already holds every durable SSTable; only the local WAL/MANIFEST are
+  lost with the node. Reopening on a replacement node is cheap (no data
+  re-transfer, just MANIFEST + WAL recovery) **provided the old owner is
+  fenced before the new one opens the same prefix** — that fencing and
+  ownership handoff is the placement and catalog design in
+  [../databases/architecture.md](../databases/architecture.md) (OD-2, OD-4), not something this storage engine
+  invents. This design depends on that mechanism; it does not duplicate it.
+- **Node loss, a Raft replica (if OS-7 is later accepted).** Unchanged from
+  today's `sm_storage: pebble`: a replacement replica gets a fresh local
+  directory and its own new prefix/`CreatorID`, and is caught up through the
+  existing `SaveSnapshot`/`RecoverFromSnapshot` path
+  (`pkg/statemachine/*.go`). The dead replica's old prefix is simply
+  abandoned and reclaimed — consistent with OS-3's no-sharing answer.
+- **Backup and restore stay on the existing logical path, unchanged.**
+  `../backup-restore/architecture.md`'s shard snapshots already iterate
+  through `storage.Reader` to a destination that can itself be a go-objstore
+  URI — that is backend-agnostic today and stays so. A bucket-native fast
+  backup (copying live SSTable objects directly, using Pebble's own
+  ref-tracking metadata instead of re-reading every key) is a plausible
+  future optimization but is explicitly **not** part of this design: it is
+  not needed for correctness, and backup and restore stay simple.
+
+### Provider coverage
+
+Every go-objstore provider that supports fast, random reads is viable:
+`local`, `memory`, `s3`, `gcs` and `azure` — reachable at Pebble object names
+of ~24 bytes, nowhere near any provider's name-length limit (OS-5).
+**`glacier` and `azurearchive` are archive tiers with retrieval delays
+measured in hours**: they cannot serve `ReadObject` at the latency an LSM read path needs and must stay
+what they already are — backup/archive destinations reached through
+`../backup-restore/`, never a live `objstore` provider.
+
+### Component boundaries (target)
+
+| Piece | Package | Owner |
+|---|---|---|
+| `pebble.Engine`, `storage.Storage`, `Batch`, `Iterator`, `Snapshot` | `pkg/storage/pebble` | go-qrdb (unchanged) |
+| `remote.Storage` adapter over go-objstore, encrypting wrapper (OS-4) | `pkg/storage/objstore` | go-qrdb (rewritten) |
+| `common.Storage` providers (local, memory, s3, gcs, azure) and their build tags | — | **go-objstore** |
+| Ranged/offset reads on `common.Storage` (OS-6, not yet available) | — | **go-objstore** — requested there, not implemented here |
+| `remote.Storage`, `objstorage.CreatorID`, `Options.Experimental.RemoteStorage` | — | **Pebble v2** (`cockroachdb/pebble/v2`) |
+| Fencing and ownership handoff for a single-owner local binding | `pkg/database`, `pkg/placement` | go-qrdb (`../databases/` design, depended on, not owned here) |
+
+### Phased implementation plan
+
+**Phase 1 — the adapter and the engine option.**
+Rewrite `pkg/storage/objstore` as the `remote.Storage` adapter (OS-6's interim
+whole-object cache) plus the encrypting wrapper (OS-4). Add
+`pebble.WithRemote(...)` to `pkg/storage/pebble`, wiring
+`Options.Experimental.{RemoteStorage,CreateOnShared,CreateOnSharedLocator}`
+and a `CreatorID` persisted beside the local directory. Delete the flat
+`Engine`/`Batch`/`Iterator`/`Snapshot` and the batch commit journal in
+`pkg/storage/objstore` (superseded — see "Shape chosen"), so a standalone
+node's `storage.backend: objstore` opens the LSM layout, and a store in the
+encoded-name layout is refused at open (OS-5).
+- *Acceptance:* (1) the existing per-engine conformance suite passes with `pebble+remote` added
+  as a parametrized backend, local-provider go-objstore; (2) a kill-process
+  mid-compaction test shows no corruption and a clean reopen; (3) an
+  encryption round-trip test with the barrier on and off (OS-4); (4) a
+  provider-construction test asserting `glacier`/`azurearchive` are refused
+  with a typed error before any SSTable write is attempted; (5) `gofmt -l`,
+  `make vet-tags`, and a build-gate test that `pkg/storage/objstore` imports
+  neither a qrdb key type nor anything key-shaped — only object names.
+
+**Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
+Remove the `database.InvalidBackendError` refusal at `openStorage` for
+`backend: objstore`; route it through `pebble.WithRemote` like any other
+non-replicated binding. The surrounding binding resolution is the databases
+feature's ([../databases/architecture.md](../databases/architecture.md));
+this phase owns only the storage side.
+- *Acceptance:* (1) `qrdb database create ... --backend objstore` round-trips
+  every engine (KV, MVCC, transactions, secondary indexes, vector, time
+  series) by exact key in that database's own bucket prefix; (2) a restart
+  with the local directory intact (normal restart, not node loss) recovers
+  with no data movement; (3) a test that removes *only* the local directory
+  (simulating node loss) and documents — does not silently paper over — that
+  reopening safely requires the fencing and ownership handoff of the
+  databases feature; this phase does not claim to solve that.
+
+**Phase 3 — OS-7, gated, if the owner accepts it.**
+Lift the hot-apply-path refusal for `raft.sm_storage`/`state_storage:
+objstore`, behind the existing cluster feature gate.
+- *Acceptance:* a three-node Raft group on `state_storage: objstore`; kill one
+  replica, replace it, confirm catch-up via `SaveSnapshot`/
+  `RecoverFromSnapshot` without reading the dead replica's old prefix; confirm
+  the dead prefix's objects are reclaimed; a compaction-under-load soak test.
+
+**Phase 4 — deferred, not scheduled.**
+Bucket-native fast backup/restore (OS-7's sibling: using Pebble's live-object
+set and ref metadata instead of a full logical scan). No acceptance criteria
+yet — explicitly future work, not blocking phases 1–3.
 
 ## Companion documents
 

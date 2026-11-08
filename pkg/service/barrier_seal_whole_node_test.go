@@ -146,7 +146,7 @@ func TestBarrierSeal_SealsTheWholeNode(t *testing.T) {
 	if !databaseKeyWiped(t, f.dbs, "secure") {
 		t.Fatal("the passphrase database was unsealed by the system unseal")
 	}
-	if err := f.dbs.BarrierManager().UnsealDatabase(ctx, "secure", seal.MustCredentials(context.Background(), []byte("db-pass"))); err != nil {
+	if err := f.dbs.BarrierManager().UnsealDatabase(ctx, "secure", "acme", seal.MustCredentials(context.Background(), []byte("db-pass"))); err != nil {
 		t.Fatalf("owner unseal of the database after the node unseal: %v", err)
 	}
 	if databaseKeyWiped(t, f.dbs, "secure") {

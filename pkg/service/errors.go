@@ -76,11 +76,26 @@ func checkResultError(result sm.Result) error {
 			return typed(requested, bound)
 		}
 	}
+	// A capacity refusal is decoded ahead of the kind dispatch too: the apply
+	// path enforces index.max_indexes and timeseries.max_metrics against the
+	// replicated state (go-qrdb#1088), and the typed error carries the cap.
+	if resource, maxCount, refused := protocol.DecodeLimitRefusal(result.Data); refused {
+		if typed, known := limitRefusalErrors[resource]; known {
+			return typed(int(maxCount))
+		}
+	}
 	msg, kind, ok := protocol.DecodeAppErrorKind(result.Data)
 	if !ok {
 		return nil
 	}
 	return refusalErrors[kind](msg)
+}
+
+// limitRefusalErrors maps each capacity a command can be refused for to the
+// typed error the service returns for it.
+var limitRefusalErrors = map[protocol.LimitResource]func(maxCount int) error{
+	protocol.LimitIndexes: func(maxCount int) error { return &IndexLimitError{Max: maxCount} },
+	protocol.LimitMetrics: func(maxCount int) error { return &MetricLimitError{Max: maxCount} },
 }
 
 // CommandRejectedError reports a command the state machine understood and
@@ -229,6 +244,12 @@ type KeyNotFoundError struct {
 // Error returns a human-readable description of the missing key.
 func (e *KeyNotFoundError) Error() string {
 	return "service: key not found: " + e.Key
+}
+
+// KeyNotFound returns the key that was not found. A package this one imports
+// (pkg/lock) recognises absence by this method, since it cannot name the type.
+func (e *KeyNotFoundError) KeyNotFound() string {
+	return e.Key
 }
 
 // EncodeRequestError is returned when a request cannot be encoded into a
@@ -1113,6 +1134,23 @@ func (e *SystemBarrierInitRefusedError) Error() string {
 		`re-run "qrdb init" to bootstrap a fresh node`
 }
 
+// SealDisabledError is returned by every barrier verb that would change the
+// barrier of a node whose seal subsystem is disabled (seal.enabled: false).
+// Such a node's barrier protection is "none": its data is stored in plaintext
+// and nothing reads it through a barrier, so there is no key to initialize,
+// unseal, seal, re-wrap or split, and no holder to enrol. Sealing it would
+// report a sealed node while its data stays readable. Op names the refused
+// verb. Encryption is not added in place: a node provisioned with
+// seal.enabled: true is (docs/barrier-seal/user.md).
+type SealDisabledError struct {
+	Op string
+}
+
+// Error implements error.
+func (e *SealDisabledError) Error() string {
+	return "service: " + e.Op + ": the seal subsystem is disabled on this node (barrier protection none)"
+}
+
 // InvalidRaftTopologyError is returned when a raft-backed database's
 // requested Raft cluster-mode topology is internally incoherent (e.g.
 // Backend == BackendRaft paired with ClusterMode == RaftNone). See
@@ -1447,6 +1485,29 @@ type ImportQuotaExceededError struct {
 // Error returns a human-readable description.
 func (e *ImportQuotaExceededError) Error() string {
 	return "service: import session " + e.Kind + " quota of " + strconv.FormatInt(e.Limit, 10) + " exceeded"
+}
+
+// IndexLimitError is returned by CreateIndex when the shard already holds
+// index.max_indexes secondary indexes and the create names none of them.
+type IndexLimitError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *IndexLimitError) Error() string {
+	return "service: index limit reached: max_indexes " + strconv.Itoa(e.Max)
+}
+
+// MetricLimitError is returned by a time-series write that would create a
+// metric when the shard already holds timeseries.max_metrics metric names.
+// A write to a metric that already exists is never refused by it.
+type MetricLimitError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *MetricLimitError) Error() string {
+	return "service: metric limit reached: max_metrics " + strconv.Itoa(e.Max)
 }
 
 // ImportSessionCorruptError is returned when a session's metadata record, or

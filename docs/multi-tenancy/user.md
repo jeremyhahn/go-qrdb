@@ -96,6 +96,30 @@ Their accounts live behind the tenant's own barrier, which does not exist yet.
 runs `qrdb tenant barrier-init` — and only the certificate you just issued may
 run it. A `prefix` tenant's admin can log in straight away.
 
+**Name the tenant's Security Officer at create, if it has one.** The Security
+Officer (SO) is the tenant's governance principal, the only one who can make
+someone else an SO. Give `--so-username`, `--so-pin` and the SO's own CSR
+(`--so-csr`) or certificate (`--so-cert`). Under strict separation of duties
+(`auth.separation_of_duties: true`, always on in FIPS 140-3 mode) the SO must
+be a different person from the admin, with a different key; otherwise you may
+name the admin as the SO, with the admin's username and CSR:
+
+```bash
+qrdb tenant create --id acme --name "Acme Corp" \
+     --admin-username alice --admin-csr alice/csr.pem \
+     --so-username sam --so-csr sam/csr.pem --so-pin "$SO_PIN" --out ./acme
+```
+
+The SO PIN goes only over TLS, as the barrier's secrets do: on a connection
+without it, a Unix socket included, `tenant create` with `--so-pin` is
+refused before anything is sent, with an error saying the SO PIN "is sent only
+over TLS; this connection is not TLS". A redirect to an `http://` URL or to
+another host is refused too. A tenant created without an SO is sent as before.
+
+`--out` writes `so-cert.pem` beside `admin-cert.pem`. On an isolated tenant the
+SO's account is created right after the admin's, when the admin runs
+`barrier-init`.
+
 **Isolation cannot change once the tenant holds data.** Get this right at
 creation, or migrate the data.
 
@@ -177,6 +201,27 @@ Later officers register and claim through `qrdb tenant barrier-officer ...`,
 mirroring the system barrier's flow with `--tenant-id` added — see
 [../shamir-custody/user.md](../shamir-custody/user.md).
 
+**Serving `barrier-init` from your own service.** A service built on the Go
+SDK that terminates its callers' TLS itself — its own REST, gRPC or MCP
+front end — runs the same two-step proof on its own connection with
+`sdk.TenantBarrierInitVerifier`. `Begin(tenantID, tlsState)` issues the
+one-time challenge, bound to the tenant and that connection;
+`Complete(tenantID, tlsState, proof, key)` checks the caller's signature
+against it, and against the key `key` names (an `sdk.ComputeSPKIThumbprint`
+value), and spends the challenge. A refused proof is
+`*sdk.FirstAdminProofError`, whose `Reason` says which check failed. The
+verifier decides only the proof: authorizing the caller is still the
+service's own job.
+
+```go
+v := sdk.NewTenantBarrierInitVerifier(nil) // one per service, shared by every connection
+c, err := v.Begin(tenantID, r.TLS)          // send c.Nonce to the caller
+// ... the caller signs with transport.ProveTenantBarrierInit ...
+err = v.Complete(tenantID, r.TLS, proof, func() (string, error) {
+	return sdk.ComputeSPKIThumbprint(firstAdminCert), nil
+})
+```
+
 **Self-managed is the default and it is the secure one.** `--barrier-auto-unseal`
 at creation wraps the tenant's key under the *system* barrier so the node can
 unseal without the tenant present. Convenient; strictly weaker; entitlement-gated
@@ -203,6 +248,12 @@ of `--admin-csr` or `--admin-cert`.
 CA certificates in `--trust-anchors` (with `--admin-chain` supplying any
 intermediates), its CN must be the admin username, and it must name the new
 tenant. No tenant was created; fix it and retry with the same id.
+
+**`tenant create` refused the Security Officer.** The SO is all or nothing:
+`--so-username`, `--so-pin` and exactly one of `--so-csr` or `--so-cert`.
+Under strict separation of duties its username and its key must both differ
+from the admin's; otherwise they must both match the admin's or both differ. No tenant was created;
+fix it and retry with the same id.
 
 **The admin's `barrier-init` was refused.** On a tenant created with its first
 admin, only the certificate `tenant create` issued or enrolled for that admin
@@ -336,11 +387,11 @@ tenant:
 
 **An isolated tenant keeps its own identity.** For a `barrier`, `volume` or
 `raft` tenant, under either policy, its users, roles, role bindings, data-key
-keyring, invitations, CA and the certificates its CA issues are kept under the
-tenant's own key, not with the platform's, and its admin signs in through any
-node. The tenant's custodians, audit trail and database catalog stay with the
-platform. The policy decides only what an operator may do, so a tenant may be
-made strict, or the floor raised to `strict`, at any time.
+keyring, invitations, CA, the certificates its CA issues and its database
+catalog are kept under the tenant's own key, not with the platform's, and its
+admin signs in through any node. The tenant's custodians and audit trail stay
+with the platform. The policy decides only what an operator may do, so a tenant
+may be made strict, or the floor raised to `strict`, at any time.
 
 On a cluster, `tenant create` for an isolated tenant takes longer than for a
 `prefix` tenant. A node that has just joined answers a tenant's requests with a

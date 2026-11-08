@@ -82,6 +82,37 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return t.barrierSvc.BarrierUnseal(ctx, req.Secret)
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient. It is gated
+// by seal:rekey and the SO PIN: the caller must hold the permission, present
+// the PIN bound by transport.WithSOPIN (refused when no pin.PINBackend is
+// injected), AND present the current passphrase, which the barrier checks
+// against the live root key.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	ctx, err := t.admit(ctx, "BarrierChangePassphrase")
+	if err != nil {
+		return err
+	}
+	if err := t.authorize(ctx, "BarrierChangePassphrase"); err != nil {
+		return err
+	}
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if t.barrierSvc == nil {
+		return &NilServiceError{Service: "BarrierServicer"}
+	}
+	// The SO PIN bound by transport.WithSOPIN, verified exactly as the
+	// network transports verify the one their request carries.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	if err := pin.RequireSOPIN(ctx, t.pinBackend, soPIN); err != nil {
+		return delayed("BarrierChangePassphrase", err)
+	}
+	return t.barrierSvc.BarrierChangePassphrase(ctx, req.Current, req.Next)
+}
+
 // BarrierSeal transitions the barrier to the sealed state by delegating
 // to the injected BarrierServicer.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
@@ -429,6 +460,14 @@ func handleBarrierUnseal(ctx context.Context, t *Transport, req, _ any) error {
 	return t.BarrierUnseal(ctx, r)
 }
 
+func handleBarrierChangePassphrase(ctx context.Context, t *Transport, req, _ any) error {
+	r, ok := req.(*transport.BarrierChangePassphraseRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "BarrierChangePassphrase"}
+	}
+	return t.BarrierChangePassphrase(ctx, r)
+}
+
 func handleBarrierSeal(ctx context.Context, t *Transport, _, _ any) error {
 	return t.BarrierSeal(ctx)
 }
@@ -614,6 +653,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	return t.claimBegin(ctx, seal.DomainUnseal, req)
 }
 
@@ -626,6 +668,9 @@ func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.Share
 	}
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "ShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	return t.claimComplete(ctx, seal.DomainUnseal, req)
 }
@@ -640,6 +685,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimBegin", Err: &transport.NilRequestError{}}
+	}
 	return t.claimBegin(ctx, seal.DomainRecovery, req)
 }
 
@@ -652,6 +700,9 @@ func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transpo
 	}
 	if err := t.requireIdentity(ctx); err != nil {
 		return nil, err
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RecoveryShareClaimComplete", Err: &transport.NilRequestError{}}
 	}
 	return t.claimComplete(ctx, seal.DomainRecovery, req)
 }

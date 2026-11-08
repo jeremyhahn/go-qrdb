@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-22
 > Conflicts with this document are defects. Fix them here first.
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
@@ -18,6 +18,7 @@ to [../shamir-custody/api.md](../shamir-custody/api.md).
 | Initialize | `POST /v1/barrier/initialize` | `BarrierInitialize` | `barrier.Initialize` | `qrdb_barrier_initialize` | `BarrierInitialize` | `seal:bootstrap` |
 | Initialize Shamir | `POST /v1/barrier/shamir/initialize` | `BarrierShamirInitialize` | `barrier.ShamirInitialize` | `qrdb_barrier_shamir_initialize` | `BarrierInitializeShamir` | `seal:initialize_shamir` |
 | Unseal (passphrase) | `POST /v1/barrier/unseal` | `BarrierUnseal` | `barrier.Unseal` | `qrdb_barrier_unseal` | `BarrierUnseal` | `seal:unseal` |
+| Change passphrase | `POST /v1/barrier/change-passphrase` | `BarrierChangePassphrase` | `barrier.ChangePassphrase` | `qrdb_barrier_change_passphrase` | `BarrierChangePassphrase` | `seal:rekey` + SO PIN |
 | Seal (non-Shamir) | `POST /v1/barrier/seal` | `BarrierSeal` | `barrier.Seal` | `qrdb_barrier_seal` | `BarrierSeal` | `seal:seal` + SO PIN |
 | Enable encryption | `POST /v1/barrier/enable-encryption` | `BarrierEnableEncryption` | `barrier.EnableEncryption` | `qrdb_barrier_enable_encryption` | `BarrierEnableEncryption` | `seal:enable_encryption` (node) or `tenant_barrier:enable_encryption` (named tenant) |
 | Cluster unseal | `POST /v1/barrier/cluster-unseal` | `BarrierClusterUnseal` | `barrier.ClusterUnseal` | `qrdb_barrier_cluster_unseal` | `BarrierClusterUnseal` | `seal:unseal` |
@@ -28,6 +29,13 @@ and `POST /v1/barrier/rekey/start`, in
 [../shamir-custody/api.md](../shamir-custody/api.md). `BarrierUnseal` refuses a
 Shamir barrier (`ErrShamirUnsealRequiresQuorum`) and `BarrierSeal` refuses one
 (`ErrShamirBarrierRequiresQuorum`).
+
+`qrdbd` refuses Initialize and Initialize Shamir: its system barrier is
+brought up by `qrdb init` ([../firstboot/api.md](../firstboot/api.md)). An
+initialized barrier is refused with `seal.ErrAlreadyInitialized`; otherwise
+the refusal is `service.SystemBarrierInitRefusedError` (`FailedPrecondition`).
+Only a barrier served without the first-boot ceremony, such as an embedded
+standalone node's, is initialized through them.
 
 **Seal carries the SO PIN.** Once an SO PIN is provisioned (`qrdb init`
 provisions one), `BarrierSeal` is refused (`pin.ErrPINInvalid`, 401 /
@@ -40,6 +48,45 @@ on every transport:
 | Go SDK | `BarrierSeal(ctx)` with the PIN bound by `transport.WithSOPIN(ctx, pin)`; every network transport fills `so_pin` from it |
 | TypeScript SDK | `client.seal.seal(soPin)` |
 | Desktop binding | `SealBinding.Seal(soPin)` |
+
+**Change passphrase re-wraps, it does not rotate.** The request carries the
+current and the next passphrase, both bytes (base64 in REST JSON:
+`{"current": "...", "next": "..."}`). The barrier must be unsealed and
+passphrase-sealed; the current passphrase must open the persisted root key.
+The root key is re-wrapped under the next passphrase and the stored blob is
+replaced by a guarded swap; the data is not re-encrypted and the barrier stays
+unsealed. Both passphrases are wiped on return, on the client and the server.
+`seal:rekey` is SO-gated by the dual-factor gate, so the PIN travels as every
+SO-gated call's does: the `X-QRDB-SO-PIN` header on REST and MCP, metadata on
+gRPC and the Unix socket, and the request's `so_pin` field on QUIC, whose
+frames have no header section. Every transport also verifies the request's
+`so_pin` against the barrier PIN backend before the barrier is reached, as
+for seal and rekey: no PIN backend is `412` / `FailedPrecondition`
+(`pin.ErrBackendNotConfigured`), a missing or wrong SO PIN is `401` /
+`Unauthenticated`, and the embedded transport verifies the PIN bound by
+`transport.WithSOPIN` the same way. The SDK clients fill `so_pin` from that
+bound PIN; on REST a client sends the PIN twice, in the header for the gate
+and in the body's `so_pin` for the handler, and a request carrying only one of
+them is `401`. The CLI takes `--so-pin`, the Go SDK the PIN
+bound by `transport.WithSOPIN`, the TypeScript SDK
+`client.seal.changePassphrase(current, next, soPin)`, and the desktop binding
+`SealBinding.ChangePassphrase`. The TypeScript SDK sends this and every other
+secret-bearing barrier call only to an `https://` base URL and refuses every
+redirect ([TypeScript SDK API](../typescript-sdk/api.md#secret-bearing-calls)).
+
+| Refusal | Sentinel | REST | gRPC / Unix | Reason (QUIC, MCP) |
+|---|---|---|---|---|
+| Current passphrase does not open the barrier | `seal.ErrCredentialMismatch` | `403` | `PermissionDenied` | `BARRIER_CREDENTIAL_MISMATCH` |
+| Empty current or next passphrase | `seal.ErrInvalidPassphrase` | `400` | `InvalidArgument` | — |
+| The blob changed under the swap | `seal.ErrPassphraseChangeConflict` | `409` | `Aborted` | `BARRIER_PASSPHRASE_CHANGE_CONFLICT` |
+| Another rewrite of the root key, such as a second passphrase change, is in flight | `seal.ErrRootKeyWriteInProgress` | `409` | `Aborted` | `BARRIER_ROOT_KEY_WRITE_IN_PROGRESS` |
+| Not a passphrase barrier, or the store has no guarded swap | `seal.ErrPassphraseStrategyNotSoftware`, `seal.ErrGuardedSwapUnsupported` | `409` | `FailedPrecondition` | — |
+| Barrier sealed | `seal.ErrSealed` | `503` | `Unavailable` | — |
+
+Unsealing an uninitialized barrier is refused with `seal.ErrNotInitialized`
+(`409` / `FailedPrecondition`, reason `BARRIER_NOT_INITIALIZED`), on every
+transport, so `errors.Is` holds
+in the Go SDK whichever transport carried it.
 
 ### Who may call these
 
@@ -303,6 +350,49 @@ strings by definition of the protocol, so the MCP client and server each carry
 the credential through one Go string at a single documented conversion point.
 Callers who cannot accept that should not drive barrier operations over MCP.
 
+### Secret arguments over MCP
+
+Every secret-bearing argument of the barrier, tenant-barrier, database and
+ceremony tools takes one of two forms:
+
+| Form | Encoding | Carries |
+|---|---|---|
+| `<name>` | the JSON string as UTF-8 text | text only |
+| `<name>_b64` | standard base64, RFC 4648 §4, padded | any bytes, exactly |
+
+The arguments are `passphrase` on `qrdb_barrier_enable_encryption`,
+`qrdb_tenant_barrier_init_complete` and
+`qrdb_tenant_barrier_signed_init_complete`; `current` and `next` on
+`qrdb_barrier_change_passphrase`; `secret` on `qrdb_barrier_initialize`,
+`qrdb_barrier_unseal`, `qrdb_database_unseal` and `qrdb_ceremony_initialize`;
+`barrier_secret` on `qrdb_database_create`; and `so_pin` and `user_pin`
+wherever those tools, `qrdb_barrier_change_passphrase`, `qrdb_barrier_seal`, `qrdb_barrier_shamir_initialize`,
+`qrdb_barrier_recovery_generate`, `qrdb_barrier_rekey_start`,
+`qrdb_barrier_officer_revoke` and `qrdb_ceremony_sign_csr` take them. A JSON string cannot hold bytes that are
+not UTF-8 — a decoder replaces them with U+FFFD — so a passphrase sent as text
+is keyed to different bytes than the caller holds; its base64 is ASCII and
+arrives exactly. The Go SDK's MCP client always sends `<name>_b64`.
+
+Either form present with a value that is not a JSON string (an array,
+object, number, boolean or `null`) is refused with `ToolArgumentError` naming
+it, before either form is decoded: it is never read as an absent secret, so a
+malformed `so_pin_b64` cannot let an initialization go ahead with no PIN
+provisioned. Only an absent argument or an empty string means "none". A call
+carrying both forms of one argument is refused with
+`SecretArgumentConflictError`; a `<name>_b64` that is not padded standard
+base64 is refused with `ValueDecodeError` naming it. All three are tool
+errors, raised before the service is reached.
+
+The other secret- and credential-bearing MCP arguments, which take one form
+only, are held to the same rule: a non-string value is refused with
+`ToolArgumentError`. They are `static_shared_secret`,
+`multicast_shared_secret` and `token_value` on the database tools; `value` on
+`qrdb_credential_store` and `qrdb_credential_submit` and `new_value` on
+`qrdb_credential_rotate`; `credential_b64`, `spki_credential_b64` and
+`lookup_key_b64` on the user auth-factor tools; `key` on
+`qrdb_tenant_barrier_unseal`; and `token` on `qrdb_invitation_redeem`. The decoded bytes are wiped when the
+handler returns, the same as the text form's.
+
 ### Request bodies
 
 `POST /v1/barrier/initialize`:
@@ -473,7 +563,7 @@ gates neither.
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
-| Isolated tenant create, update to an isolated type, or a statement recorded, before `per-node-barrier-keys` is activated | 503 | `UNAVAILABLE` — `featuregate.NotActiveError`; retry after the rollout |
+| Isolated tenant create, update to an isolated type, or a statement recorded, before `per-node-barrier-keys` is activated | 503 | `UNAVAILABLE` — `feature.NotActiveError`; retry after the rollout |
 | Init statement not signed by the barrier's owner, or malformed | 403 | `PERMISSION_DENIED` — `barrierinit.InitStatementError` |
 | The barrier's first epoch is already claimed by another statement | 409 | `ALREADY_EXISTS` — `barrierinit.BarrierAlreadyInitializedError` |
 | The statement's epoch does not follow the recorded one, or lost a race | 409 | `ABORTED` — `barrierinit.EpochConflictError`; read the record and retry |

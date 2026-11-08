@@ -17,7 +17,9 @@ package server
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -30,7 +32,7 @@ import (
 // other failure, and a cancelled context, is returned at once.
 func TestWhileSystemShardSettling(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
+	err := WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return quicraft.ErrReadIndexNotReady
@@ -43,7 +45,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 
 	boom := errors.New("boom")
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return boom })
+	err = WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error { calls++; return boom })
 	if !errors.Is(err, boom) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want boom after 1", err, calls)
 	}
@@ -51,7 +53,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls = 0
-	err = WhileSystemShardSettling(ctx, "test read", func(context.Context) error { calls++; return nil })
+	err = WhileSystemShardSettling(ctx, nil, "test read", func(context.Context) error { calls++; return nil })
 	if !errors.Is(err, context.Canceled) || calls != 0 {
 		t.Fatalf("err = %v after %d calls, want context.Canceled before any call", err, calls)
 	}
@@ -64,7 +66,7 @@ func TestWhileSystemShardSettling(t *testing.T) {
 // not-leader answer that names a leader is not an election and is returned.
 func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
+	err := WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return &service.NotLeaderError{ShardID: 1}
@@ -77,7 +79,7 @@ func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 
 	known := &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return known })
+	err = WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error { calls++; return known })
 	if !errors.Is(err, known) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want the known-leader error after 1", err, calls)
 	}
@@ -92,7 +94,7 @@ func TestWhileSystemShardSettling_WaitsOutAnElection(t *testing.T) {
 // type -- and must be waited out exactly the same way.
 func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T) {
 	calls := 0
-	err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
+	err := WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error {
 		calls++
 		if calls < 3 {
 			return &transport.NotLeaderError{ShardID: 1}
@@ -105,7 +107,7 @@ func TestWhileSystemShardSettling_WaitsOutAnElection_TransportLayer(t *testing.T
 
 	known := &transport.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "192.0.2.2:5000"}
 	calls = 0
-	err = WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error { calls++; return known })
+	err = WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error { calls++; return known })
 	if !errors.Is(err, known) || calls != 1 {
 		t.Fatalf("err = %v after %d calls, want the known-leader error after 1", err, calls)
 	}
@@ -123,7 +125,7 @@ func TestWhileSystemShardSettling_WaitsOutALeaderChange(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := 0
-			err := WhileSystemShardSettling(context.Background(), "test read", func(context.Context) error {
+			err := WhileSystemShardSettling(context.Background(), nil, "test read", func(context.Context) error {
 				calls++
 				if calls < 3 {
 					return notice
@@ -144,7 +146,7 @@ func TestWhileSystemShardSettling_WaitsOutALeaderChange(t *testing.T) {
 func TestWhileSystemShardSettling_BoundsEachAttempt(t *testing.T) {
 	var left time.Duration
 	hasDeadline := false
-	err := WhileSystemShardSettling(context.Background(), "test read", func(actx context.Context) error {
+	err := WhileSystemShardSettling(context.Background(), nil, "test read", func(actx context.Context) error {
 		var dl time.Time
 		dl, hasDeadline = actx.Deadline()
 		left = time.Until(dl)
@@ -155,5 +157,127 @@ func TestWhileSystemShardSettling_BoundsEachAttempt(t *testing.T) {
 	}
 	if !hasDeadline || left <= 0 || left > StartupReadAttemptTimeout {
 		t.Fatalf("attempt context deadline: set=%v, %s left; want set and within %s", hasDeadline, left, StartupReadAttemptTimeout)
+	}
+}
+
+// formingShard is a system shard that has a leader once elected is set, and
+// whose leader has committed in its term once committed is set.
+type formingShard struct{ elected, committed atomic.Bool }
+
+var _ shardLeaderSource = (*formingShard)(nil)
+
+func (s *formingShard) LeaderID(uint64) (uint64, bool, error) {
+	return 1, s.elected.Load(), nil
+}
+
+func (s *formingShard) ReadReady(context.Context, uint64) error {
+	if s.committed.Load() {
+		return nil
+	}
+	return quicraft.ErrReadIndexNotReady
+}
+
+// unanswered is an attempt the system shard drops: it ends only when its
+// bound does.
+func unanswered(actx context.Context) error {
+	<-actx.Done()
+	return actx.Err()
+}
+
+// A cluster still forming does not spend the budget: attempts cut off
+// unanswered for well past SystemShardSettleBudget, while no leader has
+// committed in its term, keep the wait open, and the read that a committed
+// leader answers ends it.
+func TestWhileSystemShardSettling_OutlastsAFormingCluster(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &formingShard{}
+		formed := 4 * SystemShardSettleBudget
+		go func() {
+			time.Sleep(formed / 2)
+			s.elected.Store(true)
+			time.Sleep(formed / 2)
+			s.committed.Store(true)
+		}()
+		start := time.Now()
+		err := WhileSystemShardSettling(context.Background(), s, "test read", func(actx context.Context) error {
+			if s.committed.Load() {
+				return nil
+			}
+			return unanswered(actx)
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil once a leader has committed", err)
+		}
+		if elapsed := time.Since(start); elapsed < formed {
+			t.Fatalf("returned after %s, before the leader committed at %s", elapsed, formed)
+		}
+	})
+}
+
+// A leader that has committed in its term and still does not answer spends
+// the budget, and the wait ends with the startup-read error at the budget.
+func TestWhileSystemShardSettling_CommittedLeaderSpendsTheBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := &formingShard{}
+		s.elected.Store(true)
+		s.committed.Store(true)
+		start := time.Now()
+		err := WhileSystemShardSettling(context.Background(), s, "test read", unanswered)
+		var sre *StartupReadError
+		if !errors.As(err, &sre) || sre.Cause != nil {
+			t.Fatalf("err = %v, want a *StartupReadError at the deadline", err)
+		}
+		if elapsed := time.Since(start); elapsed < SystemShardSettleBudget || elapsed >= SystemShardSettleBudget+StartupReadAttemptTimeout {
+			t.Fatalf("gave up after %s, want at the %s budget", elapsed, SystemShardSettleBudget)
+		}
+	})
+}
+
+// leaderOnly is a LeaderSource that cannot probe its leader's term.
+type leaderOnly struct{ known atomic.Bool }
+
+func (l *leaderOnly) LeaderID(uint64) (uint64, bool, error) { return 1, l.known.Load(), nil }
+
+// A leader source without the read probe counts the budget from the moment
+// it knows a leader, and not before.
+func TestWhileSystemShardSettling_KnownLeaderWithoutProbeCounts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := &leaderOnly{}
+		elected := 2 * SystemShardSettleBudget
+		go func() {
+			time.Sleep(elected)
+			l.known.Store(true)
+		}()
+		start := time.Now()
+		err := WhileSystemShardSettling(context.Background(), l, "test read", unanswered)
+		var sre *StartupReadError
+		if !errors.As(err, &sre) || sre.Cause != nil {
+			t.Fatalf("err = %v, want a *StartupReadError at the deadline", err)
+		}
+		if elapsed := time.Since(start); elapsed < elected+SystemShardSettleBudget {
+			t.Fatalf("gave up after %s, want the %s budget counted from the election at %s", elapsed, SystemShardSettleBudget, elected)
+		}
+	})
+}
+
+// A forming cluster's wait still ends when its caller gives up.
+func TestWhileSystemShardSettling_FormingClusterEndsWithCtx(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*SystemShardSettleBudget)
+		defer cancel()
+		err := WhileSystemShardSettling(ctx, &formingShard{}, "test read", unanswered)
+		var sre *StartupReadError
+		if !errors.As(err, &sre) || !errors.Is(sre.Cause, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want a *StartupReadError caused by ctx", err)
+		}
+	})
+}
+
+func TestSystemShardLeaders(t *testing.T) {
+	if got := systemShardLeaders(nil); got != nil {
+		t.Fatalf("systemShardLeaders(nil) = %#v, want a nil LeaderSource", got)
+	}
+	if systemShardCommitted(context.Background(), &leaderOnly{}) {
+		t.Fatal("a source that knows no leader reported a committed leader")
 	}
 }

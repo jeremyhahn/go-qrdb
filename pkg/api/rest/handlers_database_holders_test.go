@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -69,7 +70,7 @@ func newRESTDBHolder(t *testing.T, name string) *restDBHolder {
 func newDBHolderServer(t *testing.T) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	systemStore := seal.NewMemoryBackend()
 	system, err := seal.NewStorageBarrier(logger, systemStore, seal.BarrierConfig{RootKeyPath: "root-key"}, seal.NewNoneStrategy())

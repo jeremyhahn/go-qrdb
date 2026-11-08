@@ -1,9 +1,10 @@
 # A bounded startup wait during leader churn exits the node and its peers
 
-> **Status: PROPOSED — pending owner ruling** · Scope: go-qrdb
-> Last verified: 2026-10-23
-> The Problem describes shipped behaviour; the Options are open. Nothing
-> here is built until the owner rules.
+> **Status: RULED — option A (owner ruling 249), built** · Scope: go-qrdb
+> Last verified: 2026-10-28
+> The Problem describes the behaviour before the ruling. The owner chose
+> option A for the system-shard settling waits; the Ruling section says what
+> was built.
 
 ## Problem
 
@@ -49,3 +50,25 @@ by restarting.
   holds the boot forever, and the only sign is the progress log.
 - **C.** Keep the contract. An exit is the signal, and a supervisor restart is
   the recovery. Tests on a stalled host stay red.
+
+## Ruling
+
+Owner ruling 249 chose **option A** for the system-shard settling waits: the
+feature-gate start (its activation check and its self-advertisement),
+database provisioning, the dynamic-membership start, the database-catalog
+open and the volume-tenant restore, every wait that runs through
+`server.WhileSystemShardSettling`.
+
+- The 15s budget (`server.SystemShardSettleBudget`) counts only while the
+  system shard has a leader that has committed in its term: a leader is known
+  and a linearizable read probe answers.
+- An attempt that fails with a settling answer, or is cut off unanswered,
+  goes back to the open-ended leader wait under the boot's context. A node
+  does not exit because the cluster is still forming.
+- A leader that has committed and still does not answer within the budget
+  fails the boot, as before.
+
+The contract is in [../clustering/engineering.md](../clustering/engineering.md),
+"A settling wait outlasts a forming cluster". The shard-serving wait and the
+first admin's replication wait are outside this ruling and keep their
+budgets.

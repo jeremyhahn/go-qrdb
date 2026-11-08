@@ -516,6 +516,24 @@ func TestDaemonBinding_ResolveConfigDir_CreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestDaemonBinding_ResolveConfigDir_MkdirAllError(t *testing.T) {
+	d := newTestDaemonBinding(t)
+	blockFile := filepath.Join(t.TempDir(), "block")
+	if err := os.WriteFile(blockFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// A sub-path of a regular file cannot be created.
+	d.configDir = filepath.Join(blockFile, "sub")
+
+	dir, err := d.resolveConfigDir()
+	if err == nil {
+		t.Fatal("expected the MkdirAll error")
+	}
+	if dir != "" {
+		t.Errorf("a failed resolve must return no directory, got %q", dir)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

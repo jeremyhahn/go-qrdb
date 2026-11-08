@@ -822,16 +822,6 @@ func TestGetIndexStats_NamespaceNotFound(t *testing.T) {
 	}
 }
 
-func TestGetCompactionProgress_WithNamespace(t *testing.T) {
-	svc := newVecSvc(t)
-	ctx := context.Background()
-	// With a valid namespace field — the namespace may not exist but validation
-	// passes. The service returns an error from storage lookup.
-	_, err := svc.GetCompactionProgress(ctx, &GetCompactionProgressRequest{Namespace: "ns"})
-	// Any error or nil is acceptable — we just want the path exercised.
-	_ = err
-}
-
 func TestRebuildIndex_NamespaceNotFound(t *testing.T) {
 	svc := newVecSvc(t)
 	ctx := context.Background()

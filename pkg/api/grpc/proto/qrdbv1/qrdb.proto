@@ -339,6 +339,12 @@ service QRDBService {
         option (qrdb.v1.permission) = "vector:namespace_create";
     }
 
+    // VectorUpdateNamespace changes a namespace's index parameters and
+    // metadata in place, keeping every vector.
+    rpc VectorUpdateNamespace(VectorUpdateNamespaceRequest) returns (VectorUpdateNamespaceResponse) {
+        option (qrdb.v1.permission) = "vector:namespace_update";
+    }
+
     // VectorDeleteNamespace removes a namespace and all its vectors.
     rpc VectorDeleteNamespace(VectorDeleteNamespaceRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "vector:namespace_delete";
@@ -798,6 +804,17 @@ service QRDBService {
         option (qrdb.v1.permission) = "roles:create";
     }
 
+    // ReconcileBuiltInRolesAllTenants converges the stored built-in roles of
+    // EVERY tenant the serving node knows onto this build's definitions, in
+    // one pass, leaving custom roles untouched. It writes every tenant's IAM
+    // data, so it carries the cross-scope roles:reconcile_all, effective only
+    // for a system-tenant caller. A tenant whose barrier is sealed, or that
+    // the node refuses, is reported skipped; one tenant's failure is
+    // reported in failed and never stops the pass.
+    rpc ReconcileBuiltInRolesAllTenants(google.protobuf.Empty) returns (ReconcileBuiltInRolesAllTenantsResponse) {
+        option (qrdb.v1.permission) = "roles:reconcile_all";
+    }
+
     // -----------------------------------------------------------------------
     // Certificate management
     // -----------------------------------------------------------------------
@@ -1007,6 +1024,14 @@ service QRDBService {
     // BarrierUnseal unseals the barrier using the master key.
     rpc BarrierUnseal(BarrierUnsealRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "seal:unseal";
+    }
+
+    // BarrierChangePassphrase re-wraps the root key of the unsealed,
+    // passphrase-sealed barrier under the next passphrase once the current
+    // one opens it. A wrong current passphrase is PERMISSION_DENIED and
+    // changes nothing; a concurrent root-key write is ABORTED.
+    rpc BarrierChangePassphrase(BarrierChangePassphraseRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "seal:rekey";
     }
 
     // BarrierSeal seals the barrier, preventing data access until unsealed.
@@ -2634,6 +2659,10 @@ enum DistanceMetric {
 
     // DISTANCE_DOT_PRODUCT measures similarity via the dot product.
     DISTANCE_DOT_PRODUCT = 2;
+
+    // DISTANCE_MANHATTAN measures the sum of absolute coordinate differences
+    // (the L1 distance) between vectors.
+    DISTANCE_MANHATTAN = 3;
 }
 
 // VectorIndexType specifies the vector index algorithm.
@@ -2668,6 +2697,23 @@ message VectorCreateNamespaceResponse {
     int64 timestamp = 2;
 }
 
+// VectorUpdateNamespaceRequest changes a namespace in place. Each key of the
+// index parameters and metadata is merged over the stored value; a key not
+// named keeps its value. A non-zero dimension must equal the namespace's.
+message VectorUpdateNamespaceRequest {
+    string namespace = 1;
+    int32 dimension = 2;
+    string index_params_json = 3;
+    string metadata_json = 4;
+}
+
+// VectorUpdateNamespaceResponse reports an in-place namespace update.
+message VectorUpdateNamespaceResponse {
+    bool updated = 1;
+    bool requires_rebuild = 2;
+    int64 timestamp = 3;
+}
+
 // VectorDeleteNamespaceRequest removes a namespace and all its vectors.
 message VectorDeleteNamespaceRequest {
     string namespace = 1;
@@ -2699,6 +2745,12 @@ message VectorNamespaceInfo {
     int64 vector_count = 5;
     int64 created_at = 6;
     int64 updated_at = 7;
+    // index_config is the namespace's index parameters, as merged by every
+    // VectorUpdateNamespace so far.
+    map<string, string> index_config = 8;
+    // metadata_json is the namespace's metadata as a JSON object, as merged
+    // by every VectorUpdateNamespace so far; empty when it has none.
+    string metadata_json = 9;
 }
 
 // ---------------------------------------------------------------------------
@@ -3421,6 +3473,31 @@ message RoleReconcileResult {
 message ReconcileBuiltInRolesResponse {
     string tenant_id = 1;
     repeated RoleReconcileResult roles = 2;
+}
+
+// RoleReconcileSkippedTenant names a tenant the all-tenant reconcile did not
+// open. reason is "sealed" (its barrier is sealed on this node) or "refused"
+// (this node does not serve it); detail is the human-readable cause.
+message RoleReconcileSkippedTenant {
+    string tenant_id = 1;
+    string reason = 2;
+    string detail = 3;
+}
+
+// RoleReconcileFailedTenant names a tenant whose reconcile failed, and why.
+message RoleReconcileFailedTenant {
+    string tenant_id = 1;
+    string error = 2;
+}
+
+// ReconcileBuiltInRolesAllTenantsResponse is the all-tenant pass's report:
+// one per-tenant report for every tenant converged (system first, then by
+// id; an empty roles list is a tenant already in agreement), and the
+// tenants skipped or failed. A non-empty failed list is a partial pass.
+message ReconcileBuiltInRolesAllTenantsResponse {
+    repeated ReconcileBuiltInRolesResponse tenants = 1;
+    repeated RoleReconcileSkippedTenant skipped = 2;
+    repeated RoleReconcileFailedTenant failed = 3;
 }
 
 // UpdateRoleProtoRequest applies partial updates to an existing role.
@@ -4200,6 +4277,17 @@ message BarrierUnsealRequest {
     bytes secret = 1;
 }
 
+// BarrierChangePassphraseRequest carries the current and the next passphrase
+// of the system barrier. Both are secrets the server wipes once the call
+// returns. so_pin is the Security Officer PIN the SO gate requires of a
+// seal:rekey call over QUIC, which has no header section; gRPC reads the
+// x-qrdb-so-pin metadata entry instead.
+message BarrierChangePassphraseRequest {
+    bytes current = 1;
+    bytes next = 2;
+    string so_pin = 3;
+}
+
 // BarrierStatusResponse describes the current barrier state.
 // shamir_threshold and shamir_total carry the configured M-of-N quorum
 // when the barrier uses the Shamir strategy and are zero otherwise.
@@ -4772,16 +4860,34 @@ message TenantCreateRequest {
     string admin_chain_pem = 10;
     // trust_anchors_pem registers the tenant's trust anchors with it.
     string trust_anchors_pem = 11;
+    // so_username is the tenant's security officer, optional: a second
+    // principal, distinct from the admin by name and by key, holding the
+    // tenant's so role alone. so_username, exactly one of so_csr_pem and
+    // so_cert_pem, and so_pin are given together or not at all.
+    string so_username = 12;
+    // so_csr_pem is the SO's CSR, signed as admin_csr_pem is.
+    string so_csr_pem = 13;
+    // so_cert_pem is the SO's own certificate, leaf first; it must chain to
+    // one of trust_anchors_pem.
+    string so_cert_pem = 14;
+    // so_chain_pem holds intermediates for so_cert_pem.
+    string so_chain_pem = 15;
+    // so_pin is the SO's second factor (auth.so_dual_factor), the PIN the
+    // SO gate asks the SO for.
+    string so_pin = 16;
 }
 
 // TenantCreateResponse is the created tenant and its first admin's
-// credential. There is never a private key.
+// credential, and its SO's when the request named one. There is never a
+// private key.
 message TenantCreateResponse {
     TenantResponse tenant = 1;
     TenantAdminCredential admin = 2;
+    TenantAdminCredential so = 3;
 }
 
-// TenantAdminCredential is a tenant's first admin as onboarding left it.
+// TenantAdminCredential is a tenant's first admin, or its SO, as onboarding
+// left it.
 message TenantAdminCredential {
     // user_id is 0 while awaits_barrier_init.
     uint64 user_id = 1;

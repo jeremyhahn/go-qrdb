@@ -149,6 +149,16 @@ func bootFormationCluster(t *testing.T, ca *qrdbdharness.CA, replicas []formatio
 // replica's server.
 func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), serverOpts ...server.ServerOption) ([]*Node, error) {
 	t.Helper()
+	return bootFormationClusterObserved(t, ca, replicas, identitiesFor, configure, nil, serverOpts...)
+}
+
+// bootFormationClusterObserved is bootFormationClusterWith with onReturn, when
+// non-nil, called on each replica's own boot goroutine the moment its
+// NewClusteredNode returns a node: what onReturn observes is the state the
+// constructor handed out, before the other founders finish booting. It may not
+// t.Fatal; it records what it saw for the test goroutine to judge.
+func bootFormationClusterObserved(t *testing.T, ca *qrdbdharness.CA, replicas []formationReplica, identitiesFor func(uint64) string, configure func(*qrdbconfig.Config), onReturn func(i int, n *Node), serverOpts ...server.ServerOption) ([]*Node, error) {
+	t.Helper()
 	caPEM := mustReadCAPEM(t, ca)
 	members := make(map[uint64]string, len(replicas))
 	for _, r := range replicas {
@@ -169,6 +179,9 @@ func bootFormationClusterWith(t *testing.T, ca *qrdbdharness.CA, replicas []form
 		go func() {
 			defer wg.Done()
 			nodes[i], errs[i] = NewClusteredNode(context.Background(), cfg, members, serverOpts, WithRaftMTLS(mtls))
+			if errs[i] == nil && onReturn != nil {
+				onReturn(i, nodes[i])
+			}
 		}()
 	}
 	wg.Wait()
@@ -561,19 +574,39 @@ func TestRunningCluster_AddReplica_Identity(t *testing.T) {
 	// live advertisement of its own (featuregate.Gate.AdmitReplica). Each
 	// subtest runs against that settled contract, never against a race with
 	// the founders' advertisements.
+	//
+	// The refusal alone does not show the leader has seen every founder: the
+	// gate refuses as soon as it adopts an activation another founder
+	// committed, which can precede the founder advertisements in its own
+	// view. A subtest that names a founder's address (the identity conflict
+	// on replica 2) needs that founder admitted, so the wait observes both.
 	const unadvertised = "127.0.0.1:9"
 	gate := nodes[leader-1].featureGate
 	if gate == nil {
 		t.Fatal("the leader gates no features")
 	}
+	// unsettled reports what the leader's gate has yet to see, or "" once
+	// it refuses the unadvertised address and admits every founder.
+	unsettled := func() string {
+		var unsupported *featuregate.UnsupportedReplicaError
+		if err := gate.AdmitReplica(shard.ShardKV, unadvertised); !errors.As(err, &unsupported) {
+			return "admitted a replica on " + unadvertised + ", which advertises nothing"
+		}
+		for _, f := range founders {
+			if err := gate.AdmitReplica(shard.ShardKV, f.addr); err != nil {
+				return err.Error()
+			}
+		}
+		return ""
+	}
 	deadline := time.Now().Add(clusterFormationBudget)
 	for {
-		var unsupported *featuregate.UnsupportedReplicaError
-		if errors.As(gate.AdmitReplica(shard.ShardKV, unadvertised), &unsupported) {
+		pending := unsettled()
+		if pending == "" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the leader's gate never refused a replica on %s, which advertises nothing", unadvertised)
+			t.Fatalf("the leader's gate never settled on the founders' advertisements: %s", pending)
 		}
 		time.Sleep(clusterPollInterval)
 	}
@@ -699,33 +732,49 @@ func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID 
 // constructor to the host-open contract every other path keeps: a node is
 // handed out only once its system shard can serve a linearizable read, so the
 // caller's FIRST read succeeds -- no leader poll, no retry. Three founders boot
-// concurrently, as an operator's do, and nothing waits for an election before
-// each returned node is asked for one ReadIndex. Without the wait the founders
-// return within milliseconds of StartShard, seconds before any election
-// timeout fires, and the probe finds no leader -- or a leader that has not yet
-// committed in its term (quicraft.ErrReadIndexNotReady), which is what a
-// replica add's committed-membership read hit. Tenant isolation is off: the
-// wait must not ride on that option.
+// concurrently, as an operator's do, and nothing waits for an election: the
+// moment each NewClusteredNode returns, on its own boot goroutine, the replica
+// must already know a leader -- observed there, before the other founders
+// finish booting, so a founder handed out early cannot be covered by an
+// election that completes while the rest boot. Then each replica is asked for
+// one ReadIndex. Without the wait the founders return within milliseconds of
+// StartShard, seconds before any election timeout fires, so the leader check
+// finds none -- or the read meets a leader that has not yet committed in its
+// term (quicraft.ErrReadIndexNotReady), which is what a replica add's
+// committed-membership read hit. Tenant isolation is off: the wait must not
+// ride on that option.
 func TestNewClusteredNode_ServesALinearizableReadOnReturn(t *testing.T) {
 	ca, replicas := newFormationReplicas(t, 3)
-	nodes, err := bootFormationCluster(t, ca, replicas, func(self uint64) string {
+	leaderAtReturn := make([]bool, len(replicas))
+	nodes, err := bootFormationClusterObserved(t, ca, replicas, func(self uint64) string {
 		return peerIdentitySpecs(t, self, replicas)
+	}, nil, func(i int, n *Node) {
+		_, leaderAtReturn[i], _ = n.host.(*quicraft.Host).LeaderID(shard.ShardKV)
 	})
 	if err != nil {
 		t.Fatalf("NewClusteredNode: %v", err)
 	}
+	// The guarantee is judged on the state NewClusteredNode returned, with no
+	// retry: every replica knew a leader on return, so the read below waits on
+	// no election, and a leader that has not committed in its term refuses it
+	// at once with quicraft.ErrReadIndexNotReady. The read's own round trip is
+	// bounded only by the test's budget: a loaded runner under the race
+	// detector (CI run 70241, a slow fsync) can outrun any tighter clock.
+	ctx, cancel := context.WithTimeout(context.Background(), clusterFormationBudget)
+	defer cancel()
 	for i, n := range nodes {
-		if err := readIndexOnce(n.host.(*quicraft.Host)); err != nil {
+		if !leaderAtReturn[i] {
+			t.Fatalf("replica %d: NewClusteredNode returned before the replica knew a leader", replicas[i].id)
+		}
+		if err := readIndexOnce(ctx, n.host.(*quicraft.Host)); err != nil {
 			t.Fatalf("replica %d: first linearizable read after NewClusteredNode returned: %v", replicas[i].id, err)
 		}
 	}
 }
 
 // readIndexOnce issues exactly one linearizable ReadIndex against the system
-// shard and reports its outcome, bounded by firstReadBudget.
-func readIndexOnce(host *quicraft.Host) error {
-	ctx, cancel := context.WithTimeout(context.Background(), firstReadBudget)
-	defer cancel()
+// shard and reports its outcome, bounded by ctx.
+func readIndexOnce(ctx context.Context, host *quicraft.Host) error {
 	rs, err := host.ReadIndex(ctx, shard.ShardKV)
 	if err != nil {
 		return err
@@ -735,50 +784,25 @@ func readIndexOnce(host *quicraft.Host) error {
 	return err
 }
 
-// firstReadBudget bounds the single probe readIndexOnce issues: a round trip
-// to a healthy leader with headroom for the race detector, and well under the
-// founders' election timeout, so it cannot cover for a missing wait by
-// outlasting an election.
-const firstReadBudget = time.Second
-
 // TestNewClusteredNode_CancelledContextReturnsPromptly: a founder waits for a
 // quorum to elect and commit before NewClusteredNode returns, and that wait
 // honours the caller's ctx. One founder of three is started alone -- no quorum
-// can form -- and its ctx is cancelled shortly after: the constructor returns
-// the cancellation well inside the readiness budget instead of holding the
-// caller for all of it.
+// can form -- and its ctx is cancelled once the shard has started, which puts
+// the cancel inside the readiness wait: the constructor returns the
+// cancellation instead of holding the caller for the readiness budget.
+//
+// The cancel is placed by what the boot has done, not by a timer, and the
+// claim is the error, not a duration. Run 69313 timed it -- cancel at 300ms,
+// return within 5s -- and failed at 5.096s: on a contended disk the boot's
+// fsyncs ran past the cancel before the wait began. A wait that ignored ctx
+// would end in its own *ShardLeaderWaitError after the budget and fail this
+// on the error, however fast or slow the host is.
 func TestNewClusteredNode_CancelledContextReturnsPromptly(t *testing.T) {
-	ca, replicas := newFormationReplicas(t, 3)
-	caPEM := mustReadCAPEM(t, ca)
-	members := make(map[uint64]string, len(replicas))
-	for _, r := range replicas {
-		members[r.id] = r.addr
-	}
-	r := replicas[0]
-	cfg := formationConfig(t, r, peerIdentitySpecs(t, r.id, replicas))
-	mtls := &RaftMTLSConfig{CACert: caPEM, Cert: r.cert.CertPEM, Key: r.cert.KeyPEM}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
-	start := time.Now()
-	n, err := NewClusteredNode(ctx, cfg, members, nil, WithRaftMTLS(mtls))
-	elapsed := time.Since(start)
-	if n != nil {
-		_ = n.Close()
-		t.Fatal("NewClusteredNode returned a node although no quorum could form")
-	}
+	_, err := bootClusteredCancelledAt(t, bootShardDir)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if elapsed > cancelledBootBudget {
-		t.Fatalf("NewClusteredNode returned %s after its ctx was cancelled at 300ms; want within %s", elapsed, cancelledBootBudget)
-	}
 }
-
-// cancelledBootBudget is how long a cancelled clustered boot may take to
-// return: the cancel at 300ms plus one bounded read probe and teardown, far
-// below the 15s readiness budget it would otherwise spend.
-const cancelledBootBudget = 5 * time.Second
 
 // TestClusteredNode_UnsealRetriesAfterACancelledBoot: the clustered boot that
 // Unseal runs honours Unseal's ctx, so a caller that gives up -- here, one

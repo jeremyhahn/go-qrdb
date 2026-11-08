@@ -109,6 +109,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683), [docs/multi-tenancy/](docs/multi-tenancy/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702), [docs/release/](docs/release/) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
+- **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
 
 ## Next
 
@@ -123,7 +124,6 @@ The cluster engine and database system for every project in the stack: embedded,
 
 ## Future
 
-- **barrier-passphrase-change** — a supported system-barrier passphrase change — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — open
 - **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — open
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision

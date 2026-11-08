@@ -34,6 +34,35 @@ func newTestDaemonBinding(t *testing.T) *DaemonBinding {
 	return d
 }
 
+// TestDaemonBinding_ResolveConfigDir_UserConfigDirFallback checks that an
+// empty configDir resolves to daemonConfigDir under os.UserConfigDir, creates
+// it, and resolves to the same path on a second call.
+func TestDaemonBinding_ResolveConfigDir_UserConfigDirFallback(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	d := NewDaemonBinding(testLogger(t), "")
+	want := filepath.Join(configHome, daemonConfigDir)
+
+	got, err := d.resolveConfigDir()
+	if err != nil {
+		t.Fatalf("resolveConfigDir: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveConfigDir = %q, want %q", got, want)
+	}
+	if info, statErr := os.Stat(got); statErr != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be a created directory: %v", got, statErr)
+	}
+
+	again, err := d.resolveConfigDir()
+	if err != nil {
+		t.Fatalf("second resolveConfigDir: %v", err)
+	}
+	if again != got {
+		t.Fatalf("second resolveConfigDir = %q, want %q", again, got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
@@ -55,6 +84,35 @@ func TestDaemonBinding_Status_NotRunning(t *testing.T) {
 	}
 	if status.LogFile == "" {
 		t.Error("expected LogFile to be set")
+	}
+}
+
+// TestDaemonBinding_ResolveLogPath_WithOverride verifies that resolveLogPath
+// returns the explicit log file path unchanged.
+func TestDaemonBinding_ResolveLogPath_WithOverride(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "custom-test.log")
+	d := NewDaemonBinding(testLogger(t), want)
+
+	got, err := d.resolveLogPath()
+	if err != nil {
+		t.Fatalf("resolveLogPath: %v", err)
+	}
+	if got != want {
+		t.Errorf("resolveLogPath = %q, want %q", got, want)
+	}
+}
+
+// TestDaemonBinding_ResolveLogPath_DefaultPath verifies that, with no
+// override, resolveLogPath returns qrdbd.log in the config directory.
+func TestDaemonBinding_ResolveLogPath_DefaultPath(t *testing.T) {
+	d := newTestDaemonBinding(t)
+
+	got, err := d.resolveLogPath()
+	if err != nil {
+		t.Fatalf("resolveLogPath: %v", err)
+	}
+	if want := filepath.Join(d.configDir, "qrdbd.log"); got != want {
+		t.Errorf("resolveLogPath = %q, want %q", got, want)
 	}
 }
 

@@ -71,6 +71,11 @@ func (a *openAIProviderAdapter) Models(ctx context.Context) ([]service.ModelInfo
 	return out, nil
 }
 
+// DefaultModel implements service.EmbeddingProvider.
+func (a *openAIProviderAdapter) DefaultModel() string {
+	return a.p.DefaultModel()
+}
+
 // Close implements service.EmbeddingProvider.
 func (a *openAIProviderAdapter) Close() error {
 	return a.p.Close()

@@ -22,9 +22,10 @@
 # run of that tree on this runner reuses it, so no job removes it. This
 # removes a <prefix>it image created at least REAP_IMAGE_MIN_AGE seconds ago,
 # default 7200 (2 h: the longest full-tier run plus headroom), so an image a
-# run still needs is not old enough. `docker image rm` without force refuses
-# an image a container (running or stopped) uses, so a live stack's image is
-# never removed. Age alone does not protect a reused image older than that,
+# run still needs is not old enough. An image a container (running or stopped)
+# uses is skipped before any of its names is removed (in_use): `docker image
+# rm` refuses only the LAST name of such an image and untags any other, so its
+# refusal alone does not keep a live stack's reference. Age alone does not protect a reused image older than that,
 # so every job that needs the image holds a lease on it: a created, never
 # started container named <prefix>lease-<run>-..., removed at its Tear down
 # (ci.yml). A lease a dead job leaves is stale like any other container
@@ -96,6 +97,19 @@ stale() {
   [ $((now - t)) -ge "$min_age" ]
 }
 
+# in_use succeeds, and says so, when a container (running or stopped: a hold
+# is created and never started) uses the image $1 names, or when that cannot
+# be known: an image is kept rather than reaped on a failed lookup.
+in_use() {
+  local users
+  if ! users=$(docker ps -aq --filter "ancestor=$1" 2>/dev/null); then
+    echo "keep  image $1 (cannot list the containers that use it)"
+    return 0
+  fi
+  [ -n "$users" ] || return 1
+  echo "keep  image $1 (used by a container)"
+}
+
 reaped=0
 
 # Compose projects.
@@ -134,6 +148,41 @@ docker ps -a --filter "name=^$prefix" \
     fi
   done
 
+# CUSTOMIZE (go-qrdb, #1275): scripts/in-toolchain-image.sh creates a
+# no-network stage's multicast marker volume with the stage, labelled
+# qrdb.ci.multicast-marker=1, and removes it in its EXIT trap. A launcher
+# killed before its trap ran leaves it behind. The stage mounts it from its
+# create to its removal, so one no container mounts (dangling) belongs to no
+# live stage, and goes.
+markers=0
+for vol in $(docker volume ls -q --filter label=qrdb.ci.multicast-marker=1 --filter dangling=true); do
+  case $vol in "$prefix"*) ;; *) continue ;; esac
+  echo "reap  marker volume $vol"
+  if run docker volume rm "$vol"; then markers=$((markers + 1)); else echo "warn  marker volume $vol not removed"; fi
+done
+# CUSTOMIZE (go-qrdb) end.
+
+# CUSTOMIZE (go-qrdb, DS-4701): scripts/ci-registry.sh tags the image a
+# toolchain hold holds <prefix>hold:<hold>, so a rebuild that moves the
+# content-hash tag cannot drop the image the job's stages run by ID. A hold
+# tag whose hold container is gone belongs to a job that died before its
+# teardown (its stale hold went above, or a teardown untagged its own first):
+# it is removed, never forced, so the image goes only when no other name or
+# container keeps it. The hold is created before its tag and removed before
+# it, so a live hold's tag always has its container.
+holdtags=0
+for ref in $(docker images --filter "reference=${prefix}hold" --format '{{.Repository}}:{{.Tag}}'); do
+  case $ref in "${prefix}hold:"*) ;; *) continue ;; esac
+  name=${ref#"${prefix}hold:"}
+  if docker container inspect "$name" >/dev/null 2>&1; then
+    echo "keep  hold tag $ref (hold $name exists)"
+    continue
+  fi
+  echo "reap  hold tag $ref (hold $name is gone)"
+  if run docker image rm "$ref"; then holdtags=$((holdtags + 1)); else echo "warn  hold tag $ref not removed"; fi
+done
+# CUSTOMIZE (go-qrdb) end.
+
 # Content-addressed integration images (v2, above).
 images=0
 for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Repository}}:{{.Tag}}'); do
@@ -146,10 +195,44 @@ for ref in $(docker images --filter "reference=${prefix}it" --format '{{.Reposit
     echo "keep  image $ref (created or tagged within ${image_min_age}s)"
     continue
   fi
+  in_use "$ref" && continue
   echo "reap  image $ref"
   if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
 done
 
+# CUSTOMIZE (go-qrdb, DS-3516): the CI images pulled from the Gitea registry
+# are <registry>/<owner>/<prefix>it and <registry>/<owner>/<prefix>toolchain,
+# named by tag on the host that pushed them and by digest alone where a job
+# pulled them. The same age rule applies to each name, and an image a job's
+# hold (a created, never-started container) uses keeps every name: in_use is
+# asked before any of them is removed, because `docker image rm` of one of
+# several names only untags it, in use or not, and the name it drops can be
+# the digest reference the holding job's next `docker create` runs. A
+# pull by digest records no tag time, so an unheld pulled image ages from its
+# build; a job holds what it pulls, and its pull retries if a reap wins the
+# race between the two.
+while read -r repo tag digest; do
+  case $repo in */"${prefix}it" | */"${prefix}toolchain") ;; *) continue ;; esac
+  refs=()
+  [ "$tag" = '<none>' ] || refs+=("$repo:$tag")
+  [ "$digest" = '<none>' ] || refs+=("$repo@$digest")
+  [ "${#refs[@]}" -gt 0 ] || continue
+  read -r created tagged < <(docker image inspect -f '{{.Created}} {{.Metadata.LastTagTime.Unix}}' "${refs[0]}" 2>/dev/null) || continue
+  t=$(date -d "$created" +%s 2>/dev/null) || continue
+  case $tagged in ''|*[!0-9]*) ;; *) [ "$tagged" -le "$t" ] || t=$tagged ;; esac
+  if [ $((now - t)) -lt "$image_min_age" ]; then
+    echo "keep  image ${refs[0]} (created or tagged within ${image_min_age}s)"
+    continue
+  fi
+  in_use "${refs[0]}" && continue
+  for ref in "${refs[@]}"; do
+    # Removing the tag can remove the image, and its digest name with it.
+    docker image inspect "$ref" >/dev/null 2>&1 || continue
+    echo "reap  image $ref"
+    if run docker image rm "$ref"; then images=$((images + 1)); else echo "warn  image $ref not removed (in use?)"; fi
+  done
+done < <(docker images --digests --format '{{.Repository}} {{.Tag}} {{.Digest}}')
+
 if [ "${REAP_DRY_RUN:-0}" = 1 ]; then done_as="would be removed"; else done_as=removed; fi
-echo "reaper: $reaped compose project(s) and $images image(s) $done_as for prefix '$prefix'"
+echo "reaper: $reaped compose project(s), $images image(s), $markers marker volume(s) and $holdtags hold tag(s) $done_as for prefix '$prefix'"
 exit 0

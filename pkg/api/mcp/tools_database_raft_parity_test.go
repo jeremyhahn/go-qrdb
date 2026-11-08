@@ -24,7 +24,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -93,7 +93,7 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})), t.TempDir())
 	mgr.SetShardIDClaimer(claimer)
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := service.NewDatabaseService(mgr)

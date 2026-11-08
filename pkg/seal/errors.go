@@ -57,6 +57,31 @@ var (
 	// is ALREADY unsealed, so there is a live key to compare against.
 	ErrCredentialMismatch = errors.New("qrdb/seal: supplied credentials do not match the barrier's current key")
 
+	// ErrPassphraseChangeConflict is returned by ChangePassword when the
+	// persisted root-key blob changed between the check of the current
+	// passphrase and the guarded write of the re-wrapped one: a rotation,
+	// rekey or second passphrase change landed first. Nothing was written;
+	// the caller retries against the new state.
+	ErrPassphraseChangeConflict = errors.New("qrdb/seal: root key blob changed during the passphrase change; nothing was written")
+
+	// ErrRootKeyWriteInProgress is returned when the persisted root-key blob
+	// is being rewritten (a passphrase change, a share redistribution's
+	// record of its Shamir parameters, or a migration's adoption of its
+	// target's key, between its write and the live barrier's adoption of the
+	// new state) and another write of it is refused rather than interleaved:
+	// a second passphrase change, or a rotation, purge or backoff write
+	// go-quicraft makes through the barrier's state persister. Nothing was
+	// written or committed; the caller retries once the rewrite has
+	// finished, and go-quicraft's scheduled rotation does so on its next tick.
+	ErrRootKeyWriteInProgress = errors.New("qrdb/seal: the root key blob is being re-wrapped; nothing was written")
+
+	// ErrRootKeyAdopted is returned by the state persister of a barrier whose
+	// root key a migration target has replaced (AdoptMigratedRootKey): its
+	// live state wraps a key the canonical blob no longer names, and writing
+	// it would undo the migration. Nothing was written; the caller reopens
+	// the keyed barrier (ReopenKeyed) and works through that one.
+	ErrRootKeyAdopted = errors.New("qrdb/seal: the root key was adopted by a migration target; this barrier no longer persists it")
+
 	// ErrDecryptionFailed is returned when an unseal decryption operation
 	// fails, typically because the supplied passphrase is wrong (the AEAD tag
 	// fails to verify). It is wrapped by go-quicraft's *UnsealError, so

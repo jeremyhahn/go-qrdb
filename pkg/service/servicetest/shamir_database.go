@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -65,7 +66,7 @@ func NewShamirDatabase(t testing.TB, name string, m, n int) *ShamirDatabase {
 func NewShamirDatabaseOwnedBy(t testing.TB, tenantID, name string, m, n int) *ShamirDatabase {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	system, err := seal.NewStorageBarrier(logger, seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "root-key"}, seal.NewNoneStrategy())
 	if err != nil {

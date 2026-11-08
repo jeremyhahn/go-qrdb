@@ -689,9 +689,10 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 // Membership and snapshot handlers
 // ---------------------------------------------------------------------------
 
-// membershipChangeStatus is the HTTP status for a failed membership add: the
-// status pkg/api/errclass gives a member-identity refusal or a feature-gate
-// admission refusal when the failure is one of those, else 500. Deliberately
+// membershipChangeStatus is the HTTP status for a failed membership change
+// (add, add-observer, promote, remove): the status pkg/api/errclass gives a
+// member-identity refusal, a feature-gate admission refusal or a transient
+// (Unavailable) Raft condition when the failure is one of those, else 500. Deliberately
 // narrower than a blanket mapHTTPError(err): a membership change reaches
 // go-quicraft directly, and errclass's Unclassified default (500) is the
 // right answer for whatever else that surface can return, not a class this
@@ -717,6 +718,14 @@ func membershipChangeStatus(err error) int {
 	// NotLeaderError->Unavailable rule), not a permanent failure.
 	var nle *service.NotLeaderError
 	if errors.As(err, &nle) {
+		return mapHTTPError(err)
+	}
+	// A change already in the log when its leader stepped down, or one Raft
+	// timed out on, may still commit: go-quicraft wraps it in a
+	// MaybeAppliedError the service layer keeps out of NotLeaderError.
+	// errclass classes it Unavailable, as gRPC and QUIC answer it; the
+	// caller reads the membership before it retries (run 70834).
+	if errclass.Classify(err) == errclass.Unavailable {
 		return mapHTTPError(err)
 	}
 	return http.StatusInternalServerError
@@ -815,7 +824,7 @@ func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) 
 		if s.tryForwardWrite(w, r, body, err) {
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "remove", Err: err})
+		writeErrorJSON(w, membershipChangeStatus(err), &MembershipError{Op: "remove", Err: err})
 		return
 	}
 

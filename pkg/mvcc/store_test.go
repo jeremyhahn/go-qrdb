@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
@@ -2300,5 +2301,74 @@ func TestRange_SingleKey_CountOnly(t *testing.T) {
 	_, count, _, err = s.Range([]byte("missing"), nil, service.WithCountOnly())
 	if err != nil || count != 0 {
 		t.Errorf("Range of a missing key = (count %d, %v), want (count 0, nil)", count, err)
+	}
+}
+
+// TestRange_FailedKeyReadIsAnError checks a key whose data entry cannot be
+// read fails the range, single key and enumerated alike, rather than being
+// left out of it as if it were absent.
+// errMetaRead is the fault metaFaultReader returns for a metadata read.
+var errMetaRead = errors.New("injected metadata read fault")
+
+// metaFaultReader reads through to its Reader except that every Get of a
+// metadata key fails.
+type metaFaultReader struct {
+	storage.Reader
+}
+
+func (r metaFaultReader) Get(key []byte) ([]byte, error) {
+	if len(key) > 0 && key[0] == prefixMeta {
+		return nil, errMetaRead
+	}
+	return r.Reader.Get(key)
+}
+
+// TestGetAtRevision_FailedMetadataReadIsAnError checks that a failed
+// metadata read is reported rather than taken for a deleted key, which
+// answers with a made-up CreateRevision and Version.
+func TestGetAtRevision_FailedMetadataReadIsAnError(t *testing.T) {
+	s := newTestStore(t)
+	for _, v := range []string{"v1", "v2"} {
+		if _, err := s.Put([]byte("a"), []byte(v), 0); err != nil {
+			t.Fatalf("Put(a=%s): %v", v, err)
+		}
+	}
+
+	kv, err := s.GetAtRevisionFrom(metaFaultReader{s.Storage()}, []byte("a"), 2)
+	if !errors.Is(err, errMetaRead) {
+		t.Fatalf("GetAtRevisionFrom = %+v, %v; want the metadata read fault", kv, err)
+	}
+	var storeErr *StoreError
+	if !errors.As(err, &storeErr) {
+		t.Fatalf("GetAtRevisionFrom error = %T, want *StoreError", err)
+	}
+}
+
+func TestRange_FailedKeyReadIsAnError(t *testing.T) {
+	s := newTestStore(t)
+	for _, key := range []string{"a", "b"} {
+		if _, err := s.Put([]byte(key), []byte("v"), 0); err != nil {
+			t.Fatalf("Put(%s): %v", key, err)
+		}
+	}
+	batch := s.Storage().Batch()
+	if err := batch.Set(EncodeDataKey([]byte("b"), 2), []byte{0xff}); err != nil {
+		t.Fatalf("corrupt the data entry: %v", err)
+	}
+	if err := batch.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	_ = batch.Close()
+
+	for _, end := range [][]byte{nil, []byte("z")} {
+		kvs, count, _, err := s.Range([]byte("b"), end)
+		var encErr *EncodingError
+		if !errors.As(err, &encErr) {
+			t.Fatalf("Range(b, %q) = (%d kvs, count %d, %v), want the EncodingError",
+				end, len(kvs), count, err)
+		}
+	}
+	if kvs, _, _, err := s.Range([]byte("a"), nil); err != nil || len(kvs) != 1 {
+		t.Fatalf("Range(a) = (%d kvs, %v), want the one readable key", len(kvs), err)
 	}
 }

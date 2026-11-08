@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -114,7 +115,7 @@ func TestBuildServices_LogServiceRefusesBarrierTenants(t *testing.T) {
 // registry and refuses the database before any key is created.
 func TestBuildServices_LogServiceRefusesBarrierDatabases(t *testing.T) {
 	barrier, registry, credSvc := newTestBarrier(t)
-	dbs := database.NewManager(nil, t.TempDir())
+	dbs := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = dbs.Close() })
 	device := &recordingHeadSigners{}
 	node := buildSeamNode(t, lifecycle.Infra{

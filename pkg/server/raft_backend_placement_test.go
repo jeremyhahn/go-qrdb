@@ -883,7 +883,7 @@ func TestRaftBackendFactory_FenceServicesResolvesADroppingDatabase(t *testing.T)
 	if _, err := f.Services(ctx, "rt", "orders"); !errors.As(err, &dropping) {
 		t.Fatalf("Services() after the drop = %v, want *database.DroppingError", err)
 	}
-	svcs, err := f.FenceServices(ctx, "rt", "orders")
+	svcs, err := f.FenceServices(ctx, "rt", "orders", "")
 	if err != nil || svcs == nil || svcs.KV == nil {
 		t.Fatalf("FenceServices() on the cached shard = (%v, %v), want its services", svcs, err)
 	}
@@ -898,8 +898,54 @@ func TestRaftBackendFactory_FenceServicesResolvesADroppingDatabase(t *testing.T)
 	if _, err := cold.Services(ctx, "rt", "orders"); !errors.As(err, &dropping) {
 		t.Fatalf("cold Services() = %v, want *database.DroppingError", err)
 	}
-	if svcs, err := cold.FenceServices(ctx, "rt", "orders"); err != nil || svcs == nil {
+	if svcs, err := cold.FenceServices(ctx, "rt", "orders", ""); err != nil || svcs == nil {
 		t.Fatalf("cold FenceServices() = (%v, %v), want the shard's services", svcs, err)
+	}
+}
+
+// TestRaftBackendFactory_FenceServicesRefusesAnotherIncarnationsShard checks
+// a dedicated shard is fenced only for the incarnation the catalog records
+// for the name: a drop that resumes after another drop finished it and the
+// name was created again resolves the successor's shard by name, and must
+// not fence it (go-qrdb#893).
+func TestRaftBackendFactory_FenceServicesRefusesAnotherIncarnationsShard(t *testing.T) {
+	store := newPlacementStore(t)
+	reg := newVolumePooledRegistry(t)
+	registerVolumeTenant(t, reg, "rt")
+	ctx := context.Background()
+
+	if err := store.Put(ctx, &placement.Placement{
+		TenantID: "rt", Database: "orders", ShardID: 5021, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+		},
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+	catalog := f.dbInfo.(*placementRaftInfoSource).fallback.(*fakeRaftInfoSource)
+	key := raftShardKey{tenantID: "rt", database: "orders"}
+	catalog.incarnations = map[raftShardKey]string{key: "successor"}
+	catalog.dropped = map[raftShardKey]bool{}
+
+	var superseded *database.DropSupersededError
+	if _, err := f.FenceServices(ctx, "rt", "orders", "dropped"); !errors.As(err, &superseded) {
+		t.Fatalf("FenceServices() for another incarnation = %v, want *database.DropSupersededError", err)
+	}
+	if svcs, err := f.FenceServices(ctx, "rt", "orders", "successor"); err != nil || svcs == nil || svcs.KV == nil {
+		t.Fatalf("FenceServices() for the recorded incarnation = (%v, %v), want its services", svcs, err)
+	}
+
+	catalog.dropped[key] = true
+	if _, err := f.FenceServices(ctx, "rt", "orders", "successor"); !errors.As(err, &superseded) {
+		t.Fatalf("FenceServices() with no catalog record = %v, want *database.DropSupersededError", err)
+	}
+
+	catalog.incarnationErr = errors.New("catalog unreadable")
+	_, err := f.FenceServices(ctx, "rt", "orders", "successor")
+	var backend *RaftBackendError
+	if !errors.As(err, &backend) || backend.Op != "incarnation-lookup" || errors.As(err, &superseded) {
+		t.Fatalf("FenceServices() with an unreadable catalog = %v, want *RaftBackendError (incarnation-lookup), never superseded", err)
 	}
 }
 
@@ -935,7 +981,7 @@ func TestRaftBackendFactory_CachedShardOfADroppedIncarnation(t *testing.T) {
 	if err := store.Delete(ctx, "rt", "orders"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := f.FenceServices(ctx, "rt", "orders"); !errors.Is(err, ErrRaftDatabaseUnknown) {
+	if _, err := f.FenceServices(ctx, "rt", "orders", ""); !errors.Is(err, ErrRaftDatabaseUnknown) {
 		t.Fatalf("FenceServices() after the placement is gone = %v, want ErrRaftDatabaseUnknown", err)
 	}
 	var dropping *database.DroppingError

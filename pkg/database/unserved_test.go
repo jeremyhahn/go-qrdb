@@ -32,7 +32,7 @@ func closed(ch <-chan struct{}) bool {
 // signal when it is unsealed: a stream opened before the seal ends, and one
 // opened after the unseal is not ended by the earlier seal.
 func TestDatabase_UnservedFollowsSealAndUnseal(t *testing.T) {
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 	db, err := m.Create(DatabaseConfig{Name: "app", Backend: BackendMemory})
 	if err != nil {
@@ -62,7 +62,7 @@ func TestDatabase_UnservedFollowsSealAndUnseal(t *testing.T) {
 
 // A drop closes the database, which ends every stream on it.
 func TestDatabase_UnservedClosesOnDrop(t *testing.T) {
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 	db, err := m.Create(DatabaseConfig{Name: "app", Backend: BackendMemory})
 	if err != nil {

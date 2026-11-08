@@ -132,6 +132,23 @@ func (u *BindingUsers) UpdateUser(ctx context.Context, req *user.UpdateUserReque
 	if berr != nil {
 		return nil, berr
 	}
+	// The caller's guard, judged against the record this write replaces, as
+	// the store judges it against the base of its conditional commit.
+	if req.Guard != nil {
+		next := *rec
+		if req.RoleIDs != nil {
+			next.RoleIDs = req.RoleIDs
+		}
+		if req.RoleBindings != nil {
+			next.RoleBindings = bindings
+		}
+		if req.Attributes != nil {
+			next.Attributes = req.Attributes
+		}
+		if gerr := req.Guard(rec, &next); gerr != nil {
+			return nil, gerr
+		}
+	}
 	u.mu.Lock()
 	u.updated = append(u.updated, req.ID)
 	u.mu.Unlock()

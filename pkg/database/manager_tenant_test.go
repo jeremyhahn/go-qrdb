@@ -728,7 +728,7 @@ func TestManager_ListForTenant_TenantIDInInfo(t *testing.T) {
 // rests on: a tenant is refused for ITS databases, never another's.
 func TestTenantDatabases_ReturnsOnlyTheTenantsOwn(t *testing.T) {
 	ctx := context.Background()
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 
 	for _, tc := range []struct{ name, owner string }{
@@ -765,7 +765,7 @@ func TestTenantDatabases_ReturnsOnlyTheTenantsOwn(t *testing.T) {
 // a tenant with no databases is exactly the tenant a delete may proceed on.
 func TestTenantDatabases_UnknownTenantOwnsNone(t *testing.T) {
 	ctx := context.Background()
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 
 	got, err := m.TenantDatabases(ctx, "never-existed")
@@ -782,7 +782,7 @@ func TestTenantDatabases_UnknownTenantOwnsNone(t *testing.T) {
 // system tenant, and the two must not disagree about that.
 func TestTenantDatabases_SystemTenantSeesUnownedDatabases(t *testing.T) {
 	ctx := context.Background()
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Create(DatabaseConfig{
@@ -809,7 +809,7 @@ func TestTenantDatabases_SystemTenantSeesUnownedDatabases(t *testing.T) {
 // drop the databases and the tenant becomes deletable.
 func TestTenantDatabases_ReflectsADrop(t *testing.T) {
 	ctx := context.Background()
-	m := NewManager(nil, t.TempDir())
+	m := newCatalogManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = m.Close() })
 
 	if _, err := m.Create(DatabaseConfig{
@@ -826,5 +826,47 @@ func TestTenantDatabases_ReflectsADrop(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("TenantDatabases after the drop = %v, want none", got)
+	}
+}
+
+func TestTenantRecords_ListsARecordThisNodeHasNotOpened(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	creator := newCatalogManager(nil, dir)
+	lister := newCatalogManager(nil, dir)
+	t.Cleanup(func() { _ = creator.Close(); _ = lister.Close() })
+
+	for _, name := range []string{"reports", "ledger"} {
+		if _, err := creator.Create(DatabaseConfig{
+			Name: name, TenantID: "acme", Backend: BackendMemory,
+			Protocol: ProtocolConfig{MySQL: true},
+		}); err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+	}
+
+	got, err := lister.TenantRecords(ctx, "acme")
+	if err != nil {
+		t.Fatalf("TenantRecords: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "ledger" || got[1].Name != "reports" {
+		t.Fatalf("TenantRecords(acme) = %v, want [ledger reports] sorted", got)
+	}
+	if !got[0].Protocol.MySQL {
+		t.Errorf("TenantRecords carries the recorded protocol: got %+v", got[0].Protocol)
+	}
+	if _, open := lister.Local("ledger", "acme"); open {
+		t.Error("TenantRecords opened a database; it must only read the catalog")
+	}
+}
+
+func TestTenantRecords_WithoutACatalogFailsTyped(t *testing.T) {
+	m := NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = m.Close() })
+
+	_, err := m.TenantRecords(context.Background(), "acme")
+	var required *CatalogRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("TenantRecords without a catalog = %v, want *CatalogRequiredError", err)
 	}
 }

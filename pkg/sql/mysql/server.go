@@ -27,6 +27,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -109,6 +110,9 @@ type Server struct {
 	// over this listener use secondary index acceleration for WHERE
 	// clause evaluation.
 	indexSvc service.IndexServicer
+	// clientLimit charges every connection and statement to its client
+	// address's bucket (WithClientLimiter); nil limits nothing.
+	clientLimit *clientlimit.Limiter
 }
 
 // ServerOption configures optional Server dependencies.
@@ -338,6 +342,7 @@ func (s *Server) Start() error {
 	}
 	sb := newSessionBuilder(s.authMW, s.sealedProbe)
 	sb.sessions = s.sessions
+	sb.clientLimit = s.clientLimit
 
 	// Configure the go-mysql-server server.
 	cfg := server.Config{
@@ -370,7 +375,7 @@ func (s *Server) Start() error {
 	// The sealed-window gate refuses new sessions in the session builder and
 	// every statement of an open one here; the query timeout bounds every
 	// statement.
-	cfg.Options = append(cfg.Options, handlerOptions(s.sealedProbe, s.sessions, s.queryTimeout)...)
+	cfg.Options = append(cfg.Options, handlerOptions(s.clientLimit, s.sealedProbe, s.sessions, s.queryTimeout)...)
 
 	// Bind a TCP listener so we can capture the resolved address
 	// (important when port 0 is used in tests).

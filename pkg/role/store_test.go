@@ -36,9 +36,11 @@ import (
 
 type memKVStore struct {
 	data sync.Map
-	// mu guards PutAllIfUnchanged (see mem_kvstore_atomic_test.go): sync.Map
-	// gives per-key atomicity, not the check-many-then-write-many atomicity a
-	// guarded batch needs, so that one operation takes this lock instead.
+	// mu guards PutAllIfUnchanged, CompareAndDelete and CompareAndSwap (see
+	// mem_kvstore_atomic_test.go): sync.Map gives per-key atomicity, not the
+	// check-many-then-write-many atomicity a guarded batch needs, and its own
+	// compare verbs cannot compare a []byte. Put and Delete take it too, so
+	// no plain write lands between one of those checks and its write.
 	mu sync.Mutex
 }
 
@@ -47,6 +49,8 @@ func newMemKVStore() *memKVStore {
 }
 
 func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data.Store(key, append([]byte(nil), value...))
 	return nil
 }
@@ -60,6 +64,8 @@ func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (m *memKVStore) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data.Delete(key)
 	return nil
 }
@@ -188,6 +194,46 @@ type faultKVStore struct {
 	getErr    error
 	getFailAt int
 	getCount  int
+	// claimLostErr, when set, makes PutIfAbsent COMMIT and then return it:
+	// a claim whose answer was lost after it landed ("it may still commit").
+	claimLostErr error
+	// onClaim, when set, runs at the start of PutIfAbsent: another create
+	// acting between a create's name lookup and its claim.
+	onClaim func()
+}
+
+var _ kvstore.AtomicKVStore = (*faultKVStore)(nil)
+
+// PutIfAbsent implements kvstore.AtomicKVStore. It is a write, so it counts
+// against putFailAt exactly as Put does.
+func (f *faultKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if f.onClaim != nil {
+		f.onClaim()
+	}
+	f.putCount++
+	if f.putFailAt > 0 && f.putCount >= f.putFailAt {
+		return false, f.putErr
+	}
+	stored, err := f.inner.PutIfAbsent(ctx, key, value)
+	if err == nil && f.claimLostErr != nil {
+		return false, f.claimLostErr
+	}
+	return stored, err
+}
+
+// CompareAndDelete implements kvstore.AtomicKVStore. It is a delete, so it
+// counts against delFailAt exactly as Delete does.
+func (f *faultKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	f.delCount++
+	if f.delFailAt > 0 && f.delCount >= f.delFailAt {
+		return false, f.delErr
+	}
+	return f.inner.CompareAndDelete(ctx, key, expected)
+}
+
+// CompareAndSwap implements kvstore.AtomicKVStore.
+func (f *faultKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return f.inner.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (f *faultKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -2205,7 +2251,7 @@ func TestValidatePermissions_Nil(t *testing.T) {
 func TestCreateRole_PutPrimaryFails(t *testing.T) {
 	fkv := &faultKVStore{
 		inner:     newMemKVStore(),
-		putFailAt: 1,
+		putFailAt: 2, // name claim(1) succeeds, primary(2) fails
 		putErr:    errors.New("disk full"),
 	}
 	svc, _ := NewStore(fkv)
@@ -2227,7 +2273,7 @@ func TestCreateRole_PutPrimaryFails(t *testing.T) {
 func TestCreateRole_PutTenantIndexFails(t *testing.T) {
 	fkv := &faultKVStore{
 		inner:     newMemKVStore(),
-		putFailAt: 2, // first Put (primary) succeeds, second (tenant index) fails
+		putFailAt: 3, // name claim(1) and primary(2) succeed, tenant index(3) fails
 		putErr:    errors.New("disk full"),
 	}
 	svc, _ := NewStore(fkv)
@@ -2249,7 +2295,7 @@ func TestCreateRole_PutTenantIndexFails(t *testing.T) {
 func TestCreateRole_PutNameIndexFails(t *testing.T) {
 	fkv := &faultKVStore{
 		inner:     newMemKVStore(),
-		putFailAt: 3, // primary and tenant succeed, name index fails
+		putFailAt: 1, // the name claim, the first write, fails
 		putErr:    errors.New("disk full"),
 	}
 	svc, _ := NewStore(fkv)

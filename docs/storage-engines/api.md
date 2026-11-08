@@ -1,7 +1,7 @@
 # Storage Engines — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Storage engines
 
@@ -36,6 +36,61 @@ between them. On the File engine that is the cross-process write lock, so the
 guarantee holds across processes sharing the directory. Memory, Pebble and
 ObjStore hold an in-process lock only; across processes sharing an ObjStore
 bucket the guarantee does not hold.
+
+An embedder opening the objstore engine passes its provider credential by
+file reference, never by value, through the SDK (`sdkstorage` is
+`github.com/jeremyhahn/go-qrdb/sdk/go/storage`):
+
+```go
+e, err := sdkstorage.NewObjStoreStorage("s3", map[string]string{"bucket": "my-bucket"},
+	sdkstorage.WithObjStoreCredentialFiles(sdkstorage.ObjStoreCredentialFiles{
+		KeyFile:    "<install-dir>/secrets/objstore-access-key",
+		SecretFile: "<install-dir>/secrets/objstore-secret-key",
+	}))
+```
+
+`New` reads each file into a go-enclave handle (`secure.ReadFileHandle`),
+hands the handles to go-objstore as a `common.Credentials` and destroys them
+before it returns. A credential in `settings` is refused with an
+`*objstore.CredentialSettingError` before any provider, shipped or
+registered, sees the settings; a file it cannot use with
+`*objstore.CredentialFileError` naming the file; neither carries the value.
+`objstore.RejectCredentialSettings(settings)` applies the same refusal before
+any open, returning an `*objstore.CredentialSettingError` that names the
+setting, never its value, and unwraps to go-objstore's error; `qrdbd start`
+calls it at load, so nothing outside the storage seam imports go-objstore.
+
+An embedder that registers a provider of its own declares which credentials
+it reads, so `New` delivers a configured reference to it rather than refusing
+the reference as ignored:
+
+```go
+err := sdkstorage.RegisterObjStoreProvider("my-provider",
+	sdkstorage.ObjStoreProviderCredentials{Key: true, Secret: true}, creator)
+```
+
+`creator` is a go-objstore `factory.StorageCreator`. A name go-objstore ships,
+as a storage provider or an archiver (`s3`, `azure`, `gcs`, `glacier`,
+`azurearchive`, `local`, `memory`), whether or not its build tag is set, or
+an earlier registration holds is refused with an `*objstore.ProviderRegisteredError`; an empty name or a nil
+creator with `objstore.ErrInvalidProviderRegistration`. `RegisterProvider` is
+safe to call concurrently with itself and with `New`: the provider is kept in
+the storage seam's own synchronized registry, never written into go-objstore's
+factory, whose registry is an unsynchronized map. `pkg/storage/objstore/objstoretest`
+registers an in-memory provider this way that reads both credentials and
+records what each open received, so a test outside the seam drives a
+credential reference end to end without importing go-objstore.
+
+The SDK names each piece after the package it aliases, with the `ObjStore`
+prefix the root already uses: `ObjStoreOption`, `ObjStoreCredentialFiles`,
+`WithObjStoreCredentialFiles`, `ObjStoreCredential` (`ObjStoreCredentialKey`,
+`ObjStoreCredentialSecret`), `ErrObjStoreCredentialKeyWithoutSecret`,
+`ObjStoreCredentialFileError`, `ObjStoreCredentialIgnoredError`,
+`ObjStoreCredentialUnavailableError`, `ObjStoreCredentialSettingError`,
+`RejectObjStoreCredentialSettings`, `RegisterObjStoreProvider`,
+`ObjStoreProviderCredentials`, `ObjStoreProviderRegisteredError` and
+`ErrInvalidObjStoreProviderRegistration` are the `objstore` names above, so an
+embedder never imports `pkg/storage/objstore`.
 
 Two optional in-process seams sit beside `Storage`: `storage.Syncer` (flush on
 demand) and `storage.Exclusive` (`Exclusive(fn func(storage.ReadWriter) error)
@@ -103,7 +158,26 @@ Two things reach a caller:
 
 Not applicable — there are no versioned routes in this feature.
 
-## Not built
+## Target design: what a caller would see
 
-An object-storage LSM segment layout for `objstore` is not implemented; this
-API describes the shipped engines only.
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+for the full design, future work under the SPEC row `object-storage-lsm`.
+**Not implemented.** The wire surface does not change shape:
+
+- The backend enum stays `objstore` — `DatabaseInfo.Backend` does not gain or
+  rename a value. The LSM segment layout is an internal rebuild of what
+  `backend: objstore` means, not a new caller-visible option.
+- There is still no wire API for storage engines (this feature has none
+  today, per "Storage engines" above), and this design does not add one.
+
+Three things a caller observes today would change:
+
+- **The capability report's `unencryptedAtRest` list** stops naming a
+  standalone `objstore` store under the seal, because the design encrypts
+  every remote object through the barrier (OS-4).
+- **A database's `backend: objstore`** stops being refused when the database
+  opens (`database.InvalidBackendError`), in phase 2 of the design.
+- **`raft.sm_storage`/`state_storage: objstore`** stays refused (see
+  [engineering.md](engineering.md)'s error table). Lifting the Raft
+  hot-apply-path refusal is OS-7, deferred to a gated phase 3, and is called
+  out here so a reader of this API doc is not surprised by it later.

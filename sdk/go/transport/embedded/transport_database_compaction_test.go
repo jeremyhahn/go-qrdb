@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service/servicetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -33,7 +34,7 @@ import (
 // own databases.
 func TestEmbeddedDatabase_CompactionPolicy_RealService(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	if _, err := mgr.Create(database.DatabaseConfig{Name: "acme-db", TenantID: "acme", Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)

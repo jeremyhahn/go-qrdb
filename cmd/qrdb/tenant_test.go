@@ -286,6 +286,26 @@ func TestTenantCreateCmd_Success(t *testing.T) {
 	}
 }
 
+// TestTenantCreateCmd_OneFileForAdminAndSO names the admin the SO with the
+// admin's own CSR file: both flags carry the file's PEM.
+func TestTenantCreateCmd_OneFileForAdminAndSO(t *testing.T) {
+	csrFile := adminCSRFile(t, "admin1")
+	var got *service.OnboardTenantRequest
+	onboard := &mockTenantOnboarding{onboardFn: func(_ context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+		got = req
+		return &service.OnboardTenantResult{Tenant: &tenant.TenantInfo{ID: req.ID}}, nil
+	}}
+	if _, err := executeTenantCmdOnboard(t, onboard,
+		"create", "--id", "tenant-001", "--name", "Alpha",
+		"--admin-username", "admin1", "--admin-csr", csrFile,
+		"--so-username", "admin1", "--so-csr", csrFile, "--so-pin", "so-pin-1234"); err != nil {
+		t.Fatalf("tenant create: %v", err)
+	}
+	if got == nil || len(got.AdminCSRPEM) == 0 || !bytes.Equal(got.AdminCSRPEM, got.SOCSRPEM) {
+		t.Fatalf("request = %+v, want the one CSR as both the admin's and the SO's", got)
+	}
+}
+
 func TestTenantCreateCmd_MissingID(t *testing.T) {
 	csrFile := adminCSRFile(t, "admin1")
 	_, err := executeTenantCmdOnboard(t, &mockTenantOnboarding{},

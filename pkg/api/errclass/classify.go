@@ -20,6 +20,7 @@ import (
 	"slices"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // rule is one row of the classification table: a way of recognising an error,
@@ -100,7 +101,19 @@ var authClassByFailure = map[authmw.AuthFailureClass]Class{
 var authRule = rule{
 	name: "middleware.ClassifyAuthError",
 	classify: func(err error) (Class, bool) {
-		c, ok := authClassByFailure[authmw.ClassifyAuthError(err)]
+		fc := authmw.ClassifyAuthError(err)
+		// The auth classifier answers Unavailable for a shard electing a
+		// leader anywhere in the chain (go-qrdb#1280), so an authenticator's
+		// failed read never reads as a credential refusal. Here that
+		// condition is a cause, which raftTransientRules classify as
+		// Unavailable beneath every wrapper that must win over its cause --
+		// a failed rollback over a raft timeout is DataLoss. So this
+		// dominant row leaves it to the table. An audit outage is its own
+		// class and keeps this row's precedence.
+		if fc == authmw.AuthFailureUnavailable && service.LeadershipTransient(err) {
+			return Unclassified, false
+		}
+		c, ok := authClassByFailure[fc]
 		return c, ok
 	},
 	samples: authSamples,

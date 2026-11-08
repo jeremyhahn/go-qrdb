@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -114,6 +115,7 @@ type CertEnrollmentService struct {
 	now         func() time.Time
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
+	clientTrust ClientTrustRefresher
 }
 
 // Compile-time interface check.
@@ -156,6 +158,17 @@ func WithEnrollmentAuditPolicy(p audit.FailurePolicy) CertEnrollmentOption {
 	return func(s *CertEnrollmentService) { s.auditPolicy = p }
 }
 
+// WithEnrollmentClientTrust sets what brings this node's client-certificate
+// trust up to date before SignCertificate and EnrollCertificate answer, so
+// the next handshake admits the certificate they return: an issuance can
+// bring a tenant's login CA into use, and a trust anchor added before an
+// enrollment is announced to the handshake asynchronously. The lifecycle
+// node passes clienttrust.Pool.Settle. Nil (the default) leaves the
+// handshake to the pool's own rebuild.
+func WithEnrollmentClientTrust(r ClientTrustRefresher) CertEnrollmentOption {
+	return func(s *CertEnrollmentService) { s.clientTrust = r }
+}
+
 // NewCertEnrollmentService returns the production CertEnrollmentServicer. A
 // nil certs disables SignCertificate and a nil anchors disables
 // EnrollCertificate and the trust-anchor verbs; each then answers
@@ -166,6 +179,20 @@ func NewCertEnrollmentService(certs cert.CertProvider, users certEnrollmentUsers
 		opt(s)
 	}
 	return s
+}
+
+// settleClientTrust brings this node's client-certificate trust up to date
+// for a certificate about to be returned. The certificate and its binding are
+// committed whatever this returns, so a failure is logged, not reported: the
+// pool's periodic rebuild admits the certificate within its interval.
+func (s *CertEnrollmentService) settleClientTrust(ctx context.Context, tenantID string) {
+	if s.clientTrust == nil {
+		return
+	}
+	if err := s.clientTrust.Refresh(ctx); err != nil {
+		slog.WarnContext(ctx, "certificate enrollment: client trust not brought up to date before answering; the periodic rebuild will admit the certificate",
+			"tenant", tenantID, "error", err)
+	}
 }
 
 // account resolves the existing account a certificate is for, refusing one
@@ -243,6 +270,7 @@ func (s *CertEnrollmentService) SignCertificate(ctx context.Context, req *SignCe
 		return nil, bindErr
 	}
 	s.settleCertAudit(ctx, ev, nil)
+	s.settleClientTrust(ctx, req.TenantID)
 	return &EnrolledCertificate{
 		UserID:     u.ID,
 		Username:   u.Username,
@@ -283,6 +311,7 @@ func (s *CertEnrollmentService) EnrollCertificate(ctx context.Context, req *Enro
 		return nil, bindErr
 	}
 	s.settleCertAudit(ctx, ev, nil)
+	s.settleClientTrust(ctx, req.TenantID)
 	return &EnrolledCertificate{
 		UserID:     u.ID,
 		Username:   u.Username,

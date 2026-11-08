@@ -38,18 +38,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
-// freeTCPPort reserves a port for the REST server through the shared harness
-// allocator, which certifies it on TCP and on UDP (the HTTP/3 sibling binds
-// the same number) and locks it against every other test process. AdminPort
-// left at its zero value would be forced to the fixed default 63001 by
-// buildNodeServerConfig, risking collisions between parallel test binaries.
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	port, err := qrdbdharness.ReserveTCPPort()
-	require.NoError(t, err)
-	return port
-}
-
 // newAuthEnforcedRESTNode builds a standalone SDK node with the REST
 // transport enabled over real mTLS, seeds an admin role/user pair with the
 // admin:status permission, and returns the node plus the harness CA and the

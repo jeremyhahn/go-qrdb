@@ -283,7 +283,24 @@ type UpdateUserRequest struct {
 	// any other field makes the request an ordinary update again, with ordinary
 	// lost-update semantics.
 	LastAuth *time.Time
+
+	// Guard, when non-nil, judges the update against the record it commits
+	// over. The store calls it before anything is written, with the record as
+	// committed -- the version the conditional commit swaps against -- and the
+	// record as this request would leave its RoleIDs, RoleBindings and
+	// Attributes. A non-nil error refuses the update and is returned
+	// unchanged. Because the commit is conditional on that same version, a
+	// guard that passed cannot be outrun by a concurrent write: the write it
+	// passed either commits over the record it judged or fails with
+	// ConcurrentUpdateError. It is not consulted by the LastAuth-only path,
+	// which changes no authority.
+	Guard UpdateGuard
 }
+
+// UpdateGuard is UpdateUserRequest.Guard: it judges an update from the record
+// as committed (prior) to the record as written (next). Both are the store's
+// own values and must not be modified.
+type UpdateGuard func(prior, next *User) error
 
 // ListUsersRequest holds parameters for listing users.
 type ListUsersRequest struct {

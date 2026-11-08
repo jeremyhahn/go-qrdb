@@ -78,6 +78,34 @@ func (s *Server) handleBarrierUnseal(ctx context.Context, payload []byte) ([]byt
 	return nil, nil
 }
 
+// handleBarrierChangePassphrase re-wraps the root key of the unsealed,
+// passphrase-sealed barrier under the next passphrase once the current one
+// opens it, by delegating to the barrier service layer, under the SO PIN the
+// request carries, verified exactly as for every other SO-gated barrier
+// operation. Both passphrases are wiped on return.
+func (s *Server) handleBarrierChangePassphrase(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.barrierSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "barrier"}
+	}
+
+	var req pb.BarrierChangePassphraseRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	defer secure.Wipe(req.GetCurrent())
+	defer secure.Wipe(req.GetNext())
+
+	if err := pin.RequireSOPIN(ctx, s.pinBackend, req.GetSoPin()); err != nil {
+		return nil, err
+	}
+
+	if err := s.barrierSvc.BarrierChangePassphrase(ctx, req.GetCurrent(), req.GetNext()); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
 // handleBarrierSeal transitions the storage barrier to the sealed state
 // by delegating to the barrier service layer.
 func (s *Server) handleBarrierSeal(ctx context.Context, payload []byte) ([]byte, error) {

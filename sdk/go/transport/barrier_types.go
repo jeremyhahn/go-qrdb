@@ -71,6 +71,16 @@ type BarrierUnsealRequest struct {
 	Secret []byte `json:"secret"`
 }
 
+// BarrierChangePassphraseRequest changes the passphrase of the unsealed,
+// passphrase-sealed system barrier. Current must open the persisted root key;
+// the root key is then re-wrapped under Next and replaced through a guarded
+// swap. Both are secrets: the caller wipes them once the call returns, and no
+// transport logs them.
+type BarrierChangePassphraseRequest struct {
+	Current []byte `json:"current"`
+	Next    []byte `json:"next"`
+}
+
 // BarrierStatusResponse describes the current state of the cryptographic
 // barrier. ShamirThreshold and ShamirTotal carry the configured M-of-N
 // quorum when the barrier uses the Shamir strategy and are zero otherwise.

@@ -659,7 +659,7 @@ func openReplicaStorage(sc StorageConfig, shardID, replicaID uint64) (storage.St
 	// factory runs when the replica starts, after the barrier is
 	// unsealed.
 	if sc.Encryptor.Enabled() {
-		cfg.FS = sc.Encryptor.FS()
+		cfg.FS = pebblestore.WrapVFS(nil, sc.Encryptor.Wrap)
 	}
 	return pebblestore.New(cfg)
 }

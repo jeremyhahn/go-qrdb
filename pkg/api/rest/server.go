@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -253,7 +254,7 @@ type Server struct {
 	// means this signing member cannot (no lease-capable store).
 	clusterJoinAdvertiser clusterenroll.FeatureAdvertiser
 
-	onEtcdUpdated func(dbName string, cfg *database.EtcdConfig) error
+	onEtcdUpdated func(tenantID, dbName string, cfg *database.EtcdConfig) error
 	webUI         http.Handler      // optional embedded web UI file server
 	auditLogger   audit.AuditLogger // optional compliance-grade audit logger
 
@@ -339,6 +340,10 @@ type Server struct {
 	// WithMaxConnsPerPeer.
 	maxConnsPerPeer int
 
+	// clientLimit admits each request by client address before anything
+	// else runs on its behalf (go-qrdb#1197); nil admits every request.
+	clientLimit *clientlimit.Limiter
+
 	// http3Listener is the quic-go listener the HTTP/3 server serves via
 	// ServeListener, wrapped in a connlimit.QUICListener when
 	// maxConnsPerPeer is enabled. http3Transport owns the UDP socket
@@ -373,6 +378,16 @@ func WithMaxBodyBytes(n int64) ServerOption {
 // n <= 0 means unlimited.
 func WithMaxConnsPerPeer(n int) ServerOption {
 	return func(s *Server) { s.maxConnsPerPeer = n }
+}
+
+// WithClientLimiter admits every request by client address through l before
+// anything else -- authentication and the public-route allowlist included --
+// runs on its behalf (go-qrdb#1197). A gRPC-Web request is admitted by the
+// gRPC server's own interceptor instead, so it is charged once. Every
+// transport of one server shares the same Limiter. Nil, the default,
+// applies no limit.
+func WithClientLimiter(l *clientlimit.Limiter) ServerOption {
+	return func(s *Server) { s.clientLimit = l }
 }
 
 // resolveMaxBodyBytes returns n if positive, else DefaultMaxBodyBytes.
@@ -601,9 +616,11 @@ func WithSQLService(svc service.SQLServicer) ServerOption {
 }
 
 // WithOnEtcdUpdated registers a callback invoked after the etcd
-// configuration for a database is updated. The orchestrator typically
-// uses this to start or restart the etcd protocol server.
-func WithOnEtcdUpdated(fn func(dbName string, cfg *database.EtcdConfig) error) ServerOption {
+// configuration for a database is updated, with the tenant owning the
+// database: two tenants may each hold a database of the same name. The
+// orchestrator typically uses this to start or restart the etcd protocol
+// server.
+func WithOnEtcdUpdated(fn func(tenantID, dbName string, cfg *database.EtcdConfig) error) ServerOption {
 	return func(s *Server) { s.onEtcdUpdated = fn }
 }
 
@@ -621,8 +638,10 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
-// WithEncryptionMigrator configures the enable-encryption migrator, enabling
-// POST /v1/barrier/enable-encryption. When nil that route is not registered.
+// WithEncryptionMigrator configures the enable-encryption migrator that
+// POST /v1/barrier/enable-encryption runs. The route is registered on every
+// node either way (node parity); with no migrator set, an authorized call is
+// answered 501 with a typed *ServiceNotImplementedError.
 func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(s *Server) { s.encMigrator = m }
 }
@@ -1256,8 +1275,24 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		handler = sealedWindowDispatch(s.sealedWindowDispatch, r)(handler)
 	}
 	handler = scopeMiddleware(handler)
+	var cors *corsPolicy
 	if s.corsConfig != nil {
-		handler = corsMiddleware(*s.corsConfig, handler)
+		cors = newCORSPolicy(*s.corsConfig)
+		handler = cors.preflight(handler)
+	}
+	// The client-address limiter (go-qrdb#1197) admits a request before the
+	// sealed window, authentication or any public-route allowlist does work
+	// on its behalf, and below the CORS preflight so a preflight is charged
+	// too, but below the CORS headers so an allowed origin's 429 carries
+	// Access-Control-Allow-Origin and the browser sees the rate limit, not
+	// a CORS failure. It sits inside grpcWebDispatch: a gRPC-Web call is
+	// admitted by the gRPC server's interceptor and must not be charged
+	// twice, while a request under its prefix that the gRPC-Web handler
+	// answers itself (a preflight, another method or media type) is charged
+	// by grpcWebDispatch through this same limiter.
+	handler = s.clientLimit.HTTP(handler)
+	if cors != nil {
+		handler = cors.headers(handler)
 	}
 	// canonicalPathMiddleware must see the SAME path every layer below it
 	// does -- sealed window, authentication and authorization, SO dual
@@ -1267,7 +1302,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// the gRPC server's own handler, runs the gRPC interceptor chain, so
 	// none of REST's would apply twice. Everything below still covers it.
 	if grpcWeb != nil {
-		handler = grpcWebDispatch(grpcWeb, handler)
+		handler = grpcWebDispatch(grpcWeb, s.clientLimit, handler)
 	}
 	handler = canonicalPathMiddleware(handler)
 	// TRULY outermost: remoteAddrMiddleware wraps even canonicalPathMiddleware,
@@ -2072,6 +2107,7 @@ func (s *Server) registerRoutes() {
 
 	// Vector routes.
 	s.route(http.MethodPost, "/vector/namespace", permission.VectorNamespaceCreate, s.handleVectorCreateNamespace)
+	s.route(http.MethodPost, "/vector/namespace/update", permission.VectorNamespaceUpdate, s.handleVectorUpdateNamespace)
 	s.route(http.MethodPost, "/vector/namespace/delete", permission.VectorNamespaceDelete, s.handleVectorDeleteNamespace)
 	s.route(http.MethodGet, "/vector/namespaces", permission.VectorNamespaceList, s.handleVectorListNamespaces)
 	s.route(http.MethodGet, "/vector/namespace/info", permission.VectorNamespaceInfo, s.handleVectorGetNamespaceInfo)
@@ -2220,6 +2256,7 @@ func (s *Server) registerRoutes() {
 	// permission would be missing from every role seeded before it existed —
 	// so nobody would hold the grant needed to repair that exact absence.
 	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile", permission.RolesCreate, s.handleReconcileRoles)
+	s.routeIf(rolesOn, http.MethodPost, "/roles/reconcile/all-tenants", permission.RolesReconcileAll, s.handleReconcileRolesAllTenants)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/assign", permission.RolesAssign, s.handleAssignRole)
 	s.routeIf(rolesOn, http.MethodPost, "/roles/unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.routeIf(rolesOn, http.MethodGet, "/permissions", permission.PermissionsList, s.handleListPermissions)
@@ -2244,6 +2281,7 @@ func (s *Server) registerRoutes() {
 			{http.MethodGet, "/roles/by-name"},
 			{http.MethodPost, "/roles/resolve-permissions"},
 			{http.MethodPost, "/roles/reconcile"},
+			{http.MethodPost, "/roles/reconcile/all-tenants"},
 			{http.MethodPost, "/roles/assign"},
 			{http.MethodPost, "/roles/unassign"},
 		} {
@@ -2430,6 +2468,7 @@ func (s *Server) registerRoutes() {
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/initialize", permission.SealBootstrap, s.handleBarrierInitialize)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/unseal", permission.SealUnseal, s.handleBarrierUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/seal", permission.SealSeal, s.handleBarrierSeal)
+	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/change-passphrase", permission.SealRekey, s.handleBarrierChangePassphrase)
 	s.routeIf(barrierOn, http.MethodGet, "/v1/barrier/status", permission.SealStatus, s.handleBarrierStatus)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/cluster-unseal", permission.SealUnseal, s.handleBarrierClusterUnseal)
 	s.routeIf(barrierOn, http.MethodPost, "/v1/barrier/shamir/initialize", permission.SealInitializeShamir, s.handleBarrierShamirInitialize)

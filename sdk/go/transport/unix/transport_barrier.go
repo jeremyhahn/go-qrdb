@@ -76,6 +76,30 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	return nil
 }
 
+// BarrierChangePassphrase implements transport.BarrierClient.
+func (t *Transport) BarrierChangePassphrase(ctx context.Context, req *transport.BarrierChangePassphraseRequest) error {
+	if t.closed.Load() {
+		return &transport.ClosedError{}
+	}
+	if err := t.requireTLS(req); err != nil {
+		return err
+	}
+	// The server verifies the SO PIN the request carries, as for BarrierSeal.
+	soPIN, err := transport.ResolveSOPIN(ctx, "BarrierChangePassphrase", "")
+	if err != nil {
+		return err
+	}
+	_, err = t.client.BarrierChangePassphrase(ctx, &pb.BarrierChangePassphraseRequest{
+		Current: req.Current,
+		Next:    req.Next,
+		SoPin:   soPIN,
+	})
+	if err != nil {
+		return mapGRPCError("BarrierChangePassphrase", err)
+	}
+	return nil
+}
+
 // BarrierSeal seals the barrier, preventing further data access until it is
 // unsealed again.
 func (t *Transport) BarrierSeal(ctx context.Context) error {
@@ -249,10 +273,19 @@ func (t *Transport) BarrierHasRecoveryKeys(ctx context.Context) (*transport.Barr
 // Share holders (Security Officers and key custodians)
 // ---------------------------------------------------------------------------
 
+// nilBarrierRequest is the typed error a barrier holder method returns for a
+// nil request, before any round trip.
+func nilBarrierRequest(method string) error {
+	return &transport.RequestError{Method: method, Err: &transport.NilRequestError{}}
+}
+
 // OfficerRegister enrols a share holder of the unseal key.
 func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("OfficerRegister")
 	}
 	in, err := holderconv.RegisterToPB(req)
 	if err != nil {
@@ -269,6 +302,9 @@ func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerR
 func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.OfficerRegisterRequest) (*transport.OfficerRegisterResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryOfficerRegister")
 	}
 	in, err := holderconv.RegisterToPB(req)
 	if err != nil {
@@ -298,6 +334,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, nilBarrierRequest("ShareClaimBegin")
+	}
 	resp, err := t.client.BarrierShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("ShareClaimBegin", err)
@@ -309,6 +348,9 @@ func (t *Transport) ShareClaimBegin(ctx context.Context, req *transport.ShareCla
 func (t *Transport) ShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("ShareClaimComplete")
 	}
 	resp, err := t.client.BarrierShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,
@@ -326,6 +368,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryShareClaimBegin")
+	}
 	resp, err := t.client.BarrierRecoveryShareClaimBegin(ctx, &pb.BarrierShareClaimBeginRequest{Username: req.Username})
 	if err != nil {
 		return nil, mapGRPCError("RecoveryShareClaimBegin", err)
@@ -337,6 +382,9 @@ func (t *Transport) RecoveryShareClaimBegin(ctx context.Context, req *transport.
 func (t *Transport) RecoveryShareClaimComplete(ctx context.Context, req *transport.ShareClaimCompleteRequest) (*transport.ShareClaimCompleteResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("RecoveryShareClaimComplete")
 	}
 	resp, err := t.client.BarrierRecoveryShareClaimComplete(ctx, &pb.BarrierShareClaimCompleteRequest{
 		Username:  req.Username,
@@ -354,6 +402,9 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierQuorumBegin")
+	}
 	resp, err := t.client.BarrierQuorumBegin(ctx, holderconv.BeginToPB(req))
 	if err != nil {
 		return nil, mapGRPCError("BarrierQuorumBegin", err)
@@ -365,6 +416,9 @@ func (t *Transport) BarrierQuorumBegin(ctx context.Context, req *transport.Quoru
 func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.QuorumSubmitRequest) (*transport.QuorumOutcome, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierQuorumSubmit")
 	}
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
@@ -380,6 +434,9 @@ func (t *Transport) BarrierQuorumSubmit(ctx context.Context, req *transport.Quor
 func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyStartRequest) (*transport.QuorumRound, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierRekeyStart")
 	}
 	if err := t.requireTLS(req); err != nil {
 		return nil, err
@@ -403,6 +460,9 @@ func (t *Transport) BarrierRekeyStart(ctx context.Context, req *transport.RekeyS
 func (t *Transport) BarrierOfficerRevoke(ctx context.Context, req *transport.OfficerRevokeRequest) (*transport.QuorumRound, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, nilBarrierRequest("BarrierOfficerRevoke")
 	}
 	if err := t.requireTLS(req); err != nil {
 		return nil, err

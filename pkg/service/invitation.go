@@ -117,6 +117,8 @@ type InvitationStore interface {
 	Create(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...invite.CreateOption) (string, *invite.Entity, error)
 	Lookup(ctx context.Context, tenantID, token string) (*invite.Entity, error)
 	Redeem(ctx context.Context, tenantID, token string) (*invite.Entity, error)
+	Reissue(ctx context.Context, userID, tenantID string, ttl time.Duration, opts ...invite.CreateOption) (string, *invite.Entity, error)
+	Activate(ctx context.Context, userID, tenantID string, at time.Time) error
 }
 
 // InvitationUsers is the user service an InvitationService needs: the
@@ -289,8 +291,9 @@ func (s *InvitationService) InviteUser(ctx context.Context, req *InviteUserReque
 }
 
 // reinvite issues a fresh token for an account that is still awaiting its
-// first credential. Every earlier token for it stays valid until it expires,
-// but only one can ever be redeemed: activation is single-use per account.
+// first credential. The new token supersedes every earlier one in the same
+// guarded write, so a token sent before it can no longer be redeemed; of two
+// racing re-invitations exactly one succeeds and the other is a conflict.
 func (s *InvitationService) reinvite(ctx context.Context, req *InviteUserRequest, u *user.User, pin string) (*Invitation, error) {
 	if req.Email != "" || req.Name != "" || len(req.RoleIDs) > 0 {
 		return nil, &InvitationFieldError{Field: "username", Reason: "names an existing account; re-inviting it takes no email, name or roles"}
@@ -319,9 +322,29 @@ func (s *InvitationService) keyPin(fingerprint string) (string, error) {
 	return fingerprint, nil
 }
 
-// issue creates the invitation record for u and audits it.
+// issue creates the invitation record for u and audits it. A re-invitation
+// (created false) supersedes every earlier invitation u holds.
+// mint writes u's invitation record. A new account's is its first; a pending
+// account's is reissued, which supersedes every earlier token in the same
+// guarded write. A pending account with no invitation record -- created
+// before the store tracked one -- gets its first.
+func (s *InvitationService) mint(ctx context.Context, tenantID string, u *user.User, created bool, pin string) (string, *invite.Entity, error) {
+	userID := strconv.FormatUint(u.ID, 10)
+	if created {
+		return s.invites.Create(ctx, userID, tenantID, s.ttl, invite.WithKeyPin(pin))
+	}
+	token, entity, err := s.invites.Reissue(ctx, userID, tenantID, s.ttl, invite.WithKeyPin(pin))
+	switch {
+	case errors.Is(err, invite.ErrUserNotFound):
+		return s.invites.Create(ctx, userID, tenantID, s.ttl, invite.WithKeyPin(pin))
+	case errors.Is(err, invite.ErrUserActive):
+		return "", nil, &InvitationAccountActiveError{Username: u.Username}
+	}
+	return token, entity, err
+}
+
 func (s *InvitationService) issue(ctx context.Context, tenantID string, u *user.User, created bool, pin string) (*Invitation, error) {
-	token, entity, err := s.invites.Create(ctx, strconv.FormatUint(u.ID, 10), tenantID, s.ttl, invite.WithKeyPin(pin))
+	token, entity, err := s.mint(ctx, tenantID, u, created, pin)
 	if err != nil {
 		return nil, err
 	}
@@ -496,6 +519,7 @@ func (s *InvitationService) RedeemInvitation(ctx context.Context, req *RedeemInv
 			settleCertAuditOn(ctx, s.audit, ev, bindErr)
 			return nil, bindErr
 		}
+		s.recordActive(ctx, req.TenantID, u)
 		settleCertAuditOn(ctx, s.audit, ev, nil)
 		return &EnrolledCertificate{
 			UserID:     u.ID,
@@ -517,6 +541,7 @@ func (s *InvitationService) RedeemInvitation(ctx context.Context, req *RedeemInv
 		settleCertAuditOn(ctx, s.audit, ev, bindErr)
 		return nil, bindErr
 	}
+	s.recordActive(ctx, req.TenantID, u)
 	settleCertAuditOn(ctx, s.audit, ev, nil)
 	return &EnrolledCertificate{
 		UserID:     u.ID,
@@ -537,6 +562,15 @@ const redeemLimitKeyPrefix = "invitation.redeem\x00"
 // allowSource takes one token from the caller's source bucket. It runs
 // before the tenant's (allowTenant), so a source that is refused never
 // drains the tenant's budget for everyone else. With no limiter it allows.
+// recordActive tells the invitation store u's account is active, so the store
+// itself refuses to reissue it. The enrolment has already succeeded and is not
+// undone when this write fails: this service never relies on it, because
+// reinvite refuses any account that is no longer pending before it reaches
+// the store, so a missed record leaves nothing reissuable.
+func (s *InvitationService) recordActive(ctx context.Context, tenantID string, u *user.User) {
+	_ = s.invites.Activate(ctx, strconv.FormatUint(u.ID, 10), tenantID, s.now())
+}
+
 func (s *InvitationService) allowSource(ctx context.Context) bool {
 	if s.limiter == nil {
 		return true

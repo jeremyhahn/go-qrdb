@@ -48,6 +48,11 @@ func (b *SealBinding) Unseal(_ string) (*UnsealProgress, error) {
 	return nil, &FeatureDisabledError{Feature: "embedded"}
 }
 
+// ChangePassphrase returns a FeatureDisabledError.
+func (b *SealBinding) ChangePassphrase(_, _, _ string) error {
+	return &FeatureDisabledError{Feature: "embedded"}
+}
+
 // Seal returns a FeatureDisabledError.
 func (b *SealBinding) Seal(_ string) error {
 	return &FeatureDisabledError{Feature: "embedded"}

@@ -54,7 +54,7 @@ func TestEtcdListener_RefusesWhileTheNodeRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := newTestClusterSeal()
 			f := newEtcdScopeFixture(t, true, WithClusterSeal(cs))
-			etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
+			etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
 			if err != nil {
 				t.Fatalf("startEtcd: %v", err)
 			}

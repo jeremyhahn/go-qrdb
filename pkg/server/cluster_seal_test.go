@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -572,7 +573,7 @@ func TestRegistryRefusesSealedRecords(t *testing.T) {
 		t.Fatalf("err = %v, want *rest.BarrierSealedError", err)
 	}
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	if _, err := mgr.Create(database.DatabaseConfig{Name: "app", Backend: database.BackendMemory}); err != nil {
 		t.Fatal(err)

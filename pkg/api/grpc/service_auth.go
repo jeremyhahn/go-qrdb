@@ -166,6 +166,7 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 	}
 
 	updateReq := &user.UpdateUserRequest{
+		Guard:     s.authMW.SORoleGuard(ctx),
 		ID:        req.GetId(),
 		Username:  req.GetUsername(),
 		Email:     req.GetEmail(),
@@ -443,7 +444,7 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
-	if err := s.authMW.AuthorizeRoleAssignmentWrite(ctx, s.userSvc, s.roleSvc, req.GetUserId(), []string{req.GetRoleId()}, nil); err != nil {
+	if err := s.authMW.AuthorizeRoleAssignment(ctx, s.userSvc, s.roleSvc, req.GetUserId(), req.GetRoleId()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -462,6 +463,7 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 
 	roleIDs := append(u.RoleIDs, req.GetRoleId())
 	if _, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.GetUserId(),
 		RoleIDs: roleIDs,
 	}); err != nil {
@@ -480,7 +482,7 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
-	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.GetUserId()); err != nil {
+	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.GetUserId(), req.GetRoleId()); err != nil {
 		return nil, mapServiceError(err)
 	}
 
@@ -498,6 +500,7 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 	}
 
 	if _, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
+		Guard:   s.authMW.SORoleGuard(ctx),
 		ID:      req.GetUserId(),
 		RoleIDs: roleIDs,
 	}); err != nil {
@@ -627,6 +630,46 @@ func reconcileReportToProto(report *role.ReconcileReport) *pb.ReconcileBuiltInRo
 		}
 	}
 	return &pb.ReconcileBuiltInRolesResponse{TenantId: report.TenantID, Roles: roles}
+}
+
+// ReconcileBuiltInRolesAllTenants converges every tenant's stored built-in
+// roles onto this build's definitions (role.ReconcileAllTenants). The
+// interceptor has already required roles:reconcile_all; a partial pass
+// answers with its report, whose failed list names the tenants.
+func (s *qrdbServiceServer) ReconcileBuiltInRolesAllTenants(ctx context.Context, _ *emptypb.Empty) (*pb.ReconcileBuiltInRolesAllTenantsResponse, error) {
+	if s.roleSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
+	}
+	if s.tenantSvc == nil {
+		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
+	}
+
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return AllTenantsReconcileReportToProto(report), nil
+}
+
+// AllTenantsReconcileReportToProto converts an all-tenant reconcile report to
+// its protobuf form. It is exported because every transport that speaks the
+// qrdb.v1 messages -- gRPC, the Unix socket and QUIC -- encodes it the same
+// way, and one conversion keeps them from drifting.
+func AllTenantsReconcileReportToProto(report *role.AllTenantsReconcileReport) *pb.ReconcileBuiltInRolesAllTenantsResponse {
+	out := &pb.ReconcileBuiltInRolesAllTenantsResponse{}
+	if report == nil {
+		return out
+	}
+	for i := range report.Tenants {
+		out.Tenants = append(out.Tenants, reconcileReportToProto(&report.Tenants[i]))
+	}
+	for _, sk := range report.Skipped {
+		out.Skipped = append(out.Skipped, &pb.RoleReconcileSkippedTenant{TenantId: sk.TenantID, Reason: sk.Reason, Detail: sk.Detail})
+	}
+	for _, f := range report.Failed {
+		out.Failed = append(out.Failed, &pb.RoleReconcileFailedTenant{TenantId: f.TenantID, Error: f.Error})
+	}
+	return out
 }
 
 // permissionsToStrings renders a permission slice for the wire.
@@ -861,17 +904,23 @@ func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRe
 	return &pb.RevokeCertResponse{RecordFound: result.RecordFound()}, nil
 }
 
-// ListCerts lists all issued client certificates for a tenant.
+// ListCerts lists all issued client certificates for a tenant. An empty
+// tenant_id means the caller's own tenant.
 func (s *qrdbServiceServer) ListCerts(ctx context.Context, req *pb.ListCertsRequest) (*pb.ListCertsResponse, error) {
 	if s.certProv == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "cert"})
 	}
 
-	if err := s.authorizeCertTenant(ctx, req.GetTenantId(), permission.CertsList); err != nil {
+	tenantID := req.GetTenantId()
+	if tenantID == "" {
+		tenantID = tenant.CallerTenant(ctx)
+	}
+
+	if err := s.authorizeCertTenant(ctx, tenantID, permission.CertsList); err != nil {
 		return nil, authmw.GRPCError(err, codes.PermissionDenied)
 	}
 
-	records, err := s.certProv.ListCerts(ctx, req.GetTenantId())
+	records, err := s.certProv.ListCerts(ctx, tenantID)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

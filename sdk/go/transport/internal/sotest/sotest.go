@@ -212,6 +212,52 @@ func Run(t *testing.T, startServer func(t *testing.T, f *Fixture) Client) {
 			t.Fatalf("a refused seal reached the service: %s", f.reached())
 		}
 	})
+	t.Run("BarrierChangePassphrase carries the bound PIN in so_pin", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		req := &transport.BarrierChangePassphraseRequest{Current: []byte("old-passphrase"), Next: []byte("new-passphrase")}
+		if err := c.BarrierChangePassphrase(ctx, req); err != nil {
+			t.Fatalf("BarrierChangePassphrase with the SO PIN bound: %s; %s", describe(err), f.reached())
+		}
+		if got := f.Barrier.PassphraseChanges(); got != 1 {
+			t.Fatalf("passphrase changes = %d, want 1; %s", got, f.reached())
+		}
+	})
+	t.Run("BarrierChangePassphrase without the bound PIN is refused", func(t *testing.T) {
+		f := NewFixture(t)
+		f.PINs = authtest.BarrierPINBackend(t, PIN)
+		c := start(t, f)
+		req := func() *transport.BarrierChangePassphraseRequest {
+			return &transport.BarrierChangePassphraseRequest{Current: []byte("old-passphrase"), Next: []byte("new-passphrase")}
+		}
+		if err := c.BarrierChangePassphrase(context.Background(), req()); err == nil {
+			t.Fatal("BarrierChangePassphrase without the SO PIN succeeded")
+		}
+		wrong, release := BindPIN(t, "not the PIN")
+		defer release()
+		if err := c.BarrierChangePassphrase(wrong, req()); err == nil {
+			t.Fatal("BarrierChangePassphrase with the wrong SO PIN bound succeeded")
+		}
+		if f.Barrier.PassphraseChanges() != 0 {
+			t.Fatalf("a refused passphrase change reached the service: %s", f.reached())
+		}
+	})
+	t.Run("BarrierChangePassphrase with no PIN backend is refused", func(t *testing.T) {
+		f := NewFixture(t)
+		c := start(t, f)
+		ctx, release := BindPIN(t, PIN)
+		defer release()
+		req := &transport.BarrierChangePassphraseRequest{Current: []byte("old-passphrase"), Next: []byte("new-passphrase")}
+		if err := c.BarrierChangePassphrase(ctx, req); err == nil {
+			t.Fatal("BarrierChangePassphrase with no PIN backend succeeded")
+		}
+		if f.Barrier.PassphraseChanges() != 0 {
+			t.Fatalf("a refused passphrase change reached the service: %s", f.reached())
+		}
+	})
 	t.Run("BarrierRekeyStart fills so_pin from the bound PIN", func(t *testing.T) {
 		f := NewFixture(t)
 		f.PINs = authtest.BarrierPINBackend(t, PIN)

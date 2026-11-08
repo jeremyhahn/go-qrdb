@@ -321,6 +321,52 @@ func TestDatabaseCreate_Table(t *testing.T) {
 	}
 }
 
+// TestDatabaseCreate_BackendHelpListsEveryBackend verifies the --backend help
+// names every backend the server accepts, so none can drop out of it again.
+func TestDatabaseCreate_BackendHelpListsEveryBackend(t *testing.T) {
+	f := newDatabaseCreateCmd().Flags().Lookup("backend")
+	if f == nil {
+		t.Fatal("--backend flag not registered on database create")
+	}
+	backends := sdk.Backends()
+	if len(backends) == 0 {
+		t.Fatal("sdk.Backends() is empty")
+	}
+	for _, b := range backends {
+		if !b.Valid() {
+			t.Errorf("sdk.Backends() lists %q, which Valid rejects", b)
+		}
+		if !strings.Contains(f.Usage, string(b)) {
+			t.Errorf("--backend help %q omits the valid backend %q", f.Usage, b)
+		}
+	}
+}
+
+// TestDatabaseCreate_ObjstoreBackendAccepted verifies objstore is a valid
+// backend, named in the --backend help and carried through to the create.
+func TestDatabaseCreate_ObjstoreBackendAccepted(t *testing.T) {
+	if !sdk.BackendObjstore.Valid() {
+		t.Fatal("objstore is not a valid backend")
+	}
+	if usage := newDatabaseCreateCmd().Flags().Lookup("backend").Usage; !strings.Contains(usage, "objstore") {
+		t.Errorf("--backend help %q omits objstore", usage)
+	}
+
+	var gotCfg database.DatabaseConfig
+	dbSvc := &fnDatabaseService{
+		createFn: func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+			gotCfg = cfg
+			return &database.DatabaseInfo{Name: cfg.Name, Backend: cfg.Backend, Status: "open"}, nil
+		},
+	}
+	if _, err := executeDatabaseCmd(t, dbSvc, "create", "blobs", "--backend", "objstore"); err != nil {
+		t.Fatalf("database create --backend objstore: %v", err)
+	}
+	if gotCfg.Backend != sdk.BackendObjstore {
+		t.Errorf("Backend = %q, want %q", gotCfg.Backend, sdk.BackendObjstore)
+	}
+}
+
 // TestDatabaseCreate_EngineFlagRemoved verifies --engine fails as an unknown
 // flag (OD-13): every database serves every engine, so the flag is gone, not
 // silently ignored.

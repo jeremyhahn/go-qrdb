@@ -23,9 +23,11 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
-	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -55,7 +57,7 @@ func NewLogService(t testing.TB) service.LogService {
 		t.Fatalf("servicetest: open the log state machine: %v", err)
 	}
 	t.Cleanup(func() { _ = machine.Close(context.Background()) })
-	databases := database.NewManager(nil, t.TempDir())
+	databases := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = databases.Close() })
 	svc, err := service.NewLogService(service.LogServiceConfig{Resolver: logShard{host: backend.NewLocalBackend(machine)}, Databases: databases})
 	if err != nil {
@@ -112,4 +114,19 @@ func VerifyHead(origin string, head vlog.SignedHead, key vlog.HeadKey) error {
 		return err
 	}
 	return vlog.VerifyHead(pub, origin, head)
+}
+
+// VerifyInclusion checks that hashes, a log's answer to an inclusion proof
+// request, proves the entry body at index is in the tree of size whose root
+// is root, under RFC 9162 tree hashing.
+func VerifyInclusion(body []byte, index, size uint64, hashes [][]byte, root []byte) error {
+	h := rfc6962.DefaultHasher
+	return proof.VerifyInclusion(h, index, size, h.HashLeaf(body), hashes, root)
+}
+
+// VerifyConsistency checks that hashes, a log's answer to a consistency proof
+// request, proves the tree of size1 with root1 is a prefix of the tree of
+// size2 with root2, under RFC 9162 tree hashing.
+func VerifyConsistency(size1, size2 uint64, hashes [][]byte, root1, root2 []byte) error {
+	return proof.VerifyConsistency(rfc6962.DefaultHasher, size1, size2, hashes, root1, root2)
 }

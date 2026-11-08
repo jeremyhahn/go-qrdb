@@ -80,7 +80,6 @@ package node
 
 import (
 	"context"
-	"crypto/fips140"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -127,12 +126,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
@@ -281,7 +282,7 @@ func WithStorageFactory(f server.StorageFactory) NodeOption {
 // file system, which a factory that writes files must route its I/O through
 // so the data stays under the barrier. Each call returns storage owned by that
 // one replica, and the node closes it with the replica.
-type ReplicaStorageFactory func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)
+type ReplicaStorageFactory func(shardID, replicaID uint64, dir string, dataPlaneFS filesys.FS) (storage.Storage, error)
 
 // bindReplicaStorage binds f to the data-plane file system: the encryptor's
 // when the barrier is enabled at the replica's open, nil otherwise.
@@ -290,7 +291,7 @@ func bindReplicaStorage(f ReplicaStorageFactory, encryptor *atrest.Encryptor) st
 		return nil
 	}
 	return func(shardID, replicaID uint64, dir string) (storage.Storage, error) {
-		var dataPlaneFS vfs.FS
+		var dataPlaneFS filesys.FS
 		if encryptor.Enabled() {
 			dataPlaneFS = encryptor.FS()
 		}
@@ -1144,6 +1145,14 @@ type Node struct {
 	// presented admin certificate exactly as a login will.
 	spiffeTrustDomain atomic.Pointer[string]
 
+	// strictSeparation is the separation-of-duties posture the node resolved
+	// with wiring.ResolveStrictSeparation when it wired its authorizer,
+	// reported by StrictSeparation.
+	strictSeparation atomic.Bool
+	// separationConfigured is the Auth.SeparationOfDuties setting that
+	// posture was resolved from; first boot records the posture from it.
+	separationConfigured atomic.Bool
+
 	// awaitingAdminCredentialProbe is the "awaiting admin credential" gate
 	// wireClientAndServer constructs, stored here so FirstBootWithCeremony
 	// can re-decide it AFTER first boot runs (reconcileAwaitingAdminCredential):
@@ -1427,6 +1436,13 @@ type Node struct {
 	// constructor).
 	tenantIsolation bool
 
+	// watchHubOpts configures every watch hub this node builds, its own and
+	// its tenants': watch.buffer_size and the one watch.max_watchers limit
+	// they share (server.WatchHubOptions). Set once by the constructor so a
+	// data-plane rebuild draws from the same limit as the tenant hubs that
+	// outlive it.
+	watchHubOpts []watch.HubOption
+
 	// defaultTenantEntitlements are forwarded to lifecycle.Infra so the built-in
 	// TenantService permits the isolation modes and features the embedder needs.
 	defaultTenantEntitlements *quota.Entitlements
@@ -1487,6 +1503,10 @@ type Node struct {
 	// none runs. Written only by the lifecycle-gated boot, teardown and
 	// Close paths.
 	stopTrustPoolRefresh func()
+	// trustPoolRefreshDone is closed when the refresh loop most recently
+	// started by startTrustPoolRefresh has exited; nil before the first
+	// start. Written with stopTrustPoolRefresh, on the same paths.
+	trustPoolRefreshDone <-chan struct{}
 
 	// featureGate decides when the clustered host's Raft groups may be sent
 	// guarded writes; nil for a host with no transport. featureAdv is its
@@ -1563,6 +1583,13 @@ func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistr
 // qrdb's own tenant routes enforce, in place of capturing the authorizer
 // indirectly through WithAuthorizerWrapper (go-qrdb#587).
 func (n *Node) AuthMiddleware() *middleware.AuthMiddleware { return n.authMiddleware.Load() }
+
+// StrictSeparation reports the separation-of-duties posture the node resolved
+// at start: true under strict separation, which FIPS 140-3 mode forces on,
+// otherwise the auth.separation_of_duties setting (sdk.ResolveStrictSeparation).
+// It reports false until the node has wired its authorizer, which a sealed node
+// does once Unseal completes the boot, and false again after Close.
+func (n *Node) StrictSeparation() bool { return n.strictSeparation.Load() }
 
 // Authorizer returns the node's composed RBAC[+ABAC] auth.Authorizer -- the
 // SAME instance AuthMiddleware() authorizes every transport's requests
@@ -1661,6 +1688,28 @@ func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
 	return n.completeBoot(ctx)
 }
 
+// ChangePassphrase replaces the passphrase sealing the system barrier's
+// root key without changing the root key itself: data written under the old
+// passphrase stays readable, and the next Unseal takes next. The barrier
+// must be unsealed. Both credentials are BORROWED; the caller destroys them.
+//
+// The call is refused with seal.ErrCredentialMismatch when current does not
+// open the barrier, with seal.ErrPassphraseChangeConflict when a concurrent
+// change won the race, and with ErrSealNotEnabled on a node built without a
+// seal barrier. A Shamir barrier has no passphrase and refuses the call too.
+//
+// This is the in-process counterpart of the barrier change-passphrase
+// operation the transports carry; it bypasses their Security Officer gate, as
+// every other method on Node does, because the embedder already holds the
+// process.
+func (n *Node) ChangePassphrase(ctx context.Context, current, next seal.Credentials) error {
+	barrier := n.barrier.Load()
+	if barrier == nil {
+		return ErrSealNotEnabled
+	}
+	return barrier.ChangePassword(ctx, current, next)
+}
+
 // completeBoot finishes the node's boot sequence after the barrier is
 // unsealed. It is called by both Unseal and (for auto-unseal strategies)
 // directly from the constructors.
@@ -1695,14 +1744,14 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		encryptor = atrest.New(barrier)
 	}
 
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(pending.serverOpts...).StorageFactory, pending.backendType, pending.dataDir, encryptor, pending.cfg.Storage)
 	if err != nil {
 		return &StorageCreateError{Backend: string(pending.backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -1713,13 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(pending.dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		n.stg = nil
-		return err
-	}
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1749,6 +1792,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Backend:           pending.backendType,
 		DatabaseManager:   dbManager,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -1764,7 +1809,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		ClusterCAKeyPEM:      n.clusterCAKeyPEM,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -1829,6 +1875,9 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Phase 1: Host, Manager, ReplicaID, RaftAddr, SystemTenant,
 			// PlacementStore, MultiplexLogDB are all left zero — IsolationRaft
 			// is not wired in the embedded standalone node yet (Phase 2).
@@ -1887,22 +1936,17 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 	n.stopLeaseExpiry = lifecycle.StartLocalLeaseExpiry(n.background(), lr, leaseSvc, n.logger)
 }
 
-// openStandaloneDatabaseManager opens the standalone node's database catalog
-// under dataDir, reopening every database a previous run created, and records
-// it on the node, which owns its lifetime. It is the standalone counterpart of
-// the clustered boot's manager: the manager is handed to BuildServices and to
-// the server, so a named database resolves through the server's registry, is
-// confined to its owning tenant, and is refused while sealed. It used to be
-// built inside BuildServices, which never reopened a previous run's databases
-// and which the server never saw.
-func (n *Node) openStandaloneDatabaseManager(dataDir string) (*database.Manager, error) {
+// newStandaloneDatabaseManager builds the standalone node's database manager
+// under dataDir and records it on the node, which owns its lifetime. It is the
+// standalone counterpart of the clustered boot's manager: the manager is
+// handed to BuildServices, which attaches the database catalog and opens every
+// database it records, and to the server, so a named database resolves
+// through the server's registry, is confined to its owning tenant, and is
+// refused while sealed.
+func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
 	dbManager := database.NewManager(n.logger, dataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = dbManager.Close()
-		return nil, &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
-	return dbManager, nil
+	return dbManager
 }
 
 // closeDatabaseManager closes the node's database catalog, if open.
@@ -2158,6 +2202,7 @@ func (n *Node) startTrustPoolRefresh(pool *clienttrust.Pool) {
 		defer close(done)
 		pool.Run(ctx)
 	}()
+	n.trustPoolRefreshDone = done
 	n.stopTrustPoolRefresh = func() {
 		cancel()
 		<-done
@@ -2270,7 +2315,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		encryptor = atrest.New(barrier)
 	}
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(encryptor)}
@@ -2298,20 +2343,15 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	}
 	n.host = host
 
-	// Build the database manager. OpenAll re-scans the databases directory and
-	// loads persisted meta.json records -- the same sequence the daemon
-	// performs before BuildServices. Shard IDs are claimed from the replicated
+	// Build the database manager. lifecycle.BuildServices attaches the
+	// replicated database catalog and opens every database it records, as it
+	// does for the daemon. Shard IDs are claimed from the replicated
 	// store (lifecycle.BuildServices wires the claimer), not from this node. The manager is shared with
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
-	if err := dbManager.OpenAll(); err != nil {
-		_ = host.Close()
-		_ = dbManager.Close()
-		return &StorageCreateError{Backend: "database-manager", Err: err}
-	}
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -2366,6 +2406,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Index:             pending.cfg.Index,
+		TimeSeries:        pending.cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
@@ -2387,7 +2429,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		NoClusterCAKey: n.byoTLS(),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: pending.cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  pending.cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(pending.cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           pending.cfg.Auth.InvitationTTL,
@@ -2445,6 +2488,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			TenantLookup:         &nodeTenantResolver{node: n},
 			VolumePoolConfigured: barrierRegistry.HasVolumePool(),
 			Logger:               n.logger,
+			WatchHub:             n.watchHubOpts,
+			Index:                pending.cfg.Index,
+			TimeSeries:           pending.cfg.TimeSeries,
 			// Host is the shared quicraft.Host that carries IsolationRaft shards.
 			// Passing it here enables NewRaftBackendFactoryFromManager and
 			// reattachRaftTenants so clustered embedded nodes gain full
@@ -2842,6 +2888,9 @@ func (n *Node) Close() error {
 		_ = sock.Close()
 	}
 	n.retractDataPlaneServices()
+	// The posture describes the authorizer just retracted; a closed node has
+	// none, so it reports false as it did before the authorizer was wired.
+	n.strictSeparation.Store(false)
 	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
 		record(svcNode.Stop(context.Background()))
 	}
@@ -2875,6 +2924,15 @@ func (n *Node) Close() error {
 		record(n.tenantHosts.CloseAll())
 		n.tenantHosts = nil
 	}
+	// Close the node's own store BEFORE sealing: with encryption at rest it
+	// sits on encfs over the system barrier, and a store still open when that
+	// barrier seals has every file it creates refused -- a background
+	// compaction's table, or the WAL Pebble cannot live without.
+	if n.stg != nil {
+		record(n.stg.Close())
+		n.stg = nil
+		n.pebbleDB = nil
+	}
 	// Seal before dropping references: Seal zeroes the EpochBarrier root
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
 	// service.SealWholeNode seals every database barrier, every tenant
@@ -2904,11 +2962,6 @@ func (n *Node) Close() error {
 	if n.sealStore != nil {
 		record(n.sealStore.Close())
 		n.sealStore = nil
-	}
-	if n.stg != nil {
-		record(n.stg.Close())
-		n.stg = nil
-		n.pebbleDB = nil
 	}
 	// Close the database manager last — after all raft shards, host, and
 	// storage are down — mirroring the daemon's deferred dbManager.Close()
@@ -2999,6 +3052,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3079,14 +3133,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 
 	// Seal disabled: build storage + engine + services immediately.
-	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage.Objstore)
+	stg, pdb, err := createNodeStorage(server.ResolveCryptoOptions(serverOpts...).StorageFactory, backendType, dataDir, nil, cfg.Storage)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: string(backendType), Err: err}
 	}
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub, lr)
 	if err != nil {
@@ -3096,12 +3150,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager, err := n.openStandaloneDatabaseManager(dataDir)
-	if err != nil {
-		_ = localHost.Close()
-		_ = n.stg.Close()
-		return nil, err
-	}
+	dbManager := n.newStandaloneDatabaseManager(dataDir)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
@@ -3117,12 +3166,15 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		Backend:         backendType,
 		DatabaseManager: dbManager,
 		ReplicaID:       cfg.Raft.ReplicaID,
+		Index:           cfg.Index,
+		TimeSeries:      cfg.TimeSeries,
 		Profile:         &profile,
 		Logger:          log,
 		SealEnabled:     cfg.Seal.Enabled,
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3225,6 +3277,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		identityHydrator:          nOpts.identityHydrator,
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
+		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
@@ -3313,7 +3366,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 
 	// Seal disabled: build the host and services immediately.
-	watchHub := watch.NewHub()
+	watchHub := watch.NewHub(n.watchHubOpts...)
 	lr := lease.NewLessor(lease.WithClock(n.clock))
 
 	pebbleOpts := []store.Option{store.WithEncryptor(atrest.New(nil))}
@@ -3360,13 +3413,16 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
 		ReplicaID:         cfg.Raft.ReplicaID,
+		Index:             cfg.Index,
+		TimeSeries:        cfg.TimeSeries,
 		Profile:           &profile,
 		Logger:            log,
 		SealEnabled:       cfg.Seal.Enabled,
 		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
-		MTLSBindingPolicy: cfg.Auth.MTLSBindingPolicy,
+		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
+		SeparationOfDuties: wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties),
 		// auth.invitation_ttl / auth.invitation_require_key_pin for
 		// users:invite and its unauthenticated redemption.
 		InvitationTTL:           cfg.Auth.InvitationTTL,
@@ -3858,7 +3914,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// regardless of config, so embedded and standalone authorize
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
-	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
+	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
+	n.strictSeparation.Store(strictSoD)
+	n.separationConfigured.Store(cfg.Auth.SeparationOfDuties)
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
@@ -4187,6 +4245,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.contextBinder != nil {
 		embeddedOpts = append(embeddedOpts, n.contextBinder)
 	}
+	// The caller's watch is a client's: it holds a watch.max_watchers slot
+	// like one opened over the network. The feature client above does not.
+	embeddedOpts = append(embeddedOpts, embedded.WithCountedWatch())
 
 	tp, err := embedded.New(svcNode.KV, svcNode.Admin, embeddedOpts...)
 	if err != nil {
@@ -4219,6 +4280,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if fwdOpt != nil {
 		allOpts = append(allOpts, fwdOpt)
 	}
+	allOpts = append(allOpts, server.WithDefaultRetention(cfg.TimeSeries.DefaultRetentionDuration()))
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
@@ -4420,6 +4482,9 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 	if svcNode.DEK != nil {
 		opts = append(opts, embedded.WithDEKService(svcNode.DEK))
 	}
+	if svcNode.Credential != nil {
+		opts = append(opts, embedded.WithCredentialService(svcNode.Credential))
+	}
 	if svcNode.Policy != nil {
 		opts = append(opts, embedded.WithPolicyService(svcNode.Policy))
 	}
@@ -4427,7 +4492,6 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 		opts = append(opts, embedded.WithUserService(svcNode.User))
 	}
 	if svcNode.Role != nil {
-		opts = append(opts, embedded.WithRoleService(svcNode.Role))
 		// Construct the qrdb RBAC authorizer the SAME way the standalone
 		// daemon does (cmd/qrdbd/start.go bootstrapAuthEnforcement):
 		// rbac.New(roleService, WithStrictSeparation(strictSoD)). Without
@@ -4459,7 +4523,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, ceremonySvc service.Ce
 			}
 		}
 		n.authorizer = authorizer
-		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))
+		// The embedded transport's role writes go through the same grant
+		// guard the server puts on every network transport
+		// (server.wireRoleGrantGuard), over this same final authorizer: a
+		// caller cannot create or widen a role past its own permissions.
+		// rbac.New above keeps the raw service, since it only reads roles,
+		// and server.WithRoleService gets the raw service too, because the
+		// server wraps it itself.
+		opts = append(opts,
+			embedded.WithRoleService(role.NewGrantGuard(svcNode.Role, authorizer)),
+			embedded.WithRBACAuthorizer(authorizer),
+		)
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
@@ -4769,6 +4843,11 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if svcNode.TenantOnboarding != nil {
 		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
+	// The SO PIN store the SO gate verifies against is the one tenant create
+	// commits a tenant SO's PIN to, as cmd/qrdbd wires it.
+	if pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator; pins != nil {
+		svcNode.AttachSOPINs(pins)
+	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))
 	}
@@ -4830,11 +4909,11 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 // daemon's mode:standalone branch and the embedded transport. An
 // unrecognized backend type falls back to pebble for backward
 // compatibility with this constructor's historical behavior.
-func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
+func createNodeStorage(factory server.StorageFactory, backendType database.BackendType, dataDir string, enc *atrest.Encryptor, storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error) {
 	if factory != nil {
 		// A composer's storage writes its files through the barrier's
 		// encrypting file system whatever the backend type names.
-		var dataPlaneFS vfs.FS
+		var dataPlaneFS filesys.FS
 		if enc.Enabled() {
 			dataPlaneFS = enc.FS()
 		}
@@ -4851,7 +4930,7 @@ func createNodeStorage(factory server.StorageFactory, backendType database.Backe
 	default:
 		backendType = database.BackendPebble
 	}
-	return lifecycle.NewLocalStorage(backendType, dataDir, enc, objCfg)
+	return lifecycle.NewLocalStorage(backendType, dataDir, enc, storageCfg)
 }
 
 // createNodeEngine creates the appropriate store engine via the canonical
@@ -4899,6 +4978,13 @@ func buildClusteredHost(
 	// one opens the WAL, binds the Raft transport and starts the shard, only
 	// for all of it to be torn down again on a cancelled boot. Callers wrap
 	// this in *HostCreateError like every other host-open failure.
+	//
+	// ctx is checked again between those three steps, not only before the
+	// first. None of them takes a ctx -- each is a run of durable bootstrap
+	// writes, fsync after fsync, which cannot be abandoned half-written --
+	// and on a disk under contention the three together take seconds. A
+	// cancel that lands in one step is honoured as that step ends, rather
+	// than paying for the steps after it as well.
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -4909,6 +4995,10 @@ func buildClusteredHost(
 		UnmarkedFormat: database.WALFormatPlaintext,
 	})
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = wal.Close()
 		return nil, nil, err
 	}
 	hostOpts = append(hostOpts, wal.Options...)
@@ -4924,6 +5014,10 @@ func buildClusteredHost(
 		log.Info("raft member identity",
 			slog.Uint64("replica_id", shardCfg.ReplicaID),
 			slog.String("identity", identity))
+	}
+	if err := ctx.Err(); err != nil {
+		_ = host.Close()
+		return nil, nil, err
 	}
 
 	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {

@@ -59,6 +59,18 @@ type VectorService interface {
 	//   - error: one of the typed errors in the error contract above
 	CreateNamespace(ctx context.Context, req *CreateNamespaceRequest) (*CreateNamespaceResponse, error)
 
+	// UpdateNamespace changes a namespace's index parameters and metadata in
+	// place and keeps every vector in it.
+	// Parameters:
+	//   - ctx: Request context with timeout and metadata
+	//   - req: Update namespace request with the keys to merge
+	// Returns:
+	//   - UpdateNamespaceResponse: Whether the new index parameters need a rebuild
+	//   - error: NamespaceNotFoundError for a missing namespace,
+	//     DimensionMismatchError for a dimension change, or another typed
+	//     error in the error contract above
+	UpdateNamespace(ctx context.Context, req *UpdateNamespaceRequest) (*UpdateNamespaceResponse, error)
+
 	// DeleteNamespace removes a vector namespace and all its vectors.
 	// Parameters:
 	//   - ctx: Request context with timeout and metadata
@@ -284,6 +296,40 @@ type CreateNamespaceResponse struct {
 	Timestamp int64
 
 	// Success indicates if creation succeeded
+	Success bool
+}
+
+// UpdateNamespaceRequest contains parameters for an in-place namespace update.
+// Each key of IndexConfig and Metadata is merged over the stored value; a key
+// the request does not name keeps its value.
+type UpdateNamespaceRequest struct {
+	// Namespace is the namespace to update
+	Namespace string
+
+	// Dimension, when non-zero, must equal the namespace's dimension: a
+	// dimension cannot change in place, since every stored vector has it
+	Dimension uint32
+
+	// IndexConfig contains the index parameters to set (e.g., HNSW m, ef_construction)
+	IndexConfig map[string]string
+
+	// Metadata contains the namespace metadata to set
+	Metadata map[string]interface{}
+}
+
+// UpdateNamespaceResponse contains the result of an in-place namespace update.
+type UpdateNamespaceResponse struct {
+	// Namespace is the updated namespace name
+	Namespace string
+
+	// RequiresRebuild reports that an index parameter changed, so the index
+	// must be rebuilt (RebuildIndex) before it reflects the new parameters
+	RequiresRebuild bool
+
+	// Timestamp is the update timestamp
+	Timestamp int64
+
+	// Success indicates if the update succeeded
 	Success bool
 }
 
@@ -993,6 +1039,10 @@ type GetIndexStatsResponse struct {
 
 	// IndexType is the index algorithm
 	IndexType string
+
+	// DistanceMetric is the distance metric the namespace was created with,
+	// as GetNamespaceInfo reports it
+	DistanceMetric string
 
 	// VectorCount is the number of indexed vectors
 	VectorCount uint64

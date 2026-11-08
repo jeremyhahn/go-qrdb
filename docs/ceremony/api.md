@@ -28,6 +28,7 @@ share-claim route of its own.
 | `awaiting_init` | freshly deployed, no ceremony performed |
 | `enrolling` | M-of-N custody initialized; holders claiming their envelopes |
 | `operational` | every initial holder has claimed, or single-admin mode |
+| `restore_failed` | the node could not read its ceremony records at startup; `Initialize` refuses (`ErrRestoreFailed`) until the cause is fixed and the node restarts |
 
 ## Schemas
 
@@ -57,14 +58,15 @@ The SO and User PINs go straight to the configured `pin.PINBackend`; without
 one the request is refused. `threshold >= 2` requires `officers` — every
 initial share holder, officers and custodians alike, each with its role — and
 fails closed with `ErrNoOfficers` without them. The unseal key is split
-`threshold`-of-`len(officers)`. The caller may not name itself among them.
+`threshold`-of-`len(officers)`. The caller may not name itself among them
+(`ceremony.ErrSelfEnrolment`). `credential_seal_strategy` names the strategy
+credentials are sealed under at rest; `qrdb init` sends its
+`--barrier-strategy`.
 
 **Each officer carries the same fields `POST /v1/barrier/officers`
 (`OfficerRegisterRequest`, [../shamir-custody/api.md](../shamir-custody/api.md))
-does**: `Initialize` is the ONLY system
-bootstrap, so it is also the only place Shamir custody over the system
-barrier is ever established, and a holder who needs any of the fields below
-has no other registration path to get them through. `encryption_kem`/
+does**: `Initialize` is the only place Shamir custody over the system barrier
+is established. `encryption_kem`/
 `encryption_key` name an optional separate share-envelope recipient key
 (HPKE suite, base64 public key); without one the certificate key receives
 the envelope. `factors` are additional authentication factors to enrol
@@ -79,10 +81,14 @@ second registration path.
 wiped from memory after use the way a `[]byte` can. It is the system
 barrier's passphrase for the single-admin path (`threshold < 2`); omit it for
 `--barrier-strategy none` and for M-of-N, where the barrier stays sealed
-until officers reconstruct it from their shares. The MCP tool's `secret`
-argument is the one exception: it is plain text there, not base64, matching
-its `passphrase` argument's convention on the barrier and tenant-barrier
-tools.
+until officers reconstruct it from their shares. On the MCP tool
+`qrdb_ceremony_initialize`, `secret`, `so_pin` and `user_pin` each take one of
+two forms, the same convention as the barrier and tenant-barrier tools
+([barrier API](../barrier-seal/api.md#secret-arguments-over-mcp)): the plain
+`<name>` argument as UTF-8 text, or `<name>_b64` as standard base64 (RFC 4648
+§4, padded), which carries any bytes exactly. A call carrying both forms of one
+argument is refused, and so is either form sent as anything but a JSON string,
+which is never read as an absent PIN or secret. The Go SDK's MCP client always sends `<name>_b64`.
 
 **`credential_seal_strategy` names how credentials are sealed at rest.** It
 is optional; the CLI sets it from `qrdb init --barrier-strategy`.
@@ -142,8 +148,9 @@ requires an authenticated, authorized caller rather than only the SO PIN.
 | Threshold above the holder count | 400 | `INVALID_ARGUMENT` — `ErrInvalidThreshold` |
 | Duplicate holder, self-enrolment, bad CSR or role | per [../shamir-custody/api.md](../shamir-custody/api.md#error-classes) | |
 | Wrong SO PIN (sign-csr) | 401 | `UNAUTHENTICATED` |
+| SO PIN locked out after repeated wrong PINs | 429 with `Retry-After` | `RESOURCE_EXHAUSTED` |
 | No PIN backend | 412 | `FAILED_PRECONDITION` |
-| CSR-sign or generate admin path on a node with no CA key | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError` |
+| CSR-sign or generate admin path on a node with no CA key (a composer's gRPC registration without `sdk.WithRegisterCeremonyCA`) | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError`, refusal reason `ADMIN_CREDENTIAL_REQUIRES_CA` with metadata `path` (`csr-sign` or `generate`); the SDK rebuilds the typed error on every transport |
 | Ceremony already performed | 409 | `FAILED_PRECONDITION` — `ErrAlreadyInitialized` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 

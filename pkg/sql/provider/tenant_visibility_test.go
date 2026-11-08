@@ -137,6 +137,84 @@ func TestAllDatabasesWithoutASessionIsSystemScoped(t *testing.T) {
 	assert.Equal(t, []string{"bootstrap"}, databaseNames(p.AllDatabases(nil)))
 }
 
+// TestSessionLookupsReachTheSessionTenantsOwnDatabase pins that two tenants
+// holding a database of one name each reach their own over SQL. The name
+// alone is ambiguous once two tenants own it, so every session lookup
+// resolves the session's (tenant, name) pair: the database itself, its SQL
+// settings and its place in the catalog listing.
+func TestSessionLookupsReachTheSessionTenantsOwnDatabase(t *testing.T) {
+	mgr := newTestManager(t)
+	owners := []struct {
+		tenant string
+		sql    *database.SQLConfig
+	}{
+		{"acme", &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic}},
+		{"globex", &database.SQLConfig{Concurrency: database.ConcurrencyOptimistic}},
+	}
+	for _, o := range owners {
+		_, err := mgr.Create(database.DatabaseConfig{
+			Name: "orders", TenantID: o.tenant, Backend: database.BackendMemory, SQL: o.sql,
+		})
+		require.NoError(t, err)
+	}
+	p := NewManagerProvider(mgr, &mockKVService{})
+
+	for _, o := range owners {
+		t.Run(o.tenant, func(t *testing.T) {
+			ctx := tenantContext(o.tenant)
+			db, ok := p.sessionDatabase(ctx, "orders")
+			require.True(t, ok)
+			assert.Equal(t, o.tenant, db.TenantID())
+			assert.True(t, p.HasDatabase(ctx, "orders"))
+			_, err := p.Database(ctx, "orders")
+			require.NoError(t, err)
+			assert.Equal(t, o.sql.EffectiveConcurrency(),
+				p.managerSQLConfig(o.tenant, "orders").EffectiveConcurrency())
+			assert.Equal(t, []string{"orders"}, databaseNames(p.AllDatabases(ctx)))
+		})
+	}
+
+	stranger := tenantContext("initech")
+	assert.False(t, p.HasDatabase(stranger, "orders"))
+	assert.Nil(t, p.managerSQLConfig("initech", "orders"))
+	assert.Empty(t, databaseNames(p.AllDatabases(stranger)))
+}
+
+// TestSharedDefaultDatabaseFallsBackToTheSystemTenant pins the shared
+// default's resolution: a tenant that owns no database of that name reaches
+// the system tenant's, and a tenant that owns one reaches its own -- once,
+// in the listing, never beside the system tenant's.
+func TestSharedDefaultDatabaseFallsBackToTheSystemTenant(t *testing.T) {
+	mgr := newTestManager(t)
+	_, err := mgr.Create(database.DatabaseConfig{
+		Name: "default", Backend: database.BackendMemory,
+		SQL: &database.SQLConfig{Concurrency: database.ConcurrencyPessimistic},
+	})
+	require.NoError(t, err)
+	_, err = mgr.Create(database.DatabaseConfig{
+		Name: "default", TenantID: "acme", Backend: database.BackendMemory,
+		SQL: &database.SQLConfig{Concurrency: database.ConcurrencyOptimistic},
+	})
+	require.NoError(t, err)
+	p := NewManagerProvider(mgr, &mockKVService{}, WithSharedDefaultDatabase("default"))
+
+	db, ok := p.sessionDatabase(tenantContext("globex"), "default")
+	require.True(t, ok)
+	assert.Equal(t, tenantid.System, tenantid.Normalize(db.TenantID()))
+	assert.Equal(t, database.ConcurrencyPessimistic,
+		p.managerSQLConfig("globex", "default").EffectiveConcurrency())
+
+	db, ok = p.sessionDatabase(tenantContext("acme"), "default")
+	require.True(t, ok)
+	assert.Equal(t, "acme", db.TenantID())
+	assert.Equal(t, database.ConcurrencyOptimistic,
+		p.managerSQLConfig("acme", "default").EffectiveConcurrency())
+	assert.Equal(t, []string{"default"}, databaseNames(p.AllDatabases(tenantContext("acme"))))
+
+	_, ok = p.sessionDatabase(tenantContext("globex"), "orders")
+	assert.False(t, ok, "only the shared default falls back to the system tenant")
+}
+
 // tenantContext builds a *sqle.Context whose session is a QRDBSession
 // authenticated to the named tenant.
 func tenantContext(tenantID string) *sqle.Context {

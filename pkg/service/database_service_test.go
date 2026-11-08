@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -625,7 +626,7 @@ func newTestDatabaseServiceWithQuota(t *testing.T, checker quota.Checker) Databa
 	t.Helper()
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return NewDatabaseService(mgr, WithQuotaChecker(checker))
 }
@@ -738,7 +739,7 @@ func raftDBConfig(name string) database.DatabaseConfig {
 func TestCreateForTenant_EntitlementRejected(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	entChecker := &mockEntitlementChecker{
@@ -764,7 +765,7 @@ func TestCreateForTenant_EntitlementRejected(t *testing.T) {
 func TestCreateForTenant_IsolationModeRejected(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	var checkedMode string
@@ -793,7 +794,7 @@ func TestCreateForTenant_IsolationModeRejected(t *testing.T) {
 func TestCreateForTenant_RaftGroupQuotaExceeded(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	var checkedResources []quota.Resource
@@ -840,7 +841,7 @@ func TestCreateForTenant_RaftGroupQuotaExceeded(t *testing.T) {
 func TestCreateForTenant_SystemTenantBypassesChecks(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, dataDir)
+	mgr := databasetest.NewManager(logger, dataDir)
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	entChecker := &mockEntitlementChecker{

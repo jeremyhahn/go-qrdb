@@ -726,13 +726,13 @@ func TestRunStart_WireCertReloaderSuccess_LogsEnabled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// runStart: MigrateIfNeeded failure (line 669-671)
+// runStart: a data directory that is a file
 //
-// Exercises the MigrateIfNeeded error return by providing a data-dir that
-// is a file (not a directory), which causes the migration to fail.
+// runStart refuses a data directory that is a file rather than starting a
+// node over it.
 // ---------------------------------------------------------------------------
 
-func TestRunStart_MigrateIfNeeded_Error(t *testing.T) {
+func TestRunStart_DataDirIsAFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create a valid TLS bundle so resolveTLS succeeds.
@@ -748,8 +748,7 @@ func TestRunStart_MigrateIfNeeded_Error(t *testing.T) {
 	require.NoError(t, os.WriteFile(certFile, bundle.CertPEM, 0o600))
 	require.NoError(t, os.WriteFile(keyFile, bundle.KeyPEM, 0o600))
 
-	// Create a file at the dataDir path so MigrateIfNeeded fails trying
-	// to use it as a directory.
+	// Create a file at the dataDir path.
 	dataDirFile := filepath.Join(tmpDir, "data-as-file")
 	require.NoError(t, os.WriteFile(dataDirFile, []byte("x"), 0o600))
 

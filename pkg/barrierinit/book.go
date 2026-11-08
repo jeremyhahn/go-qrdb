@@ -81,7 +81,7 @@ type Book struct {
 
 // NewBook returns a Book over kv. required returns nil once
 // featuregate.PerNodeBarrierKeys is activated and the refusal (the composer's
-// *featuregate.NotActiveError) before; nil is a node that gates nothing -- a
+// *feature.NotActiveError) before; nil is a node that gates nothing -- a
 // standalone node -- and is active from the start.
 func NewBook(kv KV, required func() error) *Book {
 	return &Book{kv: kv, required: required}

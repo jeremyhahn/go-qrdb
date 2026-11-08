@@ -21,12 +21,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -712,18 +712,18 @@ type alwaysFailReclaimer struct {
 	unfenceErr error
 }
 
-func (r *alwaysFailReclaimer) ReclaimDatabaseKeyspace(_ context.Context, _, _, _ string) error {
+func (r *alwaysFailReclaimer) ReclaimDatabaseKeyspace(_ context.Context, _, _, _, _ string) error {
 	return r.err
 }
 
 // FenceDatabaseKeyspace succeeds: the failure under test is the reclamation.
-func (r *alwaysFailReclaimer) FenceDatabaseKeyspace(_ context.Context, _, _ string) error {
+func (r *alwaysFailReclaimer) FenceDatabaseKeyspace(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
 
 // UnfenceDatabaseKeyspace succeeds unless unfenceErr is set, so by default
 // a failed drop rolls back cleanly.
-func (r *alwaysFailReclaimer) UnfenceDatabaseKeyspace(_ context.Context, _, _, _ string) error {
+func (r *alwaysFailReclaimer) UnfenceDatabaseKeyspace(_ context.Context, _, _, _, _ string) error {
 	return r.unfenceErr
 }
 
@@ -790,7 +790,7 @@ func TestDrop_ReclaimFailureClearsTheReplicatedFence(t *testing.T) {
 // TestDrop_ResumesAfterRestartDespiteTheLocalFence is finding 7's second
 // half: after a restart, Manager.Get keeps returning *database.DroppingError
 // for a database whose local fence survived the restart (Open restores
-// Dropping from meta.json) -- the exact resolution path Drop's tenantID
+// Dropping from the catalog record) -- the exact resolution path Drop's tenantID
 // lookup used to depend on. Before the fix this left tenantID empty,
 // dropRaftPlacement was never called at all, and a manager-level drop that
 // went on to succeed anyway left the replicated placement entry (and its
@@ -810,14 +810,14 @@ func TestDrop_ResumesAfterRestartDespiteTheLocalFence(t *testing.T) {
 
 	// Simulate a restart that reopened the database with its local fence
 	// already set (see database.Manager.Open restoring Dropping from
-	// meta.json), WITHOUT touching the replicated placement entry at all --
+	// the catalog record), WITHOUT touching the replicated placement entry at all --
 	// exactly the state a crash between dropRaftPlacement and
 	// manager.Drop's own completion would leave.
 	db, err := svc.manager.Get("orders")
 	if err != nil {
 		t.Fatalf("manager.Get before simulating the restart: %v", err)
 	}
-	db.SetDropping(true)
+	fenceInterruptedDrop(t, svc, db)
 	if _, err := svc.manager.Get("orders"); err == nil {
 		t.Fatal("manager.Get should now refuse with DroppingError, precondition for this test not met")
 	}
@@ -857,7 +857,7 @@ func TestDropForTenant_ResumesAfterRestartAndReleasesQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetForTenant before simulating the restart: %v", err)
 	}
-	db.SetDropping(true)
+	fenceInterruptedDrop(t, svc, db)
 	if _, err := svc.manager.GetForTenant(ctx, "orders"); err == nil {
 		t.Fatal("GetForTenant should now refuse with DroppingError, precondition for this test not met")
 	}
@@ -874,6 +874,26 @@ func TestDropForTenant_ResumesAfterRestartAndReleasesQuota(t *testing.T) {
 	if f.decTotal != decTotalBefore+1 {
 		t.Errorf("total-replica quota decrement = %d, want %d (the resumed drop must still release it)", f.decTotal, decTotalBefore+1)
 	}
+}
+
+// fenceInterruptedDrop leaves db as a drop that crashed after claiming its
+// fence leaves it across a restart: fenced in its catalog record, under a
+// claim no live drop holds, and on the reopened entry (Open restores the
+// entry's fence from the record). Setting the entry alone is a fence the
+// next resolution clears, because the record says the database is not
+// dropping.
+func fenceInterruptedDrop(t *testing.T, svc *DatabaseService, db *database.Database) {
+	t.Helper()
+	err := databasetest.Catalog(svc.manager.DataDir()).Update(context.Background(), db.TenantID(), db.Name(), db.Incarnation(),
+		func(meta *database.DatabaseMeta) error {
+			meta.Dropping = true
+			meta.DropClaim = "interrupted-drop"
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("Catalog.Update(dropping) error = %v", err)
+	}
+	db.SetDropping(true)
 }
 
 // failNthCompareAndSwapKV wraps a memPlacementKV whose CompareAndSwap fails
@@ -959,7 +979,7 @@ func TestDrop_MarkDropCommittedFailureFailsTheDrop(t *testing.T) {
 // refuse it before touching anything -- the replicated placement fence
 // included.
 func TestDatabaseService_RefusesToDropTheDefaultDatabase(t *testing.T) {
-	svc := NewDatabaseService(database.NewManager(nil, t.TempDir()))
+	svc := NewDatabaseService(databasetest.NewManager(nil, t.TempDir()))
 	var refused *database.DefaultDatabaseDropError
 
 	if err := svc.Drop(context.Background(), tenant.DefaultDatabase); !errors.As(err, &refused) {
@@ -1013,7 +1033,7 @@ func TestClearRaftPlacementFence_RunsAfterTheRequestIsCancelled(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	svc := NewDatabaseService(database.NewManager(nil, t.TempDir()), WithPlacementStore(store)).(*DatabaseService)
+	svc := NewDatabaseService(databasetest.NewManager(nil, t.TempDir()), WithPlacementStore(store)).(*DatabaseService)
 
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -1074,11 +1094,9 @@ func TestDrop_LocalFenceWriteFailureRollsBackThePlacementFence(t *testing.T) {
 	if _, err := svc.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
-	// Remove the database's catalog directory, so persisting the local
-	// fence to meta.json fails -- the one failure before anything is fenced.
-	if err := os.RemoveAll(filepath.Join(svc.manager.DataDir(), "databases", "orders")); err != nil {
-		t.Fatalf("RemoveAll: %v", err)
-	}
+	// The catalog refuses every write, so persisting the local fence in the
+	// database's record fails -- the one failure before anything is fenced.
+	svc.manager.SetCatalog(putRefusingCatalog{Catalog: databasetest.Catalog(svc.manager.DataDir())})
 
 	if err := svc.DropForTenant(ctx, "orders"); err == nil {
 		t.Fatal("DropForTenant = nil error, want the local fence write failure")

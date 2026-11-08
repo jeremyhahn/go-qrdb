@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -45,7 +46,7 @@ func newCoverageLogger() *slog.Logger {
 func newCoverageDatabaseManager(t *testing.T) *database.Manager {
 	t.Helper()
 	dir := t.TempDir()
-	mgr := database.NewManager(newCoverageLogger(), dir)
+	mgr := databasetest.NewManager(newCoverageLogger(), dir)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return mgr
 }

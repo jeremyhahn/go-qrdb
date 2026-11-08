@@ -21,11 +21,13 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -181,73 +183,77 @@ func TestCreateForTenant_CallerCancelled_ReturnsCallerError(t *testing.T) {
 	}
 }
 
-// TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers pins two
-// bounds, each on its own clock. The service's create deadline must release
-// the stalled seal-record write: the watchdog judges that, from the moment
-// the write starts, so the manager's create before it is not on its clock. The rollback
-// that follows is deliberately not under that deadline -- it runs under
-// database.DropRollbackContext, and the manager's create and drop write
-// meta.json through a file and directory fsync that no context bounds -- so
-// the answer is awaited under the rollback's own bound, and the test's verdict
-// does not depend on the host disk's latency.
+// TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers pins that
+// the service's create deadline releases a stalled seal-record write, and
+// that the create then rolls back and answers. The deadline covers the whole
+// create, the manager's catalog-record write included: that write is a
+// consensus step, which is what the deadline exists to bound. The test runs
+// in a synctest bubble, so its fake clock advances only while every
+// goroutine in it is durably blocked: the manager's disk and catalog work
+// before the seal-record write takes no time on the deadline's clock however
+// loaded the host is, and the deadline fires only once the stalled write is
+// all that waits. The rollback runs under database.DropRollbackContext, and
+// its file and directory fsyncs likewise take no fake time.
 func TestCreateWithCredentials_StalledSealRecord_RollsBackAndAnswers(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
-	t.Cleanup(func() { _ = mgr.Close() })
-	entered := make(chan struct{}, 1)
-	released := make(chan error, 1)
-	svc := NewDatabaseService(mgr,
-		WithDatabaseClusterSealer(stallingClearSealer{Sealer: clustersealtest.New(true), entered: entered, released: released}),
-		WithDatabaseCreateTimeout(50*time.Millisecond),
-	)
-	dc, ok := svc.(DatabaseCredentialCreator)
-	if !ok {
-		t.Fatalf("%T is not a DatabaseCredentialCreator", svc)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := dc.CreateWithCredentials(context.Background(), testDBConfig("app"), seal.Credentials{})
-		done <- err
-	}()
-
-	// The manager's create runs first and writes to disk, which no context
-	// bounds; it is awaited under the same load-tolerant bound as the answer.
-	// The deadline's work starts at the seal-record write.
-	select {
-	case <-entered:
-	case err := <-done:
-		t.Fatalf("create answered %v before reaching the seal-record write", err)
-	case <-time.After(database.DropRollbackTimeout + createDeadlineWatchdog):
-		t.Fatalf("create did not reach the seal-record write within %v: the manager's create did not finish", database.DropRollbackTimeout+createDeadlineWatchdog)
-	}
-	select {
-	case err := <-released:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("seal-record write released by %v, want the create deadline's context.DeadlineExceeded", err)
+	synctest.Test(t, func(t *testing.T) {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		mgr := databasetest.NewManager(logger, t.TempDir())
+		t.Cleanup(func() { _ = mgr.Close() })
+		entered := make(chan struct{}, 1)
+		released := make(chan error, 1)
+		svc := NewDatabaseService(mgr,
+			WithDatabaseClusterSealer(stallingClearSealer{Sealer: clustersealtest.New(true), entered: entered, released: released}),
+			WithDatabaseCreateTimeout(50*time.Millisecond),
+		)
+		dc, ok := svc.(DatabaseCredentialCreator)
+		if !ok {
+			t.Fatalf("%T is not a DatabaseCredentialCreator", svc)
 		}
-	case <-time.After(createDeadlineWatchdog):
-		t.Fatalf("seal-record write not released within %v: it is not bounded by the service's create deadline", createDeadlineWatchdog)
-	}
 
-	var err error
-	select {
-	case err = <-done:
-	case <-time.After(database.DropRollbackTimeout + createDeadlineWatchdog):
-		t.Fatalf("create did not answer within the rollback bound %v after its deadline", database.DropRollbackTimeout)
-	}
-	var timeoutErr *DatabaseCreateTimeoutError
-	if !errors.As(err, &timeoutErr) {
-		t.Fatalf("err = %v (%T), want *DatabaseCreateTimeoutError", err, err)
-	}
-	if _, gerr := mgr.Get("app"); gerr == nil {
-		t.Error("database app still exists after its create timed out, want it rolled back")
-	}
+		done := make(chan error, 1)
+		go func() {
+			_, err := dc.CreateWithCredentials(context.Background(), testDBConfig("app"), seal.Credentials{})
+			done <- err
+		}()
+
+		// The manager's create runs first, on the deadline's clock; its disk
+		// and catalog work never blocks durably, so the bubble's clock stands
+		// still until the seal-record write is all that is left waiting.
+		select {
+		case <-entered:
+		case err := <-done:
+			t.Fatalf("create answered %v before reaching the seal-record write", err)
+		case <-time.After(createDeadlineWatchdog):
+			t.Fatalf("create did not reach the seal-record write within %v", createDeadlineWatchdog)
+		}
+		select {
+		case err := <-released:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("seal-record write released by %v, want the create deadline's context.DeadlineExceeded", err)
+			}
+		case <-time.After(createDeadlineWatchdog):
+			t.Fatalf("seal-record write not released within %v: it is not bounded by the service's create deadline", createDeadlineWatchdog)
+		}
+
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(database.DropRollbackTimeout + createDeadlineWatchdog):
+			t.Fatalf("create did not answer within the rollback bound %v after its deadline", database.DropRollbackTimeout)
+		}
+		var timeoutErr *DatabaseCreateTimeoutError
+		if !errors.As(err, &timeoutErr) {
+			t.Fatalf("err = %v (%T), want *DatabaseCreateTimeoutError", err, err)
+		}
+		if _, gerr := mgr.Get("app"); gerr == nil {
+			t.Error("database app still exists after its create timed out, want it rolled back")
+		}
+	})
 }
 
 func TestWithDatabaseCreateTimeout_DefaultsAndIgnoresNonPositive(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := database.NewManager(logger, t.TempDir())
+	mgr := databasetest.NewManager(logger, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 
 	for _, tc := range []struct {

@@ -161,6 +161,22 @@ type CreateTenantRequest struct {
 	AdminChainPEM string `json:"admin_chain_pem,omitempty"`
 	// TrustAnchorsPEM registers the tenant's trust anchors with it.
 	TrustAnchorsPEM string `json:"trust_anchors_pem,omitempty"`
+	// SOUsername is the tenant's security officer, optional: a second
+	// principal, distinct from the admin by name and by key, holding the
+	// tenant's so role alone. SOUsername, exactly one of SOCSRPEM and
+	// SOCertPEM, and SOPin are given together or not at all.
+	SOUsername string `json:"so_username,omitempty"`
+	// SOCSRPEM is the SO's certificate signing request, signed as
+	// AdminCSRPEM is.
+	SOCSRPEM string `json:"so_csr_pem,omitempty"`
+	// SOCertPEM is the SO's own certificate, leaf first; it must chain to
+	// one of TrustAnchorsPEM.
+	SOCertPEM string `json:"so_cert_pem,omitempty"`
+	// SOChainPEM holds intermediates for SOCertPEM.
+	SOChainPEM string `json:"so_chain_pem,omitempty"`
+	// SOPin is the SO's second factor, the PIN the SO gate
+	// (auth.so_dual_factor) asks the SO for.
+	SOPin string `json:"so_pin,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.
@@ -193,10 +209,15 @@ type CreateTenantResponse struct {
 
 	// Admin is the tenant's first admin as onboarding left it.
 	Admin TenantAdminCredential `json:"admin"`
+
+	// SO is the tenant's security officer as onboarding left it, when the
+	// request named one.
+	SO *TenantAdminCredential `json:"so,omitempty"`
 }
 
-// TenantAdminCredential is a tenant's first admin and the login certificate
-// bound to it. There is never a private key: the admin keeps its own.
+// TenantAdminCredential is a tenant's first admin, or its SO, and the login
+// certificate bound to it. There is never a private key: the account keeps
+// its own.
 type TenantAdminCredential struct {
 	// UserID is zero while AwaitsBarrierInit.
 	UserID   uint64 `json:"user_id,omitempty,string"`

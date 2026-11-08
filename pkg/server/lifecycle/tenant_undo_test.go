@@ -23,6 +23,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -64,12 +65,12 @@ func TestTenantUndoRequired_NilWhenNothingGates(t *testing.T) {
 
 func TestTenantUndoRequired_FollowsTheGate(t *testing.T) {
 	// Another feature being active does not stand in for this one.
-	before := gatedHost{enabled: map[featuregate.Feature]bool{featuregate.PerNodeBarrierKeys: true}}
-	var notActive *featuregate.NotActiveError
+	before := gatedHost{enabled: map[feature.Feature]bool{featuregate.PerNodeBarrierKeys: true}}
+	var notActive *feature.NotActiveError
 	if err := tenantUndoRequired(before)(); !errors.As(err, &notActive) || notActive.Feature != featuregate.TenantUndo || notActive.ShardID != 0 {
 		t.Fatalf("required before activation = %v, want cluster-wide NotActiveError(%s)", err, featuregate.TenantUndo)
 	}
-	after := gatedHost{enabled: map[featuregate.Feature]bool{featuregate.TenantUndo: true}}
+	after := gatedHost{enabled: map[feature.Feature]bool{featuregate.TenantUndo: true}}
 	if err := tenantUndoRequired(after)(); err != nil {
 		t.Fatalf("required after activation = %v, want nil", err)
 	}

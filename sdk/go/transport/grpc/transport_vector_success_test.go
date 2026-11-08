@@ -40,6 +40,10 @@ func (f *fakeVectorService) CreateNamespace(_ context.Context, req *service.Crea
 	return &service.CreateNamespaceResponse{Namespace: req.Namespace, Dimension: req.Dimension, Success: true, Timestamp: 1}, nil
 }
 
+func (f *fakeVectorService) UpdateNamespace(_ context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	return &service.UpdateNamespaceResponse{Namespace: req.Namespace, RequiresRebuild: len(req.IndexConfig) > 0, Success: true, Timestamp: 1}, nil
+}
+
 func (f *fakeVectorService) DeleteNamespace(_ context.Context, _ *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {
 	return &service.DeleteNamespaceResponse{Success: true, VectorsDeleted: 5, Timestamp: 1}, nil
 }
@@ -52,7 +56,7 @@ func (f *fakeVectorService) ListNamespaces(_ context.Context, _ *service.ListNam
 }
 
 func (f *fakeVectorService) GetNamespaceInfo(_ context.Context, req *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error) {
-	return &service.GetNamespaceInfoResponse{Namespace: req.Namespace, Dimension: 128, VectorCount: 100}, nil
+	return &service.GetNamespaceInfoResponse{Namespace: req.Namespace, Dimension: 128, VectorCount: 100, DistanceMetric: "L2"}, nil
 }
 
 func (f *fakeVectorService) UpsertVector(_ context.Context, req *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
@@ -108,7 +112,7 @@ func (f *fakeVectorService) GetRebuildProgress(_ context.Context, _ *service.Get
 }
 
 func (f *fakeVectorService) GetIndexStats(_ context.Context, _ *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
-	return &service.GetIndexStatsResponse{Namespace: "ns", IndexType: "HNSW", VectorCount: 100, Dimension: 128}, nil
+	return &service.GetIndexStatsResponse{Namespace: "ns", IndexType: "HNSW", DistanceMetric: "L2", VectorCount: 100, Dimension: 128}, nil
 }
 
 func (f *fakeVectorService) CompactNamespace(_ context.Context, _ *service.CompactNamespaceRequest) (*service.CompactNamespaceResponse, error) {

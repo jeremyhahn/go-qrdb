@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -663,16 +664,23 @@ func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, val
 	return s.leasedPutResult(ctx, key, value, leaseID, result)
 }
 
+// presentKeyVersion is a present key's version on a state machine that keeps
+// no revision history: its version compare reads 0 absent and 1 present.
+const presentKeyVersion int64 = 1
+
 // leasedPutResult reports an applied lease-attached put. A state machine
 // with revision history returns the write's revision in result.Value, and
 // the write is read back at it for its full metadata. A state machine
 // without one -- declared with WithoutRevisionHistory; the default pebble
 // state machine -- applies the put and attaches the lease just the same,
 // but has no revision to report: the put is reported as the key, value and
-// lease it wrote, with zero revisions, and nothing is read back.
+// lease it wrote, with zero revisions, and nothing is read back. Its version
+// is 1, the version such a state machine's transaction compares read for a
+// present key (protocol.CompareHolds: presence is its only version), so a
+// read-then-compare-and-set on the reported version holds there too.
 func (s *MVCCKVService) leasedPutResult(ctx context.Context, key string, value []byte, leaseID int64, result sm.Result) (*KeyValue, error) {
 	if s.noRevisionHistory {
-		return &KeyValue{Key: []byte(key), Value: value, LeaseID: leaseID}, nil
+		return &KeyValue{Key: []byte(key), Value: value, LeaseID: leaseID, Version: presentKeyVersion}, nil
 	}
 	readResult, err := s.host.SyncRead(ctx, s.shardID, MVCCGetAtRevisionQuery{
 		Key:      []byte(key),
@@ -866,7 +874,7 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.NodeCompaction) {
-		return &featuregate.NotActiveError{Feature: featuregate.NodeCompaction, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.NodeCompaction, ShardID: s.shardID}
 	}
 	cmd, encErr := protocol.EncodeMVCCCompactNode(revision)
 	if encErr != nil {
@@ -892,7 +900,7 @@ func (s *MVCCKVService) CompactNodeKeyspace(ctx context.Context, revision int64)
 // refused by the state machine (*CompactRevisionFutureError,
 // *RevisionCompactedError) and changes nothing. The command is proposed only
 // once the group's feature gate reports every replica can apply it
-// (*featuregate.NotActiveError otherwise).
+// (*feature.NotActiveError otherwise).
 func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revision int64) error {
 	if !isDatabaseKeyspace(prefix) || !s.ownsWholeStore(prefix) {
 		return &CompactPrefixInvalidError{Prefix: prefix}
@@ -901,7 +909,7 @@ func (s *MVCCKVService) CompactPrefix(ctx context.Context, prefix string, revisi
 		return &CompactRevisionInvalidError{Revision: revision}
 	}
 	if gated, ok := s.host.(FeatureGatedHost); ok && !gated.FeatureEnabled(s.shardID, featuregate.PrefixCompaction) {
-		return &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
+		return &feature.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: s.shardID}
 	}
 	cmd, encErr := protocol.EncodeMVCCCompactPrefix([]byte(prefix), revision)
 	if encErr != nil {

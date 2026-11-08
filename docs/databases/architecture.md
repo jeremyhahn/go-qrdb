@@ -248,6 +248,32 @@ A non-replicated backend in a multi-node cluster is **not** refused (OD-2): the 
 requests there. When the owner cannot be reached the request fails with
 `database.BindingOwnerUnavailableError`, which names the owner.
 
+The owning node is the catalog record's `owner_node` (`DatabaseMeta.OwnerNode`):
+the Raft address of the node that created the database. It is set for a
+memory, file, pebble or objstore database and left empty for:
+
+- a raft-placed database (`backend: raft`, or any database carrying a Raft
+  configuration, such as every database of a raft-isolated tenant);
+- a provisioned database;
+- a database created on a standalone node.
+
+A record with no owner opens on every node, as before. On every other node, a
+record naming another node:
+
+- is never opened: no store, directory or barrier exists for it there;
+- is listed with status `remote`, without being opened, and is skipped by
+  `OpenAll` at startup;
+- refuses a request with a local-binding `placement.NotAReplicaError` (shard
+  ID 0, the owner as its one replica). REST, gRPC, the Unix socket, QUIC and
+  MCP forward that refusal to the owner through replica forwarding and relay
+  the owner's answer.
+
+When the owner does not answer, the forwarding node returns
+`database.BindingOwnerUnavailableError`, which maps to Unavailable on every
+transport. The PostgreSQL and MySQL wire protocols have no forwarding layer,
+so they return the refusal itself, also classed Unavailable. A local binding's
+target is never cached: each request resolves the owner from the refusal.
+
 ### What stays node-level
 
 Node configuration keeps only what is genuinely a property of the node:
@@ -396,7 +422,7 @@ concurrently with it, orphaned under a name the catalog no longer named.
 The fence has two halves, and they answer different questions:
 
 - **The local fence** (`Database.Dropping`, persisted in the database's
-  metadata) answers "may a caller resolve this database now?".
+  catalog record) answers "may a caller resolve this database now?".
   `Manager.Get` — the seam every read and write path resolves a database
   through — refuses with `database.DroppingError` for the whole of steps
   1-3, even though the catalog entry itself does not go until step 4.
@@ -418,6 +444,17 @@ The fence has two halves, and they answer different questions:
   caller receives `database.DroppingError`. There is no check-then-write
   window, because there is no separate check.
 
+**Once the drop removes the catalog record, the database does not exist.**
+The catalog is replicated, so every node applies the removal and releases
+the database ("database released: its catalog record is gone"). From then
+on a request that names it, on any node and over any transport, is refused
+where the database is resolved, before anything is proposed, with the typed
+database-not-found error: 404 Not Found over REST (RFC 9110 §15.5.5),
+`NOT_FOUND` over gRPC, each other transport's not-found answer. No tombstone
+is kept resolvable to answer it with a conflict instead. The store fence
+stays underneath: a write resolved before the release, still in flight, is
+refused by the guard at its log position as above.
+
 **Handles are scoped to an incarnation.** Creating a database marks its new
 incarnation live as the last step before it becomes resolvable. A handle
 resolved before a drop names the old incarnation, so it is refused after the
@@ -434,29 +471,60 @@ claims its ID from one replicated high-water mark, and no caller can name one
 created again under the name always gets a new shard, and a shard cached under the dropped one's ID is
 evicted (and its directory purged) rather than served.
 
+**A dedicated-raft database has a second marker, in the store its namespaced
+keyspace is reclaimed from** — the system store, which is not its shard. The
+reclamation's deletes there are guarded on that marker, so it must name the
+incarnation exactly as the shard-resident marker of a shared-store database
+does. Creating a dedicated-raft database claims it with the new incarnation,
+from absent or the tombstone, whether or not the database's shard exists yet;
+its drop swaps exactly that incarnation to the tombstone before it fences the
+shard, and refuses the drop with `*database.DropSupersededError` when the
+marker holds another incarnation. A reclamation that resolved its fence
+target, paused while another node finished the drop and the name was created
+again — as a dedicated database or not — therefore resumes to find the
+successor's incarnation in the marker and deletes none of the successor's
+keys, indexes or vectors in that store. A dedicated-raft database created
+before the claim existed has no marker there; its drop writes the tombstone
+from absent.
+
 **Marking an incarnation live never overwrites another one.** The marker is
 claimed only from absent or from the tombstone, by compare-and-swap. The
-database catalog is node-local while the marker is replicated, so a marker
-already holding a different live incarnation means the name was created on
-another node; the create is refused with `*database.AlreadyExistsError`
-(`Elsewhere` set) rather than taking the name over and refusing every write
-to the other node's database. Until the catalog is replicated, a name is
-created through the API on one node only.
+catalog record is written first, create-if-absent, so a name any node has
+already recorded is refused with `*database.AlreadyExistsError` before the
+marker is touched. A marker that nonetheless holds a different live
+incarnation belongs to a database the catalog does not record; the create is
+refused with `*database.AlreadyExistsError` (`Elsewhere` set) rather than
+taking the name over and refusing every write to that database.
 
 **A dropped name needs the store to be re-created.** A drop's tombstone
 outlives the drop, and only the keyspace reclaimer can replace it. A manager
 with no reclaimer attached refuses to create a name this node dropped —
 `*database.ReclaimerRequiredError` — instead of creating a database every
-write to which the tombstone would refuse; the node records its drops beside
-the catalog (`dropped/<name>`) so it can tell. For the same reason the
+write to which the tombstone would refuse; the node records its drops in a
+node-local ledger under its data directory (`dropped/`) so it can tell. For the same reason the
 daemon provisions its configured databases only after the data plane has
-attached the reclaimer. Boot provisioning (`Manager.Provision`) uses the
-empty incarnation, the one every node provisioning the same configured name
-agrees on without a replicated catalog; it clears a tombstone to absent and
-refuses a name live elsewhere, like a create.
+attached the reclaimer. Boot provisioning (`Manager.Provision`) opens the configured name when the
+catalog already records it, from an earlier boot or another node. Otherwise
+it creates it with the empty incarnation, which every node provisioning the
+same configured name agrees on. It clears a tombstone to absent and refuses a
+marker live under another incarnation, like a create.
 
-A failed drop is rolled back: the marker is restored to the database's own
-incarnation — always, because a fence write that reported failure may still
+A failed drop is rolled back by the drop that holds the catalog record's drop
+claim, and by no other: a retry on any node takes the claim over in the same
+compare-and-swap that writes the fence, and the drop it overtook neither
+clears the fences nor removes the record, which it deletes only by a
+compare-and-delete naming the incarnation it dropped and its claim. The
+store enforces the claim, not a read of the catalog that can be stale by the
+time the write lands: the tombstone a drop writes carries its claim, the
+takeover's fence re-stamps it with the new one, and the rollback's restore,
+the reclamation's guarded deletes and the clear of a dedicated-raft
+database's markers each compare the marker against the caller's own
+tombstone in the same Raft-applied compare-and-swap. A rollback that reaches
+the store after a takeover is refused with `*database.DropSupersededError`
+and leaves the takeover's fence and its reclamation intact. A create claims
+any drop's tombstone; the catalog, not the marker, refuses a create while a
+drop is in flight. The
+rollback restores the marker to the database's own incarnation — always, because a fence write that reported failure may still
 have committed — under a context the failed request's cancellation cannot
 reach. Only once that succeeds is the local fence cleared, and only then is
 a dedicated-raft database's replicated placement fence cleared; if the store
@@ -513,7 +581,7 @@ database**: unresolvable to ordinary operations, but still in the catalog, so
 re-issuing the drop finishes it — the reclamation is idempotent, and an
 already-empty keyspace is a success. A crash between the fence and the
 catalog removal is indistinguishable from an interrupted drop still in
-progress: the fence is persisted in the database's own metadata, so a
+progress: the fence is persisted in the database's catalog record, so a
 restart reopens it fenced rather than silently resolvable again.
 
 A reclamation that fails **fails the whole drop**. The database, its catalog
@@ -525,7 +593,7 @@ turn one failure into an outage.
 
 **A dedicated-raft (`IsolationRaft`) database needs a second, REPLICATED
 fence, and has one.** Its existence and ownership are authoritative in the
-replicated placement table, not the local catalog — a follower's local
+replicated placement table, not a node's database manager — a follower's local
 `database.Manager` entry may legitimately be absent even though the
 follower hosts a live replica (see `RaftBackendFactory`) — so a fence that
 only lived in `database.Manager` would close the race solely on the node
@@ -547,7 +615,7 @@ and the tenant's quota release have both completed; a failed reclamation
 clears the fence the same way the local one is cleared. A failure removing
 the placement entry itself is not swallowed: the fence survives with the
 entry, so the database stays refused rather than becoming simultaneously
-unreachable (the local catalog record is already gone) and unrefused (no
+unreachable (the catalog record is already gone) and unrefused (no
 replica has any signal that it is still being torn down) — an operator's
 retry (or a resumed `DropForTenant`) finishes the removal.
 
@@ -683,17 +751,17 @@ delete and the `TenantShardReconciler`'s own (later) cache eviction.
 
 **The local fence's in-memory flag commits before its durable one, not
 after.** `Manager.Drop`'s step 0 sets the in-memory flag
-(`Database.SetDropping`) FIRST, then persists `DatabaseMeta.Dropping` to
-`meta.json`: `loadDatabase` (the seam every
+(`Database.SetDropping`) FIRST, then persists `DatabaseMeta.Dropping` to the
+database's catalog record: `loadDatabase` (the seam every
 `Update*`/`Get` resolution goes through) refuses the instant the in-memory
-flag reads true, and `rewriteMeta` always reads it fresh at call time, never
-a cached value, so a concurrent `Update*` call can never observe the flag
-still false and silently persist a stale `Dropping: false` over the durable
-write moments later. `meta.json` itself is written through a temp-file/
-fsync/rename sequence rather than a direct write to the final path, so a
-crash mid-write can never leave it truncated or otherwise corrupt, and two
-writers racing the same path settle on "the later rename wins" rather than
-an interleaved, invalid file.
+flag reads true. An `Update*` call already past that check — on this node, or
+on another node that opened the database before the drop — cannot persist a
+stale `Dropping: false` over the durable write: `rewriteMeta` applies its one
+field to the record as the catalog holds it, with a compare-and-swap against
+the record it read, and refuses a record that is dropping. The record is one
+key in the tenant's store, replaced by one compare-and-swap, so a crash leaves
+either the previous record or the new one, never a partial one, and two
+writers racing the same record each keep the other's field.
 
 The data a database owns is addressed in these shapes, and a teardown that
 reclaimed only the first would leave every document behind:
@@ -1626,14 +1694,17 @@ file, pebble or objstore database exists on one node.
 - C: no default; `backend` is required.
 - **Chosen: A.**
 
-**OD-4 — Catalog authority.** A database's `meta.json` is node-local; only
-dedicated-raft databases also have a replicated placement record.
-- A: the replicated catalog (the placement table, extended to every backend) is
-  authoritative for every database; `meta.json` becomes a node-local cache
-  rebuilt from it.
-- B: keep `meta.json` authoritative for non-raft backends and placement for raft.
+**OD-4 — Catalog authority.** Where the authoritative record of a database
+lives.
+- A: a catalog record per database in the tenant's replicated store,
+  authoritative for every backend; every node reads the same records.
+- B: a metadata file in the database's directory on the creating node for
+  non-raft backends, and the placement table for raft.
 - **Chosen: A.** OD-2 A requires every node to resolve every database,
-  and B cannot give it that.
+  and B cannot give it that. Nothing reads B's metadata file: a node whose
+  data directory still holds one refuses to start
+  (`*database.UnmigratedDatabasesError`) rather than starting with those
+  databases unlisted; they are recreated.
 
 **OD-5 — Implicit default databases of non-system tenants.** Every tenant can
 address the default database (`system`) and the SQL default database without

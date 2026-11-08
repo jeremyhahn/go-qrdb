@@ -338,3 +338,44 @@ func testTSLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 		t.Fatalf("[%s] ts aggregate --function not-a-function succeeded, want error (output: %s)", proto.name, out)
 	}
 }
+
+// TestTS_CLI_MaxMetricsRefusesPastTheCap starts qrdbd with
+// timeseries.max_metrics 1, fills the one slot with `qrdb ts write` over
+// REST, and proves every transport then refuses a write (and a write-batch)
+// that would create a further metric with the metric-limit error, while a
+// write to the metric already held is still accepted.
+func TestTS_CLI_MaxMetricsRefusesPastTheCap(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", "timeseries:\n  max_metrics: 1\n")
+
+	const held = "tscap_held"
+	holderProto := multiProtocol{name: "rest", scheme: "https"}
+	if out, err := runCLIProto(t, node, holderProto, "ts", "write", "--metric", held, "--value", "1"); err != nil {
+		t.Fatalf("[rest] ts write %s under max_metrics 1: %v\noutput: %s", held, err, out)
+	}
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			refused := "tscap_refused_" + proto.name
+			out, err := runCLIProto(t, node, proto, "ts", "write", "--metric", refused, "--value", "1")
+			if err == nil || !strings.Contains(strings.ToLower(out), "metric limit reached") {
+				t.Fatalf("[%s] ts write %s past max_metrics 1: err = %v, output = %q, want a non-zero exit with the metric-limit refusal",
+					proto.name, refused, err, out)
+			}
+
+			ts := time.Now().UnixNano()
+			batch := fmt.Sprintf(`[{"metric":%q,"value":2,"timestamp_ns":%d},{"metric":%q,"value":3,"timestamp_ns":%d}]`,
+				held, ts, refused, ts)
+			out, err = runCLIProtoStdin(t, node, proto, batch, "ts", "write-batch", "--file", "-")
+			if err == nil || !strings.Contains(strings.ToLower(out), "metric limit reached") {
+				t.Fatalf("[%s] ts write-batch creating %s past max_metrics 1: err = %v, output = %q, want a non-zero exit with the metric-limit refusal",
+					proto.name, refused, err, out)
+			}
+
+			if out, err := runCLIProto(t, node, proto, "ts", "write", "--metric", held, "--value", "4"); err != nil {
+				t.Fatalf("[%s] ts write to the held metric %s at max_metrics 1: %v\noutput: %s", proto.name, held, err, out)
+			}
+		})
+	}
+}

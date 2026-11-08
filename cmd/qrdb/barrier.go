@@ -80,6 +80,8 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
   init           Initialize barrier with passphrase or none
   init-shamir    Initialize Shamir custody over the enrolled share holders
   unseal         Unseal using a passphrase
+  change-passphrase
+                 Re-wrap the root key under a new passphrase
   seal           Seal the barrier
   officer        Enrol, list, claim and revoke share holders
   quorum         Submit an authenticated holder's share to a quorum round
@@ -93,6 +95,7 @@ CLI binary in the stack (qrdb, xkmsctl, quicbaasctl, platformctl):
 		newBarrierInitCmd(),
 		newBarrierInitShamirCmd(),
 		newBarrierUnsealCmd(),
+		newBarrierChangePassphraseCmd(),
 		newBarrierSealCmd(),
 		newBarrierClusterUnsealCmd(),
 		newHolderRekeyCmd("rekey", holderSystem),
@@ -170,34 +173,38 @@ type barrierInitFlags struct {
 
 // newBarrierInitCmd returns the canonical `barrier init` subcommand.
 //
-// It refuses the SYSTEM barrier of a fresh node with a typed error naming
-// `qrdb init` (go-qrdb#548): that barrier is brought up by `qrdb init`,
-// which runs the full ceremony (barrier + CA + admin cert + roles) in the
-// sealed window, in one call, before anything else is unsealed. This verb
-// has always been the SYSTEM barrier only -- POST /v1/barrier/initialize
-// carries no tenant or database scope -- so it is now refused
-// unconditionally; it does not gain a refusal exception for some other
-// scope it never had. A tenant admin initializes their own tenant barrier
-// with the separate "qrdb tenant barrier-init" command, untouched by this
-// change; there is no equivalent per-database command.
+// A qrdbd node built with the first-boot ceremony refuses it with a typed
+// error naming `qrdb init` (go-qrdb#548): that node's system barrier is
+// brought up by `qrdb init`, which runs the full ceremony (barrier + CA +
+// admin cert + roles) in the sealed window, in one call, before anything
+// else is unsealed. The refusal is the server's, not this command's: a node
+// whose barrier service has no ceremony -- a standalone embedded node
+// (sdk/go/standalone) -- initializes its barrier from this verb. A refused
+// initialize writes nothing, PINs included. The verb has always been the
+// SYSTEM barrier only -- POST /v1/barrier/initialize carries no tenant or
+// database scope. A tenant admin initializes their own tenant barrier with
+// the separate "qrdb tenant barrier-init" command; there is no equivalent
+// per-database command.
 func newBarrierInitCmd() *cobra.Command {
 	f := &barrierInitFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize the system barrier (refused: use qrdb init instead)",
+		Short: "Initialize the system barrier (a qrdbd node refuses: use qrdb init)",
 		Long: `Initialize the system cryptographic barrier.
 
-Refused unconditionally (go-qrdb#548): the system barrier is brought up by
-"qrdb init", the only system bootstrap, which also runs the ceremony and
-issues the bootstrap admin's credential in the same call. This command has
-always been the system barrier only; it carries no tenant or database
-scope, so there is no case in which it still succeeds. A tenant admin
-initializes their own tenant barrier with "qrdb tenant barrier-init"
-instead, a separate command untouched by this change.
+A qrdbd node built with the first-boot ceremony refuses this command
+(go-qrdb#548), whatever its flags: that node's system barrier is brought up
+by "qrdb init", its only system bootstrap, which also runs the ceremony and
+issues the bootstrap admin's credential in the same call. A node with no
+first-boot ceremony -- a standalone embedded node -- accepts it and
+initializes its barrier. A refused initialize changes nothing: no barrier
+key and no PIN is written. This command is the system barrier only; it
+carries no tenant or database scope. A tenant admin initializes their own
+tenant barrier with "qrdb tenant barrier-init" instead.
 
-Strategies (documented for the error message's context only; every
-invocation is refused regardless of which one is given):
+Strategies (a node that refuses the command refuses it whichever one is
+given):
   none        Identity passthrough; data stored in cleartext (dev only).
   passphrase  Single passphrase-derived master key (default).
 
@@ -434,6 +441,60 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&passphrase, "passphrase", "", "Master passphrase (omit for a none barrier)")
+
+	return cmd
+}
+
+func newBarrierChangePassphraseCmd() *cobra.Command {
+	var current, next, soPin string
+
+	cmd := &cobra.Command{
+		Use:   "change-passphrase",
+		Short: "Change the passphrase of the unsealed barrier",
+		Long: `Change the passphrase that seals the barrier's root key.
+
+The barrier must be unsealed and passphrase-sealed. The current passphrase
+must open the persisted root key; a wrong one is refused and nothing is
+written. The root key itself is unchanged: it is re-wrapped under the new
+passphrase and replaced atomically, so the next unseal takes the new
+passphrase and the old one is refused.
+
+Requires seal:rekey and the Security Officer PIN, verified on every transport
+before the barrier is reached, as for seal and rekey: once an SO PIN is
+provisioned --so-pin MUST carry it, and a missing or wrong one is refused. A
+node with no PIN backend refuses the change outright.
+
+Example:
+  qrdb barrier change-passphrase --current '<current>' --next '<next>' --so-pin '<so-pin>'`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Every network transport reads the SO PIN from the context
+			// (transport.WithSOPIN). An empty --so-pin binds nothing.
+			ctx, release, err := transport.WithSOPIN(cmd.Context(), []byte(soPin))
+			if err != nil {
+				return err
+			}
+			defer release()
+			req := &transport.BarrierChangePassphraseRequest{
+				Current: secretBytes(current),
+				Next:    secretBytes(next),
+			}
+			defer secure.Wipe(req.Current)
+			defer secure.Wipe(req.Next)
+			if err := client.Barrier().BarrierChangePassphrase(ctx, req); err != nil {
+				return err
+			}
+			printOK()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&current, "current", "", "Current passphrase")
+	cmd.Flags().StringVar(&next, "next", "", "New passphrase")
+	cmd.Flags().StringVar(&soPin, "so-pin", "",
+		"Security Officer PIN (required once an SO PIN is provisioned)")
+	_ = cmd.MarkFlagRequired("current")
+	_ = cmd.MarkFlagRequired("next")
 
 	return cmd
 }

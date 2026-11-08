@@ -69,15 +69,12 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
-
-// Feature names a cluster feature: a command or behaviour every replica of
-// a group must understand before any replica may be sent it.
-type Feature string
 
 // GuardedWrites is protocol.OpGuarded: a write carried with compares the
 // state machine evaluates at the write's own log position.
-const GuardedWrites Feature = "guarded-writes"
+const GuardedWrites feature.Feature = "guarded-writes"
 
 // VectorEngine is the vector command set (protocol.OpVectorNamespaceCreate
 // and its siblings, 70-77): new Raft opcodes an old binary would refuse as
@@ -87,7 +84,7 @@ const GuardedWrites Feature = "guarded-writes"
 // writes are refused with a typed feature-gate error until the feature is
 // enabled for its group, rather than proposed unguarded
 // (docs/vectors/engineering.md "Target: the vector engine", "Commands").
-const VectorEngine Feature = "vector-engine"
+const VectorEngine feature.Feature = "vector-engine"
 
 // ClusterShardIDs is cluster-wide shard ID allocation: every raft database
 // claims its shard ID from one replicated high-water mark (shard.Claimer)
@@ -99,18 +96,18 @@ const VectorEngine Feature = "vector-engine"
 // Activation also applies the gate's downgrade rule: once every node claims, a
 // binary that allocates locally can neither start nor be admitted as a
 // replica, so no node can re-issue a shard ID another holds.
-const ClusterShardIDs Feature = "cluster-shard-ids"
+const ClusterShardIDs feature.Feature = "cluster-shard-ids"
 
 // PrefixCompaction is protocol.OpMVCCCompactPrefix -- a compaction confined
 // to one database's keyspace prefix, with a compaction floor per prefix --
 // and protocol.OpCompactionState, the replicated scheduled-compaction state
 // (policy and samples) those compactions run from. One gate: both arrived
 // together, and a replica that applies one applies the other.
-const PrefixCompaction Feature = "prefix-compaction"
+const PrefixCompaction feature.Feature = "prefix-compaction"
 
 // NodeCompaction is protocol.OpMVCCCompactNode: a compaction of the node
 // keyspace -- every key outside all database namespaces.
-const NodeCompaction Feature = "node-compaction"
+const NodeCompaction feature.Feature = "node-compaction"
 
 // ClusterSeal is cluster-wide sealing: every node reads the replicated seal
 // records under "__sys:cluster/seal/" and seals itself when one says so (see
@@ -118,7 +115,7 @@ const NodeCompaction Feature = "node-compaction"
 // cluster seal, so the records are written and enforced only once the feature
 // is ACTIVATED -- enforcement is per node, not per Raft group, so per-group
 // enablement is not the right test.
-const ClusterSeal Feature = "cluster-seal"
+const ClusterSeal feature.Feature = "cluster-seal"
 
 // ImportStaging is protocol.OpImportStage: a chunked import session's
 // metadata and staged chunks, written directly into the state machine's
@@ -127,9 +124,9 @@ const ClusterSeal Feature = "cluster-seal"
 // client data plane -- the fix for go-qrdb#576's security review finding
 // that the session's earlier MVCC-backed staging was only a discovery
 // guard, not storage isolation. ImportBegin refuses with
-// *featuregate.NotActiveError until every replica of the group can apply
+// *feature.NotActiveError until every replica of the group can apply
 // the opcode.
-const ImportStaging Feature = "import-staging"
+const ImportStaging feature.Feature = "import-staging"
 
 // RangeDelete is protocol.OpDeleteRange: the deletion of every live key in a
 // range as one entry -- the batch of single deletes over them, never a
@@ -137,7 +134,7 @@ const ImportStaging Feature = "import-staging"
 // database's keys in one proposal per chunk. A replica that does not know
 // the opcode would refuse it while its peers deleted the keys, so it is
 // proposed only once every replica of the group can apply it.
-const RangeDelete Feature = "range-delete"
+const RangeDelete feature.Feature = "range-delete"
 
 // AuditAppend is protocol.OpAuditAppend: a deterministic, apply-time-assigned
 // append (or retention prune) to a tenant's replicated audit hash chain. A
@@ -145,7 +142,7 @@ const RangeDelete Feature = "range-delete"
 // cannot decode -- UnknownOpError in both engine families -- while its peers
 // commit the chain, so no replica may be sent it until every replica of the
 // group can apply it. See docs/audit/architecture.md#cluster-wide-replicated-trail.
-const AuditAppend Feature = "audit-append"
+const AuditAppend feature.Feature = "audit-append"
 
 // TimeSeriesRetention is protocol.OpTSApplyRetention: a new Raft opcode an
 // old binary would refuse as unknown while its up-to-date peers applied it,
@@ -153,7 +150,7 @@ const AuditAppend Feature = "audit-append"
 // server's leader-driven retention scheduler (pkg/server's
 // retentionScheduler) proposes it only once every replica of the group can
 // apply it (docs/time-series/engineering.md "Retention enforcement").
-const TimeSeriesRetention Feature = "timeseries-retention"
+const TimeSeriesRetention feature.Feature = "timeseries-retention"
 
 // LeaseCheckpoint is protocol.OpLeaseCheckpoint: the leader's replicated
 // record of how much TTL each long-lived lease had left, which a new leader and
@@ -162,7 +159,7 @@ const TimeSeriesRetention Feature = "timeseries-retention"
 // so a leader checkpoints no lease until the feature is enabled for the group;
 // until then a new leader grants every lease a full TTL, as it did before
 // (docs/leases/architecture.md "Keep-alive").
-const LeaseCheckpoint Feature = "lease-checkpoint"
+const LeaseCheckpoint feature.Feature = "lease-checkpoint"
 
 // PerNodeBarrierKeys is per-node barrier initialisation: an isolated tenant's
 // barrier is initialised by every serving node from the barrier owner's signed
@@ -173,7 +170,7 @@ const LeaseCheckpoint Feature = "lease-checkpoint"
 // key, so it would never serve the tenant. Like ClusterSeal it is enforced per
 // node, so it is judged by ACTIVATION: until then an isolated tenant create is
 // refused (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
-const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
+const PerNodeBarrierKeys feature.Feature = "per-node-barrier-keys"
 
 // VerifiableLog is protocol.OpVerifiableLog: a deterministic, apply-time
 // create, append, checkpoint or body expiry on a named verifiable log. A
@@ -182,7 +179,7 @@ const PerNodeBarrierKeys Feature = "per-node-barrier-keys"
 // replica of the group can apply it. Its apply carries no build tag, so every
 // binary that carries it advertises it. See
 // docs/decisions/verifiable-log.md, section 3.
-const VerifiableLog Feature = "verifiable-log"
+const VerifiableLog feature.Feature = "verifiable-log"
 
 // RollingMigration is the per-node step record of a cluster encryption
 // migration (clustermig.ClusterMigration.Steps): the coordinator hands the
@@ -191,7 +188,7 @@ const VerifiableLog Feature = "verifiable-log"
 // a peer down loses quorum, so no request carries steps until every node
 // can honour them. Like ClusterSeal it is enforced per node by each node's
 // reconciler, so it is judged by ACTIVATION.
-const RollingMigration Feature = "rolling-migration"
+const RollingMigration feature.Feature = "rolling-migration"
 
 // TenantUndo is the undone tenant tombstone and its per-node cleanup
 // acknowledgements: an undone tenant create leaves a tombstone in an undone
@@ -201,7 +198,7 @@ const RollingMigration Feature = "rolling-migration"
 // acknowledgement, so a reuse would wait on it forever; it is judged by
 // ACTIVATION, and until then an undone create retires its ID as a deletion
 // does (docs/multi-tenancy/architecture.md).
-const TenantUndo Feature = "tenant-undo"
+const TenantUndo feature.Feature = "tenant-undo"
 
 // VerifiableLogKeys is the head-signing-key wire of protocol.OpVerifiableLog:
 // the Create body that frames the descriptor and the log's sealed key record,
@@ -210,14 +207,40 @@ const TenantUndo Feature = "tenant-undo"
 // neither is proposed until every replica of the group can apply them. Its
 // apply carries no build tag, so every binary that carries it advertises it.
 // See docs/databases/architecture.md.
-const VerifiableLogKeys Feature = "verifiable-log-keys"
+const VerifiableLogKeys feature.Feature = "verifiable-log-keys"
+
+// VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
+// vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
+// which a binary from before it refuses as an unknown metric while its
+// up-to-date peers accept it. A Manhattan FLAT or IVF create is refused with
+// a typed failed-precondition error until every replica of the group
+// advertises it (docs/vectors/architecture.md).
+const VectorManhattan feature.Feature = "vector-manhattan"
+
+// CommandCaps is the admission cap a capped command carries: the
+// timeseries.max_metrics trailer on OpTSWrite, OpTSWritePoint and
+// OpTSWriteBatch, and the index.max_indexes field of OpIndexCreate. Every
+// replica enforces the cap the command carries, so a binary from before it,
+// which ignores the trailer, would admit a write its up-to-date peers refuse
+// and diverge the group. Until every replica of the group advertises it the
+// commands are proposed uncapped, exactly as an older binary encodes them
+// (docs/time-series/engineering.md, docs/secondary-indexes/engineering.md).
+const CommandCaps feature.Feature = "command-caps"
+
+// LockCreateRevisionToken is the distributed lock's fencing token read from
+// the lock key's MVCC create revision rather than from the fencing_token
+// field of its stored value. A binary from before it reads the stored field,
+// so until every replica of the group advertises it acquisition and reentry
+// keep writing the field, with the same value (docs/distributed-locks/
+// engineering.md).
+const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken}
 
 // Supported returns the features this binary implements.
-func Supported() []Feature {
+func Supported() []feature.Feature {
 	return slices.Clone(supported)
 }
 
@@ -325,7 +348,7 @@ type Gate struct {
 
 	// activated holds one flag per supported feature; a feature this binary
 	// does not implement has no flag and is never enabled.
-	activated map[Feature]*atomic.Bool
+	activated map[feature.Feature]*atomic.Bool
 
 	// view is the current advertisement snapshot across every store the
 	// gate follows, replaced whole.
@@ -362,7 +385,7 @@ func New(cfg Config) (*Gate, error) {
 		members:     cfg.Members,
 		refresh:     cfg.RefreshInterval,
 		logger:      cfg.Logger,
-		activated:   make(map[Feature]*atomic.Bool, len(supported)),
+		activated:   make(map[feature.Feature]*atomic.Bool, len(supported)),
 	}
 	if g.refresh <= 0 {
 		g.refresh = DefaultRefreshInterval
@@ -396,14 +419,14 @@ func New(cfg Config) (*Gate, error) {
 // cannot happen: once true, Enabled can never go false for any group again.
 // Before activation, a write that would use the feature keeps the documented
 // resolve-time fallback instead (see docs/clustering).
-func (g *Gate) Enabled(_ uint64, feature Feature) bool {
+func (g *Gate) Enabled(_ uint64, feature feature.Feature) bool {
 	return g.Activated(feature)
 }
 
 // decide reads shardID's committed membership and reports whether every
 // replica that applies its log -- and, when withWitnesses, every witness --
 // is on a node that supports feature.
-func (g *Gate) decide(shardID uint64, feature Feature, withWitnesses bool) bool {
+func (g *Gate) decide(shardID uint64, feature feature.Feature, withWitnesses bool) bool {
 	group, err := g.members.GroupMembership(shardID)
 	if err != nil {
 		return false
@@ -436,7 +459,7 @@ func (g *Gate) decide(shardID uint64, feature Feature, withWitnesses bool) bool 
 // supportingAddresses returns the raft addresses of the system-shard
 // members -- this node included -- whose advertisement names feature. A
 // record counts only while its (replica ID, address) is a current member.
-func (g *Gate) supportingAddresses(feature Feature, system GroupMembership) map[string]struct{} {
+func (g *Gate) supportingAddresses(feature feature.Feature, system GroupMembership) map[string]struct{} {
 	view := *g.view.Load()
 	supporting := make(map[string]struct{}, len(system.Replicas)+len(system.Witnesses))
 	consider := func(id uint64, addr string) {
@@ -465,7 +488,7 @@ func (g *Gate) supportingAddresses(feature Feature, system GroupMembership) map[
 // feature advertisement or member registration -- naming the address and
 // the feature. A node that is not yet a member is judged by its own record,
 // which is lease-backed: it counts only while the node keeps it alive.
-func (g *Gate) Supports(raftAddr string, feature Feature) bool {
+func (g *Gate) Supports(raftAddr string, feature feature.Feature) bool {
 	if self, err := g.AdvertisedSelf(); err == nil && self.Address == raftAddr {
 		return true
 	}
@@ -532,7 +555,7 @@ func (g *Gate) AdvertisedSelf() (Self, error) {
 }
 
 // Activated reports whether feature has been activated cluster-wide.
-func (g *Gate) Activated(feature Feature) bool {
+func (g *Gate) Activated(feature feature.Feature) bool {
 	flag, ok := g.activated[feature]
 	return ok && flag.Load()
 }
@@ -582,8 +605,11 @@ func (g *Gate) adoptApplied(ctx context.Context, kv ActivationKV) {
 
 // adopt marks every feature in features enabled, and refuses with
 // *UnsupportedFeatureError -- kept for Refusal -- at one this binary does
-// not implement.
-func (g *Gate) adopt(features []Feature) error {
+// not implement. It logs each feature it is first to enable, so every node
+// logs each activation exactly once whichever path learns of it: activate,
+// a linearizable refresh, or a replica's applied record read while its
+// leader is unreachable.
+func (g *Gate) adopt(features []feature.Feature) error {
 	for _, f := range features {
 		flag, ok := g.activated[f]
 		if !ok {
@@ -591,7 +617,9 @@ func (g *Gate) adopt(features []Feature) error {
 			g.refusal.Store(refusal)
 			return refusal
 		}
-		flag.Store(true)
+		if flag.CompareAndSwap(false, true) {
+			g.logger.Info("feature gate: feature activation observed", "feature", string(f))
+		}
 	}
 	return nil
 }
@@ -616,7 +644,7 @@ func (g *Gate) Refusal() error {
 }
 
 // ActivatedFeatures lists the features the cluster has activated.
-func ActivatedFeatures(ctx context.Context, kv ActivationKV) ([]Feature, error) {
+func ActivatedFeatures(ctx context.Context, kv ActivationKV) ([]feature.Feature, error) {
 	keys, err := kv.ListAll(ctx, ActivationPrefix)
 	if err != nil {
 		return nil, &StoreError{Op: "list activations", Err: err}
@@ -625,11 +653,11 @@ func ActivatedFeatures(ctx context.Context, kv ActivationKV) ([]Feature, error) 
 }
 
 // activationFeatures returns the features named by activation record keys.
-func activationFeatures(keys []string) []Feature {
-	features := make([]Feature, 0, len(keys))
+func activationFeatures(keys []string) []feature.Feature {
+	features := make([]feature.Feature, 0, len(keys))
 	for _, k := range keys {
 		if name := strings.TrimPrefix(k, ActivationPrefix); name != "" && name != k {
-			features = append(features, Feature(name))
+			features = append(features, feature.Feature(name))
 		}
 	}
 	return features
@@ -654,8 +682,8 @@ func CheckActivated(ctx context.Context, kv ActivationKV) error {
 
 // activationRecord is the value stored under an activation key.
 type activationRecord struct {
-	Feature   Feature `json:"feature"`
-	ReplicaID uint64  `json:"activated_by"`
+	Feature   feature.Feature `json:"feature"`
+	ReplicaID uint64          `json:"activated_by"`
 }
 
 // sourcedEvent is an advertisement event tagged with the store it came from.
@@ -883,7 +911,9 @@ func (g *Gate) activate(ctx context.Context, kv ActivationKV) {
 				"feature", string(f), "error", err)
 			continue
 		}
-		g.activated[f].Store(true)
+		if !g.activated[f].CompareAndSwap(false, true) {
+			continue // adopted meanwhile, and logged there
+		}
 		if stored {
 			g.logger.Info("feature gate: feature activated cluster-wide", "feature", string(f))
 		} else {

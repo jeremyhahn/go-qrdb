@@ -39,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	grpcserver "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -665,6 +666,38 @@ func TestConnect_UnauthenticatedIsTheTypedRefusal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client certificate is invalid or unverified") {
 		t.Errorf("Connect error = %v, want the server's refusal message", err)
+	}
+	var connErr *transport.ConnectionError
+	if errors.As(err, &connErr) {
+		t.Errorf("Connect error = %v, want the server's refusal, not a connection failure", err)
+	}
+}
+
+// TestConnect_RateLimitedIsTheTypedRefusal pins that a node refusing the
+// caller's address under the client-address rate limit answers Connect with
+// its ResourceExhausted refusal and the wait it named, not "health check
+// failed" (go-qrdb#1197).
+func TestConnect_RateLimitedIsTheTypedRefusal(t *testing.T) {
+	adminSvc := newMockAdminService()
+	adminSvc.healthErr = &clientlimit.RateLimitedError{Client: "127.0.0.1", RetryAfter: 30 * time.Second}
+	addr, stopSrv := startGRPCTestServer(t, newMockKVService(), adminSvc)
+	defer stopSrv()
+	tr, err := New(transport.WithAddress(addr), sharedGRPCClientTLSOption())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close()
+
+	err = tr.Connect(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != int(codes.ResourceExhausted) {
+		t.Fatalf("Connect error = %T %v, want a RequestError carrying ResourceExhausted", err, err)
+	}
+	if reqErr.RetryAfter != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", reqErr.RetryAfter)
+	}
+	if !strings.Contains(err.Error(), "rate limit") {
+		t.Errorf("Connect error = %v, want the server's rate-limit refusal", err)
 	}
 	var connErr *transport.ConnectionError
 	if errors.As(err, &connErr) {

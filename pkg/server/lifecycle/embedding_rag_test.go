@@ -513,6 +513,58 @@ func TestOpenAIProviderAdapter_Close(t *testing.T) {
 	_ = node.Stop(context.Background())
 }
 
+// TestOpenAIProviderAdapter_DefaultModelSharesCacheEntry exercises
+// openAIProviderAdapter.DefaultModel through a cache-enabled node: a request
+// with no model resolves to the provider's configured model and is served from
+// the entry a request naming that model stored.
+func TestOpenAIProviderAdapter_DefaultModelSharesCacheEntry(t *testing.T) {
+	srv := fakeEmbeddingServer(t)
+	defer srv.Close()
+
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+		Logger:   slog.Default(),
+		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
+			DefaultProvider: "fake",
+			CacheCapacity:   16,
+			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "fake")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+	bindNodeRAG(node)
+
+	ctx := context.Background()
+	first, err := node.Embedding.Embed(ctx, &service.EmbedRequest{Texts: []string{"shared"}})
+	if err != nil {
+		t.Fatalf("no-model Embed: %v", err)
+	}
+	if first.Cached {
+		t.Error("first Embed must reach the provider")
+	}
+	if first.Model != "fake-model" {
+		t.Errorf("no-model Embed used %q, want the configured %q", first.Model, "fake-model")
+	}
+
+	second, err := node.Embedding.Embed(ctx, &service.EmbedRequest{Texts: []string{"shared"}, Model: "fake-model"})
+	if err != nil {
+		t.Fatalf("default-model Embed: %v", err)
+	}
+	if !second.Cached {
+		t.Error("default-model request after a no-model request: want a cache hit")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ragIngestorAdapter.Ingest and ragRetrieverAdapter.Retrieve
 // ---------------------------------------------------------------------------

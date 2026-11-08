@@ -26,7 +26,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // provisionReclaimer is a keyspace reclaimer whose fence marker behaves the
@@ -38,12 +40,16 @@ type provisionReclaimer struct {
 
 const provisionTombstone = "\x00dropped"
 
-func (r *provisionReclaimer) FenceDatabaseKeyspace(_ context.Context, tenantID, db string) error {
-	r.marker[tenantID+"/"+db] = provisionTombstone
+func (r *provisionReclaimer) FenceDatabaseKeyspace(_ context.Context, tenantID, db, incarnation, _ string) error {
+	key := tenantID + "/" + db
+	if current := r.marker[key]; current != "" && current != incarnation && current != provisionTombstone {
+		return &database.DropSupersededError{Name: db, TenantID: tenantID}
+	}
+	r.marker[key] = provisionTombstone
 	return nil
 }
 
-func (r *provisionReclaimer) UnfenceDatabaseKeyspace(_ context.Context, tenantID, db, incarnation string) error {
+func (r *provisionReclaimer) UnfenceDatabaseKeyspace(_ context.Context, tenantID, db, incarnation, _ string) error {
 	key := tenantID + "/" + db
 	if current := r.marker[key]; current != "" && current != provisionTombstone && current != incarnation {
 		return &database.AlreadyExistsError{Name: db, Elsewhere: true}
@@ -52,7 +58,7 @@ func (r *provisionReclaimer) UnfenceDatabaseKeyspace(_ context.Context, tenantID
 	return nil
 }
 
-func (r *provisionReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string) error {
+func (r *provisionReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string, string) error {
 	return nil
 }
 
@@ -74,15 +80,15 @@ func provisionFlags(sqlDatabase string) *startFlags {
 func TestProvisionDatabases_DroppedConfiguredNameNeedsTheReclaimer(t *testing.T) {
 	dir := t.TempDir()
 	reclaimer := &provisionReclaimer{marker: map[string]string{}}
-	mgr := database.NewManager(nil, dir)
+	mgr := databasetest.NewManager(nil, dir)
 	mgr.SetKeyspaceReclaimer(reclaimer)
 	require.NoError(t, provisionDatabases(context.Background(), provisionFlags(""), mgr, electedLeader{}))
 	require.NoError(t, mgr.Drop(context.Background(), "orders"))
 	require.NoError(t, mgr.Close())
 
-	restarted := database.NewManager(nil, dir)
+	restarted := databasetest.NewManager(nil, dir)
 	t.Cleanup(func() { _ = restarted.Close() })
-	require.NoError(t, restarted.OpenAll())
+	require.NoError(t, restarted.OpenAll(context.Background()))
 	err := provisionDatabases(context.Background(), provisionFlags(""), restarted, electedLeader{})
 	var required *database.ReclaimerRequiredError
 	require.ErrorAs(t, err, &required)
@@ -97,7 +103,7 @@ func TestProvisionDatabases_DroppedConfiguredNameNeedsTheReclaimer(t *testing.T)
 // --sql-database is created with the enabled SQL protocols, and re-running
 // provisioning (the in-process recycle) keeps it and its protocols.
 func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
@@ -114,9 +120,46 @@ func TestProvisionDatabases_CreatesAndKeepsTheSQLDatabase(t *testing.T) {
 	assert.True(t, again.ProtocolConfig().PostgreSQL, "an existing SQL database gains the enabled protocols")
 }
 
+// The SQL database is the system tenant's: a tenant holding a database of the
+// same name neither makes boot provisioning fail on an ambiguous name nor has
+// its own database's protocols rewritten.
+func TestProvisionDatabases_ATenantDatabaseOfTheSameNameIsLeftAlone(t *testing.T) {
+	mgr := databasetest.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	f := provisionFlags("shop")
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	theirs, err := mgr.Create(database.DatabaseConfig{Name: "shop", TenantID: "acme", Backend: database.BackendMemory})
+	require.NoError(t, err)
+
+	f.enablePgSQL = true
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	ours, err := mgr.GetOwned("shop", tenantid.System)
+	require.NoError(t, err)
+	assert.True(t, ours.ProtocolConfig().PostgreSQL, "the system tenant's SQL database gains the enabled protocols")
+	assert.False(t, theirs.ProtocolConfig().PostgreSQL, "acme's database of the same name is not the SQL database")
+}
+
+// A configured database's SQL settings land on the system tenant's database,
+// never on a tenant's database of the same name.
+func TestProvisionDatabases_ConfiguredSQLSettingsSkipATenantDatabase(t *testing.T) {
+	mgr := databasetest.NewManager(nil, t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+	theirs, err := mgr.Create(database.DatabaseConfig{Name: "ledger", TenantID: "acme", Backend: database.BackendMemory})
+	require.NoError(t, err)
+	f := &startFlags{databases: []qrdbconfig.DatabaseConfig{{
+		Name: "ledger", Backend: string(database.BackendMemory),
+		SQL: &qrdbconfig.DatabaseSQLConfig{Concurrency: string(database.ConcurrencyPessimistic)},
+	}}}
+	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
+	ours, err := mgr.GetOwned("ledger", tenantid.System)
+	require.NoError(t, err)
+	assert.Equal(t, database.ConcurrencyPessimistic, ours.SQLConfig().EffectiveConcurrency())
+	assert.Equal(t, database.ConcurrencyOptimistic, theirs.SQLConfig().EffectiveConcurrency())
+}
+
 // No SQL protocol enabled means --sql-database is not provisioned.
 func TestProvisionDatabases_SkipsTheSQLDatabaseWithoutASQLProtocol(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	f.enableMySQL = false
@@ -131,7 +174,7 @@ func TestProvisionDatabases_SkipsTheSQLDatabaseWithoutASQLProtocol(t *testing.T)
 // Engine/Backend/SQL only, silently dropping them regardless of build
 // tags, every boot.
 func TestProvisionDatabases_ConfiguredEntryCarriesItsOwnProtocol(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{
@@ -152,14 +195,16 @@ type sqlUpdateFailingManager struct {
 	err error
 }
 
-func (m sqlUpdateFailingManager) UpdateSQL(string, *database.SQLConfig) error { return m.err }
+func (m sqlUpdateFailingManager) UpdateSQLForTenant(context.Context, string, *database.SQLConfig) error {
+	return m.err
+}
 
 var _ databaseProvisioner = sqlUpdateFailingManager{}
 
 // A databases[] entry's sql settings are applied on every boot, an existing
 // database included, and a failure to apply them fails provisioning.
 func TestProvisionDatabases_ConfiguredEntryAppliesItsSQLSettings(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{{
@@ -210,7 +255,7 @@ func TestValidateConfiguredDatabases_RefusesEtcdNotCompiled(t *testing.T) {
 // validateConfiguredDatabases's job (see above), and start.go always runs
 // it first -- so this is exercised the same way on every build.
 func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := &startFlags{
 		databases: []qrdbconfig.DatabaseConfig{
@@ -229,12 +274,21 @@ func TestProvisionDatabases_ConfiguredEntryCarriesEtcd(t *testing.T) {
 
 // A --sql-database a drop is fencing does not fail boot; it stays fenced.
 func TestProvisionDatabases_LeavesADroppingSQLDatabaseFenced(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	dir := t.TempDir()
+	mgr := databasetest.NewManager(nil, dir)
 	t.Cleanup(func() { _ = mgr.Close() })
 	f := provisionFlags("shop")
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
 	db, err := mgr.Get("shop")
 	require.NoError(t, err)
+	// A drop fences the catalog record, which resolution reconciles the
+	// open entry against, as well as the entry itself.
+	require.NoError(t, databasetest.Catalog(dir).Update(context.Background(), db.TenantID(), db.Name(), db.Incarnation(),
+		func(meta *database.DatabaseMeta) error {
+			meta.Dropping = true
+			meta.DropClaim = "in-flight-drop"
+			return nil
+		}))
 	db.SetDropping(true)
 
 	require.NoError(t, provisionDatabases(context.Background(), f, mgr, electedLeader{}))
@@ -254,15 +308,19 @@ func TestProvisionDatabases_ReturnsAnUnexpectedLookupFailure(t *testing.T) {
 // error no real manager produces on demand.
 type failingProvisioner struct{ err error }
 
-func (p failingProvisioner) Get(string) (*database.Database, error) { return nil, p.err }
+func (p failingProvisioner) GetOwned(string, string) (*database.Database, error) { return nil, p.err }
 
 func (p failingProvisioner) Provision(context.Context, database.DatabaseConfig) (*database.Database, error) {
 	return nil, p.err
 }
 
-func (p failingProvisioner) UpdateProtocol(string, database.ProtocolConfig) error { return p.err }
+func (p failingProvisioner) UpdateProtocolForTenant(context.Context, string, database.ProtocolConfig) error {
+	return p.err
+}
 
-func (p failingProvisioner) UpdateSQL(string, *database.SQLConfig) error { return p.err }
+func (p failingProvisioner) UpdateSQLForTenant(context.Context, string, *database.SQLConfig) error {
+	return p.err
+}
 
 // electedLeader reports the system shard's leader as known, as every node
 // does once the shard has elected one.
@@ -280,7 +338,7 @@ func (noLeader) LeaderID(uint64) (uint64, bool, error) { return 0, false, nil }
 // leader first -- a proposal before any election is refused, not queued --
 // and a wait cut short is reported before anything is created.
 func TestProvisionDatabases_WaitsForALeaderBeforeWriting(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -295,15 +353,10 @@ func TestProvisionDatabases_WaitsForALeaderBeforeWriting(t *testing.T) {
 	assert.Error(t, getErr, "nothing may be provisioned before a leader is known")
 }
 
-// awaitLeader returns as soon as the shard reports a leader.
-func TestAwaitLeader_ReturnsOnceALeaderIsKnown(t *testing.T) {
-	require.NoError(t, awaitLeader(context.Background(), electedLeader{}, testLeaderWait, 1))
-}
-
 // flakyProvisioner answers *service.NotLeaderError (leader unknown) for
 // the first notLeaderUntil-1 Provision/UpdateSQL/UpdateProtocol calls, then
 // delegates to the wrapped provisioner -- standing in for the system
-// shard's settling window immediately after awaitLeader confirms a leader
+// shard's settling window immediately after server.AwaitShardLeader confirms a leader
 // is locally known (go-qrdb hotfix/cakey-restart, cause 3's pattern
 // reproduced at the database drop-fence write: TestDEK_Cluster_* and
 // TestRaftSMOverFileStorage_ThreeNodeCluster both failed this way on a real
@@ -329,25 +382,25 @@ func (p *flakyProvisioner) Provision(ctx context.Context, cfg database.DatabaseC
 	return p.databaseProvisioner.Provision(ctx, cfg)
 }
 
-func (p *flakyProvisioner) UpdateSQL(name string, cfg *database.SQLConfig) error {
+func (p *flakyProvisioner) UpdateSQLForTenant(ctx context.Context, name string, cfg *database.SQLConfig) error {
 	if err := p.transientRefusal(); err != nil {
 		return err
 	}
-	return p.databaseProvisioner.UpdateSQL(name, cfg)
+	return p.databaseProvisioner.UpdateSQLForTenant(ctx, name, cfg)
 }
 
-func (p *flakyProvisioner) UpdateProtocol(name string, cfg database.ProtocolConfig) error {
+func (p *flakyProvisioner) UpdateProtocolForTenant(ctx context.Context, name string, cfg database.ProtocolConfig) error {
 	if err := p.transientRefusal(); err != nil {
 		return err
 	}
-	return p.databaseProvisioner.UpdateProtocol(name, cfg)
+	return p.databaseProvisioner.UpdateProtocolForTenant(ctx, name, cfg)
 }
 
 // TestProvisionDatabases_RetriesTransientNotLeader proves provisionDatabases
 // retries a settling-window *service.NotLeaderError on its own write calls
-// rather than failing boot the moment awaitLeader's local check is stale.
+// rather than failing boot the moment server.AwaitShardLeader's local check is stale.
 func TestProvisionDatabases_RetriesTransientNotLeader(t *testing.T) {
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	flaky := &flakyProvisioner{databaseProvisioner: mgr, notLeaderUntil: 3}
 

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -39,7 +40,7 @@ func testShardClaimer(t *testing.T) *shard.Claimer {
 // does: constructed first, then given its shard-ID claimer.
 func claimingManager(t *testing.T, logger *slog.Logger, dir string) *database.Manager {
 	t.Helper()
-	m := database.NewManager(logger, dir)
+	m := databasetest.NewManager(logger, dir)
 	m.SetShardIDClaimer(testShardClaimer(t))
 	return m
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
 const (
@@ -341,7 +342,7 @@ func TestGate_RefusesToStartUnderAnUnknownActivatedFeature(t *testing.T) {
 	var unsupported *UnsupportedFeatureError
 	require.ErrorAs(t, err, &unsupported)
 	require.ErrorAs(t, g.Refusal(), &unsupported, "the refusal is kept for health reporting")
-	assert.Equal(t, Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 	assert.Contains(t, unsupported.Error(), "future-opcode")
 
 	require.ErrorAs(t, CheckActivated(context.Background(), kv), &unsupported)
@@ -502,7 +503,7 @@ func TestGate_ActivationCountsWitnesses(t *testing.T) {
 func TestGate_UndecidableIsNotEnabled(t *testing.T) {
 	m := threeNodes()
 	g := newGate(t, m)
-	assert.False(t, g.Enabled(systemShard, Feature("unknown")))
+	assert.False(t, g.Enabled(systemShard, feature.Feature("unknown")))
 	assert.False(t, g.Enabled(999, GuardedWrites), "an unknown shard")
 	m.set(dedicatedShard, 9, map[uint64]string{})
 	assert.False(t, g.Enabled(dedicatedShard, GuardedWrites), "an empty group")
@@ -552,8 +553,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys)}, SupportedNames())
+	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -759,7 +760,7 @@ func TestGate_RefreshRefusesAnAppliedUnknownActivation(t *testing.T) {
 	eventually(t, func() bool { return g.Refusal() != nil }, "an applied unknown activation was not refused")
 	var unsupported *UnsupportedFeatureError
 	require.ErrorAs(t, g.Refusal(), &unsupported)
-	assert.Equal(t, Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 }
 
 // A replica whose applied state cannot be read -- a witness applies none --
@@ -792,6 +793,62 @@ func TestGate_AdoptAppliedLeavesActivationsUnloaded(t *testing.T) {
 	unread := newGate(t, threeNodes())
 	unread.adoptApplied(context.Background(), kv)
 	assert.False(t, unread.Activated(GuardedWrites), "a failed local read adopted something")
+}
+
+// loggedGate returns a single-member gate whose log is written to buf.
+func loggedGate(t *testing.T, buf *bytes.Buffer) *Gate {
+	t.Helper()
+	m := &fakeMembers{groups: map[uint64]GroupMembership{}}
+	m.set(systemShard, 1, map[uint64]string{1: "n1:7000", 2: "n2:7000"})
+	g, err := New(Config{Self: Self{ReplicaID: 1}, SystemShardID: systemShard, Members: m,
+		RefreshInterval: time.Hour, Logger: slog.New(slog.NewTextHandler(buf, nil))})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close() })
+	return g
+}
+
+// A node that learns of an activation only from its replica's applied
+// record -- its leader unreachable, so neither the linearizable refresh nor
+// activate's write gets through -- still logs it, once, however many passes
+// find it.
+func TestGate_AppliedActivationIsLoggedOnce(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(RollingMigration), []byte(`{}`))
+	require.NoError(t, err)
+	noLeader := errors.New("not leader")
+	kv.fail(noLeader, nil, noLeader)
+
+	var buf bytes.Buffer
+	g := loggedGate(t, &buf)
+	g.adoptApplied(context.Background(), kv)
+	g.adoptApplied(context.Background(), kv)
+	g.activate(context.Background(), kv)
+
+	require.True(t, g.Activated(RollingMigration))
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "feature activation observed"), logged)
+	assert.Contains(t, logged, "feature="+string(RollingMigration))
+	assert.NotContains(t, logged, "activated cluster-wide")
+}
+
+// A linearizable refresh that finds an activation logs it once, and a
+// feature no record names is neither enabled nor logged.
+func TestGate_CheckActivatedLogsEachAdoptionOnce(t *testing.T) {
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(TenantUndo), []byte(`{}`))
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	g := loggedGate(t, &buf)
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+
+	require.True(t, g.Activated(TenantUndo))
+	require.False(t, g.Activated(RollingMigration))
+	logged := buf.String()
+	assert.Equal(t, 1, strings.Count(logged, "feature activation observed"), logged)
+	assert.Contains(t, logged, "feature="+string(TenantUndo))
+	assert.NotContains(t, logged, "feature="+string(RollingMigration))
 }
 
 // failingListStore cannot list advertisements.

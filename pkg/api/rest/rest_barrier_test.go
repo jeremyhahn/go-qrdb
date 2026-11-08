@@ -42,6 +42,7 @@ import (
 type mockBarrierService struct {
 	initializeFn         func(ctx context.Context, secret []byte) error
 	unsealFn             func(ctx context.Context, secret []byte) error
+	changePassphraseFn   func(ctx context.Context, current, next []byte) error
 	sealFn               func(ctx context.Context) error
 	statusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
 	initializeShamirFn   func(ctx context.Context, threshold, totalShares int, policy seal.FactorPolicy) (*service.ShamirInitInfo, error)
@@ -78,6 +79,13 @@ func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) e
 	return nil
 }
 
+func (m *mockBarrierService) BarrierChangePassphrase(ctx context.Context, current, next []byte) error {
+	if m.changePassphraseFn != nil {
+		return m.changePassphraseFn(ctx, current, next)
+	}
+	return nil
+}
+
 func (m *mockBarrierService) BarrierSeal(ctx context.Context) error {
 	if m.sealFn != nil {
 		return m.sealFn(ctx)
@@ -104,9 +112,9 @@ func (m *mockBarrierService) BarrierDeleteRecoveryKeys(ctx context.Context) erro
 	return nil
 }
 
-// BarrierInitialized reports the double as never initialized: its
+// BarrierInitializePrecondition admits every initialize: the double's
 // initialize paths answer for themselves through their canned results.
-func (m *mockBarrierService) BarrierInitialized(_ context.Context) (bool, error) { return false, nil }
+func (m *mockBarrierService) BarrierInitializePrecondition(_ context.Context) error { return nil }
 
 func (m *mockBarrierService) BarrierHasRecoveryKeys(ctx context.Context) (bool, error) {
 	if m.hasRecoveryKeysFn != nil {
@@ -437,6 +445,72 @@ func TestBarrierHandlers_Unseal_WrongPassphraseSentinel(t *testing.T) {
 	srv.dispatch(rec, req)
 
 	assertStatus(t, rec, http.StatusForbidden)
+}
+
+func TestBarrierHandlers_ChangePassphrase(t *testing.T) {
+	called := false
+	svc := &mockBarrierService{
+		changePassphraseFn: func(_ context.Context, current, next []byte) error {
+			if string(current) != "old-secret" || string(next) != "new-secret" {
+				t.Fatalf("passphrases = (%q, %q), want (old-secret, new-secret)", current, next)
+			}
+			called = true
+			return nil
+		},
+	}
+	srv := newBarrierPINTestServer(t, svc, newStubPINBackend())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/change-passphrase",
+		strings.NewReader(`{"current":"b2xkLXNlY3JldA==","next":"bmV3LXNlY3JldA=="}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusNoContent)
+	if !called {
+		t.Fatal("BarrierChangePassphrase was not called")
+	}
+}
+
+func TestBarrierHandlers_ChangePassphrase_BadJSON(t *testing.T) {
+	srv := newBarrierTestServer(t, &mockBarrierService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/change-passphrase",
+		strings.NewReader(`not-json`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// TestBarrierHandlers_ChangePassphrase_TypedRefusals pins the status each
+// refusal of a passphrase change maps to: a wrong current passphrase is 403,
+// and a concurrent root-key write 409.
+func TestBarrierHandlers_ChangePassphrase_TypedRefusals(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want int
+	}{
+		"credential mismatch": {seal.ErrCredentialMismatch, http.StatusForbidden},
+		"change conflict":     {seal.ErrPassphraseChangeConflict, http.StatusConflict},
+		"write in progress":   {seal.ErrRootKeyWriteInProgress, http.StatusConflict},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc := &mockBarrierService{
+				changePassphraseFn: func(context.Context, []byte, []byte) error { return tc.err },
+			}
+			srv := newBarrierPINTestServer(t, svc, newStubPINBackend())
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/barrier/change-passphrase",
+				strings.NewReader(`{"current":"d3Jvbmc=","next":"bmV3"}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.dispatch(rec, req)
+
+			assertStatus(t, rec, tc.want)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

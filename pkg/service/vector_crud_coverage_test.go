@@ -1120,7 +1120,14 @@ func TestVectorCRUD_BatchUpsert_RaftEnsureHNSWIndexFailure(t *testing.T) {
 		return []vector.NamespaceInfo{}, nil
 	}
 
+	// The batch's own dimension check reads the namespace; the index the
+	// write then ensures cannot read it.
+	infoCalls := 0
 	storage.getNamespaceInfoFn = func(ctx context.Context, namespace string) (*vector.NamespaceInfo, error) {
+		infoCalls++
+		if infoCalls == 1 {
+			return &vector.NamespaceInfo{Name: namespace, Dimension: 3}, nil
+		}
 		return nil, errors.New("namespace info unavailable")
 	}
 

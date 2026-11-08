@@ -21,8 +21,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
 )
@@ -292,7 +291,7 @@ func TestSet_LeavesNoTempFiles(t *testing.T) {
 // error path directly: the engine root no longer exists, so the temp file
 // cannot be created in it.
 func TestWriteJournal_CreateTempErrorPropagates(t *testing.T) {
-	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: filepath.Join(memdir.TempDir(t), "gone"), fs: filesys.Default, atRest: atRestPlaintext}
 
 	err := e.writeJournal([]byte("x"))
 	var jwe *JournalWriteError
@@ -315,7 +314,7 @@ func TestWriteJournal_RenameErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := &Engine{dir: dir, fs: vfs.Default, atRest: atRestPlaintext}
+	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext}
 	err := e.writeJournal(encodeJournal([]storage.BufferedOp{{Key: []byte("k"), Value: []byte("v")}}))
 	var jwe *JournalWriteError
 	if !errors.As(err, &jwe) {

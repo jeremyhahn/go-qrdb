@@ -36,9 +36,9 @@ qrdb database info shop --output json    # "sql": {"concurrency": "pessimistic"}
 ```
 
 An unknown mode exits non-zero with an invalid-argument error and changes
-nothing. The setting is held in the catalog of the node that receives the
-request, so in a cluster run it against every node, or set it in every node's
-configuration file (below).
+nothing. The setting is held in the database's record in the replicated
+catalog, so it can be run against any node: every node takes the new setting
+on its next lookup of the database.
 
 ## `qrdbd` configuration
 

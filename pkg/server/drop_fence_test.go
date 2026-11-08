@@ -15,6 +15,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -162,7 +164,7 @@ func newSharedStoreFixture(t *testing.T) *sharedStoreFixture {
 	host := newGatedHost(t)
 	raw := rawServices(host)
 
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(service.NewKeyspaceReclaimService(service.ReclaimTarget{KV: raw.KV, Index: raw.Index}))
 	if _, err := mgr.Create(database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -345,7 +347,7 @@ type failingReclaimAfterFence struct {
 	*service.KeyspaceReclaimService
 }
 
-func (f *failingReclaimAfterFence) ReclaimDatabaseKeyspace(context.Context, string, string, string) error {
+func (f *failingReclaimAfterFence) ReclaimDatabaseKeyspace(context.Context, string, string, string, string) error {
 	return errors.New("simulated reclamation failure")
 }
 
@@ -356,7 +358,7 @@ type stubRaftFence struct {
 	err  error
 }
 
-func (s *stubRaftFence) FenceServices(context.Context, string, string) (*DatabaseServices, error) {
+func (s *stubRaftFence) FenceServices(context.Context, string, string, string) (*DatabaseServices, error) {
 	return s.svcs, s.err
 }
 
@@ -377,7 +379,7 @@ func TestDropFence_DedicatedRaftWriteResolvedBeforeDropIsRejectedAtApply(t *test
 		tenantSvc:    &isolatedTenantServicer{isolation: tenant.IsolationRaft},
 		systemTenant: tenantid.System,
 	})
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(reclaim)
 	tctx := tenant.WithTenantID(ctx, "rt")
 	if _, err := mgr.CreateForTenant(tctx, database.DatabaseConfig{Name: "orders", Backend: database.BackendMemory}); err != nil {
@@ -407,12 +409,23 @@ func TestDropFence_DedicatedRaftWriteResolvedBeforeDropIsRejectedAtApply(t *test
 
 	assertDroppingError(t, <-errc, "orders")
 
+	// The write fence guarding the database's writes is the marker in its
+	// own shard. The system store, which its namespaced keyspace is
+	// reclaimed from, holds the reclaim marker under the same key: the
+	// tombstone the drop swaps in from absence there, the value the shard's
+	// fence carries too, never an incarnation. Were the write fence written
+	// to the system store instead, the shard would hold no marker.
 	fenceKey := service.DropFenceKey("rt", "orders")
-	if _, err := ded.KV.Get(ctx, fenceKey); err != nil {
+	shardMarker, err := ded.KV.Get(ctx, fenceKey)
+	if err != nil {
 		t.Fatalf("the fence is not in the database's own shard: %v", err)
 	}
-	if _, err := sys.KV.Get(ctx, fenceKey); err == nil {
-		t.Fatal("the fence was written to the system store, where the database's writes are not guarded")
+	reclaimMarker, err := sys.KV.Get(ctx, fenceKey)
+	if err != nil {
+		t.Fatalf("the system store holds no reclaim marker: %v", err)
+	}
+	if !bytes.Equal(reclaimMarker, shardMarker) {
+		t.Fatalf("system-store reclaim marker = %q, want the tombstone %q the shard's fence holds", reclaimMarker, shardMarker)
 	}
 	if _, err := ded.KV.Get(ctx, "k"); err == nil {
 		t.Fatal("the refused write landed in the dedicated shard")

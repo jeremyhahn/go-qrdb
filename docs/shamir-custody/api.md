@@ -41,6 +41,12 @@ The barrier's own operations are [../barrier-seal/api.md](../barrier-seal/api.md
 Unseal, seal, root-token, recovery and the completion of a rekey have no
 route of their own: each is the quorum submission with its `op`.
 
+On MCP, the SO PIN of `qrdb_barrier_rekey_start`, `qrdb_barrier_officer_revoke`
+and `qrdb_barrier_recovery_generate` is `so_pin` as text or `so_pin_b64` as
+standard base64, never both, and always a JSON string
+([../barrier-seal/api.md](../barrier-seal/api.md#secret-arguments-over-mcp)).
+The Go SDK's MCP client always sends `so_pin_b64`.
+
 ## Who may register, list and revoke node holders
 
 The node barrier's holder registry decides who holds a share of its key:

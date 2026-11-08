@@ -109,8 +109,8 @@ Over a wire transport only the timeout is rebuilt as its typed error; the
 other three arrive as the transport's error for their class. Naming the
 current leader succeeds at once.
 
-**List/approve/reject pending join requests are `service.
-JoinRequestReviewer`**, likewise a capability interface, implemented by
+**List/approve/reject pending join requests are
+`service.JoinRequestReviewer`**, likewise a capability interface, implemented by
 `AdminService` once member-side CSR join is configured
 (`SetClusterJoinTokenStore`) — the same bind `MintJoinToken` depends on,
 since the approval queue lives in the identical replicated store. See
@@ -417,6 +417,7 @@ Nothing was changed; resubmit the plan.
 | Leadership transfer to an observer, witness or removed replica | 409 | `FAILED_PRECONDITION` |
 | Consensus refused the request for now (busy, dropped, shard not ready, no leader yet) | 503 | `UNAVAILABLE` — retry |
 | A consensus proposal or read timed out | 504 | `DEADLINE_EXCEEDED` — retry |
+| Membership change submitted, then its leader stepped down or Raft timed out (`already submitted to raft; it may still commit`) | 503 | `UNAVAILABLE` — outcome unknown: read the membership, retry only if the change is not there |
 
 Cluster enrollment mostly runs at daemon startup, below every transport, so
 most of its failures are startup errors rather than status codes. The one
@@ -452,8 +453,8 @@ itself is not configured on this node (no join-token store bound).
 | `ttl_seconds` outside `[MinJoinTokenTTL, MaxJoinTokenTTL]` | `400` — `*clusterenroll.JoinTokenTTLError` |
 | member-side CSR join not configured on this node | `501` — `*service.ClusterJoinTokenNotConfiguredError` |
 
-This verb is implemented on all six transports (`transport.
-ClusterJoinTokenMinter`, consumed by the `qrdb admin join-token mint` CLI —
+This verb is implemented on all six transports
+(`transport.ClusterJoinTokenMinter`, consumed by the `qrdb admin join-token mint` CLI —
 see [cli.md](cli.md)):
 
 | Transport | Binding |

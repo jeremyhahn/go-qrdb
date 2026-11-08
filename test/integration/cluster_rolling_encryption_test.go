@@ -21,19 +21,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -160,12 +166,48 @@ func rollingGet(client *http.Client, ports []int, key string) (string, error) {
 	return value, err
 }
 
-// rollingAway reports whether a node is out of service for the migration:
-// its barrier is sealed, or it does not answer at all (an in-process
-// reboot). A node that answers SEAL_STATE_UNCONFIRMED during an election
-// still holds its key and its Raft replica, so it is not away.
+// rollingAway reports whether a reading is definitive evidence that a node
+// is out of service for the migration: its barrier answers sealed, or its
+// process is down, so nothing listens on its port (an in-process reboot) and
+// the connection is refused. A node that answers SEAL_STATE_UNCONFIRMED
+// during an election still holds its key and its Raft replica, so it is not
+// away. A probe that times out, or fails any other way, says nothing about
+// the node's state: it is no sample, not an away.
 func rollingAway(r barrierStatusReading) bool {
-	return r.Sealed || (r.Status == 0 && r.Err != nil)
+	if r.Sealed {
+		return true
+	}
+	return r.Status == 0 && errors.Is(r.Err, syscall.ECONNREFUSED)
+}
+
+// TestRollingAwayClassification pins which barrier-status readings count as
+// an owner away: only a sealed answer or a refused connection. A client
+// timeout awaiting headers is inconclusive and must not count (main run
+// 73166: two such timeouts at once were reported as two owners away).
+func TestRollingAwayClassification(t *testing.T) {
+	get := func(err error) error {
+		return &url.Error{Op: "Get", URL: "https://127.0.0.1:1/v1/barrier/status", Err: err}
+	}
+	refused := get(&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})
+	timeout := get(fmt.Errorf("%w (Client.Timeout exceeded while awaiting headers)", context.DeadlineExceeded))
+	reset := get(&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
+	for _, tc := range []struct {
+		name string
+		r    barrierStatusReading
+		want bool
+	}{
+		{"sealed answer", barrierStatusReading{Sealed: true, Definitive: true, Status: http.StatusServiceUnavailable}, true},
+		{"connection refused", barrierStatusReading{Err: refused}, true},
+		{"client timeout awaiting headers", barrierStatusReading{Err: timeout}, false},
+		{"connection reset", barrierStatusReading{Err: reset}, false},
+		{"unsealed answer", barrierStatusReading{Strategy: "passphrase", Definitive: true, Status: http.StatusOK}, false},
+		{"seal state unconfirmed", barrierStatusReading{Status: http.StatusServiceUnavailable, Body: "SEAL_STATE_UNCONFIRMED"}, false},
+		{"body read failed after a status", barrierStatusReading{Status: http.StatusOK, Err: io.ErrUnexpectedEOF}, false},
+	} {
+		if got := rollingAway(tc.r); got != tc.want {
+			t.Errorf("%s: rollingAway = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // TestClusterEnableEncryption_Rolling_RF3 proves the rolling system-scope
@@ -574,7 +616,10 @@ func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
 	// The coordinator stops and starts again while the second turn is held,
 	// then leads again.
 	c.stop(t, coord)
-	restartedAt := len(c.logs[coord].String())
+	restartedAt := make([]int, len(c.logs))
+	for i, l := range c.logs {
+		restartedAt[i] = len(l.String())
+	}
 	c.restart(t, coord)
 	out, err := runQRDB(t, cli, c.nodes[second].cliArgsFor(ca, c.adminCert, c.adminKey, multiProtocols[0]),
 		"admin", "member", "transfer-leadership", strconv.Itoa(coord+1), "--shard-id", "1")
@@ -604,12 +649,29 @@ func TestClusterEnableEncryption_Rolling_RF3_CoordinatorRestart(t *testing.T) {
 	}
 
 	// The restarted coordinator hands the second turn on once its owner is
-	// back.
+	// back, from the record, if it still leads. Raft keeps no leader in
+	// place: a leader that loses its quorum steps down, and the node elected
+	// then hands the turn on instead (Coordinator.Advance). So the hand-on is
+	// looked for in every node's log since the restart, and a node other
+	// than the coordinator may make it only once the coordinator has stepped
+	// down.
 	migrate(2, second)
+	handedOnBy := -1
 	if !pollUntil(60*time.Second, 250*time.Millisecond, func() bool {
-		return slices.ContainsFunc(handOnsInText(c.logs[coord].String()[restartedAt:]), func(h handOn) bool { return h.node == secondID })
+		for i, l := range c.logs {
+			if slices.ContainsFunc(handOnsInText(l.String()[restartedAt[i]:]), func(h handOn) bool { return h.node == secondID }) {
+				handedOnBy = i
+				return true
+			}
+		}
+		return false
 	}) {
-		t.Errorf("the restarted coordinator, node %d, never handed on %s's turn", coord+1, secondID)
+		t.Errorf("no node handed on %s's turn after the coordinator, node %d, restarted", secondID, coord+1)
+	} else if handedOnBy != coord {
+		if !steppedDown(c.logs[coord].String()[restartedAt[coord]:]) {
+			t.Errorf("node %d handed on %s's turn while the restarted coordinator, node %d, still led", handedOnBy+1, secondID, coord+1)
+		}
+		t.Logf("the restarted coordinator, node %d, stepped down; node %d handed on %s's turn", coord+1, handedOnBy+1, secondID)
 	}
 
 	// The coordinator's own turn comes last. The restart cost it the
@@ -790,7 +852,7 @@ func waitForCLIMigrationReaped(t *testing.T, cli string, c *noneSealRF3, node ga
 
 // waitForFeatureActive polls every node's log until each has activated
 // feature f cluster-wide or observed its activation.
-func waitForFeatureActive(t *testing.T, logs []*nodeLog, f featuregate.Feature, timeout time.Duration) {
+func waitForFeatureActive(t *testing.T, logs []*nodeLog, f feature.Feature, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for i, l := range logs {
@@ -805,7 +867,7 @@ func waitForFeatureActive(t *testing.T, logs []*nodeLog, f featuregate.Feature, 
 // featureActiveIn reports whether a node log holds the gate's activation line
 // -- "feature activated cluster-wide" or "feature activation observed" -- for
 // feature f.
-func featureActiveIn(log string, f featuregate.Feature) bool {
+func featureActiveIn(log string, f feature.Feature) bool {
 	for _, line := range strings.Split(log, "\n") {
 		if strings.Contains(line, "feature gate: feature activat") && strings.Contains(line, string(f)) {
 			return true
@@ -854,6 +916,18 @@ func handOnsInText(log string) []handOn {
 		got = append(got, h)
 	}
 	return got
+}
+
+// steppedDown reports whether a node's log records it giving up leadership
+// of the system shard, shard 1: quicraft logs "leader lost" on the leader
+// itself whenever it steps down, by a lost quorum or a transfer.
+func steppedDown(log string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, `msg="leader lost"`) && strings.Contains(line, " shard=1 ") {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForHandOns polls the node logs until they hold want hand-on lines and

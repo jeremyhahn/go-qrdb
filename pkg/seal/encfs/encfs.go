@@ -6,9 +6,11 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package encfs provides an encrypting Pebble vfs.FS that transparently
+// Package encfs provides an encrypting filesys.FS that transparently
 // protects all on-disk file contents using a seal.StorageBarrier as the
-// key-encryption-key. Every file written through the FS is structured
+// key-encryption-key. Pebble writes through it by way of the vfs.FS
+// adapter in pkg/storage/pebble; the file backend and the vector
+// checkpoint writer use it directly. Every file written through the FS is structured
 // as a small plaintext header carrying a barrier-wrapped per-file data
 // encryption key (DEK), followed by a sequence of independently
 // encrypted variable-size blocks.

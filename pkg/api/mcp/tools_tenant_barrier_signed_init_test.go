@@ -136,6 +136,45 @@ func TestHandleTenantBarrierSignedInitComplete_MapsArgumentsAndWipesPassphrase(t
 	}
 }
 
+// TestHandleTenantBarrierSignedInitComplete_B64Passphrase verifies the
+// passphrase is declared in both forms and that passphrase_b64 carries bytes
+// that are not UTF-8 exactly.
+func TestHandleTenantBarrierSignedInitComplete_B64Passphrase(t *testing.T) {
+	requireBothForms(t, toolTenantBarrierSignedInitComplete(), "passphrase")
+
+	svc := newSignedInitRecorder()
+	_, err := handleTenantBarrierSignedInitComplete(svc, allowSignedInit)(context.Background(), buildCallToolRequest(t, toolNameTenantBarrierSignedInitComplete, map[string]any{
+		"tenant_id": "acme", "reference": "cmVm", "signature": "c2ln", "passphrase_b64": "/4A=",
+	}))
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if string(svc.seen) != "\xff\x80" {
+		t.Fatalf("passphrase = %x, want ff80", svc.seen)
+	}
+}
+
+// TestHandleTenantBarrierSignedInitComplete_RefusesBadPassphraseForms
+// verifies a passphrase sent in both forms, or as malformed base64, is refused
+// before the service.
+func TestHandleTenantBarrierSignedInitComplete_RefusesBadPassphraseForms(t *testing.T) {
+	for _, tc := range []struct {
+		args     map[string]any
+		conflict bool
+	}{
+		{map[string]any{"passphrase": "a", "passphrase_b64": "YQ=="}, true},
+		{map[string]any{"passphrase_b64": "%%%"}, false},
+	} {
+		tc.args["tenant_id"], tc.args["reference"], tc.args["signature"] = "acme", "cmVm", "c2ln"
+		svc := newSignedInitRecorder()
+		_, err := handleTenantBarrierSignedInitComplete(svc, allowSignedInit)(context.Background(), buildCallToolRequest(t, toolNameTenantBarrierSignedInitComplete, tc.args))
+		requireSecretArgError(t, err, tc.conflict)
+		if svc.complete != nil {
+			t.Fatal("a refused call reached the service")
+		}
+	}
+}
+
 func TestHandleTenantBarrierSignedInitComplete_Refusals(t *testing.T) {
 	for name, args := range map[string]map[string]any{
 		"no tenant":     {"reference": "cmVm"},

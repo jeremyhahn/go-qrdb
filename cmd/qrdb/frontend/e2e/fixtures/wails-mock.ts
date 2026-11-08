@@ -1,7 +1,8 @@
 // Copyright 2026 Jeremy Hahn
 // SPDX-License-Identifier: Apache-2.0
 
-import { test as base, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test as base } from "./api-guard.ts";
 
 /** Minimal database info for mock responses. */
 export interface MockDatabaseInfo {
@@ -560,6 +561,14 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.sealStatus.sealed = false;
             s.unsealProgress.sealed = false;
             return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
+          },
+          // SealBinding.ChangePassphrase(current, next, soPin): a Shamir
+          // barrier has no passphrase, and the real binding refuses it.
+          ChangePassphrase: async (_current: string, _next: string, _soPin: string) => {
+            maybeReject("SealBinding.ChangePassphrase");
+            if (getState().sealStatus.strategy === "shamir") {
+              throw new Error("qrdb/seal: a Shamir barrier has no passphrase to change");
+            }
           },
           // SealBinding.Seal(soPin): the PIN is recorded so a test can
           // assert what the Seal Manager sent.

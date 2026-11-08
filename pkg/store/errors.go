@@ -15,6 +15,8 @@
 // Package store provides persistent storage backends for QRDB state machines.
 package store
 
+import "strconv"
+
 // OpenError is returned when the PebbleDB database cannot be opened.
 type OpenError struct {
 	Dir string
@@ -63,6 +65,38 @@ func (e *LogsResyncError) Error() string {
 // Unwrap returns both underlying errors for use with errors.Is and errors.As.
 func (e *LogsResyncError) Unwrap() []error {
 	return []error{e.ApplyErr, e.RestoreErr}
+}
+
+// ApplyOrderError is returned by MVCCStateMachine.Update when the batch it
+// committed is not the next one to publish: Update ran concurrently with
+// another, which the state machine contract forbids, and publishing it would
+// expose revisions out of apply order.
+type ApplyOrderError struct {
+	Seq       uint64
+	Published uint64
+}
+
+// Error returns a human-readable description of the out-of-order apply.
+func (e *ApplyOrderError) Error() string {
+	return "store: apply " + strconv.FormatUint(e.Seq, 10) + " committed out of order: last published apply is " + strconv.FormatUint(e.Published, 10)
+}
+
+// PublishError is returned by MVCCStateMachine when it cannot take the
+// storage snapshot readers answer a committed state from. The commit is
+// durable; readers keep answering from the state published before it.
+type PublishError struct {
+	Rev int64
+	Err error
+}
+
+// Error returns a human-readable description of the failed publication.
+func (e *PublishError) Error() string {
+	return "store: publish revision " + strconv.FormatInt(e.Rev, 10) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *PublishError) Unwrap() error {
+	return e.Err
 }
 
 // ReadError is returned when a read operation fails.

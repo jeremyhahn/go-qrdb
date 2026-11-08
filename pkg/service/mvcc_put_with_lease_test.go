@@ -85,8 +85,14 @@ func TestMVCCKVService_PutWithLeaseWithoutRevisionHistory(t *testing.T) {
 		if string(kv.Key) != "k" || !bytes.Equal(kv.Value, []byte("hello")) || kv.LeaseID != 7 {
 			t.Fatalf("%s = %+v, want the key, value and lease it wrote", name, kv)
 		}
-		if kv.ModRevision != 0 || kv.CreateRevision != 0 || kv.Version != 0 {
+		if kv.ModRevision != 0 || kv.CreateRevision != 0 {
 			t.Fatalf("%s = %+v: a state machine with no revision history assigns no revision", name, kv)
+		}
+		// Its version compare reads presence, so a written key's version is
+		// 1: a compare-and-set on the reported version must hold.
+		present := protocol.DecodedCompare{Target: protocol.CompareTargetVersion, Result: protocol.CompareResultEqual, Version: kv.Version}
+		if kv.Version != 1 || !protocol.CompareHolds(present, kv.Value) {
+			t.Fatalf("%s version = %d, want 1, the version its transaction compare reads for a present key", name, kv.Version)
 		}
 	}
 	if len(*cmds) != 2 || (*cmds)[0][0] != protocol.OpMVCCPut {

@@ -78,6 +78,11 @@ func ClusterAdminScope(t *testing.T, start ClusterStartFunc) {
 			_, err := c.GetStateHashes(callCtx(t), &pb.GetStateHashesRequest{})
 			return err
 		}},
+		// Starting a shard places a replica group on the cluster (#1281).
+		{"start shard", func(c pb.QRDBServiceClient, t *testing.T) error {
+			_, err := c.StartShard(callCtx(t), &pb.StartShardRequest{ShardId: 7, ReplicaId: 1})
+			return err
+		}},
 	}
 	roles := authtest.BuiltInRoles(t, tenantid.System, authtest.ClusterAdminTenant)
 	for _, op := range ops {

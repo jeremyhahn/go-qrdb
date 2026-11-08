@@ -136,6 +136,48 @@ func TestKVStore_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestSOKVStore_RoundTripsUnderThePendingSOKey(t *testing.T) {
+	ctx := context.Background()
+	backing := kvstore.NewMemoryKVStore()
+	s := NewSOKVStore(backing)
+	p := &Pending{Username: "sec", Thumbprint: "def456", NotAfter: time.Now().Add(time.Hour).UTC()}
+	if err := s.Create(ctx, "acme", p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	scoped, err := kvstore.NewNamespacedKVStore(backing, tenant.IdentityNamespace("acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := scoped.Get(ctx, pendingSOKey); err != nil || raw == nil {
+		t.Fatalf("record under %s = %q, %v; want it present", pendingSOKey, raw, err)
+	}
+	got, err := s.Get(ctx, "acme")
+	if err != nil || got == nil || got.Username != "sec" || got.Thumbprint != "def456" {
+		t.Fatalf("Get = %+v, %v; want the recorded SO", got, err)
+	}
+	if deleted, err := s.Delete(ctx, "acme", got); err != nil || !deleted {
+		t.Fatalf("Delete = %v, %v; want true, nil", deleted, err)
+	}
+}
+
+func TestSOKVStore_IsIndependentOfThePendingAdmin(t *testing.T) {
+	ctx := context.Background()
+	backing := kvstore.NewMemoryKVStore()
+	admins, sos := NewKVStore(backing), NewSOKVStore(backing)
+	if err := admins.Create(ctx, "acme", &Pending{Username: "admin", Thumbprint: "a"}); err != nil {
+		t.Fatalf("admin Create: %v", err)
+	}
+	if got, err := sos.Get(ctx, "acme"); err != nil || got != nil {
+		t.Fatalf("SO Get with only an admin pending = %+v, %v; want nil, nil", got, err)
+	}
+	if err := sos.Create(ctx, "acme", &Pending{Username: "sec", Thumbprint: "s"}); err != nil {
+		t.Fatalf("SO Create beside a pending admin: %v", err)
+	}
+	if got, err := admins.Get(ctx, "acme"); err != nil || got == nil || got.Username != "admin" {
+		t.Fatalf("admin Get = %+v, %v; want the admin untouched", got, err)
+	}
+}
+
 func TestKVStore_GetOfAnAbsentRecordIsNilNil(t *testing.T) {
 	ctx := context.Background()
 	s := NewKVStore(kvstore.NewMemoryKVStore())

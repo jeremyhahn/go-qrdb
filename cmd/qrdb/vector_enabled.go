@@ -110,6 +110,7 @@ var distanceMetricMap = map[string]transport.DistanceMetric{
 	"cosine":      transport.DistanceCosine,
 	"euclidean":   transport.DistanceEuclidean,
 	"dot-product": transport.DistanceDotProduct,
+	"manhattan":   transport.DistanceManhattan,
 }
 
 // indexTypeMap maps CLI index type strings to transport constants.
@@ -132,6 +133,7 @@ var distanceMetricNames = map[transport.DistanceMetric]string{
 	transport.DistanceCosine:     "cosine",
 	transport.DistanceEuclidean:  "euclidean",
 	transport.DistanceDotProduct: "dot-product",
+	transport.DistanceManhattan:  "manhattan",
 }
 
 // indexTypeNames maps transport constants back to display strings.
@@ -243,6 +245,7 @@ func newVectorCmd() *cobra.Command {
 	}
 	nsCmd.AddCommand(
 		newVectorNamespaceCreateCmd(),
+		newVectorNamespaceUpdateCmd(),
 		newVectorNamespaceDeleteCmd(),
 		newVectorNamespaceListCmd(),
 		newVectorNamespaceInfoCmd(),
@@ -332,11 +335,71 @@ func newVectorNamespaceCreateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
 	cmd.Flags().Uint32Var(&dimension, "dimension", 0, "Vector dimensionality")
-	cmd.Flags().StringVar(&distanceMetric, "distance-metric", "cosine", "Distance metric: cosine, euclidean, dot-product")
+	cmd.Flags().StringVar(&distanceMetric, "distance-metric", "cosine", "Distance metric: cosine, euclidean, dot-product, manhattan")
 	cmd.Flags().StringVar(&indexType, "index-type", "hnsw", "Index type: hnsw, flat, ivf-flat")
 	cmd.Flags().Uint64Var(&shardID, "shard-id", 0, "Target shard ID")
 	_ = cmd.MarkFlagRequired("namespace")
 	_ = cmd.MarkFlagRequired("dimension")
+
+	return cmd
+}
+
+func newVectorNamespaceUpdateCmd() *cobra.Command {
+	var (
+		namespace   string
+		dimension   uint32
+		indexParams map[string]string
+		metadataStr string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update a vector namespace's index parameters and metadata",
+		Long: "Update a vector namespace's index parameters and metadata in place, keeping every vector. " +
+			"Each key given is merged over the stored value; a key not given keeps its value. " +
+			"The dimension cannot change; --dimension, when given, must equal the namespace's. " +
+			"A change to an index parameter the built index depends on reports that the index needs a rebuild.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := &transport.UpdateNamespaceRequest{
+				Namespace: namespace,
+				Dimension: dimension,
+			}
+			if len(indexParams) > 0 {
+				req.IndexConfig = indexParams
+			}
+			if metadataStr != "" {
+				md, err := parseJSONMap(metadataStr)
+				if err != nil {
+					return err
+				}
+				req.Metadata = md
+			}
+
+			resp, err := client.Vector().UpdateNamespace(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "Success:          %t\n", resp.Success)
+				_, _ = fmt.Fprintf(outputWriter, "Requires rebuild: %t\n", resp.RequiresRebuild)
+				_, _ = fmt.Fprintf(outputWriter, "Timestamp:        %d\n", resp.Timestamp)
+				return nil
+			}
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace name")
+	cmd.Flags().Uint32Var(&dimension, "dimension", 0, "Expected vector dimensionality (must equal the namespace's)")
+	cmd.Flags().StringToStringVar(&indexParams, "index-param", nil, "Index parameter key=value (repeatable)")
+	cmd.Flags().StringVar(&metadataStr, "metadata", "", "JSON metadata object merged over the namespace's metadata")
+	_ = cmd.MarkFlagRequired("namespace")
 
 	return cmd
 }

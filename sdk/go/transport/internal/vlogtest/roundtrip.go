@@ -54,9 +54,17 @@ func Run(t *testing.T, c transport.VlogClient) {
 		t.Fatalf("VlogCreate = %+v, want audit in the default database with key version 1", created)
 	}
 
-	appended, err := c.VlogAppend(ctx, &vlogwire.AppendRequest{Log: "audit", Entries: [][]byte{[]byte("a"), []byte("b"), []byte("c")}})
-	if err != nil || *appended != (vlogwire.AppendResult{FirstIndex: 0, Count: 3}) {
-		t.Fatalf("VlogAppend = %+v, %v; want first 0, count 3", appended, err)
+	first, err := c.VlogAppend(ctx, &vlogwire.AppendRequest{Log: "audit", Entries: [][]byte{[]byte("a")}})
+	if err != nil || *first != (vlogwire.AppendResult{FirstIndex: 0, Count: 1}) {
+		t.Fatalf("VlogAppend = %+v, %v; want first 0, count 1", first, err)
+	}
+	head1, err := c.VlogHead(ctx, &vlogwire.LogRequest{Log: "audit"})
+	if err != nil || head1.Size != 1 {
+		t.Fatalf("VlogHead = %+v, %v; want size 1", head1, err)
+	}
+	appended, err := c.VlogAppend(ctx, &vlogwire.AppendRequest{Log: "audit", Entries: [][]byte{[]byte("b"), []byte("c")}})
+	if err != nil || *appended != (vlogwire.AppendResult{FirstIndex: 1, Count: 2}) {
+		t.Fatalf("VlogAppend = %+v, %v; want first 1, count 2", appended, err)
 	}
 
 	got, err := c.VlogGet(ctx, &vlogwire.GetRequest{Log: "audit", From: 1, Limit: 2})
@@ -79,10 +87,18 @@ func Run(t *testing.T, c transport.VlogClient) {
 	if err != nil || incl.Index != 1 || incl.Size != 3 || len(incl.Hashes) == 0 {
 		t.Fatalf("VlogProveInclusion = %+v, %v", incl, err)
 	}
+	// The proofs must verify, from the caller's side of the wire, against
+	// the roots the log's heads answer (go-qrdb#1194).
+	if err := servicetest.VerifyInclusion([]byte("b"), incl.Index, incl.Size, incl.Hashes, head.Root); err != nil {
+		t.Fatalf("VlogProveInclusion of b does not verify against the size-3 root: %v", err)
+	}
 
 	cons, err := c.VlogProveConsistency(ctx, &vlogwire.ConsistencyRequest{Log: "audit", Size1: 1, Size2: 3})
 	if err != nil || cons.Size1 != 1 || cons.Size2 != 3 || len(cons.Hashes) == 0 {
 		t.Fatalf("VlogProveConsistency = %+v, %v", cons, err)
+	}
+	if err := servicetest.VerifyConsistency(cons.Size1, cons.Size2, cons.Hashes, head1.Root, head.Root); err != nil {
+		t.Fatalf("VlogProveConsistency 1 -> 3 does not verify against the heads' roots: %v", err)
 	}
 
 	signed, err := c.VlogSignHead(ctx, &vlogwire.LogRequest{Log: "audit"})

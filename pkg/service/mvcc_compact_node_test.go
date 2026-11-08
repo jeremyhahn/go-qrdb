@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
@@ -53,7 +54,7 @@ func TestMVCCKVService_CompactNodeKeyspace_Refusals(t *testing.T) {
 
 	inner, gatedCmds := recordingHost(sm.Result{})
 	gated := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
-	var gate *featuregate.NotActiveError
+	var gate *feature.NotActiveError
 	if err := nodeCompactor(gated).CompactNodeKeyspace(context.Background(), 5); !errors.As(err, &gate) || gate.Feature != featuregate.NodeCompaction {
 		t.Fatalf("before the gate = %v", err)
 	}

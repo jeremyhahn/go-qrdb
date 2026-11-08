@@ -23,6 +23,7 @@ import (
 // mockVectorService is a configurable mock for service.VectorServicer.
 type mockVectorService struct {
 	createNamespaceFn       func(ctx context.Context, req *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error)
+	updateNamespaceFn       func(ctx context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error)
 	deleteNamespaceFn       func(ctx context.Context, req *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error)
 	listNamespacesFn        func(ctx context.Context, req *service.ListNamespacesRequest) (*service.ListNamespacesResponse, error)
 	getNamespaceInfoFn      func(ctx context.Context, req *service.GetNamespaceInfoRequest) (*service.GetNamespaceInfoResponse, error)
@@ -42,6 +43,13 @@ type mockVectorService struct {
 	getIndexStatsFn         func(ctx context.Context, req *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error)
 	compactNamespaceFn      func(ctx context.Context, req *service.CompactNamespaceRequest) (*service.CompactNamespaceResponse, error)
 	getCompactionProgressFn func(ctx context.Context, req *service.GetCompactionProgressRequest) (*service.GetCompactionProgressResponse, error)
+}
+
+func (m *mockVectorService) UpdateNamespace(ctx context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	if m.updateNamespaceFn != nil {
+		return m.updateNamespaceFn(ctx, req)
+	}
+	return &service.UpdateNamespaceResponse{Namespace: req.Namespace, RequiresRebuild: len(req.IndexConfig) > 0, Timestamp: 1000, Success: true}, nil
 }
 
 func (m *mockVectorService) CreateNamespace(ctx context.Context, req *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {

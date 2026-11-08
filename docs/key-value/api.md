@@ -229,9 +229,9 @@ and `conflicted`.
 | `Compact` to a revision below 1, or above the current revision | 400 | `INVALID_ARGUMENT` | `service.CompactRevisionInvalidError`, `service.CompactRevisionFutureError` |
 | `Compact` to a revision the database is already compacted to | 416 | `OUT_OF_RANGE` | `service.RevisionCompactedError`; nothing changes |
 | `Compact` on a server with no database scope (raw service) | 422 | `FAILED_PRECONDITION` | `service.CompactScopeRequiredError`; there is no store-wide compaction |
-| `Compact` before every replica of the group supports per-database compaction | 503 | `UNAVAILABLE` | `featuregate.NotActiveError` naming `prefix-compaction`; nothing proposed, and a retry succeeds once the feature is active. |
+| `Compact` before every replica of the group supports per-database compaction | 503 | `UNAVAILABLE` | `feature.NotActiveError` naming `prefix-compaction`; nothing proposed, and a retry succeeds once the feature is active. |
 | `SetNodeCompaction` with an invalid policy | 400 | `INVALID_ARGUMENT` | `compaction.InvalidPolicyError` |
-| `SetNodeCompaction` before every replica of the shared store supports the compaction-state command | 503 | `UNAVAILABLE` | `featuregate.NotActiveError` naming `prefix-compaction` |
+| `SetNodeCompaction` before every replica of the shared store supports the compaction-state command | 503 | `UNAVAILABLE` | `feature.NotActiveError` naming `prefix-compaction` |
 | `NodeCompaction` / `SetNodeCompaction` on a node whose shared store keeps no MVCC history | 422 | `FAILED_PRECONDITION` | `service.NodeCompactionUnavailableError` |
 | `NodeCompaction` / `SetNodeCompaction` by a caller of any tenant but the system tenant | 403 | `PERMISSION_DENIED` | the `ScopeCross` refusal; in process, `tenant.CrossTenantDeniedError` |
 | Non-MVCC state machine asked for an MVCC operation | 501 | `UNIMPLEMENTED` | `service.MVCCBackendRequiredError`, whose message says to configure `raft.sm_type: mvcc` |

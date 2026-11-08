@@ -142,7 +142,7 @@ func TestRaftBackendFactory_FenceServicesReportsAPlacementReadFailure(t *testing
 	}
 	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
 
-	_, err = f.FenceServices(context.Background(), "rt", "orders")
+	_, err = f.FenceServices(context.Background(), "rt", "orders", "")
 	if err == nil {
 		t.Fatal("FenceServices succeeded over an unreadable placement table")
 	}

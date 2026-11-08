@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	memorystorage "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
@@ -76,7 +77,7 @@ func TestKVService_DeleteRange_RefusedUntilTheGateIsActive(t *testing.T) {
 	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: false}}
 
 	err := NewKVService(host, 1).(rangeDeleter).DeleteRange(context.Background(), []byte("a"), nil)
-	var notActive *featuregate.NotActiveError
+	var notActive *feature.NotActiveError
 	if !stderrors.As(err, &notActive) || notActive.Feature != featuregate.RangeDelete || notActive.ShardID != 1 {
 		t.Fatalf("DeleteRange on an inactive gate = %v, want a range-delete NotActiveError for shard 1", err)
 	}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/clientlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -68,6 +69,14 @@ var retryAfterRules = []func(error) (time.Duration, bool){
 	// The authentication and authorization refusals that name a delay: a
 	// request over the caller's rate limit, a tenant SO PIN lockout.
 	middleware.RetryAfter,
+	// The pre-authentication client-address limiter (go-qrdb#1197).
+	func(err error) (time.Duration, bool) {
+		var e *clientlimit.RateLimitedError
+		if errors.As(err, &e) {
+			return e.RetryAfter, true
+		}
+		return 0, false
+	},
 }
 
 // RetryAfter reports how long err says its caller must wait before a retry

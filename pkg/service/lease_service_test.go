@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/raftadmin"
@@ -329,6 +330,63 @@ func TestLeaseService_KeepAlive_NotPrimaryFallsBackToTheLog(t *testing.T) {
 	}
 }
 
+// logRenewalHost is a host whose keep-alive read answers with readErr, nil
+// for a renewal the primary answers from memory, and whose proposal applies
+// the renewal through the log.
+func logRenewalHost(readErr error) *mockHost {
+	return &mockHost{
+		syncProposeFn: func(context.Context, uint64, []byte) (sm.Result, error) {
+			return sm.Result{Value: 42, Data: protocol.EncodeLeaseInfo(42, 60, 60, nil)}, nil
+		},
+		syncReadFn: func(context.Context, uint64, interface{}) (interface{}, error) {
+			if readErr != nil {
+				return nil, readErr
+			}
+			return &Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
+		},
+	}
+}
+
+// TestLeaseService_LogRenewals_LocalRenewalIsNotCounted checks a renewal the
+// primary answers from memory leaves the count at zero, however many there are.
+func TestLeaseService_LogRenewals_LocalRenewalIsNotCounted(t *testing.T) {
+	svc := NewLeaseService(logRenewalHost(nil), 1).(*LeaseService)
+	for range 3 {
+		if _, err := svc.KeepAlive(context.Background(), 42); err != nil {
+			t.Fatalf("KeepAlive: %v", err)
+		}
+	}
+	if got := svc.LogRenewals(); got != 0 {
+		t.Fatalf("LogRenewals = %d after three leader-local renewals, want 0", got)
+	}
+}
+
+// TestLeaseService_LogRenewals_CountsEveryRenewalThroughTheLog checks each
+// renewal that falls back to the log is counted once: one answered by a
+// replica that is not the primary, and one clearing a checkpoint.
+func TestLeaseService_LogRenewals_CountsEveryRenewalThroughTheLog(t *testing.T) {
+	cases := []struct {
+		name    string
+		readErr error
+	}{
+		{"not primary", &lease.NotPrimaryError{}},
+		{"checkpointed", &lease.CheckpointedError{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewLeaseService(logRenewalHost(tc.readErr), 1).(*LeaseService)
+			for want := uint64(1); want <= 2; want++ {
+				if _, err := svc.KeepAlive(context.Background(), 42); err != nil {
+					t.Fatalf("KeepAlive: %v", err)
+				}
+				if got := svc.LogRenewals(); got != want {
+					t.Fatalf("LogRenewals = %d, want %d", got, want)
+				}
+			}
+		})
+	}
+}
+
 // The log-backed renewal of a lease the lessor does not hold is an idempotent
 // apply success carrying the not-found marker, reported as *LeaseNotFoundError.
 func TestLeaseService_KeepAlive_NotPrimaryNotFound(t *testing.T) {
@@ -532,7 +590,7 @@ func TestLeaseService_CheckpointEnabledFollowsTheFeatureGate(t *testing.T) {
 	if !NewLeaseCheckpointer(gated, 2).CheckpointEnabled() {
 		t.Fatal("checkpoints refused in a group whose gate is open")
 	}
-	if !slices.Equal(gated.asked, []featuregate.Feature{featuregate.LeaseCheckpoint, featuregate.LeaseCheckpoint}) {
+	if !slices.Equal(gated.asked, []feature.Feature{featuregate.LeaseCheckpoint, featuregate.LeaseCheckpoint}) {
 		t.Fatalf("asked the gate about %v, want lease-checkpoint", gated.asked)
 	}
 }
@@ -568,7 +626,7 @@ func TestLeaseService_KeepAlive_GateClosedRenewsThroughTheLog(t *testing.T) {
 	if got.ID != 42 || got.RemainingTTL != 60 {
 		t.Fatalf("lease = %+v, want the committed renewal of 42", got)
 	}
-	if !slices.Equal(host.asked, []featuregate.Feature{featuregate.LeaseCheckpoint}) {
+	if !slices.Equal(host.asked, []feature.Feature{featuregate.LeaseCheckpoint}) {
 		t.Fatalf("asked the gate about %v, want lease-checkpoint", host.asked)
 	}
 }

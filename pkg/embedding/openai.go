@@ -150,6 +150,11 @@ func (p *OpenAIProvider) Name() string {
 	return "openai"
 }
 
+// DefaultModel returns the model Embed uses when called with an empty model.
+func (p *OpenAIProvider) DefaultModel() string {
+	return p.model
+}
+
 // Models returns the list of models available from the OpenAI-compatible endpoint.
 func (p *OpenAIProvider) Models(ctx context.Context) ([]ModelInfo, error) {
 	return p.client.Models(ctx)

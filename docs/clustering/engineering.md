@@ -113,6 +113,8 @@ built.
 - Coverage — every founder named, an anchor for a joiner — is go-quicraft's
   rule and is left to `StartShard`, which returns `*quicraft.InvalidMemberError`.
   Restating it here would be a second copy of the rule to drift.
+- The SDK node wraps each refusal in `*node.ConfigError{Field:
+  "raft.member_identities"}`, which unwraps to the typed cause.
 
 **A node's mTLS identity can be a signer, not key bytes.** `sdk/go/node`'s
 `WithRaftMTLS` takes `RaftMTLSConfig` (go-quicraft's `MTLSConfig`): either the
@@ -145,8 +147,6 @@ and no CA material resolves one through `clusterenroll.Resolve` with
 generated CA key once Key A is replicated through
 `lifecycle.RemoveClusterCAKeyCache`. A multi-member node needs `WithRaftMTLS`
 for its transport and is never reached by this.
-- The SDK node wraps each refusal in `*node.ConfigError{Field:
-  "raft.member_identities"}`, which unwraps to the typed cause.
 
 ### Enrollment role — `pkg/clusterenroll`
 
@@ -178,9 +178,8 @@ file: both hold
 So no ordering of generate/persist/start lets a later boot tell them apart;
 once the process exits the two leave the same bytes. The role is written
 **before** the CA material for the same reason: material present with no role
-file then means exactly one thing, a data directory written before this
-mechanism existed, rather than a state a fresh install can also reach through a
-badly timed crash. That ordering is what makes the refusal below defensible —
+file is then never a state a fresh install reaches through a badly timed
+crash. That ordering is what makes the refusal below defensible —
 if an interrupted first boot could reach the same state, the refusal would be
 turning an ordinary crash into a node that will not start.
 
@@ -190,8 +189,7 @@ Without it the listener starts only on the boot that generated the CA, and
 serves no enrollment, with nothing logging a problem.
 
 **A data directory with CA material and no recorded role refuses to boot**, with
-a `*MissingRoleError`. It is the state a directory written before the role file
-existed presents, and the node in it cannot know whether it owes the cluster an
+a `*MissingRoleError`. The node in it cannot know whether it owes the cluster an
 enrollment listener. Coming up anyway and serving none is the defect itself: a
 first node in that state is silently unjoinable for as long as it runs, nothing
 on the node reports it, and the only symptom is a peer's join failing on another
@@ -200,28 +198,23 @@ report on the node that has the defect, at the moment it has it.
 
 The refusal covers every such directory, not only a first node's, because the
 two are not distinguishable — that is exactly what the rest of this section
-measures. A `single-node` or `joined` directory written before the role file is
-refused too, and the message tells its operator which value to record.
+measures. A `single-node` or `joined` directory with no role file is refused
+too, and the message tells its operator which value to record.
 
 The error names the remedy rather than the state: the file to write, the three
 values it accepts, and that a restart is needed. It also carries the caution
 that **holding `ca-key.pem` is not evidence of having generated the CA**, since
 an operator following the remedy would otherwise reproduce by hand the
-derivation the next paragraph rules out.
+derivation ruled out below.
 
 The role is not inferred from `SingleNode` either: that is configuration, it can
 differ from the value the node was first started with, and inferring a
 cluster-wide enrollment decision from it at read time would be a guess wearing
 the clothes of a recovery.
 
-Nor is it derived from the material. A **joined** node's directory can hold the
-CA private key: an enrollment that handed the joiner the CA certificate *and
-the CA private key*, to mint its own leaf, left `[ca-key.pem ca.pem
-enrollment-role node-cert.pem node-key.pem]`. Enrollment never hands out the
-key and refuses joins (`*EnrollmentUnavailableError`, before any dial or
-write), but directories written that way exist. "Holds
-the CA key and is not single-node" therefore does not
-mean "generated the CA", and acting on it would give every joined node in the
+Nor is it derived from the material. A **joined** node's directory can hold
+`ca-key.pem` beside `ca.pem`, so "holds the CA key and is not single-node"
+does not mean "generated the CA", and acting on it would give every joined node in the
 cluster the first node's role, each opening an enrollment listener nobody asked
 for. The other candidate signal, `noise-key.hex`, does discriminate but is
 written by the advertiser start *after* the CA material, so a node killed
@@ -288,8 +281,8 @@ file or the new one and never a mix; it does not put the new *directory entry*
 on stable storage. Without an `fsync` of the containing directory, a power loss
 can recover a set of files in an order the writer never wrote them in — the CA
 material, written later, surviving while the role entry it was supposed to
-follow is gone. The node then reads as a directory written before the role
-existed and comes up with no enrollment listener, which is exactly what the
+follow is gone. The node then reads as a directory with no role file and comes
+up with no enrollment listener, which is exactly what the
 ordering exists to prevent. `securefile.WriteFileAtomic` (`pkg/util/securefile`,
 re-exported from `sdk/go`) therefore
 fsyncs the directory after the rename and does not report success until
@@ -424,8 +417,7 @@ claim, and it is the claim `GODEBUG` itself makes.
 
 **What this does NOT do.** It does not make the Noise suite work under FIPS —
 nothing can, short of a different handshake, which is why the P-256 suite
-exists — and it does not decide whether the shared-CA-key enrollment mode should
-be served over either suite at all, which is a separate open question. See
+exists. See
 [fips140-mode.md](../seal/fips140-mode.md) for the FIPS register and the
 remaining gaps.
 
@@ -522,7 +514,7 @@ func HostMembership(h ShardMembershipReader) MembershipSource
   (`shard.Claimer`, see [../databases/engineering.md](../databases/engineering.md#cluster-wide-shard-ids)),
   using the KV engine's existing compare-and-set. The claim is gated on the
   feature: on a host that gates features, every claim -- and so every raft
-  database create -- is refused with `*featuregate.NotActiveError` (503 /
+  database create -- is refused with `*feature.NotActiveError` (503 /
   `UNAVAILABLE`, retryable) until `cluster-shard-ids` is active cluster-wide,
   so no node claims while another may still allocate per node. Its activation
   also applies the downgrade rule: once every node claims, a binary that
@@ -656,8 +648,8 @@ distinct-interface pattern. `AdminService` implements it over go-quicraft's
 `sm.Hasher` value together with its applied index, and lists the local
 replicas from `GetNodeHostInfo(SkipLogInfo)`. The host reaches the service
 through a capability interface, `service.StateMachineHasher`, that
-`*raft.HostAdapter` satisfies by embedding `*quicraft.Host` and asserts at
-compile time — the standalone `backend.LocalBackend` does not, which is
+`*raft.HostAdapter` satisfies by embedding `*quicraft.Host`, pinned by a
+compile-time assertion in `pkg/service`'s tests — the standalone `backend.LocalBackend` does not, which is
 what makes the read `ReplicaStateUnsupportedError` in standalone mode. The
 service maps go-quicraft's answers one to one:
 
@@ -942,7 +934,8 @@ type ImbalanceReport struct {
   the same fields. If the caller's context ends first, the same error carries
   that context's error as well. The reads are the cluster-CA readback
   (`lifecycle.AwaitClusterCACertificate`, 30s), and the reads made while the
-  system shard settles (`server.WhileSystemShardSettling`, 15s): the
+  system shard settles (`server.WhileSystemShardSettling`, 15s counted only
+  while the shard has a leader that has committed in its term, below): the
   feature-gate start (its activation check and its self-advertisement), the
   boot tenant list, the encryption migrator's entitlement and isolation-mode
   reads, `qrdbd`'s dynamic-membership start (its registration and first
@@ -979,6 +972,29 @@ type ImbalanceReport struct {
   reconcile's budget. A cut-off pass is safe to retry: every read it makes
   fails closed, and the records that name a retired tenant's directories are
   dropped last, so the retry finds whatever the cut-off pass left.
+- **A settling wait outlasts a forming cluster.** The budget of
+  `server.WhileSystemShardSettling` (`server.SystemShardSettleBudget`, 15s)
+  counts only while the system shard has a leader that has committed in its
+  term (decision record
+  [startup-wait-cascade](../decisions/startup-wait-cascade.md), option A).
+  Before the first attempt and after every attempt that fails with a settling
+  answer or is cut off unanswered, the wait asks the shard's `LeaderSource`:
+  a leader must be known, and, on a `quicraft.Host`, a linearizable read
+  probe (`ReadIndex`, 500ms) must answer. The time between two asks counts
+  against the budget only when both found such a leader
+  (`server.StartupRead.Counts`); every other stretch moves the deadline out.
+  While no leader has committed, the wait is the open-ended leader wait: it
+  runs under the boot's context, logs `startup read still waiting`, and ends
+  only when the read succeeds, the read fails with a non-settling error, or
+  the boot's context ends. A node therefore exits for a leader that has
+  committed and still does not answer within the budget, never for an
+  election in progress or peers not yet unsealed. Every caller passes the
+  system shard's leader source: the feature-gate start (and `sdk/go/node`'s
+  activation check before it installs its seal monitor), database
+  provisioning, the dynamic-membership start, the database-catalog open and
+  the volume-tenant restore (through the node's `quicraft.Host`; a node
+  without one counts all of the wait). A source that cannot probe a term (the
+  local backend) counts from the moment it knows a leader.
 - **A startup wait says what it waits for.** While a startup read waits --
   inside an attempt or between two -- it logs `startup read still waiting` at
   WARN every `server.StartupWaitReportInterval` (5s), naming the read, the time

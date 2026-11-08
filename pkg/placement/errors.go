@@ -156,7 +156,9 @@ func (e *ReplicaDataRootError) Error() string {
 type NotAReplicaError struct {
 	TenantID string
 	Database string
-	ShardID  uint64
+	// ShardID is the database's Raft group. Zero for a local binding -- a
+	// database held on one node, which has no group (see LocalBinding).
+	ShardID uint64
 	// NodeID is the node that refused.
 	NodeID string
 	// Replicas is the replica set the placement names.
@@ -165,6 +167,13 @@ type NotAReplicaError struct {
 	// fact: Raft may have elected another replica since. Replica forwarding
 	// tries it first. Zero when the placement names none.
 	LeaderReplicaID uint64
+}
+
+// LocalBinding reports whether the refusal names a database held on one node
+// rather than a Raft group: its one replica is the owning node, and it has no
+// shard.
+func (e *NotAReplicaError) LocalBinding() bool {
+	return e.ShardID == 0
 }
 
 // Error implements the error interface.

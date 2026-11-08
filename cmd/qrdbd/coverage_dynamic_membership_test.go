@@ -53,7 +53,7 @@ func TestStartDynamicMembership_SuccessPath(t *testing.T) {
 		clusterMinPeers: 3,
 	}
 
-	mgr, err := startDynamicMembership(ctx, f, kvMock, adminMock, mvccMock, leaseMock, watchMock, nil)
+	mgr, err := startDynamicMembership(ctx, f, kvMock, adminMock, mvccMock, leaseMock, watchMock, nil, nil)
 	require.NoError(t, err, "startDynamicMembership must succeed with valid mock services")
 	require.NotNil(t, mgr)
 

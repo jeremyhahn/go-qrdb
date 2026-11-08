@@ -58,15 +58,15 @@ func TestDatabaseBarrier_RegisteredDeviceStrategySealsTheBarrier(t *testing.T) {
 	if device.Wraps() == 0 {
 		t.Fatal("the device never wrapped the root key")
 	}
-	status, err := mgr.BarrierStatus("hwdb")
+	status, err := mgr.BarrierStatus("hwdb", "")
 	if err != nil || status.Sealed {
 		t.Fatalf("BarrierStatus = %+v, %v; want an unsealed barrier", status, err)
 	}
 
-	if err := mgr.SealDatabase("hwdb"); err != nil {
+	if err := mgr.SealDatabase("hwdb", ""); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
-	if err := mgr.UnsealDatabase(ctx, "hwdb", seal.Credentials{}); err != nil {
+	if err := mgr.UnsealDatabase(ctx, "hwdb", "", seal.Credentials{}); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
 	}
 	if device.Unwraps() == 0 {
@@ -92,7 +92,7 @@ func TestDatabaseBarrier_RegisterBarrierReopensUnderTheDevice(t *testing.T) {
 	if err := reopened.RegisterBarrier("hwdb", "", cfg, backend); err != nil {
 		t.Fatalf("RegisterBarrier: %v", err)
 	}
-	if err := reopened.UnsealDatabase(ctx, "hwdb", seal.Credentials{}); err != nil {
+	if err := reopened.UnsealDatabase(ctx, "hwdb", "", seal.Credentials{}); err != nil {
 		t.Fatalf("UnsealDatabase after re-open: %v", err)
 	}
 	if device.Unwraps() == 0 {

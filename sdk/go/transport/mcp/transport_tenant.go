@@ -97,6 +97,10 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ctx, err := t.guardSecret(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	args := map[string]any{
 		"id":   req.ID,
@@ -117,6 +121,11 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		"admin_cert_pem":    req.AdminCertPEM,
 		"admin_chain_pem":   req.AdminChainPEM,
 		"trust_anchors_pem": req.TrustAnchorsPEM,
+		"so_username":       req.SOUsername,
+		"so_csr_pem":        req.SOCSRPEM,
+		"so_cert_pem":       req.SOCertPEM,
+		"so_chain_pem":      req.SOChainPEM,
+		"so_pin":            req.SOPin,
 	} {
 		if value != "" {
 			args[name] = value
@@ -134,14 +143,15 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 
 	var result struct {
-		Tenant mcpTenantInfo                   `json:"tenant"`
-		Admin  transport.TenantAdminCredential `json:"admin"`
+		Tenant mcpTenantInfo                    `json:"tenant"`
+		Admin  transport.TenantAdminCredential  `json:"admin"`
+		SO     *transport.TenantAdminCredential `json:"so,omitempty"`
 	}
 	if jsonErr := json.Unmarshal([]byte(text), &result); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin}, nil
+	return &transport.CreateTenantResponse{Tenant: mcpTenantInfoToTransport(&result.Tenant), Admin: result.Admin, SO: result.SO}, nil
 }
 
 // trustAnchorTool calls a trust-anchor tool and decodes the tenant's
@@ -381,6 +391,9 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
+	}
 
 	args := map[string]any{
 		"id":                           req.TenantID,
@@ -441,10 +454,8 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 	defer func() { _ = client.Close() }()
 
 	return tenantinit.Run(req, func(round tenantinit.Round) (*transport.TenantBarrierInitResponse, error) {
-		args := map[string]any{
-			"tenant_id":  req.TenantID,
-			"passphrase": secretArg(req.Passphrase),
-		}
+		args := map[string]any{"tenant_id": req.TenantID}
+		putSecret(args, "passphrase", req.Passphrase)
 		if req.Threshold != 0 {
 			args["threshold"] = req.Threshold
 		}
@@ -585,7 +596,7 @@ func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *tr
 		"signature": base64.StdEncoding.EncodeToString(req.Signature),
 	}
 	if len(req.Passphrase) > 0 {
-		args["passphrase"] = secretArg(req.Passphrase)
+		putSecret(args, "passphrase", req.Passphrase)
 	}
 	text, err := t.callTool(ctx, "qrdb_tenant_barrier_signed_init_complete", args)
 	if err != nil {

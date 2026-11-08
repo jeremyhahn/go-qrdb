@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -139,7 +140,7 @@ func newEtcdScopeFixture(t *testing.T, withAuth bool, extra ...ServerOption) *et
 		shared.put(k, []byte("v"))
 	}
 
-	mgr := database.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	for _, owner := range []string{"acme"} {
 		if _, err := mgr.Create(database.DatabaseConfig{TenantID: owner, Name: "app", Backend: database.BackendMemory}); err != nil {
@@ -183,7 +184,7 @@ func (f *etcdScopeFixture) kv(t *testing.T, addr string, cfg *tls.Config) pb.KVC
 // and a write through it must land in that keyspace.
 func TestEtcdListener_ScopedToItsDatabase(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("startEtcd: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestEtcdListener_ScopedToItsDatabase(t *testing.T) {
 // that can reach the port reads and writes the database.
 func TestEtcdListener_RefusesToStartWithoutAuthentication(t *testing.T) {
 	f := newEtcdScopeFixture(t, false)
-	etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
 	if err == nil {
 		stopEtcd(etcdSrv)
 		t.Fatal("startEtcd started an etcd listener with no authentication configured")
@@ -231,7 +232,7 @@ func TestEtcdListener_RefusesToStartWithoutAuthentication(t *testing.T) {
 // A client that does not authenticate is refused on every call.
 func TestEtcdListener_RefusesUnauthenticatedClient(t *testing.T) {
 	f := newEtcdScopeFixture(t, true)
-	etcdSrv, err := startEtcd(f.srv, "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
+	etcdSrv, err := startEtcd(f.srv, "acme", "app", &database.EtcdConfig{Enabled: true, ListenAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("startEtcd: %v", err)
 	}

@@ -826,7 +826,7 @@ func TestStartDynamicMembership_WithMockServices(t *testing.T) {
 		clusterMinPeers: 3,
 	}
 
-	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil)
+	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil, nil)
 	// With a pre-canceled context, either mgr.Start fails or the store
 	// returns context.Canceled — either way, an error is expected.
 	if err != nil {
@@ -852,7 +852,7 @@ func TestStartDynamicMembership_DefaultMinPeers(t *testing.T) {
 		clusterMinPeers: 0, // triggers default to 3
 	}
 
-	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil)
+	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil, nil, nil)
 	// Result is acceptable regardless — we're covering the minPeers<=0 branch.
 	t.Logf("startDynamicMembership (minPeers=0): %v", err)
 }

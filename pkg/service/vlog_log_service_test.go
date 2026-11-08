@@ -30,6 +30,8 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -135,7 +137,7 @@ func newTestLogService(t *testing.T, host *mockHost, signers vlog.HeadSignerProv
 // database it has no record of, which the log service lets through.
 func noDatabases(t *testing.T) *database.Manager {
 	t.Helper()
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	return mgr
 }
@@ -539,12 +541,12 @@ func TestLogService_Writes_RefusedBeforeGateActive(t *testing.T) {
 // featureHost is a host on which exactly the features in active are active.
 type featureHost struct {
 	*mockHost
-	active map[featuregate.Feature]bool
+	active map[feature.Feature]bool
 }
 
 var _ FeatureGatedHost = (*featureHost)(nil)
 
-func (h *featureHost) FeatureEnabled(_ uint64, f featuregate.Feature) bool { return h.active[f] }
+func (h *featureHost) FeatureEnabled(_ uint64, f feature.Feature) bool { return h.active[f] }
 
 func TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive(t *testing.T) {
 	ctx := acmeCtx()
@@ -552,7 +554,7 @@ func TestLogService_KeyWrites_RefusedBeforeKeyFeatureActive(t *testing.T) {
 	inner, cmds := rotateHost(desc)
 	device := newHSMProvider()
 	svc, err := NewLogService(LogServiceConfig{
-		Resolver:  &fixedShardResolver{host: &featureHost{mockHost: inner, active: map[featuregate.Feature]bool{featuregate.VerifiableLog: true}}, shardID: 4},
+		Resolver:  &fixedShardResolver{host: &featureHost{mockHost: inner, active: map[feature.Feature]bool{featuregate.VerifiableLog: true}}, shardID: 4},
 		Databases: noDatabases(t),
 		Signers:   device,
 	})

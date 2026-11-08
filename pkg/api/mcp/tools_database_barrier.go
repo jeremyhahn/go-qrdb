@@ -21,6 +21,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -57,9 +58,7 @@ func toolDatabaseUnseal() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The database name."),
 		),
-		mcp.WithString("secret",
-			mcp.Description("The unseal secret for the database barrier."),
-		),
+		withSecretArg("secret", "The unseal secret for the database barrier."),
 	)
 }
 
@@ -70,7 +69,12 @@ func handleDatabaseUnseal(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		creds, err := seal.CredentialsFor(ctx, []byte(mcp.ParseString(req, "secret", "")))
+		secret, err := secretArg(req, "secret")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_database_unseal", Err: err}
+		}
+		defer secure.Wipe(secret)
+		creds, err := seal.CredentialsFor(ctx, secret)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_unseal", Err: err}
 		}

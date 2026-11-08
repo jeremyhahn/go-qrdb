@@ -19,10 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2/vfs"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek/dektest"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -43,7 +42,7 @@ func TestResolveCryptoOptions_CompositionSeams(t *testing.T) {
 	device := dektest.New()
 	limiter := nopLimiter{}
 	sink := nopSink{}
-	factory := StorageFactory(func(string, vfs.FS) (storage.Storage, error) { return nil, context.Canceled })
+	factory := StorageFactory(func(string, filesys.FS) (storage.Storage, error) { return nil, context.Canceled })
 
 	got := ResolveCryptoOptions(
 		WithClock(fake),

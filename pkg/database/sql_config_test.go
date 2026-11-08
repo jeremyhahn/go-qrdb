@@ -74,7 +74,7 @@ func TestDatabaseConfig_Validate_RefusesBadConcurrency(t *testing.T) {
 func TestManager_Create_PersistsSQLConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 
 	cfg := validMemoryConfig("sql-create")
 	cfg.SQL = &SQLConfig{Concurrency: ConcurrencyPessimistic}
@@ -92,9 +92,9 @@ func TestManager_Create_PersistsSQLConfig(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() error = %v", err)
 	}
 	reopened, err := mgr2.Get("sql-create")
@@ -109,7 +109,7 @@ func TestManager_Create_PersistsSQLConfig(t *testing.T) {
 func TestManager_UpdateSQL_PersistsAcrossReopen(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(logger, dataDir)
+	mgr := newCatalogManager(logger, dataDir)
 	if _, err := mgr.Create(validMemoryConfig("sql-update")); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -120,9 +120,9 @@ func TestManager_UpdateSQL_PersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	mgr2 := NewManager(logger, dataDir)
+	mgr2 := newCatalogManager(logger, dataDir)
 	defer func() { _ = mgr2.Close() }()
-	if err := mgr2.OpenAll(); err != nil {
+	if err := mgr2.OpenAll(context.Background()); err != nil {
 		t.Fatalf("OpenAll() error = %v", err)
 	}
 	db, err := mgr2.Get("sql-update")

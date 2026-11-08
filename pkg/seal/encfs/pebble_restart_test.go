@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
@@ -94,7 +95,7 @@ func TestPebble_SurvivesRestartWithPassphraseBarrier(t *testing.T) {
 	// --- Boot 1 -------------------------------------------------------
 	barrier1, sealStore1 := bootBarrier(t, sealDir)
 
-	fs1 := encfs.New(vfs.Default, barrier1)
+	fs1 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier1) })
 	db, err := pebble.Open(dataDir, &pebble.Options{FS: fs1})
 	if err != nil {
 		t.Fatalf("boot 1: pebble.Open: %v", err)
@@ -120,7 +121,7 @@ func TestPebble_SurvivesRestartWithPassphraseBarrier(t *testing.T) {
 	barrier2, sealStore2 := bootBarrier(t, sealDir)
 	defer func() { _ = sealStore2.Close() }()
 
-	fs2 := encfs.New(vfs.Default, barrier2)
+	fs2 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier2) })
 	db2, err := pebble.Open(dataDir, &pebble.Options{FS: fs2})
 	if err != nil {
 		t.Fatalf("boot 2: pebble.Open: %v", err)

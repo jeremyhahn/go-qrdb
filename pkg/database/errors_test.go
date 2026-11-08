@@ -51,26 +51,6 @@ func TestInvalidNameError_TypeAssertion(t *testing.T) {
 	}
 }
 
-func TestLegacyMetadataError_Message(t *testing.T) {
-	err := &LegacyMetadataError{Path: "/data/db/meta.json", Err: errors.New(`json: unknown field "engine"`)}
-	want := `database: unsupported metadata format "/data/db/meta.json": json: unknown field "engine"; recreate the database`
-	if got := err.Error(); got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}
-
-func TestLegacyMetadataError_TypeAssertion(t *testing.T) {
-	cause := errors.New("boom")
-	var err error = &LegacyMetadataError{Path: "/data/db/meta.json", Err: cause}
-	var target *LegacyMetadataError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed for *LegacyMetadataError")
-	}
-	if !errors.Is(err, cause) {
-		t.Error("Unwrap() did not expose the underlying cause")
-	}
-}
-
 func TestInvalidBackendError_Message(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -247,8 +227,8 @@ func TestCloseError_Unwrap(t *testing.T) {
 
 func TestMetaReadError_Message(t *testing.T) {
 	cause := io.EOF
-	err := &MetaReadError{Path: "/data/mydb/meta.json", Err: cause}
-	want := `database: failed to read database metadata "/data/mydb/meta.json": EOF`
+	err := &MetaReadError{Path: "/data/dropped/mydb", Err: cause}
+	want := `database: failed to read database metadata "/data/dropped/mydb": EOF`
 	if got := err.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
@@ -256,7 +236,7 @@ func TestMetaReadError_Message(t *testing.T) {
 
 func TestMetaReadError_Unwrap(t *testing.T) {
 	cause := io.EOF
-	err := &MetaReadError{Path: "/data/mydb/meta.json", Err: cause}
+	err := &MetaReadError{Path: "/data/dropped/mydb", Err: cause}
 	if unwrapped := err.Unwrap(); unwrapped != cause {
 		t.Errorf("Unwrap() = %v, want %v", unwrapped, cause)
 	}
@@ -267,15 +247,15 @@ func TestMetaReadError_Unwrap(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As failed for *MetaReadError")
 	}
-	if target.Path != "/data/mydb/meta.json" {
-		t.Errorf("Path = %q, want %q", target.Path, "/data/mydb/meta.json")
+	if target.Path != "/data/dropped/mydb" {
+		t.Errorf("Path = %q, want %q", target.Path, "/data/dropped/mydb")
 	}
 }
 
 func TestMetaWriteError_Message(t *testing.T) {
 	cause := io.ErrShortWrite
-	err := &MetaWriteError{Path: "/data/mydb/meta.json", Err: cause}
-	want := `database: failed to write database metadata "/data/mydb/meta.json": short write`
+	err := &MetaWriteError{Path: "/data/dropped/mydb", Err: cause}
+	want := `database: failed to write database metadata "/data/dropped/mydb": short write`
 	if got := err.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
@@ -283,7 +263,7 @@ func TestMetaWriteError_Message(t *testing.T) {
 
 func TestMetaWriteError_Unwrap(t *testing.T) {
 	cause := io.ErrShortWrite
-	err := &MetaWriteError{Path: "/data/mydb/meta.json", Err: cause}
+	err := &MetaWriteError{Path: "/data/dropped/mydb", Err: cause}
 	if unwrapped := err.Unwrap(); unwrapped != cause {
 		t.Errorf("Unwrap() = %v, want %v", unwrapped, cause)
 	}
@@ -294,8 +274,8 @@ func TestMetaWriteError_Unwrap(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatal("errors.As failed for *MetaWriteError")
 	}
-	if target.Path != "/data/mydb/meta.json" {
-		t.Errorf("Path = %q, want %q", target.Path, "/data/mydb/meta.json")
+	if target.Path != "/data/dropped/mydb" {
+		t.Errorf("Path = %q, want %q", target.Path, "/data/dropped/mydb")
 	}
 }
 
@@ -597,7 +577,6 @@ func TestAllErrorTypes_ImplementErrorInterface(t *testing.T) {
 		&CloseError{Name: "x", Err: cause},
 		&MetaReadError{Path: "x", Err: cause},
 		&MetaWriteError{Path: "x", Err: cause},
-		&LegacyMetadataError{Path: "x", Err: cause},
 		&DropError{Name: "x", Err: cause},
 		&StorageCreateError{Name: "x", Backend: "y", Err: cause},
 		&InvalidModeError{Mode: "x"},

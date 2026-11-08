@@ -139,9 +139,7 @@ func toolTenantBarrierSignedInitComplete() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Base64 detached signature over the statement: ECDSA (ASN.1) or RSA PKCS#1 v1.5 over its SHA-256, or pure Ed25519."),
 		),
-		mcp.WithString("passphrase",
-			mcp.Description("The caller-supplied passphrase sealing the tenant barrier. Required for the passphrase strategy."),
-		),
+		withSecretArg("passphrase", "The caller-supplied passphrase sealing the tenant barrier. Required for the passphrase strategy."),
 	)
 }
 
@@ -163,7 +161,11 @@ func handleTenantBarrierSignedInitComplete(svc tenant.TenantServicer, authorize 
 		if err := authorize(ctx, tenantID); err != nil {
 			return authzToolError(err), nil
 		}
-		passphrase, err := tenant.NewSignedInitPassphrase(secretArg(req, "passphrase"))
+		raw, err := secretArg(req, "passphrase")
+		if err != nil {
+			return nil, &ToolError{Tool: toolNameTenantBarrierSignedInitComplete, Err: err}
+		}
+		passphrase, err := tenant.NewSignedInitPassphrase(raw)
 		if err != nil {
 			return nil, &ToolError{Tool: toolNameTenantBarrierSignedInitComplete, Err: err}
 		}

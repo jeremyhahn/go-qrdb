@@ -42,21 +42,31 @@ func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (b
 }
 
 // CompareAndDelete implements kvstore.AtomicKVStore.
+//
+// It compares under m.mu rather than through sync.Map.CompareAndDelete,
+// which compares the stored values with == and panics on a []byte.
 func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	current, ok := m.data.Load(key)
 	if !ok || !bytes.Equal(current.([]byte), expected) {
 		return false, nil
 	}
-	return m.data.CompareAndDelete(key, current), nil
+	m.data.Delete(key)
+	return true, nil
 }
 
-// CompareAndSwap implements kvstore.AtomicKVStore.
+// CompareAndSwap implements kvstore.AtomicKVStore, under m.mu for the
+// reason CompareAndDelete gives.
 func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	current, ok := m.data.Load(key)
 	if !ok || !bytes.Equal(current.([]byte), expected) {
 		return false, nil
 	}
-	return m.data.CompareAndSwap(key, current, append([]byte(nil), next...)), nil
+	m.data.Store(key, append([]byte(nil), next...))
+	return true, nil
 }
 
 // PutAllIfUnchanged implements kvstore.GuardedBatchKVStore in terms of

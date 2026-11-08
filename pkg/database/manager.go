@@ -15,9 +15,9 @@
 package database
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"os"
@@ -26,18 +26,30 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 const (
 	databasesDir = "databases"
-	metaFile     = "meta.json"
 	dataSubDir   = "data"
 
-	// barrierMetaSubDir is the per-database subdirectory (under dbDir, a
-	// sibling of meta.json) that stores a database barrier's own bootstrap
+	// legacyMetaFile is the node-local database record a version before the
+	// catalog wrote in each database's directory. Nothing reads it; OpenAll
+	// refuses a node that still holds one (UnmigratedDatabasesError).
+	legacyMetaFile = "meta.json"
+
+	// tenantDatabasesDir holds every non-system tenant's database
+	// directories (see dbDir). Its "." is outside a database name's
+	// alphabet, so no system database's directory can be it.
+	tenantDatabasesDir = "tenants.d"
+
+	// barrierMetaSubDir is the per-database subdirectory (under dbDir) that
+	// stores a database barrier's own bootstrap
 	// key-wrapping metadata (its wrapped root key and epoch bookkeeping).
 	// It is always kept separate from dataSubDir -- the application data
 	// plane a barrier encrypts -- so the barrier's own bootstrap material
@@ -64,30 +76,55 @@ var reservedDataSubdirs = []string{"seal", "wal", "snapshot", "snapshots", "syst
 //
 //	{dataDir}/
 //	  databases/
-//	    {name}/
-//	      meta.json     # DatabaseMeta serialized as JSON
-//	      data/         # actual storage files
+//	    {name}/                    # a system-tenant database
+//	      data/                    # actual storage files
+//	    tenants.d/{sha256(tenant)}/{name}/
+//
+// A database's DatabaseMeta is its record in the replicated Catalog, not a
+// file under its directory.
 type Manager struct {
 	logger     *slog.Logger
 	dataDir    string
-	databases  sync.Map // name (string) -> *Database
+	databases  sync.Map // dbKey -> *Database
 	factory    BackendFactory
 	barrierMgr *DatabaseBarrierManager
 	claimer    atomic.Pointer[claimerRef]
+	catalogRef atomic.Pointer[catalogRef]
 	reclaimer  KeyspaceReclaimer
+	localNode  atomic.Pointer[string] // see SetLocalNode
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
 	// no longer removes the catalog entry first (see Drop), and that entry
 	// was what used to decide the race: DropForTenant releases quota on a
 	// successful drop, so two successes would release it twice.
-	dropping sync.Map // name (string) -> struct{}
+	dropping sync.Map // dbKey -> struct{}
 
-	// inFlight holds the name of every database with a Create or Open in
-	// flight. See CreateWithCredentials for why two of them must not
-	// interleave.
-	inFlight sync.Map // name (string) -> struct{}
+	// inFlight holds the name of every database whose node-local resources
+	// are being created, opened, released or torn down by a drop: one of
+	// them at a time per name (see tryClaim). See CreateWithCredentials for
+	// why two creates or opens must not interleave, and drop for why its
+	// teardown must not interleave with either. The channel is closed when
+	// the claim is released, for a drop waiting to take it (awaitClaim).
+	inFlight sync.Map // dbKey -> chan struct{}
 }
+
+// dbKey identifies a database on this node: its owning tenant, normalized,
+// and its name. It is the pair the catalog keys its records by (CatalogKey),
+// so two tenants may each hold a database of one name, on one node or many.
+type dbKey struct {
+	tenant string
+	name   string
+}
+
+// keyFor returns the key of tenantID's database name.
+func keyFor(tenantID, name string) dbKey {
+	return dbKey{tenant: tenantid.Normalize(tenantID), name: name}
+}
+
+// catalogTimeout bounds a catalog read or write made by a method whose
+// signature carries no context.
+const catalogTimeout = 30 * time.Second
 
 // NewManager creates a new Manager rooted at the given data directory.
 // Pass a nil logger to use slog.Default(). Pass a nil factory to use
@@ -167,13 +204,14 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 		return
 	}
 	m.databases.Range(func(key, value any) bool {
-		name, _ := key.(string)
+		k, _ := key.(dbKey)
+		name := k.name
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		cfg := db.Config()
 		if cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.HasDedicatedStore() {
 			return true
 		}
-		barrierMetaBackend, err := m.openBarrierMetaBackend(m.dbDir(name), name)
+		barrierMetaBackend, err := m.openBarrierMetaBackend(m.dbDir(k.tenant, name), name)
 		if err != nil {
 			m.logger.Warn("failed to open barrier metadata backend",
 				slog.String("database", name),
@@ -188,7 +226,7 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 				slog.Any("error", err))
 			return true
 		}
-		encryptor := bm.GetBarrier(name)
+		encryptor := bm.GetBarrier(name, cfg.TenantID)
 		if encryptor == nil {
 			_ = barrierMetaBackend.Close()
 			m.logger.Warn("barrier registered but encryptor unavailable",
@@ -240,13 +278,24 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 	if cfg.Raft != nil {
 		return nil, &ProvisionRaftError{Name: cfg.Name}
 	}
-	if db, err := m.GetIgnoringFence(cfg.Name); err == nil {
-		return db, nil
+	if db, ok := m.databases.Load(keyFor(cfg.TenantID, cfg.Name)); ok {
+		return db.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
-	if _, err := os.Stat(filepath.Join(m.dbDir(cfg.Name), metaFile)); err == nil {
-		return m.Open(cfg.Name)
+	// Another node, or an earlier run of this one, may have recorded it.
+	db, err := m.Open(ctx, cfg.TenantID, cfg.Name)
+	var notFound *NotFoundError
+	if !errors.As(err, &notFound) {
+		return db, err
 	}
-	return m.create(ctx, cfg, seal.Credentials{}, true)
+	db, err = m.create(ctx, cfg, seal.Credentials{}, true)
+	var exists *AlreadyExistsError
+	if errors.As(err, &exists) {
+		// Another node recorded it between the read above and this create.
+		if db, openErr := m.Open(ctx, cfg.TenantID, cfg.Name); !errors.As(openErr, &notFound) {
+			return db, openErr
+		}
+	}
+	return db, err
 }
 
 // create is CreateWithCredentials and Provision. shared selects the empty,
@@ -255,7 +304,11 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if err := m.validateDataDir(cfg.Name, cfg.DataDir); err != nil {
+	cat, err := m.catalog("create database")
+	if err != nil {
+		return nil, err
+	}
+	if err := m.validateDataDir(cfg.TenantID, cfg.Name, cfg.DataDir); err != nil {
 		return nil, err
 	}
 	if cfg.Barrier != nil && cfg.Barrier.Enabled {
@@ -271,9 +324,19 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		return nil, &CallerShardIDError{Name: cfg.Name, ShardID: cfg.Raft.ShardID}
 	}
 
-	// Check for duplicates.
-	if _, loaded := m.databases.Load(cfg.Name); loaded {
-		return nil, &AlreadyExistsError{Name: cfg.Name}
+	// Check for duplicates. An entry this node holds is a duplicate only
+	// while the catalog still records it: a drop on another node leaves the
+	// entry here, and it is released rather than refusing the name forever.
+	key := keyFor(cfg.TenantID, cfg.Name)
+	if value, loaded := m.databases.Load(key); loaded {
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		obsolete, err := m.revalidate(ctx, key, db)
+		if err != nil {
+			return nil, err
+		}
+		if !obsolete {
+			return nil, &AlreadyExistsError{Name: cfg.Name}
+		}
 	}
 
 	// One create or open of a name at a time. Two concurrent creates would
@@ -281,11 +344,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// win the catalog, leaving the loser's marker to refuse every write to
 	// the winner; Open takes the same claim, so the catalog insert below
 	// can never lose to it either.
-	if _, inFlight := m.inFlight.LoadOrStore(cfg.Name, struct{}{}); inFlight {
+	unclaim, claimed := m.tryClaim(key)
+	if !claimed {
 		return nil, &AlreadyExistsError{Name: cfg.Name}
 	}
-	defer m.inFlight.Delete(cfg.Name)
-	if _, loaded := m.databases.Load(cfg.Name); loaded {
+	defer unclaim()
+	if _, loaded := m.databases.Load(key); loaded {
 		return nil, &AlreadyExistsError{Name: cfg.Name}
 	}
 
@@ -294,7 +358,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// the database created here would refuse every write, forever. Refuse
 	// the create instead; it succeeds once the data plane is attached.
 	if m.reclaimer == nil {
-		dropped, err := m.droppedHere(cfg.Name)
+		dropped, err := m.droppedHere(key.tenant, key.name)
 		if err != nil {
 			return nil, err
 		}
@@ -315,22 +379,22 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		}
 	}
 
-	dbDir := m.dbDir(cfg.Name)
+	dbDir := m.dbDir(cfg.TenantID, cfg.Name)
 	dataDir := filepath.Join(dbDir, dataSubDir)
 	if cfg.DataDir != "" {
 		dataDir = cfg.DataDir
 	}
 
-	// Everything this call creates on disk and in the barrier manager, so a
-	// failure at any later step removes exactly that and nothing else: a
-	// directory that existed before the call belongs to someone else.
-	undo := &createUndo{m: m, name: cfg.Name}
+	// Everything this call creates on disk, in the catalog and in the
+	// barrier manager, so a failure at any later step removes exactly that
+	// and nothing else: a directory that existed before the call belongs to
+	// someone else.
+	undo := &createUndo{m: m, tenantID: cfg.TenantID, name: cfg.Name}
 	if err := undo.mkdirAll(dbDir); err != nil {
 		return nil, &OpenError{Name: cfg.Name, Err: err}
 	}
 	if err := undo.mkdirAll(dataDir); err != nil {
-		undo.run()
-		return nil, &OpenError{Name: cfg.Name, Err: err}
+		return nil, undo.run(ctx, &OpenError{Name: cfg.Name, Err: err})
 	}
 
 	// Default mode for backward compat.
@@ -340,28 +404,38 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 
 	// A raft database's shard ID is issued here, never chosen by the caller
 	// (refused above). It is written into the config so it is persisted in
-	// meta.json and survives restarts.
+	// the catalog record and survives restarts.
 	if cfg.Raft != nil {
 		id, err := m.issueShardID(ctx)
 		if err != nil {
-			undo.run()
-			return nil, err
+			return nil, undo.run(ctx, err)
 		}
 		cfg.Raft.ShardID = id
 	}
 
-	// Write meta.json. A freshly created database is never already dropping.
+	// Record it in the catalog. A freshly created database is never already
+	// dropping. The record is created only where none exists, so of two
+	// nodes creating one name, one is refused here.
 	meta := metaFromConfig(cfg, false, incarnation)
-	if err := m.writeMeta(dbDir, meta); err != nil {
-		undo.run()
-		return nil, err
+	meta.OwnerNode = m.ownerFor(cfg, shared)
+	if err := cat.Create(ctx, meta); err != nil {
+		// A write that may have committed is settled first: rolling back
+		// around a record it left would orphan the name. A record that
+		// could not be settled keeps the directories for the drop that
+		// removes it.
+		if createOutcomeUnknown(err) {
+			if serr := undo.settleCatalog(ctx, cat, incarnation, err); serr != nil {
+				return nil, serr
+			}
+		}
+		return nil, undo.run(ctx, err)
 	}
+	undo.catalog, undo.incarnation = cat, incarnation
 
 	// Open storage backend via factory.
 	backend, err := m.factory.Create(cfg, dataDir)
 	if err != nil {
-		undo.run()
-		return nil, err
+		return nil, undo.run(ctx, err)
 	}
 	undo.backends = append(undo.backends, backend)
 
@@ -375,20 +449,17 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if cfg.Barrier != nil && cfg.Barrier.Enabled && m.barrierMgr != nil {
 		barrierMetaBackend, err = m.openBarrierMetaBackend(dbDir, cfg.Name)
 		if err != nil {
-			undo.run()
-			return nil, err
+			return nil, undo.run(ctx, err)
 		}
 		undo.backends = append(undo.backends, barrierMetaBackend)
 		storageAdapter := NewBackendStorageAdapter(barrierMetaBackend)
 		if err := m.barrierMgr.EnsureBarrier(ctx, cfg.Name, cfg.TenantID, cfg.Barrier, storageAdapter, creds); err != nil {
-			undo.run()
-			return nil, err
+			return nil, undo.run(ctx, err)
 		}
 		undo.barrier = true
-		encryptor := m.barrierMgr.GetBarrier(cfg.Name)
+		encryptor := m.barrierMgr.GetBarrier(cfg.Name, cfg.TenantID)
 		if encryptor == nil {
-			undo.run()
-			return nil, &BarrierEncryptorUnavailableError{Name: cfg.Name}
+			return nil, undo.run(ctx, &BarrierEncryptorUnavailableError{Name: cfg.Name})
 		}
 		dataBackend = NewBarrierBackend(backend, encryptor)
 	}
@@ -407,6 +478,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		}
 	}
 	db.incarnation = incarnation
+	db.ownerNode = meta.OwnerNode
 
 	// Mark the new incarnation live in the store holding the database's
 	// data. This is the LAST fallible step before the database becomes
@@ -420,23 +492,22 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// on another node, and this create is refused rather than taking it
 	// over.
 	if m.reclaimer != nil {
-		if err := m.reclaimer.UnfenceDatabaseKeyspace(ctx, cfg.TenantID, cfg.Name, incarnation); err != nil {
-			undo.run()
+		if err := m.reclaimer.UnfenceDatabaseKeyspace(ctx, cfg.TenantID, cfg.Name, incarnation, ""); err != nil {
 			var exists *AlreadyExistsError
 			if errors.As(err, &exists) {
-				return nil, exists
+				return nil, undo.run(ctx, exists)
 			}
-			return nil, &KeyspaceFenceError{Name: cfg.Name, TenantID: cfg.TenantID, Err: err}
+			return nil, undo.run(ctx, &KeyspaceFenceError{Name: cfg.Name, TenantID: cfg.TenantID, Err: err})
 		}
-		if err := m.forgetDrop(cfg.Name); err != nil {
+		if err := m.forgetDrop(key.tenant, key.name); err != nil {
 			m.logger.Warn("failed to clear the record of an earlier drop of a re-created database",
 				slog.String("name", cfg.Name), slog.Any("error", err))
 		}
 	}
 
 	// Creates and opens of one name are serialized (see inFlight), so the
-	// catalog cannot already hold it.
-	m.databases.Store(cfg.Name, db)
+	// map cannot already hold it.
+	m.databases.Store(key, db)
 
 	m.logger.Info("database created",
 		slog.String("name", cfg.Name),
@@ -445,26 +516,68 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	return db, nil
 }
 
-// Open opens an existing database by reading its meta.json and
-// initializing its storage backend.
-func (m *Manager) Open(name string) (*Database, error) {
+// Open opens tenantID's database name on this node from its catalog record,
+// initializing its storage backend. It returns *NotFoundError when the
+// catalog holds no such record, and the database itself when it is already
+// open here.
+func (m *Manager) Open(ctx context.Context, tenantID, name string) (*Database, error) {
+	key := keyFor(tenantID, name)
 	// Already open?
-	if val, ok := m.databases.Load(name); ok {
-		return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	if db, ok, err := m.loadOpen(key); ok {
+		return db, err
 	}
-	if _, inFlight := m.inFlight.LoadOrStore(name, struct{}{}); inFlight {
-		return nil, &AlreadyExistsError{Name: name}
-	}
-	defer m.inFlight.Delete(name)
-	if val, ok := m.databases.Load(name); ok {
-		return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
-	}
-
-	dbDir := m.dbDir(name)
-	meta, err := m.readMeta(dbDir)
+	cat, err := m.catalog("open database")
 	if err != nil {
 		return nil, err
 	}
+	meta, err := cat.Get(ctx, tenantID, name)
+	if err != nil {
+		return nil, err
+	}
+	return m.openRecord(key, meta)
+}
+
+// openRecord opens the database meta records under key, unless this node
+// has it open already. Concurrent openers of one key do not both build a
+// backend: the loser gets *AlreadyExistsError.
+func (m *Manager) openRecord(key dbKey, meta DatabaseMeta) (*Database, error) {
+	if refusal, held := m.ownerRefusal(key, meta); held {
+		return nil, refusal
+	}
+	if db, ok, err := m.loadOpen(key); ok {
+		return db, err
+	}
+	unclaim, claimed := m.tryClaim(key)
+	if !claimed {
+		return nil, &AlreadyExistsError{Name: key.name}
+	}
+	defer unclaim()
+	if db, ok, err := m.loadOpen(key); ok {
+		return db, err
+	}
+	return m.openMeta(key, meta)
+}
+
+// loadOpen returns the entry this node holds open for key, and whether it
+// holds one. An entry reconcile found obsolete and release could not yet
+// remove is refused with *StaleDatabaseError and never returned.
+func (m *Manager) loadOpen(key dbKey) (*Database, bool, error) {
+	val, ok := m.databases.Load(key)
+	if !ok {
+		return nil, false, nil
+	}
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	if db.obsolete.Load() {
+		return nil, true, &StaleDatabaseError{Name: key.name, TenantID: key.tenant}
+	}
+	return db, true, nil
+}
+
+// openMeta opens the database meta records on this node and adds it to the
+// open-database map under key. The caller holds key's inFlight claim.
+func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
+	name := key.name
+	dbDir := m.dbDir(key.tenant, name)
 
 	dataDir := filepath.Join(dbDir, dataSubDir)
 	if meta.DataDir != "" {
@@ -511,7 +624,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 			slog.String("name", name),
 			slog.String("backend", string(cfg.Backend)))
 	}
-	if err := m.validateDataDir(name, meta.DataDir); err != nil {
+	if err := m.validateDataDir(key.tenant, name, meta.DataDir); err != nil {
 		return nil, err
 	}
 
@@ -541,7 +654,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 			_ = barrierMetaBackend.Close()
 			return nil, err
 		}
-		encryptor := m.barrierMgr.GetBarrier(name)
+		encryptor := m.barrierMgr.GetBarrier(name, meta.TenantID)
 		if encryptor == nil {
 			_ = backend.Close()
 			_ = barrierMetaBackend.Close()
@@ -561,7 +674,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 		db.SetStatus(StatusSealed)
 	}
 
-	// A node that restarted with a Drop's fence still set in meta.json
+	// A node that opens a record with a Drop's fence still set
 	// (see Drop step 0) reopens the database fenced, in ADDITION to
 	// whichever status above applies: a crash between the fence and the
 	// catalog record's removal must not silently drop the fence and let a
@@ -573,8 +686,9 @@ func (m *Manager) Open(name string) (*Database, error) {
 		db.SetDropping(true)
 	}
 	db.incarnation = meta.Incarnation
+	db.ownerNode = meta.OwnerNode
 
-	if actual, loaded := m.databases.LoadOrStore(name, db); loaded {
+	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {
 		// Another goroutine opened it concurrently.
 		_ = db.Backend().Close()
 		if barrierMetaBackend != nil {
@@ -590,37 +704,63 @@ func (m *Manager) Open(name string) (*Database, error) {
 	return db, nil
 }
 
-// loadDatabase returns the catalog entry for name, refusing with
-// DroppingError while Manager.Drop is fencing it (see Database.Dropping)
-// even though the catalog entry itself is not removed until the drop
-// completes. It is the resolution seam every write and read path uses --
+// loadDatabase returns the open database named name (see lookupName),
+// refusing with DroppingError while Manager.Drop is fencing it (see
+// Database.Dropping) even though its catalog record is not removed until
+// the drop completes. It is the resolution seam every write and read path uses --
 // directly via Get, or via one of the Update* methods below, which resolve
 // against m.databases the same way Get does rather than calling Get itself
 // -- so refusing here is what stops a caller from reaching, or mutating the
 // metadata of, a database whose keyspace is already being, or about to be,
 // reclaimed (go-qrdb#482).
 func (m *Manager) loadDatabase(name string) (*Database, error) {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return nil, &NotFoundError{Name: name}
+	_, db, err := m.lookupName(name)
+	if err != nil {
+		return nil, err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	if db.Dropping() {
 		return nil, &DroppingError{Name: name, TenantID: db.TenantID()}
 	}
 	return db, nil
 }
 
-// GetIgnoringFence returns an already-open database by name WITHOUT the
+// lookupName returns the one database named name open on this node,
+// whichever tenant owns it, and its key. A name more than one tenant holds
+// here is refused with *AmbiguousNameError: a caller that has the tenant
+// resolves the pair instead (GetOwned).
+func (m *Manager) lookupName(name string) (dbKey, *Database, error) {
+	var (
+		key   dbKey
+		db    *Database
+		found int
+	)
+	m.databases.Range(func(k, value any) bool {
+		dk, _ := k.(dbKey)
+		if dk.name != name {
+			return true
+		}
+		found++
+		key, db = dk, value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+		return found < 2
+	})
+	switch found {
+	case 0:
+		return dbKey{}, nil, &NotFoundError{Name: name}
+	case 1:
+		return key, db, nil
+	default:
+		return dbKey{}, nil, &AmbiguousNameError{Name: name}
+	}
+}
+
+// GetIgnoringFence returns an already-open database by name (see
+// lookupName) WITHOUT the
 // drop-fence refusal Get applies. It is for the drop itself -- the one
 // caller that must reach a database its own fence refuses -- and nothing
 // else: every data-plane resolution goes through Get.
 func (m *Manager) GetIgnoringFence(name string) (*Database, error) {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return nil, &NotFoundError{Name: name}
-	}
-	return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	_, db, err := m.lookupName(name)
+	return db, err
 }
 
 // Get returns an already-open database by name. See loadDatabase for the
@@ -646,7 +786,7 @@ func (m *Manager) Get(name string) (*Database, error) {
 // catalog no longer named. The fence has two halves, both set BEFORE the
 // reclamation that follows can run:
 //
-//   - the LOCAL fence (Database.Dropping, persisted in meta.json) makes the
+//   - the LOCAL fence (Database.Dropping, persisted in the catalog record) makes the
 //     database unresolvable to Manager.Get, the seam every new handle is
 //     resolved through;
 //   - the STORE fence (KeyspaceReclaimer.FenceDatabaseKeyspace) writes the
@@ -665,8 +805,8 @@ func (m *Manager) Get(name string) (*Database, error) {
 // step never calls db.SetStatus. That is what lets step 2 keep asking
 // db.Status() the exact question it always has -- was there an open backend
 // to release -- undisturbed by the fence, and what makes a fenced database
-// that survives a crash and a restart (Open restores Dropping from
-// meta.json onto a freshly-StatusOpen database) still resolvable to a fresh
+// that survives a crash and a restart (Open restores Dropping from the
+// catalog record onto a freshly-StatusOpen database) still resolvable to a fresh
 // Drop retry rather than stuck because Status reads as if a drop already
 // closed it.
 //
@@ -688,40 +828,49 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 	if err := CheckDroppable(name); err != nil {
 		return err
 	}
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
+	key, db, err := m.lookupName(name)
+	if err != nil {
+		return err
 	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+	return m.drop(ctx, key, db)
+}
 
-	if _, inFlight := m.dropping.LoadOrStore(name, struct{}{}); inFlight {
+// drop drops the open database db, held under key. See Drop.
+func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
+	name := key.name
+	cat, err := m.catalog("drop database")
+	if err != nil {
+		return err
+	}
+	if _, inFlight := m.dropping.LoadOrStore(key, struct{}{}); inFlight {
 		return &DropInProgressError{Name: name}
 	}
-	defer m.dropping.Delete(name)
+	defer m.dropping.Delete(key)
 
 	// 0. Fence: refuse every new caller before the data they would touch
 	//    starts being reclaimed (go-qrdb#482). The IN-MEMORY flag is set
-	//    FIRST, not the durable one: loadDatabase -- the seam every
-	//    Update*/Get resolution goes through -- refuses the instant
-	//    db.Dropping() reads true, and rewriteMeta always reads
-	//    db.Dropping() freshly at call time (never a value cached earlier),
-	//    so flipping the in-memory flag first closes the window a
-	//    durable-first ordering left open: a concurrent Update* call that
-	//    had already passed loadDatabase's check (observing Dropping()
-	//    still false) could run rewriteMeta AFTER the durable write below
-	//    committed but BEFORE the in-memory flag caught up, read the
-	//    stale-at-that-instant false, and silently overwrite meta.json with
-	//    the fence cleared -- reopening a mid-drop database as fully
-	//    resolvable after a crash during reclamation (go-qrdb#482 round 3,
-	//    finding 10). The durable write still follows immediately after, so
-	//    a crash between the two still resumes fenced (Open restores
-	//    Dropping from meta.json); only the commit order changed, and a
-	//    durable-write failure rolls the in-memory flag back rather than
-	//    leaving the two disagreeing. Idempotent: re-marking an
-	//    already-fenced database (a retry after a crash or a failed
-	//    reclamation) is a no-op write of the same value.
+	//    FIRST, so loadDatabase -- the seam every Update*/Get resolution
+	//    goes through -- refuses new callers before the durable write
+	//    commits. A configuration update that already passed that check
+	//    cannot clear the durable fence: rewriteMeta applies its one field
+	//    to the record as the catalog holds it and refuses a record that is
+	//    dropping, so it never writes a Dropping value of its own, from this
+	//    node or another (go-qrdb#482 round 3, finding 10). A crash between
+	//    the two writes still resumes fenced (Open restores Dropping from the
+	//    catalog record), and a durable-write failure rolls the in-memory
+	//    flag back rather than leaving the two disagreeing. The durable
+	//    write carries this drop's claim, won in the catalog by one swap:
+	//    a retry of an already-fenced database (after a crash or a failed
+	//    reclamation, on any node) takes the claim over, and only the
+	//    holder deletes the record in step 4 or rolls the fence back, so a
+	//    drop that was taken over cannot remove the record of a database
+	//    re-created under the name since (go-qrdb#893).
+	claim, err := NewIncarnation()
+	if err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 	db.SetDropping(true)
-	if err := m.setDroppingFlag(name, db, true); err != nil {
+	if err := m.claimDrop(ctx, db, claim); err != nil {
 		db.SetDropping(false)
 		return &LocalFenceError{Name: name, Err: err}
 	}
@@ -731,21 +880,51 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 	//    no write the fence did not precede can land in the keyspace being
 	//    reclaimed -- see the doc comment. Nothing below this line can reach
 	//    the data, and everything below this line makes it unreachable.
+	//
+	//    The incarnation is the drop's fencing token where the data is
+	//    deleted: the fence swaps the marker from this incarnation only, and
+	//    every reclamation delete is refused by the state machine, in the
+	//    same command, once the marker holds a successor's incarnation. A
+	//    drop another drop took over and finished, resumed after the name was
+	//    created again, gets *DropSupersededError and deletes nothing of the
+	//    successor's (go-qrdb#893).
 	if m.reclaimer != nil {
-		if err := m.reclaimer.FenceDatabaseKeyspace(ctx, db.TenantID(), name); err != nil {
-			rolledBack := m.rollbackDropFence(ctx, name, db)
+		if err := m.reclaimer.FenceDatabaseKeyspace(ctx, db.TenantID(), name, db.Incarnation(), claim); err != nil {
+			rolledBack := m.rollbackDropFence(ctx, name, db, claim)
 			return &KeyspaceFenceError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}
 		// The store now holds this name's tombstone; remember that here,
 		// where a later create of the name with no reclaimer consults it.
-		if err := m.recordDrop(name); err != nil {
-			rolledBack := m.rollbackDropFence(ctx, name, db)
+		if err := m.recordDrop(key.tenant, key.name); err != nil {
+			rolledBack := m.rollbackDropFence(ctx, name, db, claim)
 			return &KeyspaceFenceError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}
-		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name, db.Incarnation()); err != nil {
-			rolledBack := m.rollbackDropFence(ctx, name, db)
+		if err := m.reclaimer.ReclaimDatabaseKeyspace(ctx, db.TenantID(), name, db.Incarnation(), claim); err != nil {
+			rolledBack := m.rollbackDropFence(ctx, name, db, claim)
 			return &KeyspaceReclaimError{Name: name, TenantID: db.TenantID(), Err: err, RolledBack: rolledBack}
 		}
+	}
+
+	// 1b. The steps below act on this node by name, where no Raft guard
+	//     reaches. They run only while this node still holds the database
+	//     being dropped and the catalog still holds its incarnation: a
+	//     record that is gone, or of another incarnation, is a drop another
+	//     drop finished, and the name's barrier and directory may already be
+	//     a successor's. They hold the name's claim, the one a create, an
+	//     open and a lookup's release take, so neither check can go stale
+	//     before the teardown it guards: no release of this entry and no
+	//     open of a successor runs on this node until the drop is done
+	//     (go-qrdb#893).
+	unclaim, err := m.awaitClaim(ctx, key)
+	if err != nil {
+		return &DropError{Name: name, Err: err}
+	}
+	defer unclaim()
+	if current, ok := m.databases.Load(key); !ok || current != db {
+		return &DropSupersededError{Name: name, TenantID: db.TenantID()}
+	}
+	if err := m.requireIncarnation(ctx, cat, db); err != nil {
+		return err
 	}
 
 	// 2. Close the database's own backend, so a dedicated store releases its
@@ -762,19 +941,34 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 
 	// 3. Remove barrier if it was enabled.
 	if db.BarrierEnabled() && m.barrierMgr != nil {
-		_ = m.barrierMgr.RemoveBarrier(name)
+		_ = m.barrierMgr.RemoveBarrier(name, db.TenantID())
 	}
 
-	// 4. The durable catalog record: meta.json, and a dedicated store's data.
-	dbDir := m.dbDir(name)
-	if err := os.RemoveAll(dbDir); err != nil {
+	// 4. A dedicated store's data, then the durable catalog record. The
+	//    record goes last: while it remains, a retry finds the database
+	//    fenced and completes the drop. The delete swaps out exactly this
+	//    incarnation's record under this drop's claim, so a drop another
+	//    drop took over removes nothing (go-qrdb#893). A record of another
+	//    incarnation is a successor created since the check in step 1b:
+	//    what this drop removed above was still its own, because the
+	//    successor cannot open here while the drop holds the name's claim,
+	//    and its entry goes with it.
+	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
+	}
+	if err := cat.Delete(ctx, db.TenantID(), name, db.Incarnation(), claim); err != nil {
+		var notFound *NotFoundError
+		if !errors.As(err, &notFound) {
+			return &DropError{Name: name, Err: err}
+		}
+		m.databases.CompareAndDelete(key, db)
+		return &DropSupersededError{Name: name, TenantID: db.TenantID()}
 	}
 
 	// 5. The in-memory mirror of the record removed in step 4. Last, and
 	//    adjacent to it, so the window in which the two disagree is as narrow
 	//    as it can be made without a persisted marker (go-qrdb#425).
-	m.databases.Delete(name)
+	m.databases.CompareAndDelete(key, db)
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil
@@ -796,65 +990,104 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 // already failed and that is what the caller reports. The result says
 // whether the drop was rolled back completely, which is what decides whether
 // a caller may roll back fences of its own (DropRolledBack).
-func (m *Manager) rollbackDropFence(ctx context.Context, name string, db *Database) bool {
+//
+// Only the drop holding the record's claim rolls back: a drop whose claim
+// another drop has since taken over (a retry, on any node) leaves both
+// fences to it. The store enforces it: the unfence clears only a fence
+// stamped with this drop's claim, so a takeover that lands between the
+// claim check and the unfence -- on another node, where no lock here
+// reaches -- keeps its fence, and one that lands after the unfence fences
+// again before it reclaims.
+func (m *Manager) rollbackDropFence(ctx context.Context, name string, db *Database, claim string) bool {
 	rollbackCtx, cancel := DropRollbackContext(ctx)
 	defer cancel()
-	if err := m.reclaimer.UnfenceDatabaseKeyspace(rollbackCtx, db.TenantID(), name, db.Incarnation()); err != nil {
+	cat, err := m.catalog("roll back drop fence")
+	if err != nil {
+		return false
+	}
+	if meta, err := cat.Get(rollbackCtx, db.TenantID(), name); err != nil ||
+		meta.Incarnation != db.Incarnation() || meta.DropClaim != claim {
+		m.logger.Warn("not clearing the drop fence after a failed drop: another drop holds it, or the catalog could not be read",
+			slog.String("name", name),
+			slog.Any("error", err))
+		return false
+	}
+	// The read above is advisory: another drop can take the claim over
+	// before the unfence lands. The unfence itself is conditional on this
+	// drop's claim, in the store's state machine: a takeover re-stamps the
+	// fence with its own claim before it reclaims anything, so an unfence
+	// ordered after it is refused, and a takeover ordered after the unfence
+	// fences again itself (go-qrdb#893).
+	if err := m.reclaimer.UnfenceDatabaseKeyspace(rollbackCtx, db.TenantID(), name, db.Incarnation(), claim); err != nil {
 		m.logger.Warn("failed to clear the store drop fence after a failed drop; the database stays fenced until the drop is retried",
 			slog.String("name", name),
 			slog.Any("error", err))
 		return false
 	}
-	db.SetDropping(false)
-	if err := m.setDroppingFlag(name, db, false); err != nil {
+	if err := m.releaseDropClaim(rollbackCtx, db, claim); err != nil {
+		var taken *DropInProgressError
+		if errors.As(err, &taken) {
+			// Another drop claimed the record after the unfence: it fences
+			// the store itself before it reclaims anything.
+			return false
+		}
 		m.logger.Warn("failed to clear the drop fence after a failed drop",
 			slog.String("name", name),
 			slog.Any("error", err))
 	}
+	db.SetDropping(false)
 	return true
 }
 
 // UpdateProtocol updates the wire protocol configuration for a database.
-// It updates both the in-memory config and the on-disk meta.json.
+// It updates both the in-memory config and the catalog record.
 func (m *Manager) UpdateProtocol(name string, protocol ProtocolConfig) error {
 	db, err := m.loadDatabase(name)
 	if err != nil {
 		return err
 	}
+	return m.updateProtocol(db, protocol)
+}
+
+// updateProtocol is UpdateProtocol on a resolved database.
+func (m *Manager) updateProtocol(db *Database, protocol ProtocolConfig) error {
 	db.UpdateProtocol(protocol)
 
-	// Rewrite meta.json with the updated protocol config, preserving whatever
-	// the drop fence is currently set to (see metaFromConfig).
-	if err := m.rewriteMeta(name, db); err != nil {
+	if err := m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Protocol = protocol }); err != nil {
 		return err
 	}
 
 	m.logger.Info("database protocol config updated",
-		slog.String("name", name),
+		slog.String("name", db.Name()),
 		slog.Bool("mysql", protocol.MySQL),
 		slog.Bool("postgresql", protocol.PostgreSQL))
 	return nil
 }
 
 // UpdateEtcd updates the etcd wire protocol configuration for a database.
-// It updates both the in-memory config and the on-disk meta.json.
+// It updates both the in-memory config and the catalog record.
 func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
+	}
+	return m.updateEtcd(db, etcd)
+}
+
+// updateEtcd is UpdateEtcd on a resolved database.
+func (m *Manager) updateEtcd(db *Database, etcd *EtcdConfig) error {
 	if etcd != nil {
 		if err := etcd.Validate(); err != nil {
 			return err
 		}
 	}
-	db, err := m.loadDatabase(name)
-	if err != nil {
-		return err
-	}
 	db.UpdateEtcd(etcd)
 
-	return m.rewriteMeta(name, db)
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Protocol.Etcd = etcd })
 }
 
 // UpdateRaft updates the Raft consensus configuration for a database.
-// It updates both the in-memory config and the on-disk meta.json.
+// It updates both the in-memory config and the catalog record.
 //
 // The shard ID is not part of what an update sets: it is the database's
 // identity, issued at create. An update that leaves it unset keeps the issued
@@ -865,6 +1098,12 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	if err != nil {
 		return err
 	}
+	return m.updateRaft(db, raft)
+}
+
+// updateRaft is UpdateRaft on a resolved database.
+func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
+	name := db.Name()
 	if raft == nil {
 		// A raft-backend database's Raft configuration carries its issued
 		// shard ID, its identity: no update clears it.
@@ -872,7 +1111,7 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 			return &RaftConfigRequiredError{Name: name}
 		}
 		db.updateRaft(nil)
-		return m.rewriteMeta(name, db)
+		return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Raft = nil })
 	}
 	issued := db.ShardID()
 	if raft.ShardID != 0 && raft.ShardID != issued {
@@ -888,7 +1127,7 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	}
 	db.updateRaft(&kept)
 
-	return m.rewriteMeta(name, db)
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Raft = &kept })
 }
 
 // keepStoredSecrets fills each discovery secret an update left empty from the
@@ -971,26 +1210,28 @@ func sameAddresses(a, b map[string]struct{}) bool {
 	return true
 }
 
-// UpdateReplicas updates the replication factor recorded for a database. It
-// updates both the in-memory config and the on-disk meta.json so
+// UpdateReplicasForTenant updates the replication factor recorded for the
+// context tenant's database name, resolved by tenant and name: two tenants
+// may hold the same name, and a name alone is ambiguous. It
+// updates both the in-memory config and the catalog record so
 // DatabaseInfo.Replicas (reported by Get/GetForTenant/List) and the
 // restart-time manager-derived fallback (managerRaftInfoSource) stay
 // consistent with the replicated placement table after
 // DatabaseService.ScaleForTenant adds or removes voting replicas. It does not
 // itself change cluster membership or placement -- callers update those
-// first and call UpdateReplicas last, once the new replica count is durable.
-func (m *Manager) UpdateReplicas(name string, replicas int) error {
-	db, err := m.loadDatabase(name)
+// first and call UpdateReplicasForTenant last, once the new replica count is durable.
+func (m *Manager) UpdateReplicasForTenant(ctx context.Context, name string, replicas int) error {
+	db, err := m.GetOwned(name, tenant.FromContext(ctx))
 	if err != nil {
 		return err
 	}
 	db.updateReplicas(replicas)
 
-	return m.rewriteMeta(name, db)
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Replicas = replicas })
 }
 
 // UpdateBarrier updates the encryption barrier configuration for a database.
-// It updates both the in-memory config and the on-disk meta.json.
+// It updates both the in-memory config and the catalog record.
 //
 // Enabling or disabling barrier encryption is a data migration, not a
 // metadata toggle: flipping Enabled from false to true on a database that
@@ -1011,7 +1252,12 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 	if err != nil {
 		return err
 	}
+	return m.updateBarrier(db, barrier)
+}
 
+// updateBarrier is UpdateBarrier on a resolved database.
+func (m *Manager) updateBarrier(db *Database, barrier *DatabaseBarrierConfig) error {
+	name := db.Name()
 	wantEnabled := barrier != nil && barrier.Enabled
 	activeNow := db.BarrierEnabled()
 
@@ -1041,7 +1287,7 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 
 	db.updateBarrier(barrier)
 
-	return m.rewriteMeta(name, db)
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Barrier = barrier })
 }
 
 // barrierMode is cfg's strategy, with the empty mode meaning passphrase.
@@ -1052,68 +1298,77 @@ func barrierMode(cfg *DatabaseBarrierConfig) string {
 	return cfg.Mode
 }
 
-// RecordShamirScheme records the M-of-N a completed rekey left dbName's Shamir
-// barrier at, so the database reopens with the scheme its holders hold.
-func (m *Manager) RecordShamirScheme(name string, threshold, total int) error {
-	val, ok := m.databases.Load(name)
-	if !ok {
-		return &NotFoundError{Name: name}
-	}
-	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
+// RecordShamirScheme records the M-of-N a completed rekey left db's Shamir
+// barrier at, so the database reopens with the scheme its holders hold. db is
+// the database the caller resolved and authorized, never looked up again by
+// name: two tenants may each hold a database of that name. Its record is
+// written only while it is db's own incarnation, so a database dropped since
+// gets *NotFoundError.
+func (m *Manager) RecordShamirScheme(db *Database, threshold, total int) error {
 	cfg := db.Config()
 	if !isShamir(cfg.Barrier) {
-		return &NotShamirBarrierError{Name: name}
+		return &NotShamirBarrierError{Name: db.Name()}
 	}
 	next := *cfg.Barrier
 	next.SharesRequired = threshold
 	next.SharesTotal = total
 	db.updateBarrier(&next)
-	return m.rewriteMeta(name, db)
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Barrier = &next })
 }
 
 // UpdateConnection updates the remote connection configuration for a database.
-// It updates both the in-memory config and the on-disk meta.json.
+// It updates both the in-memory config and the catalog record.
 func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) error {
+	db, err := m.loadDatabase(name)
+	if err != nil {
+		return err
+	}
+	return m.updateConnection(db, conn)
+}
+
+// updateConnection is UpdateConnection on a resolved database.
+func (m *Manager) updateConnection(db *Database, conn *DatabaseConnectionConfig) error {
 	if conn != nil {
 		if err := conn.Validate(); err != nil {
 			return err
 		}
 	}
+	db.updateConnection(conn)
+
+	return m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.Connection = conn })
+}
+
+// UpdateSQL replaces the SQL settings of a database, in memory and in its
+// catalog record. A nil sqlCfg restores the defaults.
+func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
 	db, err := m.loadDatabase(name)
 	if err != nil {
 		return err
 	}
-	db.updateConnection(conn)
-
-	return m.rewriteMeta(name, db)
+	return m.updateSQL(db, sqlCfg)
 }
 
-// UpdateSQL replaces the SQL settings of a database, in memory and in its
-// meta.json. A nil sqlCfg restores the defaults.
-func (m *Manager) UpdateSQL(name string, sqlCfg *SQLConfig) error {
+// updateSQL is UpdateSQL on a resolved database.
+func (m *Manager) updateSQL(db *Database, sqlCfg *SQLConfig) error {
 	if sqlCfg != nil {
 		if err := sqlCfg.Validate(); err != nil {
 			return err
 		}
 	}
-	db, err := m.loadDatabase(name)
-	if err != nil {
-		return err
-	}
 	db.updateSQL(sqlCfg)
 
-	if err := m.rewriteMeta(name, db); err != nil {
+	if err := m.rewriteMeta(db, func(meta *DatabaseMeta) { meta.SQL = sqlCfg }); err != nil {
 		return err
 	}
 	m.logger.Info("database sql config updated",
-		slog.String("name", name),
+		slog.String("name", db.Name()),
 		slog.String("concurrency", string(sqlCfg.EffectiveConcurrency())))
 	return nil
 }
 
-// metaFromConfig builds the DatabaseMeta persisted to meta.json from cfg.
+// metaFromConfig builds the DatabaseMeta the catalog records for cfg.
 // dropping is threaded through explicitly, rather than always false, so a
-// caller that rewrites meta.json for an unrelated reason (a configuration
+// caller that rewrites the record for an unrelated reason (a configuration
 // update) while Drop's fence happens to be set does not silently clear it.
 func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) DatabaseMeta {
 	return DatabaseMeta{
@@ -1135,23 +1390,119 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 	}
 }
 
-// rewriteMeta rebuilds and rewrites the meta.json for a database from its
-// current in-memory configuration, preserving whatever the drop fence
-// (DatabaseMeta.Dropping) is currently set to.
-func (m *Manager) rewriteMeta(name string, db *Database) error {
-	meta := metaFromConfig(db.Config(), db.Dropping(), db.Incarnation())
-	return m.writeMeta(m.dbDir(name), meta)
+// rewriteMeta writes a configuration change to db's catalog record: set
+// applies the change to the record as the catalog holds it, so a field set
+// does not touch keeps its recorded value, whichever node wrote it, and the
+// drop fence is never written from db's copy of it. A record that is
+// dropping refuses the change with *DroppingError and fences db here too.
+func (m *Manager) rewriteMeta(db *Database, set func(*DatabaseMeta)) error {
+	ctx, cancel := context.WithTimeout(context.Background(), catalogTimeout)
+	defer cancel()
+	return m.updateMeta(ctx, db, func(meta *DatabaseMeta) error {
+		if meta.Dropping {
+			db.SetDropping(true)
+			return &DroppingError{Name: db.Name(), TenantID: db.TenantID()}
+		}
+		set(meta)
+		return nil
+	})
 }
 
-// setDroppingFlag persists dropping to name's meta.json, which is what lets
-// a restart mid-drop (see Open) tell a fenced database apart from an
-// ordinary open one across a crash. It does not touch db's in-memory
+// claimDrop persists the drop fence to db's catalog record with claim as its
+// owner, which is what lets a restart mid-drop (see Open) tell a fenced
+// database apart from an ordinary open one across a crash. The claim is won
+// in the catalog: the swap takes over a fence an earlier drop left (a retry,
+// on this node or another, after a crash or a failed reclamation), and from
+// then on only this drop deletes the record or clears the fence. It does not touch db's in-memory
 // status -- Drop sets that itself, separately, so a failed reclamation can
 // restore the exact prior status (open or sealed) instead of always
 // falling back to StatusOpen.
-func (m *Manager) setDroppingFlag(name string, db *Database, dropping bool) error {
-	meta := metaFromConfig(db.Config(), dropping, db.Incarnation())
-	return m.writeMeta(m.dbDir(name), meta)
+// tryClaim takes key's claim on this node's resources for the name -- its
+// entry, barrier and directory -- if no create, open, release or drop
+// teardown holds it, and returns the function that releases it.
+func (m *Manager) tryClaim(key dbKey) (func(), bool) {
+	done := make(chan struct{})
+	if _, held := m.inFlight.LoadOrStore(key, done); held {
+		return nil, false
+	}
+	return func() {
+		m.inFlight.CompareAndDelete(key, done)
+		close(done)
+	}, true
+}
+
+// awaitClaim takes key's claim, waiting for the holder to release it. A
+// drop waits rather than failing as a create or open does: the claims it
+// waits on are a create's, an open's or a release's, all bounded by their
+// own work, and a drop refused for a concurrent lookup would leave the
+// database fenced for no reason the caller could act on.
+func (m *Manager) awaitClaim(ctx context.Context, key dbKey) (func(), error) {
+	for {
+		if unclaim, ok := m.tryClaim(key); ok {
+			return unclaim, nil
+		}
+		held, ok := m.inFlight.Load(key)
+		if !ok {
+			continue
+		}
+		select {
+		case <-held.(chan struct{}): //nolint:errcheck // type assertion on a value this container only ever holds
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (m *Manager) claimDrop(ctx context.Context, db *Database, claim string) error {
+	return m.updateMeta(ctx, db, func(meta *DatabaseMeta) error {
+		meta.Dropping = true
+		meta.DropClaim = claim
+		return nil
+	})
+}
+
+// releaseDropClaim clears the durable fence claim set, in one swap that
+// fails with *DropInProgressError when another drop has taken the claim
+// over since: the fence is then that drop's, and only it may clear it.
+func (m *Manager) releaseDropClaim(ctx context.Context, db *Database, claim string) error {
+	return m.updateMeta(ctx, db, func(meta *DatabaseMeta) error {
+		if meta.DropClaim != claim {
+			return &DropInProgressError{Name: db.Name()}
+		}
+		meta.Dropping = false
+		meta.DropClaim = ""
+		return nil
+	})
+}
+
+// requireIncarnation returns *DropSupersededError unless the catalog record
+// of db's name is still of db's incarnation. A drop that another drop took
+// over keeps the record of its own incarnation while the other runs; once
+// that drop has removed the record -- and the name may have been created
+// again -- the database this drop holds is gone, and what the name now
+// resolves to on this node is not its to remove.
+func (m *Manager) requireIncarnation(ctx context.Context, cat Catalog, db *Database) error {
+	meta, err := cat.Get(ctx, db.TenantID(), db.Name())
+	var notFound *NotFoundError
+	if errors.As(err, &notFound) || (err == nil && meta.Incarnation != db.Incarnation()) {
+		return &DropSupersededError{Name: db.Name(), TenantID: db.TenantID()}
+	}
+	if err != nil {
+		return &DropError{Name: db.Name(), Err: err}
+	}
+	return nil
+}
+
+// updateMeta applies mutate to db's catalog record, only while the record
+// is of db's incarnation (Catalog.Update): a handle another node's drop left
+// stale gets *NotFoundError, and neither resurrects the dropped database nor
+// overwrites a database since created under its name.
+func (m *Manager) updateMeta(ctx context.Context, db *Database, mutate func(*DatabaseMeta) error) error {
+	cat, err := m.catalog("update database")
+	if err != nil {
+		return err
+	}
+	return cat.Update(ctx, db.TenantID(), db.Name(), db.Incarnation(), mutate)
 }
 
 // List returns information about all open databases, sorted by name.
@@ -1162,10 +1513,19 @@ func (m *Manager) List() []DatabaseInfo {
 		infos = append(infos, db.Info())
 		return true
 	})
-	sort.Slice(infos, func(i, j int) bool {
-		return infos[i].Name < infos[j].Name
-	})
+	sortInfos(infos)
 	return infos
+}
+
+// sortInfos orders infos by name, then by tenant: the order List and
+// ListForTenant report in.
+func sortInfos(infos []DatabaseInfo) {
+	sort.Slice(infos, func(i, j int) bool {
+		if infos[i].Name != infos[j].Name {
+			return infos[i].Name < infos[j].Name
+		}
+		return infos[i].TenantID < infos[j].TenantID
+	})
 }
 
 // SealBarrierDatabases is the database half of a whole-node seal: it seals
@@ -1219,33 +1579,109 @@ func (m *Manager) Close() error {
 	return firstErr
 }
 
-// OpenAll scans the databases directory and opens all databases that
-// have a valid meta.json. It issues nothing: shard IDs come from the
-// replicated claimer alone, so there is no node-local counter to restore.
-func (m *Manager) OpenAll() error {
-	dbsDir := filepath.Join(m.dataDir, databasesDir)
-	entries, err := os.ReadDir(dbsDir)
+// OpenAll opens on this node every database the catalog lists in the system
+// store: the system tenant's and every shared tenant's. An isolated tenant's
+// databases are recorded in its home store and are opened on first access,
+// once that home is reachable (GetOwnedIgnoringFence, ListForTenant). It
+// issues nothing: shard IDs come from the replicated claimer alone, so there
+// is no node-local counter to restore.
+func (m *Manager) OpenAll(ctx context.Context) error {
+	cat, err := m.catalog("open databases")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // no databases directory yet
-		}
-		return &MetaReadError{Path: dbsDir, Err: err}
+		return err
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	// Records written before the catalog would otherwise vanish without a
+	// trace: the catalog does not hold them, so their databases would be
+	// neither listed nor resolvable while their data stayed on disk.
+	records, err := m.unmigratedRecords()
+	if err != nil {
+		return err
+	}
+	if len(records) > 0 {
+		return &UnmigratedDatabasesError{Records: records}
+	}
+	metas, err := cat.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, meta := range metas {
+		key := keyFor(meta.TenantID, meta.Name)
+		// Another node holds it: that node opens it, and this one forwards.
+		if _, held := m.ownerRefusal(key, meta); held {
 			continue
 		}
-		name := entry.Name()
-		if _, openErr := m.Open(name); openErr != nil {
+		if _, openErr := m.openRecord(key, meta); openErr != nil {
 			m.logger.Warn("failed to open database",
-				slog.String("name", name),
+				slog.String("tenant", meta.TenantID),
+				slog.String("name", meta.Name),
 				slog.String("error", openErr.Error()))
 			// Continue opening other databases.
 			continue
 		}
 	}
 	return nil
+}
+
+// unmigratedRecords returns, sorted, the path of every legacyMetaFile in a
+// database directory under this node's data directory: the system tenant's
+// databases/<name>/ and every tenant's databases/tenants.d/<tenant>/<name>/.
+// A data directory that holds no databases yet has none.
+func (m *Manager) unmigratedRecords() ([]string, error) {
+	root := filepath.Join(m.dataDir, databasesDir)
+	dirs, err := subdirs(root)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []string
+	for _, dir := range dirs {
+		if filepath.Base(dir) != tenantDatabasesDir {
+			candidates = append(candidates, dir)
+			continue
+		}
+		tenants, err := subdirs(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, tenantDir := range tenants {
+			names, err := subdirs(tenantDir)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, names...)
+		}
+	}
+	var records []string
+	for _, dir := range candidates {
+		path := filepath.Join(dir, legacyMetaFile)
+		_, err := os.Lstat(path)
+		switch {
+		case err == nil:
+			records = append(records, path)
+		case !errors.Is(err, os.ErrNotExist):
+			return nil, &OpenError{Name: filepath.Base(dir), Err: err}
+		}
+	}
+	sort.Strings(records)
+	return records, nil
+}
+
+// subdirs returns the paths of the directories directly under dir, none when
+// dir does not exist.
+func subdirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, &OpenError{Name: filepath.Base(dir), Err: err}
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return dirs, nil
 }
 
 // DataDir returns the root data directory for all databases.
@@ -1268,9 +1704,27 @@ func barrierDataPathError(cfg DatabaseConfig) error {
 	return nil
 }
 
-// dbDir returns the directory path for a specific database.
-func (m *Manager) dbDir(name string) string {
-	return filepath.Join(m.dataDir, databasesDir, name)
+// dbDir returns the directory of tenantID's database name: a dedicated
+// store's default data and the barrier metadata store. The system tenant's
+// databases are directly under the databases directory; every other
+// tenant's are under tenantDatabasesDir, in a directory named by the
+// SHA-256 of the tenant ID, so a tenant ID is never a path element and two
+// tenants' databases of one name never share a directory.
+func (m *Manager) dbDir(tenantID, name string) string {
+	return tenantScopedPath(filepath.Join(m.dataDir, databasesDir), tenantID, name)
+}
+
+// tenantScopedPath is where root keeps the entry for tenantID's database name:
+// root/name for the system tenant, root/tenants.d/<sha256(tenant)>/name for any
+// other. Two tenants' entries for one name are therefore never the same path,
+// and the tenant ID, which may hold any character, never becomes a path
+// segment of its own.
+func tenantScopedPath(root, tenantID, name string) string {
+	if tenantid.IsSystem(tenantID) {
+		return filepath.Join(root, name)
+	}
+	sum := sha256.Sum256([]byte(tenantID))
+	return filepath.Join(root, tenantDatabasesDir, hex.EncodeToString(sum[:]), name)
 }
 
 // openBarrierMetaBackend opens (creating if necessary) the dedicated
@@ -1361,7 +1815,7 @@ func pathContains(base, candidate string) bool {
 // enforced, regardless of where the resolved path lives, is that it cannot
 // collide with -- or reach into -- storage the manager or another database
 // already owns.
-func (m *Manager) validateDataDir(name, dataDir string) error {
+func (m *Manager) validateDataDir(tenantID, name, dataDir string) error {
 	if strings.TrimSpace(dataDir) == "" {
 		return nil
 	}
@@ -1375,8 +1829,8 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 	}
 
 	// Never the manager's own data root, and never an ancestor of it: both
-	// would fold the manager's entire catalog -- every other database's
-	// meta.json, barrier metadata, and default storage -- inside this one
+	// would fold every other database's barrier metadata and default
+	// storage inside this one
 	// database's view.
 	if pathContains(resolved, root) {
 		return &DataDirReservedPathError{Name: name, DataDir: dataDir, Reserved: root}
@@ -1398,10 +1852,10 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 	}
 
 	// Never inside -- or the parent of -- this database's own catalog
-	// directory (meta.json plus the barrier metadata store): a DataDir
-	// reaching into dbDir would let application data collide with barrier
-	// bootstrap key material or the on-disk metadata record.
-	ownDBDir, err := resolveDataDir(m.dbDir(name))
+	// directory (the barrier metadata store): a DataDir reaching into dbDir
+	// would let application data collide with barrier bootstrap key
+	// material.
+	ownDBDir, err := resolveDataDir(m.dbDir(tenantID, name))
 	if err != nil {
 		return &InvalidDataDirError{Name: name, DataDir: dataDir, Err: err}
 	}
@@ -1414,13 +1868,14 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 	// directory.
 	var conflict error
 	m.databases.Range(func(key, value any) bool {
-		otherName, _ := key.(string)
-		if otherName == name {
+		other, _ := key.(dbKey)
+		if other == keyFor(tenantID, name) {
 			return true
 		}
+		otherName := other.name
 		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 
-		if otherDBDir, derr := resolveDataDir(m.dbDir(otherName)); derr == nil {
+		if otherDBDir, derr := resolveDataDir(m.dbDir(other.tenant, otherName)); derr == nil {
 			if pathContains(resolved, otherDBDir) || pathContains(otherDBDir, resolved) {
 				conflict = &DataDirConflictError{Name: name, DataDir: dataDir, With: otherName}
 				return false
@@ -1435,32 +1890,6 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 		return true
 	})
 	return conflict
-}
-
-// writeMeta writes the DatabaseMeta as JSON to the meta.json file via a
-// write-temp-file/fsync/rename sequence, not a direct write to the final
-// path (go-qrdb#482 round 3, finding 10): a crash mid-write to path itself
-// can leave meta.json truncated or otherwise corrupt, and two concurrent
-// writers to the same path (Drop's fence and an Update*'s rewriteMeta,
-// racing) can interleave their writes with no serialization between them.
-// os.Rename is atomic on the same filesystem -- guaranteed by every POSIX
-// platform this ships on -- so every writer instead writes its own
-// uniquely-named temp file (no interleaving possible), fsyncs it so the
-// data is durable BEFORE the rename makes it visible, and only then renames
-// it over path in one atomic step: a reader (readMeta) never observes a
-// partial write, and two racing writers settle on "the later rename wins"
-// -- the same last-writer-wins semantics this package already documents
-// elsewhere for the fence -- rather than a corrupt file. The containing
-// directory is also best-effort fsynced after the rename so the directory
-// entry itself survives a crash immediately after; a platform where that
-// second fsync is unsupported still has a fully-written, correctly-named
-// file from the rename itself, so this failure is logged, not returned.
-func (m *Manager) writeMeta(dbDir string, meta DatabaseMeta) error {
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return &MetaWriteError{Path: filepath.Join(dbDir, metaFile), Err: err}
-	}
-	return writeFileAtomic(dbDir, metaFile, data)
 }
 
 // writeFileAtomic writes data to dir/name through a temp-file, fsync, rename
@@ -1505,38 +1934,4 @@ func writeFileAtomic(dir, name string, data []byte) error {
 		_ = d.Close()
 	}
 	return nil
-}
-
-// readMeta reads the DatabaseMeta from the meta.json file.
-//
-// Decoding is strict (json.Decoder.DisallowUnknownFields): a field this
-// version no longer understands -- today, only a pre-v0.45 "engine" key --
-// is refused as LegacyMetadataError rather than silently dropped and the
-// file rewritten without it (OD-13; superseded the migrate-on-open
-// alternative per the no-backward-compat ruling of 2026-10-02). Any other
-// decode failure (truncated or corrupt JSON) stays MetaReadError.
-func (m *Manager) readMeta(dbDir string) (*DatabaseMeta, error) {
-	path := filepath.Join(dbDir, metaFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, &MetaReadError{Path: path, Err: err}
-	}
-	var meta DatabaseMeta
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&meta); err != nil {
-		if isUnknownMetaFieldError(err) {
-			return nil, &LegacyMetadataError{Path: path, Err: err}
-		}
-		return nil, &MetaReadError{Path: path, Err: err}
-	}
-	return &meta, nil
-}
-
-// isUnknownMetaFieldError reports whether err is the "json: unknown field"
-// error a strict decoder returns for a stale meta.json key. encoding/json
-// does not expose this as a distinct type, only as this exact message
-// prefix, so the prefix is the match.
-func isUnknownMetaFieldError(err error) bool {
-	return strings.HasPrefix(err.Error(), "json: unknown field ")
 }

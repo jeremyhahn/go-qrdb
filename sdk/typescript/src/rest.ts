@@ -268,6 +268,7 @@ import type {
     CredentialRotateResult,
 } from './types.js';
 import {
+    ConfigError,
     DesktopOnlyError,
     KeyNotFoundError,
     NotConnectedError,
@@ -344,6 +345,73 @@ async function requestVoid(baseUrl: string, path: string, init?: RequestInit): P
             resp.status,
             new Error(body),
         );
+    }
+}
+
+/**
+ * Sends a request through send when its body carries a secret -- a barrier
+ * secret or passphrase, a PIN, a share, a recovery key or a token -- as the
+ * Go REST transport's GuardBarrierSecret does: a base URL that is not
+ * https:// is refused before any network I/O, and a redirect fails the
+ * request instead of being followed, since a 307/308 would resend the
+ * secret-bearing body to wherever the Location header points. A request
+ * whose optional secret is absent (secret false) goes through send as is.
+ */
+function requestSecret<T>(
+    send: (baseUrl: string, path: string, init?: RequestInit) => Promise<T>,
+    baseUrl: string,
+    path: string,
+    init: RequestInit | undefined,
+    secret: boolean,
+): Promise<T> {
+    if (!secret) {
+        return send(baseUrl, path, init);
+    }
+    if (!isHTTPS(baseUrl)) {
+        return Promise.reject(new ConfigError(
+            'baseUrl',
+            `${init?.method ?? 'GET'} ${path} sends a secret, which requires an https:// base URL`,
+        ));
+    }
+    return send(baseUrl, path, { ...init, redirect: 'error' });
+}
+
+/**
+ * Issues a fetch request and returns the decoded body, or undefined for
+ * 204 No Content. Throws {@link TransportError} on non-OK status.
+ */
+async function requestOptionalJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T | undefined> {
+    const method = init?.method ?? 'GET';
+    let resp: Response;
+    try {
+        resp = await fetch(baseUrl + path, init);
+    } catch (err: unknown) {
+        throw new TransportError(
+            `${method} ${path}`,
+            undefined,
+            err instanceof Error ? err : new Error(String(err)),
+        );
+    }
+    if (!resp.ok) {
+        throw new TransportError(`${method} ${path}`, resp.status, new Error(await resp.text()));
+    }
+    if (resp.status === 204) {
+        return undefined;
+    }
+    return deepSnakeToCamel(await resp.json()) as T;
+}
+
+/** raftSecret reports whether raft carries a discovery shared secret or join token. */
+function raftSecret(raft: DatabaseRaftConfig | undefined): boolean {
+    return Boolean(raft?.multicast?.sharedSecret || raft?.token?.token);
+}
+
+/** isHTTPS reports whether address is an https:// URL. */
+function isHTTPS(address: string): boolean {
+    try {
+        return new URL(address).protocol === 'https:';
+    } catch {
+        return false;
     }
 }
 
@@ -1638,11 +1706,11 @@ export class RestClient implements Client {
                 // constructor's baseUrl), so _options -- which names where to
                 // redeem for a transport with no prior connection -- does not
                 // apply here; see RedeemInvitationOptions.
-                return this.fetchJSON<EnrolledCert>('/invitations/redeem', {
+                return this.fetchSecretJSON<EnrolledCert>('/invitations/redeem', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
-                });
+                }, Boolean(req.token));
             },
         };
     }
@@ -1748,11 +1816,11 @@ export class RestClient implements Client {
                 // (ExportCertRequest); see issueCert above. Using jsonBody()
                 // here previously mangled them into "cert_p_e_m"/"key_p_e_m",
                 // silently breaking every export call.
-                return this.fetchJSON<ExportCertResponse>('/certs/export', {
+                return this.fetchSecretJSON<ExportCertResponse>('/certs/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
-                });
+                }, Boolean(req.passphrase));
             },
             revoke: async (serial: string): Promise<void> => {
                 this.ensureConnected();
@@ -1778,11 +1846,11 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>('/v1/databases', {
+                return this.fetchSecretJSON<DatabaseInfo>('/v1/databases', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
-                });
+                }, Boolean(req.barrier?.secret) || raftSecret(req.raft));
             },
             get: async (name: string): Promise<DatabaseInfo> => {
                 this.ensureConnected();
@@ -1838,12 +1906,13 @@ export class RestClient implements Client {
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/raft`,
+                return this.fetchSecretJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/raft`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(raft),
                     },
+                    raftSecret(raft),
                 );
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
@@ -1999,10 +2068,10 @@ export class RestClient implements Client {
                 // zeroize it there; a `[]byte` is base64 in REST JSON, which is
                 // the same convention `[]byte` fields use everywhere else in
                 // this SDK. The SDK-facing argument stays plaintext.
-                await this.fetchVoid('/v1/barrier/initialize', {
+                await this.fetchSecretVoid('/v1/barrier/initialize', {
                     method: 'POST',
                     ...jsonBody({ secret: encodeBase64Utf8(secret) }),
-                });
+                }, secret !== '');
             },
             initializeShamir: async (req: ShamirInitializeRequest): Promise<BootstrapResult> => {
                 this.ensureConnected();
@@ -2013,8 +2082,9 @@ export class RestClient implements Client {
                     readonly totalShares: number;
                     readonly shareCount: number;
                 }
-                const init = await this.fetchJSON<ShamirInitResponse>('/v1/barrier/shamir/initialize',
+                const init = await this.fetchSecretJSON<ShamirInitResponse>('/v1/barrier/shamir/initialize',
                     { method: 'POST', ...jsonBody(req) },
+                    Boolean(req.soPin || req.userPin),
                 );
                 // A Shamir root token needs a holder quorum, so none is minted
                 // here.
@@ -2025,19 +2095,45 @@ export class RestClient implements Client {
                 // Credential strategies only: a Shamir barrier opens through a
                 // holder quorum, and the server refuses this request for it.
                 // base64 on the wire; see initialize.
-                await this.fetchVoid('/v1/barrier/unseal', {
+                await this.fetchSecretVoid('/v1/barrier/unseal', {
                     method: 'POST',
                     ...jsonBody({ secret: encodeBase64Utf8(secret) }),
-                });
+                }, secret !== '');
                 return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
+            },
+            changePassphrase: async (current: string, next: string, soPin?: string): Promise<void> => {
+                this.ensureConnected();
+                // Both passphrases are base64 on the wire, as unseal's secret.
+                // The PIN goes twice, as the Go REST client sends it: the
+                // authorization middleware reads X-QRDB-SO-PIN, and the
+                // handler's own SO gate reads the body's so_pin. Those
+                // credentials go only over https and never follow a redirect.
+                const current64 = encodeBase64Utf8(current);
+                const next64 = encodeBase64Utf8(next);
+                if (soPin === undefined || soPin === '') {
+                    await this.fetchSecretVoid('/v1/barrier/change-passphrase', {
+                        method: 'POST',
+                        ...jsonBody({ current: current64, next: next64 }),
+                    });
+                    return;
+                }
+                const body = jsonBody({ current: current64, next: next64, so_pin: soPin });
+                await this.fetchSecretVoid('/v1/barrier/change-passphrase', {
+                    method: 'POST',
+                    ...body,
+                    headers: { ...(body.headers as Record<string, string>), 'X-QRDB-SO-PIN': soPin },
+                });
             },
             seal: async (soPin?: string): Promise<void> => {
                 this.ensureConnected();
                 // The server's SO gate reads so_pin; without a PIN the body
                 // stays empty, which the server accepts when none is set.
-                await this.fetchVoid('/v1/barrier/seal', soPin === undefined || soPin === ''
-                    ? { method: 'POST' }
-                    : { method: 'POST', ...jsonBody({ so_pin: soPin }) });
+                // A PIN goes only over https and never follows a redirect.
+                if (soPin === undefined || soPin === '') {
+                    await this.fetchVoid('/v1/barrier/seal', { method: 'POST' });
+                    return;
+                }
+                await this.fetchSecretVoid('/v1/barrier/seal', { method: 'POST', ...jsonBody({ so_pin: soPin }) });
             },
             status: async (): Promise<SealStatus> => {
                 this.ensureConnected();
@@ -2105,8 +2201,9 @@ export class RestClient implements Client {
                 if (req.passphrase) payload.passphrase = encodeBase64Utf8(req.passphrase);
                 if (req.shamirThreshold) payload.shamir_threshold = req.shamirThreshold;
                 if (req.shamirTotal) payload.shamir_total = req.shamirTotal;
-                return this.fetchJSON<EnableEncryptionResponse>('/v1/barrier/enable-encryption',
+                return this.fetchSecretJSON<EnableEncryptionResponse>('/v1/barrier/enable-encryption',
                     { method: 'POST', ...jsonBody(payload) },
+                    Boolean(req.passphrase),
                 );
             },
         };
@@ -2137,8 +2234,9 @@ export class RestClient implements Client {
                 if (officers && officers.length > 0) {
                     body.officers = officers.map(ceremonyOfficerWire);
                 }
-                const resp = await this.fetchJSON<CeremonyInitializeResponse>('/v1/ceremony/initialize',
+                const resp = await this.fetchSecretJSON<CeremonyInitializeResponse>('/v1/ceremony/initialize',
                     { method: 'POST', ...wireBody(body) },
+                    Boolean(req.soPin || req.userPin || req.secret),
                 );
                 // admin_key_pem is base64 on the wire for the same reason
                 // secret is on the way in; decoded back to plain PEM text
@@ -2153,8 +2251,9 @@ export class RestClient implements Client {
             },
             signCSR: async (req: CeremonySignCSRRequest): Promise<CeremonySignCSRResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<CeremonySignCSRResponse>('/v1/ceremony/sign-csr',
+                return this.fetchSecretJSON<CeremonySignCSRResponse>('/v1/ceremony/sign-csr',
                     { method: 'POST', ...jsonBody(req) },
+                    Boolean(req.soPin),
                 );
             },
         };
@@ -2194,14 +2293,16 @@ export class RestClient implements Client {
             },
             startRekey: async (req: RekeyStartRequest): Promise<QuorumRound> => {
                 this.ensureConnected();
-                return this.fetchJSON<QuorumRound>('/v1/barrier/rekey/start',
+                return this.fetchSecretJSON<QuorumRound>('/v1/barrier/rekey/start',
                     { method: 'POST', ...jsonBody({ ...req, domain: req.domain ?? 'unseal' }) },
+                    Boolean(req.soPin),
                 );
             },
             revokeOfficer: async (req: OfficerRevokeRequest): Promise<QuorumRound> => {
                 this.ensureConnected();
-                return this.fetchJSON<QuorumRound>('/v1/barrier/officers/revoke',
+                return this.fetchSecretJSON<QuorumRound>('/v1/barrier/officers/revoke',
                     { method: 'POST', ...jsonBody({ ...req, domain: req.domain ?? 'unseal' }) },
+                    Boolean(req.soPin),
                 );
             },
             registerTenantOfficer: async (req: TenantOfficerRegisterRequest): Promise<OfficerRegisterResponse> => {
@@ -2417,8 +2518,9 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 // The key is `[]byte` on the server so it can be zeroized:
                 // base64 on the wire.
-                await this.fetchJSON<unknown>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
+                await this.fetchSecretJSON<unknown>(`/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/unseal`,
                     { method: 'POST', ...jsonBody({ key: encodeBase64Utf8(req.key) }) },
+                    req.key !== '',
                 );
             },
             barrierStatus: async (tenantId: string): Promise<TenantBarrierStatusResponse> => {
@@ -2622,17 +2724,17 @@ export class RestClient implements Client {
         return {
             submit: async (name: string, value: string): Promise<void> => {
                 this.ensureConnected();
-                await this.fetchVoid('/v1/credentials/submit', {
+                await this.fetchSecretVoid('/v1/credentials/submit', {
                     method: 'POST',
                     ...jsonBody({ name, value }),
-                });
+                }, value !== '');
             },
             store: async (name: string, value: string): Promise<void> => {
                 this.ensureConnected();
-                await this.fetchVoid('/v1/credentials/store', {
+                await this.fetchSecretVoid('/v1/credentials/store', {
                     method: 'POST',
                     ...jsonBody({ name, value }),
-                });
+                }, value !== '');
             },
             retrieve: async (name: string): Promise<string> => {
                 this.ensureConnected();
@@ -2661,7 +2763,7 @@ export class RestClient implements Client {
             },
             rotate: async (name: string, newValue: string, gracePeriodSeconds?: number): Promise<CredentialRotateResult> => {
                 this.ensureConnected();
-                return this.fetchJSON<CredentialRotateResult>(`/v1/credentials/${encodeURIComponent(name)}/rotate`,
+                return this.fetchSecretJSON<CredentialRotateResult>(`/v1/credentials/${encodeURIComponent(name)}/rotate`,
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -2670,6 +2772,7 @@ export class RestClient implements Client {
                             gracePeriodSeconds: gracePeriodSeconds ?? 0,
                         }),
                     },
+                    Boolean(newValue),
                 );
             },
             listVersions: async (name: string): Promise<CredentialVersionInfo[]> => {
@@ -2813,42 +2916,41 @@ export class RestClient implements Client {
     /**
      * Issues one init/begin, init/complete pair of a tenant barrier init under
      * base, returning the decoded answer, or undefined for 204 No Content.
+     * Both requests go through the secret guard when body carries a
+     * passphrase, so an http:// base URL is refused before init/begin.
      */
     private async tenantBarrierInitRound(
         base: string,
         body: Record<string, unknown>,
     ): Promise<TenantBarrierInitResponse | undefined> {
-        const challenge = await this.fetchJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' });
+        const secret = Boolean(body.passphrase);
+        const challenge = await this.fetchSecretJSON<{ nonce?: string }>(`${base}/begin`, { method: 'POST' }, secret);
         if (challenge?.nonce) {
             throw new DesktopOnlyError('tenants.barrierInit with proof of possession');
         }
-        // fetchJSON cannot parse an empty body, so the request is issued
-        // directly and a 204 answered with undefined.
-        const path = `${base}/complete`;
-        let resp: Response;
-        try {
-            resp = await fetch(this.baseUrl + path, { method: 'POST', ...jsonBody(body) });
-        } catch (err: unknown) {
-            throw new TransportError(
-                `POST ${path}`,
-                undefined,
-                err instanceof Error ? err : new Error(String(err)),
-            );
-        }
-        if (!resp.ok) {
-            throw new TransportError(`POST ${path}`, resp.status, new Error(await resp.text()));
-        }
-        if (resp.status === 204) {
-            return undefined;
-        }
-        // The wire answer has no `shares` field; deepSnakeToCamel maps
-        // share_count → shareCount, unseal_key_check → unsealKeyCheck.
-        return deepSnakeToCamel(await resp.json()) as TenantBarrierInitResponse;
+        // "none" and "passphrase" answer 204 No Content, which fetchJSON
+        // cannot parse.
+        return requestSecret(requestOptionalJSON<TenantBarrierInitResponse>, this.baseUrl, `${base}/complete`,
+            { method: 'POST', ...jsonBody(body) }, secret);
     }
 
     /** Database-scope-aware wrapper over {@link requestVoid}. */
     private fetchVoid(path: string, init?: RequestInit): Promise<void> {
         return requestVoid(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /**
+     * fetchSecretJSON is fetchJSON for a body carrying a secret; see
+     * requestSecret. secret false, for a request whose optional secret is
+     * absent, makes it fetchJSON.
+     */
+    private fetchSecretJSON<T>(path: string, init?: RequestInit, secret = true): Promise<T> {
+        return requestSecret(requestJSON<T>, this.baseUrl, path, this.scopedInit(path, init), secret);
+    }
+
+    /** fetchSecretVoid is fetchVoid for a body carrying a secret; see fetchSecretJSON. */
+    private fetchSecretVoid(path: string, init?: RequestInit, secret = true): Promise<void> {
+        return requestSecret(requestVoid, this.baseUrl, path, this.scopedInit(path, init), secret);
     }
 
     /** Database-scope-aware wrapper over {@link requestText}. */

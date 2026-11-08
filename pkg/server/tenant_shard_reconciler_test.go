@@ -464,8 +464,8 @@ func TestTenantShardReconciler_SkipsLocalBinding(t *testing.T) {
 
 // TestTenantShardReconciler_MetaManagedShardSurvivesReconcile proves that a
 // locally started shard with NO placement entry is NOT torn down by
-// ReconcileOnce. Shards absent from the placement table are meta-managed
-// (started from meta.json at boot or single-node Phase-4b) and must be left
+// ReconcileOnce. Shards absent from the placement table are catalog-managed
+// (opened from the database catalog at boot or single-node Phase-4b) and must be left
 // running — absence is not evidence of orphan status (BUG 2 fix).
 func TestTenantShardReconciler_MetaManagedShardSurvivesReconcile(t *testing.T) {
 	factory := newFakeShardLifecycle()

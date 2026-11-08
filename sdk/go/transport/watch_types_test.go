@@ -17,6 +17,8 @@ package transport
 import (
 	"errors"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // ---------------------------------------------------------------------------
@@ -144,6 +146,37 @@ func TestWatchStartRevisionUnsupportedError_Error(t *testing.T) {
 	err := &WatchStartRevisionUnsupportedError{Reason: "boom"}
 	if err.Error() == "" {
 		t.Error("Error() must not be empty")
+	}
+}
+
+// watcherLimitReason is the node's own refusal text, so the classifier is
+// tested against what a node sends rather than a copy of it.
+var watcherLimitReason = (&watch.WatcherLimitError{Max: 3}).Error()
+
+func TestClassifyWatchError_WatcherLimit(t *testing.T) {
+	got := ClassifyWatchError(errors.New(watcherLimitReason))
+
+	var wle *WatcherLimitError
+	if !errors.As(got, &wle) {
+		t.Fatalf("ClassifyWatchError() = %T (%v), want *WatcherLimitError", got, got)
+	}
+	if wle.Reason != watcherLimitReason {
+		t.Fatalf("Reason = %q, want %q", wle.Reason, watcherLimitReason)
+	}
+}
+
+func TestWatchResponse_Err_WatcherLimit(t *testing.T) {
+	resp := WatchResponse{Canceled: true, CancelReason: watcherLimitReason}
+	var wle *WatcherLimitError
+	if err := resp.Err(); !errors.As(err, &wle) {
+		t.Fatalf("Err() = %T (%v), want *WatcherLimitError", err, err)
+	}
+}
+
+func TestWatcherLimitError_Error(t *testing.T) {
+	err := &WatcherLimitError{Reason: "boom"}
+	if got, want := err.Error(), "transport: watch refused: boom"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
 

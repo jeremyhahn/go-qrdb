@@ -52,21 +52,20 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CeremonyInitialize", Err: err}
 	}
+	// The secret-bearing fields are rewritten here, not left to EncodeArgs's
+	// generic struct encoding, which renders the PINs as text and req.Secret
+	// ([]byte) as an untagged base64 string the server reads as text. Each
+	// travels as its <name>_b64 argument instead, so arbitrary bytes arrive
+	// exactly (go-qrdb#1130).
+	delete(args, "so_pin")
+	delete(args, "user_pin")
 	if soPIN != "" {
-		args["so_pin"] = soPIN
+		putStringSecret(args, "so_pin", soPIN)
 	}
-	// secret is overwritten here, not left to EncodeArgs's generic struct
-	// encoding: req.Secret is []byte, which EncodeArgs (via encoding/json)
-	// renders as base64, but the server's handleCeremonyInitialize reads
-	// "secret" as plain text (go-qrdb#560 review item 7, follow-up) --
-	// the same convention BarrierInitialize/BarrierUnseal already use on
-	// this transport. Left to the generic path, the barrier ends up keyed
-	// to the base64 TEXT of the passphrase instead of the passphrase
-	// itself: initialize's own auto-unseal (which never leaves this
-	// process) stays internally consistent and so never notices, and the
-	// mismatch only surfaces on a later unseal call that sends the real
-	// passphrase.
-	args["secret"] = secretArg(req.Secret)
+	if req.UserPin != "" {
+		putStringSecret(args, "user_pin", req.UserPin)
+	}
+	putSecret(args, "secret", req.Secret)
 
 	text, err := t.callTool(ctx, "qrdb_ceremony_initialize", args)
 	if err != nil {
@@ -119,12 +118,13 @@ func (t *Transport) CeremonySignCSR(ctx context.Context, req *transport.SignCSRI
 		return nil, err
 	}
 
-	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", map[string]any{
+	args := map[string]any{
 		"username": req.Username,
-		"so_pin":   soPIN,
 		"csr_pem":  req.CSRPEM,
 		"role":     req.Role,
-	})
+	}
+	putStringSecret(args, "so_pin", soPIN)
+	text, err := t.callTool(ctx, "qrdb_ceremony_sign_csr", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CeremonySignCSR", Err: err}
 	}

@@ -40,6 +40,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 
 	resp, err := t.client.TenantCreate(ctx, enrollconv.TenantCreateRequest(req))
 	if err != nil {
@@ -49,6 +52,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	return &transport.CreateTenantResponse{
 		Tenant: tenantconv.ToTenantInfo(resp.GetTenant()),
 		Admin:  enrollconv.AdminCredential(resp.GetAdmin()),
+		SO:     enrollconv.SOCredential(resp.GetSo()),
 	}, nil
 }
 
@@ -223,6 +227,9 @@ func (t *Transport) UpdateTenantQuotas(ctx context.Context, req *transport.Updat
 func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport.UpdateTenantEntitlementsRequest) (*transport.UpdateTenantEntitlementsResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "UpdateTenantEntitlements", Err: &transport.NilRequestError{}}
 	}
 
 	resp, err := t.client.TenantUpdateEntitlements(ctx, &pb.TenantUpdateEntitlementsRequest{

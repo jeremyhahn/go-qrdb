@@ -45,7 +45,7 @@ func TestDatabaseBarrierQuorumSubmit_UnsealRunsUnderTheRegistryLock(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	_, barrier, err := svc.barrierMgr.Holders("vault")
+	_, barrier, err := svc.barrierMgr.Holders("vault", "acme")
 	if err != nil {
 		t.Fatal(err)
 	}

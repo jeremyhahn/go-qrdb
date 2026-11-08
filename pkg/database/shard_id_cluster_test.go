@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -30,7 +31,7 @@ import (
 func clusterNode(t *testing.T, replicated kvstore.AtomicKVStore) *Manager {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(claimerOver(t, replicated))
 	t.Cleanup(func() { _ = m.Close() })
 	return m
@@ -146,7 +147,7 @@ func (f failingClaimer) ClaimShardID(context.Context) (uint64, error) { return 0
 func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	storeDown := errors.New("system store unavailable")
-	m := NewManager(logger, t.TempDir())
+	m := newCatalogManager(logger, t.TempDir())
 	m.SetShardIDClaimer(failingClaimer{err: storeDown})
 	t.Cleanup(func() { _ = m.Close() })
 
@@ -155,13 +156,13 @@ func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	if !errors.As(err, &claimErr) || !errors.Is(err, storeDown) {
 		t.Fatalf("create with a failing claimer = %v, want *ShardIDClaimError wrapping the store error", err)
 	}
-	if claimErr.Error() == "" {
-		t.Fatal("empty error text")
+	if !strings.Contains(claimErr.Error(), "shard ID") {
+		t.Fatalf("ShardIDClaimError text %q does not name the shard ID claim", claimErr.Error())
 	}
 	if _, err := m.Get("refused"); err == nil {
 		t.Fatal("a refused create left a catalog entry")
 	}
-	if _, err := os.Stat(m.dbDir("refused")); !os.IsNotExist(err) {
+	if _, err := os.Stat(m.dbDir("", "refused")); !os.IsNotExist(err) {
 		t.Fatalf("a refused create left its directory: %v", err)
 	}
 }

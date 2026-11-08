@@ -92,6 +92,12 @@ type userDeleter interface {
 	DeleteUser(ctx context.Context, id uint64) error
 }
 
+// userUpdater is the user-store seam that grants a standard-posture tenant's
+// first admin the so role when the tenant names the admin as its SO.
+type userUpdater interface {
+	UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+}
+
 // adminSigner is the signer for the first admin's CSR: PendingAdminSigner for
 // an admin recorded as pending, Signer otherwise. A pending admin's CSR with
 // no PendingAdminSigner is refused as system first boot refuses a CSR on a
@@ -117,6 +123,10 @@ type adminPlan struct {
 	signer  firstboot.CertSigner
 	byoc    *certenroll.BYOC
 	anchors []*x509.Certificate
+	// thumbprint is the SPKI SHA-256 thumbprint of the key the credential
+	// will certify, known before anything is signed: two accounts a tenant
+	// is created with are told apart by it.
+	thumbprint string
 }
 
 // planAdmin judges every input that can be refused -- the trust anchors, the
@@ -140,42 +150,72 @@ func planAdmin(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmen
 	if mode != AdminEnrollCert {
 		return plan, nil
 	}
-	// The admin's name ends up in a certificate's Subject and, under a trust
-	// domain, its SPIFFE SAN. A name the CA would refuse to certify must be
-	// refused here, before the tenant is created -- a refusal after it would
-	// be undone by deleting the tenant, which retires its id. The trust domain
-	// is a dependency, not a credential, so its absence is a missing seam.
-	if deps.TrustDomain == "" {
-		return nil, &MissingProvisioningSeamError{Seam: "Dependencies.TrustDomain to name the admin's SPIFFE ID"}
-	}
-	if _, err := cert.ClientSPIFFEURIs(deps.TrustDomain, cfg.TenantID, adminUsername); err != nil {
-		return nil, &AdminCredentialRejectedError{Cause: err}
-	}
-	switch {
-	case len(cfg.AdminCSRPEM) > 0 && len(cfg.AdminCertPEM) > 0:
-		return nil, &ConflictingAdminCredentialError{}
-	case len(cfg.AdminCSRPEM) > 0:
-		signer, err := deps.adminSigner(pending)
-		if err != nil {
-			return nil, err
-		}
-		plan.signer = signer
-		if _, err := cert.ParseCSR(cfg.AdminCSRPEM); err != nil {
-			return nil, &AdminCredentialRejectedError{Cause: err}
-		}
-		plan.csrPEM = cfg.AdminCSRPEM
-	case len(cfg.AdminCertPEM) > 0:
-		// A new tenant has no anchors but the ones in this request, so the
-		// certificate is verified against exactly those.
-		byoc, err := certenroll.VerifyBYOCAgainst(plan.anchors, cfg.TenantID, adminUsername, cfg.AdminCertPEM, cfg.AdminChainPEM, deps.TrustDomain, now)
-		if err != nil {
-			return nil, &AdminCredentialRejectedError{Cause: err}
-		}
-		plan.byoc = byoc
-	default:
-		return nil, &MissingAdminCredentialError{}
+	acct := accountCredential{username: adminUsername, csrPEM: cfg.AdminCSRPEM, certPEM: cfg.AdminCertPEM, chainPEM: cfg.AdminChainPEM}
+	if err := plan.planCredential(deps, cfg.TenantID, acct, pending); err != nil {
+		return nil, err
 	}
 	return plan, nil
+}
+
+// accountCredential is one tenant account's enrollment input: the name it
+// authenticates as and exactly one of a CSR to sign or its own certificate.
+type accountCredential struct {
+	username string
+	csrPEM   []byte
+	certPEM  []byte
+	chainPEM []byte
+}
+
+// planCredential judges acct's credential against p's trust anchors and
+// records how it will be issued, and the SPKI thumbprint it will bind, on p.
+// It is the one credential check every account a tenant is created with
+// passes -- its admin and its SO alike -- and it runs before the tenant is
+// created, so a refusal costs no tenant id.
+func (p *adminPlan) planCredential(deps Dependencies, tenantID string, acct accountCredential, pending bool) error {
+	// The account's name ends up in a certificate's Subject and, under a
+	// trust domain, its SPIFFE SAN. A name the CA would refuse to certify
+	// must be refused here, before the tenant is created -- a refusal after
+	// it would be undone by deleting the tenant, which retires its id. The
+	// trust domain is a dependency, not a credential, so its absence is a
+	// missing seam.
+	if deps.TrustDomain == "" {
+		return &MissingProvisioningSeamError{Seam: "Dependencies.TrustDomain to name the admin's SPIFFE ID"}
+	}
+	if _, err := cert.ClientSPIFFEURIs(deps.TrustDomain, tenantID, acct.username); err != nil {
+		return &AdminCredentialRejectedError{Cause: err}
+	}
+	switch {
+	case len(acct.csrPEM) > 0 && len(acct.certPEM) > 0:
+		return &ConflictingAdminCredentialError{}
+	case len(acct.csrPEM) > 0:
+		signer, err := deps.adminSigner(pending)
+		if err != nil {
+			return err
+		}
+		p.signer = signer
+		pub, err := cert.ParseCSR(acct.csrPEM)
+		if err != nil {
+			return &AdminCredentialRejectedError{Cause: err}
+		}
+		thumbprint, err := user.PublicKeySPKIThumbprint(pub)
+		if err != nil {
+			return &AdminCredentialRejectedError{Cause: err}
+		}
+		p.csrPEM = acct.csrPEM
+		p.thumbprint = thumbprint
+	case len(acct.certPEM) > 0:
+		// A new tenant has no anchors but the ones in this request, so the
+		// certificate is verified against exactly those.
+		byoc, err := certenroll.VerifyBYOCAgainst(p.anchors, tenantID, acct.username, acct.certPEM, acct.chainPEM, deps.TrustDomain, deps.now())
+		if err != nil {
+			return &AdminCredentialRejectedError{Cause: err}
+		}
+		p.byoc = byoc
+		p.thumbprint = byoc.Thumbprint
+	default:
+		return &MissingAdminCredentialError{}
+	}
+	return nil
 }
 
 // adminCredential is the admin's certificate as onboarding binds it.
@@ -188,7 +228,7 @@ type adminCredential struct {
 
 // issue produces the admin's certificate from the plan: signed from the CSR,
 // or the verified bring-your-own one as is.
-func (p *adminPlan) issue(ctx context.Context, tenantID, adminUsername string) (*adminCredential, error) {
+func (p *adminPlan) issue(ctx context.Context, tenantID, username, roleName string) (*adminCredential, error) {
 	if p.byoc != nil {
 		return &adminCredential{
 			certPEM:    trustanchor.EncodePEM(p.byoc.Certificate),
@@ -196,13 +236,14 @@ func (p *adminPlan) issue(ctx context.Context, tenantID, adminUsername string) (
 			notAfter:   p.byoc.NotAfter,
 		}, nil
 	}
-	certPEM, err := p.signer.SignAdminCSR(ctx, tenantID, adminUsername, p.csrPEM)
+	kind := accountKinds[roleName]
+	certPEM, err := p.signer.SignAdminCSR(ctx, tenantID, username, p.csrPEM)
 	if err != nil {
-		return nil, &TenantAdminCertError{Cause: err}
+		return nil, kind.certErr(err)
 	}
 	certs, err := trustanchor.ParseCertificates(certPEM)
 	if err != nil {
-		return nil, &TenantAdminCertError{Cause: err}
+		return nil, kind.certErr(err)
 	}
 	return &adminCredential{
 		certPEM:    certPEM,
@@ -215,16 +256,17 @@ func (p *adminPlan) issue(ctx context.Context, tenantID, adminUsername string) (
 // bind binds the admin's certificate to its account: through the user
 // service's AddCertBinding when deps.Users provides it (the binding then
 // carries the certificate's expiry), else through deps.Binder.
-func bindAdmin(ctx context.Context, deps Dependencies, tenantID string, adminUser *user.User, c *adminCredential) error {
+func bindAdmin(ctx context.Context, deps Dependencies, tenantID string, account *user.User, c *adminCredential, roleName string) error {
+	kind := accountKinds[roleName]
 	if adder, ok := deps.Users.(certBindingAdder); ok {
-		if _, err := adder.AddCertBinding(ctx, adminUser.ID, c.thumbprint, c.notAfter.Unix()); err != nil {
-			return &TenantAdminCertError{Cause: err}
+		if _, err := adder.AddCertBinding(ctx, account.ID, c.thumbprint, c.notAfter.Unix()); err != nil {
+			return kind.certErr(err)
 		}
 		return nil
 	}
 	if deps.Binder != nil {
-		if err := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, c.thumbprint); err != nil {
-			return &TenantAdminCertError{Cause: err}
+		if err := deps.Binder.BindAdminCert(ctx, tenantID, account.ID, c.thumbprint); err != nil {
+			return kind.certErr(err)
 		}
 		return nil
 	}
@@ -311,14 +353,21 @@ func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Depen
 	if deps.Logger == nil {
 		return false, &MissingLoggerError{}
 	}
-	if deps.PendingAdmins == nil {
-		return false, nil
+	stores := map[string]tenantadmin.Store{role.RoleNameAdmin: deps.PendingAdmins, role.RoleNameSO: deps.PendingSOs}
+	pendings := make(map[string]*tenantadmin.Pending, len(stores))
+	for roleName, store := range stores {
+		if store == nil {
+			continue
+		}
+		pending, err := store.Get(ctx, tenantID)
+		if err != nil {
+			return false, accountKinds[roleName].pendingErr("read", err)
+		}
+		if pending != nil {
+			pendings[roleName] = pending
+		}
 	}
-	pending, err := deps.PendingAdmins.Get(ctx, tenantID)
-	if err != nil {
-		return false, &PendingTenantAdminError{Op: "read", Cause: err}
-	}
-	if pending == nil {
+	if len(pendings) == 0 {
 		return false, nil
 	}
 	if deps.HomeLeader != nil && !deps.HomeLeader.LeadsHome(tenantID) {
@@ -330,57 +379,111 @@ func CompletePendingTenantAdmin(ctx context.Context, tenantID string, deps Depen
 	if _, err := seedTenantRoles(ctx, deps, tenantID); err != nil {
 		return false, err
 	}
+	// The admin first: an SO is completed only beside the admin it was
+	// provisioned with, never in its place.
+	completed := false
+	for _, roleName := range []string{role.RoleNameAdmin, role.RoleNameSO} {
+		pending, ok := pendings[roleName]
+		if !ok {
+			continue
+		}
+		done, err := completePendingAccount(ctx, deps, tenantID, stores[roleName], pending, roleName)
+		if err != nil {
+			return false, err
+		}
+		completed = completed || done
+	}
+	return completed, nil
+}
+
+// completePendingAccount creates the account pending records for roleName,
+// holding that tenant system role alone, binds its recorded certificate and
+// deletes the record. It reports whether this call deleted it.
+func completePendingAccount(ctx context.Context, deps Dependencies, tenantID string, store tenantadmin.Store, pending *tenantadmin.Pending, roleName string) (bool, error) {
+	kind := accountKinds[roleName]
 	// System roles are undeletable and name-immutable (no-compat-cleanup
 	// deleted the UUIDv5->UUIDv8 dual-read compatibility), so the role id is
 	// always its canonical derivation -- no resolver, no store lookup, no
 	// legacy fallback. See bootstrap.go's ProvisionTenant Step 3.
-	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
-	adminUser, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
+	roleID := role.SystemRoleID(tenantID, roleName)
+	account, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
 		WithoutEmailLoginKey: true,
 		Username:             pending.Username,
 		TenantID:             tenantID,
-		RoleIDs:              []string{adminRoleID},
+		RoleIDs:              []string{roleID},
 	})
 	if err != nil {
 		var exists *user.UsernameExistsError
 		if !errors.As(err, &exists) {
-			return false, &TenantAdminUserCreationError{Cause: err}
+			return false, kind.createErr(err)
 		}
 		// A previous attempt created the account and failed before deleting
 		// the record: adopt it.
 		lookup := userResolver(deps)
 		if lookup == nil {
-			return false, &TenantAdminUserCreationError{Cause: err}
+			return false, kind.createErr(err)
 		}
-		if adminUser, err = lookup.GetUserByUsername(ctx, tenantID, pending.Username); err != nil {
-			return false, &TenantAdminUserCreationError{Cause: err}
+		if account, err = lookup.GetUserByUsername(ctx, tenantID, pending.Username); err != nil {
+			return false, kind.createErr(err)
 		}
-		// Adopt it only if it IS that admin: an account of the same name
-		// that does not hold the tenant's Admin role is someone else's, and
-		// binding the onboarded admin's key to it would hand the admin's
-		// credential an account it was never issued for -- or hand that
-		// account's holder the admin's place.
-		if !slices.Contains(adminUser.RoleIDs, adminRoleID) {
-			return false, &PendingAdminAccountConflictError{TenantID: tenantID, Username: pending.Username}
+		// Adopt it only if it IS that account: one of the same name that
+		// does not hold the role is someone else's, and binding the
+		// onboarded key to it would hand the credential an account it was
+		// never issued for -- or hand that account's holder its place.
+		// The one exception is the admin a standard-posture tenant named as
+		// its SO: the account holding the admin role and already bound to
+		// this very credential takes the so role.
+		if !slices.Contains(account.RoleIDs, roleID) {
+			if !adminNamedAsSO(tenantID, account, pending, roleName) {
+				return false, &PendingAdminAccountConflictError{TenantID: tenantID, Username: pending.Username, Role: roleName}
+			}
+			if err := grantSORole(ctx, deps, tenantID, account); err != nil {
+				return false, err
+			}
 		}
 	}
-	c := &adminCredential{thumbprint: pending.Thumbprint, notAfter: pending.NotAfter, serial: pending.Serial}
-	if err := bindAdmin(ctx, deps, tenantID, adminUser, c); err != nil {
-		return false, err
+	if !boundTo(account, pending.Thumbprint) {
+		c := &adminCredential{thumbprint: pending.Thumbprint, notAfter: pending.NotAfter, serial: pending.Serial}
+		if err := bindAdmin(ctx, deps, tenantID, account, c, roleName); err != nil {
+			return false, err
+		}
 	}
-	deleted, err := deps.PendingAdmins.Delete(ctx, tenantID, pending)
+	deleted, err := store.Delete(ctx, tenantID, pending)
 	if err != nil {
-		return false, &PendingTenantAdminError{Op: "delete", Cause: err}
+		return false, kind.pendingErr("delete", err)
 	}
 	if !deleted {
 		// Another completion read the same record and deleted it first; the
 		// account and binding this call found or made are the ones it made.
 		return false, nil
 	}
-	deps.Logger.Info("bootstrap: pending tenant admin completed",
-		slog.String("tenant", tenantID), slog.String("admin", pending.Username))
+	deps.Logger.Info("bootstrap: pending tenant account completed",
+		slog.String("tenant", tenantID), slog.String("role", roleName), slog.String("username", pending.Username))
 	return true, nil
 }
+
+// adminNamedAsSO reports whether account is the tenant's admin that a
+// standard-posture tenant named as its SO: the pending record is the SO's,
+// the account holds the admin role, and it is bound to the pending
+// credential.
+func adminNamedAsSO(tenantID string, account *user.User, pending *tenantadmin.Pending, roleName string) bool {
+	return roleName == role.RoleNameSO &&
+		slices.Contains(account.RoleIDs, role.SystemRoleID(tenantID, role.RoleNameAdmin)) &&
+		boundTo(account, pending.Thumbprint)
+}
+
+// boundTo reports whether account carries a certificate binding for
+// thumbprint.
+func boundTo(account *user.User, thumbprint string) bool {
+	return slices.ContainsFunc(account.CertBindings, func(b user.CertBinding) bool {
+		return b.Thumbprint == thumbprint
+	})
+}
+
+// DefaultAdminCompletionBudget is AdminCompletionBounds' default Budget: the
+// longest a tenant admin's completion retries before it is left to the
+// tenant's next barrier unseal or status read.
+const DefaultAdminCompletionBudget = 2 * time.Minute
 
 // AdminCompletionBounds bounds CompletePendingTenantAdminWithin. A zero
 // field takes its default.
@@ -402,7 +505,7 @@ type AdminCompletionBounds struct {
 // withDefaults returns b with every zero field set to its default.
 func (b AdminCompletionBounds) withDefaults() AdminCompletionBounds {
 	if b.Budget <= 0 {
-		b.Budget = 2 * time.Minute
+		b.Budget = DefaultAdminCompletionBudget
 	}
 	if b.AttemptTimeout <= 0 {
 		b.AttemptTimeout = 10 * time.Second

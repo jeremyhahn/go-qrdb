@@ -216,6 +216,13 @@ func (r *BarrierUnsealRequest) barrierSecret() BarrierSecretKind {
 	return secretIf(len(r.Secret) > 0, BarrierSecretUnsealKey)
 }
 
+func (r *BarrierChangePassphraseRequest) barrierSecret() BarrierSecretKind {
+	if r == nil {
+		return ""
+	}
+	return secretIf(len(r.Current) > 0 || len(r.Next) > 0, BarrierSecretPassphrase)
+}
+
 func (r *BarrierInitializeShamirRequest) barrierSecret() BarrierSecretKind {
 	if r == nil {
 		return ""
@@ -307,6 +314,15 @@ func (r *TenantQuorumSubmitRequest) barrierSecret() BarrierSecretKind {
 	return secretIf(len(r.Share) > 0, BarrierSecretShare)
 }
 
+// barrierSecret reports the SO PIN when tenant creation enrols an SO with
+// one; a request without a PIN carries no secret and is sent as before.
+func (r *CreateTenantRequest) barrierSecret() BarrierSecretKind {
+	if r == nil {
+		return ""
+	}
+	return secretIf(r.SOPin != "", soPINSecret)
+}
+
 // barrierSecret is declared rather than promoted from QuorumSubmitRequest: the
 // promoted method dereferences a nil request.
 func (r *DatabaseQuorumSubmitRequest) barrierSecret() BarrierSecretKind {
@@ -351,6 +367,7 @@ var (
 	_ BarrierSecretCarrier = (*DatabaseBarrierConfig)(nil)
 	_ BarrierSecretCarrier = (*BarrierInitializeRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierUnsealRequest)(nil)
+	_ BarrierSecretCarrier = (*BarrierChangePassphraseRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierInitializeShamirRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierEnableEncryptionRequest)(nil)
 	_ BarrierSecretCarrier = (*BarrierGenerateRecoveryKeysRequest)(nil)
@@ -362,5 +379,6 @@ var (
 	_ BarrierSecretCarrier = (*TenantBarrierInitRequest)(nil)
 	_ BarrierSecretCarrier = (*TenantBarrierUnsealRequest)(nil)
 	_ BarrierSecretCarrier = (*TenantQuorumSubmitRequest)(nil)
+	_ BarrierSecretCarrier = (*CreateTenantRequest)(nil)
 	_ BarrierSecretCarrier = (*DatabaseQuorumSubmitRequest)(nil)
 )

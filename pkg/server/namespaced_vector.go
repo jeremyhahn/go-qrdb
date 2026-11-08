@@ -96,6 +96,27 @@ func (s *namespacedVectorService) CreateNamespace(ctx context.Context, req *serv
 	return resp, nil
 }
 
+// UpdateNamespace updates the prefixed namespace in place and strips the
+// prefix from the name it reports.
+func (s *namespacedVectorService) UpdateNamespace(ctx context.Context, req *service.UpdateNamespaceRequest) (*service.UpdateNamespaceResponse, error) {
+	var resp *service.UpdateNamespaceResponse
+	err := s.guardedWrite(func() error {
+		cp := *req
+		cp.Namespace = s.prefix + req.Namespace
+		out, err := s.inner.UpdateNamespace(ctx, &cp)
+		if err != nil {
+			return err
+		}
+		out.Namespace = s.strip(out.Namespace)
+		resp = out
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // DeleteNamespace removes the prefixed vector namespace.
 // DeleteNamespace removes the prefixed vector namespace.
 func (s *namespacedVectorService) DeleteNamespace(ctx context.Context, req *service.DeleteNamespaceRequest) (*service.DeleteNamespaceResponse, error) {

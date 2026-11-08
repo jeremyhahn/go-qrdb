@@ -312,9 +312,9 @@ An unbounded keyspace walk inside a synchronous API call would be a denial of
 service on the control plane; bottom-up refusal is what bounds the walk.
 
 The reclamation scope is nonetheless the tenant's WHOLE namespace, not just
-the identity residue, because the database catalog is node-local while the
-keyspace is replicated: a node whose catalog under-reports would otherwise
-leave a tenant's data behind with nothing left to name it.
+the identity residue: the database catalog names the tenant's databases, but
+a key outside every recorded database would otherwise be left behind with
+nothing left to name it.
 
 ### What a tenant owns
 
@@ -737,6 +737,21 @@ committed meanwhile is kept rather than refused.
   [Creating a tenant](#creating-a-tenant-onboarding-with-its-first-admin)
   describes, with the request fields `admin_username`, `admin_csr_pem` and
   `admin_cert_pem`.
+- **The tenant's security officer from tenant create**: the
+  optional `so_username`, `so_csr_pem` / `so_cert_pem`, `so_chain_pem` and
+  `so_pin`, planned beside the admin in `pkg/bootstrap/tenant_so.go`. A partial
+  set or a CSR with a certificate is refused before anything is written. Under
+  strict separation of duties an SO matching the admin by username or by SPKI
+  thumbprint is refused too; outside it an SO matching the admin by both is the
+  admin, whose account is granted `so` beside `admin`, and one matching by only
+  one of the two is refused. A distinct SO is enrolled
+  with the `so` role alone and its PIN is set with
+  `SOAuthenticator.SetSOPIN`, one PIN per tenant, as the create's last step.
+  An isolated tenant records the SO as `__sys:pending-so` beside the pending
+  admin; the account is completed right after the admin's. Both postures
+  enroll the SO alike otherwise. Under strict separation only an SO grants or
+  revokes `so`. No tenant route is SO-gated yet: the SO permissions are
+  node-barrier, cross-scope.
 - **The isolation policy**, in `pkg/tenant/isolation_policy.go`: the cluster
   floor (`ClusterIsolationPolicy`: unset, `strict` or `operator-access`,
   tighten-only) and the per-tenant opt-in (`TenantIsolationPolicy`: inherit
@@ -917,13 +932,14 @@ is in
 | Invitations and redemptions | home store | home store |
 | Permission-scope overrides | home store | home store |
 | DEK keyring | home store | home store |
+| Named credentials (`credentials:*`) | the tenant's own barrier; a `prefix` tenant has none and is refused ([../credentials/architecture.md](../credentials/architecture.md#tenant-stores)) | the tenant's own barrier |
 | Identity index (user and role id → tenant) | `system/__sys:identity_idx/…` | **removed**; see [Identity routing without a global index](#identity-routing-without-a-global-index) |
 | Tenant CA private key and CA certificate | home store; the public CA certificate is also published at `__sys:cert_ca_pub/{t}/` | home store, with the public certificate published |
 | Issued-certificate records | home store | home store |
 | Revocation of tenant-issued certificates | `__sys:certs_revoked/{serial}` (global) | home store, enforced by the serving replicas when they authenticate the tenant's users |
 | SO PIN commitment | `__sys:so-pin-commit/{t}` (unconfined root store) | each node's tenant bootstrap record (below), because it gates operations on a sealed tenant |
 | Tenant officer roster | tenant barrier store; **falls back to the replicated system store before init** | Home store, plus the unseal roster in each node's tenant bootstrap record. Before init, the roster is held in memory by the init ceremony. |
-| Database catalog | node-local `meta.json` on the creating node only | home store, as one replicated catalog for the tenant |
+| Database catalog | home store, one record per database under `__sys:dbcatalog/{t}/` | home store |
 | Collection work journal, drop fence, reclaim index, locks, leases, sequences, row locks, index catalog, time series | system shard under `{t}/…` and `__sys:…/{t}/…` | the database's own store, per the databases binding design. Tenant-wide journals go to the home store. |
 | Tenant-scope encryption-migration records | `__sys:encmig/{t}/{db}` | home store |
 | Audit events about the tenant's identities and data | one node-local file shared by every tenant | a per-tenant, hash-chained trail replicated in the tenant's home group, under the tenant's key (S9). Platform events about the tenant go to the platform trail. |
@@ -1467,7 +1483,7 @@ the init statement is written through the existing guarded write.
   isolated tenant is not admitted until every member advertises the feature.
 - **Not yet active:** creating a `barrier`, `volume` or `raft` tenant, or
   changing an existing tenant to one of those types, is refused with
-  `*featuregate.NotActiveError{Feature: per-node-barrier-keys}` (503,
+  `*feature.NotActiveError{Feature: per-node-barrier-keys}` (503,
   retryable after rollout) and writes nothing. A `prefix` tenant is unaffected.
   Recording an init statement is refused the same way.
 - **Active:** on a clustered node, once every member advertises the feature;

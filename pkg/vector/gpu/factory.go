@@ -76,17 +76,17 @@ func (f *GPUIndexFactory) createRemoteIndex() (interfaces.HNSWIndex, error) {
 // createGPUIndex selects the appropriate GPU index type based on the configured
 // GPUIndexType and wraps it in a GPUIndexAdapter.
 func (f *GPUIndexFactory) createGPUIndex(config *interfaces.HNSWConfig) (interfaces.HNSWIndex, error) {
+	// A GPU index is allocated for one fixed dimension, so it is built for the
+	// namespace's dimension and refuses a config that does not carry one.
+	if config.Dimensions <= 0 {
+		return nil, &FactoryError{Op: "gpu factory: create gpu index", Cause: ErrInvalidDimension}
+	}
 	// Default to CAGRA as the highest-throughput GPU index.
-	// Dimension is inferred from the HNSW config's EfSearch heuristic;
-	// callers that need a specific dimension should embed it in a custom config.
-	// Here we use the HNSW M parameter as a proxy for expected dimension buckets,
-	// but a production caller would pass dimension explicitly. We default to 128.
-	const defaultDimension = 128
-	idx, err := NewCAGRAIndex(f.config, defaultDimension, config.DistanceMetric)
+	idx, err := NewCAGRAIndex(f.config, config.Dimensions, config.DistanceMetric)
 	if err != nil {
 		return nil, err
 	}
-	return NewGPUIndexAdapter(idx, defaultDimension), nil
+	return NewGPUIndexAdapter(idx, config.Dimensions), nil
 }
 
 // createFallbackIndex delegates index creation to the CPU fallback factory.

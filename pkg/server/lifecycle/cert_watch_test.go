@@ -33,18 +33,35 @@ type certProviderStub struct {
 
 // certProviderWithWatch adds certDeletionWatcher to certProviderStub, so a
 // test can control WatchForDeletions' outcome and observe the ctx it was
-// called with.
+// called with. Like DefaultCertProvider's, its watchers run until that ctx
+// is canceled and then close done.
 type certProviderWithWatch struct {
 	certProviderStub
 	watchErr   error
 	watchCalls int
 	gotCtx     context.Context
+	running    chan struct{} // closed once the watchers run
+	exited     chan struct{} // closed once they have returned
 }
 
-func (s *certProviderWithWatch) WatchForDeletions(ctx context.Context) error {
+func newCertProviderWithWatch(watchErr error) *certProviderWithWatch {
+	return &certProviderWithWatch{watchErr: watchErr, running: make(chan struct{}), exited: make(chan struct{})}
+}
+
+func (s *certProviderWithWatch) WatchForDeletions(ctx context.Context) (<-chan struct{}, error) {
 	s.watchCalls++
 	s.gotCtx = ctx
-	return s.watchErr
+	if s.watchErr != nil {
+		return nil, s.watchErr
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(s.running)
+		<-ctx.Done()
+		close(s.exited)
+	}()
+	return done, nil
 }
 
 var _ certDeletionWatcher = (*certProviderWithWatch)(nil)
@@ -73,12 +90,12 @@ func TestWatchCertProviderEvictions_ProviderWithoutWatchSupportIsNoOp(t *testing
 
 // TestWatchCertProviderEvictions_DelegatesToWatchForDeletions proves a
 // CertProvider that DOES implement certDeletionWatcher has
-// WatchForDeletions called with the exact ctx passed in, and its result
-// returned verbatim.
+// WatchForDeletions called once, under a ctx the caller's cancellation ends,
+// and its error returned verbatim.
 func TestWatchCertProviderEvictions_DelegatesToWatchForDeletions(t *testing.T) {
-	watcher := &certProviderWithWatch{}
+	watcher := newCertProviderWithWatch(nil)
 	n := &Node{CertProv: watcher}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := WatchCertProviderEvictions(ctx, n); err != nil {
 		t.Fatalf("WatchCertProviderEvictions: %v", err)
@@ -86,13 +103,80 @@ func TestWatchCertProviderEvictions_DelegatesToWatchForDeletions(t *testing.T) {
 	if watcher.watchCalls != 1 {
 		t.Errorf("WatchForDeletions called %d times, want 1", watcher.watchCalls)
 	}
-	if watcher.gotCtx != ctx {
-		t.Error("WatchForDeletions was not called with the exact ctx passed in")
+	cancel()
+	<-watcher.exited
+	if watcher.gotCtx.Err() == nil {
+		t.Error("canceling the caller's ctx did not cancel the watchers' ctx")
 	}
 
-	watcher2 := &certProviderWithWatch{watchErr: errors.New("hub unavailable")}
+	watcher2 := newCertProviderWithWatch(errors.New("hub unavailable"))
 	n2 := &Node{CertProv: watcher2}
-	if err := WatchCertProviderEvictions(ctx, n2); !errors.Is(err, watcher2.watchErr) {
+	if err := WatchCertProviderEvictions(context.Background(), n2); !errors.Is(err, watcher2.watchErr) {
 		t.Errorf("WatchCertProviderEvictions = %v, want %v", err, watcher2.watchErr)
 	}
 }
+
+// TestWatchCertProviderEvictions_StopWaitsForTheWatchers proves the eviction
+// watchers are the node's own work: Stop cancels them, under a caller ctx
+// that never ends, and returns only once they have.
+func TestWatchCertProviderEvictions_StopWaitsForTheWatchers(t *testing.T) {
+	watcher := newCertProviderWithWatch(nil)
+	n := &Node{CertProv: watcher}
+	if err := WatchCertProviderEvictions(context.Background(), n); err != nil {
+		t.Fatalf("WatchCertProviderEvictions: %v", err)
+	}
+	<-watcher.running
+
+	if err := n.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-watcher.exited:
+	default:
+		t.Fatal("a cert eviction watcher was still running when Stop returned")
+	}
+}
+
+// TestWatchCertProviderEvictions_AfterStopLeavesNothingRunning proves
+// watchers started on a node that has already stopped are canceled and
+// awaited before the call returns, rather than left running unsupervised.
+func TestWatchCertProviderEvictions_AfterStopLeavesNothingRunning(t *testing.T) {
+	watcher := newCertProviderWithWatch(nil)
+	n := &Node{CertProv: watcher}
+	if err := n.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	err := watchCertEvictions(context.Background(), &n.work, watcher)
+	if err != nil {
+		t.Fatalf("watchCertEvictions: %v", err)
+	}
+	select {
+	case <-watcher.exited:
+	default:
+		t.Fatal("a cert eviction watcher started after Stop was still running when the call returned")
+	}
+}
+
+// TestWatchCertProviderEvictions_NoWatchServiceStartsNoWork proves a
+// provider without a watch service (WatchForDeletions returns a nil done)
+// adds nothing for Stop to wait on.
+func TestWatchCertProviderEvictions_NoWatchServiceStartsNoWork(t *testing.T) {
+	n := &Node{CertProv: noWatchServiceProvider{}}
+	if err := WatchCertProviderEvictions(context.Background(), n); err != nil {
+		t.Fatalf("WatchCertProviderEvictions: %v", err)
+	}
+	if err := n.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// noWatchServiceProvider is DefaultCertProvider built without
+// WithWatchService: WatchForDeletions starts nothing and returns a nil done.
+type noWatchServiceProvider struct{ certProviderStub }
+
+func (noWatchServiceProvider) WatchForDeletions(context.Context) (<-chan struct{}, error) {
+	return nil, nil
+}
+
+var _ certDeletionWatcher = noWatchServiceProvider{}

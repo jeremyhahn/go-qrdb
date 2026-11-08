@@ -1,7 +1,8 @@
 # Storage Engines — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED — pending owner
+> decision — for the object-storage LSM target design (see "Target design" at
+> the end).** · Scope: go-qrdb · Last verified: 2026-10-27
 
 ## Exported surface
 
@@ -59,7 +60,7 @@ func New(dir string, opts ...Option) (*Engine, error)
 type Option func(*options)
 type Encryptor interface {      // satisfied by *atrest.Encryptor
 	Enabled() bool
-	Wrap(base vfs.FS) vfs.FS
+	Wrap(base filesys.FS) filesys.FS
 }
 func WithEncryptor(enc Encryptor) Option   // nil or disabled: plaintext
 
@@ -73,20 +74,42 @@ type AtRestMismatchError struct{ Dir, Found, Want string }   // "plaintext" | "e
 ```go
 func New(barrier *seal.StorageBarrier) *Encryptor   // nil barrier: disabled
 func (e *Encryptor) Enabled() bool
-func (e *Encryptor) Apply(o *pebble.Options)        // Pebble: Options.FS
-func (e *Encryptor) FS() vfs.FS
-func (e *Encryptor) Wrap(base vfs.FS) vfs.FS        // file engine: over its base FS
+func (e *Encryptor) FS() filesys.FS
+func (e *Encryptor) Wrap(base filesys.FS) filesys.FS   // over any store's base FS
 ```
+
+`pkg/filesys` is the store-neutral file-system interface (standard library
+only) that `pkg/seal/encfs` and `pkg/atrest` are written against, so an
+embedder that never opens Pebble does not compile it. `pkg/storage/pebble`
+owns the one adapter between it and Pebble's `vfs.FS`:
+
+```go
+func VFS(fsys filesys.FS) vfs.FS
+func FromVFS(fs vfs.FS) filesys.FS                             // nil: vfs.Default
+func WrapVFS(base vfs.FS, wrap func(filesys.FS) filesys.FS) vfs.FS
+
+opts.FS = pebblestore.WrapVFS(opts.FS, enc.Wrap)               // a Pebble store, encrypted
+```
+
+`filesys.Default.OpenDir` returns a handle whose `Sync` fsyncs the directory,
+except on Windows, where `FlushFileBuffers` fails on a directory handle and
+the `Sync` is a no-op, as in Pebble's own `vfs.Default`. A Pebble store opened
+through `pebblestore.VFS(enc.FS())` therefore syncs its database directory on
+Windows exactly as one over `vfs.Default` does.
 
 ```go
 // pkg/server/lifecycle
 func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atrest.Encryptor,
-	objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error)
+	storageCfg qrdbconfig.StorageConfig) (storage.Storage, *pebble.DB, error)
 ```
 
 `NewLocalStorage` opens `pebble` and `file` through `enc`; it is the
 constructor every standalone node store goes through — the daemon, the SDK
-node and the embedded server. A raft replica's `file` storage takes the same
+node and the embedded server. It opens `pebble` with `storageCfg`'s
+`CacheSize`, `WALDir` and `MaxOpenFiles` (a zero keeps
+`pebbleStorage.DefaultConfig`'s value) and `objstore` with its `Objstore`
+section; the embedded server's `standalone.ServerConfig` carries the three
+Pebble fields itself. A raft replica's `file` storage takes the same
 encryptor from `statemachine.StorageConfig.Encryptor`.
 
 `pkg/database` — re-encrypting a `file` store under a new key, the file
@@ -186,13 +209,67 @@ The volume pool surface is in
 ```yaml
 storage:
   backend: pebble        # pebble | memory | file | objstore
-  cache_size: 0          # pebble block cache bytes; 0 = pebble default
+  cache_size: 0          # pebble block cache bytes; 0 = 512 MiB
   wal_dir: ""            # separate pebble WAL directory; empty = data dir
-  max_open_files: 0      # 0 = pebble default
+  max_open_files: 0      # 0 = 2000
   objstore:              # used when a backend is objstore
     provider: local      # local | memory | s3 | gcs | azure
-    settings: {}         # passed verbatim to the go-objstore factory
+    settings: {}         # passed verbatim to the go-objstore factory; never a credential
+    credentials:         # optional; empty = the provider's default chain
+      key_file: ""       # owner-only file holding the access key ID
+      secret_file: ""    # owner-only file holding the secret (alone: an account key)
 ```
+
+`cache_size`, `wal_dir` and `max_open_files` tune the standalone data plane's
+Pebble store, the one `NewLocalStorage` opens. A raft replica's state machines
+open their own Pebble stores and do not read them.
+
+The provider credential is a **file reference**, never a value. A credential
+setting in `settings` (go-objstore's `common.RejectCredentialSettings` list,
+e.g. `secret_key`, `access_key_id`, `account_key`) is refused by `qrdbd start`
+at load with a `config.ValidationError` on `storage.objstore.settings`, through
+the storage seam's `objstore.RejectCredentialSettings` (an
+`*objstore.CredentialSettingError` naming the setting), and by
+`objstore.New` at every open, through the same function and before any
+provider's creator runs, so a creator added through `objstore.RegisterProvider`
+that does not delegate to a go-objstore `Configure` never receives the value;
+`pkg/config` itself does not import go-objstore, because a lean standalone
+embedder compiles it without that module. Any other key under `credentials` is
+refused at load with a `config.UnknownFieldError`. No refusal carries the
+value. `objstore.New` takes `objstore.WithCredentialFiles`: it reads each file
+through `secure.ReadFileHandle`, straight into a go-enclave locked-memory
+handle (one trailing line ending stripped; a file other than a regular,
+owner-owned file of mode `0600` or tighter, empty, or over 64 KiB is refused),
+passes the handles to go-objstore as a `common.Credentials` for the data and
+the journal store, and destroys both before it returns, on success and on
+every failed-open path: go-objstore backends take what they need during
+configuration and retain no handle. Before reading any file, `objstore.New`
+refuses a reference the provider would ignore with an
+`objstore.CredentialIgnoredError` naming the provider, the credential and the
+file: at the pinned go-objstore v0.9.0-alpha, `s3` reads the key and the
+secret, `azure` reads only the secret (as the account key), and `gcs` (Google
+application default credentials), `local` and `memory` read none. Accepting
+such a reference would open the store under the provider's ambient identity
+while the operator believes the configured credential is in use. A provider
+added through `objstore.RegisterProvider` declares its reads there instead;
+the pinned table is never written, and a name go-objstore ships is refused
+even when its build tag leaves it out of the binary, so a registration cannot
+change what a shipped provider reads, nor be answered with a shipped
+provider's pinned reads in place of its own declaration. The registered
+creator lives in the seam's own `sync.Map`, which `New` consults before
+go-objstore's factory: the factory keeps its creators in an unsynchronized
+map, filled only by its package initialisation, so writing a registration
+there would race every concurrent registration and open. `New` resolves the
+provider once, before any file is read, and both checks the reads and opens
+the stores with that one resolution: a name neither registry knows is refused
+as unsupported then, so a registration completing during the open can never
+supply a creator that skipped the credential check. The
+file is opened with `O_NONBLOCK` and every check runs on the opened descriptor
+(`fstat`), so a FIFO or device is refused at once instead of blocking the
+open. File references were chosen over
+environment variables (readable in `/proc/<pid>/environ` and copied into an
+unzeroizable Go string) and over `pkg/credentials` (which stores through a
+`StorageBarrier` and so cannot hold the credential that opens the storage).
 
 `pkg/config.StorageConfig` also carries `volume_pools` and
 `allow_degraded_volume_boot`; see
@@ -200,12 +277,20 @@ storage:
 
 A composer can replace the configured backend of a **standalone** node's data
 plane: `server.WithStorageFactory` / `node.WithStorageFactory` take a
-`func(dataDir string, dataPlaneFS vfs.FS) (storage.Storage, error)`, and the
+`func(dataDir string, dataPlaneFS filesys.FS) (storage.Storage, error)`, and the
 node closes what it returns. A factory that writes files must route its I/O
-through the `vfs.FS` it is given so the data stays under the barrier. A
+through the `filesys.FS` it is given (a Pebble store through
+`pebblestore.VFS(dataPlaneFS)`) so the data stays under the barrier. The
+data-plane FS names host paths (`filesys.HostFS`), and the adapter takes its
+database lock through Pebble's own default file system: a host file's lock
+belongs to the process, so every Pebble store in the process locks through
+that one owner, whichever way it was opened, with the platform's own lock
+(`LockFileEx` on Windows). Such a store holds its database lock whether or not
+the barrier is enabled; a second open of a held directory, in this process or
+another, fails rather than waits. A
 **clustered** node's `disk` and `fast` replicas take a composer's storage
 through `node.WithReplicaStorageFactory`, a
-`func(shardID, replicaID uint64, dir string, dataPlaneFS vfs.FS) (storage.Storage, error)`
+`func(shardID, replicaID uint64, dir string, dataPlaneFS filesys.FS) (storage.Storage, error)`
 called once per replica with that replica's own directory; the node closes
 each storage with its replica, and a factory error fails the replica's open
 with `statemachine.ReplicaStorageOpenError`. The clustered MVCC store and the
@@ -238,6 +323,11 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Iterator created before `Close` and advanced after it | serves its pinned version; never panics. `Close` reported the leak | — |
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
+| Objstore provider credential inline in `storage.objstore.settings` or `credentials` | refused by `qrdbd start` at load (`config.ValidationError`, `config.UnknownFieldError`) and by `objstore.New` at open (`common.CredentialSettingError`), naming the key, never the value | **yes** |
+| Objstore `key_file` without `secret_file` | refused at load (`config.ValidationError` on `storage.objstore.credentials.secret_file`) and at open (`objstore.ErrCredentialKeyWithoutSecret`) | **yes** |
+| Objstore credential file referenced for a provider that does not read it (`key_file` on `azure`; either file on `gcs`, `local` or `memory`) | refused at open, before any file is read (`objstore.CredentialIgnoredError`), naming the provider and the file | **yes** |
+| Objstore credential file missing, not a regular file (a FIFO is refused without blocking), not owner-only, empty or too large | refused at open (`objstore.CredentialFileError` wrapping `secure.FileHandleError` / `FileModeError` / `FileOwnerError`) naming the file, never the value | **yes** |
+| Objstore credential handle unreadable inside go-objstore | refused at open (`objstore.CredentialUnavailableError`) naming the files | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
 | Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
@@ -346,7 +436,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   property tests); objstore object-name encoding. Every function has a happy
   path and an error path.
 - **Parity cells**: the storage parity tests and the `sdk/go/conformance`
-  matrix run every engine through the same cells; the file-engine cells run on
+  matrix run every engine through the same cells. The binary-key cells
+  (`pkg/storage/binary_parity_test.go`, `binary_key_parity_test.go`) hold every
+  engine to the same answer for every single byte, a NUL-prefixed table under
+  scans and `List`, keys shaped like paths (separators, `..`, a drive letter,
+  control characters, an embedded NUL), a key long enough that objstore names
+  it by hash, and binary keys through a batch, a rollback and a snapshot. The
+  file-engine cells run on
   tmpfs (`pkg/testutil/memdir`), so a deadline measures the code, not the disk.
 - **Fault-injection seams**: a slow fake sync for group commit, a failing
   record sync recovered from the journal, failing lock and unlock calls, and
@@ -372,7 +468,144 @@ win however deeply the condition is wrapped, so the wrapper rows
 `GET` meeting a dying node and a `PUT` meeting one are the same fact and get
 the same status.
 
-## Not built
+## Target design: `objstore` as Pebble remote storage
 
-`objstore` as Pebble remote storage (an LSM segment layout) is not
-implemented; see [architecture.md](architecture.md#not-built).
+> See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout)
+> for the shape, the direction it proposes, and the decisions (OS-1..OS-7)
+> this contract assumes. It is future work under the SPEC row
+> `object-storage-lsm`. **Nothing below is implemented**, and no
+> configuration key, type or error named below exists yet.
+
+### Exported surface (target)
+
+`pkg/storage/objstore` stops exporting `Engine`/`Batch`/`Iterator`/`Snapshot`.
+It exports a `remote.Storage` adapter and nothing else that is KV-shaped:
+
+```go
+// NewRemote constructs a Pebble remote.Storage backed by a go-objstore
+// provider, resolved exactly as New resolves it today. enc is the
+// barrier-driven encrypting wrapper (OS-4); a nil or disabled encryptor is a
+// no-op, matching pkg/atrest.Encryptor's convention.
+func NewRemote(provider string, settings map[string]string, enc *atrest.Encryptor) (remote.Storage, error)
+
+// Locator builds the remote.Locator for a (provider, prefix) pair qrdb
+// controls; it never embeds a qrdb key.
+func Locator(provider, prefix string) remote.Locator
+```
+
+`pkg/storage/pebble` gains one construction option:
+
+```go
+// WithRemote configures the Engine to keep its SSTables on remote storage
+// reached through store, under locator, using strategy to decide which
+// levels are remote (CreateOnSharedAll for a local binding — every level
+// remote; CreateOnSharedLower is available but not used by phase 1).
+// The local dir passed to pebble.New still roots the WAL, MANIFEST and
+// block cache (OS-2) — WithRemote narrows what the local dir holds, it does
+// not replace it.
+func WithRemote(store remote.Storage, locator remote.Locator, strategy remote.CreateOnSharedStrategy) Option
+```
+
+A `*pebble.DB` opened with `WithRemote` is constructed with a `CreatorID`
+(OS-3): one per owning instance, generated once and persisted as a small local
+marker file beside the WAL/MANIFEST directory — never derived from a qrdb
+key, never shared between instances.
+
+### Invariants (target, additive to the ones above)
+
+- **An `objstore`-backed engine is a `pebble.Engine`.** It is not a second KV
+  implementation: `storage.Storage`, `Batch`, `Iterator`, `Snapshot`, the
+  closed-store contract (`ErrStorageClosed`, the PebbleDB reader gate) all
+  apply unchanged. Anything this document says about the `pebble` engine
+  elsewhere in this file is true of `objstore` too, because it is the same
+  code with one `Option` added.
+- **Segment object names never derive from a qrdb key.** They are Pebble's own
+  `<hash>-<creator-id>-<file-num>.sst` / `.blob` naming
+  (`objstorageprovider/remote_obj_name.go`). A review that finds a qrdb key,
+  tenant id, or database name embedded in an object name sent to go-objstore
+  on this path is a defect.
+- **Encryption happens in the `remote.Storage` adapter, not in `vfs.FS`.**
+  `pkg/atrest.Encryptor.Apply` continues to cover the local WAL/MANIFEST/local
+  SSTables exactly as today; it does **not** reach objects written through
+  `WithRemote`. The adapter encrypts the whole object payload with the same
+  `seal.StorageBarrier` AEAD before `CreateObject` and decrypts after
+  `ReadObject`. A barrier-sealed database with `WithRemote` configured and no
+  working encryptor fails closed at open, matching
+  `statemachine.SMStorageUnencryptedError`'s existing precedent for
+  `file`-backed state machines.
+- **One prefix, one `CreatorID`, one owning instance — never shared.** A
+  replacement instance (replacement Raft replica, or a reassigned local-binding
+  owner) never reopens a previous instance's prefix; it gets a fresh one. This
+  is OS-3's answer and is a correctness invariant, not a cost optimization: two
+  live Pebble instances writing under one `CreatorID`/prefix would corrupt each
+  other's manifest.
+- **`glacier` and `azurearchive` are refused at construction.** `NewRemote`
+  returns a typed error (`ArchiveTierUnsupportedError`, new) for a provider
+  go-objstore registers only as an `Archiver`, before any attempt to open a
+  Pebble store against it. These stay backup/archive destinations only (see
+  [../backup-restore/architecture.md](../backup-restore/architecture.md)).
+- **No ranged read yet (OS-6).** Until go-objstore exposes one, `ReadObject`
+  fetches the whole object once per open and serves `ReadAt` from a local
+  cache keyed by object name. This is a documented performance limitation of
+  phase 1, not a silent one: the adapter's doc comment says so, and the real
+  fix is the ranged read requested from go-objstore.
+- **The provider credential crosses as go-objstore takes it.** `NewRemote`
+  passes the provider and its settings to go-objstore as `New` does today;
+  when the SPEC row `object-storage-credential-handle` lands, `NewRemote`
+  takes the same protected-memory credential handle and never holds a
+  plaintext copy.
+
+### Configuration (target)
+
+The keys a node reads today select the backend and its provider, and keep
+their meaning:
+
+```yaml
+storage:
+  backend: objstore      # selects the LSM layout once it ships
+  objstore:
+    provider: s3         # local | memory | s3 | gcs | azure
+    settings:            # passed verbatim to the go-objstore factory
+      bucket: qrdb-data
+    create_on_shared: all  # proposed, not a key today: all | lower
+```
+
+The bucket prefix a store writes under is go-qrdb's to choose, per owning
+instance (OS-3), and never carries a key. The WAL, MANIFEST and block cache
+live in the store's local data directory, resolved as the `pebble` engine's
+is — the node's data directory or a volume pool
+([../volume-pools/](../volume-pools/)) — so this design adds no second
+local-path mechanism and no `local_dir` key. `create_on_shared` is the only
+proposed key; whether it is exposed at all, or fixed at `all` for a
+non-replicated binding, is decided with OS-7.
+
+### Error semantics (target, additive)
+
+| Condition | Behavior | Fails closed? |
+|---|---|---|
+| `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
+| Store written in the encoded-name layout (`qrdb-objstore-format` version `2`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
+| Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
+| A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
+| go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |
+| `raft.sm_storage`/`state_storage: objstore` before the phase-3 gate accepts it | refused, as today | **yes** |
+
+### Test strategy (target, additive)
+
+- The existing per-engine conformance suite runs over `pebble+remote`
+  (local-provider go-objstore) exactly as it runs over `memory`/`file`/
+  `pebble` today.
+- **Encryption round trip**: barrier on, write, restart, read — object bytes
+  on the local-provider backing directory are not the plaintext; barrier off,
+  same round trip, object bytes equal the plaintext (today's documented
+  behavior for `pebble`'s local files, now asserted for remote objects too).
+- **Provider refusal**: `NewRemote("glacier", ...)` and
+  `NewRemote("azurearchive", ...)` return `ArchiveTierUnsupportedError` before
+  any network call.
+- **Crash safety**: kill `-9` mid-compaction and mid-flush; reopen must
+  succeed with no corruption, matching the existing `pebble` engine's crash
+  test, parametrized onto `pebble+remote`.
+- **Name hygiene (build gate)**: a test asserting no object name
+  `pkg/storage/objstore` sends to go-objstore's `Put`/`CreateObject`
+  round-trips through anything shaped like a qrdb key — a regression guard for
+  the invariant above.

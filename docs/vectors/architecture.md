@@ -28,8 +28,14 @@ its dimensionality, distance metric and index type at creation:
 | Property | Values | Default |
 |---|---|---|
 | dimension | uint32 | — (required) |
-| distance metric | `cosine`, `euclidean`, `dot_product` | `euclidean` |
+| distance metric | `cosine`, `euclidean`, `dot_product`, `manhattan` | `euclidean` |
 | index type | `hnsw`, `flat`, `ivf_flat` | `hnsw` |
+
+`manhattan` joined the namespace record's metric values after the other three,
+so a namespace of any index type using it waits for the `vector-manhattan`
+cluster feature: until it is active in the cluster, the create is
+refused as a failed precondition rather than written in a form an older member
+cannot apply.
 
 Four search modes, deliberately distinct rather than one overloaded call:
 
@@ -41,7 +47,9 @@ Four search modes, deliberately distinct rather than one overloaded call:
 
 Index maintenance is explicit and asynchronous: `RebuildIndex` and
 `CompactNamespace` return immediately and expose progress endpoints
-(`GetRebuildProgress`, `GetCompactionProgress`).
+(`GetRebuildProgress`, `GetCompactionProgress`). The vector service owns
+those background jobs: closing it cancels them and waits for them, and the
+node closes it before the vector storage beneath it.
 
 ### Alternatives rejected
 

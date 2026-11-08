@@ -30,6 +30,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -122,13 +123,13 @@ func TestStartFeatureGate_RefusesAnActivatedFeatureThisBinaryLacks(t *testing.T)
 	store := map[string][]byte{featuregate.ActivationPrefix + "future-opcode": []byte(`{}`)}
 	var unsupported *featuregate.UnsupportedFeatureError
 
-	_, err := startFeatureGate(context.Background(), nil, gateServices(store), nil)
+	_, err := startFeatureGate(context.Background(), nil, gateServices(store), nil, nil)
 	require.ErrorAs(t, err, &unsupported)
-	assert.Equal(t, featuregate.Feature("future-opcode"), unsupported.Feature)
+	assert.Equal(t, feature.Feature("future-opcode"), unsupported.Feature)
 
 	g := soloGate(t)
 	t.Cleanup(func() { _ = g.Close() })
-	_, err = startFeatureGate(context.Background(), g, gateServices(store), nil)
+	_, err = startFeatureGate(context.Background(), g, gateServices(store), nil, nil)
 	require.ErrorAs(t, err, &unsupported)
 }
 
@@ -136,7 +137,7 @@ func TestStartFeatureGate_RefusesAnActivatedFeatureThisBinaryLacks(t *testing.T)
 // implements is no obstacle.
 func TestStartFeatureGate_WithoutAGateOnlyChecks(t *testing.T) {
 	store := map[string][]byte{featuregate.ActivationPrefix + string(featuregate.GuardedWrites): []byte(`{}`)}
-	closer, err := startFeatureGate(context.Background(), nil, gateServices(store), nil)
+	closer, err := startFeatureGate(context.Background(), nil, gateServices(store), nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, closer.Close())
 }
@@ -146,7 +147,7 @@ func TestStartFeatureGate_WithoutAGateOnlyChecks(t *testing.T) {
 func TestStartFeatureGate_AdvertisesAndActivates(t *testing.T) {
 	store := map[string][]byte{}
 	g := soloGate(t)
-	closer, err := startFeatureGate(context.Background(), g, gateServices(store), nil)
+	closer, err := startFeatureGate(context.Background(), g, gateServices(store), nil, nil)
 	require.NoError(t, err)
 	assert.True(t, g.Activated(featuregate.GuardedWrites))
 	_, recorded := store[featuregate.ActivationPrefix+string(featuregate.GuardedWrites)]
@@ -175,7 +176,7 @@ func TestStartFeatureGate_DegradesWhenLeaseIsUnavailable(t *testing.T) {
 	g := soloGate(t)
 	t.Cleanup(func() { _ = g.Close() })
 
-	closer, err := startFeatureGate(context.Background(), g, svc, nil)
+	closer, err := startFeatureGate(context.Background(), g, svc, nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, closer.Close())
 	assert.False(t, g.Activated(featuregate.GuardedWrites),
@@ -248,7 +249,7 @@ func TestStartFeatureGate_BoundsEveryStartRead(t *testing.T) {
 		return list(ctx, prefix)
 	}
 
-	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil)
+	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil, nil)
 	mu.Lock()
 	returned = true
 	got := unbounded
@@ -266,7 +267,7 @@ func TestStartFeatureGate_AdvertisementOutlivesTheAttempt(t *testing.T) {
 	leases := &countingLeaseServicer{}
 	svc.Lease = leases
 
-	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil)
+	closer, err := startFeatureGate(context.Background(), soloGate(t), svc, nil, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = closer.Close() })
 	require.Eventually(t, func() bool { return leases.keepAlives.Load() > 0 },
@@ -278,7 +279,7 @@ func TestStartFeatureGate_AdvertisementOutlivesTheAttempt(t *testing.T) {
 // services are not wired fails at the embedded client rather than start an
 // advertisement it cannot write.
 func TestStartFeatureGate_RefusesANodeWithoutServices(t *testing.T) {
-	closer, err := startFeatureGate(context.Background(), soloGate(t), &lifecycle.Node{}, nil)
+	closer, err := startFeatureGate(context.Background(), soloGate(t), &lifecycle.Node{}, nil, nil)
 	require.Error(t, err)
 	assert.Nil(t, closer)
 }

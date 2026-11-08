@@ -119,7 +119,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_Success(t *testing.T) {
 	}
 
 	// Verify the barrier was registered and initialized (unsealed).
-	status, err := mgr.BarrierStatus("testdb")
+	status, err := mgr.BarrierStatus("testdb", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestDatabaseBarrierManager_EnsureBarrier_DisabledNoop(t *testing.T) {
 	}
 
 	// Verify no barrier was registered.
-	_, err = mgr.BarrierStatus("testdb")
+	_, err = mgr.BarrierStatus("testdb", "")
 	if err == nil {
 		t.Error("expected error for unregistered database barrier")
 	}
@@ -160,9 +160,59 @@ func TestDatabaseBarrierManager_EnsureBarrier_NilConfig(t *testing.T) {
 	}
 
 	// Verify no barrier was registered.
-	_, err = mgr.BarrierStatus("testdb")
+	_, err = mgr.BarrierStatus("testdb", "")
 	if err == nil {
 		t.Error("expected error for unregistered database barrier")
+	}
+}
+
+func TestDatabaseBarrierManager_RegisterBarrier_Success(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+
+	err := mgr.RegisterBarrier("reg-barrier-db", "", cfg, storage)
+	if err != nil {
+		t.Fatalf("RegisterBarrier: %v", err)
+	}
+
+	// Barrier should be registered but sealed (no init was done).
+	status, err := mgr.BarrierStatus("reg-barrier-db", "")
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if !status.Sealed {
+		t.Error("expected barrier to be sealed after RegisterBarrier (not initialized)")
+	}
+}
+
+func TestDatabaseBarrierManager_RegisterBarrier_DisabledNoop(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	cfg := &DatabaseBarrierConfig{Enabled: false}
+
+	err := mgr.RegisterBarrier("disabled-db", "", cfg, storage)
+	if err != nil {
+		t.Fatalf("RegisterBarrier with disabled config returned unexpected error: %v", err)
+	}
+
+	_, err = mgr.BarrierStatus("disabled-db", "")
+	if err == nil {
+		t.Error("expected error for unregistered (disabled) database barrier")
+	}
+}
+
+func TestDatabaseBarrierManager_RegisterBarrier_NilConfig(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	storage := seal.NewMemoryBackend()
+
+	if err := mgr.RegisterBarrier("nil-cfg-db", "", nil, storage); err != nil {
+		t.Fatalf("RegisterBarrier with nil config returned unexpected error: %v", err)
+	}
+	if _, err := mgr.BarrierStatus("nil-cfg-db", ""); err == nil {
+		t.Error("BarrierStatus after RegisterBarrier(nil config) = nil error, want no barrier registered")
 	}
 }
 
@@ -208,11 +258,11 @@ func TestDatabaseBarrierManager_SealDatabase_Success(t *testing.T) {
 	}
 
 	// Seal the barrier.
-	if err := mgr.SealDatabase("testdb"); err != nil {
+	if err := mgr.SealDatabase("testdb", ""); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
 
-	status, err := mgr.BarrierStatus("testdb")
+	status, err := mgr.BarrierStatus("testdb", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -224,7 +274,7 @@ func TestDatabaseBarrierManager_SealDatabase_Success(t *testing.T) {
 func TestDatabaseBarrierManager_SealDatabase_NotFound(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 
-	err := mgr.SealDatabase("nonexistent")
+	err := mgr.SealDatabase("nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for sealing nonexistent database barrier")
 	}
@@ -234,6 +284,59 @@ func TestDatabaseBarrierManager_SealDatabase_NotFound(t *testing.T) {
 	}
 	if sealErr.Name != "nonexistent" {
 		t.Errorf("expected Name=nonexistent, got %s", sealErr.Name)
+	}
+}
+
+// TestDatabaseBarrierManager_TenantsHoldingOneName: a database name is unique
+// only within its tenant, so two tenants each holding "orders" get two
+// barriers, each under its own credentials, and sealing, unsealing or removing
+// one leaves the other as it was.
+func TestDatabaseBarrierManager_TenantsHoldingOneName(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	ctx := context.Background()
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	acmeCreds := func() seal.Credentials { return seal.MustCredentials(ctx, []byte("acme-orders-pass")) }
+	betaCreds := func() seal.Credentials { return seal.MustCredentials(ctx, []byte("beta-orders-pass")) }
+
+	if err := mgr.EnsureBarrier(ctx, "orders", "acme", cfg, seal.NewMemoryBackend(), acmeCreds()); err != nil {
+		t.Fatalf("EnsureBarrier acme: %v", err)
+	}
+	if err := mgr.EnsureBarrier(ctx, "orders", "beta", cfg, seal.NewMemoryBackend(), betaCreds()); err != nil {
+		t.Fatalf("EnsureBarrier beta: %v", err)
+	}
+	acme, beta := mgr.GetBarrier("orders", "acme"), mgr.GetBarrier("orders", "beta")
+	if acme == nil || beta == nil || acme == beta {
+		t.Fatalf("the two tenants do not hold two barriers (acme %p, beta %p)", acme, beta)
+	}
+	if mgr.GetBarrier("orders", "") != nil {
+		t.Fatal("the system tenant resolves a barrier it never created")
+	}
+
+	if err := mgr.SealDatabase("orders", "acme"); err != nil {
+		t.Fatalf("SealDatabase acme: %v", err)
+	}
+	if st, err := mgr.BarrierStatus("orders", "acme"); err != nil || !st.Sealed {
+		t.Fatalf("acme's barrier is not sealed (%+v, %v)", st, err)
+	}
+	if st, err := mgr.BarrierStatus("orders", "beta"); err != nil || st.Sealed {
+		t.Fatalf("sealing acme's barrier changed beta's (%+v, %v)", st, err)
+	}
+
+	if err := mgr.UnsealDatabase(ctx, "orders", "acme", betaCreds()); err == nil {
+		t.Fatal("beta's credentials unsealed acme's barrier")
+	}
+	if err := mgr.UnsealDatabase(ctx, "orders", "acme", acmeCreds()); err != nil {
+		t.Fatalf("UnsealDatabase acme: %v", err)
+	}
+
+	if err := mgr.RemoveBarrier("orders", "acme"); err != nil {
+		t.Fatalf("RemoveBarrier acme: %v", err)
+	}
+	if mgr.GetBarrier("orders", "acme") != nil {
+		t.Fatal("acme's barrier survived its removal")
+	}
+	if mgr.GetBarrier("orders", "beta") != beta {
+		t.Fatal("removing acme's barrier removed beta's")
 	}
 }
 
@@ -250,15 +353,15 @@ func TestDatabaseBarrierManager_UnsealDatabase_Success(t *testing.T) {
 	}
 
 	// Seal first, then unseal.
-	if err := mgr.SealDatabase("testdb"); err != nil {
+	if err := mgr.SealDatabase("testdb", ""); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
 
-	if err := mgr.UnsealDatabase(ctx, "testdb", testCreds()); err != nil {
+	if err := mgr.UnsealDatabase(ctx, "testdb", "", testCreds()); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
 	}
 
-	status, err := mgr.BarrierStatus("testdb")
+	status, err := mgr.BarrierStatus("testdb", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -288,18 +391,18 @@ func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing
 	if err := mgr.EnsureBarrier(ctx, "testdb", "", cfg, storage, testCreds()); err != nil {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
-	if err := mgr.SealDatabase("testdb"); err != nil {
+	if err := mgr.SealDatabase("testdb", ""); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
 
 	wrong := seal.MustCredentials(context.Background(), []byte("not-the-test-password"))
-	if err := mgr.UnsealDatabase(ctx, "testdb", wrong); err == nil {
+	if err := mgr.UnsealDatabase(ctx, "testdb", "", wrong); err == nil {
 		t.Fatal("go-qrdb#157: UnsealDatabase accepted a WRONG passphrase — " +
 			"the registered strategy is not checking credentials")
 	}
 
 	// The barrier must still be sealed after the refusal, not left half-open.
-	status, err := mgr.BarrierStatus("testdb")
+	status, err := mgr.BarrierStatus("testdb", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -309,7 +412,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing
 
 	// And the correct passphrase still works, so the guard has not simply
 	// broken unsealing outright.
-	if err := mgr.UnsealDatabase(ctx, "testdb", testCreds()); err != nil {
+	if err := mgr.UnsealDatabase(ctx, "testdb", "", testCreds()); err != nil {
 		t.Fatalf("UnsealDatabase with the correct passphrase: %v", err)
 	}
 }
@@ -318,7 +421,7 @@ func TestDatabaseBarrierManager_UnsealDatabase_NotFound(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 	ctx := context.Background()
 
-	err := mgr.UnsealDatabase(ctx, "nonexistent", testCreds())
+	err := mgr.UnsealDatabase(ctx, "nonexistent", "", testCreds())
 	if err == nil {
 		t.Fatal("expected error for unsealing nonexistent database barrier")
 	}
@@ -343,7 +446,7 @@ func TestDatabaseBarrierManager_BarrierStatus_Success(t *testing.T) {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
-	status, err := mgr.BarrierStatus("testdb")
+	status, err := mgr.BarrierStatus("testdb", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -358,7 +461,7 @@ func TestDatabaseBarrierManager_BarrierStatus_Success(t *testing.T) {
 func TestDatabaseBarrierManager_BarrierStatus_NotFound(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 
-	_, err := mgr.BarrierStatus("nonexistent")
+	_, err := mgr.BarrierStatus("nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for status of nonexistent database barrier")
 	}
@@ -376,12 +479,12 @@ func TestDatabaseBarrierManager_RemoveBarrier_Success(t *testing.T) {
 		t.Fatalf("EnsureBarrier: %v", err)
 	}
 
-	if err := mgr.RemoveBarrier("testdb"); err != nil {
+	if err := mgr.RemoveBarrier("testdb", ""); err != nil {
 		t.Fatalf("RemoveBarrier: %v", err)
 	}
 
 	// Verify the barrier is gone.
-	_, err := mgr.BarrierStatus("testdb")
+	_, err := mgr.BarrierStatus("testdb", "")
 	if err == nil {
 		t.Error("expected error after RemoveBarrier")
 	}
@@ -390,7 +493,7 @@ func TestDatabaseBarrierManager_RemoveBarrier_Success(t *testing.T) {
 func TestDatabaseBarrierManager_RemoveBarrier_NotFound(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 
-	err := mgr.RemoveBarrier("nonexistent")
+	err := mgr.RemoveBarrier("nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for removing nonexistent database barrier")
 	}
@@ -412,7 +515,7 @@ func TestDatabaseBarrierManager_FullLifecycle(t *testing.T) {
 	}
 
 	// Verify unsealed after creation.
-	status, err := mgr.BarrierStatus("lifecycle-db")
+	status, err := mgr.BarrierStatus("lifecycle-db", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -421,10 +524,10 @@ func TestDatabaseBarrierManager_FullLifecycle(t *testing.T) {
 	}
 
 	// Seal.
-	if err := mgr.SealDatabase("lifecycle-db"); err != nil {
+	if err := mgr.SealDatabase("lifecycle-db", ""); err != nil {
 		t.Fatalf("SealDatabase: %v", err)
 	}
-	status, err = mgr.BarrierStatus("lifecycle-db")
+	status, err = mgr.BarrierStatus("lifecycle-db", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -433,10 +536,10 @@ func TestDatabaseBarrierManager_FullLifecycle(t *testing.T) {
 	}
 
 	// Unseal.
-	if err := mgr.UnsealDatabase(ctx, "lifecycle-db", creds); err != nil {
+	if err := mgr.UnsealDatabase(ctx, "lifecycle-db", "", creds); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
 	}
-	status, err = mgr.BarrierStatus("lifecycle-db")
+	status, err = mgr.BarrierStatus("lifecycle-db", "")
 	if err != nil {
 		t.Fatalf("BarrierStatus: %v", err)
 	}
@@ -445,10 +548,10 @@ func TestDatabaseBarrierManager_FullLifecycle(t *testing.T) {
 	}
 
 	// Remove.
-	if err := mgr.RemoveBarrier("lifecycle-db"); err != nil {
+	if err := mgr.RemoveBarrier("lifecycle-db", ""); err != nil {
 		t.Fatalf("RemoveBarrier: %v", err)
 	}
-	_, err = mgr.BarrierStatus("lifecycle-db")
+	_, err = mgr.BarrierStatus("lifecycle-db", "")
 	if err == nil {
 		t.Error("expected error after RemoveBarrier")
 	}

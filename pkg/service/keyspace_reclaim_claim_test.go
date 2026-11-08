@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 )
 
 // errProposeTimeout stands in for a propose whose outcome is unknown: the
@@ -121,15 +122,24 @@ func TestUnfence_TimedOutClaimThatLandsIsReleased(t *testing.T) {
 			kv := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), landed: true}
 			svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 			if tc.dropped {
-				if err := svc.FenceDatabaseKeyspace(context.Background(), "acme", "orders"); err != nil {
+				// The dropped database held the marker as its incarnation,
+				// and its drop fenced that incarnation.
+				if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "dropped-incarnation", ""); err != nil {
+					t.Fatalf("UnfenceDatabaseKeyspace: %v", err)
+				}
+				if err := svc.FenceDatabaseKeyspace(context.Background(), "acme", "orders", "dropped-incarnation", ""); err != nil {
 					t.Fatalf("FenceDatabaseKeyspace: %v", err)
 				}
+				assertMarker(t, kv.memoryKVSvc, dropFenceTombstone)
+				// The drop's fence swapped to the tombstone too; count only
+				// the releases of the create under test.
+				kv.releases, kv.releaseCtxError = 0, nil
 				kv.failClaimSwap = true
 			} else {
 				kv.failPutIfAbsent = true
 			}
 
-			err := svc.UnfenceDatabaseKeyspace(expiredContext(t), "acme", "orders", "first-incarnation")
+			err := svc.UnfenceDatabaseKeyspace(expiredContext(t), "acme", "orders", "first-incarnation", "")
 			var fence *DropFenceError
 			if !errors.As(err, &fence) || fence.Op != "mark live" {
 				t.Fatalf("err = %v, want a mark-live *DropFenceError", err)
@@ -143,7 +153,7 @@ func TestUnfence_TimedOutClaimThatLandsIsReleased(t *testing.T) {
 			assertMarker(t, kv.memoryKVSvc, dropFenceTombstone)
 
 			kv.failPutIfAbsent, kv.failClaimSwap = false, false
-			if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "retry-incarnation"); err != nil {
+			if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "retry-incarnation", ""); err != nil {
 				t.Fatalf("the retried create must claim the released marker: %v", err)
 			}
 			assertMarker(t, kv.memoryKVSvc, []byte("retry-incarnation"))
@@ -158,7 +168,7 @@ func TestUnfence_TimedOutClaimThatNeverLandsLeavesTheMarker(t *testing.T) {
 	kv := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), failPutIfAbsent: true}
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	err := svc.UnfenceDatabaseKeyspace(expiredContext(t), "acme", "orders", "first-incarnation")
+	err := svc.UnfenceDatabaseKeyspace(expiredContext(t), "acme", "orders", "first-incarnation", "")
 	if !errors.Is(err, errProposeTimeout) {
 		t.Fatalf("err = %v, want the propose timeout", err)
 	}
@@ -166,7 +176,7 @@ func TestUnfence_TimedOutClaimThatNeverLandsLeavesTheMarker(t *testing.T) {
 		t.Fatal("a claim that never landed must leave the marker absent")
 	}
 	kv.failPutIfAbsent = false
-	if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "retry-incarnation"); err != nil {
+	if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "retry-incarnation", ""); err != nil {
 		t.Fatalf("retried create: %v", err)
 	}
 	assertMarker(t, kv.memoryKVSvc, []byte("retry-incarnation"))
@@ -181,7 +191,7 @@ func TestUnfence_FailedReleaseIsReported(t *testing.T) {
 	kv := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), failPutIfAbsent: true, landed: true, releaseErr: releaseErr}
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "first-incarnation")
+	err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "first-incarnation", "")
 	var release *MarkerReleaseError
 	if !errors.As(err, &release) {
 		t.Fatalf("err = %v, want *MarkerReleaseError", err)
@@ -203,6 +213,35 @@ func TestUnfence_FailedReleaseIsReported(t *testing.T) {
 	}
 }
 
+// TestUnfence_PerDatabaseTimedOutClaimThatLandsIsReleased pins the release
+// on the path of a database with a store of its own: its incarnation is
+// claimed on the marker in the store its namespaced keyspace is reclaimed
+// from, and a claim there that times out yet lands is released the same way.
+func TestUnfence_PerDatabaseTimedOutClaimThatLandsIsReleased(t *testing.T) {
+	kv := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), failPutIfAbsent: true, landed: true}
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+	svc.SetStoreResolver(&dedicatedRaftResolver{shard: newMemoryKVSvc()})
+
+	err := svc.UnfenceDatabaseKeyspace(expiredContext(t), "acme", "orders", "first-incarnation", "")
+	var fence *DropFenceError
+	if !errors.As(err, &fence) || fence.Op != "mark live" {
+		t.Fatalf("err = %v, want a mark-live *DropFenceError", err)
+	}
+	if !errors.Is(err, errProposeTimeout) {
+		t.Fatalf("err = %v, want the propose timeout as its cause", err)
+	}
+	if kv.releases != 1 || kv.releaseCtxError != nil {
+		t.Fatalf("releases = %d under ctx error %v, want one under a live context", kv.releases, kv.releaseCtxError)
+	}
+	assertMarker(t, kv.memoryKVSvc, dropFenceTombstone)
+
+	kv.failPutIfAbsent = false
+	if err := svc.UnfenceDatabaseKeyspace(context.Background(), "acme", "orders", "retry-incarnation", ""); err != nil {
+		t.Fatalf("the retried create must claim the released marker: %v", err)
+	}
+	assertMarker(t, kv.memoryKVSvc, []byte("retry-incarnation"))
+}
+
 // TestDatabaseCreate_TimedOutMarkLiveLeavesNoHalfState drives the whole
 // create stack -- DatabaseService, database.Manager, the keyspace reclaimer
 // -- through a mark-live propose that times out at the caller and commits
@@ -212,7 +251,7 @@ func TestUnfence_FailedReleaseIsReported(t *testing.T) {
 // succeeds and marks its own incarnation live.
 func TestDatabaseCreate_TimedOutMarkLiveLeavesNoHalfState(t *testing.T) {
 	kv := &unknownOutcomeKV{memoryKVSvc: newMemoryKVSvc(), failPutIfAbsent: true, landed: true}
-	mgr := database.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir())
 	mgr.SetKeyspaceReclaimer(NewKeyspaceReclaimService(ReclaimTarget{KV: kv}))
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := NewDatabaseService(mgr)

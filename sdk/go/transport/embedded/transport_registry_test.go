@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -137,7 +138,7 @@ func TestEmbeddedTransport_ServiceRegistryProvider(t *testing.T) {
 // The default database cannot be dropped through the embedded transport:
 // it is the DatabaseServicer's refusal, typed, exactly as on the network.
 func TestEmbeddedDatabase_DropOfTheDefaultDatabaseIsRefused(t *testing.T) {
-	dbSvc := service.NewDatabaseService(database.NewManager(nil, t.TempDir()))
+	dbSvc := service.NewDatabaseService(databasetest.NewManager(nil, t.TempDir()))
 	tr := newExtTransport(t, WithDatabaseService(dbSvc))
 
 	var refused *database.DefaultDatabaseDropError

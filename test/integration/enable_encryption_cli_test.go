@@ -757,7 +757,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	createReq, admin := adminBYOCFieldsForTenant(t, tenantID, tenantID+"-admin")
 	createReq["id"], createReq["name"] = tenantID, "Acme CLI"
 	createReq["isolation_type"], createReq["barrier_auto_unseal"] = "volume", false
-	tBody, tStatus := iraftAPIPost(t, sysClient,
+	tBody, tStatus := iraftAPIPost(t, tenantCreateClient(sysClient),
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort), createReq)
 	if tStatus != http.StatusCreated && tStatus != http.StatusOK {
 		t.Fatalf("create tenant: status %d, body: %s", tStatus, tBody)
@@ -794,11 +794,10 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	// own encrypted IAM store. The system tenant can no longer provision
 	// records inside another tenant's IAM at all (owner ruling,
 	// 2026-10-01), so this authenticates as the tenant's own onboarded
-	// admin; its built-in Admin role cannot create a NEW role
-	// (RolesCreate is SO-exclusive), so it self-assigns its own
-	// pre-seeded SO role first, exactly like
-	// tenant_isolation_cli_test.go's provisionTenantIdentityFor.
-	selfAssignTenantSO(t, adminPort, tenantID, onboardedAdminClient)
+	// admin; its built-in Admin role lets it seat a second account with
+	// Admin and Operator (seatTenantProvisioner), which creates the role
+	// from what it holds (the grant rule, go-qrdb#1278).
+	onboardedAdminClient = seatTenantProvisioner(t, ca, adminPort, tenantID, onboardedAdminClient, false)
 	roleBody, roleStatus := iraftAPIPost(t, onboardedAdminClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{

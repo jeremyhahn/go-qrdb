@@ -294,7 +294,8 @@ func NewTenantShardReconciler(
 //     (which is idempotent and defers barrier-missing shards gracefully).
 //  3. Closes a locally started shard ONLY when a placement entry EXISTS for it
 //     but no longer assigns a replica to this node (demotion). Shards with no
-//     placement entry are meta-managed (started from meta.json at boot) and are
+//     placement entry are catalog-managed (opened from the database catalog
+//     at boot) and are
 //     left running — absence from the placement table is not evidence of orphan
 //     status (BUG 2 fix).
 func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
@@ -335,8 +336,9 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		key := raftShardKey{tenantID: s.TenantID, database: s.Database}
 		p, hasPlacement := allPlacements[key]
 		if !hasPlacement {
-			// No placement entry — this shard is meta-managed (started from
-			// meta.json at boot or single-node Phase-4b). Do not tear it down.
+			// No placement entry — this shard is catalog-managed (opened from
+			// the database catalog at boot or single-node Phase-4b). Do not
+			// tear it down.
 			continue
 		}
 		if _, ok := p.ReplicaForNode(r.selfNodeID); ok {

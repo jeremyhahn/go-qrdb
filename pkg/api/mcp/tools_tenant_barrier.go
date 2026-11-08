@@ -133,9 +133,7 @@ func toolTenantBarrierInit() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The tenant whose barrier should be initialized."),
 		),
-		mcp.WithString("passphrase",
-			mcp.Description("The caller-supplied passphrase used to seal the tenant barrier. Required for the passphrase strategy; ignored for hardware/cloud strategies."),
-		),
+		withSecretArg("passphrase", "The caller-supplied passphrase used to seal the tenant barrier. Required for the passphrase strategy; ignored for hardware/cloud strategies."),
 		mcp.WithNumber("threshold",
 			mcp.Description("Shamir threshold (number of shares required to unseal). Optional; 0 selects defaults."),
 		),
@@ -245,7 +243,10 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 			return authzToolError(err), nil
 		}
 
-		passphrase := secretArg(req, "passphrase")
+		passphrase, err := secretArg(req, "passphrase")
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_tenant_barrier_init_complete", Err: err}
+		}
 		defer secure.Wipe(passphrase)
 		threshold := mcp.ParseInt(req, "threshold", 0)
 		shares := mcp.ParseInt(req, "shares", 0)
@@ -328,8 +329,12 @@ func handleTenantBarrierUnseal(svc tenant.TenantServicer, authorize tenantScopeA
 			return authzToolError(err), nil
 		}
 
+		encoded, _, err := stringArg(req, "key")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		var key []byte
-		if encoded := mcp.ParseString(req, "key", ""); encoded != "" {
+		if encoded != "" {
 			decoded, decErr := base64.StdEncoding.DecodeString(encoded)
 			if decErr != nil {
 				return mcp.NewToolResultError("key must be valid base64: " + decErr.Error()), nil

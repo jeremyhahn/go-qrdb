@@ -15,9 +15,73 @@
 package transport
 
 import (
+	"errors"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
+
+// Structured-refusal reasons of the system barrier's sentinels. A remote
+// client rebuilds the sentinel itself, so errors.Is(err, seal.ErrX) holds on
+// every transport exactly as it does in-process.
+const (
+	// ReasonBarrierNotInitialized names seal.ErrNotInitialized: the barrier
+	// has no persisted root key.
+	ReasonBarrierNotInitialized = "BARRIER_NOT_INITIALIZED"
+	// ReasonBarrierCredentialMismatch names seal.ErrCredentialMismatch: the
+	// presented credential does not open the persisted root key.
+	// #nosec G101 -- structured-refusal reason code, not a credential.
+	ReasonBarrierCredentialMismatch = "BARRIER_CREDENTIAL_MISMATCH"
+	// ReasonBarrierPassphraseChangeConflict names
+	// seal.ErrPassphraseChangeConflict: the root key was rewritten while a
+	// passphrase change was in flight.
+	ReasonBarrierPassphraseChangeConflict = "BARRIER_PASSPHRASE_CHANGE_CONFLICT"
+	// ReasonBarrierRootKeyWriteInProgress names
+	// seal.ErrRootKeyWriteInProgress: another rewrite of the root key, such
+	// as an overlapping passphrase change, was in flight and this one was
+	// refused before it wrote anything.
+	ReasonBarrierRootKeyWriteInProgress = "BARRIER_ROOT_KEY_WRITE_IN_PROGRESS"
+)
+
+// barrierRefusal pairs a barrier sentinel with the reason that carries it.
+type barrierRefusal struct {
+	reason   string
+	sentinel error
+}
+
+// barrierRefusals are the barrier sentinels carried as structured refusals,
+// in the order BarrierRefusal tries them.
+var barrierRefusals = []barrierRefusal{
+	{ReasonBarrierNotInitialized, seal.ErrNotInitialized},
+	{ReasonBarrierCredentialMismatch, seal.ErrCredentialMismatch},
+	{ReasonBarrierPassphraseChangeConflict, seal.ErrPassphraseChangeConflict},
+	{ReasonBarrierRootKeyWriteInProgress, seal.ErrRootKeyWriteInProgress},
+}
+
+// BarrierRefusal returns the structured-refusal reason of the barrier
+// sentinel err wraps, for a server to put on the wire. The sentinels carry no
+// metadata.
+func BarrierRefusal(err error) (string, bool) {
+	for _, r := range barrierRefusals {
+		if errors.Is(err, r.sentinel) {
+			return r.reason, true
+		}
+	}
+	return "", false
+}
+
+// barrierSentinel returns the barrier sentinel reason names, or nil.
+func barrierSentinel(reason string) error {
+	for _, r := range barrierRefusals {
+		if r.reason == reason {
+			return r.sentinel
+		}
+	}
+	return nil
+}
 
 // refusalErrors rebuilds, per structured-refusal reason, the typed error a
 // server refused with. Every transport carries the reason and its metadata
@@ -31,6 +95,24 @@ var refusalErrors = map[string]func(md map[string]string) error{
 	},
 	ReasonUserConcurrentUpdate: func(md map[string]string) error {
 		return UserConcurrentUpdateFromMetadata(md)
+	},
+	lock.ReasonLockHeld: func(md map[string]string) error {
+		return lock.LockHeldFromMetadata(md)
+	},
+	lock.ReasonNotLockHolder: func(md map[string]string) error {
+		return lock.NotLockHolderFromMetadata(md)
+	},
+	lock.ReasonLockNotFound: func(md map[string]string) error {
+		return lock.LockNotFoundFromMetadata(md)
+	},
+	ReasonVectorNamespaceNotFound: func(md map[string]string) error {
+		return NamespaceNotFoundFromMetadata(md)
+	},
+	ReasonVectorDimensionMismatch: func(md map[string]string) error {
+		return DimensionMismatchFromMetadata(md)
+	},
+	ceremony.ReasonAdminCredentialRequiresCA: func(md map[string]string) error {
+		return ceremony.AdminCredentialRequiresCAFromMetadata(md)
 	},
 	vlog.ReasonLogExists: func(md map[string]string) error {
 		return vlog.LogExistsFromMetadata(md)
@@ -49,7 +131,7 @@ var refusalErrors = map[string]func(md map[string]string) error{
 func RefusalError(reason string, md map[string]string) error {
 	decode, ok := refusalErrors[reason]
 	if !ok {
-		return nil
+		return barrierSentinel(reason)
 	}
 	return decode(md)
 }

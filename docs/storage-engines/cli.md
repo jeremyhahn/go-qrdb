@@ -1,7 +1,7 @@
 # Storage Engines — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
-> Conflicts with this document are defects. Fix them here first.
+> **Status: NORMATIVE for shipped behaviour; PROPOSED for the "Target design"
+> note below.** · Scope: go-qrdb · Last verified: 2026-10-27
 
 **No dedicated CLI verb group.** Storage engines are a server configuration
 concern.
@@ -26,7 +26,22 @@ storage:
     settings:
       bucket: "my-bucket"
       region: "us-east-1"
+    credentials:        # optional; omit to use the provider's default chain
+      key_file: "<install-dir>/secrets/objstore-access-key"
+      secret_file: "<install-dir>/secrets/objstore-secret-key"
 ```
+
+The provider credential is referenced by file, never written into the
+configuration. Each file holds one value (a trailing newline is ignored), is a
+regular file owned by the `qrdbd` user and has mode `0600` or `0400`;
+`secret_file` alone is an account key (Azure). Reference only what the
+provider reads: `s3` takes both files, `azure` only `secret_file`, and `gcs`,
+`local` and `memory` neither, so a reference the provider would ignore fails
+the boot naming the provider and the file. `qrdbd start` also refuses a
+credential under `settings` (`secret_key`, `access_key_id`, `account_key`,
+`sas_token`, `session_token` and their spellings) or any other key under
+`credentials`, and fails the boot naming a file it cannot use; neither error
+prints the value. Paths in YAML are taken literally: write the expanded path.
 
 `storage.backend` has no `qrdb` value: `qrdbd` does not store through another
 go-qrdb node.
@@ -114,7 +129,14 @@ no `qrdb` verb. The volume pool verbs are covered in
 [../volume-pools/cli.md](../volume-pools/cli.md); the database verbs that select a backend are covered in
 [../databases/cli.md](../databases/cli.md).
 
-## Not built
+## Target design: no CLI change
 
-No configuration exists for an object-storage LSM segment layout; see
-[architecture.md](architecture.md#not-built).
+See [architecture.md](architecture.md#target-design-object-storage-lsm-segment-layout).
+**Not implemented** — future work under the SPEC row `object-storage-lsm`.
+The proposed object-storage LSM segment layout adds no `qrdb` verb and no
+flag. `qrdb database create ... --backend objstore` is unchanged as a
+command; what changes is what the node does when such a database opens. The
+proposed configuration is in [engineering.md](engineering.md)'s target
+design, not here, because none of it exists yet. `glacier` and
+`azurearchive` stay archive destinations reached through `qrdb backup create`
+(see [../backup-restore/cli.md](../backup-restore/cli.md)).

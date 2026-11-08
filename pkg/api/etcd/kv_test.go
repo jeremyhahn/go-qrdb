@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -1217,7 +1218,7 @@ func TestCompact_AnswersWithEtcdsOwnRevisionErrors(t *testing.T) {
 }
 
 // TestCompact_FeatureNotActiveIsRetryable: a compaction before the cluster
-// activated prefix-compaction is refused with featuregate.NotActiveError,
+// activated prefix-compaction is refused with feature.NotActiveError,
 // which clears once every node runs a release that supports it.
 // kube-apiserver's compactor retries an Unavailable answer and gives up on an
 // Internal one, so the listener answers codes.Unavailable.
@@ -1226,7 +1227,7 @@ func TestCompact_FeatureNotActiveIsRetryable(t *testing.T) {
 
 	srv := newTestKVServer(&mockMVCCKVServicer{
 		compactFn: func(context.Context, int64) error {
-			return &featuregate.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: 1}
+			return &feature.NotActiveError{Feature: featuregate.PrefixCompaction, ShardID: 1}
 		},
 	}, nil)
 	_, err := srv.Compact(context.Background(), &pb.CompactionRequest{Revision: 5})

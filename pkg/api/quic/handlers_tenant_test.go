@@ -26,6 +26,7 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -81,6 +82,57 @@ func TestHandleTenantCreate_Success(t *testing.T) {
 	}
 	if createResp.GetTenant().GetName() != "ACME Corp" {
 		t.Errorf("expected name 'ACME Corp', got %q", createResp.GetTenant().GetName())
+	}
+}
+
+// TestHandleTenantCreate_SO proves the SO's fields reach OnboardTenant and the
+// SO's credential is answered (go-qrdb#1042); without an SO, none is.
+func TestHandleTenantCreate_SO(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		so   *service.TenantAdminCredential
+		req  *pb.TenantCreateRequest
+	}{
+		{
+			name: "with an SO",
+			so:   &service.TenantAdminCredential{UserID: 2, Username: "so", CertPEM: []byte("so-cert"), Thumbprint: "tp"},
+			req:  &pb.TenantCreateRequest{Id: "acme", Name: "ACME", SoUsername: "so", SoCertPem: "so-cert", SoChainPem: "so-chain", SoPin: "so-pin"},
+		},
+		{name: "without an SO", req: &pb.TenantCreateRequest{Id: "acme", Name: "ACME"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockTenantService{
+				createFn: func(_ context.Context, id, name string, iso tenant.IsolationType) (*tenant.TenantInfo, error) {
+					return &tenant.TenantInfo{ID: id, Name: name, IsolationType: iso}, nil
+				},
+			}
+			onboarding := &fakeTenantOnboarding{tenants: svc, so: tc.so}
+			srv := newTestServer(&mockKVService{}, &mockAdminService{},
+				WithTenantService(svc), WithTenantOnboarding(onboarding))
+			payload, _ := proto.Marshal(tc.req)
+			resp, err := srv.handleTenantCreate(context.Background(), payload)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var createResp pb.TenantCreateResponse
+			if err := proto.Unmarshal(resp, &createResp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			so := createResp.GetSo()
+			if tc.so == nil {
+				if so != nil {
+					t.Fatalf("SO credential = %+v, want none", so)
+				}
+				return
+			}
+			if so.GetUserId() != 2 || so.GetUsername() != "so" || so.GetCertPem() != "so-cert" || so.GetThumbprint() != "tp" {
+				t.Errorf("SO credential = %+v, want so's", so)
+			}
+			got := onboarding.gotReq
+			if got.SOUsername != "so" || string(got.SOCertPEM) != "so-cert" || string(got.SOChainPEM) != "so-chain" || string(got.SOPIN) != "so-pin" {
+				t.Errorf("OnboardTenant request = %+v, SO fields not forwarded", got)
+			}
+		})
 	}
 }
 

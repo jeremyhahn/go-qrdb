@@ -16,6 +16,7 @@ package vector
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -352,10 +353,16 @@ func (s *MemoryVectorStorage) ScanNamespace(ctx context.Context, namespace strin
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var fromID uint64
+	if opts != nil {
+		fromID = opts.FromID
+	}
 	ns := s.vectors[namespace]
 	results := make([]*VectorValue, 0, len(ns))
-	for _, vec := range ns {
-		results = append(results, cloneVectorValue(vec))
+	for id, vec := range ns {
+		if id >= fromID {
+			results = append(results, cloneVectorValue(vec))
+		}
 	}
 	return applyScanOptions(sortedByID(results), opts), nil
 }
@@ -379,6 +386,28 @@ func (s *MemoryVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 	}
 	infoCopy := *info
 	s.registry[info.Name] = &memNamespace{info: infoCopy}
+	return nil
+}
+
+// UpdateNamespace replaces the namespace's index parameters and metadata in
+// place; its vectors are untouched.
+func (s *MemoryVectorStorage) UpdateNamespace(ctx context.Context, namespace string, update *NamespaceUpdate) error {
+	if err := s.checkOpen(); err != nil {
+		return err
+	}
+	if namespace == "" || update == nil {
+		return ErrInvalidNamespace
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, exists := s.registry[namespace]
+	if !exists {
+		return ErrNamespaceNotFound
+	}
+	ns.info.IndexConfig = maps.Clone(update.IndexConfig)
+	ns.info.Metadata = maps.Clone(update.Metadata)
+	ns.info.UpdatedAt = update.UpdatedAt
 	return nil
 }
 

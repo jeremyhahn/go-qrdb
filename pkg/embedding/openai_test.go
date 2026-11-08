@@ -229,6 +229,32 @@ func TestOpenAIProvider_Name(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_DefaultModel_Configured(t *testing.T) {
+	srv, _ := embeddingServer(t, openaiProviderHandler(1536, "m"))
+	cfg := newOpenAIProviderConfig(srv.URL)
+	cfg.Model = "custom-embed"
+	p, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+	if got := p.DefaultModel(); got != "custom-embed" {
+		t.Errorf("DefaultModel = %q, want %q", got, "custom-embed")
+	}
+}
+
+func TestOpenAIProvider_DefaultModel_Unset(t *testing.T) {
+	srv, _ := embeddingServer(t, openaiProviderHandler(1536, "m"))
+	cfg := newOpenAIProviderConfig(srv.URL)
+	cfg.Model = ""
+	p, err := NewOpenAIProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewOpenAIProvider: %v", err)
+	}
+	if got := p.DefaultModel(); got != "text-embedding-3-small" {
+		t.Errorf("DefaultModel = %q, want %q", got, "text-embedding-3-small")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------

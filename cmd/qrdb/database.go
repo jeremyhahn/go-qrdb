@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -91,7 +92,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 	}
 
-	cmd.Flags().StringVar(&backend, "backend", "pebble", "Storage backend (pebble, memory, file, raft)")
+	cmd.Flags().StringVar(&backend, "backend", "pebble", backendFlagUsage())
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Dedicated data directory for this database (required for a real per-database encryption barrier)")
 	cmd.Flags().IntVar(&replicas, "replicas", 0, "Replication factor for a dedicated-raft database (raft backend only; defaults to 1)")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "Raft cluster topology for a dedicated-raft database (local, distributed; raft backend only, defaults to local)")
@@ -145,6 +146,17 @@ func newDatabaseCreateCmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+// backendFlagUsage is the --backend help text. It lists sdk.Backends, the set
+// the server validates a create against, so no valid backend is left out.
+func backendFlagUsage() string {
+	backends := sdk.Backends()
+	names := make([]string, len(backends))
+	for i, b := range backends {
+		names[i] = string(b)
+	}
+	return "Storage backend (" + strings.Join(names, ", ") + ")"
 }
 
 // newDatabaseUpdateCompactionCmd creates the "database update-compaction"

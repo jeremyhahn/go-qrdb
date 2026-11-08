@@ -22,11 +22,13 @@ import (
 func recordHoldPolls(held *atomic.Bool) (hold func() bool, polled <-chan struct{}) {
 	ch := make(chan struct{}, 1)
 	return func() bool {
+		// Read before signalling: a received signal means this poll's answer is fixed.
+		h := held.Load()
 		select {
 		case ch <- struct{}{}:
 		default:
 		}
-		return held.Load()
+		return h
 	}, ch
 }
 

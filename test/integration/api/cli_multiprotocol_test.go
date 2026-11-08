@@ -755,9 +755,9 @@ func TestCLIServerFlagFormats(t *testing.T) {
 		format string
 	}{
 		{"unix-socket", "unix:///var/run/qrdbd/qrdbd.sock"},
-		{"https", "https://qrdbd:63002"},
-		{"grpcs", "grpcs://qrdbd:63003"},
-		{"mcp", "mcp://qrdbd:63005"},
+		{"https", "https://127.0.0.1:63002"},
+		{"grpcs", "grpcs://127.0.0.1:63003"},
+		{"mcp", "mcp://127.0.0.1:63005"},
 		{"http", "http://localhost:63002"},
 		{"quic", "quic://localhost:63004"},
 		{"quics", "quics://localhost:63004"},

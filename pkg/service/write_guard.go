@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -62,7 +63,7 @@ import (
 // whether every replica of shardID's group can apply commands that use
 // feature (see pkg/cluster/featuregate).
 type FeatureGatedHost interface {
-	FeatureEnabled(shardID uint64, feature featuregate.Feature) bool
+	FeatureEnabled(shardID uint64, feature feature.Feature) bool
 }
 
 // ReplicaAdmitter is implemented by a Host (or RaftHost) whose groups gate

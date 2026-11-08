@@ -27,13 +27,13 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
-	"github.com/cockroachdb/pebble/v2/vfs"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
@@ -103,7 +103,9 @@ func (e *ReencryptVerifyMismatchError) Error() string {
 // seal-subsystem-disabled raw-plaintext source state.
 func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) (int64, error) {
 	srcOpts := &pebble.Options{ReadOnly: true}
-	srcEnc.Apply(srcOpts)
+	if srcEnc.Enabled() {
+		srcOpts.FS = pebblestore.WrapVFS(srcOpts.FS, srcEnc.Wrap)
+	}
 	srcOpts.Logger = pebblestore.NewLogger(nil)
 	src, err := pebble.Open(srcDir, srcOpts)
 	if err != nil {
@@ -112,7 +114,9 @@ func ReencryptPebbleStore(ctx context.Context, srcDir string, srcEnc *atrest.Enc
 	defer func() { _ = src.Close() }()
 
 	dstOpts := &pebble.Options{}
-	dstEnc.Apply(dstOpts)
+	if dstEnc.Enabled() {
+		dstOpts.FS = pebblestore.WrapVFS(dstOpts.FS, dstEnc.Wrap)
+	}
 	dstOpts.Logger = pebblestore.NewLogger(nil)
 	dst, err := pebble.Open(dstDir, dstOpts)
 	if err != nil {
@@ -253,13 +257,13 @@ func isEncfsFile(path string) (bool, error) {
 // recodeFile decrypts an encfs file through srcFS and re-encrypts it through
 // dstFS, writing the logically-identical content under a new (destination)
 // barrier key.
-func recodeFile(srcFS vfs.FS, srcPath string, dstFS vfs.FS, dstPath string) error {
+func recodeFile(srcFS filesys.FS, srcPath string, dstFS filesys.FS, dstPath string) error {
 	in, err := srcFS.Open(srcPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := dstFS.Create(dstPath, vfs.WriteCategoryUnspecified)
+	out, err := dstFS.Create(dstPath)
 	if err != nil {
 		return err
 	}
@@ -578,7 +582,9 @@ const (
 // and commits the swap — guaranteeing no data loss across re-encryption.
 func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.Encryptor, dstDir string, dstEnc *atrest.Encryptor) error {
 	srcOpts := &pebble.Options{ReadOnly: true}
-	srcEnc.Apply(srcOpts)
+	if srcEnc.Enabled() {
+		srcOpts.FS = pebblestore.WrapVFS(srcOpts.FS, srcEnc.Wrap)
+	}
 	srcOpts.Logger = pebblestore.NewLogger(nil)
 	src, err := pebble.Open(srcDir, srcOpts)
 	if err != nil {
@@ -587,7 +593,9 @@ func VerifyReencryptedStore(ctx context.Context, srcDir string, srcEnc *atrest.E
 	defer func() { _ = src.Close() }()
 
 	dstOpts := &pebble.Options{ReadOnly: true}
-	dstEnc.Apply(dstOpts)
+	if dstEnc.Enabled() {
+		dstOpts.FS = pebblestore.WrapVFS(dstOpts.FS, dstEnc.Wrap)
+	}
 	dstOpts.Logger = pebblestore.NewLogger(nil)
 	dst, err := pebble.Open(dstDir, dstOpts)
 	if err != nil {
