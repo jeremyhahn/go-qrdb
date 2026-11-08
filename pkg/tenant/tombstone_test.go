@@ -598,6 +598,14 @@ func TestStoreResolver_ForeignTenantServicerSkipsTheTombstoneCheck(t *testing.T)
 // because the interface requires them.
 type foreignTenantServicer struct{}
 
+func (foreignTenantServicer) ClusterIsolationPolicy(context.Context) (ClusterIsolationPolicy, error) {
+	return ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (foreignTenantServicer) SetClusterIsolationPolicy(context.Context, ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (foreignTenantServicer) CreateTenant(context.Context, string, string, IsolationType, ...CreateTenantOption) (*TenantInfo, error) {
 	return nil, ErrTenantNotFound
 }

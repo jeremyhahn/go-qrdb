@@ -44,6 +44,14 @@ type signedInitTenantService struct {
 	complete *tenant.TenantBarrierInitCompleteRequest
 }
 
+func (m *signedInitTenantService) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *signedInitTenantService) SetClusterIsolationPolicy(context.Context, tenant.ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (s *signedInitTenantService) TenantBarrierInitBegin(_ context.Context, req *tenant.TenantBarrierInitBeginRequest) (*tenant.TenantBarrierInitBeginResult, error) {
 	s.begin = req
 	return &tenant.TenantBarrierInitBeginResult{

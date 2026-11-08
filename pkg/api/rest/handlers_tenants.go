@@ -116,6 +116,10 @@ type updateTenantRequest struct {
 	// Status, when present, moves the tenant to that status along the
 	// allowed transitions; it needs tenants:set_status.
 	Status *tenant.Status `json:"status,omitempty"`
+	// IsolationPolicy, when present, sets the tenant's own isolation
+	// policy: "strict", or "" for inherit. Tighten-only: strict to inherit
+	// is refused with *tenant.IsolationPolicyChangeError.
+	IsolationPolicy *tenant.TenantIsolationPolicy `json:"isolation_policy,omitempty"`
 }
 
 // setTenantQuotasRequest is the JSON payload for POST /v1/tenants/{id}/quotas.
@@ -236,9 +240,12 @@ type tenantResponse struct {
 	Metadata     map[string]string   `json:"metadata,omitempty"`
 	// Status is the tenant's operational status; a principal of a tenant
 	// that is not active is refused.
-	Status    tenant.Status `json:"status"`
-	CreatedAt string        `json:"createdAt"`
-	UpdatedAt string        `json:"updatedAt"`
+	Status tenant.Status `json:"status"`
+	// IsolationPolicy is the tenant's own isolation policy: "strict", or
+	// absent for inherit (the cluster floor applies).
+	IsolationPolicy tenant.TenantIsolationPolicy `json:"isolation_policy,omitempty"`
+	CreatedAt       string                       `json:"createdAt"`
+	UpdatedAt       string                       `json:"updatedAt"`
 	// Refusal is set when the answering node will not serve this tenant's
 	// data; absent otherwise. Another node may still serve it.
 	Refusal *tenantRefusal `json:"refusal,omitempty"`
@@ -650,8 +657,17 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 		Metadata:      req.Metadata,
 		Status:        req.Status,
 	}
+	if req.IsolationPolicy != nil {
+		patch.IsolationPolicy = *req.IsolationPolicy
+	}
 	if !s.authorizeTenantUpdate(ctx, w, id, patch) {
 		return
+	}
+	if req.IsolationPolicy != nil && *req.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
+		if err := refuseIsolationPolicyLoosening(ctx, s.tenantSvc, id); err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
 	}
 
 	// The tenant must hold no data before its isolation type changes; the
@@ -664,6 +680,67 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	}
 
 	writeJSON(w, tenantToResponse(info))
+}
+
+// clusterIsolationPolicyBody is the body of GET and PUT
+// /v1/cluster/isolation-policy: the cluster-wide isolation floor.
+type clusterIsolationPolicyBody struct {
+	Policy tenant.ClusterIsolationPolicy `json:"policy"`
+}
+
+// handleGetClusterIsolationPolicy returns the cluster-wide isolation floor;
+// an unset floor reads as operator-access.
+func (s *Server) handleGetClusterIsolationPolicy(w http.ResponseWriter, r *http.Request) {
+	if s.tenantSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+	policy, err := s.tenantSvc.ClusterIsolationPolicy(r.Context())
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, clusterIsolationPolicyBody{Policy: policy})
+}
+
+// handleSetClusterIsolationPolicy sets the cluster-wide isolation floor.
+// The floor is tighten-only: a loosening is refused with
+// *tenant.IsolationPolicyChangeError (409).
+func (s *Server) handleSetClusterIsolationPolicy(w http.ResponseWriter, r *http.Request) {
+	if s.tenantSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+	var req clusterIsolationPolicyBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	ctx := r.Context()
+	if err := s.tenantSvc.SetClusterIsolationPolicy(ctx, req.Policy); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	policy, err := s.tenantSvc.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+	writeJSON(w, clusterIsolationPolicyBody{Policy: policy})
+}
+
+// refuseIsolationPolicyLoosening refuses an explicit request to move tenant
+// id back to inherit once it is strict. tenant.TenantPatch reads an empty
+// IsolationPolicy as "unchanged", so the inherit request is checked here.
+func refuseIsolationPolicyLoosening(ctx context.Context, svc tenant.TenantServicer, id string) error {
+	info, err := svc.GetTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	if info.IsolationPolicy == tenant.TenantIsolationPolicyStrict {
+		return &tenant.IsolationPolicyChangeError{From: string(tenant.TenantIsolationPolicyStrict), To: "inherit"}
+	}
+	return nil
 }
 
 // handleSetTenantQuotas handles POST /v1/tenants/{id}/quotas -- updates the
@@ -986,17 +1063,18 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 		return nil
 	}
 	resp := &tenantResponse{
-		ID:            info.ID,
-		Name:          info.Name,
-		IsolationType: info.EffectiveIsolationType(),
-		VolumePool:    info.VolumePool,
-		Quotas:        info.Quotas,
-		Entitlements:  info.Entitlements,
-		Description:   info.Description,
-		Metadata:      info.Metadata,
-		Status:        info.Status,
-		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
+		ID:              info.ID,
+		Name:            info.Name,
+		IsolationType:   info.EffectiveIsolationType(),
+		VolumePool:      info.VolumePool,
+		Quotas:          info.Quotas,
+		Entitlements:    info.Entitlements,
+		Description:     info.Description,
+		Metadata:        info.Metadata,
+		Status:          info.Status,
+		IsolationPolicy: info.IsolationPolicy,
+		CreatedAt:       info.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       info.UpdatedAt.Format(time.RFC3339),
 	}
 	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
 		resp.Refusal = &tenantRefusal{Code: refusal.Code, Message: refusal.Message}
