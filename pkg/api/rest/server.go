@@ -2329,6 +2329,10 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodGet, "/v1/tenants/{id}", permission.TenantsRead, s.handleTenantByID)
 	s.route(http.MethodPut, "/v1/tenants/{id}", permission.TenantsUpdate, s.handleTenantByID)
 	s.route(http.MethodDelete, "/v1/tenants/{id}", permission.TenantsDelete, s.handleTenantByID)
+	// The cluster-wide isolation floor: any tenant reader may read it; only a
+	// cross-tenant operator may tighten it.
+	s.route(http.MethodGet, "/v1/cluster/isolation-policy", permission.TenantsRead, s.handleGetClusterIsolationPolicy)
+	s.route(http.MethodPut, "/v1/cluster/isolation-policy", permission.TenantsUpdateCross, s.handleSetClusterIsolationPolicy)
 	// Quotas and entitlements are the tenant's plan: platform-operator
 	// permissions (ScopeCross), so a tenant Admin cannot raise its own limits.
 	s.route(http.MethodPost, "/v1/tenants/{id}/quotas", permission.TenantsSetQuotas, s.handleTenantByID)
