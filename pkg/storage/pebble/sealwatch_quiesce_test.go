@@ -247,3 +247,25 @@ func TestPebbleStorage_WritesAndCompactionsRefuseWhileSealing(t *testing.T) {
 		t.Fatalf("held = %v after Close", got)
 	}
 }
+
+func TestNewFromDB_WithSealWatchLeasesWrites(t *testing.T) {
+	var gate quiesce.Gate
+	db, w := openQuiesced(t, &gate)
+	s := NewFromDB(db, true, WithSealWatch(w))
+	if err := s.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	gate.Close()
+	var sealed *SealedError
+	if err := s.Set([]byte("k2"), []byte("v")); !errors.As(err, &sealed) {
+		t.Fatalf("Set while sealing = %v; want a *SealedError", err)
+	}
+	gate.Reopen()
+
+	// Without a watch the wrapper writes unleased, as before.
+	gate.Close()
+	defer gate.Reopen()
+	if err := NewFromDB(db, true, WithSealWatch(nil)).Set([]byte("k3"), []byte("v")); err != nil {
+		t.Fatalf("unwatched Set while sealing = %v", err)
+	}
+}

@@ -92,6 +92,17 @@ func WithSyncObserver(o *syncwatch.Observer) Option {
 	}
 }
 
+// WithSealWatch makes the store take w's quiesce lease around every durable
+// write, so a seal drains them. NewFromDB callers that wrap a sealed store's
+// db pass its watch here; a nil watch leaves writes unleased.
+func WithSealWatch(w *SealWatch) Option {
+	return func(s *PebbleStorage) {
+		if w != nil {
+			s.seals = w
+		}
+	}
+}
+
 func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
 	for _, opt := range opts {
 		opt(s)

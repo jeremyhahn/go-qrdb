@@ -335,12 +335,26 @@ func (s *PebbleStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 // exactly the self-committing behaviour this state machine's time-series
 // support has always had.
 func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
-	batch := pebbleStorage.NewFromDB(s.db, true, pebbleSyncs(s.dir)).Batch()
+	batch := pebbleStorage.NewFromDB(s.db, true, pebbleSyncs(s.dir), pebbleStorage.WithSealWatch(s.seals)).Batch()
 	defer func() { _ = batch.Close() }()
 	if err := fn(batch); err != nil {
 		return err
 	}
 	return batch.Commit()
+}
+
+// leased runs commit inside w's quiesce lease, so a seal drains it before
+// the key leaves memory. A refused Admit is the typed sealed error, as a
+// PebbleStorage write returns it; a nil watch runs commit unleased.
+func leased(w *pebbleStorage.SealWatch, commit func() error) error {
+	if w == nil {
+		return commit()
+	}
+	if err := w.Admit(); err != nil {
+		return err
+	}
+	defer w.Done()
+	return commit()
 }
 
 // tsRefusalResult is the application result of a time-series write that
@@ -396,7 +410,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// Create time-series storage if enabled. Uses the same PebbleDB
 	// instance so that TS data shares the same durability guarantees.
 	if s.enableTimeSeries && s.ts == nil {
-		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir)))
+		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir), pebbleStorage.WithSealWatch(seals)))
 		if tsErr != nil {
 			seals.Close()
 			_ = db.Close()
@@ -446,7 +460,7 @@ func (s *PebbleStateMachine) restoreLessor() error {
 	if s.lessor == nil {
 		return nil
 	}
-	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true))
+	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)))
 }
 
 // restoreAuditChain rebuilds the attached replicated audit Chain, if any,
@@ -456,7 +470,7 @@ func (s *PebbleStateMachine) restoreAuditChain() error {
 	if s.auditChain == nil {
 		return nil
 	}
-	return s.auditChain.Restore(pebbleStorage.NewFromDB(s.db, true))
+	return s.auditChain.Restore(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)))
 }
 
 // readLastApplied reads the persisted last applied index from the metadata key.
@@ -567,7 +581,7 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := leased(s.seals, func() error { return batch.Commit(pebble.Sync) }); err != nil {
 		return &WriteError{Err: err}
 	}
 
@@ -676,19 +690,19 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		if s.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return s.auditChain.Query(pebbleStorage.NewFromDB(s.db, true), q.TenantID, q.Filter)
+		return s.auditChain.Query(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q.TenantID, q.Filter)
 
 	case audit.VerifyRequest:
 		if s.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true), q.TenantID)
+		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q.TenantID)
 
 	case vlog.Request:
 		if s.logs == nil {
 			return nil, &InvalidQueryError{Reason: "log registry not configured"}
 		}
-		return vlog.ReadSnapshot(pebbleStorage.NewFromDB(s.db, true), q)
+		return vlog.ReadSnapshot(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q)
 
 	case index.IndexQueryRequest:
 		idx, ok := s.indexes[q.IndexName]
@@ -1103,7 +1117,7 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := leased(s.seals, func() error { return batch.Commit(pebble.Sync) }); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
@@ -2130,7 +2144,7 @@ func (s *PebbleStateMachine) pebbleHandleAuditAppend(_ *PebbleStateMachine, batc
 // beneath what this update has staged. Classification -- refusal versus halt
 // -- is statemachine.ApplyVerifiableLog's, shared with the MVCC engine.
 func (s *PebbleStateMachine) pebbleHandleVerifiableLog(_ *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	res, err := statemachine.ApplyVerifiableLog(s.logs, pebbleStorage.NewFromDB(s.db, true), pebbleAuditWriter{batch: batch}, payload)
+	res, err := statemachine.ApplyVerifiableLog(s.logs, pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), pebbleAuditWriter{batch: batch}, payload)
 	return res, nil, err
 }
 

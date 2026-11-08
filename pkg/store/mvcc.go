@@ -251,7 +251,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	// syncWrites=true for durability by default; noSync=true disables fsync
 	// (suitable for testing where fsync latency causes proposal timeouts).
 	syncWrites := !s.noSync
-	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir, syncwatch.WithClock(s.syncClock)))
+	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir, syncwatch.WithClock(s.syncClock)), pebbleStorage.WithSealWatch(seals))
 
 	// Build engine options from pre-Open configuration.
 	var engineOpts []engine.MVCCOption
