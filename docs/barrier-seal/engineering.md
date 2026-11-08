@@ -611,10 +611,21 @@ services and to the server, which wraps the node's sealed-window probe with
   flush, durable write and compaction, and the state machines' `Sync` flushes
   through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
   node closes its own data-plane store before it seals its barriers, so a
-  clean `Close` never meets the refusal. The check and Pebble's next file
-  creation are not atomic, so a seal landing between them is still a crash;
-  closing that window is the planned seal-quiesce row in
-  [SPEC.md](../SPEC.md).
+  clean `Close` never meets the refusal.
+- **A seal drains the work already in flight before the key leaves memory**
+  (seal-quiesce). The check alone would leave a window between it and
+  Pebble's next file creation, so every flush, durable write and compaction
+  the watch admits holds its store's quiesce lease (`SealWatch.Admit` ...
+  `SealWatch.Done`, one atomic add and one atomic load). `StorageBarrier.Seal`
+  closes the barrier's quiesce gate, after which `Admit` refuses with the same
+  `*SealedError` wrapping `ErrBarrierSealed`, waits up to `seal.drain_timeout`
+  (`QRDB_SEAL_DRAIN_TIMEOUT`, default `10s`) for every store's leases to
+  drain, then wipes the key. A drain that runs out still seals and returns a
+  `*quiesce.DrainTimeoutError` naming the stores, logged and audited (phase
+  `drain`); unseal reopens the gate. Pebble's own background flushes and
+  compactions are not admitted, and a sealed barrier fails them as before.
+  Pebble is used as released (see *Sealing quiesces the encrypted stores* in
+  [architecture.md](architecture.md)).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
