@@ -169,6 +169,8 @@ are not reconstructed here — their history is in the git log.
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
   serve fails the image build instead of being fetched from its origin.
+- `changes` and `arch-gates` run as one `preflight` job (ci-template v1.34);
+  ci.yml has 17 jobs.
 
 - **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
   of ci.yml, release.yml, nightly.yml, automerge.yml and
