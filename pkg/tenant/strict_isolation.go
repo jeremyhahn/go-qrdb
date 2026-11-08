@@ -14,47 +14,28 @@
 
 package tenant
 
-import (
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
-	"github.com/jeremyhahn/go-qrdb/pkg/feature"
-)
-
-// StrictIsolationGate is implemented by a tenant service that answers the
+// StrictIsolationGate is implemented by a tenant service that carries the
 // strict-isolation activation check. The transports' isolation-policy verbs
 // (the cluster floor's get and set, and a tenant update carrying
-// isolation_policy) call it first and refuse with its error, so before
-// activation they change nothing.
+// isolation_policy) run it first, through featuregate.RequireStrictIsolation,
+// and refuse with its error, so before activation they change nothing.
 type StrictIsolationGate interface {
-	RequireStrictIsolation() error
+	// StrictIsolationCheck returns the injected activation check, or nil
+	// when none was injected, which the caller treats as not active.
+	StrictIsolationCheck() func() error
 }
 
 // strictIsolationGate holds the strict-isolation activation check. Unlike
-// the other activation gates it fails closed: without a check the feature is
-// not active, because this binary does not implement strict isolation's
-// dedicated WALs (featuregate.StrictIsolation is not supported) and a
-// composition that forgot the option must not open the verbs.
+// the other activation gates a missing check means not active: this binary
+// does not implement strict isolation's dedicated WALs, and a composition
+// that forgot the option must not open the verbs.
 type strictIsolationGate struct {
 	strictIsolationRequired func() error
 }
 
-// RequireStrictIsolation returns nil once strict-isolation is active, and
-// otherwise the check's error (the composer's *feature.NotActiveError).
-func (g strictIsolationGate) RequireStrictIsolation() error {
-	if g.strictIsolationRequired == nil {
-		return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
-	}
-	return g.strictIsolationRequired()
-}
-
-// RequireStrictIsolation answers the strict-isolation activation check for a
-// transport's tenant service: the service's own check, or
-// *feature.NotActiveError when the service has none, so a service without
-// the gate never opens the isolation-policy verbs.
-func RequireStrictIsolation(svc any) error {
-	if g, ok := svc.(StrictIsolationGate); ok {
-		return g.RequireStrictIsolation()
-	}
-	return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+// StrictIsolationCheck returns the injected activation check, nil if none.
+func (g strictIsolationGate) StrictIsolationCheck() func() error {
+	return g.strictIsolationRequired
 }
 
 // SetStrictIsolationGate injects the strict-isolation activation check on a
@@ -78,9 +59,9 @@ var (
 )
 
 // WithStrictIsolationGate injects the strict-isolation activation check:
-// while required returns an error (the composer's *feature.NotActiveError),
-// RequireStrictIsolation returns it and the isolation-policy verbs are
-// refused. Without it the verbs are always refused.
+// while required returns an error (the composer's *feature.NotActiveError)
+// the isolation-policy verbs are refused with it. Without it they are always
+// refused.
 func WithStrictIsolationGate(required func() error) TenantServiceOption {
 	return func(s *TenantService) { s.strictIsolationRequired = required }
 }

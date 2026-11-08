@@ -565,6 +565,27 @@ func TestSupported_OmitsStrictIsolation(t *testing.T) {
 	assert.NotContains(t, SupportedNames(), string(StrictIsolation))
 }
 
+// strictIsolationService is a tenant service carrying check as its
+// strict-isolation activation check.
+type strictIsolationService struct{ check func() error }
+
+func (s strictIsolationService) StrictIsolationCheck() func() error { return s.check }
+
+// TestRequireStrictIsolation_FailsClosed pins that a service without the
+// check, or with none injected, is refused as not active, and that an
+// injected check decides otherwise.
+func TestRequireStrictIsolation_FailsClosed(t *testing.T) {
+	for name, svc := range map[string]any{"no gate": struct{}{}, "nil service": nil, "nil check": strictIsolationService{}} {
+		var notActive *feature.NotActiveError
+		if err := RequireStrictIsolation(svc); !errors.As(err, &notActive) || notActive.Feature != StrictIsolation {
+			t.Fatalf("%s: RequireStrictIsolation = %v, want NotActiveError(%s)", name, err, StrictIsolation)
+		}
+	}
+	refused := errors.New("not yet")
+	assert.ErrorIs(t, RequireStrictIsolation(strictIsolationService{check: func() error { return refused }}), refused)
+	assert.NoError(t, RequireStrictIsolation(strictIsolationService{check: func() error { return nil }}))
+}
+
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
 // implements tenant-undo: its activation record is adopted, not refused as
 // unsupported, and the gate reports the feature active.

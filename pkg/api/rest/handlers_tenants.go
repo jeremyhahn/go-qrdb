@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/initproof"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -664,7 +665,7 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	if req.IsolationPolicy != nil {
-		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
 			writeErrorJSON(w, mapHTTPError(err), err)
 			return
 		}
@@ -701,7 +702,7 @@ func (s *Server) handleGetClusterIsolationPolicy(w http.ResponseWriter, r *http.
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
 		return
 	}
-	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+	if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -721,7 +722,7 @@ func (s *Server) handleSetClusterIsolationPolicy(w http.ResponseWriter, r *http.
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
 		return
 	}
-	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+	if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

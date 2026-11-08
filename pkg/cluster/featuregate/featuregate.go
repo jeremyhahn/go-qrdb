@@ -253,6 +253,21 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 // (docs/multi-tenancy/engineering.md phase 5).
 const StrictIsolation feature.Feature = "strict-isolation"
 
+// RequireStrictIsolation answers the strict-isolation activation check for a
+// transport's tenant service: nil once the service's injected check passes,
+// and otherwise its error, or *feature.NotActiveError when the service
+// carries no check (it does not implement StrictIsolationCheck, or returns
+// nil), so a composition without the gate never opens the isolation-policy
+// verbs.
+func RequireStrictIsolation(svc any) error {
+	if g, ok := svc.(interface{ StrictIsolationCheck() func() error }); ok {
+		if check := g.StrictIsolationCheck(); check != nil {
+			return check()
+		}
+	}
+	return &feature.NotActiveError{Feature: StrictIsolation}
+}
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
 var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads}
