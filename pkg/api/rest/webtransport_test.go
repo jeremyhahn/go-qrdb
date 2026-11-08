@@ -16,6 +16,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -382,10 +383,95 @@ func TestWebTransportServer_ServeListenerEndsOnAcceptError(t *testing.T) {
 // a request that did not come from the WebTransport listener: its writer is
 // not an HTTP/3 one and its context carries no QUIC connection.
 func TestWebTransportClientRequirementsMet_NotHTTP3(t *testing.T) {
-	err := webTransportClientRequirementsMet(httptest.NewRecorder(), httptest.NewRequest(http.MethodConnect, wtTestPath, nil))
+	err := webTransportClientRequirementsMet(httptest.NewRecorder(), httptest.NewRequest(http.MethodConnect, wtTestPath, nil), nil)
 	var target *WebTransportNotHTTP3Error
 	if !errors.As(err, &target) {
 		t.Fatalf("err %v, want *WebTransportNotHTTP3Error", err)
+	}
+}
+
+// withWebTransportSettingsDeadline replaces the handshake timer of the
+// client-SETTINGS wait with c, so a test fires the deadline itself.
+func withWebTransportSettingsDeadline(c <-chan time.Time) ServerOption {
+	return func(s *Server) { s.webTransportSettingsDeadline = c }
+}
+
+// TestNewWebTransportServer_UpgradeSharesTheHandshakeTimeout pins Upgrade's
+// own SETTINGS wait to the constant that bounds ours.
+func TestNewWebTransportServer_UpgradeSharesTheHandshakeTimeout(t *testing.T) {
+	if got := newWebTransportServer(&http3.Server{}).wt.ReorderingTimeout; got != webTransportHandshakeTimeout {
+		t.Fatalf("ReorderingTimeout %v, want webTransportHandshakeTimeout %v", got, webTransportHandshakeTimeout)
+	}
+}
+
+// qpackString appends s as a QPACK string literal without Huffman coding,
+// its length an integer with the given prefix (RFC 9204 section 4.1.2).
+func qpackString(b []byte, flags byte, prefix uint, s string) []byte {
+	b = qpackInt(b, flags, prefix, uint64(len(s)))
+	return append(b, s...)
+}
+
+// qpackInt appends v as a QPACK prefixed integer (RFC 9204 section 4.1.1).
+func qpackInt(b []byte, flags byte, prefix uint, v uint64) []byte {
+	limit := uint64(1)<<prefix - 1
+	if v < limit {
+		return append(b, flags|byte(v))
+	}
+	b = append(b, flags|byte(limit))
+	for v -= limit; v >= 0x80; v >>= 7 {
+		b = append(b, byte(v)|0x80)
+	}
+	return append(b, byte(v))
+}
+
+// TestWebTransport_ConnectWithoutSettingsRejectedAtTheDeadline sends an
+// authenticated draft-16 CONNECT on a connection that never opens its
+// control stream, so the server never receives the client's SETTINGS. When
+// the handshake deadline fires, the request stream is reset with
+// H3_REQUEST_REJECTED and no session handler runs.
+func TestWebTransport_ConnectWithoutSettingsRejectedAtTheDeadline(t *testing.T) {
+	h := newWTRecorder()
+	deadline := make(chan time.Time)
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, h.handle), withWebTransportSettingsDeadline(deadline))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
+		EnableDatagrams:                  true,
+		EnableStreamResetPartialDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("DialAddr: %v", err)
+	}
+	defer func() { _ = conn.CloseWithError(0, "") }()
+	str, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("OpenStreamSync: %v", err)
+	}
+
+	// The field section (RFC 9204 section 4.5): a zero Required Insert Count
+	// and Base, then static-table references (:method CONNECT 15, :scheme
+	// https 23, :authority 0, :path 1, authorization 84) and :protocol by
+	// literal name.
+	fields := []byte{0x00, 0x00, 0xc0 | 15, 0xc0 | 23}
+	fields = qpackString(qpackInt(fields, 0x50, 4, 0), 0, 7, srv.Addr())
+	fields = qpackString(qpackInt(fields, 0x50, 4, 1), 0, 7, wtTestPath)
+	fields = qpackString(qpackString(fields, 0x20, 3, ":protocol"), 0, 7, validWTHandshake.protocol)
+	fields = qpackString(qpackInt(fields, 0x50, 4, 84), 0, 7, "Bearer good")
+	frame := quicvarint.Append(quicvarint.Append(nil, 0x01), uint64(len(fields)))
+	if _, err := str.Write(append(frame, fields...)); err != nil {
+		t.Fatalf("write HEADERS: %v", err)
+	}
+
+	close(deadline)
+	str.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, err = io.ReadAll(str)
+	var streamErr *quic.StreamError
+	if !errors.As(err, &streamErr) || streamErr.ErrorCode != quic.StreamErrorCode(http3.ErrCodeRequestRejected) || !streamErr.Remote {
+		t.Fatalf("read: %v; want the server's H3_REQUEST_REJECTED stream reset", err)
+	}
+	if n := h.calls.Load(); n != 0 {
+		t.Fatalf("handler ran %d times, want 0", n)
 	}
 }
 

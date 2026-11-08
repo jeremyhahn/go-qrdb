@@ -24,7 +24,7 @@ are not reconstructed here — their history is in the git log.
   whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
   feature `transaction-reads` is active on every member. A branch that only
   reads does not advance the revision.
-- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route.
+- **WebTransport sessions on the HTTP/3 listener** (#1243): `WithWebTransportHandler(path, handler)` (`pkg/api/rest`, `pkg/server`, `sdk/go/server`) serves draft-ietf-webtrans-http3-16 sessions through webtransport-go v0.13.0. Each session's CONNECT passes the REST authentication and tenant-binding chain before it is upgraded, and the handler receives the caller and tenant. Without the option, the listener sends no WebTransport SETTINGS and the path is an unknown route. A CONNECT whose client sends no HTTP/3 SETTINGS within the 5 s handshake timeout is reset with H3_REQUEST_REJECTED and never reaches the handler.
 
 ### Fixed
 

@@ -160,9 +160,12 @@ type Server struct {
 	webTransportFunc  WebTransportHandler
 	webTransportErr   error
 	webTransport      *webTransportServer
-	gatherer          prometheus.Gatherer
-	resolver          LeaderAdminResolver
-	forwardClient     *http.Client
+	// webTransportSettingsDeadline, when set, replaces the
+	// webTransportHandshakeTimeout timer of the client-SETTINGS wait.
+	webTransportSettingsDeadline <-chan time.Time
+	gatherer                     prometheus.Gatherer
+	resolver                     LeaderAdminResolver
+	forwardClient                *http.Client
 
 	// forwardSigner is this node's own private key, used to sign the
 	// on-behalf CallerAssertion attached to forwarded write requests. It is

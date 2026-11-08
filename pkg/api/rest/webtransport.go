@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -73,7 +74,17 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: &WebTransportNotHTTP3Error{}})
 		return
 	}
-	if err := webTransportClientRequirementsMet(w, r); err != nil {
+	deadline := s.webTransportSettingsDeadline
+	if deadline == nil {
+		timer := time.NewTimer(webTransportHandshakeTimeout)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	if err := webTransportClientRequirementsMet(w, r, deadline); err != nil {
+		if errors.Is(err, errWebTransportSettingsTimeout) {
+			rejectWebTransportRequest(w)
+			return
+		}
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})
 		return
 	}
@@ -119,7 +130,7 @@ var webTransportClientRequirements = []struct {
 // arrive after its CONNECT (section 3.1), and returns a
 // *WebTransportClientRequirementError when the connection lacks one of
 // webTransportClientRequirements. Section 3.1 makes such a session malformed.
-func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request) error {
+func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request, deadline <-chan time.Time) error {
 	settingser, ok := w.(http3.Settingser)
 	conn, connOK := r.Context().Value(quicConnContextKey{}).(*quic.Conn)
 	if !ok || !connOK {
@@ -127,6 +138,8 @@ func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request) e
 	}
 	select {
 	case <-settingser.ReceivedSettings():
+	case <-deadline:
+		return errWebTransportSettingsTimeout
 	case <-r.Context().Done():
 		return r.Context().Err()
 	}
@@ -139,8 +152,33 @@ func webTransportClientRequirementsMet(w http.ResponseWriter, r *http.Request) e
 	return nil
 }
 
+// errWebTransportSettingsTimeout reports that the client's SETTINGS did not
+// arrive within webTransportHandshakeTimeout.
+var errWebTransportSettingsTimeout = errors.New("rest: the client's HTTP/3 SETTINGS did not arrive within the WebTransport handshake timeout")
+
+// rejectWebTransportRequest refuses a CONNECT whose client never sent its
+// SETTINGS: both directions of the request stream are reset with
+// H3_REQUEST_REJECTED (RFC 9114 section 8.1), which tells the client the
+// request was not processed, and no session handler runs.
+func rejectWebTransportRequest(w http.ResponseWriter) {
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		return
+	}
+	str := streamer.HTTPStream()
+	str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+	str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+}
+
 // webTransportServer serves the HTTP/3 listener's connections through
 // webtransport-go, which has no ServeListener of its own.
+// webTransportHandshakeTimeout bounds how long a CONNECT waits for the
+// client's HTTP/3 SETTINGS: our own wait ahead of Upgrade, and Upgrade's
+// (webtransport.Server.ReorderingTimeout). HTTP/3 has no request timeout of
+// its own, so without it a client that withholds SETTINGS would hold the
+// request's handler and stream for ever.
+const webTransportHandshakeTimeout = 5 * time.Second
+
 type webTransportServer struct {
 	wt *webtransport.Server
 }
@@ -158,7 +196,7 @@ func newWebTransportServer(h3 *http3.Server) *webTransportServer {
 		}
 		return context.WithValue(ctx, quicConnContextKey{}, c)
 	}
-	return &webTransportServer{wt: &webtransport.Server{H3: h3}}
+	return &webTransportServer{wt: &webtransport.Server{H3: h3, ReorderingTimeout: webTransportHandshakeTimeout}}
 }
 
 // quicConnContextKey is the request context key of the request's QUIC
