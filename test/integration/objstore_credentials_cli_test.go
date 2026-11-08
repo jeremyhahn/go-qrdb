@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
+	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -177,6 +179,15 @@ func randomObjstoreCredential(t *testing.T) string {
 // initializes and unseals its barrier, which opens the objstore backend.
 func startObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf) {
 	t.Helper()
+	cmd, out, _ := startObjstoreCredentialNodeConn(t, bin, cfg, dataDir)
+	return cmd, out
+}
+
+// startObjstoreCredentialNodeConn is startObjstoreCredentialNode that also
+// returns the qrdb CLI's connection flags for the node's REST transport, as
+// the admin the ceremony bound.
+func startObjstoreCredentialNodeConn(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf, []string) {
+	t.Helper()
 	ca := generateTestCA(t)
 	restPort := allocateTCPPorts(t, 1)[0]
 	args := append([]string{
@@ -191,8 +202,8 @@ func startObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.
 	out := &watchOutputBuf{}
 	cmd := spawnNode(t, bin, args, out)
 	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
-	initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
-	return cmd, out
+	certPath, keyPath := initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
+	return cmd, out, restConnArgs(ca, certPath, keyPath, restPort)
 }
 
 // assertObjstoreCredentialsNotEchoed fails the test when any credential in
@@ -266,10 +277,13 @@ func TestObjstoreCredentials_LocalRefusesUnusedCredentialFiles(t *testing.T) {
 // node's output, its data directory, its configuration directory, or any
 // object in the bucket.
 //
-// The node is stopped once a signed request has verified: the s3 provider
-// answers a missing object with the SDK's NoSuchKey error rather than
-// go-objstore's ErrKeyNotFound, so the engine cannot open an empty bucket
-// and the boot does not complete against any S3 endpoint.
+// The bucket is seeded with the objects a formatted, empty store holds (the
+// format marker and an empty commit journal), so the engine opens: the s3
+// provider answers a missing object with the SDK's NoSuchKey error rather
+// than go-objstore's ErrKeyNotFound, and an empty bucket cannot be opened.
+// The node then completes its boot, a key is written and read back through
+// the qrdb CLI, and the write must have reached the bucket before the node
+// is stopped and checked, so the bodies searched include the written ones.
 func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *testing.T) {
 	bin, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage,
 		qrdbdharness.WithBuildTags(qrdbdharness.DefaultBuildTags+" awss3"))
@@ -303,8 +317,37 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
 	dataDir := t.TempDir()
 
-	cmd, out := startObjstoreCredentialNode(t, bin, cfg, dataDir)
+	// The MVCC store reads its revision and node compaction floor when it
+	// opens; both are seeded at revision 0, a fresh database.
+	seeded := stub.seedFormattedStore(t, map[string][]byte{
+		string(mvcc.RevisionKey()):            mvcc.EncodeRevision(0),
+		string(mvcc.NodeCompactionFloorKey()): mvcc.EncodeRevision(0),
+		lease.TablePrefix + "seq":             make([]byte, 8),
+	})
+
+	cmd, out, conn := startObjstoreCredentialNodeConn(t, bin, cfg, dataDir)
 	stub.awaitSignedRequest(t, 60*time.Second, out)
+	cli := buildCLIBinary(t)
+	const kvKey, kvValue = "objstore-credentials-key", "objstore-credentials-value"
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...),
+		"kv", "put", kvKey, kvValue)...); err != nil {
+		t.Fatalf("kv put: %v\nstderr: %s\nS3 requests: %v\nnode output:\n%s", err, stderr, stub.requestList(), out)
+	}
+	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...), "kv", "get", kvKey)...)
+	if err != nil {
+		t.Fatalf("kv get: %v\nstderr: %s\nnode output:\n%s", err, stderr, out)
+	}
+	if !strings.Contains(stdout, kvValue) {
+		t.Fatalf("kv get %q = %q, want %q", kvKey, stdout, kvValue)
+	}
+	written := stub.objectBodies()
+	for _, name := range seeded {
+		delete(written, name)
+	}
+	if len(written) == 0 {
+		t.Fatalf("the kv put stored no object in the bucket beyond the seeded %v; requests: %v\nnode output:\n%s",
+			seeded, stub.requestList(), out)
+	}
 	stopNode(t, cmd, 30*time.Second)
 
 	if stub.verifiedCount() == 0 {
