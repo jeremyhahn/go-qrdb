@@ -261,6 +261,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The toolchain image build retries its Trivy download.** The
+  `build/docker/devcontainer` tools stage fetched the Trivy release archive
+  with a single `curl`, so one transient 504 from GitHub's release-asset
+  host failed `make docker-build-toolchain` and, with it, every CI job on
+  main and on PRs. The fetch now retries five times, 3 s apart; the pinned
+  SHA-256 check is unchanged.
 - **An unknown op type in a transaction or batch is refused, not applied as
   a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
   and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
@@ -636,6 +642,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `github.com/wailsapp/wails/v2` v2.17.0 → v2.17.1 in the root module, the
+  desktop shell's only Wails requirement; `deps-check` reported it behind its
+  latest release.
 - `github.com/mark3labs/mcp-go` v1.4.0 → v1.5.0 in the root and `sdk/go`
   modules (indirect in `sdk/go/gorm/conformance` and `test/clusterproof`).
 - `github.com/jackc/pgx/v5` v5.11.0 → v5.12.0 in the root module (indirect in
