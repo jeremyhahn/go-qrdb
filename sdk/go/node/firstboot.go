@@ -112,6 +112,15 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	deps.AdminCertPEM = adminCertPEM
 	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
 	deps.Binder = firstboot.UserCertBinder{Users: users}
+	// The system SO the ceremony recorded, unless the caller names one.
+	if deps.SO == nil {
+		so, err := firstboot.PendingSystemSO(ctx, store)
+		if err != nil {
+			return nil, err
+		}
+		deps.SO = so
+		deps.SOEnrolled = so == nil && firstboot.SystemSOConsumed(ctx, store)
+	}
 
 	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, policy, users)
@@ -138,6 +147,9 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	// fatal, matching cmd/qrdbd/start.go's own treatment of the same step.
 	if err := firstboot.ClearPendingAdminCert(ctx, store); err != nil {
 		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
+	}
+	if err := firstboot.ClearPendingSystemSO(ctx, store); err != nil {
+		slog.Warn("node: failed to clear the pending system SO record", "error", err)
 	}
 	return result, nil
 }

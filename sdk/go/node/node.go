@@ -3876,6 +3876,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// clustered or not: even a standalone node's ceremony may have
 		// issued one, and the record is harmless (never read) when nothing
 		// downstream calls FirstBootWithCeremony.
+		// The ceremony's system SO (go-qrdb#1128) is recorded first, as
+		// cmd/qrdbd does: a replica that sees the admin's record sees it.
+		if err := firstboot.WriteIssuedSystemSOIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
+			return &PendingAdminCertWriteError{Err: err}
+		}
 		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
 			return &PendingAdminCertWriteError{Err: err}
 		}
