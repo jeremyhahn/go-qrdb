@@ -77,6 +77,8 @@ func TestNamedLogErrors_Error(t *testing.T) {
 		"checkpoint exists":  {err: &CheckpointExistsError{Size: 4}, want: []string{"4", "already exists"}},
 		"empty checkpoint":   {err: &EmptyCheckpointError{Size: 3}, want: []string{"empty", "3"}},
 		"expire not allowed": {err: &ExpireNotAllowedError{ID: id}, want: []string{"acme/ledger/certs", "expiring"}},
+		"not audit log":      {err: &NotAuditLogError{ID: id}, want: []string{"acme/ledger/certs", "audit"}},
+		"audit name taken":   {err: &AuditNameTakenError{ID: id}, want: []string{"acme/ledger/certs", "predates the audit instance", "delete it"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			msg := tc.err.Error()
