@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -44,6 +45,13 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
 		if err != nil {
 			return 0, err
+		}
+		if vlog.IsAuditLog(id) {
+			// The audit instance (docs/databases/architecture.md §7):
+			// each entry is an audit event, validated and linked into the
+			// linear chain by pkg/audit, and its record is the leaf. The
+			// result is the last event's sequence, as OpAuditAppend's is.
+			return audit.ChainOn(logs).AppendToInstance(w, id.TenantID, entries)
 		}
 		return logs.AppendEntries(w, id, entries)
 	},

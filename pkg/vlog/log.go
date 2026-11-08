@@ -188,8 +188,18 @@ func (c *Chain) Append(w Writer, tenantID string, encode Encoder) (seq uint64, e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Once the tenant's audit instance exists, an event this opcode carries
+	// is its next leaf too; before, Append writes no tree node.
+	return c.appendEvent(w, tenantID, encode, false)
+}
+
+// appendLinear stages the next record of tenantID's linear chain and its new
+// head, and returns that head and the record's bytes without installing the
+// head: the caller does, once everything else the command writes is staged.
+// c.mu must be held.
+func (c *Chain) appendLinear(w Writer, tenantID string, encode Encoder) (headState, []byte, error) {
 	head := c.heads[tenantID]
-	seq = head.seq + 1
+	seq := head.seq + 1
 	lo := head.lo
 	if head.seq == 0 {
 		lo = 1 // the first live sequence is 1; nothing below it ever existed.
@@ -197,18 +207,16 @@ func (c *Chain) Append(w Writer, tenantID string, encode Encoder) (seq uint64, e
 
 	body, digest, encErr := encode(head.digest, head.seq == 0)
 	if encErr != nil {
-		return 0, encErr
+		return headState{}, nil, encErr
 	}
 
 	if setErr := w.Set(EventKey(tenantID, seq), body); setErr != nil {
-		return 0, &TableWriteError{Err: setErr}
+		return headState{}, nil, &TableWriteError{Err: setErr}
 	}
 	if setErr := w.Set(headKey(tenantID), encodeHead(seq, lo, digest)); setErr != nil {
-		return 0, &TableWriteError{Err: setErr}
+		return headState{}, nil, &TableWriteError{Err: setErr}
 	}
-
-	c.heads[tenantID] = headState{seq: seq, lo: lo, digest: digest}
-	return seq, nil
+	return headState{seq: seq, lo: lo, digest: digest}, body, nil
 }
 
 // Prune deletes tenantID's events in [lo, upper), where lo is the Chain's own
@@ -233,6 +241,14 @@ func (c *Chain) Prune(w Writer, tenantID string, cutoff uint64) (deleted int, er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	return c.pruneLocked(w, tenantID, cutoff)
+}
+
+// pruneLocked is Prune with c.mu held. Once tenantID's audit instance exists,
+// it is that instance's ExpireBodies (docs/databases/architecture.md §7): the
+// bodies go, the tree stays, and the instance's low-watermark advances to the
+// first leaf whose body survives.
+func (c *Chain) pruneLocked(w Writer, tenantID string, cutoff uint64) (deleted int, err error) {
 	head, ok := c.heads[tenantID]
 	if !ok || head.seq == 0 {
 		return 0, nil
@@ -258,6 +274,18 @@ func (c *Chain) Prune(w Writer, tenantID string, cutoff uint64) (deleted int, er
 	newHead := headState{seq: head.seq, lo: upper, digest: head.digest}
 	if setErr := w.Set(headKey(tenantID), encodeHead(newHead.seq, newHead.lo, newHead.digest)); setErr != nil {
 		return deleted, &TableWriteError{Err: setErr}
+	}
+
+	id := AuditLogID(tenantID)
+	if st, exists := c.logs[id]; exists && upper > st.treeStart {
+		lo := min(upper-st.treeStart, st.size)
+		if lo > st.lo {
+			if setErr := w.Set(logHeadKey(id), encodeLogHead(st.size, lo, st.hashes)); setErr != nil {
+				return deleted, &TableWriteError{Err: setErr}
+			}
+			st.lo = lo
+			c.logs[id] = st
+		}
 	}
 	c.heads[tenantID] = newHead
 	return deleted, nil

@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -25,10 +26,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // ReplicatedLogger implements audit.AuditLogger over the replicated audit
-// chain: Emit proposes protocol.OpAuditAppend through whichever (Host,
+// chain: Emit proposes protocol.OpAuditAppend -- or, once the group enables
+// featuregate.VerifiableLog, an append to the tenant's audit instance -- through whichever (Host,
 // shardID) the resolver names for the event's tenant, and Query/
 // VerifyTenantChain read back through audit.QueryRequest/audit.VerifyRequest
 // on the same shard. It is the sink an OptInAuditLogger composes with once a
@@ -78,19 +81,37 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if err != nil {
 		return err
 	}
-	if gated, ok := host.(FeatureGatedHost); ok && !gated.FeatureEnabled(shardID, featuregate.AuditAppend) {
+	gated, isGated := host.(FeatureGatedHost)
+	if isGated && !gated.FeatureEnabled(shardID, featuregate.AuditAppend) {
 		return &AuditFeatureNotActiveError{TenantID: target, ShardID: shardID}
 	}
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
-	cmd, err := protocol.EncodeAuditAppend(target, ev)
+	// Once the group enables featuregate.VerifiableLog, every event is an
+	// append to the tenant's audit instance, the log system/audit
+	// (docs/databases/architecture.md §7); before, it is OpAuditAppend, and
+	// no replica writes a tree node for it. A host that gates nothing is a
+	// single-binary composition: it keeps OpAuditAppend.
+	var cmd []byte
+	if isGated && gated.FeatureEnabled(shardID, featuregate.VerifiableLog) {
+		body, marshalErr := json.Marshal(ev)
+		if marshalErr != nil {
+			return &EncodeRequestError{Err: marshalErr}
+		}
+		cmd, err = protocol.EncodeVerifiableLogAppend(vlog.AuditLogID(target), [][]byte{body})
+	} else {
+		cmd, err = protocol.EncodeAuditAppend(target, ev)
+	}
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
 	result, err := propose(ctx, host, shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
+	}
+	if _, _, msg, refused := protocol.DecodeLogRefusal(result.Data); refused {
+		return &ProposeError{Err: &AuditInstanceRefusedError{TenantID: target, Reason: msg}}
 	}
 	if resultErr := checkResultError(result); resultErr != nil {
 		return &ProposeError{Err: resultErr}
