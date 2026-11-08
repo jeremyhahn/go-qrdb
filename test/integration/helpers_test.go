@@ -2589,6 +2589,14 @@ const (
 // package asserts on it.
 func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string) (certPath, keyPath string) {
 	t.Helper()
+	return initAndUnsealBarrierWith(t, ca, port, passphrase, nil)
+}
+
+// initAndUnsealBarrierWith is initAndUnsealBarrier with extra
+// CeremonyInitializeRequest fields, such as the system SO a strict
+// separation node needs (startMultiProtocolNodeWithConfig).
+func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase string, extra map[string]any) (certPath, keyPath string) {
+	t.Helper()
 
 	_, certPath, keyPath = ca.adminIdentity(t, t.TempDir())
 	adminCertPEM, err := os.ReadFile(certPath)
@@ -2596,7 +2604,7 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		t.Fatalf("initAndUnsealBarrier: read %s: %v", certPath, err)
 	}
 
-	body, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"so_pin":         harnessSOPIN,
 		"user_pin":       harnessUserPIN,
 		"admin_cert_pem": string(adminCertPEM),
@@ -2608,7 +2616,11 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 		// etc.). A bare string marshals as plain JSON text instead, which
 		// is not valid base64 and the decoder rejects.
 		"secret": []byte(passphrase),
-	})
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	body, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("initAndUnsealBarrier: marshal: %v", err)
 	}

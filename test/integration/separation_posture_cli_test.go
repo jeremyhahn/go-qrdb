@@ -26,6 +26,7 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -195,6 +196,78 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] %s holds the so role after the SO revoked it", proto.name, uma)
 			}
 		})
+	}
+}
+
+// TestSeparationPosture_CLI_SystemSO_PerProtocol drives the system SO a
+// strict node's ceremony enrolled (#1128) over every transport: it creates
+// a system role and runs the system tenant's and the all-tenants built-in
+// role reconcile, each of which strict separation refuses the system Admin.
+func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
+	t.Parallel()
+	n := startStrictSeparationNode(t)
+	if n.systemSOCert == "" {
+		t.Fatal("the strict node enrolled no system SO")
+	}
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			pt := createPostureTenant(t, n, proto, "sso", false)
+			soConn := tenantCLIArgsForProto(n, proto, n.systemSOCert, n.systemSOKey)
+			ops := func(caller string) map[string][]string {
+				return map[string][]string{
+					"roles create": {"roles", "create", "--name", pt.id + "-" + caller + "-sysauditor",
+						"--permissions", "audit:read", "--tenant-id", "system"},
+					// The per-tenant reconcile is the caller's own tenant's;
+					// the all-tenants pass reaches pt's.
+					"roles reconcile --tenant":      {"roles", "reconcile", "--tenant", "system"},
+					"roles reconcile --all-tenants": {"roles", "reconcile", "--all-tenants"},
+				}
+			}
+			for name, args := range ops("admin") {
+				out, err := runCLIProto(t, n, proto, args...)
+				if err == nil {
+					t.Fatalf("[%s] strict separation: %s ran as the system Admin: %s", proto.name, name, out)
+				}
+				lower := strings.ToLower(out)
+				if !strings.Contains(lower, "separation of duties") &&
+					!strings.Contains(lower, "so role required") &&
+					!strings.Contains(lower, "permission denied") &&
+					!strings.Contains(lower, "forbidden") {
+					t.Fatalf("[%s] %s as the system Admin must be refused as a permission denial, got: %s", proto.name, name, out)
+				}
+			}
+			for name, args := range ops("so") {
+				if out, err := runQRDB(t, n.cli, soConn, args...); err != nil {
+					t.Fatalf("[%s] %s as the system SO: %v\noutput: %s", proto.name, name, err, out)
+				}
+			}
+		})
+	}
+}
+
+// TestSeparationPosture_EmbeddedStrictRequiresSO boots an embedded node
+// under strict separation with no system SO: first boot refuses it, typed,
+// before any write (#1128).
+func TestSeparationPosture_EmbeddedStrictRequiresSO(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Raft.DataDir = t.TempDir()
+	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
+	cfg.Protocols.REST, cfg.Protocols.GRPC, cfg.Protocols.QUIC = false, false, false
+	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
+	cfg.Auth.SeparationOfDuties = true
+	n, err := node.NewStandaloneNode(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("NewStandaloneNode: %v", err)
+	}
+	defer func() { _ = n.Close() }()
+	svcs := n.Services()
+	_, err = n.FirstBoot(context.Background(), firstboot.Dependencies{
+		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
+		Logger: slog.New(slog.DiscardHandler), SeparationOfDuties: true,
+	})
+	var required *firstboot.SystemSORequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("strict first boot without an SO = %v, want *firstboot.SystemSORequiredError", err)
 	}
 }
 
