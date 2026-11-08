@@ -261,6 +261,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **The toolchain image build retries its Trivy download.** The
+  `build/docker/devcontainer` tools stage fetched the Trivy release archive
+  with a single `curl`, so one transient 504 from GitHub's release-asset
+  host failed `make docker-build-toolchain` and, with it, every CI job on
+  main and on PRs. The fetch now retries five times, 3 s apart; the pinned
+  SHA-256 check is unchanged.
 - **An unknown op type in a transaction or batch is refused, not applied as
   a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
   and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
