@@ -281,6 +281,9 @@ func (s *Server) buildHandlers() {
 	s.handle("cert.Issue", permission.CertsIssue, s.handleIssueCert)
 	s.handle("cert.Enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.handle("cert.Delegate", permission.CertsDelegate, s.handleIssueDelegation)
+	s.handle("cert.DelegationPolicyPut", permission.CertsDelegate, s.handlePutDelegationPolicy)
+	s.handle("cert.DelegationPolicyList", permission.CertsDelegate, s.handleListDelegationPolicies)
+	s.handle("cert.DelegationPolicyDelete", permission.CertsDelegate, s.handleDeleteDelegationPolicy)
 	s.handle("cert.Revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.handle("cert.List", permission.CertsList, s.handleListCerts)
 

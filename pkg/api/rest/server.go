@@ -2421,6 +2421,9 @@ func (s *Server) registerRoutes() {
 	s.routeIf(enrollOn, http.MethodPost, "/certs/issue", permission.CertsIssue, s.handleIssueCert)
 	s.routeIf(enrollOn, http.MethodPost, "/certs/enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.routeIf(enrollOn, http.MethodPost, "/certs/delegate", permission.CertsDelegate, s.handleIssueDelegation)
+	s.routeIf(enrollOn, http.MethodPost, "/certs/delegate/policies", permission.CertsDelegate, s.handlePutDelegationPolicy)
+	s.routeIf(enrollOn, http.MethodGet, "/certs/delegate/policies", permission.CertsDelegate, s.handleListDelegationPolicies)
+	s.routeIf(enrollOn, http.MethodDelete, "/certs/delegate/policies/{principal}", permission.CertsDelegate, s.handleDeleteDelegationPolicy)
 	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
 

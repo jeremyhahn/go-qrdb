@@ -96,7 +96,7 @@ type delegationCredential struct {
 // second value is tenant B's, and the third holds each tenant's login CA.
 func startDelegationNode(t *testing.T) (*multiProtoNode, delegationCredential, delegationKeyB) {
 	t.Helper()
-	sdk.RegisterPermissionRoleGrant(delegationPrincipal, permission.KVGet, permission.KVPut)
+	sdk.RegisterPermissionRoleGrant(delegationPrincipal, permission.KVGet, permission.KVPut, permission.CertsDelegate)
 
 	ca := generateTestCA(t)
 	serverKP := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject("node", ""), qrdbdharness.WithServerAuth())

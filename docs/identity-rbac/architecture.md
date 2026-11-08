@@ -911,7 +911,9 @@ signature code of its own.
 - **Only the tenant issues one.** Issuance is `certs:delegate`, a
   tenant-only permission: it is confined to the caller's own tenant, the
   system tenant has none to give, and a caller that is itself delegated cannot
-  issue another (a delegation that could renew itself would have no lifetime).
+  issue another (a delegation that could renew itself would have no lifetime),
+  except a renewal within a standing policy the tenant wrote
+  ([below](#standing-delegation-policy)).
   The tenant's Key B may be device-held through the certificate-key seam
   (`WithCertKeyProviderFactory`); the delegation is signed wherever Key B is.
 - **Only the tenant's own CA speaks for it.** The verifier requires the leaf's
@@ -977,6 +979,40 @@ The extension is named `tp-delegation` and its OID is
 `1.3.6.1.4.1.29377.101.24`. The arc `29377.101` is the company's IANA Private
 Enterprise Number (29377) certificate-extension arc, shared with
 go-trusted-platform and go-xkms.
+
+### Standing delegation policy
+
+A certificate that lives at most 24 hours needs a tenant admin to issue the
+next one, every day, for as long as the host serves the tenant. A **standing
+delegation policy** lets the tenant decide that once: it names the principal,
+the most scope it may hold and the longest lifetime, and the node mints and
+renews within it with no admin at hand. The tenant still grants everything;
+the policy is that grant written down.
+
+- **The tenant writes it.** Put, list and delete are `certs:delegate`, in the
+  caller's own tenant. The system tenant has no policy to write, and a
+  delegated caller cannot write, list or delete one. The record is one per
+  (tenant, principal), stored under `__sys:cert_delegation_policy/` and
+  replicated like any system record.
+- **First mint, in process.** `Node.MintDelegation` mints the first
+  certificate as the node's service principal, for the principal the node
+  runs as; it is refused unless a policy names that principal in that tenant.
+- **Renewal, by the delegation itself.** The one exception to "a delegated
+  caller cannot issue another": a caller authenticated by a delegation may call
+  `IssueDelegation` for its own principal in its own tenant while a policy
+  stands for it. `Policy.Bound` bounds the request: it may narrow the scope
+  and shorten the lifetime, never widen either, and the 24-hour cap still
+  holds. The renewal is a fresh certificate the tenant's CA signs; the old one
+  lives out its own lifetime.
+- **Revoked by deleting it.** A delete stops every further mint and renewal at
+  once (`DelegationPolicyNotFoundError`, NotFound on every transport).
+  Certificates already minted live until they expire or are revoked by serial,
+  so a tenant that wants the principal out at once deletes the policy and
+  revokes the live serial.
+- **Audited to the tenant.** `cert.delegation_policy.put`,
+  `cert.delegation_policy.delete` and `cert.delegation.mint` are recorded under
+  the tenant, and every use of a minted certificate is audited as any
+  delegation is.
 
 ## Component boundaries
 
