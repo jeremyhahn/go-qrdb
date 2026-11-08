@@ -207,6 +207,16 @@ func TestCompoundIndex_Clear(t *testing.T) {
 	assert.Empty(t, keys)
 }
 
+func TestCompoundIndex_Close(t *testing.T) {
+	idx := newTestCompoundIndex(t, IndexConfig{
+		Name:       "test.messages.F1_F2",
+		FieldNames: []string{"ConversationID", "Timestamp"},
+		ValueTypes: []IndexValueType{IndexValueTypeString, IndexValueTypeString},
+	})
+	err := idx.Close()
+	assert.NoError(t, err)
+}
+
 func TestCompoundIndex_ThreeFields(t *testing.T) {
 	idx := newTestCompoundIndex(t, IndexConfig{
 		Name:       "test.jobs.QueueType_Status_NextRunAt",
