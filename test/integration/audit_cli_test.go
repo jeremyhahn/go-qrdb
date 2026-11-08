@@ -49,8 +49,10 @@
 package integration_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -379,12 +381,18 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNodeWithConfig(t, "", auditInstanceYAML)
 
-	// Onboarding the tenant files its tenant.onboard events, the instance's
-	// first leaves.
+	// Onboarding records are platform events on the system tenant's trail,
+	// so the tenant's admin files the instance's first leaf itself.
 	const tenantID = "auditlog-acme"
 	createTenant(t, node, multiProtocols[0], tenantID, "Audit Log Tenant", "prefix", false)
 	certPath, keyPath := provisionTenantSOIdentity(t, node, tenantID, "audit-log-reader",
 		[]string{"vlog:head", "vlog:get", "vlog:proof", "audit:verify_replicated", "admin:health"})
+	adminCred, ok := lookupTenantAdminCred(tenantID)
+	if !ok {
+		t.Fatalf("no admin credential registered for %s", tenantID)
+	}
+	fileTenantAuditEvent(t, node.restPort, tenantID,
+		mtlsHTTPClientFromFiles(t, node.ca, adminCred.certPath, adminCred.keyPath, 15*time.Second))
 
 	auditLog := []string{"--database", "system", "--log", "audit"}
 	for _, proto := range multiProtocols {
@@ -409,7 +417,7 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 				headErr = vlogJSON(&head, "head")
 				return headErr == nil && head.Size >= 1
 			}) {
-				t.Fatalf("[%s] vlog head on %s/system/audit = size %d, %v; want the onboarding events", proto.name, tenantID, head.Size, headErr)
+				t.Fatalf("[%s] vlog head on %s/system/audit = size %d, %v; want the tenant's factor delete record", proto.name, tenantID, head.Size, headErr)
 			}
 			if len(head.Root) != rfc6962.DefaultHasher.Size() {
 				t.Fatalf("[%s] vlog head on %s/system/audit has root %x", proto.name, tenantID, head.Root)
@@ -447,5 +455,37 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] audit verify --replicated = %+v, %v; want a continuous chain\noutput: %s", proto.name, result, jerr, out)
 			}
 		})
+	}
+}
+
+// fileTenantAuditEvent files a tenant-keyed record on tenantID's trail: the
+// tenant's admin adds a throwaway mTLS factor to its own account and
+// hard-deletes it, and the user_authfactor delete record carries the
+// caller's tenant. Tenant onboarding does not serve: its records are platform
+// events, filed on the system tenant's trail naming the tenant.
+func fileTenantAuditEvent(t *testing.T, restPort int, tenantID string, adminClient *http.Client) {
+	t.Helper()
+	userID, err := strconv.ParseUint(awaitTenantAdminID(t, restPort, tenantID, adminClient), 10, 64)
+	if err != nil {
+		t.Fatalf("fileTenantAuditEvent: admin id of %s: %v", tenantID, err)
+	}
+	credential := sha256.Sum256([]byte(tenantID + "/audit-event"))
+	body, status := iraftAPIPost(t, adminClient, fmt.Sprintf("https://127.0.0.1:%d/v1/users/factors", restPort),
+		map[string]any{"user_id": userID, "type": "mtls", "label": "audit-event", "credential": credential[:]})
+	if status != http.StatusOK && status != http.StatusCreated {
+		t.Fatalf("fileTenantAuditEvent: add factor in %s: status %d, body: %s", tenantID, status, body)
+	}
+	var added struct {
+		Factor struct {
+			ID string `json:"id"`
+		} `json:"factor"`
+	}
+	if err := json.Unmarshal(body, &added); err != nil || added.Factor.ID == "" {
+		t.Fatalf("fileTenantAuditEvent: decode added factor: %v body=%s", err, body)
+	}
+	body, status = iraftAPIPost(t, adminClient, fmt.Sprintf("https://127.0.0.1:%d/v1/users/factors/delete", restPort),
+		map[string]any{"factor_id": added.Factor.ID, "force": true})
+	if status != http.StatusOK {
+		t.Fatalf("fileTenantAuditEvent: delete factor %s in %s: status %d, body: %s", added.Factor.ID, tenantID, status, body)
 	}
 }

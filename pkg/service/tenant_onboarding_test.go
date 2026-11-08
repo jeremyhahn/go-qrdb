@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -369,8 +370,8 @@ func TestOnboardTenant_EmitsAuditRecordOnSuccess(t *testing.T) {
 	if ev == nil {
 		t.Fatal("no tenant.onboard event recorded")
 	}
-	if ev.TenantID != "acme" || ev.Resource != "tenant" {
-		t.Fatalf("event = %+v, want TenantID=acme Resource=tenant", ev)
+	if ev.TenantID != tenantid.System || ev.Resource != "tenant:acme" {
+		t.Fatalf("event = %+v, want TenantID=system Resource=tenant:acme", ev)
 	}
 	if ev.Outcome != audit.OutcomeSuccess {
 		t.Fatalf("event Outcome = %q, want success", ev.Outcome)

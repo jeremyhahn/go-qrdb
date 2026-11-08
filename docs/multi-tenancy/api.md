@@ -360,8 +360,9 @@ before the change included — with 403 / `PERMISSION_DENIED`. Reactivating it
 restores access on the next request. Principals of other tenants and the
 system administrator's calls on the tenant are unaffected.
 
-Every status change is audited as `tenant.status_change`, keyed by the
-affected tenant and carrying the caller and the `from` and `to` status. A
+Every status change is audited as `tenant.status_change`, a platform event
+on the system tenant's trail naming the affected tenant as its resource
+(`tenant:<id>`) and carrying the caller and the `from` and `to` status. A
 `permitted` record is written before the change is stored and a `success` or
 `failure` record once it is. Under the default `fail-closed`
 `auth.audit_failure_policy` a change whose record cannot be written is

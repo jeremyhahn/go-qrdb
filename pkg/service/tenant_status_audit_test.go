@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // auditedTenants returns a tenant service holding tenant "acme" (active),
@@ -62,7 +63,7 @@ func TestTenantStatusAudit_RecordsTheChange(t *testing.T) {
 		if ev.Action != ActionTenantStatusChange || ev.Outcome != want {
 			t.Fatalf("event %d = %s/%s, want %s/%s", i, ev.Action, ev.Outcome, ActionTenantStatusChange, want)
 		}
-		if ev.TenantID != "acme" || ev.Resource != "tenant" || ev.Actor != "root" {
+		if ev.TenantID != tenantid.System || ev.Resource != "tenant:acme" || ev.Actor != "root" {
 			t.Fatalf("event %d = %+v, want TenantID=acme Resource=tenant Actor=root", i, ev)
 		}
 		if ev.Attributes["from"] != string(tenant.StatusActive) || ev.Attributes["to"] != string(tenant.StatusSuspended) {

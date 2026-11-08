@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ActionTenantStatusChange records a change of a tenant's status
@@ -58,8 +59,11 @@ func NewTenantStatusAudit(logger audit.AuditLogger, policy audit.FailurePolicy) 
 	return &tenantStatusAudit{audit: logger, policy: policy}
 }
 
-// statusChangeEvent renders a status-change event keyed by tenantID -- the
-// AFFECTED tenant, not the caller's.
+// statusChangeEvent renders a status-change event naming tenantID -- the
+// AFFECTED tenant, not the caller's -- as its resource. A status change is a
+// platform event (docs/multi-tenancy/architecture.md decision S9): it goes to
+// the system tenant's trail, so it never depends on the affected tenant's
+// home group existing or being unsealed.
 func statusChangeEvent(ctx context.Context, tenantID string, from, to tenant.Status) audit.AuditEvent {
 	var actor string
 	if id := auth.IdentityFromContext(ctx); id != nil {
@@ -67,14 +71,20 @@ func statusChangeEvent(ctx context.Context, tenantID string, from, to tenant.Sta
 	}
 	return audit.AuditEvent{
 		Actor:    actor,
-		TenantID: tenantID,
-		Resource: "tenant",
+		TenantID: tenantid.System,
+		Resource: tenantResource(tenantID),
 		Action:   ActionTenantStatusChange,
 		Attributes: map[string]any{
 			"from": string(from),
 			"to":   string(to),
 		},
 	}
+}
+
+// tenantResource names tenantID as the resource of a platform event about
+// it, in the "kind:id" form AuditEvent.Resource uses ("user:alice").
+func tenantResource(tenantID string) string {
+	return "tenant:" + tenantID
 }
 
 // BeginStatusChange implements tenant.StatusChangeAuditor. It writes the

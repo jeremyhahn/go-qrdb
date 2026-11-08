@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -312,8 +313,9 @@ func (s *TenantOnboardingService) sopins() bootstrap.SOPINSetter {
 	return nil
 }
 
-// onboardEvent renders a tenant-onboarding event keyed by req.ID -- the
-// AFFECTED tenant being created.
+// onboardEvent renders a tenant-onboarding event naming req.ID -- the
+// AFFECTED tenant being created -- as its resource. Onboarding is a platform
+// event: it goes to the system tenant's trail, see statusChangeEvent.
 func onboardEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEvent {
 	var actor string
 	if id := auth.IdentityFromContext(ctx); id != nil {
@@ -321,8 +323,8 @@ func onboardEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEve
 	}
 	return audit.AuditEvent{
 		Actor:    actor,
-		TenantID: req.ID,
-		Resource: "tenant",
+		TenantID: tenantid.System,
+		Resource: tenantResource(req.ID),
 		Action:   ActionTenantOnboard,
 		Attributes: map[string]any{
 			"admin_username": req.AdminUsername,
