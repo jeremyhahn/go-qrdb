@@ -2164,3 +2164,18 @@ func TestEmbedded_AddCertBinding_PastExpiryRefused(t *testing.T) {
 		t.Fatalf("err = %T(%v), want *user.CertBindingExpiredError", err, err)
 	}
 }
+
+func TestEmbeddedAuth_CertBinding_NilUserService(t *testing.T) {
+	tr := newExtTransport(t)
+	ctx := context.Background()
+	for name, call := range map[string]func() error{
+		"GetUserByCertThumbprint": func() error { _, err := tr.GetUserByCertThumbprint(ctx, "AABBCC"); return err },
+		"AddCertBinding":          func() error { _, err := tr.AddCertBinding(ctx, 1, "AABBCC", 0); return err },
+		"RemoveCertBinding":       func() error { _, err := tr.RemoveCertBinding(ctx, 1, "AABBCC"); return err },
+	} {
+		var nie *transport.NotImplementedError
+		if err := call(); !errors.As(err, &nie) {
+			t.Errorf("%s: expected NotImplementedError, got %T: %v", name, err, err)
+		}
+	}
+}
