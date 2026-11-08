@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/tidwall/btree"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -1822,27 +1823,27 @@ func hasDecodedRead(ops []protocol.DecodedOp) bool {
 // service.TxnReplyOpBytes for every op of the branch) and, for each entry a
 // read answers, service.TxnReplyKVBytes plus its key and value bytes. Each
 // read is charged the entries it answers over the state before the branch
-// plus every put staged ahead of it that falls in its range. That is never
-// less than what the read answers once the branch runs: a branch writes only
-// puts and deletes, so every key the read returns either holds a value one
-// of those puts wrote or holds the value it held before the branch. Each
-// scan stops as soon as the running total passes the bound, so no answer
-// larger than the bound is held. A failed read is returned as an error and
-// fails the transaction.
+// plus the latest put staged ahead of it to each key in its range. That is
+// never less than what the read answers once the branch runs: a branch
+// writes only puts and deletes, so every key the read returns either holds
+// the value its latest put wrote or holds the value it held before the
+// branch. The staged puts are kept in an ordered map, so a read visits only
+// the puts in its range and each visit is charged: the preflight is
+// O(n log n) in the branch's ops. Each scan stops as soon as the running
+// total passes the bound, so no answer larger than the bound is held. A
+// failed read is returned as an error and fails the transaction.
 func txnReadRefusal(s *mvcc.Store, batch storage.Batch, rev int64, ops []protocol.DecodedOp) (sm.Result, bool, error) {
 	total := int64(service.TxnReplyHeaderBytes) + int64(len(ops))*service.TxnReplyOpBytes
 	if total > service.MaxReplyBytes {
 		return txnReadRefusalResult(total), true, nil
 	}
-	for i, op := range ops {
+	var staged txnStagedPuts
+	for _, op := range ops {
 		if op.Type != protocol.OpMVCCRange {
+			staged.stage(op)
 			continue
 		}
-		for _, w := range ops[:i] {
-			if w.Type == protocol.OpMVCCPut && txnReadCovers(op, w.Key) {
-				total += service.TxnReplyKVBytes + int64(len(w.Key)) + int64(len(w.Value))
-			}
-		}
+		total = staged.charge(op, total)
 		if total > service.MaxReplyBytes {
 			return txnReadRefusalResult(total), true, nil
 		}
@@ -1877,17 +1878,50 @@ func txnReadRefusal(s *mvcc.Store, batch storage.Batch, rev int64, ops []protoco
 	return sm.Result{}, false, nil
 }
 
-// txnReadCovers reports whether a read op answers for key: the key itself
-// for a get, [Key, RangeEnd) for a range. A range end of a single 0x00 byte
-// is etcd's "every key from Key on" and covers every key at or past Key.
-func txnReadCovers(op protocol.DecodedOp, key []byte) bool {
-	if len(op.RangeEnd) == 0 {
-		return bytes.Equal(key, op.Key)
+// txnStagedPuts is the puts a transaction branch has staged so far, ordered
+// by key: each key maps to the reply bytes of the entry its latest put
+// answers, service.TxnReplyKVBytes plus its key and value.
+type txnStagedPuts struct {
+	puts btree.Map[string, int64]
+	// visited counts the staged entries reads were charged, for the tests.
+	visited int
+}
+
+// stage records a write op of the branch: a put replaces the entry of its
+// key, and a delete of one key removes it. A range delete leaves the puts it
+// covers in place, which only over-charges the reads after it.
+func (p *txnStagedPuts) stage(op protocol.DecodedOp) {
+	switch {
+	case op.Type == protocol.OpMVCCPut:
+		p.puts.Set(string(op.Key), service.TxnReplyKVBytes+int64(len(op.Key))+int64(len(op.Value)))
+	case op.Type == protocol.OpMVCCDelete && len(op.RangeEnd) == 0:
+		p.puts.Delete(string(op.Key))
 	}
-	if bytes.Compare(key, op.Key) < 0 {
-		return false
+}
+
+// charge adds to total the staged entries a read op answers for -- the key
+// itself for a get, [Key, RangeEnd) for a range, where a range end of a
+// single 0x00 byte is etcd's "every key from Key on" -- and stops as soon
+// as total passes service.MaxReplyBytes.
+func (p *txnStagedPuts) charge(read protocol.DecodedOp, total int64) int64 {
+	if len(read.RangeEnd) == 0 {
+		if n, ok := p.puts.Get(string(read.Key)); ok {
+			p.visited++
+			total += n
+		}
+		return total
 	}
-	return bytes.Equal(op.RangeEnd, []byte{0}) || bytes.Compare(key, op.RangeEnd) < 0
+	toEnd := bytes.Equal(read.RangeEnd, []byte{0})
+	end := string(read.RangeEnd)
+	p.puts.Ascend(string(read.Key), func(key string, n int64) bool {
+		if !toEnd && key >= end {
+			return false
+		}
+		p.visited++
+		total += n
+		return total <= service.MaxReplyBytes
+	})
+	return total
 }
 
 // txnReadRefusalResult is the non-fatal refusal of a transaction whose reply
