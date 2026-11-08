@@ -464,6 +464,7 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		Logger:                    slog.Default(),
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
+		SignedInitTTL:             f.tenantConfig.SignedInitTTLDuration(),
 	})
 	if err != nil {
 		return nil, &SealedListenerStartupError{Err: err}

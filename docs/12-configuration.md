@@ -1199,6 +1199,7 @@ model.
 | `default_entitlements` | object | see below | Entitlements applied to a tenant whose own entitlements are unset |
 | `quota_reconcile_interval` | duration | `"5m"` | How often the storage-quota reconciler flushes byte counters and re-measures dedicated-volume tenants |
 | `isolation_policy` | string | `""` | Cluster isolation-policy floor applied at start: `strict` or `operator-access`. Empty applies nothing. The floor tightens only: this key can set or tighten it, never loosen it; a refused change is logged and the stored floor stands |
+| `signed_init_ttl` | duration | `"5m"` | How long a signed barrier-init reference (`qrdb tenant barrier-init-begin`) stays redeemable; positive and at most `5m`, so it can only shorten the default. Overridable via `QRDB_TENANT_SIGNED_INIT_TTL` |
 
 `default_quotas` keys: `max_databases` (default `5`), `max_raft_groups`
 (`0`), `max_replicas_per_group` (`3`), `max_total_replicas` (`3`),
