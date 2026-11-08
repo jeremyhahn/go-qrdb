@@ -453,12 +453,15 @@ then exits non-zero naming every failed tenant. `--output json` and
 lists.
 
 Requires `roles:reconcile_all`, a cross-tenant permission held only by the
-system tenant's built-in Admin. A tenant's own Admin, or any other tenant
-principal, is refused even if it holds `roles:create`.
+system tenant's built-in Admin and SO roles. A tenant's own Admin, or any other
+tenant principal, is refused even if it holds `roles:create`. Under strict
+separation of duties (`auth.separation_of_duties`) both reconciles are the
+system SO's alone and the system Admin is refused; first boot enrols that SO
+(`qrdb init --so-username` with `--so-csr` or `--so-cert`).
 
 A node upgraded from a build that predates `roles:reconcile_all` has a stored
 system Admin role without it. Run `qrdb roles reconcile` as the system Admin
-first; that converges the system tenant and grants the permission. Then run
+(the system SO under strict separation) first; that converges the system tenant and grants the permission. Then run
 `--all-tenants`.
 
 ## ABAC policies
