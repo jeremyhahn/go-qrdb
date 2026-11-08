@@ -928,12 +928,12 @@ barrier, has the unseal domain only).
 
 ## Verifiable log
 
-> **Status: engine implemented; service and surface not.** In the code:
-> `pkg/vlog`, `protocol.OpVerifiableLog` (`pkg/protocol/vlog.go`),
-> `featuregate.VerifiableLog`, `statemachine.ApplyVerifiableLog` dispatched by
-> both state-machine families, and the reads behind `vlog.Request`. Not in the
-> code: the service, transports, SDK, CLI, `vlog:*` permissions, the sign-head
-> seam and the audit switch; the names this section gives them are proposed.
+> **Status: implemented.** In the code: `pkg/vlog`, `protocol.OpVerifiableLog`
+> (`pkg/protocol/vlog.go`), `featuregate.VerifiableLog`,
+> `statemachine.ApplyVerifiableLog` dispatched by both state-machine families,
+> the reads behind `vlog.Request`, the log service, transports, SDK, CLI,
+> `vlog:*` permissions, the sign-head seam, and the audit switch (§7): the
+> replicated audit trail is the log instance `<tenant>/system/audit`.
 > [Decided](#decided) states what the design does not reopen; [Design](#design) implements it, and its
 > [§9](#9-design-choices) records its choices with the alternatives not taken.
 > One choice is still open, with go-xkms: [Open questions](#open-questions).
@@ -987,7 +987,7 @@ The engine half of the log and the replicated audit chain share one mechanism
 | The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`), `featuregate.VerifiableLog` (`"verifiable-log"`) and `featuregate.VerifiableLogKeys` (`"verifiable-log-keys"`, the head-signing-key wire: the keyed `Create` body and `RotateKey`). |
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
-| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes; reads back through `SyncRead`. |
+| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes — `OpVerifiableLog`/`Append` to the tenant's audit instance (`vlog.AuditLogID`) once `featuregate.VerifiableLog` is enabled for the group, `OpAuditAppend` before (§7); reads back through `SyncRead`. |
 | Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardLogResolver` — the audit resolver's routing, which also refuses a barrier tenant with `BarrierTenantLogNotSupportedError` (§3) — refuses a barrier-enabled database, looked up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass, with `BarrierDatabaseLogNotSupportedError` (§3), refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
@@ -1029,7 +1029,7 @@ fields.
 | `Create` | log name, `[descLen:4][vlog.Descriptor JSON]` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`, `Keys`), then one key record | Refuses a name that exists; stages the descriptor record, the sealed key record if present, and an empty head. |
 | `Append` | one entry, or a bounded batch of entries | Assigns each entry the next index, stages the entry, its leaf hash and every tree node the append completes, and the new head (§4). Returns the first assigned index. |
 | `Checkpoint` | tree size, root hash, signed checkpoint bytes | Checks that the size is no larger than the log's size and that the root is the tree's root at that size (§5); stages the checkpoint record. |
-| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) or by the audit retention scheduler. Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
+| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) on a named log; on the audit instance only audit `Prune` expires bodies, and the log surface refuses `ExpireBodies` as expire-not-allowed (§7). Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
 | `RotateKey` | log name, `[keyLen:4][vlog.HeadKey JSON]`, then one key record | Appends the next key version to the descriptor; stages its sealed key record if present. |
 
 A key record is one presence byte: `0` for none (a provider that keeps the key
@@ -1315,6 +1315,11 @@ it.
 
 #### 7. The audit trail as one log instance
 
+> **Shipped.** `ReplicatedLogger.Emit` switches on `featuregate.VerifiableLog`
+> per group; both state-machine families apply the append through
+> `statemachine.ApplyVerifiableLog` into `audit.Chain.AppendToInstance`
+> (`pkg/audit/chain.go`), which creates the instance at its first append.
+
 The replicated audit chain becomes the log named `audit` in each tenant's
 reserved system database, with a descriptor that allows `ExpireBodies` and keeps
 the linear digest. Its existing records keep their keys under
@@ -1335,7 +1340,9 @@ the upgrade moves no data.
   digest; their Merkle root is their head.
 - **Retention** stays a replicated, deterministic, bounded command: on the
   audit instance `Prune` becomes `ExpireBodies`, which removes event bodies and
-  keeps the tree (§9, decision 8).
+  keeps the tree (§9, decision 8). Audit `Prune` (`OpAuditAppend`/`AuditSubtypePrune`) is the
+  instance's only retention command: the log surface reads the instance like
+  any log, and refuses an `ExpireBodies` on it as expire-not-allowed.
 - **The node-local trail is unchanged.** `ChainFileLogger` is a different
   mechanism — one node's file, written before the store is unsealed, and the
   sink an audit-write failure falls back on — and this design neither moves nor
@@ -1426,18 +1433,11 @@ Each choice is kept with the alternatives not taken and the reason each lost.
 
 ### Remaining work
 
-What [What already exists](#what-already-exists) lists is in the code. Each
-remaining step leaves the tree green:
-
-1. The log service's composition in `pkg/server/lifecycle/lifecycle.go`; the
-   transports, SDK and CLI ([Surface](#surface)); the
-   `vlog:*` permissions ([Authorization](#authorization)).
-2. The audit switch (§7): `ReplicatedLogger.Emit` proposes to the audit
-   instance through the log service once `featuregate.VerifiableLog` is enabled
-   for the group, and `OpAuditAppend` before; the log service shares the audit
-   resolver. The audit transports, SDK and CLI keep every capability and its
-   shape; the audit instance is also reachable through the log surface by a
-   caller holding the log permissions on its own tenant.
+None. What [What already exists](#what-already-exists) lists is in the code,
+the surface below included, and the audit switch (§7) has shipped: the audit
+transports, SDK and CLI keep every capability and its shape, and the audit
+instance is also reachable through the log surface by a caller holding the log
+permissions on its own tenant (`--database system --log audit`).
 
 ### Surface
 

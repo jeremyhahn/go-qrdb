@@ -13,6 +13,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **The replicated audit trail is a verifiable log.** Once the
+  `verifiable-log` feature gate is enabled for a group, each tenant's
+  replicated audit events are appended to the log instance
+  `<tenant>/system/audit`: a Merkle tree starts at the first such event, whose
+  `prev_hash` links it to the whole earlier chain, and `qrdb audit verify
+  --replicated` stays continuous across the switch. `qrdb vlog head`, `get`,
+  `prove-inclusion` and `prove-consistency` with `--database system --log
+  audit` read it on every transport, confined to the caller's own tenant.
+  Audit prune expires event bodies and keeps the tree; `ExpireBodies` through
+  the log surface is refused on the instance. Before the gate, the trail is
+  written exactly as before.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,

@@ -108,6 +108,25 @@ See [user.md](user.md) for how to read a verification result and
 Every transport returns each event with its `tenant_id`, `client_ip`,
 `request_id` and `prev_hash`.
 
+## The audit instance through the log surface
+
+Once `featuregate.VerifiableLog` is enabled for the group, the replicated
+chain is also the verifiable log `<tenant>/system/audit`
+([architecture.md](architecture.md#cluster-wide-replicated-trail)), and the
+log surface ([../databases/api.md](../databases/api.md)) reads it like any
+log, confined to the caller's own tenant: database `system`, log `audit`.
+
+| Read | Permission | Answers |
+|---|---|---|
+| Head | `vlog:head` | the tree size (events appended since the switch) and root |
+| Get | `vlog:get` | entries by index; each body is one marshaled event, `prev_hash` included |
+| Inclusion / consistency proof | `vlog:proof` | RFC 9162 proofs that verify against the head's root |
+
+The audit capabilities above keep their shape; the log surface adds reads
+only. `ExpireBodies` on the instance is refused as expire-not-allowed
+(`vlog.ExpireNotAllowedError`): its retention is the audit prune, which
+expires bodies below the cutoff and keeps the tree.
+
 ## Query request
 
 | Field | Type | Meaning |
