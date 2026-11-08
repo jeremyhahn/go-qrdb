@@ -157,3 +157,83 @@ func TestHandleVolumePoolUpdate_FieldPresence(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleVolumePoolList_Success(t *testing.T) {
+	svc := &volumetest.Service{T: t, ListPoolsFn: func(context.Context) ([]volume.PoolView, error) {
+		return []volume.PoolView{{Pool: volume.Pool{Name: "fast", Provider: "dir"}}, {Pool: volume.Pool{Name: "slow"}}}, nil
+	}}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithVolumeService(svc))
+	out, err := srv.handleVolumePoolList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleVolumePoolList: %v", err)
+	}
+	var resp pb.VolumePoolListResponse
+	if err := proto.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.GetPools()) != 2 || resp.GetPools()[0].GetName() != "fast" || resp.GetPools()[1].GetName() != "slow" {
+		t.Fatalf("pools = %+v", resp.GetPools())
+	}
+}
+
+func TestHandleVolumePoolGet_Success(t *testing.T) {
+	var gotName string
+	svc := &volumetest.Service{T: t, GetPoolFn: func(_ context.Context, name string) (*volume.PoolDetail, error) {
+		gotName = name
+		return &volume.PoolDetail{PoolView: volume.PoolView{Pool: volume.Pool{Name: name}}}, nil
+	}}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithVolumeService(svc))
+	out, err := srv.handleVolumePoolGet(context.Background(), mustMarshal(t, &pb.VolumePoolGetRequest{Name: "fast"}))
+	if err != nil {
+		t.Fatalf("handleVolumePoolGet: %v", err)
+	}
+	if gotName != "fast" {
+		t.Fatalf("service got name %q, want fast", gotName)
+	}
+	if len(out) == 0 {
+		t.Fatal("empty response")
+	}
+}
+
+func TestHandleVolumePoolDelete_Success(t *testing.T) {
+	var gotName string
+	svc := &volumetest.Service{T: t, DeletePoolFn: func(_ context.Context, name string) error {
+		gotName = name
+		return nil
+	}}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithVolumeService(svc))
+	out, err := srv.handleVolumePoolDelete(context.Background(), mustMarshal(t, &pb.VolumePoolDeleteRequest{Name: "fast"}))
+	if err != nil || out != nil {
+		t.Fatalf("handleVolumePoolDelete = %v, %v", out, err)
+	}
+	if gotName != "fast" {
+		t.Fatalf("service got %q", gotName)
+	}
+}
+
+func TestHandleVolumePoolListTenants_Success(t *testing.T) {
+	svc := &volumetest.Service{T: t, ListAssignmentsFn: func(_ context.Context, pool, token string, size int) (*volume.AssignmentPage, error) {
+		if pool != "fast" || token != "t1" || size != 5 {
+			t.Errorf("service got pool=%q token=%q size=%d", pool, token, size)
+		}
+		return &volume.AssignmentPage{
+			Assignments:   []volume.Assignment{{TenantID: "acme", Pool: pool, ReservedBytes: 7}},
+			NextPageToken: "t2",
+		}, nil
+	}}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithVolumeService(svc))
+	out, err := srv.handleVolumePoolListTenants(context.Background(), mustMarshal(t, &pb.VolumePoolListTenantsRequest{
+		Pool: "fast", PageToken: "t1", PageSize: 5,
+	}))
+	if err != nil {
+		t.Fatalf("handleVolumePoolListTenants: %v", err)
+	}
+	var resp pb.VolumePoolListTenantsResponse
+	if err := proto.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.GetNextPageToken() != "t2" || len(resp.GetTenants()) != 1 ||
+		resp.GetTenants()[0].GetTenantId() != "acme" || resp.GetTenants()[0].GetReservedBytes() != 7 {
+		t.Fatalf("resp = %+v", &resp)
+	}
+}
