@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -99,7 +100,9 @@ func TestCeremonyBinding_Initialize_GeneratePath_SavesKeyLocally(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 
-	svc := &capturingGeneratingCeremonyService{adminKeyPEM: []byte("-----BEGIN PRIVATE KEY-----\nmock\n-----END PRIVATE KEY-----")}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("mock")})
+	want := string(keyPEM) // copied before Initialize can wipe keyPEM
+	svc := &capturingGeneratingCeremonyService{adminKeyPEM: keyPEM}
 	b := newCeremonyTestBinding(t, svc)
 
 	result, err := b.Initialize(&transport.CeremonyInitializeRequest{AdminGenerate: true})
@@ -116,7 +119,7 @@ func TestCeremonyBinding_Initialize_GeneratePath_SavesKeyLocally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading saved key file: %v", err)
 	}
-	if string(saved) != "-----BEGIN PRIVATE KEY-----\nmock\n-----END PRIVATE KEY-----" {
+	if string(saved) != want {
 		t.Errorf("saved key content mismatch: %q", saved)
 	}
 	if result.AdminCredentialSource != string(ceremony.AdminCredentialGenerated) {
@@ -189,7 +192,7 @@ func TestCeremonyBinding_Initialize_SecretIsClonedThenBothWiped(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 
-	svc := &capturingGeneratingCeremonyService{adminKeyPEM: []byte("-----BEGIN PRIVATE KEY-----\nmock\n-----END PRIVATE KEY-----")}
+	svc := &capturingGeneratingCeremonyService{adminKeyPEM: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("mock")})}
 	b := newCeremonyTestBinding(t, svc)
 
 	req := &transport.CeremonyInitializeRequest{Secret: []byte("barrier-secret"), AdminGenerate: true}

@@ -381,6 +381,51 @@ func TestForwardToLeader_UnreachableLeaderDoesNotForward(t *testing.T) {
 	}
 }
 
+// Every forwarded request carries a freshly signed on-behalf assertion, so
+// a peer's redirect is never followed (GO-2026-6911): both the replica
+// forward and the leader forward fail, and the host the Location names sees
+// no request at all.
+func TestReplicaForwardMCP_ARedirectIsNeverFollowed(t *testing.T) {
+	ca := replicaforwardtest.NewCA(t)
+	var leaked, signed atomic.Int32
+	elsewhere := startTLSPeer(t, ca.TLS(t, "node-2"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked.Add(1)
+		if r.Header.Get(forward.HeaderAssertion) != "" || r.Header.Get(forward.HeaderSignature) != "" {
+			signed.Add(1)
+		}
+	}))
+	var redirected atomic.Int32
+	peer := startTLSPeer(t, ca.TLS(t, "node-1"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		http.Redirect(w, r, "https://"+elsewhere+"/mcp", http.StatusTemporaryRedirect)
+	}))
+	members := replicaforwardtest.Members{
+		{NodeID: 1, Address: "raft-leader", APIEndpoints: map[cluster.APIProtocol]string{cluster.APIProtocolMCP: peer}},
+	}
+	f := newReplicaForwarder(replicaforward.Config{
+		Locator: replicaforward.NewLocator(members, replicaforward.NewLeaderCache(), "raft-a", nil),
+		RootCAs: ca.Pool,
+		Timeout: 2 * time.Second,
+	}, ca.TLS(t, "node-a"))
+	defer f.close()
+
+	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
+	req := mcpgo.CallToolRequest{}
+	req.Params.Name = "qrdb_put"
+	if res, sent, err := f.call(callCtx(t), peer, caller, req); !errors.Is(err, errForwardRedirect) || sent {
+		t.Fatalf("call followed a redirect: result %+v, sent %v, err %v", res, sent, err)
+	}
+	if _, _, ok := f.forwardToLeader(auth.WithIdentity(callCtx(t), caller), req, "raft-leader"); ok {
+		t.Fatal("forwardToLeader followed a redirect")
+	}
+	if redirected.Load() < 2 {
+		t.Fatalf("the peer saw %d requests; want both forwards to reach it", redirected.Load())
+	}
+	if n := leaked.Load(); n != 0 {
+		t.Fatalf("the redirect's target received %d requests (%d signed)", n, signed.Load())
+	}
+}
+
 // TestForwardToLeader_StalledLeaderLookupDoesNotForward proves the forward
 // timeout bounds the leader lookup as well as the call: a member-record read
 // that never completes, under a caller context with no deadline, falls back

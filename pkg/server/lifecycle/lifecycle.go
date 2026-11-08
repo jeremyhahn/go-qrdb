@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -385,6 +386,10 @@ type Infra struct {
 	// nil, nil-entitlement tenants fall back to the conservative built-in
 	// defaults (prefix-only isolation; dedicated raft/volume denied).
 	DefaultTenantEntitlements *quota.Entitlements
+
+	// SignedInitTTL is tenant.signed_init_ttl, parsed: how long a signed
+	// barrier-init reference stays redeemable. Zero is tenant.SignedInitTTL.
+	SignedInitTTL time.Duration
 
 	// Profile, when non-nil, is the effective capability profile for this
 	// node (build tags x run mode x config, config.EffectiveCapabilities).
@@ -2120,6 +2125,9 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 	}
 	if infra.DefaultTenantEntitlements != nil {
 		opts = append(opts, tenant.WithDefaultEntitlements(infra.DefaultTenantEntitlements))
+	}
+	if infra.SignedInitTTL > 0 {
+		opts = append(opts, tenant.WithSignedInitTTL(infra.SignedInitTTL))
 	}
 	if infra.ClusterSealer != nil {
 		opts = append(opts, tenant.WithClusterSealer(infra.ClusterSealer))

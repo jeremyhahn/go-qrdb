@@ -17,6 +17,7 @@ package clusterenroll
 import (
 	"context"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -226,8 +227,8 @@ func TestResumeAdvertiser_FirstNodeWithoutBindHostRefuses(t *testing.T) {
 
 func TestResumeAdvertiser_RefusesToServeABundleHoldingAPrivateKey(t *testing.T) {
 	dir := firstNodeDir(t)
-	bundle := []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n" +
-		"-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n")
+	bundle := append([]byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: make([]byte, 3)})...)
 	adv, err := ResumeAdvertiser(firstNodeOpts(t, dir, freePort(t)), &clustertls.Material{CACertPEM: bundle}, discardLogger())
 	if adv != nil {
 		adv.Stop()

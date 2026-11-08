@@ -102,6 +102,9 @@ func NewHardConfinedTransaction(svc TransactionServicer) TransactionServicer {
 }
 
 func (h *hardConfinedTxn) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
+	if err := refuseRangedGets(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	if opsOrComparesTouchHardConfined(compares, successOps, failureOps) {
 		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
@@ -109,6 +112,9 @@ func (h *hardConfinedTxn) Execute(ctx context.Context, compares []Compare, succe
 }
 
 func (h *hardConfinedTxn) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
+	if err := refuseRangedGets(successOps, failureOps); err != nil {
+		return nil, err
+	}
 	if opsOrComparesTouchHardConfined(compares, successOps, failureOps) {
 		return nil, &HardConfinedKeyError{Key: hardConfinedPrefixesLabel}
 	}
