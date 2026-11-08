@@ -170,8 +170,6 @@ func rejectWebTransportRequest(w http.ResponseWriter) {
 	str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
 }
 
-// webTransportServer serves the HTTP/3 listener's connections through
-// webtransport-go, which has no ServeListener of its own.
 // webTransportHandshakeTimeout bounds how long a CONNECT waits for the
 // client's HTTP/3 SETTINGS: our own wait ahead of Upgrade, and Upgrade's
 // (webtransport.Server.ReorderingTimeout). HTTP/3 has no request timeout of
@@ -179,6 +177,8 @@ func rejectWebTransportRequest(w http.ResponseWriter) {
 // request's handler and stream for ever.
 const webTransportHandshakeTimeout = 5 * time.Second
 
+// webTransportServer serves the HTTP/3 listener's connections through
+// webtransport-go, which has no ServeListener of its own.
 type webTransportServer struct {
 	wt *webtransport.Server
 }
