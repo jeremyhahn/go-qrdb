@@ -425,6 +425,10 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation
 
-No CLI verb reads or sets an isolation policy. A node running in FIPS 140-3 mode raises the
+No CLI verb reads or sets an isolation policy. The REST, gRPC, QUIC and MCP
+verbs that do ([api.md](api.md)) are refused until the `strict-isolation`
+feature is active, which this build does not support (it is supported once
+G1 lands): each answers `feature.NotActiveError` (HTTP 503, `Unavailable`)
+and changes nothing. A node running in FIPS 140-3 mode raises the
 cluster floor to `strict` when the node starts. Design:
 [architecture.md](architecture.md#strict-tenant-isolation--design).

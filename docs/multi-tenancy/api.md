@@ -529,8 +529,25 @@ leaks to a caller with no access to the tier.
 Every node applies the `tenant.isolation_policy` configuration key (`strict`
 or `operator-access`) to the cluster isolation-policy floor before it serves.
 The floor only tightens, and cannot become `strict` over tenants that are not:
-a refused transition is logged and the stored floor stands. No transport
-reads or sets the floor or a tenant's policy.
+a refused transition is logged and the stored floor stands.
+
+The floor and a tenant's policy have transport verbs, refused until the
+`strict-isolation` feature is active. This build does not support the feature
+(it is supported once G1, a dedicated WAL for every database of a strict
+tenant, lands), so every one of them answers `feature.NotActiveError` and
+changes nothing:
+
+| Verb | REST | gRPC | QUIC | MCP |
+|------|------|------|------|-----|
+| Read the floor | `GET /v1/cluster/isolation-policy` | `GetClusterIsolationPolicy` | `cluster.IsolationPolicyGet` | `qrdb_cluster_isolation_policy_get` |
+| Set the floor | `PUT /v1/cluster/isolation-policy` `{"policy": "strict"}` | `SetClusterIsolationPolicy` | `cluster.IsolationPolicySet` | `qrdb_cluster_isolation_policy_set` |
+| Set a tenant's policy | a tenant update carrying `isolation_policy` | `TenantUpdate.isolation_policy` | `tenant.Update` `isolation_policy` | `qrdb_tenant_update` `isolation_policy` |
+
+| Outcome | HTTP | gRPC / QUIC |
+|---------|------|-------------|
+| Feature not active (`feature.NotActiveError`) | 503 | `Unavailable` |
+| Unknown policy value (`tenant.InvalidIsolationPolicyError`) | 400 | `InvalidArgument` |
+| A loosening (`tenant.IsolationPolicyChangeError`) | 409 | `FailedPrecondition` |
 
 ### Capabilities
 
