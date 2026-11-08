@@ -53,6 +53,7 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	if td := n.spiffeTrustDomain.Load(); td != nil {
 		deps.TrustDomain = *td
 	}
+	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), users)
 	if err != nil {
 		return nil, err
@@ -112,6 +113,7 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
 	deps.Binder = firstboot.UserCertBinder{Users: users}
 
+	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, policy, users)
 	if err != nil {
 		return nil, err
@@ -246,6 +248,21 @@ func (n *Node) reconcileAwaitingAdminCredential(ctx context.Context, users first
 // policy -- the node's own configured auth.mtls_binding_policy -- always wins
 // over whatever deps.MTLSBindingPolicy already held, since that field's zero
 // value is indistinguishable from an explicit auth.MTLSBindingRequired.
+// defaultSOPINs points deps.SOPINs, when the embedder left it nil, at the SO
+// PIN store the node's SO gate verifies against (the one tenant create
+// commits a tenant SO's PIN to), so the system SO's PIN lands where the
+// gate reads it.
+func (n *Node) defaultSOPINs(deps *firstboot.Dependencies) {
+	if deps.SOPINs != nil {
+		return
+	}
+	if svcNode := n.svcNode.Load(); svcNode != nil {
+		if pins := svcNode.SOPINs(); pins != nil {
+			deps.SOPINs = pins
+		}
+	}
+}
+
 func firstBootUnderPolicy(ctx context.Context, deps firstboot.Dependencies, policy auth.MTLSBindingPolicy, users firstboot.AdminLookup) (*firstboot.Result, error) {
 	deps.MTLSBindingPolicy = policy
 	result, err := firstboot.Initialize(ctx, deps)

@@ -80,6 +80,11 @@ func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMo
 	if err := so.Validate(); err != nil {
 		return nil, err
 	}
+	// Tenant create is handed the PIN itself; a hashed record is first
+	// boot's hand-off alone.
+	if so.PIN == nil {
+		return nil, &firstboot.IncompleteSOError{Field: "so_pin"}
+	}
 	// The SO is told apart from the admin, or found to be it, by key as well
 	// as by name, and a deferred admin has no key yet to compare.
 	if mode != AdminEnrollCert {

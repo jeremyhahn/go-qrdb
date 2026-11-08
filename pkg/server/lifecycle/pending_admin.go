@@ -101,6 +101,14 @@ func (n *Node) AttachSOPINs(pins firstboot.SOPINSetter) {
 	}
 }
 
+// SOPINs is the SO PIN seam AttachSOPINs attached, or nil.
+func (n *Node) SOPINs() firstboot.SOPINSetter {
+	if n.onboarding == nil {
+		return nil
+	}
+	return n.onboarding.SOPINs()
+}
+
 func logAdminCompletion(log *slog.Logger, tenantID string, done bool, err error) {
 	var deferred *bootstrap.AdminCompletionDeferredError
 	switch {

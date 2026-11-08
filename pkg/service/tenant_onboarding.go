@@ -304,8 +304,9 @@ func (s *TenantOnboardingService) AttachSOPINs(pins firstboot.SOPINSetter) {
 	s.soPINs.Store(&pins)
 }
 
-// sopins is the attached SO PIN seam, or nil.
-func (s *TenantOnboardingService) sopins() firstboot.SOPINSetter {
+// SOPINs is the attached SO PIN seam, or nil. First boot commits the system
+// SO's PIN through the same seam.
+func (s *TenantOnboardingService) SOPINs() firstboot.SOPINSetter {
 	if p := s.soPINs.Load(); p != nil {
 		return *p
 	}
@@ -401,7 +402,7 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		TrustDomain:        s.trustDomain,
 		Homes:              s.homes,
 		PendingSOs:         s.pendingSOs,
-		SOPINs:             s.sopins(),
+		SOPINs:             s.SOPINs(),
 		SeparationOfDuties: s.strictSoD,
 		Logger:             s.logger,
 	}

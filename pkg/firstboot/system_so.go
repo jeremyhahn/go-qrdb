@@ -51,19 +51,25 @@ type SOConfig struct {
 	// PIN is the SO's second factor, sealed by the caller with
 	// secure.NewSecret and committed through an SOPINSetter.
 	PIN *secure.Secret
+
+	// PINRecord is the SO's PIN already hashed by auth.HashSOPIN, in place
+	// of PIN: the ceremony's hand-off to first boot carries this record,
+	// replicated to whichever node runs first boot, and never the PIN.
+	// Committed through an SOPINRecordSetter.
+	PINRecord string
 }
 
 // Validate reports whether c is a whole SO: a username, exactly one of a
-// CSR or a certificate, and a live PIN. It returns *IncompleteSOError naming
-// the first part missing, or *ConflictingSOCredentialError for both a CSR
-// and a certificate.
+// CSR or a certificate, and a live PIN or a PIN record. It returns
+// *IncompleteSOError naming the first part missing, or
+// *ConflictingSOCredentialError for both a CSR and a certificate.
 func (c *SOConfig) Validate() error {
 	switch {
 	case c.Username == "":
 		return &IncompleteSOError{Field: "so_username"}
 	case len(c.CSRPEM) == 0 && len(c.CertPEM) == 0:
 		return &IncompleteSOError{Field: "so_csr_pem or so_cert_pem"}
-	case c.PIN == nil || !c.PIN.IsAlive():
+	case (c.PIN == nil || !c.PIN.IsAlive()) && c.PINRecord == "":
 		return &IncompleteSOError{Field: "so_pin"}
 	case len(c.CSRPEM) > 0 && len(c.CertPEM) > 0:
 		return &ConflictingSOCredentialError{}
@@ -75,6 +81,21 @@ func (c *SOConfig) Validate() error {
 // (auth.SOAuthenticator) implements it.
 type SOPINSetter interface {
 	SetSOPIN(ctx context.Context, tenantID string, pin []byte) error
+}
+
+// SOPINRecordSetter commits a tenant's SO PIN already hashed by
+// auth.HashSOPIN. An SOPINSetter that also implements it accepts an
+// SOConfig.PINRecord; auth.SOAuthenticator does.
+type SOPINRecordSetter interface {
+	CommitSOPINRecord(ctx context.Context, tenantID, record string) error
+}
+
+// commitSystemSOPIN commits so's PIN, or its PIN record, through pins.
+func commitSystemSOPIN(ctx context.Context, pins SOPINSetter, tenantID string, so *SOConfig) error {
+	if so.PIN != nil && so.PIN.IsAlive() {
+		return CommitSOPIN(ctx, pins, tenantID, so.PIN)
+	}
+	return pins.(SOPINRecordSetter).CommitSOPINRecord(ctx, tenantID, so.PINRecord)
 }
 
 // CommitSOPIN commits pin as tenantID's SO PIN through pins. The PIN is
@@ -112,6 +133,8 @@ func checkSystemSO(deps Dependencies) error {
 	switch {
 	case deps.SOPINs == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.SOPINs to commit its PIN"}
+	case (so.PIN == nil || !so.PIN.IsAlive()) && !implementsPINRecordSetter(deps.SOPINs):
+		return &MissingSOSeamError{Seam: "Dependencies.SOPINs implementing SOPINRecordSetter to commit its PIN record"}
 	case deps.Binder == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.Binder to bind its certificate"}
 	case len(so.CSRPEM) > 0 && deps.Signer == nil:
@@ -133,6 +156,11 @@ func checkSystemSO(deps Dependencies) error {
 		return &SOMatchesAdminError{Field: "key"}
 	}
 	return nil
+}
+
+func implementsPINRecordSetter(pins SOPINSetter) bool {
+	_, ok := pins.(SOPINRecordSetter)
+	return ok
 }
 
 // spkiThumbprintOf is the SPKI thumbprint of the key a CSR or a
@@ -188,7 +216,7 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 		)
 	}
 
-	if err := CommitSOPIN(ctx, deps.SOPINs, tenantID, so.PIN); err != nil {
+	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
 		// An SO an earlier run created may have committed its PIN before
 		// that run stopped; a PIN already set on a brand-new SO is not ours.
 		if !created && errors.Is(err, auth.ErrSOPINAlreadySet) {

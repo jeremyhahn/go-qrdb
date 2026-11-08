@@ -284,6 +284,14 @@ type SystemConfig struct {
 	// (ceremony.CeremonyService.CACertPool()), since AdminCertPEM was issued
 	// by that same CA. Required whenever AdminCertPEM is set.
 	AdminCertPool *x509.CertPool
+
+	// SO is the system Security Officer, forwarded to first-boot with
+	// Dependencies.SOPINs. Required when SeparationOfDuties is set. go-qrdb's
+	// own compositions pass the certificate the ceremony issued or adopted
+	// for it (SO.CertPEM, validated against AdminCertPool), as for the
+	// admin. See firstboot.Dependencies.SO. The caller keeps SO.PIN and
+	// destroys it.
+	SO *firstboot.SOConfig
 }
 
 // SystemResult reports what BootstrapSystem did: the system barrier strategy
@@ -404,6 +412,8 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Logger:             deps.Logger,
 		SeparationOfDuties: cfg.SeparationOfDuties,
 		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
+		SO:                 cfg.SO,
+		SOPINs:             deps.SOPINs,
 	})
 	if fbErr != nil {
 		return nil, &FirstBootError{Cause: fbErr}

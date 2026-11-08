@@ -29,7 +29,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -402,6 +404,44 @@ func TestInitialize_StandardEnrolsAnOptionalSO(t *testing.T) {
 	}
 	if !result.SOCreated || h.users.byName["officer"] == nil {
 		t.Fatalf("standard boot with an SO did not enrol it: %+v", result)
+	}
+}
+
+// The ceremony hand-off carries the PIN hashed; first boot commits that
+// record, and the SO's PIN then verifies at the node's SO authenticator.
+func TestInitialize_SystemSOFromAHashedPINRecord(t *testing.T) {
+	ctx := context.Background()
+	h := newSOHarness(t, true)
+	record, err := auth.HashSOPIN([]byte("so-pin-8642"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	so, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.deps.SO.PIN = nil
+	h.deps.SO.PINRecord = record
+	h.deps.SOPINs = so
+	if _, err := Initialize(ctx, h.deps); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := so.VerifySOPIN(ctx, tenantid.System, []byte("so-pin-8642")); err != nil {
+		t.Fatalf("VerifySOPIN: %v", err)
+	}
+	if _, err := Initialize(ctx, h.deps); err != nil {
+		t.Fatalf("re-run Initialize: %v", err)
+	}
+}
+
+func TestInitialize_SystemSOPINRecordNeedsARecordSeam(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.deps.SO.PIN = nil
+	h.deps.SO.PINRecord = "A:00"
+	_, err := Initialize(context.Background(), h.deps)
+	var e *MissingSOSeamError
+	if !errors.As(err, &e) || len(h.users.creates) != 0 {
+		t.Fatalf("Initialize = %v (creates %v), want *MissingSOSeamError before any write", err, h.users.creates)
 	}
 }
 
