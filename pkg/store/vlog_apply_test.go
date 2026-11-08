@@ -282,10 +282,15 @@ func TestStoreAuditInstance_FamiliesAgree(t *testing.T) {
 	type state struct {
 		values      []uint64
 		audit, logs map[string]string
+		root        []byte
+		treeSize    uint64
+		seq, lo     uint64
+		digest      [32]byte
 	}
 	var states []state
 	for _, kind := range auditSMKinds {
-		n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+		logs := vlog.NewChain()
+		n := openLogNode(t, kind, t.TempDir(), logs)
 		var s state
 		for _, e := range entries {
 			res := n.apply(t, e)
@@ -293,7 +298,16 @@ func TestStoreAuditInstance_FamiliesAgree(t *testing.T) {
 			s.values = append(s.values, res[0].Value)
 		}
 		s.audit, s.logs = table(t, n.reader(), vlog.TablePrefix), table(t, n.reader(), vlog.LogTablePrefix)
+		head := n.lookup(t, vlog.HeadRequest{ID: vlog.AuditLogID("acme")}).(*vlog.Head)
+		s.root, s.treeSize = head.Root, head.Size
+		s.seq, s.lo, s.digest = logs.Head("acme")
 		states = append(states, s)
+	}
+	if states[0].treeSize != 5 || len(states[0].root) == 0 {
+		t.Fatalf("audit instance head = size %d, root %x; want 5 leaves and a root", states[0].treeSize, states[0].root)
+	}
+	if states[0].seq != 8 || states[0].digest == ([32]byte{}) {
+		t.Fatalf("linear head = seq %d, digest %x; want seq 8 and a digest", states[0].seq, states[0].digest)
 	}
 	if want := []uint64{1, 2, 3, 4, 5, 6, 7, 8, 5}; !reflect.DeepEqual(states[0].values, want) {
 		t.Fatalf("results = %v, want %v", states[0].values, want)
