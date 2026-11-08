@@ -15,6 +15,7 @@
 package embedded
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -44,5 +45,17 @@ func TestTransport_AbsentServiceIsAWiringDefect(t *testing.T) {
 	}
 	if _, err := tr.ListEmbeddingModels(t.Context(), "openai"); !errors.As(err, &nse) {
 		t.Errorf("ListEmbeddingModels: err = %T (%v), want *NilServiceError", err, err)
+	}
+}
+
+// TestEmbedded_WithEmbeddingService_NilLeavesServiceAbsent checks that
+// WithEmbeddingService(nil) does not install a typed-nil service: the
+// transport still refuses embedding calls with NilServiceError.
+func TestEmbedded_WithEmbeddingService_NilLeavesServiceAbsent(t *testing.T) {
+	tr := newExtTransport(t, WithEmbeddingService(nil))
+	_, err := tr.Embed(context.Background(), &transport.EmbedRequest{})
+	var ne *NilServiceError
+	if !errors.As(err, &ne) {
+		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
 	}
 }
