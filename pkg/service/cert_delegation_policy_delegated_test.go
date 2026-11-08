@@ -18,6 +18,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -31,7 +33,11 @@ import (
 // tenants' standing delegation policies.
 func newPolicyService(t *testing.T, opts ...service.CertEnrollmentOption) *service.CertEnrollmentService {
 	t.Helper()
-	p := service.NewPolicyTestProvider(t)
+	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), sealtest.UnsealedBarrier(t),
+		cert.WithTrustDomain("qrdb.example.com"))
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
 	store, ok := any(p).(cert.DelegationPolicyStore)
 	if !ok {
 		t.Fatalf("%T keeps no delegation policies", p)
