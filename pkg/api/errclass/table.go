@@ -1081,6 +1081,9 @@ var tenantRules = []rule{
 	// the compare-and-set to one that moved the policy first, leaves the
 	// store unchanged, and the caller re-reads before deciding anything.
 	as(&tenant.IsolationPolicyChangeError{}, FailedPrecondition),
+	// An isolation policy value outside the enum is the caller's input
+	// error: nothing was read or written.
+	as(&tenant.InvalidIsolationPolicyError{}, InvalidArgument),
 	// UpdateTenant lost its compare-and-swap on every attempt: other writers
 	// kept committing the record, and the caller may retry the update.
 	as(&tenant.ConcurrentUpdateError{}, Aborted),
