@@ -51,9 +51,15 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
 // auditEventCLIJSON mirrors transport.AuditEvent.
@@ -350,5 +356,39 @@ func testAuditVerifyOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 	}
 	if !strings.Contains(tableOut, "Verified: true") {
 		t.Fatalf("[%s] audit verify (table): expected 'Verified: true', got: %s", proto.name, tableOut)
+	}
+
+	// The audit trail is the log instance system/audit
+	// (docs/databases/architecture.md §7): its head and an inclusion proof
+	// of its newest leaf read through the log surface and verify, and the
+	// linear chain still verifies after them.
+	auditLog := []string{"--database", "system", "--log", "audit"}
+	head := vlogCLIJSON[vlogwire.Head](t, node, proto, append([]string{"head"}, auditLog...)...)
+	if head.Size < 1 || len(head.Root) != rfc6962.DefaultHasher.Size() {
+		t.Fatalf("[%s] vlog head on system/audit = size %d, root %x; want at least one leaf and a root", proto.name, head.Size, head.Root)
+	}
+	last := strconv.FormatUint(head.Size-1, 10)
+	size := strconv.FormatUint(head.Size, 10)
+	leaves := vlogCLIJSON[vlogwire.GetResult](t, node, proto, append([]string{"get", "--from", last, "--limit", "1"}, auditLog...)...)
+	if len(leaves.Entries) != 1 || leaves.Entries[0].Expired {
+		t.Fatalf("[%s] vlog get on system/audit = %+v, want the newest leaf's body", proto.name, leaves.Entries)
+	}
+	var leafEvent auditEventCLIJSON
+	if err := json.Unmarshal(leaves.Entries[0].Body, &leafEvent); err != nil {
+		t.Fatalf("[%s] the audit instance's leaf is not an audit event: %v", proto.name, err)
+	}
+	incl := vlogCLIJSON[vlogwire.InclusionProof](t, node, proto, append([]string{"prove-inclusion", "--index", last, "--size", size}, auditLog...)...)
+	if err := proof.VerifyInclusion(rfc6962.DefaultHasher, incl.Index, incl.Size,
+		rfc6962.DefaultHasher.HashLeaf(leaves.Entries[0].Body), incl.Hashes, head.Root); err != nil {
+		t.Fatalf("[%s] inclusion proof of system/audit leaf %s does not verify against the head: %v", proto.name, last, err)
+	}
+
+	out, err = runCLIProto(t, node, proto, "--output", "json", "audit", "verify")
+	if err != nil {
+		t.Fatalf("[%s] audit verify after the log reads: %v\noutput: %s", proto.name, err, out)
+	}
+	result = auditVerifyCLIJSON{}
+	if jerr := json.Unmarshal([]byte(out), &result); jerr != nil || !result.Verified {
+		t.Fatalf("[%s] audit verify after the log reads = %+v, %v; want a continuous chain", proto.name, result, jerr)
 	}
 }
