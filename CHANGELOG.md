@@ -165,6 +165,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The devcontainer build proxy has no `direct` entry** (ci-template
+  v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
+  defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
+  serve fails the image build instead of being fetched from its origin.
+
 - **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
   of ci.yml, release.yml, nightly.yml, automerge.yml and
   release-lockstep.yml runs on `ubuntu-latest`; only code review keeps its
