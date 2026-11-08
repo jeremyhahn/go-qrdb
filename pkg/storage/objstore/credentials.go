@@ -84,6 +84,7 @@ type Option func(*options)
 
 type options struct {
 	credentials CredentialFiles
+	prefix      string
 }
 
 // WithCredentialFiles has New authenticate the provider with the credential

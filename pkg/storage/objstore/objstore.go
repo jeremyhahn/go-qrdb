@@ -108,6 +108,9 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if err := validObjectPrefix(o.prefix); err != nil {
+		return nil, err
+	}
 	// A registered creator need not delegate to a go-objstore Configure, so
 	// an inline credential is refused here, before any provider sees it.
 	if err := RejectCredentialSettings(settings); err != nil {
@@ -137,6 +140,9 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	store, journal, err := openStores(provider, resolved.creator, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
+	}
+	if o.prefix != "" {
+		store, journal = withPrefix(store, o.prefix), withPrefix(journal, o.prefix)
 	}
 	e := &Engine{store: store, journal: journal, provider: provider}
 	if err := e.ensureFormatMarker(); err != nil {
