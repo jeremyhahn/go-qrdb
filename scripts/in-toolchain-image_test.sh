@@ -27,14 +27,24 @@ s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
 case $1 in
   create) printf '%s' "${*: -1}" > "$s/stage-cmd" ;;
-  cp) cat > /dev/null ;;
+  cp)
+    # A copy out of the stage (<name>:/src/<path> <dest>) writes <dest>,
+    # unless STUB_NO_PRODUCT says the stage left nothing there.
+    case $2 in
+      *:/src/*) if [ -n "${STUB_NO_PRODUCT:-}" ]; then exit 1; fi; echo product > "$3" ;;
+      *) cat > /dev/null ;;
+    esac ;;
   start) ;;
   run)
     case " $* " in
       *" --name "*)
         echo configured >> "$s/events"
-        if [ "${STUB_BLOCK:-}" = config ]; then echo config > "$s/sync"; sleep 0.3; fi ;;
+        if [ "${STUB_BLOCK:-}" = config ]; then echo config > "$s/sync"; sleep 0.3; fi
+        # STUB_CONFIG_FAILS=n: the first n configurator runs fail as a run
+        # whose stage has exited does.
+        if [ "$(grep -c configured "$s/events")" -le "${STUB_CONFIG_FAILS:-0}" ]; then exit 125; fi ;;
     esac ;;
+  volume) [ "$2" = rm ] && echo "volume:$3" >> "$s/removed" ;;
   logs)
     if [ "${STUB_BLOCK:-}" = logs ]; then
       echo $$ > "$s/logs-pid"
@@ -135,25 +145,87 @@ if [ "$rc" = 0 ] && ! called '^run ' && ! grep -q 'ip route' "$D/state/stage-cmd
   ok "a bridge stage starts no configurator"
 else bad "a bridge stage starts no configurator"; cat "$D/state/calls"; fi
 
-# 9-10. The stage's command waits for the route, then runs; without the route
-# it gives up after MULTICAST_WAIT seconds. The replay sets the scratch
-# directory the stage's guard checks, as the stage's container does, so it
-# does not depend on the caller's TMPDIR.
+# 9-10. The stage's command waits for the configurator's markers and the
+# route, then runs; without them it gives up MULTICAST_WAIT seconds after the
+# configurator started. The gate runs here with the marker directory in $D/m
+# and an `ip` that shows the route while $D/route exists. The replay sets the
+# scratch directory the stage's guard checks, as the stage's container does,
+# so it does not depend on the caller's TMPDIR.
 mkdir -p "$D/ipbin" "$D/scratch"
-# shellcheck disable=SC2016 # the stub expands ROUTE when it runs
-printf '#!/bin/sh\n[ -n "${ROUTE:-}" ] && echo "224.0.0.0/4 scope link"\nexit 0\n' > "$D/ipbin/ip"
+printf '#!/bin/sh\n[ -e "%s/route" ] && echo "224.0.0.0/4 scope link"\nexit 0\n' "$D" > "$D/ipbin/ip"
 chmod +x "$D/ipbin/ip"
 reset
 run MULTICAST_WAIT=1
 gate=$(cat "$D/state/stage-cmd")
-if (PATH="$D/ipbin:$PATH" ROUTE=1 TMPDIR="$D/scratch" sh -c "${gate%make test}echo ran") | grep -qx ran; then
-  ok "the stage runs once the route is there"
-else bad "the stage runs once the route is there"; echo "$gate"; fi
+gate=${gate//\/run\/qrdb-mcast/$D/m}
+gate=${gate%make test}
+# markers <files...>: the marker directory holds exactly <files>.
+markers() { rm -rf "$D/m" "$D/route"; mkdir -p "$D/m"; for f in "$@"; do : > "$D/$f"; done; }
+markers m/started.1 m/ready.1 route
+if (PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate}echo ran") | grep -qx ran; then
+  ok "the stage runs once the configurator is ready and the route is there"
+else bad "the stage runs once the configurator is ready and the route is there"; echo "$gate"; fi
+# The retry has started too, so its MULTICAST_WAIT is the last bound.
+markers m/started.1 m/started.2
 grc=0
-(PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate%make test}echo ran") > "$D/gate" 2>&1 || grc=$?
-if [ "$grc" = 1 ] && grep -q 'no multicast route after 1 s' "$D/gate" && ! grep -q ran "$D/gate"; then
+(PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate}echo ran") > "$D/gate" 2>&1 || grc=$?
+if [ "$grc" = 1 ] && grep -q 'no multicast route 1 s after the configurator started' "$D/gate" &&
+  ! grep -q ran "$D/gate"; then
   ok "the stage gives up without the route"
 else bad "the stage gives up without the route (rc=$grc)"; cat "$D/gate"; fi
+
+# 12. The route alone is not the signal: until the configurator writes
+# `ready`, the stage waits, and gives up on the same bound (#1275).
+markers m/started.1 m/started.2 route
+grc=0
+(PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate}echo ran") > "$D/gate" 2>&1 || grc=$?
+if [ "$grc" = 1 ] && ! grep -q ran "$D/gate"; then
+  ok "the stage waits for the ready marker, not only the route"
+else bad "the stage waits for the ready marker, not only the route (rc=$grc)"; cat "$D/gate"; fi
+
+# 13. The clock starts when the configurator does: a configurator that starts
+# 2 s into the stage, past a 1 s MULTICAST_WAIT, still lets the stage run.
+markers
+(sleep 2; : > "$D/m/started.1"; : > "$D/route"; : > "$D/m/ready.1") &
+helper=$!
+if (PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${gate}echo ran") 2>&1 | grep -qx ran; then
+  ok "the clock starts when the configurator starts"
+else bad "the clock starts when the configurator starts"; fi
+wait "$helper"
+
+# 14. The configurator mounts the marker volume the stage mounts read-only and
+# creates labelled, writes `started.1` first and `ready.1` after the route.
+stage=$(grep -m1 '^create ' "$D/state/calls" | grep -o -- '--name p-tc-[0-9]*-[0-9]*' | cut -d' ' -f2)
+if called "^create .*--mount type=volume,src=$stage-mcast,dst=/run/qrdb-mcast,readonly,volume-label=qrdb.ci.multicast-marker=1 " &&
+  called "^run --rm --name $stage-netns .*-v $stage-mcast:/m img sh -c touch /m/started.1 && ip link .*ip route replace 224.0.0.0/4 dev lo && touch /m/ready.1$" &&
+  removed "volume:$stage-mcast"; then
+  ok "the configurator writes the markers on the stage's marker volume, removed after"
+else bad "the configurator writes the markers on the stage's marker volume, removed after"; cat "$D/state/calls"; fi
+
+# 15. A failed configurator is retried once, and the stage then runs.
+reset
+run STUB_CONFIG_FAILS=1
+if [ "$rc" = 0 ] && [ "$(grep -c configured "$D/state/events")" = 2 ] &&
+  grep -q 'multicast configurator failed; retrying once' "$D/out" &&
+  called 'touch /m/started.1 .*touch /m/ready.1$' && called 'touch /m/started.2 .*touch /m/ready.2$'; then
+  ok "a failed configurator is retried once"
+else bad "a failed configurator is retried once (rc=$rc)"; cat "$D/out"; fi
+
+# 16. A second failure fails the script, and both containers and the marker
+# volume are removed.
+reset
+run STUB_CONFIG_FAILS=2
+if [ "$rc" = 125 ] && [ "$(grep -c configured "$D/state/events")" = 2 ] && both_removed &&
+  grep -q '^volume:p-tc-.*-mcast$' "$D/state/removed"; then
+  ok "a configurator failing twice fails the script and removes everything"
+else bad "a configurator failing twice fails the script and removes everything (rc=$rc)"; cat "$D/out"; fi
+
+# 17. A bridge stage has no marker volume to remove.
+reset
+run IN_IMAGE_NETWORK=bridge
+if ! called 'mcast'; then
+  ok "a bridge stage has no marker volume"
+else bad "a bridge stage has no marker volume"; cat "$D/state/calls"; fi
 
 # 11. MULTICAST_WAIT is a positive integer.
 reset
@@ -161,6 +233,54 @@ run MULTICAST_WAIT=0
 if [ "$rc" = 2 ] && grep -q 'MULTICAST_WAIT must be' "$D/out"; then
   ok "a bad MULTICAST_WAIT is refused"
 else bad "a bad MULTICAST_WAIT is refused (rc=$rc)"; cat "$D/out"; fi
+
+# 18. A configurator that never starts (its launcher died first) ends the
+# stage MULTICAST_START_WAIT seconds after the stage started, not never.
+reset
+run MULTICAST_START_WAIT=1
+sgate=$(cat "$D/state/stage-cmd")
+sgate=${sgate//\/run\/qrdb-mcast/$D/m}
+sgate=${sgate%make test}
+markers
+grc=0
+(PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${sgate}echo ran") > "$D/gate" 2>&1 || grc=$?
+if [ "$grc" = 1 ] && grep -q 'in-toolchain-image: the configurator did not start within 1 s' "$D/gate" &&
+  ! grep -q ran "$D/gate"; then
+  ok "the stage gives up when the configurator never starts"
+else bad "the stage gives up when the configurator never starts (rc=$grc)"; cat "$D/gate"; fi
+
+# 19. `started` then `ready`, within the start bound, still runs the stage.
+markers
+(sleep 0.3; : > "$D/m/started.1"; : > "$D/route"; : > "$D/m/ready.1") &
+helper=$!
+if (PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${sgate}echo ran") 2>&1 | grep -qx ran; then
+  ok "a configurator starting within MULTICAST_START_WAIT lets the stage run"
+else bad "a configurator starting within MULTICAST_START_WAIT lets the stage run"; fi
+wait "$helper"
+
+# 21. A first attempt that wrote `started.1` and then failed does not hold the
+# retry to its route clock: the stage waits MULTICAST_START_WAIT afresh for
+# `started.2`, so a retry the daemon starts past the first attempt's
+# MULTICAST_WAIT still lets the stage run (#1275, Codex review 8934).
+reset
+run MULTICAST_START_WAIT=3 MULTICAST_WAIT=1
+rgate=$(cat "$D/state/stage-cmd")
+rgate=${rgate//\/run\/qrdb-mcast/$D/m}
+rgate=${rgate%make test}
+markers m/started.1
+(sleep 2; : > "$D/m/started.2"; : > "$D/route"; : > "$D/m/ready.2") &
+helper=$!
+if (PATH="$D/ipbin:$PATH" TMPDIR="$D/scratch" sh -c "${rgate}echo ran") 2>&1 | grep -qx ran; then
+  ok "a retry started past the first attempt's MULTICAST_WAIT lets the stage run"
+else bad "a retry started past the first attempt's MULTICAST_WAIT lets the stage run"; fi
+wait "$helper"
+
+# 20. MULTICAST_START_WAIT is a positive integer.
+reset
+run MULTICAST_START_WAIT=4m
+if [ "$rc" = 2 ] && grep -q 'MULTICAST_START_WAIT must be a positive integer: 4m' "$D/out"; then
+  ok "a bad MULTICAST_START_WAIT is refused"
+else bad "a bad MULTICAST_START_WAIT is refused (rc=$rc)"; cat "$D/out"; fi
 
 # 12-13. The stage's command checks its scratch directory before anything else
 # runs: an unset or missing TMPDIR fails it by name with status 2.
@@ -179,6 +299,93 @@ scratch_refused() {
 }
 scratch_refused unset -u TMPDIR
 scratch_refused missing TMPDIR="$D/no-such-dir"
+
+# 22. CI_CACHE_DIR bind-mounts its gobuild and golangci directories, creates
+# them, mounts no module cache, and gives the cache to the run's uid with a
+# CHOWN-only helper after the stage's create; a bridge stage then takes the
+# copy of the baked module cache.
+reset
+rm -rf "$D/cache"
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" IN_IMAGE_NETWORK=bridge
+create=$(grep -n '^create ' "$D/state/calls" | cut -d: -f1)
+chown=$(grep -n '^run --rm --network none --cap-drop ALL --cap-add CHOWN ' "$D/state/calls" | cut -d: -f1)
+if [ "$rc" = 0 ] && [ -d "$D/cache/gobuild" ] && [ -d "$D/cache/golangci" ] &&
+  called "^create .*-v $D/cache/gobuild:/cache/gobuild .*-v $D/cache/golangci:/cache/golangci " &&
+  ! called 'cache-gomod' && ! called '/cache/gomod' &&
+  [ -n "$chown" ] && [ "$create" -lt "$chown" ] &&
+  called "-v $D/cache/gobuild:/c/gobuild -v $D/cache/golangci:/c/golangci img find /c -mindepth 1 ! -user 10001 -exec chown -h 10001:10001 {} +$" &&
+  grep -q 'cp -a /gomodcache/. /home/dev/gomodcache/ && ' "$D/state/stage-cmd"; then
+  ok "CI_CACHE_DIR bind-mounts the cache, chowned after the create, with no module cache"
+else bad "CI_CACHE_DIR bind-mounts the cache, chowned after the create, with no module cache (rc=$rc)"; cat "$D/state/calls"; fi
+
+# 23. Without CI_CACHE_DIR the caches are the named volumes, one set per
+# prefix with no trust class, and a bridge stage writes the gomod volume.
+reset
+run CI_CACHE=on IN_IMAGE_NETWORK=bridge
+if [ "$rc" = 0 ] && called '^create .*-v p-cache-gobuild:/cache/gobuild .*-v p-cache-golangci:/cache/golangci .*-v p-cache-gomod:/cache/gomod ' &&
+  called '^create .*--env GOMODCACHE=/cache/gomod ' && ! grep -q 'cp -a /gomodcache' "$D/state/stage-cmd" &&
+  called '-v p-cache-gomod:/c/gomod img find /c '; then
+  ok "the named-volume cache keeps the gomod volume for a bridge stage"
+else bad "the named-volume cache keeps the gomod volume for a bridge stage (rc=$rc)"; cat "$D/state/calls"; fi
+
+# 24. A relative CI_CACHE_DIR is refused before anything runs.
+reset
+run CI_CACHE=on CI_CACHE_DIR=cache
+if [ "$rc" = 2 ] && grep -q 'CI_CACHE_DIR must be an absolute path: cache' "$D/out" && [ ! -s "$D/state/calls" ]; then
+  ok "a relative CI_CACHE_DIR is refused"
+else bad "a relative CI_CACHE_DIR is refused (rc=$rc)"; cat "$D/out"; fi
+
+# 25. No --cgroup-parent unless CI_CGROUP_PARENT names one: a hosted runner VM
+# has no CI slice.
+reset
+run
+if ! grep -q -- '--cgroup-parent' "$D/state/calls"; then
+  ok "no --cgroup-parent by default"
+else bad "no --cgroup-parent by default"; cat "$D/state/calls"; fi
+reset
+run CI_CGROUP_PARENT=ci.slice
+if called '^create .*--cgroup-parent ci.slice '; then
+  ok "CI_CGROUP_PARENT names the cgroup parent"
+else bad "CI_CGROUP_PARENT names the cgroup parent"; cat "$D/state/calls"; fi
+
+# 26. --memory and --memory-swap are one size, the swap-free bound, whatever
+# the host offers: a cgroup limit, or MemTotal less 2 GiB, or 8g.
+reset
+run
+mem=$(grep -m1 '^create ' "$D/state/calls" | grep -o -- '--memory [0-9]*[mg]\{0,1\} ' | cut -d' ' -f2)
+if [ -n "$mem" ] && called "^create .*--memory $mem --memory-swap $mem "; then
+  ok "the stage's memory bound is derived and swap-free ($mem)"
+else bad "the stage's memory bound is derived and swap-free"; cat "$D/state/calls"; fi
+
+# 27. IN_IMAGE_COPY_OUT copies the named product out of the stage after it
+# exits, whatever its status, and the stage's status is still the script's.
+reset
+rm -rf "$D/src/coverage"
+run IN_IMAGE_COPY_OUT=coverage/leg-x.out STUB_EXIT=3
+if [ "$rc" = 3 ] && [ "$(cat "$D/src/coverage/leg-x.out" 2>/dev/null)" = product ] &&
+  called '^cp p-tc-[0-9]*-[0-9]*:/src/coverage/leg-x.out '; then
+  ok "IN_IMAGE_COPY_OUT copies the product out after a failing stage"
+else bad "IN_IMAGE_COPY_OUT copies the product out after a failing stage (rc=$rc)"; cat "$D/out" "$D/state/calls"; fi
+rm -rf "$D/src/coverage"
+
+# 28. A stage that left no product says so, and keeps its own status.
+reset
+run IN_IMAGE_COPY_OUT=coverage/leg-x.out STUB_NO_PRODUCT=1
+if [ "$rc" = 0 ] && grep -q 'the stage left no coverage/leg-x.out' "$D/out" && [ ! -e "$D/src/coverage/leg-x.out" ]; then
+  ok "a missing product is reported"
+else bad "a missing product is reported (rc=$rc)"; cat "$D/out"; fi
+rm -rf "$D/src/coverage"
+
+# 29. A copy-out path that is absolute or leaves the checkout is refused
+# before anything runs.
+for bad_path in /etc/passwd ../x coverage/../../x ./x a//b; do
+  reset
+  run IN_IMAGE_COPY_OUT="$bad_path"
+  if [ "$rc" = 2 ] && grep -q "IN_IMAGE_COPY_OUT must be a relative path inside the checkout: $bad_path" "$D/out" &&
+    [ ! -s "$D/state/calls" ]; then
+    ok "IN_IMAGE_COPY_OUT refuses $bad_path"
+  else bad "IN_IMAGE_COPY_OUT refuses $bad_path (rc=$rc)"; cat "$D/out"; fi
+done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

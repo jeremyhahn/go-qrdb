@@ -1831,6 +1831,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		SignedInitTTL:             pending.cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
@@ -2452,6 +2453,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		SignedInitTTL:             pending.cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
@@ -3183,6 +3185,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(cfg),
+		SignedInitTTL:             cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(serverOpts...).TrustAnchors,
 	}, cfg, serverOpts)

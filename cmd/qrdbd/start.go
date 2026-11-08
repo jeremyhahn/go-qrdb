@@ -2046,6 +2046,7 @@ func runStart(f *startFlags) (err error) {
 				TimeSeries:                f.timeSeriesConfig,
 				DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 				DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
+				SignedInitTTL:             f.tenantConfig.SignedInitTTLDuration(),
 				Encryptor:                 enc,
 				// Key A: in-memory bootstrap material (populated only when
 				// ca-key.pem still exists on disk this boot) for the built-in

@@ -34,6 +34,12 @@
 # devcontainer images and runs the stages in them, and `ci-gate`, where CI Gate runs
 # (Company Agent m386). go-quicraft's ci.yml has used both since v1.18.
 #
+# CUSTOMIZE (go-qrdb, DS-7377): `batch`, `bigdisk` and `ci-gate` are removed.
+# Every job of ci.yml, nightly.yml, release.yml and batch.yml runs on
+# GitHub-hosted ubuntu-latest, so no workflow names those labels, and an
+# allowlist that still accepts a label no runner has cannot catch it as a typo
+# (the v3 reasoning above). Only code-review.yml keeps self-hosted labels.
+#
 # CUSTOMIZE (go-qrdb): `qwen`, the opencode review host's runner label, which
 # code-review-template v5.5 runs `review-opencode` on. The actionlint template
 # does not list it yet, so adopting v5.5 without it took `Lint` red (the v2
@@ -53,6 +59,3 @@ self-hosted-runner:
     - claude
     - code-review
     - qwen
-    - batch
-    - bigdisk
-    - ci-gate
