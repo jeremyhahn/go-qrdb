@@ -17,7 +17,11 @@
 package integration_test
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -141,5 +145,75 @@ func TestObjstoreCredentials_IgnoredCredentialFailsTheBoot(t *testing.T) {
 	}
 	if strings.Contains(out.String(), fakeObjstoreSecret) {
 		t.Fatal("qrdbd echoed the credential")
+	}
+}
+
+// randomObjstoreCredential returns credential material generated for this
+// test run, so no committed value can mask an echo.
+func randomObjstoreCredential(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("generate credential: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// TestObjstoreCredentials_NeverEchoesTheKeyOrSecret boots qrdbd with key and
+// secret files generated at test time and proves neither value reaches the
+// node's output, the barrier replies' output, or any file the node writes
+// under its data directory or the provider's bucket: the credential crosses
+// the seam only as a protected-memory handle.
+func TestObjstoreCredentials_NeverEchoesTheKeyOrSecret(t *testing.T) {
+	bin := buildBinary(t)
+	ca := generateTestCA(t)
+	key := randomObjstoreCredential(t)
+	secret := randomObjstoreCredential(t)
+	secrets := t.TempDir()
+	keyFile := writeObjstoreCredentialFile(t, secrets, "access-key", key, 0o600)
+	secretFile := writeObjstoreCredentialFile(t, secrets, "secret-key", secret, 0o600)
+	cfg := writeObjstoreModeConfig(t, fmt.Sprintf(
+		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
+	dataDir := t.TempDir()
+
+	restPort := allocateTCPPorts(t, 1)[0]
+	args := append([]string{
+		"start",
+		"--config", cfg,
+		"--mode", "standalone",
+		"--data-dir", dataDir,
+		"--admin-port", strconv.Itoa(restPort),
+		"--auth-enabled",
+		"--enable-rest",
+	}, ca.tlsFlags(t)...)
+	out := &watchOutputBuf{}
+	cmd := spawnNode(t, bin, args, out)
+
+	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
+	initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
+	_ = awaitNodeExit(t, cmd, 60*time.Second)
+
+	for name, value := range map[string]string{"key": key, "secret": secret} {
+		if strings.Contains(out.String(), value) {
+			t.Fatalf("qrdbd echoed the %s credential", name)
+		}
+		for _, root := range []string{dataDir, filepath.Dir(cfg)} {
+			err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+				if err != nil || !d.Type().IsRegular() {
+					return err
+				}
+				body, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if bytes.Contains(body, []byte(value)) {
+					t.Errorf("qrdbd wrote the %s credential to %s", name, path)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("walk %s: %v", root, err)
+			}
+		}
 	}
 }
