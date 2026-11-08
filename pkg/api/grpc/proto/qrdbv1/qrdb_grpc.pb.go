@@ -168,6 +168,9 @@ const (
 	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
 	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
 	QRDBService_IssueDelegation_FullMethodName                   = "/qrdb.v1.QRDBService/IssueDelegation"
+	QRDBService_PutDelegationPolicy_FullMethodName               = "/qrdb.v1.QRDBService/PutDelegationPolicy"
+	QRDBService_ListDelegationPolicies_FullMethodName            = "/qrdb.v1.QRDBService/ListDelegationPolicies"
+	QRDBService_DeleteDelegationPolicy_FullMethodName            = "/qrdb.v1.QRDBService/DeleteDelegationPolicy"
 	QRDBService_TrustAnchorAdd_FullMethodName                    = "/qrdb.v1.QRDBService/TrustAnchorAdd"
 	QRDBService_TrustAnchorList_FullMethodName                   = "/qrdb.v1.QRDBService/TrustAnchorList"
 	QRDBService_TrustAnchorRemove_FullMethodName                 = "/qrdb.v1.QRDBService/TrustAnchorRemove"
@@ -651,8 +654,19 @@ type QRDBServiceClient interface {
 	// IssueDelegation has the caller's own tenant's CA issue a short-lived
 	// delegation certificate from a CSR: the named service principal may act
 	// inside the tenant with at most the delegated scope. The system tenant
-	// and a delegated caller are refused.
+	// is refused; a delegated caller renews its own delegation, within the
+	// standing policy its tenant wrote for it, and nothing more.
 	IssueDelegation(ctx context.Context, in *IssueDelegationRequest, opts ...grpc.CallOption) (*IssuedDelegationResponse, error)
+	// PutDelegationPolicy writes the caller's own tenant's standing
+	// delegation policy for a service principal. A delegated caller is
+	// refused.
+	PutDelegationPolicy(ctx context.Context, in *PutDelegationPolicyRequest, opts ...grpc.CallOption) (*DelegationPolicy, error)
+	// ListDelegationPolicies lists the caller's own tenant's standing
+	// delegation policies.
+	ListDelegationPolicies(ctx context.Context, in *ListDelegationPoliciesRequest, opts ...grpc.CallOption) (*ListDelegationPoliciesResponse, error)
+	// DeleteDelegationPolicy revokes the caller's own tenant's standing
+	// delegation policy for a service principal.
+	DeleteDelegationPolicy(ctx context.Context, in *DeleteDelegationPolicyRequest, opts ...grpc.CallOption) (*DeleteDelegationPolicyResponse, error)
 	// TrustAnchorAdd registers CA certificates as trust anchors of
 	// tenant_id, which must be the caller's own tenant.
 	TrustAnchorAdd(ctx context.Context, in *TrustAnchorAddRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error)
@@ -2330,6 +2344,36 @@ func (c *qRDBServiceClient) IssueDelegation(ctx context.Context, in *IssueDelega
 	return out, nil
 }
 
+func (c *qRDBServiceClient) PutDelegationPolicy(ctx context.Context, in *PutDelegationPolicyRequest, opts ...grpc.CallOption) (*DelegationPolicy, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DelegationPolicy)
+	err := c.cc.Invoke(ctx, QRDBService_PutDelegationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) ListDelegationPolicies(ctx context.Context, in *ListDelegationPoliciesRequest, opts ...grpc.CallOption) (*ListDelegationPoliciesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListDelegationPoliciesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ListDelegationPolicies_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) DeleteDelegationPolicy(ctx context.Context, in *DeleteDelegationPolicyRequest, opts ...grpc.CallOption) (*DeleteDelegationPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteDelegationPolicyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DeleteDelegationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) TrustAnchorAdd(ctx context.Context, in *TrustAnchorAddRequest, opts ...grpc.CallOption) (*TrustAnchorListResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TrustAnchorListResponse)
@@ -3891,8 +3935,19 @@ type QRDBServiceServer interface {
 	// IssueDelegation has the caller's own tenant's CA issue a short-lived
 	// delegation certificate from a CSR: the named service principal may act
 	// inside the tenant with at most the delegated scope. The system tenant
-	// and a delegated caller are refused.
+	// is refused; a delegated caller renews its own delegation, within the
+	// standing policy its tenant wrote for it, and nothing more.
 	IssueDelegation(context.Context, *IssueDelegationRequest) (*IssuedDelegationResponse, error)
+	// PutDelegationPolicy writes the caller's own tenant's standing
+	// delegation policy for a service principal. A delegated caller is
+	// refused.
+	PutDelegationPolicy(context.Context, *PutDelegationPolicyRequest) (*DelegationPolicy, error)
+	// ListDelegationPolicies lists the caller's own tenant's standing
+	// delegation policies.
+	ListDelegationPolicies(context.Context, *ListDelegationPoliciesRequest) (*ListDelegationPoliciesResponse, error)
+	// DeleteDelegationPolicy revokes the caller's own tenant's standing
+	// delegation policy for a service principal.
+	DeleteDelegationPolicy(context.Context, *DeleteDelegationPolicyRequest) (*DeleteDelegationPolicyResponse, error)
 	// TrustAnchorAdd registers CA certificates as trust anchors of
 	// tenant_id, which must be the caller's own tenant.
 	TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error)
@@ -4622,6 +4677,15 @@ func (UnimplementedQRDBServiceServer) EnrollCert(context.Context, *EnrollCertReq
 }
 func (UnimplementedQRDBServiceServer) IssueDelegation(context.Context, *IssueDelegationRequest) (*IssuedDelegationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IssueDelegation not implemented")
+}
+func (UnimplementedQRDBServiceServer) PutDelegationPolicy(context.Context, *PutDelegationPolicyRequest) (*DelegationPolicy, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutDelegationPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) ListDelegationPolicies(context.Context, *ListDelegationPoliciesRequest) (*ListDelegationPoliciesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListDelegationPolicies not implemented")
+}
+func (UnimplementedQRDBServiceServer) DeleteDelegationPolicy(context.Context, *DeleteDelegationPolicyRequest) (*DeleteDelegationPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteDelegationPolicy not implemented")
 }
 func (UnimplementedQRDBServiceServer) TrustAnchorAdd(context.Context, *TrustAnchorAddRequest) (*TrustAnchorListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TrustAnchorAdd not implemented")
@@ -7409,6 +7473,60 @@ func _QRDBService_IssueDelegation_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_PutDelegationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutDelegationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).PutDelegationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_PutDelegationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).PutDelegationPolicy(ctx, req.(*PutDelegationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ListDelegationPolicies_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListDelegationPoliciesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ListDelegationPolicies(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ListDelegationPolicies_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ListDelegationPolicies(ctx, req.(*ListDelegationPoliciesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_DeleteDelegationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteDelegationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DeleteDelegationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DeleteDelegationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DeleteDelegationPolicy(ctx, req.(*DeleteDelegationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_TrustAnchorAdd_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TrustAnchorAddRequest)
 	if err := dec(in); err != nil {
@@ -10107,6 +10225,18 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IssueDelegation",
 			Handler:    _QRDBService_IssueDelegation_Handler,
+		},
+		{
+			MethodName: "PutDelegationPolicy",
+			Handler:    _QRDBService_PutDelegationPolicy_Handler,
+		},
+		{
+			MethodName: "ListDelegationPolicies",
+			Handler:    _QRDBService_ListDelegationPolicies_Handler,
+		},
+		{
+			MethodName: "DeleteDelegationPolicy",
+			Handler:    _QRDBService_DeleteDelegationPolicy_Handler,
 		},
 		{
 			MethodName: "TrustAnchorAdd",
