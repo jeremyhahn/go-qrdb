@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -26,12 +28,38 @@ var policyScope = []string{"certs:delegate", "kv:get", "kv:put"}
 // tenants' standing delegation policies, as the node wires it.
 func newPolicyService(t *testing.T, opts ...CertEnrollmentOption) *CertEnrollmentService {
 	t.Helper()
-	p := newCertEnrollmentProvider(t)
+	return newPolicyServiceOver(t, newCertEnrollmentProvider(t), liveTenants{"acme": true}, opts...)
+}
+
+// newPolicyServiceOver is newPolicyService over the provider p, with
+// tenants as its tenant registry.
+func newPolicyServiceOver(t *testing.T, p cert.CertProvider, tenants TenantGetter, opts ...CertEnrollmentOption) *CertEnrollmentService {
+	t.Helper()
 	store, ok := any(p).(cert.DelegationPolicyStore)
 	if !ok {
 		t.Fatalf("%T keeps no delegation policies", p)
 	}
-	return NewCertEnrollmentService(p, nil, nil, append([]CertEnrollmentOption{WithDelegationPolicyStore(store)}, opts...)...)
+	base := []CertEnrollmentOption{WithDelegationPolicyStore(store), WithEnrollmentTenants(tenants)}
+	return NewCertEnrollmentService(p, nil, nil, append(base, opts...)...)
+}
+
+// NewPolicyTestProvider is newCertEnrollmentProvider for the external
+// tests in cert_delegation_policy_delegated_test.go: an initialized CA
+// over an unsealed barrier, which a mint needs.
+func NewPolicyTestProvider(t *testing.T) cert.CertProvider {
+	t.Helper()
+	return newCertEnrollmentProvider(t)
+}
+
+// liveTenants is a tenant registry holding exactly the tenants it maps to
+// true; deleting one from it is a tenant deletion.
+type liveTenants map[string]bool
+
+func (l liveTenants) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	if !l[id] {
+		return nil, &TenantNotFoundError{TenantID: id}
+	}
+	return &tenant.TenantInfo{ID: id}, nil
 }
 
 func billingPolicy() *DelegationPolicyRequest {
@@ -158,5 +186,63 @@ func TestMintDelegation_FailClosedOnAuditRefusal(t *testing.T) {
 	}
 	if err := svc.DeleteDelegationPolicy(anchorCaller("acme", "alice"), "", "billing"); !errors.As(err, &gate) {
 		t.Fatalf("delete with a refusing trail: err = %v, want *audit.GateError", err)
+	}
+}
+
+// TestDelegationPolicy_RecordsSitUnderTheConfinedPrefix is the drift test
+// between pkg/cert's unexported prefixDelegationPolicy and the literal
+// hardConfinedWholePrefixes reproduces: a policy pkg/cert writes must land
+// under the prefix the embedded transport confines.
+func TestDelegationPolicy_RecordsSitUnderTheConfinedPrefix(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	svc := newPolicyServiceOver(t, newCertEnrollmentProviderOver(t, store), liveTenants{"acme": true})
+	if _, err := svc.PutDelegationPolicy(anchorCaller("acme", "alice"), billingPolicy()); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	var keys []string
+	if err := store.Scan(context.Background(), delegationPolicyConfinedPrefix, func(key string, _ []byte) error {
+		keys = append(keys, key)
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(keys) != 1 || !isHardConfinedKey(keys[0]) {
+		t.Fatalf("policy records under %q = %v, want one confined record", delegationPolicyConfinedPrefix, keys)
+	}
+	if !slices.Contains(TenantKeyPrefixes("acme"), tenantDelegationPolicyPrefix("acme")) || !strings.HasPrefix(keys[0], tenantDelegationPolicyPrefix("acme")) {
+		t.Fatalf("TenantKeyPrefixes(acme) does not reclaim %q", keys[0])
+	}
+}
+
+// TestMintDelegation_RefusesADeletedTenant: a shared tenant's policy record
+// that outlived the tenant's deletion never mints.
+func TestMintDelegation_RefusesADeletedTenant(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	tenants := liveTenants{"acme": true}
+	ring := audit.NewRingBuffer(16)
+	svc := newPolicyServiceOver(t, newCertEnrollmentProviderOver(t, store), tenants, WithEnrollmentAuditLogger(ring))
+	if _, err := svc.PutDelegationPolicy(anchorCaller("acme", "alice"), billingPolicy()); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	delete(tenants, "acme")
+
+	var gone *TenantNotFoundError
+	issued, err := svc.MintDelegation(servicePrincipalCtx("billing"), &MintDelegationRequest{TenantID: "acme", CSRPEM: delegationCSR(t)})
+	if !errors.As(err, &gone) || gone.TenantID != "acme" || issued != nil {
+		t.Fatalf("mint for a deleted tenant: issued %v, err = %v, want *TenantNotFoundError", issued, err)
+	}
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == ActionCertDelegationMint {
+			t.Fatalf("a mint for a deleted tenant was audited: %+v", ev)
+		}
+	}
+	if _, found, err := svc.policies.DelegationPolicy(context.Background(), "acme", "billing"); err != nil || !found {
+		t.Fatalf("the surviving record: found %v, err %v; the refusal must not depend on its absence", found, err)
+	}
+
+	unwired := newPolicyServiceOver(t, newCertEnrollmentProviderOver(t, store), nil)
+	var notConfigured *CertEnrollmentNotConfiguredError
+	if _, err := unwired.MintDelegation(servicePrincipalCtx("billing"), &MintDelegationRequest{TenantID: "acme", CSRPEM: delegationCSR(t)}); !errors.As(err, &notConfigured) {
+		t.Fatalf("mint with no tenant registry: err = %v, want *CertEnrollmentNotConfiguredError", err)
 	}
 }
