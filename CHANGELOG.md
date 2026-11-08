@@ -13,6 +13,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **A tenant can write standing delegation policies** (#1187). A policy is the
+  tenant's grant written down once (one per principal: `scope` and `ttl`), so an
+  embedder's server-owned work can mint and renew its delegation with no tenant
+  admin at hand. `qrdb ca delegate policy put|list|delete`, REST
+  `POST|GET /certs/delegate/policies` and `DELETE /certs/delegate/policies/{principal}`,
+  gRPC and Unix `PutDelegationPolicy` / `ListDelegationPolicies` /
+  `DeleteDelegationPolicy`, QUIC `cert.DelegationPolicyPut|List|Delete`, the MCP
+  tools `qrdb_cert_delegation_policy_put|list|delete`, and the Go SDK methods of
+  the same names. All three need `certs:delegate` in the caller's own tenant and
+  refuse the system tenant and a delegated caller; put and delete are audited as
+  `cert.delegation_policy.put` / `cert.delegation_policy.delete`, and a missing
+  policy is `DelegationPolicyNotFoundError` (404 / `NOT_FOUND`). Embedders mint
+  under a policy with `Node.MintDelegation`, bounded by the policy and the
+  principal's grants; a renewal needs `certs:delegate` in both. Policies live
+  under `__sys:cert_delegation_policy/`, which the embedded transport confines
+  whole (every read, write, list, scan, watch and transaction is refused), so no
+  KV writer can forge one. Deleting a tenant deletes its policies, and a mint for
+  a tenant that is deleted or retired is refused with `TenantNotFoundError`.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,
