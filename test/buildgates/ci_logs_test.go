@@ -47,18 +47,14 @@ import (
 // credentials: a make target, a script, npm or curl. The runner injects the
 // credentials into every job (dependency-resolution.md §6), so each of these
 // masks them in its first step after the checkout.
-var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "arch-gates", "integration-standalone", "integration-features", "fips", "soak"}
+var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "arch-gates", "integration-standalone", "integration-features", "fips", "soak"}
 
 // unmaskedJobs are the jobs that hold the credentials but run only inline
 // steps that cannot print them, each with the reason. Every job in ci.yml is
 // in one of the two lists, so a new job fails the gate until it is placed.
 var unmaskedJobs = map[string]string{
 	"changes": "prints only the changed file names",
-	// ci-template v1.29.3: it runs no git, make or script, only curl and jq
-	// against the Actions API, and its tokens reach curl as a header from a
-	// file descriptor.
-	"schedule-guard": "prints only HTTP codes and run counts",
-	"ci-gate":        "prints only the jobs' results",
+	"ci-gate": "prints only the jobs' results",
 }
 
 const maskStepName = "Mask the forge credentials"
@@ -193,8 +189,8 @@ func TestMaskProblems_CanFail(t *testing.T) {
 	const checkout = `
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0`
 	const other = `
-      - name: Reap stale CI stacks
-        run: scripts/reap-stale-ci-stacks.sh x`
+      - name: Report the workspace
+        run: df -h "$GITHUB_WORKSPACE"`
 	jobs := func(steps map[string]string) string {
 		var b strings.Builder
 		b.WriteString("jobs:\n")

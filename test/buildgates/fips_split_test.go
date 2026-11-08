@@ -27,8 +27,8 @@ const (
 	fipsSplitPkgFloor  = 2
 	fipsSplitTestFloor = 200
 
-	fipsSplitFix = "fix: name it in one FIPS_RUN_<leg> of its package's legs in the Makefile, or let the " +
-		"package's FIPS_SKIP_ leg run it"
+	fipsSplitFix = "fix: name it in one UNIT_RUN_<leg> of its package's legs in the Makefile, or let the " +
+		"package's UNIT_SKIP_ leg run it"
 )
 
 // fipsFilter is one leg's test selection: go test's -run and -skip patterns.
@@ -118,7 +118,7 @@ func fipsSplitProblems(filters map[string]fipsFilter, legPkgs map[string][]strin
 				problems = append(problems, p+"."+name+" runs in no FIPS leg; "+fipsSplitFix)
 			case len(in) > 1:
 				problems = append(problems, p+"."+name+" runs in FIPS legs "+strings.Join(in, " and ")+
-					"; fix: narrow the FIPS_RUN_<leg> patterns so one selects it")
+					"; fix: narrow the UNIT_RUN_<leg> patterns so one selects it")
 			}
 		}
 	}
@@ -179,7 +179,7 @@ func TestFIPSLegs_SplitPackagesRunEachTestOnce(t *testing.T) {
 	for _, l := range strings.Fields(makeOutput(t, root, "print-fips-legs")) {
 		if f := fipsLegFilter(t, root, l); f.split() {
 			filters[l] = f
-			legPkgs[l] = strings.Fields(makeOutput(t, root, "print-fips-leg-packages", "FIPS_LEG="+l))
+			legPkgs[l] = strings.Fields(makeOutput(t, root, "print-unit-leg-packages", "UNIT_LEG="+l))
 		}
 	}
 	tests := map[string][]string{}

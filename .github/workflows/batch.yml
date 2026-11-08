@@ -22,10 +22,11 @@
 #              artifact on Gitea)
 # A finding that is already an open issue gets a comment, not a new issue.
 #
-# RUNNERS. `runs-on: batch`: Infrastructure registers "batch" runners with
-# capacity 8, 8 and 3 on three hosts (named in no tracked file: the tree is
-# publicly releasable). Nothing else uses
-# that label, so batch work never takes a CI slot from a pull request.
+# RUNNERS. `runs-on: ubuntu-latest`: GitHub-hosted runners (4 vCPU, 16 GB,
+# 6 h per job on a public repository). The repository is public, so no job
+# runs on a self-hosted runner without a hardware reason (Company Agent
+# m2061, m2066), and none of these four has one. Every job stays inside the
+# 6 h limit at its 180-minute timeout.
 #
 # ARTIFACTS. actions/upload-artifact v4 and later refuse any server that is
 # not github.com ("not currently supported on GHES"; Gitea presents as one),
@@ -38,9 +39,8 @@
 #   RACE_PKGS              the unit-test package scope, the same as ci.yml's
 #                          Test job (dark or environment-bound suites excluded)
 #   SOAK_CMD               the repo's integration suite. go-quicraft and
-#                          go-qrdb run their cluster suites, and their soak
-#                          job's runs-on names the raft-guest runner label
-#                          where Infrastructure has registered one
+#                          go-qrdb run their cluster suites; go-qrdb's soak
+#                          runs on the hosted runner like every other job
 #   BENCH_PKGS             benchmark scope (harness modules excluded)
 # A repo with no Fuzz* targets keeps the fuzz job; it finds none and passes.
 #
@@ -109,11 +109,12 @@ jobs:
   # The runner does not expand a matrix built from another job's output
   # (go-quicraft ci.yml), so the targets are split over a static matrix of
   # four shards, and each shard fuzzes two targets at a time with
-  # -parallel=4: 8 cores per shard, 20 minutes per pair of targets.
+  # -parallel=4: 8 fuzz workers per shard on the runner's 4 vCPU, 20 minutes
+  # per pair of targets.
   fuzz:
     name: Fuzz (shard ${{ matrix.shard }}/4)
     if: inputs.jobs == 'all' || inputs.jobs == 'fuzz'
-    runs-on: batch
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -195,7 +196,7 @@ jobs:
   race-full:
     name: Race (full, -count=3)
     if: inputs.jobs == 'all' || inputs.jobs == 'race-full'
-    runs-on: batch
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -220,7 +221,7 @@ jobs:
   soak:
     name: Soak (${{ inputs.soak_minutes }} min)
     if: inputs.jobs == 'all' || inputs.jobs == 'soak'
-    runs-on: batch  # CUSTOMIZE: the raft-guest label for go-quicraft and go-qrdb, once registered
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -277,7 +278,7 @@ jobs:
   bench:
     name: Bench
     if: inputs.jobs == 'all' || inputs.jobs == 'bench'
-    runs-on: batch
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
