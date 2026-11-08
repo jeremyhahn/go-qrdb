@@ -13,6 +13,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **The object-storage credential crosses only as a protected-memory handle**
+  (#1143, SPEC row `object-storage-credential-handle`). The `objstore`
+  backend reads `storage.objstore.credentials.key_file` / `secret_file` into
+  go-enclave handles and passes them to go-objstore's
+  `Storage.Configure(settings, common.Credentials)`; settings never carry a
+  credential, the adapter holds no plaintext copy, and both handles are
+  destroyed when the open returns, on success and on every error path.
+  qrdbd never echoes either value or writes it under its data directory.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

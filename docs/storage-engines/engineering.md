@@ -549,11 +549,17 @@ key, never shared between instances.
   cache keyed by object name. This is a documented performance limitation of
   phase 1, not a silent one: the adapter's doc comment says so, and the real
   fix is the ranged read requested from go-objstore.
-- **The provider credential crosses as go-objstore takes it.** `NewRemote`
-  passes the provider and its settings to go-objstore as `New` does today;
-  when the SPEC row `object-storage-credential-handle` lands, `NewRemote`
-  takes the same protected-memory credential handle and never holds a
-  plaintext copy.
+- **The provider credential crosses as a protected-memory handle.** The
+  adapter reads `storage.objstore.credentials.key_file` and `secret_file`
+  into go-enclave handles (`openCredentials`) and passes them to
+  go-objstore's `Storage.Configure(settings, common.Credentials{Key,
+  Secret})`; the backend copies the bytes out only for the call that builds
+  its SDK credential. Settings never carry a credential: an inline one is
+  refused by name, never by value (`RejectCredentialSettings`, at `qrdbd
+  start` and at every open). The adapter holds no plaintext copy and the
+  `Engine` no handle: `New` destroys both handles before it returns, on
+  success and on every error path, including a key handle already read when
+  the secret read fails (SPEC row `object-storage-credential-handle`).
 
 ### Configuration (target)
 
