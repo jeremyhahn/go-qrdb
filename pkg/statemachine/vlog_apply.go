@@ -67,6 +67,12 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		if err != nil {
 			return 0, err
 		}
+		if vlog.IsAuditLog(id) {
+			// The audit instance's retention is audit Prune (OpAuditPrune),
+			// which expires its bodies through pkg/audit; the log surface
+			// only reads it.
+			return 0, &vlog.ExpireNotAllowedError{ID: id}
+		}
 		expired, err := logs.ExpireBodies(w, id, cutoff)
 		return uint64(expired), err
 	},

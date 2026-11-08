@@ -322,6 +322,32 @@ func TestStoreAuditInstance_FamiliesAgree(t *testing.T) {
 	}
 }
 
+// TestStoreAuditInstance_LogSurfaceExpireIsRefused pins that an
+// OpVerifiableLog ExpireBodies naming the audit instance is a refusal on both
+// families and changes nothing: the instance's retention is audit Prune.
+func TestStoreAuditInstance_LogSurfaceExpireIsRefused(t *testing.T) {
+	for _, kind := range auditSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			p := enc(t)
+			n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+			body, err := json.Marshal(fixedAuditEvent("acme"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNoRefusal(t, n.apply(t, p(protocol.EncodeVerifiableLogAppend(vlog.AuditLogID("acme"), [][]byte{body}))))
+			before := table(t, n.reader(), vlog.TablePrefix)
+
+			res := n.apply(t, p(protocol.EncodeVerifiableLogExpireBodies(vlog.AuditLogID("acme"), 1)))
+			if reason, _, _, ok := protocol.DecodeLogRefusal(res[0].Data); !ok || reason != protocol.LogRefusalExpireNotAllowed {
+				t.Fatalf("ExpireBodies on the audit instance = %+v, want an expire-not-allowed refusal", res[0])
+			}
+			if after := table(t, n.reader(), vlog.TablePrefix); !reflect.DeepEqual(after, before) {
+				t.Fatal("a refused ExpireBodies changed the audit table")
+			}
+		})
+	}
+}
+
 // TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer pins that a replica
 // recovered from a snapshot taken while the head runs past its last
 // checkpoint serves the same head, entries, proofs and checkpoint as the

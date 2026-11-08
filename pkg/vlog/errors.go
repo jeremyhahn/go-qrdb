@@ -117,7 +117,6 @@ func (e *InvalidDescriptorError) Error() string {
 	return "vlog: invalid descriptor: " + e.Reason
 }
 
-// LogExistsError is returned when Create names a log that already exists.
 // ReservedLogError is returned when Create, CreateWithKey or AppendEntries
 // names a tenant's audit instance (AuditLogID): the instance is created by
 // its first audit event and appended to only through AppendAudit, so every
@@ -130,6 +129,7 @@ func (e *ReservedLogError) Error() string {
 	return "vlog: log " + e.ID.String() + " is the audit instance; only audit events append to it"
 }
 
+// LogExistsError is returned when Create names a log that already exists.
 type LogExistsError struct {
 	ID LogID
 }
