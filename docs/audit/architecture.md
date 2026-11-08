@@ -341,8 +341,9 @@ that cannot be opened stops the start. No composer is left without one.
 
 The barriers record on the same trail, not a second one: the system barrier,
 every tenant barrier and every database barrier, through the adapter
-`seal.NewComplianceAuditLogger`, keyed by the owning tenant and naming the
-barrier. A Shamir unseal therefore leaves the holders' submissions and the
+`seal.NewComplianceAuditLogger`, naming the barrier. The system barrier's and
+every tenant barrier's records are platform events, keyed by the system
+tenant; a database barrier's are keyed by the database's tenant. A Shamir unseal therefore leaves the holders' submissions and the
 barrier's `quorum-complete` and `unseal` side by side. **Each event has one
 emitter:** a submission and a rekey opening are the holder engine's records,
 and the barrier emits no copy. The list is in

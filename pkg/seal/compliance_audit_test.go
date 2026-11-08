@@ -166,7 +166,9 @@ func TestBarrierRegistry_WithAuditTrail(t *testing.T) {
 		t.Fatal(err)
 	}
 	inits := eventsOfAction(ring, "initialize")
-	if len(inits) != 1 || inits[0].TenantID != "acme" || inits[0].Attributes["barrier"] != "tenant:acme" || inits[0].Outcome != audit.OutcomeSuccess {
+	// A tenant barrier's events are platform events: the system tenant's
+	// trail, naming the tenant's barrier.
+	if len(inits) != 1 || inits[0].TenantID != tenantid.System || inits[0].Attributes["barrier"] != "tenant:acme" || inits[0].Outcome != audit.OutcomeSuccess {
 		t.Fatalf("initialize records = %+v", inits)
 	}
 

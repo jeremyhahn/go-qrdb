@@ -1757,8 +1757,8 @@ barrier and, through `seal.WithAuditTrail`, to every tenant barrier their
 registry builds; the database barrier manager
 (`database.WithBarrierAuditTrail`) to every database barrier; and the
 desktop's embedded server to both when its trail is enabled. Each record is
-keyed by the tenant that owns the barrier -- the system tenant for the system
-barrier, the tenant for a tenant barrier, the database's tenant for a
+keyed by the system tenant for the system barrier and for a tenant barrier
+(whose seal and unseal are platform events), the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
 details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`, `from`,

@@ -38,8 +38,10 @@ func DatabaseBarrierAuditName(tenantID, database string) string {
 }
 
 // WithAuditTrail records the events of every tenant barrier the registry
-// builds on sink, the node's compliance trail, keyed by the tenant
-// (NewComplianceAuditLogger). A registration that supplies its own
+// builds on sink, the node's compliance trail. A tenant barrier's seal and
+// unseal are platform events: they are keyed by the system tenant and name
+// the tenant's barrier ("tenant:<id>"), so a tenant whose home group is
+// sealed is never held by its own trail (NewComplianceAuditLogger). A registration that supplies its own
 // BarrierConfig.AuditLogger keeps it. A nil sink is a no-op.
 func WithAuditTrail(sink audit.AuditLogger) Option {
 	return func(r *BarrierRegistry) {
