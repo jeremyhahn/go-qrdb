@@ -14,7 +14,10 @@
 
 package firstboot
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // MissingTenantsError is returned when Initialize is called without a
 // TenantServicer in Dependencies.
@@ -266,5 +269,98 @@ func (e *AdminLookupError) Error() string {
 
 // Unwrap returns the underlying cause.
 func (e *AdminLookupError) Unwrap() error {
+	return e.Cause
+}
+
+// SystemSORequiredError is Initialize's refusal, before any write, to boot a
+// strict-separation deployment without a system Security Officer. Under
+// strict separation of duties role create and the built-in reconcile run
+// only as a separate SO, and the assignment gate keeps the system admin from
+// creating one, so a deployment that booted without an SO could never
+// manage its roles. Missing names the inputs to supply.
+type SystemSORequiredError struct {
+	Missing []string
+}
+
+// Error names the missing inputs.
+func (e *SystemSORequiredError) Error() string {
+	return "firstboot: strict separation of duties requires a system SO, so role create and the built-in reconcile have a principal to run as; supply " +
+		strings.Join(e.Missing, ", ")
+}
+
+// IncompleteSOError is returned when an SO (tenant create's or first
+// boot's) is given in part: the SO is the username, exactly one of a CSR or
+// a certificate, and the PIN together, or is omitted altogether. Field names
+// the first part missing.
+type IncompleteSOError struct {
+	Field string
+}
+
+// Error names the missing part.
+func (e *IncompleteSOError) Error() string {
+	return "firstboot: the SO is given in part: " + e.Field + " is missing (give so_username, so_csr_pem or so_cert_pem, and so_pin together, or none)"
+}
+
+// ConflictingSOCredentialError is returned when both a CSR and a certificate
+// are given for an SO: exactly one names the SO's key.
+type ConflictingSOCredentialError struct{}
+
+// Error implements error.
+func (e *ConflictingSOCredentialError) Error() string {
+	return "firstboot: supply the SO's CSR or certificate, not both"
+}
+
+// SOMatchesAdminError is returned when an SO is the admin by another name:
+// the same username, or a credential over the same key (SPKI). Strict
+// separation needs two principals, so the SO and the admin never share an
+// account or a key; first boot refuses it in either posture, since the
+// system admin is immutable and never takes the SO role. Field is
+// "username" or "key".
+type SOMatchesAdminError struct {
+	Field string
+}
+
+// Error implements error.
+func (e *SOMatchesAdminError) Error() string {
+	return "firstboot: the SO must differ from the admin; they share a " + e.Field
+}
+
+// MissingSOSeamError is returned, before any write, when Dependencies.SO is
+// set but a seam enrolling it is not: Seam names the field and its use.
+type MissingSOSeamError struct {
+	Seam string
+}
+
+// Error implements error.
+func (e *MissingSOSeamError) Error() string {
+	return "firstboot: the system SO needs " + e.Seam
+}
+
+// SystemSOConflictError is returned when the system SO's username is held
+// by an account that is not this SO: one without the system so role, or,
+// under strict separation, one that also holds the system Admin role.
+type SystemSOConflictError struct {
+	Username string
+}
+
+// Error implements error.
+func (e *SystemSOConflictError) Error() string {
+	return "firstboot: username " + strconv.Quote(e.Username) + " is held by an account that is not the system SO"
+}
+
+// SystemSOEnrollmentError wraps a failure enrolling the system SO. Op names
+// the step: "account", "certificate", "binding" or "PIN commit".
+type SystemSOEnrollmentError struct {
+	Op    string
+	Cause error
+}
+
+// Error implements error.
+func (e *SystemSOEnrollmentError) Error() string {
+	return "firstboot: system SO " + e.Op + " failed: " + e.Cause.Error()
+}
+
+// Unwrap returns the underlying cause.
+func (e *SystemSOEnrollmentError) Unwrap() error {
 	return e.Cause
 }

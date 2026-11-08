@@ -47,13 +47,13 @@ func (f *fakeSOPINs) SetSOPIN(_ context.Context, tenantID string, pin []byte) er
 	return f.err
 }
 
-var _ SOPINSetter = (*fakeSOPINs)(nil)
-var _ SOPINSetter = (*auth.SOAuthenticator)(nil)
+var _ firstboot.SOPINSetter = (*fakeSOPINs)(nil)
+var _ firstboot.SOPINSetter = (*auth.SOAuthenticator)(nil)
 
-// soConfig is a complete TenantSOConfig over a fresh key.
-func soConfig(t *testing.T) *TenantSOConfig {
+// soConfig is a complete firstboot.SOConfig over a fresh key.
+func soConfig(t *testing.T) *firstboot.SOConfig {
 	t.Helper()
-	return &TenantSOConfig{Username: "officer", CSRPEM: validAdminCSR(t), PIN: sealedPIN(t, "so-pin-1234")}
+	return &firstboot.SOConfig{Username: "officer", CSRPEM: validAdminCSR(t), PIN: sealedPIN(t, "so-pin-1234")}
 }
 
 // sealedPIN seals pin into a *secure.Secret, as a caller of ProvisionTenant
@@ -69,7 +69,7 @@ func sealedPIN(t *testing.T, pin string) *secure.Secret {
 }
 
 // provisionWithSO provisions tenant acme, prefix isolation, with so.
-func provisionWithSO(t *testing.T, so *TenantSOConfig, users firstboot.UserCreator, deps Dependencies) (*TenantProvisionResult, error) {
+func provisionWithSO(t *testing.T, so *firstboot.SOConfig, users firstboot.UserCreator, deps Dependencies) (*TenantProvisionResult, error) {
 	t.Helper()
 	deps.Users = users
 	if deps.Tenants == nil {
@@ -149,7 +149,7 @@ func TestProvisionTenant_SO_UsesTheInjectedSignerAndBinder(t *testing.T) {
 
 func TestProvisionTenant_SO_UsesTheInjectedBYOCVerification(t *testing.T) {
 	root := newOnboardingRoot(t, "Acme Root")
-	so := &TenantSOConfig{Username: "officer", CertPEM: onboardingPEM(root.clientLeaf(t, "officer", "acme")), PIN: sealedPIN(t, "pin")}
+	so := &firstboot.SOConfig{Username: "officer", CertPEM: onboardingPEM(root.clientLeaf(t, "officer", "acme")), PIN: sealedPIN(t, "pin")}
 	signer := &fakeSigner{cert: realCertPEM(t)}
 	users := &fakeCertBindingUsers{}
 	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
@@ -176,22 +176,22 @@ func TestProvisionTenant_SO_RefusedBeforeTheTenantIsCreated(t *testing.T) {
 	cases := []struct {
 		name  string
 		admin []byte
-		so    func(*TenantSOConfig)
+		so    func(*firstboot.SOConfig)
 		deps  Dependencies
 		check func(error) bool
 	}{
-		{"no username", nil, func(s *TenantSOConfig) { s.Username = "" }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_username")},
-		{"no credential", nil, func(s *TenantSOConfig) { s.CSRPEM = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_csr_pem or so_cert_pem")},
-		{"no PIN", nil, func(s *TenantSOConfig) { s.PIN = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_pin")},
-		{"both credentials", nil, func(s *TenantSOConfig) { s.CertPEM = []byte("x") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*ConflictingSOCredentialError]},
-		{"strict: admin's username", nil, func(s *TenantSOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
-		{"strict: admin's key", sameKey, func(s *TenantSOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("key")},
-		{"strict: the admin itself", sameKey, func(s *TenantSOConfig) { s.Username, s.CSRPEM = "admin", sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
-		{"standard: admin's username, another key", nil, func(s *TenantSOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("username")},
-		{"standard: admin's key, another name", sameKey, func(s *TenantSOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("key")},
-		{"unparsable CSR", nil, func(s *TenantSOConfig) { s.CSRPEM = []byte("not a csr") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
-		{"uncertifiable name", nil, func(s *TenantSOConfig) { s.Username = "bad/name" }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
-		{"no PIN seam", nil, func(*TenantSOConfig) {}, Dependencies{}, errAs[*MissingProvisioningSeamError]},
+		{"no username", nil, func(s *firstboot.SOConfig) { s.Username = "" }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_username")},
+		{"no credential", nil, func(s *firstboot.SOConfig) { s.CSRPEM = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_csr_pem or so_cert_pem")},
+		{"no PIN", nil, func(s *firstboot.SOConfig) { s.PIN = nil }, Dependencies{SOPINs: &fakeSOPINs{}}, isIncomplete("so_pin")},
+		{"both credentials", nil, func(s *firstboot.SOConfig) { s.CertPEM = []byte("x") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*firstboot.ConflictingSOCredentialError]},
+		{"strict: admin's username", nil, func(s *firstboot.SOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
+		{"strict: admin's key", sameKey, func(s *firstboot.SOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("key")},
+		{"strict: the admin itself", sameKey, func(s *firstboot.SOConfig) { s.Username, s.CSRPEM = "admin", sameKey }, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true}, isMatch("username")},
+		{"standard: admin's username, another key", nil, func(s *firstboot.SOConfig) { s.Username = "Admin" }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("username")},
+		{"standard: admin's key, another name", sameKey, func(s *firstboot.SOConfig) { s.CSRPEM = sameKey }, Dependencies{SOPINs: &fakeSOPINs{}}, isPartlyMatch("key")},
+		{"unparsable CSR", nil, func(s *firstboot.SOConfig) { s.CSRPEM = []byte("not a csr") }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
+		{"uncertifiable name", nil, func(s *firstboot.SOConfig) { s.Username = "bad/name" }, Dependencies{SOPINs: &fakeSOPINs{}}, errAs[*SOCredentialRejectedError]},
+		{"no PIN seam", nil, func(*firstboot.SOConfig) {}, Dependencies{}, errAs[*MissingProvisioningSeamError]},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -225,14 +225,14 @@ func TestProvisionTenant_SO_RefusedBeforeTheTenantIsCreated(t *testing.T) {
 
 func isIncomplete(field string) func(error) bool {
 	return func(err error) bool {
-		var e *IncompleteTenantSOError
+		var e *firstboot.IncompleteSOError
 		return errors.As(err, &e) && e.Field == field
 	}
 }
 
 func isMatch(field string) func(error) bool {
 	return func(err error) bool {
-		var e *SOMatchesAdminError
+		var e *firstboot.SOMatchesAdminError
 		return errors.As(err, &e) && e.Field == field
 	}
 }
@@ -542,7 +542,7 @@ func TestAccountKinds_WrapEachRolesFailuresInItsOwnType(t *testing.T) {
 func TestSOErrors_DescribeAndUnwrap(t *testing.T) {
 	cause := errors.New("cause")
 	for _, err := range []error{
-		&IncompleteTenantSOError{Field: "so_pin"}, &ConflictingSOCredentialError{}, &SOMatchesAdminError{Field: "key"}, &SOPartlyMatchesAdminError{Field: "key"},
+		&firstboot.IncompleteSOError{Field: "so_pin"}, &firstboot.ConflictingSOCredentialError{}, &firstboot.SOMatchesAdminError{Field: "key"}, &SOPartlyMatchesAdminError{Field: "key"},
 		&SOCredentialRejectedError{Cause: cause}, &TenantSOEnrollmentError{Op: "PIN commit", Cause: cause},
 		&PendingAdminAccountConflictError{TenantID: "acme", Username: "officer", Role: role.RoleNameSO},
 	} {

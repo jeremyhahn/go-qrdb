@@ -1052,9 +1052,9 @@ var onboardingRules = []rule{
 	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
 	// A tenant SO named in part, with two credentials, or as the admin by
 	// name or by key is the request's fault.
-	as(&bootstrap.IncompleteTenantSOError{}, InvalidArgument),
-	as(&bootstrap.ConflictingSOCredentialError{}, InvalidArgument),
-	as(&bootstrap.SOMatchesAdminError{}, InvalidArgument),
+	as(&firstboot.IncompleteSOError{}, InvalidArgument),
+	as(&firstboot.ConflictingSOCredentialError{}, InvalidArgument),
+	as(&firstboot.SOMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.SOPartlyMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad

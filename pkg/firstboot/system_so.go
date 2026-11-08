@@ -1,0 +1,281 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package firstboot
+
+import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"log/slog"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// SOConfig is a Security Officer to enrol: tenant create's optional tenant
+// SO (bootstrap.TenantProvisionConfig.SO) and first boot's system SO
+// (Dependencies.SO) are the same inputs, judged by the same Validate.
+type SOConfig struct {
+	// Username is the SO's login name. It must differ from the admin's.
+	Username string
+
+	// CSRPEM is the SO's certificate signing request, signed through the
+	// same CertSigner seam as the admin's. The SO keeps its key.
+	CSRPEM []byte
+
+	// CertPEM is the SO's own (bring-your-own) certificate, leaf first,
+	// verified against the same trust anchors as the admin's.
+	CertPEM []byte
+
+	// ChainPEM holds intermediates for CertPEM's chain. Optional.
+	ChainPEM []byte
+
+	// PIN is the SO's second factor, sealed by the caller with
+	// secure.NewSecret and committed through an SOPINSetter.
+	PIN *secure.Secret
+}
+
+// Validate reports whether c is a whole SO: a username, exactly one of a
+// CSR or a certificate, and a live PIN. It returns *IncompleteSOError naming
+// the first part missing, or *ConflictingSOCredentialError for both a CSR
+// and a certificate.
+func (c *SOConfig) Validate() error {
+	switch {
+	case c.Username == "":
+		return &IncompleteSOError{Field: "so_username"}
+	case len(c.CSRPEM) == 0 && len(c.CertPEM) == 0:
+		return &IncompleteSOError{Field: "so_csr_pem or so_cert_pem"}
+	case c.PIN == nil || !c.PIN.IsAlive():
+		return &IncompleteSOError{Field: "so_pin"}
+	case len(c.CSRPEM) > 0 && len(c.CertPEM) > 0:
+		return &ConflictingSOCredentialError{}
+	}
+	return nil
+}
+
+// SOPINSetter commits a tenant's SO PIN. The node's SO authenticator
+// (auth.SOAuthenticator) implements it.
+type SOPINSetter interface {
+	SetSOPIN(ctx context.Context, tenantID string, pin []byte) error
+}
+
+// CommitSOPIN commits pin as tenantID's SO PIN through pins. The PIN is
+// opened for exactly this call; the opened buffer is destroyed when it
+// returns, and pin itself stays the caller's to destroy. pins' error is
+// returned unchanged (auth.ErrSOPINAlreadySet when a PIN is already set).
+func CommitSOPIN(ctx context.Context, pins SOPINSetter, tenantID string, pin *secure.Secret) error {
+	return pin.WithBytes(ctx, func(b []byte) error {
+		return pins.SetSOPIN(ctx, tenantID, b)
+	})
+}
+
+// systemSOInputs lists what a strict deployment must give for its system
+// SO, in the order an operator supplies them.
+var systemSOInputs = []string{"so_username", "so_csr_pem or so_cert_pem", "so_pin"}
+
+// checkSystemSO is Initialize's pre-flight for the system SO. It runs BEFORE
+// any write: a strict deployment without an SO, an SO given in part, an SO
+// that is the admin by username or key, and an SO whose enrolment seams are
+// not wired are each refused here rather than half-way through first boot.
+func checkSystemSO(deps Dependencies) error {
+	so := deps.SO
+	if so == nil {
+		if deps.SeparationOfDuties {
+			return &SystemSORequiredError{Missing: systemSOInputs}
+		}
+		return nil
+	}
+	if err := so.Validate(); err != nil {
+		return err
+	}
+	if strings.EqualFold(so.Username, adminUsername) {
+		return &SOMatchesAdminError{Field: "username"}
+	}
+	switch {
+	case deps.SOPINs == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.SOPINs to commit its PIN"}
+	case deps.Binder == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.Binder to bind its certificate"}
+	case len(so.CSRPEM) > 0 && deps.Signer == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.Signer to sign its CSR"}
+	case len(so.CertPEM) > 0 && deps.AdminCertPool == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.AdminCertPool to verify its certificate"}
+	}
+	soKey, err := spkiThumbprintOf(so.CSRPEM, so.CertPEM)
+	if err != nil {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	}
+	// A generated admin key (Path A) is fresh and cannot be the SO's; only a
+	// key the operator supplies for the admin can collide.
+	if len(deps.AdminCSRPEM) == 0 && len(deps.AdminCertPEM) == 0 {
+		return nil
+	}
+	adminKey, err := spkiThumbprintOf(deps.AdminCSRPEM, deps.AdminCertPEM)
+	if err == nil && adminKey == soKey {
+		return &SOMatchesAdminError{Field: "key"}
+	}
+	return nil
+}
+
+// spkiThumbprintOf is the SPKI thumbprint of the key a CSR or a
+// certificate (whichever is given) names: the identifier a binding holds.
+func spkiThumbprintOf(csrPEM, certPEM []byte) (string, error) {
+	if len(certPEM) > 0 {
+		return spkiThumbprintFromCertPEM(certPEM)
+	}
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		return "", errors.New("no CERTIFICATE REQUEST block in PEM input")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	return user.ComputeSPKIThumbprint(&x509.Certificate{RawSubjectPublicKeyInfo: csr.RawSubjectPublicKeyInfo}), nil
+}
+
+// enrollSystemSO enrols Dependencies.SO in tenantID, after the admin: the
+// account with the so role alone, its certificate bound, its PIN
+// committed. Idempotent: a re-run finds this SO, binds it only when it
+// holds no live binding, and accepts a PIN an earlier run already set.
+func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, result *Result) error {
+	so := deps.SO
+	if so == nil {
+		return nil
+	}
+	soUser, created, err := createSystemSO(ctx, deps, tenantID)
+	if err != nil {
+		return err
+	}
+	result.SOCreated = created
+	result.SOUserID = soUser.ID
+
+	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil {
+		certPEM, err := issueSOCert(ctx, deps, tenantID)
+		if err != nil {
+			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+		}
+		thumbprint, err := spkiThumbprintFromCertPEM(certPEM)
+		if err != nil {
+			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+		}
+		if err := deps.Binder.BindAdminCert(ctx, tenantID, soUser.ID, thumbprint); err != nil {
+			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
+		}
+		result.SOCertPEM = certPEM
+		result.SOCertThumbprint = thumbprint
+		deps.Logger.Info("first-boot: system SO cert bound",
+			slog.String("tenant", tenantID),
+			slog.Uint64("user_id", soUser.ID),
+		)
+	}
+
+	if err := CommitSOPIN(ctx, deps.SOPINs, tenantID, so.PIN); err != nil {
+		// An SO an earlier run created may have committed its PIN before
+		// that run stopped; a PIN already set on a brand-new SO is not ours.
+		if !created && errors.Is(err, auth.ErrSOPINAlreadySet) {
+			return nil
+		}
+		return &SystemSOEnrollmentError{Op: "PIN commit", Cause: err}
+	}
+	return nil
+}
+
+// issueSOCert signs the SO's CSR through Signer or adopts its certificate
+// against AdminCertPool, exactly as the admin's Path B and Path C do.
+func issueSOCert(ctx context.Context, deps Dependencies, tenantID string) ([]byte, error) {
+	so := deps.SO
+	if len(so.CertPEM) > 0 {
+		return adoptPresentedCert(so.CertPEM, so.ChainPEM, deps.AdminCertPool, deps.TrustDomain, tenantID)
+	}
+	return deps.Signer.SignAdminCSR(ctx, tenantID, so.Username, so.CSRPEM)
+}
+
+// createSystemSO creates the system SO's account with the so role alone. A
+// collision on its username or generated id is first checked against the
+// account holding the username: this SO is the idempotent re-run, an
+// unresolved holder is a racing create still settling (retried within
+// adminConvergeWindow), and anyone else is *SystemSOConflictError.
+func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, error) {
+	so := deps.SO
+	soRoleID := role.SystemRoleID(tenantID, role.RoleNameSO)
+	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
+	users := userResolver(deps)
+	var convergeDeadline time.Time
+	idCollisions := 0
+	for {
+		soUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
+			// The SO authenticates by certificate and PIN, not by an email
+			// login key.
+			WithoutEmailLoginKey: true,
+			Username:             so.Username,
+			TenantID:             tenantID,
+			RoleIDs:              []string{soRoleID},
+		})
+		if createErr == nil {
+			if soUser == nil {
+				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface created the SO without returning it")}
+			}
+			deps.Logger.Info("first-boot: system SO created",
+				slog.String("username", so.Username),
+				slog.String("tenant", tenantID),
+			)
+			return soUser, true, nil
+		}
+		var usernameExists *user.UsernameExistsError
+		var idExists *user.UserIDExistsError
+		usernameTaken := errors.As(createErr, &usernameExists)
+		if !usernameTaken && !errors.As(createErr, &idExists) {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+		}
+		if users == nil {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+		}
+		existing, lookupErr := users.GetUserByUsername(ctx, tenantID, so.Username)
+		if lookupErr == nil && existing != nil {
+			if existing.TenantID != tenantID ||
+				!slices.Contains(existing.RoleIDs, soRoleID) ||
+				(deps.SeparationOfDuties && slices.Contains(existing.RoleIDs, adminRoleID)) ||
+				!existing.Lifecycle.Valid() || existing.Lifecycle.Terminal() {
+				return nil, false, &SystemSOConflictError{Username: so.Username}
+			}
+			return existing, false, nil
+		}
+		if usernameTaken {
+			if convergeDeadline.IsZero() {
+				convergeDeadline = time.Now().Add(adminConvergeWindow)
+			}
+			if !time.Now().Before(convergeDeadline) {
+				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+			}
+			select {
+			case <-ctx.Done():
+				return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: ctx.Err()}
+			case <-time.After(adminConvergeInterval):
+			}
+			continue
+		}
+		idCollisions++
+		if idCollisions >= adminCreateAttempts {
+			return nil, false, &SystemSOEnrollmentError{Op: "account", Cause: createErr}
+		}
+	}
+}

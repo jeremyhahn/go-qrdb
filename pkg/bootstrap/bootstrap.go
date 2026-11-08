@@ -181,7 +181,7 @@ type Dependencies struct {
 
 	// SOPINs commits a tenant SO's PIN. Required by ProvisionTenant when the
 	// request has an SO.
-	SOPINs SOPINSetter
+	SOPINs firstboot.SOPINSetter
 
 	// SeparationOfDuties is the strict separation-of-duties posture, as
 	// wiring.ResolveStrictSeparation resolves it. Under it a tenant SO must
@@ -530,7 +530,7 @@ type TenantProvisionConfig struct {
 	// tenant's so role alone through the same seams as the admin, and
 	// refused when it is the admin by username or by key. Nil enrolls none.
 	// It needs AdminEnrollCert.
-	SO *TenantSOConfig
+	SO *firstboot.SOConfig
 }
 
 // TenantProvisionResult reports what ProvisionTenant created.

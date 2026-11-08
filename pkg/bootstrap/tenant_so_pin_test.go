@@ -19,6 +19,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -35,7 +36,7 @@ func (a *aliveSOPINs) SetSOPIN(ctx context.Context, tenantID string, pin []byte)
 	return a.fakeSOPINs.SetSOPIN(ctx, tenantID, pin)
 }
 
-var _ SOPINSetter = (*aliveSOPINs)(nil)
+var _ firstboot.SOPINSetter = (*aliveSOPINs)(nil)
 
 func TestProvisionTenant_SO_PINReachesTheSeamByteIdenticalThenIsDestroyed(t *testing.T) {
 	so := soConfig(t)

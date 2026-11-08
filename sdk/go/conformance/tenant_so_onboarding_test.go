@@ -21,9 +21,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
-	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -141,7 +141,7 @@ func TestTenantOnboarding_StandardPostureTheAdminIsTheSO(t *testing.T) {
 			// FIPS 140 mode forces strict separation whatever is configured,
 			// so there the create is refused exactly as in the strict posture.
 			if wiring.ResolveStrictSeparation(false) {
-				want := (&bootstrap.SOMatchesAdminError{Field: "username"}).Error()
+				want := (&firstboot.SOMatchesAdminError{Field: "username"}).Error()
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Fatalf("%s: FIPS 140 mode forces strict separation of duties: create err = %v, want %q", tk, err, want)
 				}

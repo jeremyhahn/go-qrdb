@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -118,7 +119,7 @@ func newOnboardedSOFixture(t *testing.T) *onboardedSOFixture {
 		TenantID:    onboardedSOTenant,
 		Isolation:   tenant.IsolationPrefix,
 		AdminCSRPEM: newCSRPEM(t, "admin"),
-		SO:          &bootstrap.TenantSOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: sealedSOPIN(t)},
+		SO:          &firstboot.SOConfig{Username: "officer", CSRPEM: newCSRPEM(t, "officer"), PIN: sealedSOPIN(t)},
 	}, bootstrap.Dependencies{
 		Tenants:     onboardedTenants{},
 		Users:       f.users,

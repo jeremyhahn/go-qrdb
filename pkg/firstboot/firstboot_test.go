@@ -546,8 +546,12 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 		Tenants:            tenants,
 		Users:              users,
 		Roles:              roles,
+		Binder:             &fakeBinder{},
+		Signer:             newSOSigner(t),
+		SOPINs:             &soPINs{pins: map[string]string{}},
 		Logger:             discardLogger(),
 		SeparationOfDuties: true,
+		SO:                 &SOConfig{Username: "officer", CSRPEM: testCSR(t), PIN: testPIN(t)},
 	})
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
@@ -564,13 +568,17 @@ func TestInitialize_StrictSeparationOfDuties(t *testing.T) {
 		}
 	}
 
-	if len(users.createCalls) != 1 {
-		t.Fatalf("user createCalls = %d, want 1", len(users.createCalls))
+	if len(users.createCalls) != 2 {
+		t.Fatalf("user createCalls = %d, want 2 (admin, system SO)", len(users.createCalls))
 	}
 	wantAdminRoleID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
 	adminReq := users.createCalls[0]
 	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantAdminRoleID {
 		t.Errorf("admin RoleIDs = %v, want [%q] (no owner under strict)", adminReq.RoleIDs, wantAdminRoleID)
+	}
+	wantSORoleID := role.SystemRoleID(tenantid.System, role.RoleNameSO)
+	if soReq := users.createCalls[1]; soReq.Username != "officer" || len(soReq.RoleIDs) != 1 || soReq.RoleIDs[0] != wantSORoleID {
+		t.Errorf("SO request = %q %v, want \"officer\" [%q]", soReq.Username, soReq.RoleIDs, wantSORoleID)
 	}
 }
 
