@@ -127,10 +127,15 @@ func clusterIsolationTransitionAllowed(from, to ClusterIsolationPolicy) bool {
 // legal edit, operator-access -> strict). Both seal.StorageBackend
 // (TenantService's store) and kvstore.AtomicKVStore (kvTenantService's,
 // when its backing store carries the capability) satisfy it.
-type clusterPolicyBackend interface {
+// clusterPolicyGetter reads the stored cluster isolation floor.
+type clusterPolicyGetter interface {
 	Get(ctx context.Context, key string) ([]byte, error)
+}
+
+type clusterPolicyBackend interface {
+	clusterPolicyGetter
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
-	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
+	CompareAndSwap(ctx context.Context, key string, expected, value []byte) (bool, error)
 }
 
 // getClusterIsolationPolicy reads the cluster floor through backend,
@@ -138,7 +143,7 @@ type clusterPolicyBackend interface {
 // permissive, pre-existing behavior for any deployment that has not written
 // the record. See getRawClusterIsolationPolicy for the undefaulted read
 // SetClusterIsolationPolicy needs to decide a transition.
-func getClusterIsolationPolicy(ctx context.Context, backend clusterPolicyBackend) (ClusterIsolationPolicy, error) {
+func getClusterIsolationPolicy(ctx context.Context, backend clusterPolicyGetter) (ClusterIsolationPolicy, error) {
 	current, err := getRawClusterIsolationPolicy(ctx, backend)
 	if err != nil {
 		return "", err
@@ -152,7 +157,7 @@ func getClusterIsolationPolicy(ctx context.Context, backend clusterPolicyBackend
 // getRawClusterIsolationPolicy reads the stored record without defaulting an
 // absent one, so the caller can tell "never written" (a legal predecessor of
 // either value) from "written operator-access" (which may only tighten).
-func getRawClusterIsolationPolicy(ctx context.Context, backend clusterPolicyBackend) (ClusterIsolationPolicy, error) {
+func getRawClusterIsolationPolicy(ctx context.Context, backend clusterPolicyGetter) (ClusterIsolationPolicy, error) {
 	data, err := backend.Get(ctx, clusterIsolationPolicyKey)
 	if err != nil {
 		if isAbsent(err) {
@@ -196,25 +201,15 @@ func setClusterIsolationPolicy(ctx context.Context, backend clusterPolicyBackend
 		return nil
 	}
 	// current == ClusterIsolationPolicyOperatorAccess, next ==
-	// ClusterIsolationPolicyStrict: the only transition left standing.
-	//
-	// CompareAndDelete followed by PutIfAbsent briefly clears the key; that
-	// composition is refused elsewhere in this package for a guarded claim
-	// that can be contested for an arbitrary value (go-qrdb#56), but this
-	// transition has exactly one possible source and one possible target, so
-	// the only two outcomes of the brief gap are "a reader sees the
-	// permissive default for a moment during a rare admin call" (current
-	// behavior, not a widened one) and "a concurrent racer's CompareAndDelete
-	// fails and it is refused outright" (safe).
-	deleted, err := backend.CompareAndDelete(ctx, clusterIsolationPolicyKey, []byte(current))
+	// ClusterIsolationPolicyStrict: the only transition left standing. One
+	// compare-and-swap, so the floor is never unset in between and a lost
+	// race is reported, never mistaken for success.
+	swapped, err := backend.CompareAndSwap(ctx, clusterIsolationPolicyKey, []byte(current), []byte(next))
 	if err != nil {
-		return &StoreError{Op: "cluster-isolation-policy-delete", Err: err}
+		return &StoreError{Op: "cluster-isolation-policy-swap", Err: err}
 	}
-	if !deleted {
+	if !swapped {
 		return &IsolationPolicyChangeError{From: string(current), To: string(next)}
-	}
-	if _, err := backend.PutIfAbsent(ctx, clusterIsolationPolicyKey, []byte(next)); err != nil {
-		return &StoreError{Op: "cluster-isolation-policy-put", Err: err}
 	}
 	return nil
 }
@@ -254,7 +249,11 @@ func (s *TenantService) ClusterIsolationPolicy(ctx context.Context) (ClusterIsol
 // SetClusterIsolationPolicy tightens the cluster-wide isolation floor. See
 // clusterIsolationTransitionAllowed for the legal transitions.
 func (s *TenantService) SetClusterIsolationPolicy(ctx context.Context, next ClusterIsolationPolicy) error {
-	return setClusterIsolationPolicy(ctx, s.store, next)
+	backend, ok := s.store.(clusterPolicyBackend)
+	if !ok {
+		return ErrTenantStoreNotAtomic
+	}
+	return setClusterIsolationPolicy(ctx, backend, next)
 }
 
 // ClusterIsolationPolicy returns the cluster-wide isolation floor. A
