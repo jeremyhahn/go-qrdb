@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -82,5 +83,56 @@ func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSOExclusive_ReconcileAllTenants proves the all-tenant reconcile verb is
+// SO-exclusive under strict separation: the system Admin, which holds
+// roles:reconcile_all, is refused, and so is a system SO still holding admin;
+// a separate system SO runs it. In the standard posture the system Admin
+// runs it as before.
+func TestSOExclusive_ReconcileAllTenants(t *testing.T) {
+	admin := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+	so := role.SystemRoleID(tenantid.System, role.RoleNameSO)
+	callers := []struct {
+		name    string
+		roleIDs []string
+		strict  bool
+		refused bool
+	}{
+		{name: "system admin, strict", roleIDs: []string{admin}, strict: true, refused: true},
+		{name: "SO holding admin, strict", roleIDs: []string{admin, so}, strict: true, refused: true},
+		{name: "separate SO, strict", roleIDs: []string{so}, strict: true},
+		{name: "system admin, standard", roleIDs: []string{admin}},
+	}
+	for _, c := range callers {
+		t.Run(c.name, func(t *testing.T) {
+			users := authtest.NewBindingUsers()
+			seedCtx := tenant.WithTenantID(context.Background(), tenantid.System)
+			if _, err := users.UpdateUser(seedCtx, &user.UpdateUserRequest{ID: authtest.SystemUserID, RoleIDs: c.roleIDs}); err != nil {
+				t.Fatalf("seed caller: %v", err)
+			}
+			roles := authtest.BindingRoles(t)
+			caller := &auth.Identity{Subject: "operator", TenantID: tenantid.System}
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
+				authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
+				authmw.WithUserService(users), authmw.WithStrictSeparation(c.strict))
+			srv := NewServer(nil, nil, "localhost:0", WithUserService(users), WithRoleService(roles),
+				WithTenantService(liveQUICTenants(t, authtest.BindingTenant)), WithAuthMiddleware(mw))
+			ctx, err := mw.AuthenticateQUIC(context.Background())
+			if err != nil {
+				t.Fatalf("AuthenticateQUIC: %v", err)
+			}
+			_, err = srv.handleReconcileRolesAllTenants(ctx, nil)
+			if !c.refused {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				return
+			}
+			if code, _ := mapServiceError(err); code != wire.StatusPermissionDenied {
+				t.Fatalf("status = %v, want StatusPermissionDenied: %v", code, err)
+			}
+		})
 	}
 }

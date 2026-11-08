@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -659,6 +660,10 @@ func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, tenantid.System, "reconcile built-in roles in every tenant"); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

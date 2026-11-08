@@ -23,6 +23,10 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -63,7 +67,7 @@ func TestRoleReconcileAllTenantsTool_ReportsEveryTenant(t *testing.T) {
 			}}}, nil
 		},
 	}
-	tools := roleReconcileAllTools(svc, liveMCPTenants(t, "acme", "broken"))
+	tools := roleReconcileAllTools(svc, liveMCPTenants(t, "acme", "broken"), nil)
 	if len(tools) != 1 || tools[0].Tool.Name != reconcileAllTool || tools[0].Perm != permission.RolesReconcileAll {
 		t.Fatalf("tools = %+v; want the one %s tool gated by roles:reconcile_all", tools, reconcileAllTool)
 	}
@@ -105,7 +109,7 @@ func TestRoleReconcileAllTenantsTool_ReportsEveryTenant(t *testing.T) {
 // TestRoleReconcileAllTenantsTool_RefusesTenantCaller: a tenant's caller gets
 // a ToolError carrying the platform-operator refusal.
 func TestRoleReconcileAllTenantsTool_RefusesTenantCaller(t *testing.T) {
-	handler := handleRoleReconcileAllTenants(&mockRoleService{}, liveMCPTenants(t, "acme"))
+	handler := handleRoleReconcileAllTenants(&mockRoleService{}, liveMCPTenants(t, "acme"), nil)
 
 	_, err := handler(tenant.WithTenantID(context.Background(), "acme"), mcp.CallToolRequest{})
 	var toolErr *ToolError
@@ -115,6 +119,48 @@ func TestRoleReconcileAllTenantsTool_RefusesTenantCaller(t *testing.T) {
 	var refused *tenant.PlatformOperatorRequiredError
 	if !errors.As(err, &refused) {
 		t.Fatalf("err = %v; want PlatformOperatorRequiredError", err)
+	}
+}
+
+// TestRoleReconcileAllTenantsTool_SOExclusive proves the all-tenant tool is
+// SO-exclusive under strict separation: the system Admin, which holds
+// roles:reconcile_all, is refused, and so is a system SO still holding
+// admin; a separate system SO runs it. In the standard posture the system
+// Admin runs it as before.
+func TestRoleReconcileAllTenantsTool_SOExclusive(t *testing.T) {
+	admin := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+	so := role.SystemRoleID(tenantid.System, role.RoleNameSO)
+	tests := []struct {
+		name    string
+		strict  bool
+		roles   []string
+		wantErr func(error) bool
+	}{
+		{name: "strict: separate SO", strict: true, roles: []string{so}},
+		{name: "strict: system admin", strict: true, roles: []string{admin},
+			wantErr: func(err error) bool { var e *authmw.SORoleRequiredError; return errors.As(err, &e) }},
+		{name: "strict: SO holding admin", strict: true, roles: []string{admin, so},
+			wantErr: func(err error) bool { var e *authmw.SORoleConflictError; return errors.As(err, &e) }},
+		{name: "standard: system admin", roles: []string{admin}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roles := authtest.BindingRoles(t)
+			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(tt.strict))
+			handler := handleRoleReconcileAllTenants(roles, liveMCPTenants(t, authtest.BindingTenant), mw)
+			id := &auth.Identity{Subject: "operator", TenantID: tenantid.System, Roles: tt.roles}
+			ctx := tenant.WithTenantID(auth.WithIdentity(context.Background(), id), tenantid.System)
+			_, err := handler(ctx, mcp.CallToolRequest{})
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				return
+			}
+			if !tt.wantErr(err) {
+				t.Fatalf("unexpected refusal %T: %v", err, err)
+			}
+		})
 	}
 }
 

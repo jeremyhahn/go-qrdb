@@ -21,10 +21,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -120,6 +122,51 @@ func TestEmbeddedSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestEmbeddedSOExclusive_ReconcileAllTenants proves the all-tenant
+// reconcile is SO-exclusive under strict separation: the system Admin, which
+// holds roles:reconcile_all, is refused, and so is a system SO still holding
+// admin; a separate system SO runs it. In the standard posture the system
+// Admin runs it as before.
+func TestEmbeddedSOExclusive_ReconcileAllTenants(t *testing.T) {
+	admin := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+	so := role.SystemRoleID(tenantid.System, role.RoleNameSO)
+	tests := []struct {
+		name    string
+		strict  bool
+		roles   []string
+		wantErr func(error) bool
+	}{
+		{name: "strict: separate SO", strict: true, roles: []string{so}},
+		{name: "strict: system admin", strict: true, roles: []string{admin}, wantErr: errorIs[*authmw.SORoleRequiredError]},
+		{name: "strict: SO holding admin", strict: true, roles: []string{admin, so}, wantErr: errorIs[*authmw.SORoleConflictError]},
+		{name: "standard: system admin", roles: []string{admin}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roles := authtest.BindingRoles(t)
+			opts := []authmw.Option{authmw.WithRoleResolver(roles), authmw.WithStrictSeparation(tt.strict)}
+			tr, err := New(newMockKVService(), &mockAdminService{},
+				WithRoleService(roles),
+				WithTenantService(liveEmbeddedTenants(t, authtest.BindingTenant)),
+				WithAuthMiddleware(authmw.New(rbac.New(roles), opts...)),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, err = tr.ReconcileBuiltInRolesAllTenants(roleAssignmentIdentityCtx(tenantid.System, tt.roles...))
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				return
+			}
+			if !tt.wantErr(err) {
+				t.Fatalf("unexpected refusal %T: %v", err, err)
+			}
+		})
 	}
 }
 

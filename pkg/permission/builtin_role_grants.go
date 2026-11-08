@@ -71,6 +71,11 @@ func registerSOGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// Cross-tenant built-in role convergence -- only effective for the
+		// system-tenant SO. Under strict separation it runs only as a
+		// separate system SO, as the single-tenant reconcile does; the
+		// system Admin holds it too, for the standard posture.
+		RolesReconcileAll,
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
