@@ -1081,8 +1081,8 @@ func TestCovCeremonyCANotConfiguredError_Error(t *testing.T) {
 func TestCovTenantTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
 	tools := tenantTools(svc, &fakeTenantOnboarding{tenants: svc}, nil)
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(tools))
+	if len(tools) != 11 {
+		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
 }
 

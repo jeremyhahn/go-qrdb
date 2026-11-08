@@ -192,6 +192,8 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_tenant_create":                      permission.TenantsCreate,
 	"qrdb_tenant_get":                         permission.TenantsRead,
 	"qrdb_tenant_update":                      permission.TenantsUpdate,
+	"qrdb_cluster_isolation_policy_get":       permission.TenantsRead,
+	"qrdb_cluster_isolation_policy_set":       permission.TenantsUpdateCross,
 	"qrdb_tenant_update_quotas":               permission.TenantsSetQuotas,
 	"qrdb_tenant_update_entitlements":         permission.TenantsSetEntitlements,
 	"qrdb_tenant_list_deleted":                permission.TenantsListDeleted,
