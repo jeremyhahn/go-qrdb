@@ -13,6 +13,17 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **A transaction branch can read** (#1211). A `get` or `range` op in a
+  transaction's success or failure branch is answered inside the transaction:
+  its `OpResponse` carries the key-values with their create and mod revision,
+  version and lease, and `count`, at the transaction's own revision, seeing the
+  writes staged before it in the same branch. A read-then-compare-and-set can
+  read back what it wrote, and a failed compare can report what beat it, in
+  one round trip. Through REST, gRPC, QUIC, MCP, Unix, embedded and `qrdb tx`.
+  Reads need an MVCC state machine, and a transaction carrying one is refused
+  whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
+  feature `transaction-reads` is active on every member. A branch that only
+  reads does not advance the revision.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as
@@ -249,6 +260,17 @@ are not reconstructed here — their history is in the git log.
   closes the host the watches read through.
 
 ### Fixed
+
+- **An unknown op type in a transaction or batch is refused, not applied as
+  a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
+  and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
+  with the op's value; the batch service dropped an op type it did not know
+  while applying the rest. Each is now refused before anything is proposed:
+  REST answers 400 (`rest.UnknownOpTypeError`), MCP a tool error
+  (`mcp.UnknownOpTypeError`), and gRPC and QUIC, which now pass the value as
+  `service.OpUnknown`, `INVALID_ARGUMENT`
+  (`service.UnsupportedTransactionOpError`, which a batch now also returns for
+  an unmapped type).
 
 - **A CI stage with no network waits for its multicast configurator's own readiness marker, and concurrent cache trims on a host run one at a time** (#1275): `scripts/in-toolchain-image.sh` starts the stage's `MULTICAST_WAIT` clock when the configurator writes `started.<n>` (its attempt n) on a marker volume and runs the stage once a `ready` marker and the route are there, retrying a failed configurator once with clocks of its own, so a daemon slow to start the configurator no longer exits the stage first, and the wait for `started` has its own bound, `MULTICAST_START_WAIT` (240 s: two configurator runs, each behind one 120 s cache trim), so a stage whose launcher died before the configurator ran exits 1 instead of waiting forever; the marker volume is labelled `qrdb.ci.multicast-marker=1`, and `scripts/reap-stale-ci-stacks.sh` removes one no container mounts; `scripts/trim-ci-caches.sh` takes a per-host lock in the runner's tool cache by polling `flock -n` (BusyBox `flock` has no `-w`) and skips its trim with one line when another job holds it past `CI_CACHE_LOCK_WAIT` seconds.
 - **A slow fsync no longer holds MVCC reads** (#1287): `MVCCStateMachine.Update` commits its batch under the read lock and takes the write lock only to publish it, in apply order; `Lookup` returns ctx's error, wrapped in `ReadError`, when ctx ends while it waits, and `Sync` takes the read lock. A batch that changes the index catalog, the lessor's tables, the compaction floors or an audit chain's head in place (an index create or drop, a lease grant, revoke, keep-alive or checkpoint, a compaction, an audit append or prune, any of those inside a guarded write, or any write while a lease exists) is still built and published under the write lock, so a reader never sees that state ahead of the published view (`MVCCEngine.RequiresExclusiveApply`, `docs/key-value/engineering.md`).
