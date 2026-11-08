@@ -560,6 +560,15 @@ key, never shared between instances.
   `Engine` no handle: `New` destroys both handles before it returns, on
   success and on every error path, including a key handle already read when
   the secret read fails (SPEC row `object-storage-credential-handle`).
+  `TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem`
+  proves the consumption end to end: a qrdbd built with `awss3` talks to an
+  in-test S3 endpoint that admits a request only when its SigV4 signature
+  recomputes with the key and secret generated for the run, and neither
+  value then appears in the node's output, its data or configuration
+  directory, or the bucket. The s3 provider currently answers a missing
+  object with the SDK's `NoSuchKey` error rather than go-objstore's
+  `ErrKeyNotFound`, so the engine cannot yet open an empty S3 bucket; the
+  test stops the node once a signed request has verified.
 
 ### Configuration (target)
 
