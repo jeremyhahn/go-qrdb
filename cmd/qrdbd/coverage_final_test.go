@@ -154,8 +154,8 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 		context.Background(), node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		auth.MTLSBindingEnrolled, nil, nil, nil,
-	)
+		auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+
 	require.NoError(t, err)
 }
 
@@ -194,8 +194,8 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 		ctx, node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		auth.MTLSBindingEnrolled, nil, nil, nil,
-	)
+		auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+
 	// We expect an error (waitForAdminReplication times out).
 	if err != nil {
 		t.Logf("runFirstBoot returned (acceptable): %v", err)

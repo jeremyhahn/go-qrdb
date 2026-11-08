@@ -119,7 +119,7 @@ var systemSOInputs = []string{"so_username", "so_csr_pem or so_cert_pem", "so_pi
 func checkSystemSO(deps Dependencies) error {
 	so := deps.SO
 	if so == nil {
-		if deps.SeparationOfDuties {
+		if deps.SeparationOfDuties && !deps.SOEnrolled {
 			return &SystemSORequiredError{Missing: systemSOInputs}
 		}
 		return nil

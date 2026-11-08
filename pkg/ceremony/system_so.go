@@ -34,8 +34,11 @@ import (
 // another node, commits the record through
 // auth.SOAuthenticator.CommitSOPINRecord.
 type IssuedSystemSO struct {
-	Username  string
-	CertPEM   []byte
+	Username string
+	CertPEM  []byte
+	// ChainPEM is SOChainPEM for an adopted certificate, which first boot
+	// verifies again; empty for a signed one.
+	ChainPEM  []byte
 	PINRecord string
 }
 
@@ -47,6 +50,7 @@ func (s *IssuedSystemSO) clone() *IssuedSystemSO {
 	return &IssuedSystemSO{
 		Username:  s.Username,
 		CertPEM:   bytes.Clone(s.CertPEM),
+		ChainPEM:  bytes.Clone(s.ChainPEM),
 		PINRecord: s.PINRecord,
 	}
 }
@@ -131,12 +135,13 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 	if !systemSORequested(opts) {
 		return nil, nil
 	}
-	var certPEM []byte
+	var certPEM, chainPEM []byte
 	if len(opts.SOCertPEM) > 0 {
 		if _, err := adoptSystemSOCert(opts, caBundlePEM, trustDomain); err != nil {
 			return nil, err
 		}
 		certPEM = bytes.Clone(opts.SOCertPEM)
+		chainPEM = bytes.Clone(opts.SOChainPEM)
 	} else {
 		signed, err := signAdminLoginCSR(ctx, ca, adminLoginSignCSROptions(tenantid.System, opts.SOUsername, trustDomain), opts.SOCSRPEM)
 		if err != nil {
@@ -154,7 +159,7 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 	if err != nil {
 		return nil, &SystemSORejectedError{Cause: err}
 	}
-	return &IssuedSystemSO{Username: opts.SOUsername, CertPEM: certPEM, PINRecord: record}, nil
+	return &IssuedSystemSO{Username: opts.SOUsername, CertPEM: certPEM, ChainPEM: chainPEM, PINRecord: record}, nil
 }
 
 // sameCertKey reports whether two PEM certificates carry the same public

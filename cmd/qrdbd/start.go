@@ -4349,23 +4349,16 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// boot after an in-process recycle or unseal reaches here with the same
 	// core and its certificate (go-qrdb#662). A write that must run waits
 	// out an election (service.LeadershipTransient) rather than exiting.
+	//
+	// The system SO the ceremony issued (go-qrdb#1128) is recorded the same
+	// way, and FIRST: both records are on this one shard, so a replica that
+	// sees the admin's record -- which Phase 2.5 of runFirstBoot waits for
+	// -- sees the SO's too. The record carries the SO PIN only as its hash.
+	if err := firstboot.WriteIssuedSystemSOIfAny(ctx, ceremonyCoreSvc, pendingAdminStore, service.LeadershipTransient); err != nil {
+		return nil, &AuthBootstrapError{Step: "pending system SO", Err: err}
+	}
 	if err := firstboot.WriteIssuedAdminCertIfAny(ctx, ceremonyCoreSvc, pendingAdminStore, service.LeadershipTransient); err != nil {
 		return nil, &AuthBootstrapError{Step: "pending admin credential", Err: err}
-	}
-
-	// First-boot: create the system tenant, register built-in roles, and
-	// create the admin user with the canonical Admin@system grant. The
-	// system-tenant rule in pkg/auth/rbac promotes that single grant to
-	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM); err != nil {
-		return nil, err
-	}
-
-	// The binding committed (or the admin already held one): the pending
-	// record, if any, has served its purpose. Best-effort -- the binding
-	// already succeeded, so a failure here is logged, not fatal.
-	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
-		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
 	}
 
 	// Create runtime stores backed by linearizable SyncRead for management
@@ -4389,10 +4382,46 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// ran against bootStore above answers identically here — the state
 	// machine's transaction support is a property of the shard, not of
 	// which KVServicer consistency mode wraps it.
+	//
+	// Built before first boot because the system SO's PIN record is
+	// committed into it: it is the store the request-time SO authenticator
+	// (bootstrapAuthEnforcement) verifies SO PINs against.
 	runtimeStore, gerr := newGuardedKVServiceAdapter(runtimeKVSvc, txSvc, nil, nil)
 	if gerr != nil {
 		return nil, &AuthBootstrapError{Step: "runtime store adapter", Err: gerr}
 	}
+	// With no audit sink (only compositions that run no ceremony) there is
+	// no SO PIN seam either, and first boot refuses any SO it is handed
+	// with *firstboot.MissingSOSeamError.
+	var bootSOPINs firstboot.SOPINSetter
+	if auditLogger != nil {
+		soAuth, err := auth.NewSOAuthenticator(runtimeStore, auditLogger, slog.Default())
+		if err != nil {
+			return nil, &AuthBootstrapError{Step: "first-boot SO PIN store", Err: err}
+		}
+		bootSOPINs = soAuth
+	}
+
+	// First-boot: create the system tenant, register built-in roles, and
+	// create the admin user with the canonical Admin@system grant. The
+	// system-tenant rule in pkg/auth/rbac promotes that single grant to
+	// cross-tenant authority. Idempotent across daemon restarts.
+	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM, bootSOPINs); err != nil {
+		return nil, err
+	}
+
+	// The binding committed (or the admin already held one): the pending
+	// record, if any, has served its purpose. Best-effort -- the binding
+	// already succeeded, so a failure here is logged, not fatal.
+	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
+		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
+	}
+	// Likewise the system SO's: once consumed, a later strict first boot
+	// reads it as already enrolled (firstboot.SystemSOConsumed).
+	if err := firstboot.ClearPendingSystemSO(ctx, pendingAdminStore); err != nil {
+		slog.Warn("first-boot: failed to clear the pending system SO record", slog.Any("error", err))
+	}
+
 	systemStore, err := kvstore.NewNamespacedKVStore(
 		runtimeStore, tenant.IdentityNamespace(tenantid.System))
 	if err != nil {
@@ -4789,7 +4818,7 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte) error {
+func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soPINs firstboot.SOPINSetter) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
@@ -4828,8 +4857,15 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	actx, cancelLookup := context.WithTimeout(ctx, server.StartupReadAttemptTimeout)
 	existingAdmin, ok := adminExists(actx, userSvc, tenantid.System)
 	cancelLookup()
+	// A system SO the ceremony recorded and no first boot has enrolled yet
+	// (go-qrdb#1128) keeps the fast path below from skipping Phase 3: the
+	// admin may be bound while the SO is not.
+	pendingSO, err := firstboot.PendingSystemSO(ctx, pendingAdminCertStore)
+	if err != nil {
+		return err
+	}
 	if ok {
-		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" {
+		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" && pendingSO == nil {
 			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
 		}
@@ -4871,8 +4907,16 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 			`continuing without one -- the node will boot into "awaiting admin credential"`,
 			slog.String("error", err.Error()))
 	}
+	// The admin's record is resolved; the SO's, written before it, has
+	// reached this replica too. Read it again: Phase 2.5 may have waited.
+	if pendingSO == nil {
+		if pendingSO, err = firstboot.PendingSystemSO(ctx, pendingAdminCertStore); err != nil {
+			return err
+		}
+	}
+	soEnrolled := pendingSO == nil && firstboot.SystemSOConsumed(ctx, pendingAdminCertStore)
 	var adminCertPool *x509.CertPool
-	if len(adminCertPEM) > 0 {
+	if len(adminCertPEM) > 0 || pendingSO != nil {
 		switch {
 		case ceremonyCA != nil:
 			if caBundle, caErr := ceremonyCA.CABundle(); caErr == nil {
@@ -4913,6 +4957,8 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 				MTLSBindingPolicy:  mtlsBindingPolicy,
 				AdminCertPEM:       adminCertPEM,
 				AdminCertPool:      adminCertPool,
+				SO:                 pendingSO,
+				SOEnrolled:         soEnrolled,
 			}, bootstrap.Dependencies{
 				Tenants:      tenantSvc,
 				Users:        userSvc,
@@ -4920,6 +4966,7 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 				RoleResolver: roleSvc,
 				Binder:       adminBinder,
 				Barriers:     barriers,
+				SOPINs:       soPINs,
 				Logger:       slog.Default(),
 			})
 			return bsErr
@@ -4938,6 +4985,9 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 			AdminCertPEM:       adminCertPEM,
 			AdminCertPool:      adminCertPool,
 			Binder:             adminBinder,
+			SO:                 pendingSO,
+			SOEnrolled:         soEnrolled,
+			SOPINs:             soPINs,
 		})
 		return fbErr
 	}

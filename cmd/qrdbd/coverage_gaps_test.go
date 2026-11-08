@@ -242,21 +242,18 @@ func TestRunFirstBoot_NonLeaderFailurePropagatesItsCause(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // leader ready
-	err := runFirstBoot(ctx, node, testLeaderWait, 1,
-		&mockUserServicer{
-			getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-				return nil, &user.UserNotFoundError{Lookup: "admin"}
-			},
-			createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
-				return nil, sentinel
-			},
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
 		},
-		&mockRoleServicer{
-			createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
-				return nil, sentinel
-			},
+		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+			return nil, sentinel
 		},
-		&mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	}, &mockRoleServicer{
+		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+			return nil, sentinel
+		},
+	}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil)
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel,
@@ -285,21 +282,18 @@ func TestRunFirstBoot_NotLeaderFallsToReplicationWait(t *testing.T) {
 			defer cancel()
 
 			node := &mockRaftNode{}
-			err := runFirstBoot(ctx, node, testLeaderWait, 1,
-				&mockUserServicer{
-					getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
-						return nil, &user.UserNotFoundError{Lookup: "admin"}
-					},
-					createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
-						return nil, notLeader
-					},
+			err := runFirstBoot(ctx, node, testLeaderWait, 1, &mockUserServicer{
+				getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+					return nil, &user.UserNotFoundError{Lookup: "admin"}
 				},
-				&mockRoleServicer{
-					createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
-						return nil, notLeader
-					},
+				createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+					return nil, notLeader
 				},
-				&mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+			}, &mockRoleServicer{
+				createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+					return nil, notLeader
+				},
+			}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil)
 
 			require.Error(t, err)
 			var abe *AuthBootstrapError

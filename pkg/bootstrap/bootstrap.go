@@ -292,6 +292,10 @@ type SystemConfig struct {
 	// admin. See firstboot.Dependencies.SO. The caller keeps SO.PIN and
 	// destroys it.
 	SO *firstboot.SOConfig
+
+	// SOEnrolled forwards firstboot.Dependencies.SOEnrolled: an earlier
+	// first boot enrolled the system SO, so strict needs no SO again.
+	SOEnrolled bool
 }
 
 // SystemResult reports what BootstrapSystem did: the system barrier strategy
@@ -413,6 +417,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		SeparationOfDuties: cfg.SeparationOfDuties,
 		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
 		SO:                 cfg.SO,
+		SOEnrolled:         cfg.SOEnrolled,
 		SOPINs:             deps.SOPINs,
 	})
 	if fbErr != nil {

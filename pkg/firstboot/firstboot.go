@@ -285,6 +285,12 @@ type Dependencies struct {
 	// caller that retries Initialize keeps it; the caller destroys it.
 	SO *SOConfig
 
+	// SOEnrolled reports that an earlier first boot already enrolled the
+	// system SO -- the composer read the ceremony's pending SO record as
+	// consumed (SystemSOConsumed). A strict boot with no SO is then a
+	// re-run, not a deployment without one, and is not refused.
+	SOEnrolled bool
+
 	// SOPINs commits the system SO's PIN. Required when SO is set.
 	SOPINs SOPINSetter
 

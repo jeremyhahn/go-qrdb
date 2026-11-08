@@ -236,6 +236,20 @@ func TestInitialize_StrictWithoutSORefusesBeforeAnyWrite(t *testing.T) {
 	}
 }
 
+// A strict re-run after an earlier first boot enrolled the SO (its pending
+// record consumed) needs no SO again and enrols none.
+func TestInitialize_StrictReRunAfterSOEnrolled(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.deps.SO = nil
+	h.deps.SOEnrolled = true
+	if _, err := Initialize(context.Background(), h.deps); err != nil {
+		t.Fatalf("Initialize(strict, SO enrolled earlier) = %v", err)
+	}
+	if len(h.users.creates) != 1 {
+		t.Fatalf("creates = %v, want the admin alone", h.users.creates)
+	}
+}
+
 func TestInitialize_StrictEnrolsSystemSO(t *testing.T) {
 	h := newSOHarness(t, true)
 	result, err := Initialize(context.Background(), h.deps)
