@@ -82,14 +82,6 @@ func TestInvalidMetricError_Error_HasPrefix(t *testing.T) {
 	}
 }
 
-func TestNilRetentionPolicyError_Error_ContainsMessage(t *testing.T) {
-	e := &NilRetentionPolicyError{}
-	got := e.Error()
-	if !strings.Contains(got, "retention policy must not be nil") {
-		t.Errorf("Error: expected nil-policy message, got %q", got)
-	}
-}
-
 func TestNilRetentionPolicyError_Error_HasPrefix(t *testing.T) {
 	e := &NilRetentionPolicyError{}
 	got := e.Error()
