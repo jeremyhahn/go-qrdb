@@ -13,9 +13,340 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 )
+
+func TestStorageBarrier_ConfigAccessor(t *testing.T) {
+	backend := NewMemoryBackend()
+	cfg := BarrierConfig{
+		RootKeyPath:  "test/root-key",
+		DeploymentID: 42,
+	}
+	b, err := NewStorageBarrier(slog.Default(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := b.Config()
+	if got.RootKeyPath != "test/root-key" {
+		t.Errorf("Config().RootKeyPath: got %q, want %q", got.RootKeyPath, "test/root-key")
+	}
+	if got.DeploymentID != 42 {
+		t.Errorf("Config().DeploymentID: got %d, want 42", got.DeploymentID)
+	}
+}
+
+func TestStorageBarrier_StrategiesAccessor(t *testing.T) {
+	backend := NewMemoryBackend()
+	sw := testSoftwareStrategy(t)
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, sw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	strats := b.Strategies()
+	if len(strats) != 1 {
+		t.Fatalf("Strategies: expected 1, got %d", len(strats))
+	}
+	if _, ok := strats[StrategyPassphrase]; !ok {
+		t.Error("expected software strategy in map")
+	}
+	// Verify it is a copy (modifying returned map does not affect barrier).
+	delete(strats, StrategyPassphrase)
+	strats2 := b.Strategies()
+	if len(strats2) != 1 {
+		t.Error("Strategies should return a copy; original was modified")
+	}
+}
+
+func TestStorageBarrier_LoggerAccessor(t *testing.T) {
+	backend := NewMemoryBackend()
+	logger := slog.Default()
+	b, err := NewStorageBarrier(logger, backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Logger() != logger {
+		t.Error("Logger() should return the logger passed to NewStorageBarrier")
+	}
+}
+
+func TestStorageBarrier_Scan_Success(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("test-password"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store some encrypted values.
+	if err := b.Put(ctx, "scan/a", []byte("value-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Put(ctx, "scan/b", []byte("value-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Put(ctx, "other/c", []byte("value-c")); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(map[string][]byte)
+	if err := b.Scan(ctx, "scan/", func(key string, value []byte) error {
+		result[key] = value
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("Scan: expected 2 entries, got %d", len(result))
+	}
+	if !bytes.Equal(result["scan/a"], []byte("value-a")) {
+		t.Errorf("Scan[scan/a]: expected %q, got %q", "value-a", result["scan/a"])
+	}
+	if !bytes.Equal(result["scan/b"], []byte("value-b")) {
+		t.Errorf("Scan[scan/b]: expected %q, got %q", "value-b", result["scan/b"])
+	}
+}
+
+func TestStorageBarrier_Scan_ErrSealed(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Barrier is sealed (not initialized).
+	err = b.Scan(ctx, "prefix/", func(_ string, _ []byte) error { return nil })
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("Scan sealed: got %v, want ErrSealed", err)
+	}
+}
+
+func TestMemoryBackend_Scan(t *testing.T) {
+	backend := NewMemoryBackend()
+	ctx := context.Background()
+
+	_ = backend.Put(ctx, "pfx/x", []byte("xval"))
+	_ = backend.Put(ctx, "pfx/y", []byte("yval"))
+	_ = backend.Put(ctx, "other/z", []byte("zval"))
+
+	result := make(map[string][]byte)
+	if err := backend.Scan(ctx, "pfx/", func(key string, value []byte) error {
+		result[key] = value
+		return nil
+	}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("Scan: expected 2 entries, got %d", len(result))
+	}
+	if !bytes.Equal(result["pfx/x"], []byte("xval")) {
+		t.Errorf("Scan[pfx/x]: expected xval, got %q", result["pfx/x"])
+	}
+	// Verify returned values are copies.
+	result["pfx/x"][0] = 0xFF
+	val, _ := backend.Get(ctx, "pfx/x")
+	if val[0] == 0xFF {
+		t.Error("Scan should return copies, not references")
+	}
+}
+
+func TestStorageBarrier_Put_EncryptError(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seal the EpochBarrier directly to make Encrypt fail
+	// while the StorageBarrier's state says unsealed.
+	_ = b.barrier.Seal()
+
+	err = b.Put(ctx, "key", []byte("value"))
+	if err == nil {
+		t.Fatal("expected error when encrypt fails")
+	}
+	var putErr *PutError
+	if !errors.As(err, &putErr) {
+		t.Fatalf("expected *PutError, got %T: %v", err, err)
+	}
+}
+
+// TestStorageBarrier_Encrypt_ErrSealed verifies Encrypt returns ErrSealed when
+// the barrier is sealed.
+func TestStorageBarrier_Encrypt_ErrSealed(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Barrier not initialized — sealed state.
+	_, err = b.Encrypt([]byte("data"))
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("Encrypt sealed: got %v, want ErrSealed", err)
+	}
+}
+
+// TestStorageBarrier_Decrypt_Success verifies an Encrypt/Decrypt round trip.
+func TestStorageBarrier_Decrypt_Success(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatal(err)
+	}
+
+	plaintext := []byte("secret data")
+	ciphertext, err := b.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	decrypted, err := b.Decrypt(ciphertext)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if string(decrypted) != string(plaintext) {
+		t.Errorf("Decrypt: got %q, want %q", decrypted, plaintext)
+	}
+}
+
+// TestStorageBarrier_Decrypt_ErrSealed verifies Decrypt returns ErrSealed when
+// the barrier is sealed.
+func TestStorageBarrier_Decrypt_ErrSealed(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = b.Decrypt([]byte("ciphertext"))
+	if !errors.Is(err, ErrSealed) {
+		t.Errorf("Decrypt sealed: got %v, want ErrSealed", err)
+	}
+}
+
+func TestNewStorageBarrier_WithOptionalConfig(t *testing.T) {
+	cfg := BarrierConfig{
+		RootKeyPath:       "test/root",
+		InvocationLimit:   2,
+		RotationThreshold: 0.8,
+	}
+	b, err := NewStorageBarrier(slog.Default(), NewMemoryBackend(), cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier with optional config: %v", err)
+	}
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The configured limit reaches the epoch barrier: past it, encryption
+	// under the current epoch is refused.
+	var lastErr error
+	for i := 0; i < 4 && lastErr == nil; i++ {
+		_, lastErr = b.Encrypt([]byte("payload"))
+	}
+	if !errors.Is(lastErr, ErrInvocationLimitExceeded) {
+		t.Fatalf("Encrypt past InvocationLimit = %v; want ErrInvocationLimitExceeded", lastErr)
+	}
+}
+
+// Unseal counts the current entries for the invocation counter; a List
+// failure there is logged and must not fail the unseal.
+func TestStorageBarrier_Unseal_ListErrorIsTolerated(t *testing.T) {
+	fb := newFailingBackend()
+	cfg := BarrierConfig{
+		RootKeyPath:     "test/root",
+		InvocationLimit: 1000,
+	}
+	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	fb.listErr = errors.New("list failed")
+	if err := b.Unseal(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatalf("Unseal with List error: %v", err)
+	}
+	if b.IsSealed() {
+		t.Error("expected barrier to be unsealed")
+	}
+}
+
+// TestStorageBarrier_NonceTracker verifies the barrier exposes the nonce
+// tracker of the epoch barrier it wraps.
+func TestStorageBarrier_NonceTracker(t *testing.T) {
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(slog.Default(), backend, BarrierConfig{
+		RootKeyPath: "test/root",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Initialize(context.Background(), MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := b.NonceTracker(), b.barrier.NonceTracker(); got != want {
+		t.Errorf("NonceTracker() = %v, want the epoch barrier's tracker %v", got, want)
+	}
+}
+
+// TestStorageBarrier_Scan_DecryptError verifies Scan reports a value that
+// fails to decrypt as a *GetError naming its key.
+func TestStorageBarrier_Scan_DecryptError(t *testing.T) {
+	backend := NewMemoryBackend()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), backend, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("pw"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write invalid ciphertext directly into the backend bypassing encryption.
+	_ = backend.Put(ctx, "scan/bad-data", []byte("not-valid-ciphertext"))
+
+	err = b.Scan(ctx, "scan/", func(string, []byte) error { return nil })
+	var getErr *GetError
+	if !errors.As(err, &getErr) || getErr.Key != "scan/bad-data" {
+		t.Fatalf("Scan over invalid ciphertext: got %v, want *GetError for scan/bad-data", err)
+	}
+}
 
 // mockAuditLogger captures audit events for test assertions.
 type mockAuditLogger struct {
