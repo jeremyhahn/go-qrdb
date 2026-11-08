@@ -22,8 +22,9 @@ are not reconstructed here — their history is in the git log.
   outlasting the bound no longer races the key wipe into a Pebble panic: the
   barrier still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError`
   naming the stores, logged and audited (`seal`, phase `drain`). A store holds
-  one lock-free lease per operation; the write-path benchmark puts it within
-  noise. Pebble is used as released.
+  one lock-free lease per operation; on the write-path benchmark
+  (`BenchmarkPebbleStorage_SetUnderEncfs`, `-count=6 -benchtime=2s`) a put
+  averages 615 ns with the lease and 611 ns without, about 4 ns per put. Pebble is used as released.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as
