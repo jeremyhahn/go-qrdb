@@ -28,6 +28,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
@@ -61,7 +62,21 @@ type PebbleVectorStorage struct {
 
 	// syncs times every write committed with pebble.Sync.
 	syncs *syncwatch.Observer
+
+	// seals registers the store with its barrier's quiesce gate: every
+	// write holds its lease (leased), so a Seal drains the store's writes
+	// in flight and refuses new ones with the typed sealed error.
+	seals *pebblestore.SealWatch
 }
+
+// barrierSealed reports whether err is a sealed barrier's refusal.
+func barrierSealed(err error) bool {
+	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed)
+}
+
+// leasedWriteHook, when set by a test, runs inside a write's quiesce lease
+// before the write reaches Pebble.
+var leasedWriteHook func()
 
 // StorageOption configures a PebbleVectorStorage instance.
 type StorageOption func(*pebble.Options)
@@ -107,8 +122,8 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 		pOpts.Logger = pebblestore.NewLogger(nil)
 	}
 
-	// Open the database
-	db, err := pebble.Open(config.DataDir, pOpts)
+	// Open the database, registered with its barrier's quiesce gate.
+	db, seals, err := pebblestore.Open(config.DataDir, pOpts, barrierSealed)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +142,13 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 		readSem:      readSem,
 		writeSem:     writeSem,
 		syncs:        syncwatch.ForStorage(syncwatch.BackendPebble, syncwatch.WithAttrs(slog.String("dir", config.DataDir))),
+		seals:        seals,
 	}
 
 	// Load existing namespaces and initialize ID allocators
 	if err := s.loadNamespaces(); err != nil {
 		_ = db.Close() //nolint:gosec // G104: Error deliberately ignored - cleanup during error path
+		seals.Close()
 		return nil, err
 	}
 
@@ -143,13 +160,32 @@ func NewPebbleVectorStorage(config *Config, logger interfaces.Logger, opts ...St
 // durably runs write with pebble.Sync when the store syncs writes, timing it
 // through s.syncs, and with pebble.NoSync otherwise.
 func (s *PebbleVectorStorage) durably(write func(*pebble.WriteOptions) error) error {
-	if !s.config.SyncWrites {
-		return write(pebble.NoSync)
+	return s.leased(func() error {
+		if !s.config.SyncWrites {
+			return write(pebble.NoSync)
+		}
+		start := s.syncs.Now()
+		err := write(pebble.Sync)
+		s.syncs.Since(start)
+		return err
+	})
+}
+
+// leased runs write inside the store's quiesce lease. A write refused by a
+// sealing or sealed barrier fails with a *pebblestore.SealedError before it
+// reaches Pebble; an admitted write holds the lease until it returns, so a
+// Seal waits for it before the key leaves memory.
+func (s *PebbleVectorStorage) leased(write func() error) error {
+	if s.seals != nil {
+		if err := s.seals.Admit(); err != nil {
+			return err
+		}
+		defer s.seals.Done()
 	}
-	start := s.syncs.Now()
-	err := write(pebble.Sync)
-	s.syncs.Since(start)
-	return err
+	if leasedWriteHook != nil {
+		leasedWriteHook()
+	}
+	return write()
 }
 
 // newBatch is a batch on s whose Commit runs through s.durably, so a store
@@ -1083,7 +1119,7 @@ func (s *PebbleVectorStorage) NextID(namespace string) (uint64, error) {
 
 	// Persist ID sequence synchronously (NoSync is still fast)
 	seqKey := schema.EncodeIDSequenceKey(namespace)
-	if err := s.db.Set(seqKey, encodeUint64(newID), pebble.NoSync); err != nil {
+	if err := s.leased(func() error { return s.db.Set(seqKey, encodeUint64(newID), pebble.NoSync) }); err != nil {
 		// Log but don't fail - ID is already allocated in memory
 		s.logger.Warnf("Failed to persist ID sequence for namespace %s: %v", namespace, err)
 	}
@@ -1121,7 +1157,7 @@ func (s *PebbleVectorStorage) BatchAllocateIDs(namespace string, count int) ([]u
 
 	// Persist ID sequence synchronously (NoSync is still fast)
 	seqKey := schema.EncodeIDSequenceKey(namespace)
-	if err := s.db.Set(seqKey, encodeUint64(startID), pebble.NoSync); err != nil {
+	if err := s.leased(func() error { return s.db.Set(seqKey, encodeUint64(startID), pebble.NoSync) }); err != nil {
 		// Log but don't fail - IDs are already allocated in memory
 		s.logger.Warnf("Failed to persist ID sequence for namespace %s: %v", namespace, err)
 	}
@@ -1143,7 +1179,8 @@ func (s *PebbleVectorStorage) Compact(ctx context.Context, namespace string) err
 
 	s.logger.Infof("Starting compaction for namespace: %s", namespace)
 
-	if err := s.db.Compact(ctx, prefix, end, true); err != nil {
+	// A compaction flushes an overlapping memtable first, rotating the WAL.
+	if err := s.leased(func() error { return s.db.Compact(ctx, prefix, end, true) }); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
@@ -1242,6 +1279,9 @@ func (s *PebbleVectorStorage) Close() error {
 
 	s.logger.Info("Closing vector storage")
 
+	// The store leaves its barrier's quiesce gate whether or not Pebble
+	// closes cleanly: it takes no further writes either way.
+	defer s.seals.Close()
 	if err := s.db.Close(); err != nil {
 		return err
 	}
