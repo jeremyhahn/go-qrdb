@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -776,6 +777,21 @@ func (f *RaftBackendFactory) RefuseIfDropping(tenantID, db string) error {
 // single-node path is used unchanged (Phase-4b compatibility).
 func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
 	return f.services(ctx, tenantID, db, true)
+}
+
+// HomeGroup names the Raft propose target of tenantID's home group: the
+// factory's feature-gated host adapter and the shard of the tenant's home
+// database (database.TenantHomeName). The services lookup carries the
+// sealed-barrier refusal, so a sealed tenant's home group is never named.
+func (f *RaftBackendFactory) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	svcs, err := f.Services(ctx, tenantID, database.TenantHomeName)
+	if err != nil {
+		return nil, 0, err
+	}
+	if f.adapter == nil {
+		return nil, 0, fmt.Errorf("server: tenant %q home group: raft host not started", tenantID)
+	}
+	return f.adapter, svcs.ShardID, nil
 }
 
 // FenceServices returns the same service set Services does, WITHOUT

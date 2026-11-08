@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -49,6 +50,10 @@ type TenantHomeServices interface {
 	// IsShardJoining reports whether this node's replica of shardID is still
 	// in its join window: added after the group formed and not yet caught up.
 	IsShardJoining(shardID uint64) bool
+
+	// HomeGroup names the Raft propose target of tenantID's home group:
+	// the gated host and the shard of its database.TenantHomeName database.
+	HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error)
 }
 
 // TenantHomeCatchingUpError is returned by HomeStore while this node's replica
@@ -225,8 +230,8 @@ func (h *TenantHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.K
 	if err != nil {
 		return nil, err
 	}
-	if h.services.IsShardJoining(svcs.ShardID) {
-		return nil, &TenantHomeCatchingUpError{TenantID: tenantID}
+	if err := h.caughtUp(tenantID, svcs.ShardID); err != nil {
+		return nil, err
 	}
 	if cached, ok := h.stores.Load(tenantID); ok {
 		if entry, ok := cached.(*homeStoreEntry); ok && entry.services == svcs {
@@ -239,6 +244,30 @@ func (h *TenantHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.K
 	}
 	h.stores.Store(tenantID, &homeStoreEntry{services: svcs, store: store})
 	return store, nil
+}
+
+// HomeGroup returns the Raft propose target of tenantID's home group, the
+// group its audit trail and verifiable logs apply in. It refuses as
+// HomeStore does: a sealed tenant through the services lookup, and a home
+// replica still catching up with *TenantHomeCatchingUpError.
+func (h *TenantHomes) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
+	host, shardID, err := h.services.HomeGroup(ctx, tenantID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := h.caughtUp(tenantID, shardID); err != nil {
+		return nil, 0, err
+	}
+	return host, shardID, nil
+}
+
+// caughtUp refuses a home whose local replica of shardID is still in its
+// join window: reads there could miss writes the group already committed.
+func (h *TenantHomes) caughtUp(tenantID string, shardID uint64) error {
+	if h.services.IsShardJoining(shardID) {
+		return &TenantHomeCatchingUpError{TenantID: tenantID}
+	}
+	return nil
 }
 
 // EnsureHome implements tenant.HomeStoreSource. It places the home group
