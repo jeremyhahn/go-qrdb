@@ -165,24 +165,31 @@ chunk count are bounded by `import_session.max_session_bytes` /
 `max_chunks_per_session` (see [engineering.md](engineering.md)), and a
 tenant's concurrent sessions by `import_session.max_sessions_per_tenant`.
 
-A transaction's reads are bounded too. The key and value bytes every get
-and range of the chosen branch answers, summed over the branch, may not
-exceed 4 MiB, so the whole response fits one reply. The bound is fixed, not
+A transaction's reply is bounded too. The whole encoded reply of the
+chosen branch may not exceed 4 MiB (`service.MaxReplyBytes`), the largest
+reply one node relays to another: a transaction forwarded from a node that
+holds no replica comes back through the gRPC forwarder, whose receive limit
+is the same 4 MiB. The reply is charged its framing -- 13 bytes, plus 19 for
+every op of the branch, reads and writes alike -- and, for every entry a get
+or range answers, 62 bytes plus the entry's key and value. These are the
+largest the protobuf `TransactionResponse` fields can encode to, so the
+charge is never less than the encoded reply. The bound is fixed, not
 configurable: every replica applies the transaction and must decide it the
 same way. It is checked before any write of the branch is applied, and each
-read is charged its bytes plus every earlier put of the branch that falls in
-its range -- an upper bound, so a branch that overwrites a key it reads can
-be refused slightly short of 4 MiB. A range stops scanning at the key that
-crosses the bound. A branch over it is refused whole with
-`TxnReadResultTooLargeError`, which names the limit and the bytes read: none
-of its writes is applied, the revision does not move, and the group keeps
-applying the entries after it. Read fewer or smaller keys per transaction,
-or page a large range outside one.
+read is charged its entries plus every earlier put of the branch that falls
+in its range -- an upper bound, so a branch that overwrites a key it reads
+can be refused slightly short of 4 MiB. A range stops scanning at the entry
+that crosses the bound. A branch over it is refused whole with
+`TxnReadResultTooLargeError`, which names the limit and the reply bytes
+charged when it was crossed: none of its writes is applied, the revision
+does not move, and the group keeps applying the entries after it. Read
+fewer or smaller keys, or use fewer ops, per transaction, or page a large
+range outside one.
 
 ## Pagination
 
 No capability on this page returns an unbounded result set: a
-transaction's reads are bounded at 4 MiB (see "Payload limits"), and an
+transaction's reply is bounded at 4 MiB (see "Payload limits"), and an
 import's errors are bounded by its rows. No pagination applies.
 
 ## Versioning

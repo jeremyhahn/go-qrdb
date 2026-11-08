@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -44,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // WithReplicaForwarding makes this listener forward a unary request it

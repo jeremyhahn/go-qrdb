@@ -1109,10 +1109,10 @@ func (e *ImportProposalTooLargeError) Error() string {
 		strconv.Itoa(e.Max) + " bytes; split the import into smaller, non-transactional batches"
 }
 
-// TxnReadResultTooLargeError is returned when the reads of a transaction's
-// executed branch would answer more than Limit key and value bytes. A
-// transaction's reads run inside the replicated apply and travel back in one
-// reply, so the bound is checked before any write of the branch is staged:
+// TxnReadResultTooLargeError is returned when the reply of a transaction's
+// executed branch -- its framing and every entry its reads answer -- could
+// encode to more than Limit bytes (MaxReplyBytes). A transaction's reads run
+// inside the replicated apply and travel back in one reply, so the bound is checked before any write of the branch is staged:
 // the transaction is refused whole, nothing is applied, and the group keeps
 // applying. Read is the byte count at which the bound was crossed; it is a
 // lower bound on what the reads would have answered, never the full size.
@@ -1123,7 +1123,7 @@ type TxnReadResultTooLargeError struct {
 
 // Error returns a human-readable description.
 func (e *TxnReadResultTooLargeError) Error() string {
-	return "service: transaction reads answer at least " + strconv.FormatInt(e.Read, 10) +
+	return "service: transaction reply is at least " + strconv.FormatInt(e.Read, 10) +
 		" bytes, past the limit of " + strconv.FormatInt(e.Limit, 10) +
 		" bytes; read fewer or smaller keys per transaction"
 }

@@ -263,7 +263,7 @@ func DecodeTxnReadRefusal(data []byte) (limit, read int64, ok bool) {
 // txnReadRefusalMessage renders a transaction-read refusal as the message a
 // generic DecodeAppError caller reads.
 func txnReadRefusalMessage(limit, read int64) string {
-	return "transaction reads answer at least " + strconv.FormatInt(read, 10) +
+	return "transaction reply is at least " + strconv.FormatInt(read, 10) +
 		" bytes, past the limit of " + strconv.FormatInt(limit, 10) + " bytes"
 }
 
