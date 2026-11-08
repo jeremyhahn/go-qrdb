@@ -31,7 +31,6 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
@@ -192,10 +191,7 @@ func (f *replicaForwarder) forward(ctx context.Context, req mcpgo.CallToolReques
 // call may be made again.
 func (f *replicaForwarder) call(ctx context.Context, endpoint string, caller *auth.Identity, req mcpgo.CallToolRequest) (res *mcpgo.CallToolResult, sent bool, err error) {
 	rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
-	cli, err := mcpclient.NewStreamableHttpClient("https://"+endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
-	if err != nil {
-		return nil, false, err
-	}
+	cli := mcpclient.NewClient(newForwardTransport("https://"+endpoint+"/mcp", rt))
 	defer func() { _ = cli.Close() }()
 	if err := cli.Start(ctx); err != nil {
 		return nil, false, err
@@ -250,11 +246,7 @@ func (f *replicaForwarder) forwardToLeader(ctx context.Context, req mcpgo.CallTo
 	}
 
 	rt := &onBehalfTransport{base: f.base, caller: caller, key: f.key, nodeID: f.nodeID}
-	cli, err := mcpclient.NewStreamableHttpClient("https://"+endpoint+"/mcp", mcptransport.WithHTTPBasicClient(&http.Client{Transport: rt}))
-	if err != nil {
-		slog.Warn("admin forwarding: could not build a client for the leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
-		return nil, nil, false
-	}
+	cli := mcpclient.NewClient(newForwardTransport("https://"+endpoint+"/mcp", rt))
 	defer func() { _ = cli.Close() }()
 	if err := cli.Start(ctx); err != nil {
 		slog.Warn("admin forwarding: could not connect to the leader", "leader_raft_addr", leaderAddr, "endpoint", endpoint, "error", err)
