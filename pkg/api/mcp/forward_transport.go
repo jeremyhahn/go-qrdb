@@ -20,7 +20,7 @@ import (
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/mcphttp"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // errForwardRedirect is the forward's answer to any 3xx: every request
