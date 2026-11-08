@@ -22,12 +22,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // Fake object-storage credential material: never a real key.
@@ -55,10 +60,19 @@ func writeObjstoreCredentialFile(t *testing.T, dir, name, value string, mode os.
 func writeObjstoreModeConfig(t *testing.T, objstore string) string {
 	t.Helper()
 	dir := t.TempDir()
-	body := fmt.Sprintf("seal:\n  enabled: true\n  strategy: passphrase\n"+
-		"databases:\n  - name: \"default\"\n    backend: \"objstore\"\n"+
-		"storage:\n  objstore:\n    provider: local\n    settings:\n      path: %q\n%s",
-		filepath.Join(dir, "bucket"), objstore)
+	return writeObjstoreProviderConfig(t, dir, fmt.Sprintf(
+		"    provider: local\n    settings:\n      path: %q\n", filepath.Join(dir, "bucket")), objstore)
+}
+
+// writeObjstoreProviderConfig writes, into dir, a standalone configuration
+// whose default database is the objstore backend; provider is the YAML of
+// the provider and its settings under storage.objstore, and objstore the
+// YAML appended after it.
+func writeObjstoreProviderConfig(t *testing.T, dir, provider, objstore string) string {
+	t.Helper()
+	body := "seal:\n  enabled: true\n  strategy: passphrase\n" +
+		"databases:\n  - name: \"default\"\n    backend: \"objstore\"\n" +
+		"storage:\n  objstore:\n" + provider + objstore
 	path := filepath.Join(dir, "qrdb.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -159,23 +173,11 @@ func randomObjstoreCredential(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// TestObjstoreCredentials_NeverEchoesTheKeyOrSecret boots qrdbd with key and
-// secret files generated at test time and proves neither value reaches the
-// node's output, the barrier replies' output, or any file the node writes
-// under its data directory or the provider's bucket: the credential crosses
-// the seam only as a protected-memory handle.
-func TestObjstoreCredentials_NeverEchoesTheKeyOrSecret(t *testing.T) {
-	bin := buildBinary(t)
+// startObjstoreCredentialNode boots qrdbd from bin with cfg and dataDir and
+// initializes and unseals its barrier, which opens the objstore backend.
+func startObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf) {
+	t.Helper()
 	ca := generateTestCA(t)
-	key := randomObjstoreCredential(t)
-	secret := randomObjstoreCredential(t)
-	secrets := t.TempDir()
-	keyFile := writeObjstoreCredentialFile(t, secrets, "access-key", key, 0o600)
-	secretFile := writeObjstoreCredentialFile(t, secrets, "secret-key", secret, 0o600)
-	cfg := writeObjstoreModeConfig(t, fmt.Sprintf(
-		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
-	dataDir := t.TempDir()
-
 	restPort := allocateTCPPorts(t, 1)[0]
 	args := append([]string{
 		"start",
@@ -188,16 +190,21 @@ func TestObjstoreCredentials_NeverEchoesTheKeyOrSecret(t *testing.T) {
 	}, ca.tlsFlags(t)...)
 	out := &watchOutputBuf{}
 	cmd := spawnNode(t, bin, args, out)
-
 	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
 	initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
-	_ = awaitNodeExit(t, cmd, 60*time.Second)
+	return cmd, out
+}
 
-	for name, value := range map[string]string{"key": key, "secret": secret} {
-		if strings.Contains(out.String(), value) {
-			t.Fatalf("qrdbd echoed the %s credential", name)
+// assertObjstoreCredentialsNotEchoed fails the test when any credential in
+// creds appears in the node's output, in a file under roots, or in a stored
+// object body.
+func assertObjstoreCredentialsNotEchoed(t *testing.T, creds map[string]string, output string, roots []string, objects map[string][]byte) {
+	t.Helper()
+	for name, value := range creds {
+		if strings.Contains(output, value) {
+			t.Errorf("qrdbd echoed the %s credential", name)
 		}
-		for _, root := range []string{dataDir, filepath.Dir(cfg)} {
+		for _, root := range roots {
 			err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 				if err != nil || !d.Type().IsRegular() {
 					return err
@@ -215,5 +222,97 @@ func TestObjstoreCredentials_NeverEchoesTheKeyOrSecret(t *testing.T) {
 				t.Fatalf("walk %s: %v", root, err)
 			}
 		}
+		for key, body := range objects {
+			if bytes.Contains(body, []byte(value)) {
+				t.Errorf("qrdbd stored the %s credential in object %q", name, key)
+			}
+		}
 	}
+}
+
+// TestObjstoreCredentials_LocalRefusesUnusedCredentialFiles boots qrdbd on
+// the local provider with key and secret files generated at test time: the
+// local provider reads neither, so the boot stops once the barrier unseals,
+// the error names the refused key file, and neither value reaches the
+// node's output, its data directory or its configuration directory.
+func TestObjstoreCredentials_LocalRefusesUnusedCredentialFiles(t *testing.T) {
+	bin := buildBinary(t)
+	key := randomObjstoreCredential(t)
+	secret := randomObjstoreCredential(t)
+	secrets := t.TempDir()
+	keyFile := writeObjstoreCredentialFile(t, secrets, "access-key", key, 0o600)
+	secretFile := writeObjstoreCredentialFile(t, secrets, "secret-key", secret, 0o600)
+	cfg := writeObjstoreModeConfig(t, fmt.Sprintf(
+		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
+	dataDir := t.TempDir()
+
+	cmd, out := startObjstoreCredentialNode(t, bin, cfg, dataDir)
+	if err := awaitNodeExit(t, cmd, 60*time.Second); err == nil {
+		t.Fatalf("qrdbd booted with credential files the local provider ignores:\n%s", out)
+	}
+	if !strings.Contains(out.String(), `provider "local" does not read the access key credential`) ||
+		!strings.Contains(out.String(), strconv.Quote(keyFile)) {
+		t.Fatalf("output does not refuse the key file %q as ignored:\n%s", keyFile, out)
+	}
+	assertObjstoreCredentialsNotEchoed(t, map[string]string{"key": key, "secret": secret},
+		out.String(), []string{dataDir, filepath.Dir(cfg)}, nil)
+}
+
+// TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem boots
+// a qrdbd built with the S3 provider against an in-test S3 endpoint that
+// admits only requests SigV4-signed with the key and secret generated for
+// this run: a verified request proves the provider was configured with both
+// credentials read from their files. Neither value may then appear in the
+// node's output, its data directory, its configuration directory, or any
+// object in the bucket.
+//
+// The node is stopped once a signed request has verified: the s3 provider
+// answers a missing object with the SDK's NoSuchKey error rather than
+// go-objstore's ErrKeyNotFound, so the engine cannot open an empty bucket
+// and the boot does not complete against any S3 endpoint.
+func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *testing.T) {
+	bin, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage,
+		qrdbdharness.WithBuildTags(qrdbdharness.DefaultBuildTags+" awss3"))
+	if err != nil {
+		t.Fatalf("build qrdbd with awss3: %v", err)
+	}
+	key := randomObjstoreCredential(t)
+	secret := randomObjstoreCredential(t)
+	const bucket, region = "qrdb-credentials", "us-east-1"
+	stub := newS3Stub(t, bucket, region, key, secret)
+	// The configuration loader lowercases settings keys, so the provider
+	// never sees forcePathStyle and addresses the bucket virtual-hosted, as
+	// <bucket>.<endpoint host>. The endpoint names a host that never
+	// resolves, and qrdbd, which inherits this process's environment,
+	// reaches it through the stub as its HTTP proxy. This process's own
+	// proxy setting is read once and cached, so it is read before the
+	// variable is set and none of its later requests go to the stub.
+	_, _ = http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "http", Host: "s3.invalid"}})
+	t.Setenv("HTTP_PROXY", stub.URL())
+	t.Setenv("http_proxy", stub.URL())
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	secrets := t.TempDir()
+	keyFile := writeObjstoreCredentialFile(t, secrets, "access-key", key, 0o600)
+	secretFile := writeObjstoreCredentialFile(t, secrets, "secret-key", secret, 0o600)
+	cfgDir := t.TempDir()
+	cfg := writeObjstoreProviderConfig(t, cfgDir, fmt.Sprintf(
+		"    provider: s3\n    settings:\n      bucket: %q\n      region: %q\n      endpoint: \"http://s3.invalid\"\n",
+		bucket, region), fmt.Sprintf(
+		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
+	dataDir := t.TempDir()
+
+	cmd, out := startObjstoreCredentialNode(t, bin, cfg, dataDir)
+	stub.awaitSignedRequest(t, 60*time.Second, out)
+	stopNode(t, cmd, 30*time.Second)
+
+	if stub.verifiedCount() == 0 {
+		t.Fatal("no request reached the S3 stub signed with the generated credentials")
+	}
+	if failures := stub.failureList(); len(failures) != 0 {
+		t.Errorf("S3 stub refused or could not serve requests:\n%s\nnode output:\n%s", strings.Join(failures, "\n"), out)
+	}
+	assertObjstoreCredentialsNotEchoed(t, map[string]string{"key": key, "secret": secret},
+		out.String(), []string{dataDir, cfgDir}, stub.objectBodies())
 }
