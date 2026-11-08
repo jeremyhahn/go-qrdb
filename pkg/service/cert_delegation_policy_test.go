@@ -22,8 +22,6 @@ import (
 
 var policyScope = []string{"certs:delegate", "kv:get", "kv:put"}
 
-// Exported for the external delegated-caller tests, which need authtest,
-// and authtest imports this package.
 // newPolicyService is a delegation service whose CA also keeps the
 // tenants' standing delegation policies, as the node wires it.
 func newPolicyService(t *testing.T, opts ...CertEnrollmentOption) *CertEnrollmentService {
@@ -41,14 +39,6 @@ func newPolicyServiceOver(t *testing.T, p cert.CertProvider, tenants TenantGette
 	}
 	base := []CertEnrollmentOption{WithDelegationPolicyStore(store), WithEnrollmentTenants(tenants)}
 	return NewCertEnrollmentService(p, nil, nil, append(base, opts...)...)
-}
-
-// NewPolicyTestProvider is newCertEnrollmentProvider for the external
-// tests in cert_delegation_policy_delegated_test.go: an initialized CA
-// over an unsealed barrier, which a mint needs.
-func NewPolicyTestProvider(t *testing.T) cert.CertProvider {
-	t.Helper()
-	return newCertEnrollmentProvider(t)
 }
 
 // liveTenants is a tenant registry holding exactly the tenants it maps to
