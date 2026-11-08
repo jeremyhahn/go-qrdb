@@ -165,13 +165,16 @@ be minted and renewed with no tenant admin at hand. One policy stands per
 in the caller's own tenant:
 
 ```json
-{ "principal": "billing", "scope": ["kv:get", "kv:put"], "ttl": "1h" }
+{ "principal": "billing", "scope": ["certs:delegate", "kv:get", "kv:put"], "ttl": "1h" }
 ```
 
 It returns `201` with `{ "tenantID", "principal", "scope", "ttl" }`. `ttl` is
 the longest lifetime a certificate minted under it may have, at most 24 hours.
 `GET /certs/delegate/policies` returns `{ "policies": [...] }`, each element
 that same shape. `DELETE /certs/delegate/policies/{principal}` returns `204`.
+A renewal needs `certs:delegate` both in the policy's `scope` and in the grants
+of the principal's role. A mint for a tenant that no longer exists is refused
+with `404`, and deleting a tenant deletes its policies.
 
 All three are `certs:delegate` in the caller's own tenant; the system tenant
 and a delegated caller are refused (`service.DelegationDeniedError`). The put

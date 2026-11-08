@@ -365,7 +365,7 @@ delegation policy** once: it names the principal, the most it may be handed,
 and the longest each certificate may live.
 
 ```bash
-qrdb ca delegate policy put --principal billing --scope kv:get,kv:put --ttl 1h
+qrdb ca delegate policy put --principal billing --scope certs:delegate,kv:get,kv:put --ttl 1h
 qrdb ca delegate policy list
 qrdb ca delegate policy delete billing
 ```
@@ -373,8 +373,10 @@ qrdb ca delegate policy delete billing
 While the policy stands, the application mints its first certificate itself
 and renews it with the certificate it holds, with no one from your tenant at
 hand. A renewal may ask for less scope or a shorter life than the policy, never
-more, and never past 24 hours. Every put, delete and mint is recorded in your
-tenant's audit trail.
+more, and never past 24 hours. A renewal needs `certs:delegate` twice: in the
+policy's scope, and in the grants of the principal's role. Every put, delete
+and mint is recorded in your tenant's audit trail. Deleting the tenant
+deletes its policies.
 
 Deleting the policy stops every further mint and renewal at once. The
 certificate the application already holds keeps working until it expires;

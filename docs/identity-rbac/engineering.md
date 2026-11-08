@@ -122,7 +122,11 @@ func (m *AuthMiddleware) AuthenticateDelegation(ctx context.Context, chain []*x5
 func (p Policy) Bound(scope []string, ttl time.Duration) (Grant, time.Duration, error)
 // pkg/service/cert_delegation_policy.go — put/list/delete under certs:delegate,
 // stored under __sys:cert_delegation_policy/; MintDelegation for the first
-// certificate; DelegationPolicyNotFoundError (NotFound) when none stands.
+// certificate; DelegationPolicyNotFoundError (NotFound) when none stands,
+// TenantNotFoundError (NotFound) for a deleted or retired tenant.
+// pkg/service/hard_confined_keys.go — the whole policy prefix is hard-confined
+// on the embedded transport (every verb, scan root and transaction refused,
+// broader sweeps filtered); TenantKeyPrefixes reclaims a tenant's policies.
 // sdk/go/node: Node.MintDelegation — the first mint, in process, as the
 // service principal.
 // sdk/go/transport: CertClient.PutDelegationPolicy, ListDelegationPolicies,
@@ -1635,7 +1639,9 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   (`policy_test.go`, `Policy.Bound` narrowing and refusing to widen),
   `pkg/cert` (`delegation_policy_test.go`), `pkg/service`
   (`cert_delegation_policy_test.go`, and `cert_delegation_policy_delegated_test.go`
-  for the mint, the renewal, and both refused after the delete),
+  for the mint, the renewal, and both refused after the delete or once the
+  tenant is gone; `hard_confined_keys_test.go` for the confinement,
+  `keyspace_reclaim_test.go` for the reclaim),
   `sdk/go/node` (`mint_delegation_test.go`), `pkg/server`
   (`embedded_mint_delegation_test.go`), each transport's handler
   (`*_delegation_policy_test.go` under `pkg/api/{rest,grpc,quic,mcp}`) and SDK
@@ -1644,6 +1650,9 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   seal and officer list are tested on every transport
   (`*tenant_barrier_delegated_test.go`). `pkg/api/errclass` and each
   transport's mapping test assert `DelegationPolicyNotFoundError` is NotFound.
+  `TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol` deletes a shared
+  tenant holding a policy on every transport: the renewal is refused and the
+  CA holds no policy for it.
   `TestABACPolicy_CLI_PerProtocol` (`make integration-test-identity-rbac`)
   drives the stored-policy lifecycle with `qrdb abac policy` on every
   transport of one node: create, get, update (the creation time survives,
