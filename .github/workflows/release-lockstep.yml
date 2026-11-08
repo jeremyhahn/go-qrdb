@@ -74,6 +74,7 @@ jobs:
   lockstep:
     name: Root and sdk/go tags in lockstep
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # The check reads this clone's tags and the default checkout fetches none
       # of them. A tagless clone is the vacuous-green failure mode, so the full

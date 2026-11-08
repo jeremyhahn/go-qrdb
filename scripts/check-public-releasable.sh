@@ -117,7 +117,7 @@
 # ACCEPTING A LINE: an inline waiver on the offending line, in the file's own
 # comment syntax, WITH a reason:
 #
-#     measured on <host> at 2026-09-12   # public-release-ok: benchmark provenance
+#     measured on core-01 at 2026-09-12   # public-release-ok: benchmark provenance
 #
 # `public-release-ok:` with nothing after it is not a waiver and does not
 # suppress anything. There is no path allowlist: a waiver sits next to the

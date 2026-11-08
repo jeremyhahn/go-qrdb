@@ -233,7 +233,7 @@ for pkg in $packages; do
 	# correct. A pre-quoted string (`-tags "a b c"`) handed through a Make
 	# variable and an environment variable carries literal quote BYTES, not
 	# shell quoting, and round-tripping it that way is exactly what broke the
-	# tag list in round 2's review (see the Makefile's COVERAGE_MERGE_SUBPROCESS
+	# tag list in round 2's review (see the Makefile's coverage-leg
 	# comment for the measured failure). Building the flag only when TAGS is
 	# non-empty, rather than always passing `-tags ""`, keeps an empty tag set
 	# from being a no-op flag that differs from omitting it entirely.

@@ -102,3 +102,9 @@ cmd/qrdbd/webui_dist/
 # A literal `~` directory, created when a tool expanded a home-relative path
 # inside the repository instead of the shell doing it.
 /~/
+
+# Per-machine agent artifacts: a coding agent's scheduled-task lock and the
+# lane records the local software factory writes. Neither is source, and the
+# whole tracked tree is publicly releasable.
+scheduled_tasks.lock
+lane-records/

@@ -89,15 +89,13 @@ COVER_GOTEST  := $(GO) test -race -v -timeout=$(GOTEST_TIMEOUT)
 # on its own reserved ports, data directories and socket directory, so they
 # share nothing but CPU. 5 is one per transport, so a per-protocol test whose
 # subtests each boot their own daemon runs them in one wave, and it keeps the
-# qrdbd count a CI leg starts (GOMAXPROCS=8, go test's default otherwise)
-# within the leg's CPU budget.
+# qrdbd count a CI leg starts within the leg's CPU budget.
+#
+# The run's -p is go test's default, GOMAXPROCS, which is derived rather than
+# written down (IT_GOMAXPROCS, below): a feature's tests are one package, so
+# -p bounds only its build, and the build takes the CPUs the leg has.
 INT_PARALLEL  ?= 5
-# INT_PROCS is the per-feature run's -p: how many packages go test builds and
-# runs at once. A feature's tests are one package, so it bounds the build, and
-# 4 keeps a shard's compile within half its GOMAXPROCS=8 on a runner host the
-# other jobs share (#1286).
-INT_PROCS     ?= 4
-INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -p $(INT_PROCS) -parallel $(INT_PARALLEL)
+INT_GOTEST    := $(GO) test -count=1 -v -timeout=$(GOTEST_TIMEOUT) -parallel $(INT_PARALLEL)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt
@@ -818,76 +816,93 @@ TEST_PKGS := ./pkg/... ./cmd/... ./test/buildgates/...
 test: test-clusterproof
 	$(GOTEST) $(TAG_FLAG) $(TEST_PKGS)
 
-# FIPS 140-3 legs (#1230). CI's `fips` job runs `make test` and `make
-# test-sdk` under GOFIPS140=latest GODEBUG=fips140=only
-# (docs/seal/fips140-mode.md) as parallel matrix legs, one per name in
-# FIPS_LEGS, each `make test-fips-leg FIPS_LEG=<leg>`. Together the legs are
-# exactly the two suites, each package in one leg:
+# Unit legs (#1230, #1234). The unit suites are too long for one hosted
+# runner, so CI runs them as parallel matrix legs over ONE partition of the
+# packages, UNIT_LEGS, which two jobs share:
 #
-#   - a FIPS_LEG_<leg> leg runs the packages its patterns match: FIPS_ROOT_LEGS
-#     in the root module, FIPS_SDK_LEGS in $(SDK_DIR);
-#   - `rest` runs every package of TEST_PKGS no root leg names, after
-#     test-clusterproof, as `make test` does;
+#   - `fips` runs `make test` and `make test-sdk` under GOFIPS140=latest
+#     GODEBUG=fips140=only (docs/seal/fips140-mode.md), one leg per name in
+#     FIPS_LEGS, each `make test-fips-leg FIPS_LEG=<leg>`;
+#   - `coverage` runs the -race coverage profile, one leg per name in
+#     COVER_LEGS, each `make coverage-leg COVER_LEG=<leg>`, and
+#     `coverage-merge` gates the merged profile (see `coverage` below).
+#
+# Together the legs are exactly the suite each job runs, each package in one
+# leg:
+#
+#   - a UNIT_LEG_<leg> leg runs the packages its patterns match: UNIT_ROOT_LEGS
+#     in the root module, UNIT_SDK_LEGS in $(SDK_DIR);
+#   - `rest` runs every package of its root-module suite no root leg names;
 #   - `sdk` runs every package of $(SDK_DIR) no SDK leg names.
 #
 # The two remainder legs mean a new package always runs: it lands in `rest` or
 # `sdk` until a leg names it. The legs are split by measured wall time (run
 # 68401, docs/seal/fips140-mode.md), not by package count: a leg takes about
 # its slowest package plus 3 to 4 minutes of build and setup, so the slowest
-# packages sit alone. A pattern without `/...` names one package, so a leg can
-# hold it alone while its subpackages run elsewhere.
+# packages sit alone. The FIPS run is the slower of the two -- the same -race
+# tests plus FIPS-mode PBKDF2 -- so a partition that fits it fits coverage. A
+# pattern without `/...` names one package, so a leg can hold it alone while
+# its subpackages run elsewhere.
 #
 # A package too slow for a leg on its own is split by test name (#1234): each
-# of its legs names the one package, FIPS_RUN_<leg> selects a leg's top-level
+# of its legs names the one package, UNIT_RUN_<leg> selects a leg's top-level
 # tests (go test -run), and the package's last leg skips what the others
-# select (FIPS_SKIP_<leg> = $(call fips-skip,<legs>), go test -skip), so a new
-# test runs there until a FIPS_RUN_ names it. pkg/tenant (38.6 min), pkg/seal
+# select (UNIT_SKIP_<leg> = $(call unit-skip,<legs>), go test -skip), so a new
+# test runs there until a UNIT_RUN_ names it. pkg/tenant (38.6 min), pkg/seal
 # (32.9 min, PBKDF2 at 600,000 iterations under FIPS) and pkg/server (25.7
-# min, split for headroom) are split in two.
+# min, split for headroom) are split in two. A split package's coverage is
+# whole once its legs' profiles are merged: coverratchet takes a block that
+# two profiles name as covered when either executed it.
 # test/buildgates/fips_legs_test.go fails when a package is in two legs or in
 # none (a split package's legs all select by name), when a leg is empty, and
-# when ci.yml's matrix is not FIPS_LEGS; fips_split_test.go fails when a test
-# of a split package runs in no leg or in two. `make -s print-fips-legs`
-# prints the legs, print-fips-leg-filter a leg's -run and -skip.
-fips-skip = $(subst $(space),|,$(strip $(foreach l,$(1),$(FIPS_RUN_$(l)))))
-FIPS_LEG_tenant-lifecycle := ./pkg/tenant
-FIPS_RUN_tenant-lifecycle := ^Test(TenantService|CreateTenant|StoreResolver|DeleteTenant|UndoCreate)
-FIPS_LEG_tenant        := ./pkg/tenant
-FIPS_SKIP_tenant        = $(call fips-skip,tenant-lifecycle)
-FIPS_LEG_seal-barrier  := ./pkg/seal
-FIPS_RUN_seal-barrier  := ^Test(Barrier|StorageBarrier|ChangePassword|SealStore|TenantBarrier)
-FIPS_LEG_seal          := ./pkg/seal
-FIPS_SKIP_seal          = $(call fips-skip,seal-barrier)
-FIPS_LEG_server-raft   := ./pkg/server
-FIPS_RUN_server-raft   := ^Test(Raft|ReattachRaft)
-FIPS_LEG_server        := ./pkg/server
-FIPS_SKIP_server        = $(call fips-skip,server-raft)
-FIPS_LEG_auth          := ./pkg/server/lifecycle/... ./pkg/auth/... ./cmd/...
-FIPS_LEG_service       := ./pkg/service/... ./pkg/database/... ./pkg/statemachine/... ./pkg/engine/... \
+# when ci.yml's fips matrix is not FIPS_LEGS; fips_split_test.go fails when a
+# test of a split package runs in no leg or in two; coverage_legs_test.go
+# holds the coverage legs to the same partition of the coverage suite.
+# `make -s print-fips-legs` prints the legs, print-unit-leg-packages
+# UNIT_LEG=<leg> a leg's packages and print-fips-leg-filter its -run and -skip.
+unit-skip = $(subst $(space),|,$(strip $(foreach l,$(1),$(UNIT_RUN_$(l)))))
+UNIT_LEG_tenant-lifecycle := ./pkg/tenant
+UNIT_RUN_tenant-lifecycle := ^Test(TenantService|CreateTenant|StoreResolver|DeleteTenant|UndoCreate)
+UNIT_LEG_tenant        := ./pkg/tenant
+UNIT_SKIP_tenant        = $(call unit-skip,tenant-lifecycle)
+UNIT_LEG_seal-barrier  := ./pkg/seal
+UNIT_RUN_seal-barrier  := ^Test(Barrier|StorageBarrier|ChangePassword|SealStore|TenantBarrier)
+UNIT_LEG_seal          := ./pkg/seal
+UNIT_SKIP_seal          = $(call unit-skip,seal-barrier)
+UNIT_LEG_server-raft   := ./pkg/server
+UNIT_RUN_server-raft   := ^Test(Raft|ReattachRaft)
+UNIT_LEG_server        := ./pkg/server
+UNIT_SKIP_server        = $(call unit-skip,server-raft)
+UNIT_LEG_auth          := ./pkg/server/lifecycle/... ./pkg/auth/... ./cmd/...
+UNIT_LEG_service       := ./pkg/service/... ./pkg/database/... ./pkg/statemachine/... ./pkg/engine/... \
                           ./pkg/dao/... ./pkg/store/...
-FIPS_LEG_api-keys      := ./pkg/api/... ./pkg/seal/encfs/... ./pkg/seal/kdf/... ./pkg/seal/sealtest/... \
+UNIT_LEG_api-keys      := ./pkg/api/... ./pkg/seal/encfs/... ./pkg/seal/kdf/... ./pkg/seal/sealtest/... \
                           ./pkg/ceremony/... ./pkg/credentials/... ./pkg/firstboot/... ./pkg/pin/... \
                           ./pkg/clusterseal/... ./pkg/barrierinit/... ./pkg/authfactors/... \
                           ./pkg/keywrap/... ./pkg/dek/... ./pkg/sql/...
-FIPS_LEG_sdk-transport := ./transport/...
-FIPS_ROOT_LEGS := tenant-lifecycle tenant seal-barrier seal server-raft server auth service api-keys
-FIPS_SDK_LEGS  := sdk-transport
-FIPS_LEGS      := $(FIPS_ROOT_LEGS) rest $(FIPS_SDK_LEGS) sdk
+UNIT_LEG_sdk-transport := ./transport/...
+UNIT_ROOT_LEGS := tenant-lifecycle tenant seal-barrier seal server-raft server auth service api-keys
+UNIT_SDK_LEGS  := sdk-transport
+UNIT_LEGS      := $(UNIT_ROOT_LEGS) rest $(UNIT_SDK_LEGS) sdk
+FIPS_LEGS      := $(UNIT_LEGS)
 
-FIPS_LEG_DIR = $(if $(filter $(FIPS_LEG),$(FIPS_SDK_LEGS) sdk),$(SDK_DIR),.)
-FIPS_LEG_CHECK = case " $(FIPS_LEGS) " in *" $(FIPS_LEG) "*) ;; \
-	*) echo "FIPS_LEG must be one of: $(FIPS_LEGS)" >&2; exit 2 ;; esac
-
-# FIPS_LEG_FILTER is the leg's test selection, as go test flags.
-FIPS_LEG_FILTER = $(if $(FIPS_RUN_$(FIPS_LEG)),-run '$(FIPS_RUN_$(FIPS_LEG))') \
-	$(if $(FIPS_SKIP_$(FIPS_LEG)),-skip '$(FIPS_SKIP_$(FIPS_LEG))')
+# unit-leg-dir is the module directory leg $(1) runs in; unit-leg-check fails
+# unless $(1) is a leg, naming the variable $(2) that carried it;
+# unit-leg-filter is leg $(1)'s test selection, as go test flags; and
+# unit-leg-taken lists the packages the named legs of $(1)'s module take.
+unit-leg-dir = $(if $(filter $(1),$(UNIT_SDK_LEGS) sdk),$(SDK_DIR),.)
+unit-leg-check = case " $(UNIT_LEGS) " in *" $(1) "*) ;; \
+	*) echo "$(2) must be one of: $(UNIT_LEGS)" >&2; exit 2 ;; esac
+unit-leg-filter = $(if $(UNIT_RUN_$(1)),-run '$(UNIT_RUN_$(1))') \
+	$(if $(UNIT_SKIP_$(1)),-skip '$(UNIT_SKIP_$(1))')
+unit-leg-taken = $(GO) list $(TAG_FLAG) $(foreach l,$(if $(filter $(1),sdk),$(UNIT_SDK_LEGS),$(UNIT_ROOT_LEGS)),$(UNIT_LEG_$(l)))
 
 # print-fips-leg-filter prints the -run and -skip patterns FIPS_LEG passes to
 # go test, empty for a leg that runs whole packages.
 .PHONY: print-fips-leg-filter
 print-fips-leg-filter:
-	@$(FIPS_LEG_CHECK)
-	@printf 'run=%s\nskip=%s\n' '$(FIPS_RUN_$(FIPS_LEG))' '$(FIPS_SKIP_$(FIPS_LEG))'
+	@$(call unit-leg-check,$(FIPS_LEG),FIPS_LEG)
+	@printf 'run=%s\nskip=%s\n' '$(UNIT_RUN_$(FIPS_LEG))' '$(UNIT_SKIP_$(FIPS_LEG))'
 
 .PHONY: print-fips-legs
 print-fips-legs:
@@ -898,27 +913,28 @@ print-fips-legs:
 print-test-pkgs:
 	@printf '%s\n' $(TEST_PKGS)
 
-# print-fips-leg-packages prints the import paths FIPS_LEG runs. A remainder
-# leg is its suite minus every package the other legs of its module name.
-.PHONY: print-fips-leg-packages
-print-fips-leg-packages:
-	@$(FIPS_LEG_CHECK)
-	@cd $(FIPS_LEG_DIR) && case "$(FIPS_LEG)" in \
+# print-unit-leg-packages prints the import paths UNIT_LEG runs of the two
+# unit suites, `make test` and `make test-sdk`. A remainder leg is its suite
+# minus every package the other legs of its module name.
+.PHONY: print-unit-leg-packages
+print-unit-leg-packages:
+	@$(call unit-leg-check,$(UNIT_LEG),UNIT_LEG)
+	@cd $(call unit-leg-dir,$(UNIT_LEG)) && case "$(UNIT_LEG)" in \
 	rest) all=$$($(GO) list $(TAG_FLAG) $(TEST_PKGS)) && \
-		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_ROOT_LEGS),$(FIPS_LEG_$(l)))) && \
+		taken=$$($(call unit-leg-taken,rest)) && \
 		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
 	sdk) all=$$($(GO) list $(TAG_FLAG) ./...) && \
-		taken=$$($(GO) list $(TAG_FLAG) $(foreach l,$(FIPS_SDK_LEGS),$(FIPS_LEG_$(l)))) && \
+		taken=$$($(call unit-leg-taken,sdk)) && \
 		printf '%s\n' "$$all" | grep -vxF "$$taken" ;; \
-	*) $(GO) list $(TAG_FLAG) $(FIPS_LEG_$(FIPS_LEG)) ;; \
+	*) $(GO) list $(TAG_FLAG) $(UNIT_LEG_$(UNIT_LEG)) ;; \
 	esac
 
 .PHONY: test-fips-leg
 test-fips-leg:
-	@$(FIPS_LEG_CHECK)
+	@$(call unit-leg-check,$(FIPS_LEG),FIPS_LEG)
 	$(if $(filter rest,$(FIPS_LEG)),$(MAKE) --no-print-directory test-clusterproof)
-	pkgs=$$($(MAKE) -s --no-print-directory print-fips-leg-packages FIPS_LEG=$(FIPS_LEG)) && \
-		cd $(FIPS_LEG_DIR) && $(GOTEST) $(TAG_FLAG) $(FIPS_LEG_FILTER) $$pkgs
+	pkgs=$$($(MAKE) -s --no-print-directory print-unit-leg-packages UNIT_LEG=$(FIPS_LEG)) && \
+		cd $(call unit-leg-dir,$(FIPS_LEG)) && $(GOTEST) $(TAG_FLAG) $(call unit-leg-filter,$(FIPS_LEG)) $$pkgs
 
 # The cluster proof harness's own unit tests (#669): the history format, the
 # acknowledged-write ledger, the porcupine linearizability check and the
@@ -1282,6 +1298,23 @@ test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-s
 test-sdk:
 	cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) ./...
 
+# test-sdk-leg runs one SDK_LEG of test-sdk, the SDK module's unit legs
+# (UNIT_SDK_LEGS and its remainder, `sdk`): CI's test-sdk job runs one leg per
+# name in TEST_SDK_LEGS, which together are exactly `make test-sdk`
+# (test/buildgates/coverage_legs_test.go holds the matrix to the list).
+TEST_SDK_LEGS := $(UNIT_SDK_LEGS) sdk
+
+.PHONY: print-test-sdk-legs
+print-test-sdk-legs:
+	@printf '%s\n' $(TEST_SDK_LEGS)
+
+.PHONY: test-sdk-leg
+test-sdk-leg:
+	@case " $(TEST_SDK_LEGS) " in *" $(SDK_LEG) "*) ;; \
+		*) echo "SDK_LEG must be one of: $(TEST_SDK_LEGS)" >&2; exit 2 ;; esac
+	pkgs=$$($(MAKE) -s --no-print-directory print-unit-leg-packages UNIT_LEG=$(SDK_LEG)) && \
+		cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) $(call unit-leg-filter,$(SDK_LEG)) $$pkgs
+
 # The qrdbd integration-test harness shared by test/integration and the
 # GORM conformance module. It is part of
 # the SDK module, so test-sdk already runs it via ./... ; this target exists to
@@ -1455,8 +1488,12 @@ integration-image:
 #
 # GOMAXPROCS is the half of the cluster stage's #682 budget that reaches the
 # spawned processes: the harness hands its environment to every qrdbd and qrdb
-# it starts, so each sizes its scheduler to 8 Ps rather than the host's
-# threads. The compose service sets it.
+# it starts, so each sizes its scheduler alike. The compose service sets it
+# from IT_GOMAXPROCS, which is empty by default: Go then takes the container's
+# CPU limit, the host's CPUs here (a 4-vCPU hosted runner gives 4). Set it to
+# pin a count, e.g. IT_GOMAXPROCS=8, the figure #682 tuned the cluster suites'
+# raft timing on.
+IT_GOMAXPROCS ?=
 IT_FEATURE ?=
 IT_CMD     ?= $(if $(IT_FEATURE),$(call int_cmd,$(IT_FEATURE)),$(GO) test -count=1 -v -timeout=$(INTEGRATION_GO_TIMEOUT) -p 1 -parallel $(CLUSTER_PARALLEL) -tags "$(INT_FEATURE_TAGS)" $(INT_TEST_DIR))
 
@@ -1473,7 +1510,7 @@ integration-test:
 	$(it-image-step); \
 	echo "==> Running integration tests in $(IT_IMAGE) (project $(IT_PROJECT))..."; \
 	status=0; \
-	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
+	QRDB_IT_IMAGE='$(IT_IMAGE)' QRDB_IT_GOMAXPROCS='$(IT_GOMAXPROCS)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		run --rm integration $(IT_CMD) || status=$$?; \
 	QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		down --volumes >/dev/null 2>&1 || true; \
@@ -1926,94 +1963,149 @@ COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,git
 # figure taken by hand is comparable only under `make print-build-tags`.
 COVER_RATCHET       = $(GO) run ./test/tools/coverratchet -profile $(COVER_DIR)/total.out -baseline $(COVER_BASELINE) -exclude "$(COVER_EXCLUDE_PKGS)" -tags "$(strip $(BUILD_TAGS))"
 
-# COVERAGE_MERGE_SUBPROCESS builds the combined profile from three DISJOINT
-# package sets: the bulk `-coverprofile` run below, over every package EXCEPT
-# the ones scripts/coverage-merge-subprocess.sh --list discovers, that
-# script's own run of exactly those packages, and the sdk/go module's run.
-# The three are concatenated (keeping one "mode:" header) rather than merged,
-# which is correct BECAUSE they are disjoint -- see the script's header for
-# why a subprocess test needs this treatment at all and why concatenation,
-# not `covdata merge`, is the right operation here.
+# The coverage profile is measured in legs, COVER_LEGS, the unit legs above:
+# each `make coverage-leg COVER_LEG=<leg>` writes $(COVER_DIR)/leg-<leg>.out.
+# CI runs each leg as a matrix job on a runner of its own, and one final job,
+# `make coverage-merge`, concatenates the legs' profiles and runs the ONE
+# repo-wide gate over the result; `make coverage` runs every leg here, then
+# the same merge. The figure is the same either way: every test runs in one
+# leg, under the same tags, by the same command.
 #
-# sdk/go is its own module, so `./pkg/...` from the root never reaches it and
-# its packages were held to no floor. Its run is in the SDK module's
-# directory, under the same tags; its generated /proto/ code is left out as
-# the bulk run's is, and so are its examples, which are programs, not
-# library code. Its two test-helper packages are in COVER_EXCLUDE_PKGS.
+# The coverage suite is COVER_ROOT_PKGS and every package of $(SDK_DIR),
+# less generated /proto/ code, which has no tests, the SDK's examples, which
+# are programs rather than library code, and the packages
+# scripts/coverage-merge-subprocess.sh --list discovers: their tests
+# re-execute the test binary, whose execution `-coverprofile` cannot see, so
+# that script measures them itself, inside the `rest` leg (see its header for
+# why, and why concatenation rather than `covdata merge` is right).
+# test/buildgates/coverage_legs_test.go fails when a package of the suite is
+# in no leg or in two (a split package's legs all select by name), when a leg
+# is empty, and when ci.yml's coverage matrix is not COVER_LEGS.
 #
-# The two runs are concurrent (#1046): the script compiles and runs its eight
-# packages one at a time, 171s on a warm cache, and run after the bulk run it
-# was a serial tail on top of it. It writes its output to subprocess.log,
-# printed once both are done, and each run's exit status is kept and checked
-# before either profile is read.
+# sdk/go is its own module, so `./pkg/...` from the root never reaches it; its
+# legs run in the SDK module's directory under the same tags, and its two
+# test-helper packages are in COVER_EXCLUDE_PKGS.
 #
-# `set -e`: without it, a `;`-joined recipe has NO fail-fast of its own -- a
-# failed bulk test run or a failed subprocess merge would leave `head`/`tail`
-# to run anyway over whatever partial output exists, and the recipe's exit
-# status is the LAST command's, which always succeeds. The ratchet would then
-# read a stale or truncated profile and could pass vacuously. Found in review
-# (round 2), confirmed with `make -n coverage` before this fix existed.
+# A leg's `go list` carries $(TAG_FLAG), the same tags its `go test` uses: a
+# package whose every file carries a build tag has NO buildable source under an
+# untagged `go list`, which silently drops it -- not an error, just absent from
+# the list `go test` is given. pkg/sql/mysql and pkg/sql/pgsql were missing
+# from the baseline that way until it was measured.
 #
-# COVERAGE_MERGE_TAGS is the RAW, unquoted tag list (Make's BUILD_TAGS is
-# already space-separated) -- not $(TAG_FLAG), which is the string
-# `-tags "..."` WITH LITERAL QUOTE CHARACTERS baked into the Make variable's
-# value. Exporting that string as an environment variable and later
-# interpolating it unquoted in the script does not re-parse those characters
-# as shell quoting; it hands the shell literal `"` bytes, which either land
-# inside a tag name or, as measured with `make -n coverage` before this fix,
-# terminate the assignment early and turn the next tag word (`raft`) into a
-# command the shell tries to execute. The script does its own quoting around
-# the raw list (scripts/coverage-merge-subprocess.sh), which is the only
-# place that can be correct, since only code that is ITSELF shell source can
-# emit shell quoting -- a value round-tripped through a Make variable and an
-# environment variable cannot.
+# COVERAGE_MERGE_TAGS is the RAW, unquoted tag list, not $(TAG_FLAG), whose
+# value carries literal quote characters: exported through the environment
+# and interpolated unquoted in the script, they would not re-parse as shell
+# quoting but land inside a tag name or end the assignment early. The script
+# does its own quoting around the raw list.
 #
-# BULK_PKGS' `go list` carries $(TAG_FLAG), the same tags the `go test` line
-# right below it uses -- it did not, until the measurement that caught this.
-# A package whose every file carries a build tag has NO buildable source
-# under an untagged `go list`, so go list silently drops it from `./pkg/...`
-# -- not an error, not a warning, just absent from BULK_PKGS, which is
-# `go test`'s own package LIST, not a filter over something `go test`
-# computes independently. `pkg/sql/mysql` and `pkg/sql/pgsql` have been in
-# that state since they were first tagged and were simply never in
-# test/coverage-baseline.txt, so the ratchet's MISSING check -- which fires
-# only for a package the baseline NAMES -- had nothing to compare against and
-# stayed quiet. Tagging `pkg/sql`'s other eight packages and `pkg/api/etcd`
-# the same way made the SAME discovery bug hit packages the baseline already
-# named, which is what turned eight silent gaps into eight loud MISSING
-# failures -- the exposure, not a new defect.
-define COVERAGE_MERGE_SUBPROCESS
-	set -e; \
-	SUBPROCESS_PKGS=$$(./scripts/coverage-merge-subprocess.sh --list); \
-	EXCLUDE_PATTERN=$$(printf '%s\n' "$$SUBPROCESS_PKGS" | paste -sd '|' -); \
-	BULK_PKGS=$$($(GO) list $(TAG_FLAG) ./pkg/... ./cmd/... | grep -v '/proto/' | grep -vE "^($$EXCLUDE_PATTERN)\$$"); \
-	COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out > $(COVER_DIR)/subprocess.log 2>&1 & SUBPROCESS_PID=$$!; \
-	BULK_RC=0; $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/bulk.out $$BULK_PKGS || BULK_RC=$$?; \
-	SDK_PKGS=$$(cd $(SDK_DIR) && $(GO) list $(TAG_FLAG) ./... | grep -v '/proto/' | grep -v '/sdk/go/examples/'); \
-	SDK_RC=0; (cd $(SDK_DIR) && $(COVER_GOTEST) $(TAG_FLAG) -coverprofile=$(CURDIR)/$(COVER_DIR)/sdk.out $$SDK_PKGS) || SDK_RC=$$?; \
-	SUBPROCESS_RC=0; wait $$SUBPROCESS_PID || SUBPROCESS_RC=$$?; \
-	cat $(COVER_DIR)/subprocess.log; \
-	if [ $$BULK_RC -ne 0 ] || [ $$SDK_RC -ne 0 ] || [ $$SUBPROCESS_RC -ne 0 ]; then echo "coverage: bulk run exit $$BULK_RC, sdk run exit $$SDK_RC, subprocess run exit $$SUBPROCESS_RC" >&2; exit 1; fi; \
-	head -1 $(COVER_DIR)/bulk.out > $(COVER_DIR)/total.out; \
-	tail -n +2 $(COVER_DIR)/bulk.out >> $(COVER_DIR)/total.out; \
-	tail -n +2 $(COVER_DIR)/sdk.out >> $(COVER_DIR)/total.out; \
-	tail -n +2 $(COVER_DIR)/subprocess.out >> $(COVER_DIR)/total.out
+# Each recipe runs under `set -e` and checks every run's exit status before a
+# profile is read: a `;`-joined recipe has no fail-fast of its own, and a
+# failed run would otherwise leave a stale or truncated profile for the gate
+# to read and pass vacuously. A leg writes its profile only once its runs
+# have passed, so a failed leg leaves no leg-<leg>.out, and the merge
+# refuses a missing or empty one.
+COVER_LEGS      := $(UNIT_LEGS)
+COVER_ROOT_PKGS := ./pkg/... ./cmd/...
+
+.PHONY: print-coverage-legs
+print-coverage-legs:
+	@printf '%s\n' $(COVER_LEGS)
+
+# print-cover-root-pkgs prints the root module's package patterns the
+# coverage suite measures.
+.PHONY: print-cover-root-pkgs
+print-cover-root-pkgs:
+	@printf '%s\n' $(COVER_ROOT_PKGS)
+
+# print-coverage-leg-packages prints the import paths COVER_LEG measures. A
+# failing `go list` fails it (its output is assigned, under set -e); only
+# the filters, which exit 1 on an empty result, are allowed to.
+.PHONY: print-coverage-leg-packages
+print-coverage-leg-packages:
+	@$(call unit-leg-check,$(COVER_LEG),COVER_LEG)
+	@set -e; \
+	sub=$$(./scripts/coverage-merge-subprocess.sh --list); \
+	cd $(call unit-leg-dir,$(COVER_LEG)); \
+	case "$(COVER_LEG)" in \
+	rest) all=$$($(GO) list $(TAG_FLAG) $(COVER_ROOT_PKGS)); taken=$$($(call unit-leg-taken,rest)) ;; \
+	sdk) all=$$($(GO) list $(TAG_FLAG) ./...); taken=$$($(call unit-leg-taken,sdk)) ;; \
+	*) all=$$($(GO) list $(TAG_FLAG) $(UNIT_LEG_$(COVER_LEG))); taken= ;; \
+	esac; \
+	printf '%s\n' "$$all" | grep -v -e '/proto/' -e '/sdk/go/examples/' | grep -vxF -e "$$sub" -e "$$taken" || true
+
+# coverage-leg runs one leg under -race and writes its profile. GOTEST_TIMEOUT
+# is go test's per-package -timeout: CI passes its job limit less 5 minutes,
+# so a hung package reports its goroutines before the runner kills the job.
+.PHONY: coverage-leg
+coverage-leg: | _cover-dir
+	@$(call unit-leg-check,$(COVER_LEG),COVER_LEG)
+	@set -e; \
+	pkgs=$$($(MAKE) -s --no-print-directory print-coverage-leg-packages COVER_LEG=$(COVER_LEG)); \
+	if [ -z "$$pkgs" ]; then echo "coverage-leg: leg $(COVER_LEG) names no package" >&2; exit 1; fi; \
+	out=$(CURDIR)/$(COVER_DIR)/leg-$(COVER_LEG).out; \
+	rm -f "$$out" "$$out.part"; \
+	sub_rc=0; \
+	if [ "$(COVER_LEG)" = rest ]; then \
+		COVERAGE_MERGE_TAGS="$(strip $(BUILD_TAGS))" COVERAGE_MERGE_TIMEOUT="$(GOTEST_TIMEOUT)" ./scripts/coverage-merge-subprocess.sh --run $(COVER_DIR)/subprocess.out > $(COVER_DIR)/subprocess.log 2>&1 & sub_pid=$$!; \
+	fi; \
+	rc=0; (cd $(call unit-leg-dir,$(COVER_LEG)) && $(COVER_GOTEST) $(TAG_FLAG) $(call unit-leg-filter,$(COVER_LEG)) -coverprofile="$$out.part" $$pkgs) || rc=$$?; \
+	if [ "$(COVER_LEG)" = rest ]; then wait $$sub_pid || sub_rc=$$?; cat $(COVER_DIR)/subprocess.log; fi; \
+	if [ $$rc -ne 0 ] || [ $$sub_rc -ne 0 ]; then echo "coverage-leg $(COVER_LEG): test run exit $$rc, subprocess run exit $$sub_rc" >&2; exit 1; fi; \
+	if [ "$(COVER_LEG)" = rest ]; then tail -n +2 $(COVER_DIR)/subprocess.out >> "$$out.part"; fi; \
+	mv "$$out.part" "$$out"
+
+# COVERAGE_CONCAT concatenates every leg's profile into total.out, keeping one
+# "mode:" header, after checking each is present, non-empty and of the one
+# mode. A package split by test name appears in each of its legs' profiles;
+# coverratchet takes a block as covered when any occurrence executed it.
+define COVERAGE_CONCAT
+	set -e; mode=; \
+	rm -f $(COVER_DIR)/total.out $(COVER_DIR)/total.out.part; \
+	for l in $(COVER_LEGS); do \
+		f=$(COVER_DIR)/leg-$$l.out; \
+		if [ ! -s "$$f" ]; then echo "coverage-merge: $$f is missing or empty: leg $$l did not pass" >&2; exit 1; fi; \
+		m=$$(head -1 "$$f"); \
+		case "$$m" in "mode: "*) ;; *) echo "coverage-merge: $$f has no mode header" >&2; exit 1 ;; esac; \
+		if [ -z "$$mode" ]; then mode=$$m; printf '%s\n' "$$m" > $(COVER_DIR)/total.out.part; \
+		elif [ "$$m" != "$$mode" ]; then echo "coverage-merge: $$f is '$$m', not '$$mode'" >&2; exit 1; fi; \
+		tail -n +2 "$$f" >> $(COVER_DIR)/total.out.part; \
+	done; \
+	mv $(COVER_DIR)/total.out.part $(COVER_DIR)/total.out
 endef
+
+# coverage-merge is the gate over the legs' profiles: CI's coverage-merge job
+# downloads them into $(COVER_DIR) and runs it.
+.PHONY: coverage-merge
+coverage-merge: | _cover-dir
+	@$(COVERAGE_CONCAT)
+	$(COVER_RATCHET) -min $(COVER_MIN) -tolerance $(COVER_TOLERANCE)
+
+# _coverage-legs runs every leg, one after another, past a failing one, and
+# fails if any did.
+.PHONY: _coverage-legs
+_coverage-legs: | _cover-dir
+	@rm -f $(COVER_DIR)/leg-*.out; \
+	failed=; \
+	for l in $(COVER_LEGS); do \
+		$(MAKE) --no-print-directory coverage-leg COVER_LEG=$$l || failed="$$failed $$l"; \
+	done; \
+	if [ -n "$$failed" ]; then echo "coverage: failed legs:$$failed" >&2; exit 1; fi
 
 # The package set is the SAME one the baseline is generated from. If CI
 # measured a different set, a package present in one and not the other would
-# read as "missing" or "new". /proto/ is generated code with no tests.
+# read as "missing" or "new".
 .PHONY: coverage
 coverage: | _cover-dir
-	$(COVERAGE_MERGE_SUBPROCESS)
-	$(COVER_RATCHET) -min $(COVER_MIN) -tolerance $(COVER_TOLERANCE)
+	@$(MAKE) --no-print-directory _coverage-legs
+	@$(MAKE) --no-print-directory coverage-merge
 
 # Regenerate the baseline from a fresh `make coverage` profile. Run it after
 # RAISING a package's coverage, to lock the gain in. The file says, in its own
 # header, that a LOWERED number is the one thing a reviewer should question.
 .PHONY: coverage-baseline
 coverage-baseline: | _cover-dir
-	$(COVERAGE_MERGE_SUBPROCESS)
+	@$(MAKE) --no-print-directory _coverage-legs
+	@$(COVERAGE_CONCAT)
 	$(COVER_RATCHET) -write
 
 # coverage-fts is `coverage`'s sibling for the one package `coverage` cannot
@@ -2372,7 +2464,7 @@ ci:
 # asserts is that `security`'s trivy leg refuses a database too old to know
 # about a current advisory (#451). A guard for the suite belongs before the
 # suite, so a broken guard reports as a broken guard.
-_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-trim-ci-caches test-in-toolchain-image check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
+_ci: check-tool-versions test-tool-versions test-deps-check check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets test-cluster-cpus test-ci-image test-in-toolchain-image check-action-pins check-no-deprecated-credential-retrieve test-nightly-signal fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound check-public-releasable test-public-releasable secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2503,7 +2595,7 @@ vet-sdk:
 # job runs `make gosec` instead.
 LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-tool-versions test-tool-versions test-deps-check test-trivy-db \
-	test-cluster-cpus test-trim-ci-caches test-in-toolchain-image \
+	test-cluster-cpus test-ci-image test-in-toolchain-image \
 	check-action-pins check-integration-feature-coverage \
 	check-no-deprecated-credential-retrieve check-no-alias-language \
 	check-lean-standalone \
@@ -2807,13 +2899,13 @@ test-compose-targets: ## Test the compose-target guard
 test-cluster-cpus: ## Test the cluster stage's host-bounded CPU cap
 	@./scripts/cluster-cpus_test.sh
 
-# The CI cache trim (scripts/trim-ci-caches.sh) evicts the build and
-# golangci-lint cache entries unused longest before it removes a whole volume,
-# which emptied the build cache and made the next image job compile the tree
-# from nothing (#1046). Tested on a stub docker: a real run needs the runner's.
-.PHONY: test-trim-ci-caches
-test-trim-ci-caches: ## Test the CI cache trim's age-first eviction
-	@./scripts/trim-ci-caches_test.sh
+# The CI image hand-off (scripts/ci-image.sh) is what every stage job runs
+# in: its refusals -- a substituted or missing artifact, a credential on a
+# command line, a digest outside the owner's namespace -- run on no healthy
+# CI run, so they are proved here on a stub docker.
+.PHONY: test-ci-image
+test-ci-image: ## Test the CI image hand-off (save, load, GHCR push)
+	@./scripts/ci-image_test.sh
 
 # A stage's multicast namespace was a holder container sleeping until the
 # script's EXIT trap removed it, so every job killed first left one running
@@ -3999,22 +4091,14 @@ TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 # content-addressed, as the toolchain tag is: a hash of the build arguments
 # that change the image and of every byte of the build context -- the
 # commit's tree, plus, on a dirty checkout, the diff against it and every
-# untracked file .gitignore does not exclude -- so every leg of one run on
-# one runner names the same image, builds it once and reuses it, and a
-# changed tree never runs a stale one. Nothing in it depends on the
-# checkout's path. Outside a git checkout there is no tree to hash, and the
-# tag falls back to DOCKER_TAG. `make -s it-image` prints the name. CI passes
-# only a per-leg IT_PROJECT, so legs sharing a daemon never share a stack;
-# scripts/reap-stale-ci-stacks.sh removes old qrdb-ci-it images.
-#
-# IT_HOLD names the job's hold on the image: a container created from it and
-# never started, which docker-build-it creates and docker-release-it removes.
-# `docker image rm` without force refuses an image any container uses, so
-# while the hold exists the reaper cannot remove the image under the job, no
-# matter how old the image's .Created is (a cache hit keeps the first build's,
-# run 57540). CI names one per job under qrdb-ci-, so the reaper removes the
-# hold of a job that died before its teardown, as it does any stale
-# container. Empty, the default off CI, takes no hold.
+# untracked file .gitignore does not exclude -- so every run of one tree
+# names the same image and builds it once, and a changed tree never runs a
+# stale one. Nothing in it depends on the checkout's path. Outside a git
+# checkout there is no tree to hash, and the tag falls back to DOCKER_TAG.
+# `make -s it-image` prints the name. CI's docker-build job builds it once per
+# run and every leg loads that build (scripts/ci-image.sh, IT_PREBUILT below);
+# CI passes a per-leg IT_PROJECT, so two legs on one daemon never share a
+# stack.
 #
 # APK_INDEX_SUM is the checksum of the Alpine package indexes the build
 # resolves against (scripts/apk-index-sum.sh, ci-template v1.29): CI reads it
@@ -4039,28 +4123,31 @@ IT_TAG     = $(shell if git rev-parse -q --verify 'HEAD^{tree}' >/dev/null 2>&1;
 	else echo $(DOCKER_TAG); fi)
 IT_IMAGE   ?= qrdb-ci-it:$(IT_TAG)
 IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
-IT_HOLD    ?=
 
-# CUSTOMIZE (go-qrdb): CI pulls the integration image from the Gitea registry
-# by digest, once per job, and never builds it (DS-3516). it-require-pulled is
-# the integration-test step for such a reference: the image must already be on
-# the daemon, pulled by scripts/ci-registry.sh, or the run fails rather than
-# rebuild something other than what docker-build pushed. A tag reference, the
-# developer-host default, still builds through docker-build-it.
-it-require-pulled = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a digest reference is pulled (scripts/ci-registry.sh pull), never built" >&2; exit 1; }
+# CUSTOMIZE (go-qrdb): CI never builds the integration image in a leg
+# (DS-3516). docker-build builds it once per run, and each leg loads that
+# build from the run's artifact (scripts/ci-image.sh load, which checks its
+# image ID) and sets IT_PREBUILT=1. it-require-prebuilt is then the
+# integration-test step: the image must already be on the daemon, or the run
+# fails rather than build something other than what docker-build built --
+# the stage runs `apk upgrade`, so a rebuild of the same tree can differ. A
+# digest reference, an image pulled from a registry, is held to the same
+# rule. A tag reference, the developer-host default, still builds through
+# docker-build-it.
+IT_PREBUILT ?=
+it-require-prebuilt = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a prebuilt image is loaded from docker-build's artifact (scripts/ci-image.sh load), never built" >&2; exit 1; }
 # it-image-step is integration-test's image step. It sits in a variable, not in
-# the recipe text, so `make -n` prints the digest path instead of running it:
+# the recipe text, so `make -n` prints the prebuilt path instead of running it:
 # make runs any recipe line that names $(MAKE) directly, even under -n.
-it-image-step = $(if $(findstring @sha256:,$(IT_IMAGE)),$(it-require-pulled),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
+it-image-step = $(if $(filter 1,$(IT_PREBUILT))$(findstring @sha256:,$(IT_IMAGE)),$(it-require-prebuilt),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
 
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
 # The module credentials are the same $(stage-gomodauth) secret every other
 # image build here passes; without them the build resolves from the public
 # proxy. GO_BUILD_PROXY comes from the caller (handbook devcontainer.md
-# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY, which on
-# the CI runners is the fleet Athens first (m1544, ruling 236(3)); unset, the
-# Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
+# section 4): an explicit GO_BUILD_PROXY, else the caller's GOPROXY; unset, as
+# on CI's hosted runners, the Dockerfile default applies. The shell expands $$GOPROXY, quoted, because the
 # runners' value uses the | separator. IT_TAGS is the tag set the integration
 # stage compiles its suites under, the same set the per-feature targets use.
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
@@ -4076,7 +4163,7 @@ docker-build: docker-build-toolchain docker-build-it
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
-	@# this daemon (built here, or pulled by scripts/ci-image-cache.sh) is the
+	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
 	@# image this tree would build.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
@@ -4087,61 +4174,34 @@ docker-build-toolchain:
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Two legs that miss together on one daemon both build, and only the
+# tree's. Two builds that miss together on one daemon both build, and only the
 # first --load can tag the result: the second fails with "image ... already
 # exists" (run 57133). That loser finds the image held once its build fails,
 # and the tag is the content, so it succeeds; any other failed build fails
-# with the build's status. A flock cannot serialize the legs, because CI's job
-# containers share the runner's daemon, not a filesystem.
-#
-# With IT_HOLD set it then holds the image (above) before it returns, so no
-# step of the job uses an image it does not hold. The reaper can remove the
-# image between the check and the hold; `docker create --pull never` then
-# fails, and the loop builds it once more and holds that.
+# with the build's status.
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
-	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): pull a digest reference with scripts/ci-registry.sh" >&2; exit 1 ;; esac
-	@for attempt in 1 2; do \
-		if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
-			echo "==> $(IT_IMAGE) is already built on this daemon"; \
-		else \
-			$(stage-gomodauth) \
-			$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-				--target integration -t $(IT_IMAGE) . || { \
-				status=$$?; \
-				docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-				echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-			}; \
-		fi; \
-		[ -n '$(IT_HOLD)' ] || exit 0; \
-		[ "$$(docker container inspect -f '{{.Config.Image}}' '$(IT_HOLD)' 2>/dev/null)" != '$(IT_IMAGE)' ] || exit 0; \
-		docker rm -f '$(IT_HOLD)' >/dev/null 2>&1 || true; \
-		if docker create --pull never --name '$(IT_HOLD)' '$(IT_IMAGE)' >/dev/null; then \
-			echo "==> $(IT_HOLD) holds $(IT_IMAGE) until docker-release-it"; \
-			exit 0; \
-		fi; \
-		echo "==> $(IT_IMAGE) was removed before $(IT_HOLD) could hold it"; \
-	done; \
-	echo "ERROR: $(IT_HOLD) could not hold $(IT_IMAGE)" >&2; \
-	exit 1
-
-# docker-release-it removes the job's hold on the integration image (IT_HOLD,
-# above), so the reaper may remove the image once no other job holds it. A
-# hold nobody created is not an error.
-.PHONY: docker-release-it
-docker-release-it:
-	@[ -z '$(IT_HOLD)' ] || docker rm -f '$(IT_HOLD)' >/dev/null 2>&1 || true
+	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
+	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
+		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+	else \
+		$(stage-gomodauth) \
+		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+			--target integration -t $(IT_IMAGE) . || { \
+			status=$$?; \
+			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
+			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
+		}; \
+	fi
 
 # docker-down-it removes an integration-test run's compose project, never its
-# image: every leg of a run on one runner reuses that image (#813), and
-# scripts/reap-stale-ci-stacks.sh removes it once no job holds it; this
-# releases the job's hold (docker-release-it).
+# image: every feature a leg runs reuses that image (#813).
 # integration-test downs its own stack; CI's legs run this under always(), so
 # a cancelled leg leaves no stack on the runner. A name nobody created is not
 # an error.
 .PHONY: docker-down-it
-docker-down-it: docker-release-it
+docker-down-it:
 	@QRDB_IT_IMAGE='$(IT_IMAGE)' docker compose -f $(DEVCONTAINER_COMPOSE) -p '$(IT_PROJECT)' \
 		down --volumes --remove-orphans >/dev/null 2>&1 || true
 
@@ -4648,8 +4708,7 @@ help:
 	@echo "  docker-run CMD=...           Run CMD in the toolchain compose service (checkout bind-mounted)"
 	@echo "  toolchain-image              Print the content-hashed toolchain image tag"
 	@echo "  trivy-image                  Scan the integration image (IT_IMAGE) with trivy"
-	@echo "  docker-down-it               Remove an integration-test run's stack and hold, keeping its image (IT_PROJECT, IT_HOLD)"
-	@echo "  docker-release-it            Remove the job's hold on the integration image (IT_HOLD)"
+	@echo "  docker-down-it               Remove an integration-test run's stack, keeping its image (IT_PROJECT)"
 	@echo "  it-image                     Print the integration image's content-addressed name (IT_IMAGE)"
 	@echo "  docker-build-release         Build production image"
 	@echo "  docker-run-release           Run production container"
