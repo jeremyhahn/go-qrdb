@@ -774,9 +774,21 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 		return &NotOpenError{}
 	}
 
+	// One quiesce lease spans the whole recovery, from the delete of the
+	// old data through the commit of its replacement: a seal either refuses
+	// recovery before anything is deleted or drains until it has finished.
+	release, err := admit(s.seals)
+	if err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+	defer release()
+
 	// Clear all existing data.
 	if err := s.clearAll(); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
+	}
+	if recoverClearedHook != nil {
+		recoverClearedHook()
 	}
 
 	var count uint32
@@ -784,7 +796,10 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
-	batch := s.storage.Batch()
+	// The replacement is written to Pebble directly: a storage batch admits
+	// again on commit, which a seal that closed the gate after the delete
+	// would refuse, and the recovery's lease is already held.
+	batch := s.db.NewBatch()
 	defer func() { _ = batch.Close() }()
 
 	for i := uint32(0); i < count; i++ {
@@ -812,12 +827,12 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 
-		if err := batch.Set(key, val); err != nil {
+		if err := batch.Set(key, val, pebble.Sync); err != nil {
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 	}
 
-	if err := batch.Commit(); err != nil {
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 

@@ -347,15 +347,32 @@ func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
 // the key leaves memory. A refused Admit is the typed sealed error, as a
 // PebbleStorage write returns it; a nil watch runs commit unleased.
 func leased(w *pebbleStorage.SealWatch, commit func() error) error {
-	if w == nil {
-		return commit()
-	}
-	if err := w.Admit(); err != nil {
+	release, err := admit(w)
+	if err != nil {
 		return err
 	}
-	defer w.Done()
+	defer release()
 	return commit()
 }
+
+// admit takes w's quiesce lease and returns its release; a nil watch admits
+// unconditionally. A caller that holds the lease across several writes, as
+// snapshot recovery does from its delete through its replacement commit,
+// writes directly inside it rather than through leased, which would admit
+// again.
+func admit(w *pebbleStorage.SealWatch) (func(), error) {
+	if w == nil {
+		return func() {}, nil
+	}
+	if err := w.Admit(); err != nil {
+		return nil, err
+	}
+	return w.Done, nil
+}
+
+// recoverClearedHook, when set by a test, runs after snapshot recovery has
+// cleared the old data and before it commits the replacement.
+var recoverClearedHook func()
 
 // tsRefusalResult is the application result of a time-series write that
 // tsAutoCommit refused: a metric-cap refusal carries its typed encoding, any
@@ -1074,9 +1091,21 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		return &NotOpenError{}
 	}
 
+	// One quiesce lease spans the whole recovery, from the delete of the
+	// old data through the commit of its replacement: a seal either refuses
+	// recovery before anything is deleted or drains until it has finished.
+	release, err := admit(s.seals)
+	if err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+	defer release()
+
 	// Clear all existing data.
 	if err := s.clearAll(); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
+	}
+	if recoverClearedHook != nil {
+		recoverClearedHook()
 	}
 
 	var count uint32
@@ -1117,7 +1146,9 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		}
 	}
 
-	if err := leased(s.seals, func() error { return batch.Commit(pebble.Sync) }); err != nil {
+	// The recovery's lease is already held; admitting again here could be
+	// refused by a seal that closed the gate after the delete.
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
