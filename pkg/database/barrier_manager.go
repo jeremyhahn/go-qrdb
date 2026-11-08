@@ -162,10 +162,16 @@ func splitBarrierKey(key string) (dbName, tenantID string) {
 // barrierConfig is the BarrierConfig of dbName's barrier in tenantID: its
 // root-key path, and its trail on the compliance audit.
 func (m *DatabaseBarrierManager) barrierConfig(dbName, tenantID string) seal.BarrierConfig {
-	return seal.BarrierConfig{
+	cfg := seal.BarrierConfig{
 		RootKeyPath: "db/" + dbName + "/root-key",
 		AuditLogger: seal.NewComplianceAuditLogger(m.auditTrail, tenantID, seal.DatabaseBarrierAuditName(tenantID, dbName)),
 	}
+	// A database barrier drains its stores within the node's
+	// seal.drain_timeout: the system barrier's resolved bound.
+	if system := m.registry.SystemBarrier(); system != nil {
+		cfg.SealDrainTimeout = system.Config().SealDrainTimeout
+	}
+	return cfg
 }
 
 // EnsureBarrier creates and initializes an encryption barrier for the
