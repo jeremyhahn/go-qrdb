@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // WithReplicaForwarding makes this listener forward a unary request it
@@ -312,7 +313,7 @@ func (f *ReplicaForwarder) conn(ctx context.Context, endpoint string) (*grpc.Cli
 				BaseDelay: replicaforward.ReconnectBaseDelay, Multiplier: replicaforward.ReconnectMultiplier,
 				Jitter: replicaforward.ReconnectJitter, MaxDelay: replicaforward.ReconnectMaxDelay,
 			}}),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(DefaultMaxMessageBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(service.MaxReplyBytes), grpc.MaxCallSendMsgSize(DefaultMaxMessageBytes)),
 		)
 		if err != nil {
 			f.mu.Unlock()
