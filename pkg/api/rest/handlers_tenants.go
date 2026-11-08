@@ -663,6 +663,12 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request, id s
 	if !s.authorizeTenantUpdate(ctx, w, id, patch) {
 		return
 	}
+	if req.IsolationPolicy != nil {
+		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+			writeErrorJSON(w, mapHTTPError(err), err)
+			return
+		}
+	}
 	if req.IsolationPolicy != nil && *req.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
 		if err := refuseIsolationPolicyLoosening(ctx, s.tenantSvc, id); err != nil {
 			writeErrorJSON(w, mapHTTPError(err), err)
@@ -695,6 +701,10 @@ func (s *Server) handleGetClusterIsolationPolicy(w http.ResponseWriter, r *http.
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
 		return
 	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	policy, err := s.tenantSvc.ClusterIsolationPolicy(r.Context())
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -709,6 +719,10 @@ func (s *Server) handleGetClusterIsolationPolicy(w http.ResponseWriter, r *http.
 func (s *Server) handleSetClusterIsolationPolicy(w http.ResponseWriter, r *http.Request) {
 	if s.tenantSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "tenant"})
+		return
+	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 	var req clusterIsolationPolicyBody

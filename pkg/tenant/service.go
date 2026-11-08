@@ -578,6 +578,9 @@ type TenantService struct {
 	// perNodeBarrierKeysGate refuses an isolated tenant until every node
 	// initialises its own barrier key; see WithPerNodeBarrierKeysGate.
 	perNodeBarrierKeysGate
+	// strictIsolationGate refuses the isolation-policy verbs until
+	// strict-isolation is active; see WithStrictIsolationGate.
+	strictIsolationGate
 	// tenantUndoGate decides whether an undone create may release its id;
 	// see WithTenantUndoGate.
 	tenantUndoGate

@@ -48,16 +48,50 @@ func quicFloorSet(t *testing.T, srv *Server, policy string) error {
 	return err
 }
 
+// strictIsolationActiveQUICServer is descriptiveQUICServer with the
+// strict-isolation gate reporting active, which this binary cannot reach
+// in production: it exercises the verbs' success paths.
+func strictIsolationActiveQUICServer(t *testing.T) *Server {
+	t.Helper()
+	srv := descriptiveQUICServer(t)
+	srv.tenantSvc.(tenant.StrictIsolationWiring).SetStrictIsolationGate(func() error { return nil })
+	return srv
+}
+
+// TestIsolationPolicyVerbs_RefusedBeforeStrictIsolation pins that before
+// strict-isolation is active the floor's get and set and a tenant update
+// carrying isolation_policy answer UNAVAILABLE and change nothing.
+func TestIsolationPolicyVerbs_RefusedBeforeStrictIsolation(t *testing.T) {
+	srv := descriptiveQUICServer(t)
+	_, getErr := srv.handleClusterIsolationPolicyGet(context.Background(), nil)
+	_, updErr := quicTenantUpdate(t, srv, &pb.TenantUpdateRequest{Id: "acme", IsolationPolicy: proto.String("strict")})
+	for name, err := range map[string]error{"get floor": getErr, "set floor": quicFloorSet(t, srv, "strict"), "tenant strict": updErr} {
+		if code, _ := mapServiceError(err); code != wire.StatusUnavailable {
+			t.Fatalf("%s before activation: code %d (%v); want UNAVAILABLE", name, code, err)
+		}
+	}
+	if got := quicTenantGet(t, srv, "acme"); got.GetIsolationPolicy() != "" {
+		t.Fatalf("isolation_policy after a refused update = %q; want inherit", got.GetIsolationPolicy())
+	}
+	srv.tenantSvc.(tenant.StrictIsolationWiring).SetStrictIsolationGate(func() error { return nil })
+	if got := quicFloorGet(t, srv); got != string(tenant.ClusterIsolationPolicyOperatorAccess) {
+		t.Fatalf("floor after a refused set = %q; want operator-access", got)
+	}
+}
+
 // TestClusterIsolationPolicy_TightenOnly pins cluster.IsolationPolicyGet/Set:
 // an unset floor reads as operator-access, it tightens to strict, and a
 // loosening is FAILED_PRECONDITION with the floor unchanged.
 func TestClusterIsolationPolicy_TightenOnly(t *testing.T) {
-	srv := descriptiveQUICServer(t)
+	srv := strictIsolationActiveQUICServer(t)
 	if got := quicFloorGet(t, srv); got != string(tenant.ClusterIsolationPolicyOperatorAccess) {
 		t.Fatalf("unset floor = %q; want operator-access", got)
 	}
 	if err := quicFloorSet(t, srv, "strict"); err != nil {
 		t.Fatalf("set strict: %v", err)
+	}
+	if code, _ := mapServiceError(quicFloorSet(t, srv, "loose")); code != wire.StatusInvalidArgument {
+		t.Fatalf("unknown policy: code %d; want INVALID_ARGUMENT", code)
 	}
 	err := quicFloorSet(t, srv, "operator-access")
 	if code, _ := mapServiceError(err); code != uint16(wire.StatusFailedPrecondition) {
@@ -86,7 +120,11 @@ func TestClusterIsolationPolicy_BadPayloadAndNoService(t *testing.T) {
 // tenant.Update: inherit to strict shows on tenant.Get; strict back to
 // inherit is FAILED_PRECONDITION and leaves the tenant strict.
 func TestHandleTenantUpdate_IsolationPolicy(t *testing.T) {
-	srv := descriptiveQUICServer(t)
+	srv := strictIsolationActiveQUICServer(t)
+	_, loose := quicTenantUpdate(t, srv, &pb.TenantUpdateRequest{Id: "acme", IsolationPolicy: proto.String("loose")})
+	if code, _ := mapServiceError(loose); code != wire.StatusInvalidArgument {
+		t.Fatalf("unknown isolation_policy: code %d (%v); want INVALID_ARGUMENT", code, loose)
+	}
 	if _, err := quicTenantUpdate(t, srv, &pb.TenantUpdateRequest{Id: "acme", IsolationPolicy: proto.String("strict")}); err != nil {
 		t.Fatalf("strict: %v", err)
 	}

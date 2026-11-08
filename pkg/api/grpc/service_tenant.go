@@ -235,6 +235,11 @@ func (s *qrdbServiceServer) TenantUpdate(ctx context.Context, req *pb.TenantUpda
 	if err := s.authorizeTenantUpdate(ctx, req.GetId(), patch); err != nil {
 		return nil, err
 	}
+	if req.IsolationPolicy != nil {
+		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+			return nil, mapServiceError(err)
+		}
+	}
 	if req.IsolationPolicy != nil && patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
 		if err := refuseIsolationPolicyLoosening(ctx, s.tenantSvc, req.GetId()); err != nil {
 			return nil, mapServiceError(err)
@@ -269,6 +274,9 @@ func (s *qrdbServiceServer) GetClusterIsolationPolicy(ctx context.Context, _ *pb
 	if s.tenantSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, mapServiceError(err)
+	}
 	policy, err := s.tenantSvc.ClusterIsolationPolicy(ctx)
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -282,6 +290,9 @@ func (s *qrdbServiceServer) GetClusterIsolationPolicy(ctx context.Context, _ *pb
 func (s *qrdbServiceServer) SetClusterIsolationPolicy(ctx context.Context, req *pb.SetClusterIsolationPolicyRequest) (*pb.ClusterIsolationPolicyResponse, error) {
 	if s.tenantSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
+	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, mapServiceError(err)
 	}
 	if err := s.tenantSvc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(req.GetPolicy())); err != nil {
 		return nil, mapServiceError(err)

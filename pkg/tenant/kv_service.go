@@ -66,6 +66,10 @@ type kvTenantService struct {
 	// see SetTenantUndoGate.
 	tenantUndoGate
 
+	// strictIsolationGate refuses the isolation-policy verbs until
+	// strict-isolation is active; see SetStrictIsolationGate.
+	strictIsolationGate
+
 	// undoNode is this node's identity in its undo cleanup acknowledgements;
 	// see SetUndoCleanupRoster.
 	undoNode string

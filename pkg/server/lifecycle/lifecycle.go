@@ -1287,6 +1287,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			w.SetTenantUndoGate(tenantUndoRequired(infra.Host))
 			w.SetUndoCleanupRoster(nodeIdentity(infra.Host), undoCleanupRoster(infra.Host))
 		}
+		if w, ok := kvTenantSvc.(tenant.StrictIsolationWiring); ok {
+			w.SetStrictIsolationGate(strictIsolationRequired(infra.Host))
+		}
 		n.Tenant = kvTenantSvc
 
 		// Barrier protection none is a valid barrier, not an unconfigured
@@ -2104,6 +2107,7 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 		tenant.WithNodeID(nodeIdentity(infra.Host)),
 		tenant.WithTenantUndoGate(tenantUndoRequired(infra.Host)),
 		tenant.WithUndoCleanupRoster(undoCleanupRoster(infra.Host)),
+		tenant.WithStrictIsolationGate(strictIsolationRequired(infra.Host)),
 	}
 	// Reserve the node's own data directory so an operator-supplied dedicated
 	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the

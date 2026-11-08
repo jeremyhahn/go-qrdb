@@ -467,6 +467,11 @@ func handleTenantUpdate(svc tenant.TenantServicer, mw *authmw.AuthMiddleware) mc
 		}); refusal != nil {
 			return refusal, nil
 		}
+		if inherit || patch.IsolationPolicy != "" {
+			if err := tenant.RequireStrictIsolation(svc); err != nil {
+				return nil, &ToolError{Tool: "qrdb_tenant_update", Err: err}
+			}
+		}
 		if inherit {
 			if err := refuseIsolationPolicyLoosening(ctx, svc, id); err != nil {
 				return nil, &ToolError{Tool: "qrdb_tenant_update", Err: err}
@@ -744,7 +749,11 @@ func toolClusterIsolationPolicyGet() mcp.Tool {
 
 func handleClusterIsolationPolicyGet(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return clusterIsolationPolicyResult(ctx, svc, "qrdb_cluster_isolation_policy_get")
+		const tool = "qrdb_cluster_isolation_policy_get"
+		if err := tenant.RequireStrictIsolation(svc); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
+		return clusterIsolationPolicyResult(ctx, svc, tool)
 	}
 }
 
@@ -761,6 +770,9 @@ func toolClusterIsolationPolicySet() mcp.Tool {
 func handleClusterIsolationPolicySet(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		const tool = "qrdb_cluster_isolation_policy_set"
+		if err := tenant.RequireStrictIsolation(svc); err != nil {
+			return nil, &ToolError{Tool: tool, Err: err}
+		}
 		policy := mcp.ParseString(req, "policy", "")
 		if policy == "" {
 			return mcp.NewToolResultError("policy is required"), nil

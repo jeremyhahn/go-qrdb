@@ -242,6 +242,17 @@ const CommandCaps feature.Feature = "command-caps"
 // engineering.md).
 const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
+// StrictIsolation is the cluster isolation floor's strict mode and the
+// per-tenant isolation_policy that opts into it: the cluster.IsolationPolicy
+// get and set verbs and a tenant update carrying isolation_policy are refused
+// with *feature.NotActiveError until it is active, and before then behaviour
+// is unchanged. It is deliberately NOT in supported: strict isolation is only
+// real once a strict tenant's databases have dedicated WALs (multi-tenancy
+// phase 5, G1), which this binary does not build, so advertising it would let
+// a cluster activate a strict floor that does not isolate
+// (docs/multi-tenancy/engineering.md phase 5).
+const StrictIsolation feature.Feature = "strict-isolation"
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
 var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads}

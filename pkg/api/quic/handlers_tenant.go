@@ -228,6 +228,11 @@ func (s *Server) handleTenantUpdate(ctx context.Context, payload []byte) ([]byte
 	if err := s.authorizeTenantUpdate(ctx, req.GetId(), patch); err != nil {
 		return nil, err
 	}
+	if req.IsolationPolicy != nil {
+		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+			return nil, err
+		}
+	}
 	if req.IsolationPolicy != nil && patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
 		if err := refuseIsolationPolicyLoosening(ctx, s.tenantSvc, req.GetId()); err != nil {
 			return nil, err
@@ -266,6 +271,9 @@ func (s *Server) handleClusterIsolationPolicyGet(ctx context.Context, _ []byte) 
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, err
+	}
 	policy, err := s.tenantSvc.ClusterIsolationPolicy(ctx)
 	if err != nil {
 		return nil, err
@@ -282,6 +290,9 @@ func (s *Server) handleClusterIsolationPolicyGet(ctx context.Context, _ []byte) 
 func (s *Server) handleClusterIsolationPolicySet(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, err
 	}
 	var req pb.SetClusterIsolationPolicyRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
